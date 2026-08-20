@@ -261,11 +261,27 @@ impl KbBridge {
     }
 
     /// Convert a `LogicalQuery` to goal [`Value`]s and a `ResolveConfig`.
+    ///
+    /// **THE STREAM IS A BAG OF PROOFS** (WI-FFPGD), so `dedup_answers` is OFF.
+    /// This is the SECOND producer of `KB.execute`'s semantics — core's
+    /// [`KnowledgeBase::execute_logical_query`] is the other, and it says the same
+    /// thing at its own site. `KB.execute` is typed `Stream[Solution]` and a
+    /// `Relation` is an unordered bag whose multiplicity is its proof count
+    /// (proposal 052), so a query-level answer projection would make `union(r, r)`
+    /// yield one row here while the interpreter face yields two — one spec, two
+    /// answers. Found by `/code-review`: the first census of this seam covered
+    /// `anthill-core/src` only, and this producer builds its goals through
+    /// `query_to_goals` rather than core's `lower_query`, so it never touched the
+    /// function that carries the decision. That duplication is the standing reason
+    /// the two can drift; it predates this and is not fixed here.
     fn query_to_goals_and_config(
         &self,
         query: &LogicalQuery,
     ) -> Result<(Vec<Value>, ResolveConfig), Error> {
-        let mut config = ResolveConfig::default();
+        let mut config = ResolveConfig {
+            dedup_answers: false,
+            ..ResolveConfig::default()
+        };
         let goals = self.query_to_goals(query, &mut config)?;
         Ok((goals, config))
     }

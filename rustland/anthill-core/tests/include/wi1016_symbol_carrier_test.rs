@@ -194,7 +194,7 @@ fn a_symbolref_child_stores_one_fact_not_two() {
 /// rule that binds the same symbol as a `Value::SymbolRef` — collapses to one
 /// solution.
 ///
-/// `is_duplicate_projection` skips dedup when σ carries a binding it cannot
+/// `is_duplicate_answer` skips dedup when σ carries a binding it cannot
 /// fingerprint, and the test for that was by CARRIER (`Value::Term | Value::Node`).
 /// A `SymbolRef` fingerprints perfectly well (`ViewHead::Ref`), so excluding it
 /// turned answer dedup off according to which carrier the symbol arrived on.
@@ -207,17 +207,22 @@ fn a_symbolref_child_stores_one_fact_not_two() {
 /// therefore INDISTINGUISHABLE to a caller — which is what makes the duplicate a
 /// duplicate.
 ///
-/// The two routes have to be alternatives for ONE goal, not two ways through one
-/// rule body: the fingerprint is taken of the NEAREST ancestor ChoicePoint's goal,
-/// and a disjunction inside the body would make that the body goal (whose two
-/// answers genuinely differ) rather than `dup(?q)`.
+/// The two routes are alternatives for ONE goal, not two ways through one rule
+/// body. That was FORCED when this test was written — the fingerprint was taken of
+/// the NEAREST ancestor ChoicePoint's goal, and a disjunction inside the body made
+/// that the body goal (whose two answers genuinely differ) rather than `dup(?q)`.
+/// WI-FFPGD projects onto the QUERY's goals, so the body-disjunction shape would
+/// measure dedup too; the one-goal shape is kept because it puts `dup(?q)` at both
+/// ends and leaves the carrier as the only moving part.
 ///
 /// CONTROL, RE-MEASURED for WI-1023, which deleted the code the original control
 /// named: the by-carrier σ list is gone, so "drop `| Value::SymbolRef(_)`" no
 /// longer describes anything. The equivalent revert is the PRE-WI-1016 list —
-/// restore `is_duplicate_projection`'s σ scan as
+/// restore `is_duplicate_answer`'s σ scan as
 /// `!matches!(v, Value::Term { .. } | Value::Node(_))` — which reports 2 solutions
-/// instead of 1. Fail-open, which is why nothing caught it.
+/// instead of 1. Fail-open, which is why nothing caught it. WI-FFPGD changed WHAT
+/// is fingerprinted (the query's goals, not the nearest ChoicePoint's) and left
+/// this σ scan untouched, so the revert still describes live code.
 #[test]
 fn a_symbolref_binding_does_not_disable_answer_dedup() {
     use anthill_core::kb::resolve::ResolveConfig;

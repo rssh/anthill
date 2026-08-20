@@ -1025,17 +1025,46 @@ impl KnowledgeBase {
     }
 
     /// Construct a lazy search stream over the lowered goals of the given
-    /// `LogicalQuery`. Uses [`ResolveConfig::default`] — callers that want
-    /// custom depth or solution caps should use `lower_query` + `resolve_lazy`
-    /// directly.
+    /// `LogicalQuery`. Callers that want custom depth or solution caps should use
+    /// `lower_query` + `resolve_lazy` directly.
     ///
     /// Per proposal 026.1 §"Query-lowering at execute": this is the sole
     /// public entry for value-driven KB queries. Every reflect operation
     /// with value args compiles down to assembling a `LogicalQuery` and
     /// calling this function.
+    ///
+    /// **THE STREAM IS A BAG OF PROOFS, NOT A SET OF ANSWERS** (WI-FFPGD), which is
+    /// why this is the one place that turns `dedup_answers` off. Both consumers say
+    /// so in their own types: `Relation.splitFirst` materializes each solution as a
+    /// row, and `KB.execute` is typed `Stream[Solution]`. Proposal 052 fixes the
+    /// semantics — §"Open questions" 6 pins consumption to "the resolver's stream
+    /// as-is", a zero-column membership relation's `multiplicity = number of
+    /// proofs`, and "a relation is an unordered bag", with `Relation.set` the
+    /// explicit collapse. Deduping here would make `union(r, r)` yield one row and
+    /// a recursive clause's re-derivation vanish.
+    ///
+    /// The default (`dedup_answers: true`) is right for the OTHER face — a query
+    /// asking what `?t` can be — and stays on for every `kb.resolve` caller.
+    ///
+    /// CONTROL, MEASURED by deleting the `config` here and passing
+    /// `ResolveConfig::default()` again: SIX tests go red, and they are the whole
+    /// population — `wi714_relation_reference_test::wi714_union_is_a_bag`
+    /// (`["alice"]`, not `["alice","alice"]`),
+    /// `wi714_drain_test::wi714_set_dedups_while_the_drain_keeps_the_bag` (3, not 5),
+    /// `wi_yqb1y_one_column_relation_test::yqb1y_join_with_a_membership_operand_is_a_filter`
+    /// (one row, not two), `wi741_spec_typed_column_test::wi741_a_spec_typed_column_joins_a_concrete_one`
+    /// (1, not 2 — the two clauses deriving `root` collapse),
+    /// `wi733_relation_head_eval_test::wi733_head_reads_an_unboundedly_generating_relation`
+    /// (2, not 3 — the recursive clause's re-derivation vanishes) and
+    /// `wi737_floundered_relation_test::wi737_same_guard_drains_when_its_vars_are_bound_by_the_body`
+    /// (1, not 6 — a zero-column relation's multiplicity IS its proof count).
     pub fn execute_logical_query(&mut self, q: &Value) -> Result<SearchStream, LowerError> {
         let goals = self.lower_query(q)?;
-        Ok(self.resolve_lazy(&goals, &ResolveConfig::default()))
+        let config = ResolveConfig {
+            dedup_answers: false,
+            ..ResolveConfig::default()
+        };
+        Ok(self.resolve_lazy(&goals, &config))
     }
 }
 

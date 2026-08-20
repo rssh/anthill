@@ -502,6 +502,14 @@ goal fingerprinted through σ, and skips dedup when that key cannot be trusted.
 Over-dedup **drops an answer**, so both guards are the conservative side of their
 question — a skipped dedup only yields a duplicate.
 
+*(Superseded in part by WI-FFPGD: the predicate is `is_duplicate_answer` and keys
+the QUERY's whole goal vector, not the nearest ChoicePoint's goal — the nearest
+projection missed an existential body variable's duplicates entirely. Both guards
+below are unchanged and still the conservative side of their question; only what
+they guard moved. A resolution asking for PROOFS rather than answers — the
+relation face, `execute_logical_query` — turns the whole check off via
+`ResolveConfig::dedup_answers`.)*
+
 - **σ-wide** — any binding that BEARS an opaque anywhere inside it
   (`TermView::bears_opaque`). Scanned over ALL of σ because that is the half the key
   cannot reach: two solutions distinguished only by an opaque binding the goal

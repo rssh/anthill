@@ -110,6 +110,15 @@
 
 /// The five-row fixture, parameterized on whether `anthill.prelude.Bool` is imported.
 /// One builder so the two arms cannot drift into two programs.
+///
+/// `right1046` CARRIES A ROW `left1046` DOES NOT (WI-FFPGD). The `pipe` row's job is to
+/// show the disjunction enumerating BOTH arms, and it used to do that with a count of 2
+/// over two arms that both answered `?x = 1` — one answer, reached twice. Answer dedup
+/// now collapses that pair, so the row would have read 1 whether the right arm ran or
+/// not. The extra `right1046(2)` restores the discrimination in the form that survives
+/// dedup: the answer `2` can ONLY come from the right arm. The other three rows are
+/// unmoved — `comma`/`nafTrue`/`nafFalse` all pivot on `?x = 1`, which both relations
+/// still hold — so the whole table stays `[2, 1, 1, 0]`.
 fn program(ns: &str, import_bool: bool) -> String {
     let imp = if import_bool {
         "  import anthill.prelude.Bool\n"
@@ -120,6 +129,7 @@ fn program(ns: &str, import_bool: bool) -> String {
         "namespace {ns}\n{imp}\
          \x20 fact left1046(1)\n\
          \x20 fact right1046(1)\n\
+         \x20 fact right1046(2)\n\
          \x20 fact empty1046(99)\n\
          \x20 rule pipe1046(?x) :- left1046(?x) | right1046(?x)\n\
          \x20 rule comma1046(?x) :- left1046(?x), right1046(?x)\n\

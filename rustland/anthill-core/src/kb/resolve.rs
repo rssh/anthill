@@ -407,6 +407,49 @@ pub struct ResolveConfig {
     /// hence the `allow` — the field is an internal channel, not public surface.
     #[allow(private_interfaces)]
     pub gamma: Option<Rc<SubstTree<Value>>>,
+    /// WI-FFPGD — is this resolution asking for ANSWERS or for PROOFS?
+    ///
+    /// `true` (the default): [`SearchStream::is_duplicate_answer`] collapses two
+    /// proofs that agree on every query variable into one solution. That is what a
+    /// QUERY means — `tagged(?t)` over rows differing only in a field the query
+    /// never mentions has ONE answer per `?t`, and an existential body variable
+    /// must not multiply it.
+    ///
+    /// `false`: every proof is yielded. THE RELATION LAYER NEEDS THIS, and it is a
+    /// documented position, not an accommodation: proposal 052 §"Open questions" 6
+    /// pins relation consumption to "the resolver's stream as-is", §"Relation
+    /// shape" defines a zero-column membership relation's `multiplicity = number of
+    /// proofs`, and §"provides LogicalStream" calls a relation an unordered BAG.
+    /// `union(r, r)` yields its row TWICE by design, and `Relation.set` is the
+    /// explicit operator that collapses it. Set from the ONE seam those consumers
+    /// share — [`KnowledgeBase::execute_logical_query`], 026.1's sole entry for
+    /// value-driven KB queries, feeding `Relation.splitFirst` and `KB.execute`.
+    ///
+    /// A test that counts PROOFS of a goal with no free query variables (a ground
+    /// goal, or one whose only var the body never binds) is asking the same
+    /// question as the relation layer and sets this too — with, at its site, the
+    /// reason it is a proof count and not an answer count.
+    ///
+    /// TWO CONSEQUENCES OF `true` THAT ARE NOT ABOUT SEMANTICS, both found by
+    /// `/code-review` and both stated rather than mitigated:
+    ///
+    ///  - **`max_solutions` bounds ANSWERS, not proofs.** A dropped duplicate never
+    ///    reaches the count [`SearchStream::drain_all`] compares against the cap, so
+    ///    a query with finitely many answers but unboundedly many proofs — cyclic
+    ///    reachability, `path(?a,?b) :- edge(?a,?c), path(?c,?b)` — no longer stops
+    ///    after N derivations. It stops after N DISTINCT answers, and once the answer
+    ///    set is exhausted it searches every remaining branch until `max_depth` cuts
+    ///    it. That IS what `--max-results N` asks for, and the search still
+    ///    terminates at the depth cap; the cost is that the cap, not the count, is
+    ///    what ends an exhausted query.
+    ///  - **`seen_answers` is retained for the stream's lifetime.** The per-frame
+    ///    `seen_goals` sets this replaced were dropped with their ChoicePoint frames;
+    ///    one `Vec<GoalKey>` per yielded answer now lives until the stream does, at
+    ///    the 25–93 tokens per goal [`goal_fingerprint`] measures. Not capped: a cap
+    ///    would silently stop deduplicating, which is the failure this ticket exists
+    ///    to remove. An unlimited query over a large extent is where it would be felt
+    ///    first, and it has not been measured there.
+    pub dedup_answers: bool,
 }
 
 impl Default for ResolveConfig {
@@ -417,6 +460,7 @@ impl Default for ResolveConfig {
             simplify: false,
             definite_only: false,
             gamma: None,
+            dedup_answers: true,
         }
     }
 }
@@ -531,11 +575,6 @@ enum FrameState {
         /// the cut goal finds exactly its own call frame. `None` for choice
         /// points that opened no cut-bearing body (the overwhelming majority).
         cut_barrier: Option<i64>,
-        /// Seen ground goals, keyed by carrier-agnostic structural fingerprint
-        /// (WI-348): `goal_fingerprint` walks the goal's `TermView` through σ to
-        /// a kb-free `GoalKey`, so a `Value::Node`-carrying answer keys by its
-        /// structure (no `TermId` materialization, no drop).
-        seen_goals: HashSet<GoalKey>,
     },
 }
 
@@ -678,6 +717,19 @@ pub struct ResolveStats {
 /// stack.
 pub struct SearchStream {
     stack: Vec<ResolverFrame>,
+    /// The ORIGINAL query goals, as handed to `resolve_lazy_goals` — the thing an
+    /// ANSWER is an answer to, and therefore what answer dedup projects onto
+    /// (WI-FFPGD). Held here rather than read back off the stack because the
+    /// initial frame is popped long before the first solution comes out, and
+    /// because the goal vector is what makes the projection the QUERY's and not
+    /// some prefix of the proof's. See [`Self::is_duplicate_answer`].
+    query_goals: Vec<Value>,
+    /// Answers already yielded, each keyed by the carrier-agnostic structural
+    /// fingerprint of the whole `query_goals` vector under that answer's σ
+    /// (WI-FFPGD). A `Vec<GoalKey>` and not one merged key: `GoalKey` is a token
+    /// sequence, so concatenating two goals' tokens would let a differently-split
+    /// pair of goals collide, and the vector keeps the goal boundary.
+    seen_answers: HashSet<Vec<GoalKey>>,
     config: ResolveConfig,
     /// Per-query cache: a ground goal's carrier-agnostic [`GoalKey`] → its
     /// discrim-tree query results. Keyed by the structural fingerprint (not a
@@ -916,7 +968,7 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
                 let sol = Solution { subst, residual };
-                self.record_solution_in_ancestors();
+                self.record_solution_in_nearest_choice_point();
                 return Some(StepResult::YieldSolution(sol));
             }
         }
@@ -929,13 +981,29 @@ impl SearchStream {
             };
             self.stack.pop();
 
-            // Head-var dedup: project solution onto each ancestor ChoicePoint's
-            // goal vars. If the projection was already seen, skip this solution.
-            if self.is_duplicate_projection(kb, &sol) {
+            // COUNT THE PROOF BEFORE JUDGING THE ANSWER, and the order is
+            // load-bearing (WI-FFPGD). `child_solutions` asks "did this choice
+            // point produce a PROOF?", which a dropped duplicate still did — its
+            // one reader is `step_choice_point`'s `child_solutions == 0 &&
+            // any_delayed` delay fallback, and a choice point that proved
+            // something must not be told it proved nothing and residualize a
+            // FLOUNDERED answer over a branch that definitely succeeded.
+            //
+            // The old order was safe only BY CONSTRUCTION, and the construction
+            // is gone: dedup keyed the nearest ancestor ChoicePoint's OWN
+            // `seen_goals`, so a duplicate implied an earlier solution had passed
+            // through that very frame and already incremented it. `seen_answers`
+            // is stream-global, so a duplicate can now come from a different
+            // subtree entirely and leave the innermost live choice point at zero.
+            self.record_solution_in_nearest_choice_point();
+
+            // Answer dedup: project the solution onto the QUERY's goals (WI-FFPGD).
+            // If that projection was already yielded, this proof re-derives an
+            // answer the caller already has — skip it.
+            if self.is_duplicate_answer(kb, &sol) {
                 return Some(StepResult::Continue);
             }
 
-            self.record_solution_in_ancestors();
             return Some(StepResult::YieldSolution(sol));
         }
 
@@ -1066,7 +1134,6 @@ impl SearchStream {
                         extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
-                        seen_goals: HashSet::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -1120,7 +1187,6 @@ impl SearchStream {
                         extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
-                        seen_goals: HashSet::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -1202,7 +1268,6 @@ impl SearchStream {
                         extent_next: 0,
                         any_delayed: false,
                         child_solutions: 0,
-                        seen_goals: HashSet::new(),
                         cut_barrier: None,
                     };
                     return Some(StepResult::Continue);
@@ -1315,7 +1380,7 @@ impl SearchStream {
                                 if self.config.definite_only {
                                     return Some(StepResult::Continue);
                                 }
-                                self.record_solution_in_ancestors();
+                                self.record_solution_in_nearest_choice_point();
                                 return Some(StepResult::YieldSolution(Solution {
                                     subst,
                                     residual,
@@ -1733,7 +1798,6 @@ impl SearchStream {
             extent_next: 0,
             any_delayed: false,
             child_solutions: 0,
-            seen_goals: HashSet::new(),
             cut_barrier: None,
         };
         Some(StepResult::Continue)
@@ -2116,7 +2180,6 @@ impl SearchStream {
                 extent_next: 0,
                 any_delayed: false,
                 child_solutions: 0,
-                seen_goals: HashSet::new(),
                 cut_barrier: None,
             };
             Some(StepResult::Continue)
@@ -2140,7 +2203,7 @@ impl SearchStream {
                     if self.config.definite_only {
                         return Some(StepResult::Continue);
                     }
-                    self.record_solution_in_ancestors();
+                    self.record_solution_in_nearest_choice_point();
                     return Some(StepResult::YieldSolution(Solution { subst, residual }));
                 }
                 1
@@ -2525,7 +2588,7 @@ impl SearchStream {
                             return Some(StepResult::Continue);
                         }
                         let residual = vec![goal.clone()];
-                        self.record_solution_in_ancestors();
+                        self.record_solution_in_nearest_choice_point();
                         return Some(StepResult::YieldSolution(Solution { subst, residual }));
                     } else {
                         // First delay of this goal — start the rotation counter at 1.
@@ -2554,6 +2617,17 @@ impl SearchStream {
                 // WI-537: the inner `P` of `not(P)` must see Γ too, so a Γ fact
                 // proving `P` correctly fails `not(P)` (sound negation under Γ).
                 gamma: self.config.gamma.clone(),
+                // WI-FFPGD: this sub-search asks whether P has ANY proof, and
+                // `drain_verdict` stops at the first definite one — an answer SET
+                // is not the question, so deduping it would only cost fingerprints.
+                //
+                // NO CONTROL EXISTS, and it is redundant BY CONSTRUCTION rather than
+                // untested: dedup fires only at the goals-empty (definite) yield and
+                // only on a key already SEEN, so it can never drop the FIRST definite
+                // solution — the one `drain_verdict` breaks on — and never touches a
+                // residual yield at all. Flipping this to `true` changes no verdict,
+                // only the fingerprints computed on the way to it.
+                dedup_answers: false,
             };
             // WI-628: drain the inner search to a three-way verdict that carries
             // `truncated`. A sub-search abandoned at `remaining_depth` proves
@@ -2615,7 +2689,7 @@ impl SearchStream {
                     // honest whole-query answer.
                     self.stack.pop();
                     let residual = vec![goal.clone()];
-                    self.record_solution_in_ancestors();
+                    self.record_solution_in_nearest_choice_point();
                     return Some(StepResult::YieldSolution(Solution { subst, residual }));
                 } else {
                     // Rotate the undecided `not(P)` behind the tail — but THREAD the
@@ -3177,11 +3251,31 @@ impl SearchStream {
         Some(StepResult::Continue)
     }
 
-    /// Check if a solution is a duplicate by **structurally fingerprinting** the
-    /// nearest ancestor ChoicePoint's goal through the solution σ (WI-348). The
-    /// fingerprint (`goal_fingerprint`) reads the goal through `TermView`, so it
-    /// is carrier-agnostic: a `Value::Node` answer keys by its structure, with
-    /// no `TermId` materialization and no `TermStore` growth.
+    /// Is this solution a REPEAT of one already yielded? Answered by
+    /// **structurally fingerprinting the QUERY's goals** through the solution σ
+    /// (WI-348 for the fingerprint, WI-FFPGD for what it is taken of). The
+    /// fingerprint (`goal_fingerprint`) reads a goal through `TermView`, so it is
+    /// carrier-agnostic: a `Value::Node` answer keys by its structure, with no
+    /// `TermId` materialization and no `TermStore` growth.
+    ///
+    /// THE PROJECTION IS ONTO THE QUERY, NOT ONTO A FRAME, and the difference is
+    /// the whole point. An ANSWER is an answer to the query goals; two proofs that
+    /// agree on every query variable are ONE answer however differently they were
+    /// derived. WI-348 projected onto the NEAREST ancestor `ChoicePoint`'s goal
+    /// instead, which catches only redundancy arising AT a choice point — several
+    /// rules for one functor all yielding the same binding. Redundancy arising
+    /// BELOW it escaped: for `tagged(?t) :- check(t: ?t, witness: ?)` the innermost
+    /// choice point is over `check`'s rows, which genuinely differ in `witness`, so
+    /// nothing was a duplicate there and `tagged(?t)` answered `ok` twice — an
+    /// EXISTENTIAL body variable multiplying answers. The query projection collapses
+    /// it, because `witness` is not in the query.
+    ///
+    /// TWO CHEAPER PROJECTIONS ARE BOTH UNSOUND, recorded so neither is re-attempted:
+    /// scanning ALL ancestors DROPS legitimate answers (for the query `a(?x), b(?y)`
+    /// the answers `(1,1)` and `(1,2)` both fingerprint `a(1)` at the still-live `a`
+    /// choice point), and taking the OUTERMOST choice point instead of the nearest
+    /// breaks the same conjunction for the same reason — for a conjunctive query the
+    /// outermost choice point is `a(?x)`. Only the whole goal VECTOR is the answer.
     ///
     /// TWO GUARDS SKIP DEDUP, AND THEY COVER DIFFERENT DOMAINS (WI-1023). Both
     /// fail OPEN — a skipped dedup yields a duplicate answer, where a wrong dedup
@@ -3200,9 +3294,25 @@ impl SearchStream {
     ///    passes it while its key is `[Open(None,1,0), Opaque]` for every cell.
     ///  - **the goal itself**: `key.is_opaque_free()` — the SAME predicate and the
     ///    same reason as [`KnowledgeBase::value_fact_dedup_key`], reused rather
-    ///    than restated. Its unique domain is an opaque reachable from
-    ///    `original_goal` with NO σ binding to scan — a value spliced straight into
-    ///    the goal — which no σ scan, however deep, can see.
+    ///    than restated. Its unique domain is an opaque reachable from a query
+    ///    goal with NO σ binding to scan — a value spliced straight into the goal
+    ///    — which no σ scan, however deep, can see. Asked of EVERY goal in the
+    ///    vector, since one lossy component makes the whole answer key lossy.
+    ///
+    /// IT IS NOT ASKED OF EVERY RESOLUTION. `ResolveConfig::dedup_answers` says
+    /// whether this stream is enumerating ANSWERS or PROOFS; a relation is a BAG
+    /// (proposal 052) and turns this off wholesale at
+    /// [`KnowledgeBase::execute_logical_query`]. Read that field's doc before
+    /// changing anything here — the two consumers disagree on purpose.
+    ///
+    /// WHAT IT STILL CANNOT SEE, stated rather than left to be rediscovered: the
+    /// var-keyed residual constraint store ([`Solution::residual_constraints`]).
+    /// Two answers agreeing on every query variable but carrying different `lacks`
+    /// / type constraints key identically and collapse. Inherited from the
+    /// nearest-ancestor projection, which was equally blind, and currently
+    /// unreachable — that store is write-mostly, with no consumer
+    /// (`docs/design/constrained-term-substrate.md`). Its first reader owes this
+    /// predicate a third guard.
     ///
     /// THE BY-CARRIER ALLOW-LIST IS GONE, and its ORIGINAL REASON WITH IT. WI-038
     /// wrote it when the key was `kb.reify` to a hash-consed `TermId`, which walked
@@ -3219,33 +3329,53 @@ impl SearchStream {
     /// The doc's own example was wrong too — it called `Value::Str` a value "with no
     /// structural fingerprint", when it views as `ViewHead::Const(String)` and keys
     /// as faithfully as the `Term::Const` twin.
-    fn is_duplicate_projection(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
+    fn is_duplicate_answer(&mut self, kb: &mut KnowledgeBase, sol: &Solution) -> bool {
+        // A PROOF stream yields every proof — see `ResolveConfig::dedup_answers`.
+        if !self.config.dedup_answers {
+            return false;
+        }
         if sol.subst.iter().any(|(_, v)| v.bears_opaque(kb)) {
             return false;
         }
-        for frame in self.stack.iter_mut().rev() {
-            if let FrameState::ChoicePoint {
-                original_goal,
-                seen_goals,
-                ..
-            } = &mut frame.state
-            {
-                // Carrier-agnostic structural fingerprint of the goal reified
-                // through σ — keys a `Value::Node` answer by its structure, with
-                // no `TermId` materialization and no `TermStore` growth (WI-348).
-                let key = goal_fingerprint(kb, &*original_goal, &sol.subst);
-                // `&&` order matters: a lossy key must never reach `seen_goals`,
-                // or the NEXT solution would dedup against a key that cannot tell
-                // it apart.
-                return key.is_opaque_free() && !seen_goals.insert(key);
-            }
-        }
-        false // no ChoicePoint ancestor — no dedup
+        // Carrier-agnostic structural fingerprint of each query goal reified
+        // through σ — keys a `Value::Node` answer by its structure, with no
+        // `TermId` materialization and no `TermStore` growth (WI-348).
+        let key: Vec<GoalKey> = self
+            .query_goals
+            .iter()
+            .map(|g| goal_fingerprint(kb, g, &sol.subst))
+            .collect();
+        // `&&` order matters: a lossy key must never reach `seen_answers`, or the
+        // NEXT solution would dedup against a key that cannot tell it apart.
+        key.iter().all(GoalKey::is_opaque_free) && !self.seen_answers.insert(key)
     }
 
     /// When yielding a solution, walk the stack to find the nearest
     /// `ChoicePoint` ancestor and increment its `child_solutions` counter.
-    fn record_solution_in_ancestors(&mut self) {
+    ///
+    /// RENAMED FROM `record_solution_in_ancestors` (WI-FFPGD): it visits exactly
+    /// ONE frame, and the plural name was the same misreading that hid this
+    /// ticket's defect in [`Self::is_duplicate_answer`]'s twin — a `return` inside
+    /// a `rev()` walk reads as "all ancestors" until someone checks. Behaviour
+    /// unchanged; only the name now says what it does. Its one reader
+    /// (`step_choice_point`'s `child_solutions == 0 && any_delayed` delay
+    /// fallback) therefore asks about solutions produced by THIS choice point with
+    /// no inner choice point in between — NOT about the whole subtree.
+    ///
+    /// AND THAT IS A LIVE DEFECT, OWNED BY **WI-20260820-4KXPD**, not merely a
+    /// naming note. WI-FFPGD's description called this "only a counter"; it is not.
+    /// A choice point whose WINNING candidate opens a body containing any
+    /// non-builtin goal never sees the credit — that goal's own choice point takes
+    /// it — so if any sibling candidate delayed, the frame believes it proved
+    /// nothing and rotates, residualizing a FLOUNDERED answer over a branch that
+    /// definitely succeeded. MEASURED at 2 spurious residuals on a three-rule
+    /// fixture, with answer dedup ON and OFF alike, so it predates WI-FFPGD.
+    ///
+    /// It is NOT fixed by deleting the `return`, which is why it is a ticket. The
+    /// reader's contract is "produced something ⇒ do not rotate", and the rotation
+    /// is what re-asks a delayed candidate after the caller's tail binds its var —
+    /// suppressing it can lose a real solution. Read 4KXPD before touching this.
+    fn record_solution_in_nearest_choice_point(&mut self) {
         for frame in self.stack.iter_mut().rev() {
             if let FrameState::ChoicePoint {
                 child_solutions, ..
@@ -3498,6 +3628,10 @@ impl KnowledgeBase {
     /// caller resolving an occurrence body need not lower it to terms first.
     /// `resolve_lazy` is the thin `&[TermId]` → `Value::Term` wrapper over this.
     pub fn resolve_lazy_goals(&self, goals: Vec<Value>, config: &ResolveConfig) -> SearchStream {
+        // WI-FFPGD: the stream keeps its own copy of the query goals — answer
+        // dedup projects onto THEM, and the initial frame that carries them is
+        // popped before any solution is yielded.
+        let query_goals = goals.clone();
         let initial_frame = ResolverFrame {
             goals,
             subst: Substitution::new(),
@@ -3509,6 +3643,8 @@ impl KnowledgeBase {
         };
         SearchStream {
             stack: vec![initial_frame],
+            query_goals,
+            seen_answers: HashSet::new(),
             config: ResolveConfig {
                 max_depth: config.max_depth,
                 max_solutions: config.max_solutions,
@@ -3519,6 +3655,9 @@ impl KnowledgeBase {
                 // WI-537: the Γ overlay rides into the stream so `step_init`'s
                 // candidate step can consult it (an `Rc` clone — a refcount bump).
                 gamma: config.gamma.clone(),
+                // WI-FFPGD: answers-or-proofs rides in too — `is_duplicate_answer`
+                // reads it at the goals-empty yield.
+                dedup_answers: config.dedup_answers,
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
@@ -5354,6 +5493,11 @@ impl KnowledgeBase {
         let goal = self.make_goal_value(pred, args);
         let config = ResolveConfig {
             max_depth,
+            // An EXISTENCE question (WI-FFPGD): `drain_verdict` stops at the first
+            // DEFINITE solution and dedup never touches a residual yield, so it
+            // cannot change any of the three verdicts — only cost fingerprints.
+            // Stated because the default claims this resolution enumerates answers.
+            dedup_answers: false,
             ..ResolveConfig::default()
         };
         let stream = self.resolve_lazy_goals(vec![goal], &config);
@@ -13495,8 +13639,15 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
+        // A PROOF COUNT, so `dedup_answers` is OFF (WI-FFPGD). `?q` unifies with
+        // the rule's head `?`, which the body never binds, so ALL FOUR proofs
+        // project onto the query goal identically — an answer stream reports 1 and
+        // the aliasing this test is about becomes invisible (an aliased `left(?)` /
+        // `right(?)` would report 1 too). The independence claim lives in the
+        // multiplicity, which is why this asks the relation layer's question.
         let config = ResolveConfig {
             max_solutions: 10,
+            dedup_answers: false,
             ..ResolveConfig::default()
         };
         let solutions = kb.resolve(&[query], &config);
@@ -13805,30 +13956,26 @@ mod tests {
         let solutions = kb.resolve(&[query], &config);
 
         // Anonymous ? in f's body correctly flow through to p's ?b, ?c.
-        // check has 3 facts → p matches all 3 → f gets all 3.
-        // Two have ?x="ok", one has ?x="fail".
+        // check has 3 facts → p matches all 3 → f would get all 3, except that two
+        // of them agree on ?x="ok" and differ only in ?b/?c — written `?`, i.e.
+        // EXISTENTIAL, and absent from the query. Two proofs, one answer.
         //
-        // THE ASSERTION BELOW IS THE ONE THIS TEST SHOULD MAKE, and it is commented out
-        // because it FAILS TODAY: the engine returns 3, not 2. `?b`/`?c` are written `?`
-        // — existential — so the two rows that agree on ?x="ok" differ only in fields the
-        // query never mentions, and must not be two answers.
+        // WI-FFPGD'S FIRST ACCEPTANCE CLAUSE, and this is the line that shows it.
+        // It returned 3 until answer dedup started projecting onto the QUERY's
+        // goals: `is_duplicate_answer` used to fingerprint the NEAREST ancestor
+        // ChoicePoint's goal, which here is the one over `check`'s three DISTINCT
+        // rows, so nothing looked like a duplicate there and the redundancy — which
+        // only appears once projected onto `f(?q)` — had no frame watching for it.
         //
-        // WHY IT FAILS: `is_duplicate_projection` (called at the goals-empty yield)
-        // fingerprints the NEAREST ancestor ChoicePoint's goal, which here is the one over
-        // `check`'s three DISTINCT rows — so nothing looks like a duplicate there. The
-        // redundancy only appears once projected onto the outer goal `f(?q)`, and by then
-        // no frame is looking. Filed as WI-20260820-FFPGD with the CLI repro, the two
-        // unsound quick fixes, and the fix (project onto the QUERY's free vars).
-        //
-        // UNCOMMENT WHEN FFPGD LANDS — it is that ticket's first acceptance clause, and
-        // this line is what will show it. Deliberately NOT pinned at 3: that would enshrine
-        // the defect as expected and make the fix look like the regression.
-        //
-        // assert_eq!(
-        //     solutions.len(),
-        //     2,
-        //     "an existential body var must not multiply answers"
-        // );
+        // CONTROL, MEASURED: restore that projection (walk `self.stack` for the
+        // nearest `FrameState::ChoicePoint` and key its `original_goal`) and this
+        // line reports 3. The RAW count is the assertion; the distinct-values check
+        // below passes either way and is a separate claim.
+        assert_eq!(
+            solutions.len(),
+            2,
+            "an existential body var must not multiply answers"
+        );
 
         let mut xs: Vec<String> = solutions
             .iter()
@@ -13842,10 +13989,11 @@ mod tests {
             })
             .collect();
         xs.sort();
-        // Collapse the WI-026 duplicate pinned above, so this asserts the DISTINCT
-        // answers — which is this test's actual subject: both ?x values reach the
-        // caller through the anonymous ?b/?c, neither is lost to a "don't care" slot.
-        xs.dedup();
+        // NOT deduped here, and that is the point: the count above already says the
+        // engine returned exactly two answers, so any `dedup()` on this side would
+        // hide a regression that duplicates one of them. This asserts the second,
+        // independent claim — both ?x values reach the caller through the anonymous
+        // ?b/?c, neither is lost to a "don't care" slot.
         assert_eq!(
             xs,
             vec!["fail", "ok"],

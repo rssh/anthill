@@ -1207,7 +1207,15 @@ fn reflect_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         named_args: Default::default(),
     });
     let kb = interp.kb_mut();
-    let stream = kb.resolve_lazy(&[not_goal], &ResolveConfig::default());
+    // An EXISTENCE question, not an answer set (WI-FFPGD): `split_first` takes the
+    // first solution and drops the stream, so answer dedup cannot change the verdict
+    // — it can only fingerprint on the way to it. Stated rather than left at the
+    // default, because the default claims this resolution is enumerating answers.
+    let config = ResolveConfig {
+        dedup_answers: false,
+        ..ResolveConfig::default()
+    };
+    let stream = kb.resolve_lazy(&[not_goal], &config);
     match stream.split_first(kb) {
         None => Ok(Value::Bool(false)),
         Some((sol, _rest)) if sol.residual.is_empty() => Ok(Value::Bool(true)),

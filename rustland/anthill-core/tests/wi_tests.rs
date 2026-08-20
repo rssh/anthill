@@ -1341,3 +1341,6 @@ mod wi567_flow_guard_discharge_test;
 
 #[path = "include/wi329_handler_discharge_test.rs"]
 mod wi329_handler_discharge_test;
+
+#[path = "include/wi_ffpgd_answer_dedup_test.rs"]
+mod wi_ffpgd_answer_dedup_test;

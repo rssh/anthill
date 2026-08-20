@@ -1097,12 +1097,16 @@ pub fn mount_extent(
 ///
 /// TWO PROPERTIES THE CALLERS DEPEND ON, both learned the hard way:
 ///
-///  - **The alternatives are for ONE goal.** `is_duplicate_projection` fingerprints
-///    the NEAREST ancestor ChoicePoint's goal, so two routes reached through a
-///    disjunction in a rule BODY would be keyed on that body goal (whose two answers
-///    genuinely differ) and measure nothing — WI-1016's first shape. A builtin-only
-///    body pushes no ChoicePoint, so the nearest ancestor for every alternative here
-///    is the shared head goal.
+///  - **The alternatives are for ONE goal.** Historically load-bearing: dedup used to
+///    fingerprint the NEAREST ancestor ChoicePoint's goal, so two routes reached
+///    through a disjunction in a rule BODY were keyed on that body goal (whose two
+///    answers genuinely differ) and measured nothing — WI-1016's first shape.
+///    WI-FFPGD moved the projection onto the QUERY's goals, which would catch the
+///    body-disjunction shape too, so the constraint is no longer needed for
+///    correctness. It is KEPT because the shape it produces is the simplest one that
+///    isolates a carrier: a builtin-only body pushes no ChoicePoint and adds no
+///    intermediate goal, so `wi1023_p(?x)` is both the head goal and the whole
+///    query, and a row's count moves only with the carrier under test.
 ///  - **`build` mints inside THIS kb.** A `Symbol` indexes one KB's symbol table and
 ///    a `TermId` one KB's term store, so a value built elsewhere names something
 ///    else entirely — a mistake that reads as a green `assert_ne!` on carriers that

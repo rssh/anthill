@@ -3141,6 +3141,25 @@ impl KnowledgeBase {
     }
 
     /// Evaluate a counting quantifier guard (lone_q, one_q, some_q, no_q).
+    ///
+    /// **IT COUNTS ANSWERS, NOT PROOFS, AND THAT CHANGED IN WI-FFPGD** — deliberately,
+    /// and it is the only consumer outside the relation face whose VERDICT moves.
+    /// `resolve_goals_with_truncation` deduplicates by projecting each solution onto
+    /// the goal vector, so a body with an existential `?` that matches two rows
+    /// agreeing on every goal variable now counts ONE where it counted two, and a
+    /// `one_q` over it flips VIOLATED → HOLDS. That is the quantifier's own reading:
+    /// `one_q(?x, …)` asks how many `?x` satisfy it, not how many derivations exist.
+    ///
+    /// It is still not EXACTLY the quantifier's reading, and that gap predates this:
+    /// the projection is over `condition ++ body`'s whole goal vector, so a body-local
+    /// variable the quantifier does not bind still splits the count. Projecting onto
+    /// `syms.var` alone is the precise form; nothing asks for it yet.
+    ///
+    /// A SECOND, QUIETER EFFECT: `max_solutions` is `max + 1` to detect overflow, and a
+    /// dropped duplicate no longer consumes that budget — so declaring VIOLATED now
+    /// requires `max + 1` DISTINCT answers and the search explores strictly more of the
+    /// tree to find them. More correct, and more likely to reach the depth cap, which
+    /// the `truncated` arm below already turns into `Undecidable` rather than a guess.
     fn eval_count_guard(
         &mut self,
         guard: &crate::eval::value::Value,

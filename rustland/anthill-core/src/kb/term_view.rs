@@ -341,7 +341,7 @@ fn optionally_named_cell_list(
 // `{ functor, pos_args, named_args, .. }` and the `..` was `type_args`, so the
 // bracket reached neither `pos_arg` nor `named_arg` nor `named_keys`. Three
 // consumers inherited it, each with its own failure mode — `goal_fingerprint`
-// (`seen_goals` answer-dedup DROPS the second answer; `query_cache` may serve one
+// (`seen_answers` answer-dedup DROPS the second answer; `query_cache` may serve one
 // goal's candidates for another), `GoalKey::is_opaque_free` (fact dedup then
 // answers TRUE on a key that is not injective, and over-dedup DROPS A FACT), and
 // `views_structurally_equal` (two bracket-distinct occurrences report EQUAL, which
@@ -504,7 +504,7 @@ fn tuple_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
 //    is what blocked WI-762's receiver-divergence guard.
 //  - FINGERPRINT (`goal_fingerprint`/`GoalKey`). `Opaque` is payload-free, so it
 //    made a lambda-bearing goal both non-cacheable and OVER-deduped in
-//    `seen_goals` (two answers differing only inside a lambda collapsed to one
+//    `seen_answers` (two answers differing only inside a lambda collapsed to one
 //    key and the second was dropped). Structural tokens fix both.
 //
 // ALPHA-EQUIVALENCE — the view is SYNTACTIC, deliberately. Two lambdas compare
@@ -2002,8 +2002,8 @@ impl GoalKey {
     ///   unbound vars the fingerprint can't see, so it is not truly "ground", on
     ///   top of collapsing distinct goals. The old `TermId` key never faced this (a
     ///   `Term` can't hold an `Opaque` child); excluding it restores that immunity
-    ///   locally, mirroring the explicit non-`Term`/`Node` guard the answer-dedup
-    ///   sibling `is_duplicate_projection` already applies for the same reason.
+    ///   locally, mirroring the opaque guards the answer-dedup sibling
+    ///   [`SearchStream::is_duplicate_answer`] applies for the same reason.
     pub fn is_cacheable(&self) -> bool {
         self.0
             .iter()

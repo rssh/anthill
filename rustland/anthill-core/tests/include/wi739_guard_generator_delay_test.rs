@@ -309,9 +309,17 @@ fn wi739_bound_first_column_still_yields_two() {
 fn wi739_zero_head_param_spelling_still_proves() {
     let mut kb = load_kb();
     let g = goal(&mut kb, "wi739.guard.distinct_local", &[]);
+    // A PROOF COUNT, so `dedup_answers` is OFF (WI-FFPGD). `distinct_local()` is
+    // GROUND — zero head params, hence zero query variables — so every one of its
+    // six proofs projects onto the same empty answer and an answer stream reports
+    // 1. Six is the number of times the body enumerated, which is the claim; it is
+    // also what the relation face of this same program counts
+    // (`wi737_same_guard_drains_when_its_vars_are_bound_by_the_body`, proposal 052
+    // §"Relation shape": a zero-column relation's multiplicity IS its proof count).
     let cfg = ResolveConfig {
         max_solutions: 100,
         definite_only: true,
+        dedup_answers: false,
         ..Default::default()
     };
     let sols = kb.resolve(&[g], &cfg);

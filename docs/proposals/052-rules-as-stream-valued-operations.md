@@ -672,8 +672,17 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    above, has no witness in any source and the one-pass order cannot serve both directions. A fixpoint
    over the family (written and measured once, and it works) is the change to make when it acquires
    one; recorded at `reduce_type_ctor`.
-6. **Ordering / multiplicity** — solution order is the resolver's search order; whether consumption
-   de-dupes or preserves multiplicity (bag vs. set) — default to the resolver's stream as-is, documented.
+6. **Ordering / multiplicity — SETTLED for the relation face, and it now has a NAME** (WI-FFPGD).
+   Solution order is still the resolver's search order. Multiplicity is the bag, as this item proposed:
+   relation consumption takes the resolver's stream as-is, and `Relation.set` is the explicit collapse.
+   What changed is that "the resolver's stream" stopped being one thing. The resolver's OTHER face — a
+   query asking what `?t` can be — deduplicates by projecting each solution onto the QUERY's goals, so
+   an existential body variable (`tagged(?t) :- check(t: ?t, witness: ?)`) does not multiply answers.
+   That projection would erase exactly what this item preserves, so the two faces are told apart by
+   `ResolveConfig::dedup_answers`, and `execute_logical_query` — 026.1's sole entry for value-driven KB
+   queries, feeding `Relation.splitFirst` and `KB.execute` — is the one caller that turns it off. The
+   bag is therefore a *stated* property of the relation entry point rather than a property the resolver
+   happened to have. Kernel spec §8.3 carries both faces.
 7. **Naming an operation and its relational face — OPEN; original convention WITHDRAWN, explicit
    relation selection PROPOSED.** The original question asked whether a Bool-valued predicate's two
    readings — the intensional relation and the boolean value — need two names, since they coincide in

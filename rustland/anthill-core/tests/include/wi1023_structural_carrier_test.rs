@@ -7,7 +7,8 @@
 //! because they are not one question:
 //!
 //!  - [`ViewHead::is_opaque`] — "does this carrier present a SHAPE?" — answer
-//!    dedup (`is_duplicate_projection`).
+//!    dedup (`SearchStream::is_duplicate_answer`, named `is_duplicate_projection`
+//!    when this file was written).
 //!  - `Value::lowers_to_leaf_term` — "does it lower to a LEAF term, losslessly
 //!    and infallibly?" — the `Term`-vs-`Entity` carrier choice (`fn_value`).
 //!  - the `ViewHead::Ref` read in `MapKey::try_from_value` — "is it the same
@@ -32,7 +33,7 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
 use anthill_core::span::{SourceId, SourceSpan};
 
-// ── (A) `is_duplicate_projection` — one σ-injection gadget, every carrier ────
+// ── (A) `is_duplicate_answer` — one σ-injection gadget, every carrier ────────
 //
 // `resolve_sort_instantiation_param(SortView(T: <v>), T, ?out)` binds `?out` to
 // the `SortView`'s `T` slot **in that value's own carrier** (`finish_result_value`,
@@ -41,10 +42,12 @@ use anthill_core::span::{SourceId, SourceSpan};
 // arbitrary `Value` into that slot puts an arbitrary carrier into σ, so ONE
 // fixture drives every carrier the widened predicate admits.
 //
-// The two routes must be alternatives for ONE goal (WI-1016's lesson: the
-// fingerprint is taken of the NEAREST ancestor ChoicePoint's goal). Two rules
-// with builtin-only bodies satisfy that — a builtin pushes no ChoicePoint, so
-// the nearest ancestor for both is `p(?x)`.
+// The two routes are alternatives for ONE goal. That was FORCED when this file
+// was written — dedup fingerprinted the NEAREST ancestor ChoicePoint's goal, so a
+// disjunction in a rule BODY measured nothing (WI-1016's lesson) — and is merely
+// the cleanest shape now that WI-FFPGD projects onto the QUERY's goals. Two rules
+// with builtin-only bodies satisfy it: a builtin pushes no ChoicePoint and adds no
+// intermediate goal, so `p(?x)` is both the head goal and the whole query.
 
 /// A KB with `wi1023_p(?v) :- rsip(SortView(T: <slot>), T, ?v)` for each
 /// `slot`, and the goal `wi1023_p(?x)`. Returns the number of SURVIVING
@@ -235,15 +238,31 @@ fn two_genuinely_different_bindings_are_two_answers() {
 ///
 /// The old by-carrier list covered this by accident, by excluding every compound
 /// non-`Node` carrier outright; widening the shallow test to "presents a shape"
-/// removes that accident, which is why `!key.is_opaque_free()` is a second guard
-/// and not a redundant one.
+/// removes that accident, and `TermView::bears_opaque` recursing is what replaces
+/// it.
 ///
-/// CONTROL, MEASURED by deleting the `if !key.is_opaque_free() { return false }`
-/// arm: 1 solution where 2 is right, i.e. an answer silently DROPPED. Nothing in
-/// the workspace
-/// reaches this — an opaque child cannot ride a fact or rule HEAD (the discrim
-/// insert panics on it first), so the corpus population is zero and only a driven
-/// case can show the guard works.
+/// CONTROL, RE-MEASURED under WI-FFPGD, AND THE ORIGINAL CLAIM WAS WRONG. It read
+/// "deleting the `if !key.is_opaque_free() { return false }` arm: 1 solution where
+/// 2 is right", crediting the KEY-side guard. Dropping that guard changes NOTHING
+/// here — measured — because the tuple lands in the head var, so it is in σ, and
+/// the σ-wide scan stops dedup first. The claim was true of a SHALLOW σ scan and
+/// went stale when `bears_opaque` became transitive; it named the wrong guard from
+/// then on. What this test actually measures is the σ-wide scan's TRANSITIVITY,
+/// same as [`an_opaque_nested_under_a_local_var_disables_dedup`] — deleting the σ
+/// scan reports 1, and so does making it shallow (`v.head(kb)` matched against
+/// `ViewHead::Opaque`).
+///
+/// THE KEY-SIDE GUARD HAS NO WITNESS IN THE WORKSPACE, stated rather than credited
+/// to this test: dropping `key.iter().all(GoalKey::is_opaque_free)` from
+/// `is_duplicate_answer` reddens not one test in the crate. Its domain is real but
+/// unreached — an `Opaque` the key picks up from the GOAL with nothing in σ to
+/// scan, which since WI-FFPGD means a query goal that is an occurrence region
+/// `occ_head` declines to decompose (any var inside it keys as one `Opaque`, so two
+/// answers binding that var differently collapse), or a duplicate-label goal, whose
+/// repeated key `fingerprint_into` marks `Opaque` for the same reason. Neither has
+/// a producer a test can currently build. The guard stays — it fails OPEN, and
+/// deleting an unwitnessed guard in the answer-DROPPING direction is the trade
+/// WI-1023's header warns about.
 #[test]
 fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
     let interp = crate::common::interp_for("namespace test.wi1023_op\nend\n");

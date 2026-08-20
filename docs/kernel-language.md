@@ -3214,6 +3214,12 @@ The kernel's reasoning engine supports:
 
 **Backward chaining (top-down):** Given a query `?- goal`, the engine searches for rules whose head unifies with the goal, then recursively proves the body terms.
 
+**A query yields ANSWERS; a relation yields PROOFS** (WI-FFPGD). Backward chaining enumerates *proofs*, and one answer can have many: a body variable written `?` is **existential**, so `rule tagged(?t) :- check(t: ?t, witness: ?)` over three `check` rows two of which agree on `t` is proved three ways and answers **twice**. A query's result is therefore projected onto the query's own goals — two proofs agreeing on every query variable are ONE solution, however differently they were derived, and two disagreeing anywhere in the query are two, however much of the proof they share. The projection is over the whole goal **vector**, not any one goal: `a(?x), b(?y)` over two facts each still has four answers. A **query** variable is part of the answer however it is spelled, `?` included — the caller can read its binding, so it distinguishes.
+
+Two cases deliberately do **not** collapse, both fail-open (a duplicate answer, never a lost one): a solution whose substitution *bears an opaque* anywhere — a closure, a stream, a `Map`/`Cell` handle, or one nested inside a tuple or entity — since such a value has no structural fingerprint and two genuinely distinct external rows would key alike; and a goal with an opaque spliced into it directly, which no scan of the substitution can see.
+
+The other face is the **relation** (proposal 052): `Relation[T]` is an unordered **bag** whose multiplicity is the number of proofs — `union(r, r)` yields each row twice, a zero-column membership relation counts its derivations, and `Relation.set` is the explicit operator that collapses them. Relation consumption takes the resolver's stream as-is and is not projected. The two faces ask different questions of one engine, and each says which at its entry point.
+
 **Unification:** Standard first-order unification. `Var` terms unify with any term of the same type. `Fn` terms unify if their names match and all arguments unify pairwise. Its user-facing surface operator is `<=>` (see below).
 
 **Equality: test vs. bind, structural vs. semantic** (proposals 049 + 051). Equality-shaped notions differ on two axes — *test* (compare, never bind) vs. *bind* (unify), and *structural* (raw term structure) vs. *semantic* (the carrier's `Eq` instance) — and the language gives each cell its own operator:

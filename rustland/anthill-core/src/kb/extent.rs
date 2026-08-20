@@ -1768,6 +1768,14 @@ impl KnowledgeBase {
     /// signal until fallible backends land (WI-780). Immaterial to today's
     /// consumers, all of which read RESIDENT functors.
     ///
+    /// WI-FFPGD: the row list is now DISTINCT rows rather than one row per
+    /// derivation, and the change is lossless here rather than a policy choice. The
+    /// resolver's answer dedup keys each solution by the goal fingerprinted through
+    /// σ, and this function RETURNS that same goal reified through that same σ — so
+    /// two solutions it collapses are two solutions whose returned rows were byte
+    /// identical. [`Self::enumeration_goal`] carrying the FULL field set is what
+    /// makes that true; a partial-arity goal would key on less than it returns.
+    ///
     /// Needs `&mut self` (resolution allocates fresh vars / interns answers), so it
     /// is a sibling method, not a `&self` [`BodiedRulePolicy`] variant.
     pub fn read_facts_resolved(
