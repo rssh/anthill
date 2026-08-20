@@ -5118,8 +5118,29 @@ pub(crate) fn materialize_from_handle_spanned(
 /// `var_ref(name: <Ref>)`) the loader emits for op-body literals. Any other
 /// `Term::Fn` — or a literal/var-ref with a non-leaf payload — is a bug (an
 /// op body never produces a reflection *pattern*); we panic.
-pub(crate) fn build_expr_leaf(kb: &KnowledgeBase, t: TermId) -> Rc<NodeOccurrence> {
-    let span = kb.term_span(t).unwrap_or_else(empty_span);
+///
+/// WI-20260819-33H3P — THE SPAN IS A PARAMETER, NOT A LOOKUP, and that is the whole
+/// point of the signature. It used to read `kb.term_span(t)`, which asks the WRONG
+/// QUESTION: that table is keyed by the HASH-CONSED `TermId` and filled first-write-wins
+/// (`create_occurrence`), while a leaf OCCURRENCE is a per-SITE thing. `var_ref(name:
+/// Ref(p))` is ONE term for every mention of `p`, and a rule reference's is one term for
+/// every mention in the whole KB — so the lookup answered "where was this term FIRST
+/// seen", and every later occurrence of it inherited that. Four measured faces, all one
+/// root: a SYNTHESIZED receiver (`p.join(q, λ)`, no parse node at all) got `SourceId(0)
+/// 0..0` and rendered `1:1`; a second DOT mention of one binder took the first's span; the
+/// same program spelled WITHOUT the dot (`join(p, q, λ)` after `takeN(p, 9)`) did too, so a
+/// receiver-only repair was defeated by a keystroke; and a rule cited from TWO FILES was
+/// reported at an offset from the other one, which — since a load error's FILE is stamped
+/// separately, per operation body (WI-745) — rendered a line that does not exist in the
+/// file it named. All four are arms of `wi_33h3p_dot_call_receiver_span_test`.
+///
+/// Callers therefore pass the PARSE node's own span (`Loader::push_leaf_occ`), and
+/// `kb.term_spans` keeps serving its other readers untouched.
+pub(crate) fn build_expr_leaf(
+    kb: &KnowledgeBase,
+    t: TermId,
+    span: SourceSpan,
+) -> Rc<NodeOccurrence> {
     let expr = match kb.get_term(t).clone() {
         Term::Const(lit) => Expr::Const(lit),
         Term::Var(v) => Expr::Var(v),

@@ -1323,3 +1323,6 @@ mod wi868_absence_representation_test;
 
 #[path = "include/wi873_dispatch_rewrite_completeness_test.rs"]
 mod wi873_dispatch_rewrite_completeness_test;
+
+#[path = "include/wi_33h3p_dot_call_receiver_span_test.rs"]
+mod wi_33h3p_dot_call_receiver_span_test;

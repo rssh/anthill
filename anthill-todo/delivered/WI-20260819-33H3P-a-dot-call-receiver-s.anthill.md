@@ -3,7 +3,9 @@
 - id: WI-20260819-33H3P-a-dot-call-receiver-s
 - created: 2026-08-19T04:52:29Z
 
-- status: Open
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-20T05:41:30Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

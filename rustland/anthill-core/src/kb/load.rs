@@ -15956,7 +15956,7 @@ impl<'a> Loader<'a> {
                         self.expr_body_bottom_recovery = true;
                         let kb_id = self.kb.alloc(Term::Bottom);
                         results.push(kb_id);
-                        self.push_leaf_occ(kb_id);
+                        self.push_leaf_occ(parse_id, kb_id);
                     }
                     "proof_stmt" => {
                         // WI-538: pos_args are [body, conclude?]. The
@@ -15977,19 +15977,19 @@ impl<'a> Loader<'a> {
                         let kb_id = self.load_pattern_var(parse_id, &pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
-                        self.push_leaf_occ(kb_id);
+                        self.push_leaf_occ(parse_id, kb_id);
                     }
                     "pattern_wildcard" => {
                         let kb_id = self.load_pattern_wildcard();
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
-                        self.push_leaf_occ(kb_id);
+                        self.push_leaf_occ(parse_id, kb_id);
                     }
                     "pattern_literal" => {
                         let kb_id = self.load_pattern_literal(&pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
-                        self.push_leaf_occ(kb_id);
+                        self.push_leaf_occ(parse_id, kb_id);
                     }
                     "pattern_constructor" => {
                         // The constructor name (pos_args[0]) is a leaf Ident — pre-resolve
@@ -16198,19 +16198,19 @@ impl<'a> Loader<'a> {
                 let kb_id = self.load_literal_expr(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
-                self.push_leaf_occ(kb_id);
+                self.push_leaf_occ(parse_id, kb_id);
             }
             Term::Ident(_) => {
                 let kb_id = self.load_var_ref(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
-                self.push_leaf_occ(kb_id);
+                self.push_leaf_occ(parse_id, kb_id);
             }
             Term::Var(Var::Global(vid)) => {
                 let kb_id = self.load_op_body_var(parse_id, vid);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
-                self.push_leaf_occ(kb_id);
+                self.push_leaf_occ(parse_id, kb_id);
             }
             Term::ParseAux(_) => {
                 // WI-366 B1: a written effect-row binding value in an op-body
@@ -16237,7 +16237,7 @@ impl<'a> Loader<'a> {
                 let kb_id = self.convert_term(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
-                self.push_leaf_occ(kb_id);
+                self.push_leaf_occ(parse_id, kb_id);
             }
         }
     }
@@ -16276,9 +16276,25 @@ impl<'a> Loader<'a> {
         // `load_var_ref` builds for a bare identifier reference, plus its
         // leaf occurrence — pushed BEFORE the arg Visits so it lands in the
         // DotApply build frame's receiver slot (`results[drain_start]`).
+        //
+        // SPAN (WI-20260819-33H3P): the WHOLE call's, for the same reason the trailing
+        // chain segments below take it — the converter flattened the callee to one
+        // dotted symbol, so this path has no receiver parse node to point at and the
+        // whole call is the narrowest honest extent. (Its START is the receiver's own
+        // first byte, since an `application` node begins at its callee, so the rendered
+        // `line:col` is exactly the receiver.)
+        //
+        // This receiver is the only leaf with NO parse node of its own; `push_leaf_occ`
+        // needs one from every caller, so it takes the call's. Before that it read
+        // `kb.term_spans`, which a synthesized node never populates, and the occurrence
+        // came out `SourceId(0) 0..0` — rendered `1:1`. `splice_query_runner`
+        // (eval/builtins.rs) ANCHORS every node of a `where_run` / `join_run` splice on
+        // this occurrence, so the un-renamed `join` column collision was reported there.
+        // Only the LOCATION is repaired: that diagnostic still names `join_run`, the op
+        // the macro splices rather than the `join` the author wrote — WI-20260820-5R2XT.
         let receiver_kb = self.mk_var_ref(root_sym);
         results.push(receiver_kb);
-        self.push_leaf_occ(receiver_kb);
+        self.push_leaf_occ(parse_id, receiver_kb);
         let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
         let name_ref = self.kb.alloc(Term::Ref(member_sym));
         let named_keys: SmallVec<[Symbol; 2]> = visible_named.iter().map(|&(sym, _)| sym).collect();
@@ -16668,7 +16684,7 @@ impl<'a> Loader<'a> {
         let kb_id = self.mk_var_ref(sym);
         self.create_occurrence(parse_id, kb_id);
         results.push(kb_id);
-        self.push_leaf_occ(kb_id);
+        self.push_leaf_occ(parse_id, kb_id);
         true
     }
 
@@ -16760,9 +16776,22 @@ impl<'a> Loader<'a> {
     /// kb_id, unless we're inside a suppressed pattern subtree (where the
     /// pattern is a `TermId` field, not a child occurrence). Mirrors the leaf
     /// arms of `node_occurrence::visit_term`.
-    fn push_leaf_occ(&mut self, kb_id: TermId) {
+    ///
+    /// WI-20260819-33H3P: `parse_id` is the node this occurrence IS — its span locates
+    /// the occurrence, and it is passed rather than read back from `kb.term_spans`. That
+    /// table is keyed by the hash-consed `kb_id` and filled first-write-wins, so reading
+    /// it answered "where was this TERM first seen" for a question that is per-SITE: two
+    /// mentions of one binder share a `var_ref` term, and a rule reference's is shared
+    /// across the whole KB. See [`node_occurrence::build_expr_leaf`] for the four measured
+    /// faces of that. `create_occurrence` still populates `term_spans` for its other
+    /// readers; this path simply stops consulting it.
+    ///
+    /// A caller with NO parse node of its own passes the node it is synthesized FOR (the
+    /// dot-call receiver passes the whole call, [`Self::try_identifier_dot_call`]).
+    fn push_leaf_occ(&mut self, parse_id: TermId, kb_id: TermId) {
         if self.occ_suppress == 0 {
-            let occ = node_occurrence::build_expr_leaf(self.kb, kb_id);
+            let span = self.source_span_of(parse_id);
+            let occ = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
             self.expr_occ_results.push(occ);
         }
     }
