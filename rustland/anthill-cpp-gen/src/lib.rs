@@ -2206,9 +2206,12 @@ fn operations_in_sort(
         // effect with no realization here is UNREALIZABLE on this target, so it
         // fails LOUDLY instead of being folded away as "does not wrap".
         //
-        // Handlers are not implemented yet (WI-329), so residual == declared;
-        // once handler discharge lands, `handle_K` narrows this row by the
-        // handled labels BEFORE the gate sees it, and this loop is unchanged.
+        // The row read here is the operation's DECLARED one, and that IS the
+        // residual: handler discharge (WI-329) narrows a CALL's row inside a
+        // body, and the op-boundary check then requires the declaration to
+        // cover what survives — so an operation that handles `Error` internally
+        // legitimately declares a row without it and the gate sees the narrower
+        // set. Nothing in this loop changes for it.
         //
         // Resolving each effect ALSO drives return-type wrapping: an effect
         // wraps iff the profile realizes it as `ResultWrap` (WI-089(b) made

@@ -303,6 +303,20 @@ pub fn interp_for(source: &str) -> Interpreter {
     interp
 }
 
+/// [`interp_for`] over MULTIPLE user sources, each its own file — for an eval test
+/// whose fixture is split into a shared declarations file plus a per-case consumer
+/// (WI-329). Same recipe, same builtins; only the load helper differs, so an eval test
+/// that needs the split cannot drift onto a different pipeline than the single-source
+/// one.
+#[allow(dead_code)]
+pub fn interp_for_files(sources: &[&str]) -> Interpreter {
+    let kb = expect_loaded(try_load_kb_with_files(sources));
+    let mut interp = Interpreter::new(kb);
+    eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    interp
+}
+
 // ── Effect handler test helpers (M5) ─────────────────────────
 
 /// Build a buffered Console handler and return `(buffer, handler)`.

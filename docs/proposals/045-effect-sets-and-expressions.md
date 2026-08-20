@@ -608,15 +608,24 @@ and **absent** from the result:
 handle_K : (body: () -> X ! { K[…], ρ }) -> X ! ρ
 ```
 
-Checking a call `handle_K(λ → e)` is then **ordinary row unification** (§5) — no
-special machinery:
+Checking a call `handle_K(λ → e)` is then the **ordinary call-site row
+machinery** (§5) — no special machinery of its own:
 
 1. derive `e`'s row by `effect_derive`;
-2. unify it against `{ K[…], ρ }` — surface the `K` label and bind the tail `ρ`
-   to the **residual** (everything in `e`'s row other than `K`);
+2. relate it to `{ K[…], ρ }`, binding the tail `ρ` to the **residual**
+   (everything in `e`'s row other than `K`);
 3. the call's row is `ρ`: `K` is **dropped**, every other effect propagates.
    So `e : () -> X ! { Error[T], Modify[c] }` under `handle_Error` gives
    `ρ := { Modify[c] }`, output `{ Modify[c] }` (the §5.3 example).
+
+A callback argument's row conforms to its parameter's by **subset**, not by
+equality — the covariant row-subtyping half of v1a (§5, "open-row subtyping in
+`arrow_compatible`") — and discharge inherits that: a body that does **not** perform
+`K` is admitted, and `ρ` is then the body's whole row — `handle_Error(λ → pure)`
+has row `{}`. Nothing distinguishes a handler from any other operation with a
+shared-tail parameter, so no stricter rule is available to it; a handler with
+nothing to catch simply never fires. The dropped label is decided by the
+**result** row alone: a handler that keeps `K` in its result discharges nothing.
 
 Because discharge is carried entirely by the handler's **type** (a shared tail,
 label present → absent), it is the **default** derivation (§5.2.1): sound for the
@@ -625,6 +634,9 @@ unification lands — no per-effect rule. v1 discharges a **single named** label
 per shared tail; discharging a *statically-unknown effect-set* at once would need
 `difference` (§7 item 4, deferred) — until then, name the handled labels and
 discharge them one tail at a time.
+
+Spec: `docs/kernel-language.md` §5.5, "Handler discharge — a row minus a handled
+label".
 
 ## 6. Representation (reflect) and reconciliation
 

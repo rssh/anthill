@@ -13774,6 +13774,11 @@ fn check_apply_iter(
         // receiver's actual per-call type (the synthesis-time discharge point).
         // Populated only when the op has a projection.
         let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
+        // WI-329: (declared callback param type, actual argument type) per callable
+        // parameter — the input to `infer_discharged_row_tails`, which runs after BOTH
+        // arg loops because a row tail's lower bound is the UNION over every parameter
+        // naming it. Empty for an op with no type parameters (the gate at each push).
+        let mut callback_pairs: Vec<(Value, Value)> = Vec::new();
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
@@ -13804,6 +13809,13 @@ fn check_apply_iter(
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
+                    }
+                    // WI-329: the (declared, actual) pairs the discharge inference reads
+                    // after BOTH loops. Recorded only for a CALLABLE parameter of an op
+                    // that declares type params — the population a row tail can live in —
+                    // so an ordinary call allocates nothing.
+                    if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
+                        callback_pairs.push((param_type.clone(), arg_result.ty.clone()));
                     }
                 }
                 merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
@@ -13837,6 +13849,10 @@ fn check_apply_iter(
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
+                    }
+                    // WI-329 — see the positional loop.
+                    if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
+                        callback_pairs.push(((*param_type).clone(), arg_result.ty.clone()));
                     }
                 }
                 merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
@@ -13890,6 +13906,16 @@ fn check_apply_iter(
                 effective_param_types.insert(*param_sym, eff);
             }
         }
+
+        // WI-329 (proposal 045 §5.6): HANDLER DISCHARGE. Placed here for the same reason
+        // WI-705 states below — `subst` now carries the FULL instantiation from every
+        // argument, which is exactly what makes a shared row tail's lower bound the union
+        // of its constraints rather than whichever argument reached it first. Above the
+        // signature check so a discharged tail is part of the instantiation that check
+        // reads, and above `check_unconstrained_type_params` so a tail this solves is no
+        // longer reported unconstrained. No-op unless the callee declares type params and
+        // one of them is still unbound.
+        infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs);
 
         // WI-705: reject a call whose SIGNATURE — the op's own effect row or any
         // arrow-typed param row — an instantiation has made UNINHABITABLE (`{X, -X}`,
@@ -14671,7 +14697,31 @@ fn check_apply_iter(
             // effect members ever become δ-groundable.)
             let deep = walk_type_deep_value(kb, &subst, e);
             let walked = walk_value_to_resolved(kb, &subst, deep);
-            if matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
+            // WI-329 (handler discharge): the callee's declared element may itself be a
+            // ROW rather than a label. A handler's result row is written `effects {Rho}`
+            // — a bare row VARIABLE — and this call site is exactly where arg-unification
+            // BOUND that tail to the residual (`{Modify[Res], Clock}` after `Error` is
+            // dropped). The walk above therefore resolves the element to a BARE
+            // `EffectExpression` (`merge(present(…), …)`), which carries no
+            // `effects_rows(…)` wrapper and so missed the flatten below and was pushed
+            // WHOLE as a single "label". That malformed atom is invisible at the op
+            // boundary — `explode_incurred_effect_row` re-explodes it there (WI-441) —
+            // but the LAMBDA arrow builder does not: `make_arrow_value` wraps each
+            // element in `present(label = …)`, minting `present(label = merge(…))`. That
+            // is what made a NESTED handler fail: the inner discharge's residual became
+            // one opaque label in the enclosing lambda's row, and the outer handler's
+            // callback-row check rejected it. Flatten the bare form here, at the
+            // producer, so every reader of this flat atom list sees atoms.
+            // A carrier the wrapper cannot hold (a deferred query path) is NOT claimed
+            // as a row: it falls through to the atom push below, exactly as before.
+            let (bare_row, walked) = match value_is_bare_row_expr(kb, &walked)
+                .then(|| wrap_bare_effect_expr_as_row(kb, &walked))
+                .flatten()
+            {
+                Some(row) => (true, row),
+                None => (false, walked),
+            };
+            if bare_row || matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
                 // A WRITTEN row wrapper: flatten to its present labels, then — WI-067
                 // — drop the label of any guarded atom inside whose σ(guard) refutes
                 // from Γ. The flatten leaves a guarded atom's label conservatively
@@ -23302,6 +23352,122 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     // = 42]` lowers to a WI-302 denoted value, which reported
     // `TypeExtractor.Denoted does not provide Monoid`.
     sort_functor_of_view(kb, value)
+}
+
+/// WI-329 (proposal 045 §5.6) — HANDLER DISCHARGE, the inference half: bind each of the
+/// callee's still-unbound flexible row tails to the RESIDUAL its callback arguments
+/// force, once every argument has been unified.
+///
+/// A handler is `(body: () -> X @ {K, ρ}) -> X @ {ρ}`, so the call's row IS `ρ` and `ρ`
+/// must come out as `body`'s row minus `K`. Ordinary unification already delivers that
+/// whenever the body DOES perform `K`: the declared row's extras are then empty and
+/// `unify_effect_rows`' closed/open arm binds `ρ := only_a`. It delivers nothing when the
+/// body does NOT perform `K` — a pure body, or the outer of two handlers for the same
+/// label — because the declared `K` has no counterpart in the actual row, which is not an
+/// EQUALITY, and that arm refuses without binding. Callback conformance is SUBTYPING, not
+/// equality (`validate_arg_against_param` owns the verdict; the arg loops discard unify's
+/// boolean), so such a call is admissible and `ρ` is simply underdetermined by that one
+/// argument.
+///
+/// WHY THIS IS A SEPARATE PASS AND NOT A BINDING INSIDE THAT ARM. `ρ` is constrained by
+/// EVERY parameter that mentions it, and the answer is their UNION. Binding per-argument
+/// inside the relation takes the first argument's least solution and CLOSES the tail, so
+/// a later argument with a real contribution is refused — measured on `two[Rho](a: () ->
+/// Int64 @ {Error[Int64], Rho}, b: () -> Int64 @ {Rho})` at a pure `a` and a `{Clock}`
+/// `b`, which stopped loading. Running once, after both arg loops, makes the result
+/// order-independent and leaves `unify_effect_rows` a clean equality that does not leak
+/// bindings on refusal.
+///
+/// DELIBERATELY NARROW — every skip below leaves the tail unbound, which is the
+/// pre-existing behavior (`check_unconstrained_type_params` then reports it), never a
+/// wrong binding:
+///   * a tail already bound by unification, or a RIGID one (a forall-Skolem is not ours
+///     to solve — WI-336);
+///   * a declared row with no tail (closed: nothing to infer) or with TWO (a row UNION,
+///     `{E, EffP}` — which lower bound belongs to which tail is not decidable here);
+///   * an actual row that is itself OPEN or carries `- e` absents — those are the shapes
+///     the unify/subtype arms reason about with their own tail machinery.
+///
+/// The residual is [`cover_present_labels`]'s `only_a`: the actual's present labels that
+/// no declared present label covers. That is exactly "the body's row minus the handled
+/// labels", computed by the same relation the subtype path uses, so the two cannot drift.
+fn infer_discharged_row_tails(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    pairs: &[(Value, Value)],
+) {
+    if op.type_params.is_empty() || pairs.is_empty() {
+        return;
+    }
+    // Cheap gate: nothing to solve unless some declared type param is still a bare var.
+    // (The same probe `check_unconstrained_type_params` makes, so the pass runs only on
+    // the calls that would otherwise be refused for an unconstrained parameter.)
+    let any_unbound = op.type_params.iter().any(|(_, var)| {
+        let t = type_param_var_term(kb, *var);
+        let resolved = walk_view(kb, subst, &TermIdView(t));
+        resolved_var(kb, &resolved).is_some()
+    });
+    if !any_unbound {
+        return;
+    }
+
+    // Lower bounds per tail, accumulated across every callback parameter naming it.
+    let mut lower: Vec<(TermId, Vec<Value>)> = Vec::new();
+    for (declared, actual) in pairs {
+        if !type_head_is_callable(kb, declared) {
+            continue;
+        }
+        let Some((_, _, Some(d_eff))) = arrow_parts(kb, declared) else {
+            continue;
+        };
+        let d_row = canonical_effects_row(kb, &d_eff);
+        let Some((d_present, d_tails, _)) = decompose_effect_row(kb, subst, &d_row) else {
+            continue;
+        };
+        if d_tails.len() != 1 {
+            continue;
+        }
+        let tail = walk_type(kb, subst, d_tails[0]);
+        if !matches!(kb.get_term(tail), Term::Var(Var::Global(_))) {
+            continue;
+        }
+        let Some((_, _, Some(a_eff))) = arrow_parts(kb, actual) else {
+            continue;
+        };
+        let a_row = canonical_effects_row(kb, &a_eff);
+        let Some((a_present, a_tails, a_absent)) = decompose_effect_row(kb, subst, &a_row) else {
+            continue;
+        };
+        if !a_tails.is_empty() || !a_absent.is_empty() {
+            continue;
+        }
+        let (only_a, _) = cover_present_labels(kb, subst, &a_present, &d_present);
+        match lower.iter().position(|(t, _)| *t == tail) {
+            Some(i) => {
+                for l in only_a {
+                    let dup = lower[i]
+                        .1
+                        .iter()
+                        .any(|x| resolved_labels_equal(kb, subst, x, &l));
+                    if !dup {
+                        lower[i].1.push(l);
+                    }
+                }
+            }
+            None => lower.push((tail, only_a)),
+        }
+    }
+
+    for (tail, labels) in lower {
+        // Re-read: `cover_present_labels` unifies as it pairs, so an earlier iteration
+        // may already have bound this tail. Binding a second time would contradict.
+        let t = walk_type(kb, subst, tail);
+        if !matches!(kb.get_term(t), Term::Var(Var::Global(_))) {
+            continue;
+        }
+        bind_row_tail(kb, subst, t, &labels, None);
+    }
 }
 
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
@@ -35308,6 +35474,36 @@ fn reorder_named_args_in_apply(
     ))
 }
 
+/// Wrap a BARE `EffectExpression` node (`merge(…)` / `present(…)` / `open(…)` /
+/// `empty_row`, the shape a BOUND row-tail var walks to) into the canonical
+/// `effects_rows(…)` wrapper the row machinery consumes. Carrier-preserving: a
+/// ground expression stays ground, an occurrence stays an occurrence.
+///
+/// `None` for EVERY OTHER CARRIER — notably a `Value::Entity`-carried row, which is an
+/// ordinary live carrier and not a hypothetical: there is no `make_effects_rows_*`
+/// constructor that takes one, and inventing a re-grounding here would undo the WI-341
+/// occurrence-preservation the two callers exist to respect. Both callers treat `None` as
+/// "not a row" and fall back to their pre-existing non-row handling, so the value is
+/// carried whole rather than dropped. This is a KNOWN carrier gap shared with
+/// [`explode_incurred_effect_row`], which has always had it; it is stated rather than
+/// papered over, and closing it means giving the wrapper an `Entity` constructor.
+///
+/// Shared by the two sites that must turn a walked row VALUE back into a row:
+/// [`explode_incurred_effect_row`] (the op-boundary reader) and the call-site
+/// effect-contribution loop (WI-329) — so the wrapping cannot drift between the
+/// producer of a call's incurred effects and the reader that checks them.
+fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value) -> Option<Value> {
+    match expr {
+        Value::Term { id: t, .. } => Some(Value::term(kb.make_effects_rows_type(*t))),
+        Value::Node(occ) => Some(Value::Node(kb.make_effects_rows_occ(
+            TypeChild::Node(Rc::clone(occ)),
+            occ.span,
+            occ.owner,
+        ))),
+        _ => None,
+    }
+}
+
 /// WI-441: explode a ROW-shaped effect value into its component atoms —
 /// the present labels plus the row-tail var (as a bare `Value::Term` Var
 /// atom). Returns `None` when `effect` is not row-shaped (an ordinary
@@ -35341,15 +35537,7 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
     } else {
         // Wrap the bare EffectExpression so `decompose_effect_row` sees the
         // canonical `effects_rows(…)` shape.
-        match effect {
-            Value::Term { id: t, .. } => Value::term(kb.make_effects_rows_type(*t)),
-            Value::Node(occ) => Value::Node(kb.make_effects_rows_occ(
-                TypeChild::Node(Rc::clone(occ)),
-                occ.span,
-                occ.owner,
-            )),
-            _ => return None,
-        }
+        wrap_bare_effect_expr_as_row(kb, effect)?
     };
     let subst = Substitution::new();
     let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
@@ -43480,6 +43668,31 @@ fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
     })
 }
 
+/// WI-329 — the strictly NARROWER sibling of [`value_is_bare_effect_expr`]: the bare
+/// `EffectExpression` shapes a BOUND ROW TAIL can walk to, and only those. `bind_row_tail`
+/// builds `merge` / `present` / `open` / `empty_row` chains and nothing else, so those four
+/// are what a row variable resolves into at a call site.
+///
+/// `guarded` and `absent` are EXCLUDED, and that exclusion is the point. They are ELEMENT
+/// forms a written row contributes, each already owned by its own arm of the call-site
+/// effect loop, and flattening either one LOSES information rather than exposing it:
+/// a standalone `guarded(label, guard)` — how a partial primitive declares its single
+/// effect (`div … effects { Error[…] :- eq(b, 0) }`) — flattens to its LABEL with the
+/// GUARD DROPPED, so the enclosing operation's row could no longer carry the condition for
+/// a later call site to discharge (WI-067/WI-478); and a bare `absent` flattens to NOTHING
+/// at all, silently deleting the element. Reusing the WI-478 predicate here captured 12 of
+/// the 15 standalone `guarded` elements in the `wi067` + `wi478` fixtures, and no test
+/// could see it because both routes keep the label.
+fn value_is_bare_row_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    v.head(kb).functor_sym().is_some_and(|sym| {
+        matches!(
+            kb.qualified_name_of(sym)
+                .strip_prefix("anthill.prelude.EffectExpression."),
+            Some("merge" | "present" | "open" | "empty_row")
+        )
+    })
+}
+
 /// WI-441: row-shaped = an `effects_rows` wrapper OR a bare `EffectExpression`
 /// node. A pair with a row-shaped side must compare via the FULL row algebra
 /// (`unify_effect_rows` / `subtype_effect_rows`) — the structural fallback is
@@ -43984,6 +44197,21 @@ fn unify_effect_rows<EA: TermView, EB: TermView>(
         (None, Some(b_t)) => {
             // a is closed, b is open.
             // a has no tail to absorb b's extras — b's extras must be empty.
+            //
+            // WI-329 CONSIDERED BINDING HERE AND MEASURED THAT IT IS WRONG. A handler's
+            // discharge wants `ρ := only_a` on exactly this arm's FAILING path (the body
+            // does not perform the handled label), and binding before the `return` looks
+            // free because it is the same `bind_row_tail` the success path performs. It
+            // is not free: this relation runs once PER ARGUMENT with its boolean
+            // DISCARDED, so a tail shared by two parameters gets closed by whichever
+            // argument reaches it first. MEASURED — `two[Rho](a: () -> Int64 @
+            // {Error[Int64], Rho}, b: () -> Int64 @ {Rho})` applied to a pure `a` and a
+            // `{Clock}` `b` stops loading, because `a` closes `Rho` to `{}` before `b`
+            // can contribute `Clock`. The discharge inference therefore belongs where
+            // every argument's contribution is known: [`infer_discharged_row_tails`],
+            // run once after the arg-unify loops. Leave this relation an EQUALITY that
+            // does not leak bindings on refusal (the discipline `pair_present_labels`
+            // states for the same reason).
             if !only_b.is_empty() {
                 return false;
             }

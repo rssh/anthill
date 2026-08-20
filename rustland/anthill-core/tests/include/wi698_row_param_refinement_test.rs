@@ -1031,9 +1031,12 @@ fn place_carrying_escape_through_destructure_lambda_rejected() {
 // 027/037/047 §8) is available for state the runtime cannot mediate, and the hazard
 // is permanent (no `register_undo` for the world; a solver re-runs the continuation
 // once per solution). WI-701 is the BLUNT load-time co-occurrence reject: any
-// operation whose DECLARED effect row presents both labels is rejected. WI-329's
-// row-discharge typing later makes it compositional (a solver's reify discharges
-// `Branch`); this is the un-discharged floor, "acceptable and intended" per the ticket.
+// operation whose DECLARED effect row presents both labels is rejected. This is the
+// un-discharged floor, "acceptable and intended" per the ticket — and it stays the floor
+// now that WI-329 has landed: discharge does not weaken this gate, it routes AROUND it.
+// A solver's `reify` discharges `Branch` at the call, so the enclosing operation declares
+// `{External}` alone and there is no co-occurrence left to refuse — the 054 sandwich,
+// driven end to end (with its un-reified control) in `wi329_handler_discharge_test`.
 
 /// A `Branch` region performing `External` — the primary hazard shape (a body that
 /// searches AND mints an issue). `search_and_create` OVER-declares on a pure body

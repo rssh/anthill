@@ -7,8 +7,11 @@
 //! loudly (repo principle: loud error over silent skip), never be folded away
 //! into "emit the signature unchanged".
 //!
-//! Handlers are unimplemented (WI-329), so residual == declared; once
-//! `handle_K` discharge lands it narrows the row before the gate sees it.
+//! The row the gate reads is the operation's DECLARED one, and that IS the
+//! residual: handler discharge (WI-329) narrows a CALL's row inside a body, and
+//! the op-boundary check requires the declaration to cover what survives — so an
+//! operation handling `Error` internally declares a row without it and the gate
+//! sees the narrower set. The gate is unchanged by it.
 
 use super::common;
 

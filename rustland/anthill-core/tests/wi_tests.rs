@@ -1338,3 +1338,6 @@ mod wi888_equational_head_connective_test;
 
 #[path = "include/wi567_flow_guard_discharge_test.rs"]
 mod wi567_flow_guard_discharge_test;
+
+#[path = "include/wi329_handler_discharge_test.rs"]
+mod wi329_handler_discharge_test;

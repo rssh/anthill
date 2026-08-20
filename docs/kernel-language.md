@@ -1992,6 +1992,40 @@ E]` declares that iterating the stream may have effect `E`; a file-backed stream
 can bind `E = Error`, while a pure in-memory stream binds the closed empty row
 `E = {}`.
 
+**Handler discharge — a row minus a handled label.** A handler is an ordinary
+operation, not new syntax. It discharges effect `K` by **sharing a row tail** `ρ`
+between its body parameter and its result, with `K` present on the body side and
+absent from the result:
+
+```
+operation handle_K[Rho](body: () -> X @ {K[...], Rho}) -> X @ {Rho}
+```
+
+Checking `handle_K(lambda () -> e)` is then the ordinary call-site row machinery
+(proposal 045 §5.6, WI-329): `ρ` binds to the **residual** — everything in `e`'s
+row other than `K` — and the call's row *is* `ρ`. A body of `{Error[Int64],
+Modify[c]}` under `handle_Error` yields `{Modify[c]}`. Because the discharge is
+carried entirely by the handler's **type**, it composes: nested handlers drop
+their labels successively in either order, and every unhandled label propagates.
+The dropped label is decided by the **result** row alone — a handler whose result
+row keeps `K` discharges nothing, at the same call.
+
+**A body that does not perform the handled label is admitted**, and `ρ` is then
+the body's whole row: `handle_Error(lambda () -> pure())` has row `{}` and
+`handle_Error(lambda () -> modifies())` has row `{Modify[...]}`. A callback
+argument's row conforms by **subset**, not by equality, so a declared label the
+argument never performs is not an error — the handler simply has nothing to
+catch. Writing the tail out (`handle_Error[Rho = {Modify[c]}](...)`) yields the
+row inference derives, and a wrong explicit tail is refused.
+
+This is the **static** half only: it asserts that the program is well-typed, not
+that a handler is installed. The runtime handler — installation, `HandlerAction`,
+continuations — is [proposal
+027](proposals/027-effect-handlers-and-standard-effects.md)'s. Consequently a
+handler that actually *ran* its body would incur `{K, ρ}` against its own
+declared `{ρ}`; the type above describes the contract, and 027 supplies the
+machinery that realises it.
+
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
 ### 5.6 Effect Semantics (State-Passing Interpretation)
