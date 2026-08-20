@@ -10095,41 +10095,44 @@ fn visit_type(
         }
 
         // ── Leaf cases ──────────────────────────────────────────
-        Expr::Const(Literal::Int(_)) => results.push(Ok(TypeResult::pure(
-            kb.make_sort_ref_by_name("Int64"),
-            unwrap_env(env),
-            Rc::clone(&occ),
-        ))),
-        // A `BigInt` literal is one that exceeded `i64` at parse — it cannot be
-        // an `Int` value, so it types as `BigInt`. (Previously lumped with
-        // `Int`; the WI-379 args-before-expected order made that mis-typing
-        // visible — `100…0 + 100…0` declared `-> BigInt` pinned `Numeric.T` to
-        // the literal's type from the argument, so a literal typed `Int` made
-        // the sum `Int`, rejected against the `BigInt` return.)
-        Expr::Const(Literal::BigInt(_)) => results.push(Ok(TypeResult::pure(
-            kb.make_sort_ref_by_name("BigInt"),
-            unwrap_env(env),
-            Rc::clone(&occ),
-        ))),
-        Expr::Const(Literal::Float(_)) => results.push(Ok(TypeResult::pure(
-            kb.make_sort_ref_by_name("Float"),
-            unwrap_env(env),
-            Rc::clone(&occ),
-        ))),
-        Expr::Const(Literal::String(_)) => results.push(Ok(TypeResult::pure(
-            kb.make_sort_ref_by_name("String"),
-            unwrap_env(env),
-            Rc::clone(&occ),
-        ))),
-        Expr::Const(Literal::Bool(_)) => results.push(Ok(TypeResult::pure(
-            kb.make_sort_ref_by_name("Bool"),
-            unwrap_env(env),
-            Rc::clone(&occ),
-        ))),
-        // `Handle(_)` literals are reserved for materialized runtime
-        // values; they never appear in surface source. If one shows up,
-        // it's a post-elaboration form being re-typed.
-        Expr::Const(_) => results.push(Err(TypeError::BottomExpr { span: occ_span })),
+        //
+        // ONE ARM, and the inner match is what keeps `Literal` compile-time exhaustive
+        // here: it carries no wildcard, so a sixth literal kind is a build error at this
+        // site rather than a runtime surprise. (It was NOT, until the unreachable
+        // `Expr::Const(_) => BottomExpr` catch-all was removed: with that arm present a
+        // new variant compiled clean here while nine other sites in the crate refused
+        // it — measured.)
+        //
+        // `try_make_sort_ref_by_name`, NOT the infallible form (WI-913). The infallible
+        // one mints an Unresolved sort out of a name that denotes nothing, and its own
+        // doc names exactly this caller: "a typer arm then reads it as a real type".
+        // `type_check_expr`/`type_check_node` are `pub` and a `KnowledgeBase::new()`
+        // that never ran `register_prelude` is a legal state, so on such a KB every
+        // integer literal would type as a freshly interned phantom `Int64` that unifies
+        // with nothing — surfacing far away as an unexplained subsumption mismatch
+        // instead of here, at the literal that caused it.
+        //
+        // A `BigInt` literal is one that exceeded `i64` at parse — it cannot be an
+        // `Int` value, so it types as `BigInt`. (Previously lumped with `Int`; the
+        // WI-379 args-before-expected order made that mis-typing visible — `100…0 +
+        // 100…0` declared `-> BigInt` pinned `Numeric.T` to the literal's type from the
+        // argument, so a literal typed `Int` made the sum `Int`, rejected against the
+        // `BigInt` return.)
+        Expr::Const(lit) => {
+            let sort_name = match lit {
+                Literal::Int(_) => "Int64",
+                Literal::BigInt(_) => "BigInt",
+                Literal::Float(_) => "Float",
+                Literal::String(_) => "String",
+                Literal::Bool(_) => "Bool",
+            };
+            match kb.try_make_sort_ref_by_name(sort_name) {
+                Some(t) => {
+                    results.push(Ok(TypeResult::pure(t, unwrap_env(env), Rc::clone(&occ))))
+                }
+                None => results.push(Err(TypeError::BottomExpr { span: occ_span })),
+            }
+        }
         // WI-714: a macro-spliced value's type belongs to its BUILDER, not the
         // typer — only `guarded_of` (which constructs the recipe) knows it. Read
         // the type the constructor stamped (`set_inferred_type`, carrier-neutral);
@@ -48916,9 +48919,6 @@ fn short_op_name(kb: &KnowledgeBase, op: Symbol) -> &str {
 /// alone would make a conditional edge an unconditional slot.
 fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return out;
-    };
     let mut conditioned: Option<Vec<Symbol>> = None;
     // THE CARRIER INDEX, not `rules_by_functor` — this runs once per SORT and the
     // provision relation is the largest in the KB, so the raw scan is O(sorts x
@@ -48927,6 +48927,25 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // when `provides_index` is `None`, which is the state during the derivation pass.
     for rid in provides_rids_by_carrier(kb, sort_sym) {
         if !kb.is_fact(rid) {
+            continue;
+        }
+        // WI-660/WI-672 — THE PER-FACT CARRIER RE-FILTER, which
+        // [`provides_rids_by_carrier`]'s doc calls load-bearing and which every sibling
+        // consumer performs (see [`directly_provided_specs`]). Without it this reads a row
+        // belonging to ANOTHER carrier as if it were this sort's own — live in exactly the
+        // no-index window the comment above names, where `rids_or_scan` returns EVERY
+        // provides fact in the KB, so `Ord provides WeakOrd[T = T]` read while querying an
+        // unrelated `Foo` would hand `Foo` a self-supplied slot it never declared.
+        let Some(named) = kb.fact_head_named_args(rid) else {
+            continue;
+        };
+        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+            continue;
+        };
+        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
+            continue;
+        };
+        if !same_sort_canonical(kb, carrier, sort_sym) {
             continue;
         }
         let head = kb.rule_head_value(rid);
@@ -58874,7 +58893,6 @@ mod p3_tests {
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, Var};
     use crate::kb::term_view::TermIdView;
-    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use crate::span::{SourceId, SourceSpan};
     use std::rc::Rc;
@@ -58974,7 +58992,6 @@ mod wi361_reader_tests {
     use crate::kb::load::register_prelude;
     use crate::kb::term::{Term, TermId};
     use crate::kb::term_view::TermIdView;
-    use crate::kb::ClauseKind;
     use crate::kb::KnowledgeBase;
     use smallvec::SmallVec;
 

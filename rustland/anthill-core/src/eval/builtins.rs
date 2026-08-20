@@ -5763,6 +5763,81 @@ mod tests {
         );
     }
 
+    /// WI-1122 — THE `Dynamic` HALF, which the audit above cannot reach. That test
+    /// iterates `HOST_FNS`, and `host_fn_by_key`'s HOST_FNS leg only ever mints
+    /// `HostFnImpl::Static`, so the `Dynamic` arm an EMBEDDER entry takes is never
+    /// exercised by it. Nor is it exercised end-to-end anywhere else: production does
+    /// not go through `HostFn::call` at all — it goes through `register_on` into the
+    /// interpreter's builtin map — and `wi1122_embedder_host_fn_test` is an INTEGRATION
+    /// test, linking the lib compiled without `cfg(test)`.
+    ///
+    /// So the two paths must agree, and nothing checked that they did. This drives
+    /// BOTH with one `Dynamic` entry that records what it received.
+    ///
+    /// CONTROL: `register_on`'s Dynamic wrapper (kb/host_fns.rs) is the only thing
+    /// between the two halves. Drop, duplicate or reorder `a` in that wrapper and the
+    /// `register_on` half fails while the `call` half still passes — which is the
+    /// asymmetry that makes this test worth having rather than a restatement.
+    #[test]
+    fn a_dynamic_host_fn_forwards_operands_identically_through_both_paths() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let seen: Rc<RefCell<Vec<Vec<Value>>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorder = Rc::clone(&seen);
+        let hf = HostFn {
+            arity: 2,
+            f: HostFnImpl::Dynamic(std::sync::Arc::new(
+                move |_i: &mut Interpreter, a: &[Value]| {
+                    recorder.borrow_mut().push(a.to_vec());
+                    Ok(Value::Int(a.len() as i64))
+                },
+            )),
+        };
+
+        let args = vec![Value::Int(7), Value::Int(9)];
+
+        let mut kb = crate::kb::KnowledgeBase::new();
+        let sym = kb.intern("probe.dynamic.forwarding");
+        let mut interp = Interpreter::new(kb);
+
+        // Path 1 — what the arity audit uses.
+        let direct = hf
+            .call(&mut interp, &args)
+            .expect("a Dynamic entry must be invocable through `call`");
+
+        // Path 2 — what production uses.
+        hf.register_on(&mut interp, sym);
+        let registered = interp
+            .builtins
+            .get(&sym)
+            .cloned()
+            .expect("register_on must bind the entry under its symbol");
+        let through_map = registered(&mut interp, &args)
+            .expect("the registered closure must be invocable");
+
+        assert_eq!(
+            direct.as_int(),
+            through_map.as_int(),
+            "both paths must return the same value"
+        );
+        let calls = seen.borrow();
+        assert_eq!(calls.len(), 2, "the closure must have run once per path");
+        // Compared through `as_int` rather than `==`: WI-486 removed the carrier-blind
+        // `Value` comparator deliberately, so `Value` has no `PartialEq` to lean on.
+        let ints = |vs: &[Value]| vs.iter().map(|v| v.as_int()).collect::<Vec<_>>();
+        assert_eq!(
+            ints(&calls[0]),
+            ints(&args),
+            "`call` must forward the operands unchanged and in order"
+        );
+        assert_eq!(
+            ints(&calls[0]),
+            ints(&calls[1]),
+            "`register_on`'s wrapper must forward exactly what `call` does"
+        );
+    }
+
     #[test]
     fn numeric_add_int() {
         let r = numeric_add(&mut dummy(), &[Value::Int(2), Value::Int(3)]).unwrap();

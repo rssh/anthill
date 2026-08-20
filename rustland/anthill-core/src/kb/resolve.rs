@@ -12904,7 +12904,7 @@ mod tests {
         let domain = kb.intern("test");
 
         // Two ground-but-floundering nullary rules `r() :- nonvar(?w)`, `u() :- nonvar(?w2)`.
-        let mut make_floundering_rule = |kb: &mut KnowledgeBase, name: &str, var: &str| -> Symbol {
+        let make_floundering_rule = |kb: &mut KnowledgeBase, name: &str, var: &str| -> Symbol {
             let sym = kb.intern(name);
             let head = kb.alloc(Term::Fn {
                 functor: sym,
@@ -13481,66 +13481,17 @@ mod tests {
     /// query recurses once per positional arg.
     #[test]
     fn debruijn_large_head_and_body() {
-        let result = std::thread::Builder::new()
+        // Shares `build_n_body_fixture` with the linearity guards below instead of
+        // hand-rolling the same construction twice. The copy that used to live here was
+        // identical by intent and by nothing else: change one side — a different
+        // `ClauseKind`, an extra named arg — and this stack-depth guard and those O(n)
+        // guards silently start measuring different workloads while all of them stay
+        // green.
+        std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
                 let n: usize = 1000;
-
-                let mut kb = KnowledgeBase::new();
-                let sort = ClauseKind::Sort;
-                let domain = kb.intern("test");
-
-                let big_sym = kb.intern("big");
-
-                let f_syms: Vec<Symbol> = (0..n).map(|i| kb.intern(&format!("f_{i}"))).collect();
-                let vals: Vec<TermId> = (0..n)
-                    .map(|i| kb.alloc(Term::Const(Literal::String(format!("v{i}")))))
-                    .collect();
-                let var_terms: Vec<TermId> = (0..n)
-                    .map(|i| {
-                        let sym = kb.intern(&format!("x{i}"));
-                        let vid = kb.fresh_var(sym);
-                        kb.alloc(Term::Var(Var::Global(vid)))
-                    })
-                    .collect();
-
-                // Rule head: big(?v0, ..., ?v999)
-                let head = kb.alloc(Term::Fn {
-                    functor: big_sym,
-                    pos_args: SmallVec::from_vec(var_terms.clone()),
-                    named_args: SmallVec::new(),
-                });
-
-                // Body: f_i(?v_i) for each i
-                let body: Vec<TermId> = (0..n)
-                    .map(|i| {
-                        kb.alloc(Term::Fn {
-                            functor: f_syms[i],
-                            pos_args: SmallVec::from_elem(var_terms[i], 1),
-                            named_args: SmallVec::new(),
-                        })
-                    })
-                    .collect();
-
-                let body_nodes = kb.term_body_to_nodes(&body);
-                kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
-
-                // Facts: f_i("val_i")
-                for i in 0..n {
-                    let fact = kb.alloc(Term::Fn {
-                        functor: f_syms[i],
-                        pos_args: SmallVec::from_elem(vals[i], 1),
-                        named_args: SmallVec::new(),
-                    });
-                    kb.assert_fact(fact, sort, domain, None);
-                }
-
-                // Query: big("v0", ..., "v999") — all concrete
-                let query = kb.alloc(Term::Fn {
-                    functor: big_sym,
-                    pos_args: SmallVec::from_vec(vals.clone()),
-                    named_args: SmallVec::new(),
-                });
+                let (mut kb, query) = build_n_body_fixture(n);
 
                 let config = ResolveConfig {
                     max_depth: usize::MAX,
@@ -13555,15 +13506,15 @@ mod tests {
                 let elapsed = start.elapsed();
 
                 assert_eq!(solutions.len(), 1, "should find exactly 1 solution");
-                eprintln!("  1000-head-arg rule resolved in {}ms", elapsed.as_millis());
 
-                // Debug build: ~800ms (dominated by SLD O(n²) apply_subst_each).
-                // If DeBruijn adds extra O(n²), would exceed 5s.
-                assert!(
-                    elapsed.as_millis() < 5000,
-                    "1000-head-arg rule took {}ms",
-                    elapsed.as_millis()
-                );
+                // REPORTED, NOT ASSERTED. This used to carry `elapsed < 5000ms` as its
+                // O(n²) guard. A wall-clock budget is machine-dependent, and
+                // `scripts/test.sh` runs this crate at the full CPU count, so the number
+                // competes with N-1 sibling test threads — on a loaded box or the 2-4
+                // core VM the script's own header names, it fails with no regression
+                // present. The asymptotic claim is made properly, and machine-
+                // independently, by `lazy_walk_calls` in the linearity guards below.
+                eprintln!("  {n}-head-arg rule resolved in {}ms", elapsed.as_millis());
             })
             .unwrap()
             .join()
@@ -13722,9 +13673,12 @@ mod tests {
     /// called rules — they are "don't care" for the caller, not
     /// wildcards that skip binding.
     ///
-    /// Also documents the redundant-solutions issue:
-    /// found(?x) :- item(?x, ?, ?) with multiple items sharing ?x
-    /// produces N solutions instead of 1 (WI-026).
+    /// CARRIES A DISABLED ASSERTION FOR A KNOWN DEFECT (WI-20260820-FFPGD): two `check`
+    /// facts share ?x="ok" and `f(?q)` returns BOTH, so an existential body var
+    /// multiplies answers. The `assert_eq!(solutions.len(), 2, ...)` in the body is
+    /// written out and COMMENTED OUT — it is the shape the engine owes, not the shape it
+    /// currently has. Uncomment it when FFPGD lands; the note there says why the
+    /// per-choicepoint dedup does not reach the outer goal.
     #[test]
     fn anonymous_vars_chain_through_rules() {
         let mut kb = KnowledgeBase::new();
@@ -13734,8 +13688,6 @@ mod tests {
         let check_sym = kb.intern("check");
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
-        let item_sym = kb.intern("item");
-        let found_sym = kb.intern("found");
 
         // Helper: make a fresh anonymous var
         let anon = |kb: &mut KnowledgeBase| {
@@ -13798,7 +13750,7 @@ mod tests {
         kb.assert_rule_debruijn_with_nodes(f_head, body_nodes, sort, domain, None);
 
         // Query: f(?q)
-        let (vq, var_q) = named(&mut kb, "q");
+        let (_vq, var_q) = named(&mut kb, "q");
         let query = kb.alloc(Term::Fn {
             functor: f_sym,
             pos_args: SmallVec::from_elem(var_q, 1),
@@ -13814,28 +13766,49 @@ mod tests {
         // Anonymous ? in f's body correctly flow through to p's ?b, ?c.
         // check has 3 facts → p matches all 3 → f gets all 3.
         // Two have ?x="ok", one has ?x="fail".
-        assert!(
-            solutions.len() >= 2,
-            "should find at least 2 solutions (ok + fail)"
-        );
+        //
+        // THE ASSERTION BELOW IS THE ONE THIS TEST SHOULD MAKE, and it is commented out
+        // because it FAILS TODAY: the engine returns 3, not 2. `?b`/`?c` are written `?`
+        // — existential — so the two rows that agree on ?x="ok" differ only in fields the
+        // query never mentions, and must not be two answers.
+        //
+        // WHY IT FAILS: `is_duplicate_projection` (called at the goals-empty yield)
+        // fingerprints the NEAREST ancestor ChoicePoint's goal, which here is the one over
+        // `check`'s three DISTINCT rows — so nothing looks like a duplicate there. The
+        // redundancy only appears once projected onto the outer goal `f(?q)`, and by then
+        // no frame is looking. Filed as WI-20260820-FFPGD with the CLI repro, the two
+        // unsound quick fixes, and the fix (project onto the QUERY's free vars).
+        //
+        // UNCOMMENT WHEN FFPGD LANDS — it is that ticket's first acceptance clause, and
+        // this line is what will show it. Deliberately NOT pinned at 3: that would enshrine
+        // the defect as expected and make the fix look like the regression.
+        //
+        // assert_eq!(
+        //     solutions.len(),
+        //     2,
+        //     "an existential body var must not multiply answers"
+        // );
 
         let mut xs: Vec<String> = solutions
             .iter()
-            .filter_map(|sol| {
+            .map(|sol| {
                 let t = kb.reify(var_q, &sol.subst).expect_term();
                 match kb.get_term(t) {
-                    Term::Const(Literal::String(s)) => Some(s.clone()),
-                    _ => None,
+                    Term::Const(Literal::String(s)) => s.clone(),
+                    // Loud: a non-String answer is a failure to report, not a row to drop.
+                    _ => panic!("?q must reify to a String literal"),
                 }
             })
             .collect();
         xs.sort();
+        // Collapse the WI-026 duplicate pinned above, so this asserts the DISTINCT
+        // answers — which is this test's actual subject: both ?x values reach the
+        // caller through the anonymous ?b/?c, neither is lost to a "don't care" slot.
         xs.dedup();
-        // Head-var dedup: "ok" and "fail" each appear once
         assert_eq!(
             xs,
             vec!["fail", "ok"],
-            "head-var dedup should yield exactly 2 distinct solutions"
+            "both distinct ?x answers must flow through f's anonymous vars"
         );
     }
 
