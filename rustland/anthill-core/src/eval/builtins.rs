@@ -2524,7 +2524,7 @@ fn splice_query_runner(
     let anchor = relations.first().ok_or_else(|| {
         EvalError::Internal("WI-714: query-runner splice with no relation operand".into())
     })?;
-    let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
+    let pass = crate::kb::occurrence::macro_expand_pass(&mut interp.kb);
     let owner = anchor.owner;
     let spliced =
         NodeOccurrence::synthesized_expr(Expr::Spliced(recipe), Rc::clone(anchor), pass, owner);
@@ -4268,7 +4268,7 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
         Value::Node(occ) => Rc::clone(occ),
         other => return Err(type_mismatch("NodeOccurrence", other, None)),
     };
-    let pass = interp.kb.register_pass("anthill.kb.passes.macro_expand");
+    let pass = crate::kb::occurrence::macro_expand_pass(&mut interp.kb);
     let owner = from.owner;
     let expr = Expr::Apply {
         functor,

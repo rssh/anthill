@@ -676,6 +676,16 @@ pub enum TypeErrorContext {
     },
     OperationReturn {
         op_name: Symbol,
+        /// WI-20260820-5R2XT — the name the AUTHOR wrote at this call site, when
+        /// `op_name` is a LOWERING of it and so names an operation no one wrote: the
+        /// `join` behind a spliced `join_run`, the `where` behind a `where_run`. `None`
+        /// when the callee IS what was written, which is every ordinary call.
+        ///
+        /// A required field, not an `Option` defaulted somewhere central, so that every
+        /// construction site has to answer "does this site know what was written?" —
+        /// most do not, because they have no call occurrence to ask.
+        /// [`NodeOccurrence::surface_call_name`] is the one that does.
+        surface: Option<Symbol>,
     },
     OperationEffects {
         op_name: Symbol,
@@ -735,7 +745,20 @@ impl TypeErrorContext {
             TypeErrorContext::OperationArgument { op_name, .. } => {
                 kb.local_name_of(*op_name).to_string()
             }
-            TypeErrorContext::OperationReturn { op_name }
+            // WI-20260820-5R2XT: a LOWERED call names BOTH — the `join` the author wrote
+            // and the `join_run` the macro spliced. Not `join` alone: when the failure is
+            // in the runner's own signature rather than in the operands, the internal
+            // name is the only thing that leads a reader to it. `surface` is `None` for
+            // every ordinary call, where the two would be the same name twice.
+            TypeErrorContext::OperationReturn {
+                op_name,
+                surface: Some(surface),
+            } => format!(
+                "{} (expanded to {})",
+                kb.local_name_of(*surface),
+                kb.local_name_of(*op_name),
+            ),
+            TypeErrorContext::OperationReturn { op_name, .. }
             | TypeErrorContext::OperationEffects { op_name }
             | TypeErrorContext::OperationMatch { op_name } => {
                 kb.local_name_of(*op_name).to_string()
@@ -7023,6 +7046,7 @@ fn build_relation_projection(
         return Some(Err(projection_type_error(
             &TypeErrorContext::OperationReturn {
                 op_name: project_run,
+                surface: None,
             },
             Some(occ.span.span),
             &format!(
@@ -8816,7 +8840,7 @@ fn eliminate_callback_hint_projection(
     if param_arg_types.is_empty() || !value_contains_projection(kb, pt) {
         return None;
     }
-    let ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+    let ctx = TypeErrorContext::OperationReturn { op_name: fn_sym, surface: None };
     eliminate_type_projections(kb, pt, param_arg_types, None, &ctx, None).ok()
 }
 
@@ -12809,7 +12833,7 @@ fn synthesize_field_access(
         })
         .ok_or_else(|| {
             Some(projection_type_error(
-                &TypeErrorContext::OperationReturn { op_name: fa_sym },
+                &TypeErrorContext::OperationReturn { op_name: fa_sym, surface: None },
                 Some(occ.span.span),
                 &format!(
                     "`anthill.reflect.field_access` must declare a `{}` type parameter — the \
@@ -13194,6 +13218,33 @@ fn normalize_variadic_capture(
         named_args: kept_args,
         named_results: kept_results,
     }))
+}
+
+/// WI-20260820-5R2XT — the name the author wrote at this call site, when a MACRO lowered
+/// it into a call to `fn_sym`. `None` for every call that was not macro-expanded.
+///
+/// The same-name suppression compares what is RENDERED, not the two symbols. Comparing
+/// symbols is the more precise question and the WRONG one here: `entity_name` renders both
+/// through `local_name_of`, so two distinct symbols sharing a short name produce
+/// `x (expanded to x)` — measured, before the macro gate existed, on an ordinary dot call
+/// whose `DotApply` member symbol is not the operation symbol it resolves to.
+fn surface_of(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>, fn_sym: Symbol) -> Option<Symbol> {
+    let pass = super::occurrence::macro_expand_pass(kb);
+    surface_of_with(kb, pass, occ, fn_sym)
+}
+
+/// [`surface_of`] with the `PassId` already in hand — for a caller in a LOOP, where
+/// re-interning the pass name per iteration is pure waste (review). The walk itself is
+/// three to five links and runs on the success path too, since the context is built before
+/// the elimination that may fail.
+fn surface_of_with(
+    kb: &KnowledgeBase,
+    macro_pass: super::occurrence::PassId,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+) -> Option<Symbol> {
+    occ.surface_call_name(macro_pass)
+        .filter(|s| kb.local_name_of(*s) != kb.local_name_of(fn_sym))
 }
 
 fn check_apply_iter(
@@ -13734,16 +13785,24 @@ fn check_apply_iter(
         if params_have_projection {
             // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too.
             let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
+            // Interned ONCE for the whole loop, not per parameter (review).
+            let macro_pass = super::occurrence::macro_expand_pass(kb);
             for (param_sym, param_type) in &written_params {
                 if !value_contains_projection(kb, param_type) {
                     continue;
                 }
+                // Computed BEFORE the call: `eliminate_type_projections` takes `kb`
+                // mutably, and only one of the two can hold it.
+                let surface = surface_of_with(kb, macro_pass, occ, fn_sym);
                 let eff = eliminate_type_projections(
                     kb,
                     param_type,
                     &param_to_arg_type,
                     arg_syms,
-                    &TypeErrorContext::OperationReturn { op_name: fn_sym },
+                    &TypeErrorContext::OperationReturn {
+                        op_name: fn_sym,
+                        surface,
+                    },
                     span,
                 )?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
@@ -14041,7 +14100,10 @@ fn check_apply_iter(
         // the spec op the call named.
         let mut return_owner = fn_sym;
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
-            let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+            let ret_ctx = TypeErrorContext::OperationReturn {
+                op_name: fn_sym,
+                surface: surface_of(kb, occ, fn_sym),
+            };
             // WI-459: pass the formal→argument value-reference map so a projection NEUTRAL
             // formed off a formal param is RE-KEYED to the caller's actual receiver (see
             // `rewrite_term_projections`).
@@ -14138,7 +14200,10 @@ fn check_apply_iter(
         // reduction the signature actually wrote. Each is universal (keyed on the sort, not
         // the op) and gated per-op on the declared return type.
         let proj_return_type = if op_return_ctors.iter().any(|f| *f) {
-            let ret_ctx = TypeErrorContext::OperationReturn { op_name: fn_sym };
+            let ret_ctx = TypeErrorContext::OperationReturn {
+                op_name: fn_sym,
+                surface: surface_of(kb, occ, fn_sym),
+            };
             // Share the single `subst`-walk (which substitutes the bound type params —
             // `Drop = R`, the captured record — into the type before the operands are
             // inspected), then apply each ctor the signature actually wrote, in family
@@ -33216,6 +33281,7 @@ fn dispatched_impl_effects(
     let arg_syms = (!param_to_arg.is_empty()).then_some(&param_to_arg);
     let ctx = TypeErrorContext::OperationReturn {
         op_name: impl_op_sym,
+        surface: None,
     };
     let mut out: Vec<Value> = Vec::new();
     for e in &impl_op.effects {
@@ -34914,7 +34980,7 @@ fn result_column_error(
     callee: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    let context = TypeErrorContext::OperationReturn { op_name: callee };
+    let context = TypeErrorContext::OperationReturn { op_name: callee, surface: None };
     // The natural orientation first: its `Fail` already renders "expected <return>, got
     // <column>", which is what the author needs to read.
     match validate_arg_against_param(
@@ -34946,7 +35012,7 @@ fn result_column_error(
         ArgValidation::Fail(_) | ArgValidation::WrapSome { .. } => Some(TypeError::TypeMismatch {
             site: TypeError::here(),
             span,
-            context: TypeErrorContext::OperationReturn { op_name: callee },
+            context: TypeErrorContext::OperationReturn { op_name: callee, surface: None },
             expected: declared_return.clone(),
             actual: column_type.clone(),
         }),
@@ -46503,7 +46569,7 @@ fn abstracting_return_error(
     Some(TypeError::Other {
         site: TypeError::here(),
         span: None,
-        context: TypeErrorContext::OperationReturn { op_name: op_sym },
+        context: TypeErrorContext::OperationReturn { op_name: op_sym, surface: None },
         expected: "an interface-expressible return (concrete, input-rooted, or an `ensures` \
                    manifest)"
             .to_owned(),
@@ -51218,7 +51284,7 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
             }
             let span = kb.functor_span(op_sym).map(|s| s.span);
             errors.push(projection_type_error(
-                &TypeErrorContext::OperationReturn { op_name: op_sym },
+                &TypeErrorContext::OperationReturn { op_name: op_sym, surface: None },
                 span,
                 &format!(
                     "cyclic cross-parameter type projection among parameters: {} — a \
@@ -54076,7 +54142,7 @@ fn check_operation_bodies(
                 &op.return_type,
                 &param_map,
                 None,
-                &TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                &TypeErrorContext::OperationReturn { op_name: op.op_sym, surface: None },
                 op.span,
             ) {
                 Ok(elim) => elim,
@@ -54191,7 +54257,7 @@ fn check_operation_bodies(
                         effective_return.clone(),
                         result.ty.clone(),
                         None,
-                        TypeErrorContext::OperationReturn { op_name: op.op_sym },
+                        TypeErrorContext::OperationReturn { op_name: op.op_sym, surface: None },
                     ));
                 } else if let Some(e) =
                     abstracting_return_error(kb, &result.ty, &effective_return, op.op_sym)

@@ -3,9 +3,9 @@
 - id: WI-20260820-5R2XT-a-macro-spliced-call-s
 - created: 2026-08-20T05:33:44Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-20T05:33:44Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-20T07:34:57Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

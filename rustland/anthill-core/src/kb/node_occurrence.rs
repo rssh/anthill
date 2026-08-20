@@ -484,14 +484,163 @@ impl NodeOccurrence {
     ///
     /// WI-1026 added the `CallClass` to what is carried — see
     /// [`carry_typer_stamps_from`](Self::carry_typer_stamps_from).
+    /// WI-20260820-5R2XT — THE SPAN IS THIS NODE'S OWN, not `from`'s. It used to come
+    /// from `from`, via [`Self::synthesized_expr`], which was indistinguishable while the
+    /// two were always equal: every synthesized node was BUILT by `synthesized_expr`, and
+    /// that constructor copies `from.span`. [`Self::reparented_from`] is the first
+    /// constructor for which they differ — it changes what a node is an expansion OF
+    /// without moving where it is — so a rebuild through `from` would have silently
+    /// carried the re-parented node's location back onto its template, undoing
+    /// WI-20260819-33H3P's answer at the next `[simp]` reassembly / De Bruijn open. A
+    /// rebuild of THIS occurrence keeps THIS occurrence's location, which is also what
+    /// this method's name and its non-synthesized arm already said.
     pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
         let rebuilt = match &self.kind {
             NodeKind::Expr {
                 origin: OccurrenceOrigin::Synthesized { from, by },
                 ..
-            } => NodeOccurrence::synthesized_expr(expr, Rc::clone(from), *by, self.owner),
+            } => Rc::new(NodeOccurrence {
+                kind: NodeKind::Expr {
+                    expr,
+                    origin: OccurrenceOrigin::Synthesized {
+                        from: Rc::clone(from),
+                        by: *by,
+                    },
+                    classification: RefCell::new(None),
+                    resolved_type_args: RefCell::new(Vec::new()),
+                    inferred_type: RefCell::new(None),
+                    lowered_receiver: RefCell::new(None),
+                },
+                span: self.span,
+                owner: self.owner,
+            }),
             _ => NodeOccurrence::new_expr(expr, self.span, self.owner),
         };
+        rebuilt.carry_typer_stamps_from(self);
+        rebuilt
+    }
+
+    /// WI-20260820-5R2XT — the name the AUTHOR wrote at this call site, when a MACRO
+    /// lowered it into a call to something else: walk the provenance chain to the first
+    /// `Source` ancestor and read its head.
+    ///
+    /// `macro_pass` is [`macro_expand_pass`](super::occurrence::macro_expand_pass), and
+    /// the chain must cross a link stamped with it. That gate is the whole precision of
+    /// this: the typer synthesizes plenty of nodes that are NOT macro expansions — a
+    /// projection lowered to `project_run`, a dot lowered to `field_access` — and it
+    /// stamps them `simp_pass` instead. MEASURED without the gate, both faces were wrong:
+    /// an ordinary dot call `bx.getIt(1)` rendered `getIt (expanded to getIt)`, because a
+    /// `DotApply`'s member symbol is not the operation symbol it resolves to but renders
+    /// as the same short name; and `r.(a, b)` would have reported `TupleLiteral` — a
+    /// constructor — as the operation the author called. Both were found by review.
+    ///
+    /// `None` when nothing macro-expanded into this node (every ordinary call), and when
+    /// the source head names nothing — a literal, a variable reference: a lowering of a
+    /// non-call.
+    ///
+    /// THE GATE IS CHAIN-GLOBAL — any link, not the first — and that is required, not
+    /// convenient. MEASURED on `p.join(q, λ)` at the site that reads this: the typer
+    /// re-wraps the spliced node twice under `simp_pass` before typing it, so the chain is
+    /// `simp, simp, MACRO, simp, simp, Source` and the macro link sits at index 2. Gating
+    /// on the first link — proposed in review — returns `None` for the very case this
+    /// exists for.
+    ///
+    /// What chain-global cannot distinguish is a NON-macro lowering built `from` a
+    /// macro-produced node: it would inherit the clause and name an operation the macro
+    /// never spliced. That is unreachable today because the two typer lowerings which
+    /// could do it fire only on a `DotApply` or a projection, while both macro builders
+    /// (`make_apply`, `splice_query_runner`) produce an `Expr::Apply` — but that invariant
+    /// lives in typing.rs and eval/builtins.rs, not here, so it is written down rather than
+    /// relied on silently.
+    pub fn surface_call_name(&self, macro_pass: PassId) -> Option<Symbol> {
+        let mut crossed_macro = false;
+        // `self`'s own link is read first, then the walk steps through owned `Rc`s.
+        let mut node: Option<Rc<NodeOccurrence>> = match &self.kind {
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { from, by },
+                ..
+            } => {
+                crossed_macro |= *by == macro_pass;
+                Some(Rc::clone(from))
+            }
+            // Not a lowering at all.
+            _ => return None,
+        };
+        // The chain is finite by construction (each link is built from an EXISTING
+        // occurrence, so it cannot cycle) and short — expansion, template, redex.
+        while let Some(n) = node {
+            match &n.kind {
+                NodeKind::Expr {
+                    origin: OccurrenceOrigin::Synthesized { from, by },
+                    ..
+                } => {
+                    crossed_macro |= *by == macro_pass;
+                    node = Some(Rc::clone(from));
+                }
+                NodeKind::Expr { expr, .. } => {
+                    return crossed_macro.then(|| expr_head_name(expr)).flatten()
+                }
+                _ => return None,
+            }
+        }
+        // Unreachable: every arm of the loop either returns or rebinds `node` to `Some`.
+        // Written as `None` rather than `unreachable!` because it is a shape the compiler
+        // requires, not a claim about the data.
+        None
+    }
+
+    /// WI-20260820-5R2XT — this occurrence with its provenance RE-PARENTED onto `from`,
+    /// keeping its own `expr`, span, owner and typer stamps.
+    ///
+    /// The one caller is the macro expander (`simp_rewrite::try_expand_macro`). A macro
+    /// BUILDS its result, so it picks that result's `from` itself — and it can only pick
+    /// among the occurrences it was handed, which are the redex's ARGUMENTS. The chain
+    /// therefore ended at an argument and the redex was unreachable: MEASURED on
+    /// `p.join(q, λ)`, the spliced `join_run` call chained to `VarRef(p)`, while the
+    /// TEMPLATE it came from chained `conjoin_of` → `join` → `.join`. Re-parenting the
+    /// result onto the template splices the two, so a consumer can walk from any expansion
+    /// to the surface call the author wrote.
+    ///
+    /// THE SPAN IS DELIBERATELY NOT TAKEN FROM `from`, which is what
+    /// [`Self::synthesized_expr`] would do — so this is the first constructor for which a
+    /// node's span and its `from`'s differ. Where a synthesized node's location comes from
+    /// is WI-20260819-33H3P's question, answered per-macro (`splice_query_runner` anchors
+    /// on its first relation operand); this method answers only "what was this an
+    /// expansion OF". Tying them would silently re-decide the other ticket — measured: it
+    /// moves `join(p, q, λ)`'s refusal off the `p` operand and onto the whole call.
+    ///
+    /// That divergence is only as durable as every REBUILD of this node, which is why
+    /// [`Self::rebuilt_expr`] had to stop reading the span off `from` too. Found by
+    /// review, not by the arms: the drift needs a `[simp]` reassembly or a De Bruijn open
+    /// AFTER the splice, which no fixture here reaches.
+    ///
+    /// The caller gates on `self` being an `Expr` (only that kind carries an origin);
+    /// a non-`Expr` result has neither a provenance to fix nor a surface name to recover,
+    /// so it is left alone THERE rather than absorbed here.
+    pub fn reparented_from(&self, from: Rc<NodeOccurrence>, by: PassId) -> Rc<Self> {
+        let NodeKind::Expr { expr, .. } = &self.kind else {
+            unreachable!("reparented_from: caller must gate on NodeKind::Expr")
+        };
+        // `expr.clone()` is shallow — every child slot is an `Rc`, so this copies the one
+        // node's tag and its child pointers, not the tree.
+        //
+        // All four `RefCell`s are built empty and the two STAMPS are then carried by
+        // `carry_typer_stamps_from` (`inferred_type` and the `CallClass`), exactly as
+        // every other rebuild path does. The other two — `resolved_type_args`,
+        // `lowered_receiver` — are typer output that does not exist yet: at the moment a
+        // macro returns, this node has not been typed.
+        let rebuilt = Rc::new(NodeOccurrence {
+            kind: NodeKind::Expr {
+                expr: expr.clone(),
+                origin: OccurrenceOrigin::Synthesized { from, by },
+                classification: RefCell::new(None),
+                resolved_type_args: RefCell::new(Vec::new()),
+                inferred_type: RefCell::new(None),
+                lowered_receiver: RefCell::new(None),
+            },
+            span: self.span,
+            owner: self.owner,
+        });
         rebuilt.carry_typer_stamps_from(self);
         rebuilt
     }
@@ -1026,7 +1175,7 @@ pub enum NodeKind {
 /// `Rc<NodeOccurrence>`; patterns stay as `TermId` (pattern reform is a
 /// separate concern). Tagged-union over the apply / match / if / let /
 /// lambda / instantiation / literal / requirement-rewrite forms.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     /// Direct function application — `apply(fn = f, args = [a, b])`.
     Apply {
@@ -6095,6 +6244,19 @@ fn pop_n(results: &mut Vec<Rc<NodeOccurrence>>, n: usize) -> Vec<Rc<NodeOccurren
     out
 }
 
+/// WI-20260820-5R2XT — the name a CALL-shaped `Expr` presents to a reader: the functor
+/// of an application, the member of a dot call, the constructor of a construction. `None`
+/// for every other form, which is the honest answer — a literal or a variable reference
+/// is not a call and names no callee.
+fn expr_head_name(expr: &Expr) -> Option<Symbol> {
+    match expr {
+        Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } => Some(*functor),
+        Expr::DotApply { name, .. } => Some(*name),
+        Expr::Constructor { name, .. } => Some(*name),
+        _ => None,
+    }
+}
+
 /// WI-1082 — the "no recorded location" span. `SourceId(0)` is a REAL sequential id (the
 /// first loaded file), not a sentinel, so anything rendered off this reports that file's
 /// start; it is for synthesized nodes that no diagnostic should point at.
@@ -7599,6 +7761,100 @@ mod tests {
                 "unbound vn stays a Global var",
             ),
             other => panic!("expected Node, got {other:?}"),
+        }
+    }
+
+    /// WI-20260820-5R2XT — the walk answers only for a chain that CROSSES A MACRO
+    /// EXPANSION. Both arms are the same chain shape and differ only in the pass stamped
+    /// on the link, which is the whole discriminator.
+    ///
+    /// Driven here because the diagnostic path for the negative case is not reachable from
+    /// a fixture: the typer's own lowerings that would otherwise qualify (`r.(a, b)` →
+    /// `project_run`, `x.f` → `field_access`) need a FAILING return-type elimination
+    /// through the synthesized callee, and neither review nor I could construct one. So
+    /// what a fixture pins is the joint effect (`wi5r2xt_control_a_dot_call_…`, which needs
+    /// BOTH this gate and the same-name suppression backed out to fail) and this pins the
+    /// gate alone. Without it, a `TupleLiteral` — a constructor, not an operation — would
+    /// be reported as the operation the author called.
+    #[test]
+    fn the_surface_name_needs_a_macro_link_not_merely_a_synthesized_one() {
+        let mut symbols = SymbolTable::new();
+        // The SHARED name, not a third copy of the literal: a rename must break this test
+        // rather than leave it quietly asserting about a pass nothing stamps.
+        let macro_pass = PassId::from_symbol(
+            symbols.intern(crate::kb::occurrence::MACRO_EXPAND_PASS_NAME),
+        );
+        let simp_pass = PassId::from_symbol(symbols.intern("anthill.kb.passes.simp"));
+        let written = symbols.intern("written");
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 1);
+
+        let source = NodeOccurrence::new_expr(
+            Expr::Apply {
+                functor: written,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            None,
+        );
+        let lowered = |by| {
+            NodeOccurrence::synthesized_expr(Expr::Bottom, Rc::clone(&source), by, None)
+                .surface_call_name(macro_pass)
+        };
+
+        assert_eq!(
+            lowered(macro_pass),
+            Some(written),
+            "a macro-expanded call must report the name that was written",
+        );
+        assert_eq!(
+            lowered(simp_pass),
+            None,
+            "a typer lowering is not a macro expansion and names nothing the author wrote",
+        );
+    }
+
+    /// WI-20260820-5R2XT — a REBUILD keeps the rebuilt node's OWN span, not its `from`'s.
+    ///
+    /// Driven at the unit level because nothing in the fixture corpus reaches it: the drift
+    /// needs a `[simp]` reassembly or a De Bruijn open of a node whose span and `from`'s
+    /// have been made to differ, and `reparented_from` is the only constructor that can
+    /// make them differ. Found by review. The CONTROL is `synthesized_inherits_span`
+    /// below: `synthesized_expr` still copies `from`'s span, which is what every other
+    /// construction path relies on — this is a change to `rebuilt_expr` alone.
+    #[test]
+    fn a_rebuild_keeps_its_own_span_not_its_origins() {
+        let mut symbols = SymbolTable::new();
+        let pass = PassId::from_symbol(symbols.intern("anthill.kb.passes.test_pass"));
+        let template_span = SourceSpan::new(SourceId::from_raw(0), 100, 200);
+        let anchor_span = SourceSpan::new(SourceId::from_raw(0), 140, 150);
+        let template = NodeOccurrence::new_expr(Expr::Bottom, template_span, None);
+
+        // A node located at the ANCHOR but an expansion OF the template — the shape
+        // `try_expand_macro` produces.
+        let spliced = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), anchor_span, None)
+            .reparented_from(Rc::clone(&template), pass);
+        assert_eq!(
+            spliced.span, anchor_span,
+            "re-parenting must not move the node's location",
+        );
+
+        let rebuilt = spliced.rebuilt_expr(Expr::Const(Literal::Int(2)));
+        assert_eq!(
+            rebuilt.span, anchor_span,
+            "a rebuild took its span from `from` ({template_span:?}), so the spliced node's \
+             location drifted onto its template",
+        );
+        match &rebuilt.kind {
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { from, .. },
+                ..
+            } => assert!(
+                Rc::ptr_eq(from, &template),
+                "a rebuild must keep the provenance it was re-parented onto",
+            ),
+            other => panic!("expected a Synthesized Expr, got {other:?}"),
         }
     }
 

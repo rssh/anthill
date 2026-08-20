@@ -1326,3 +1326,6 @@ mod wi873_dispatch_rewrite_completeness_test;
 
 #[path = "include/wi_33h3p_dot_call_receiver_span_test.rs"]
 mod wi_33h3p_dot_call_receiver_span_test;
+
+#[path = "include/wi_5r2xt_macro_spliced_call_name_test.rs"]
+mod wi_5r2xt_macro_spliced_call_name_test;

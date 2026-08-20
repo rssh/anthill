@@ -6731,10 +6731,19 @@ end
         .unwrap_or_else(|| panic!("no OperationReturn TypeMismatch in {errors:?}"));
     match return_err {
         TypeError::TypeMismatch {
-            context: TypeErrorContext::OperationReturn { op_name },
+            context: TypeErrorContext::OperationReturn { op_name, surface },
             ..
         } => {
             assert_eq!(kb.local_name_of(*op_name), "greet");
+            // WI-20260820-5R2XT: `greet` is an ORDINARY operation — nothing lowered it —
+            // so there is no surface name beside the callee and the rendering must stay a
+            // bare `greet.return`. This is the negative half of that ticket: the field is
+            // set only where a macro really did splice a call the author never wrote.
+            assert!(
+                surface.is_none(),
+                "an un-lowered call must carry no surface name, got {:?}",
+                surface.map(|s| kb.local_name_of(s).to_string()),
+            );
         }
         _ => unreachable!(),
     }

@@ -55,7 +55,7 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 
 use super::load::meta_has_flag;
-use super::node_occurrence::{self, Expr, MatchBranch, NodeOccurrence};
+use super::node_occurrence::{self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin};
 use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Term, TermId, VarId};
@@ -1119,7 +1119,37 @@ fn try_expand_macro(
     };
     match outcome {
         // The body returned a spliceable occurrence — the rewrite result.
-        Ok(Value::Node(result)) => Ok(Some(result)),
+        //
+        // WI-20260820-5R2XT: RE-PARENTED onto the template, so the provenance chain
+        // reaches the redex. A macro BUILDS its result and therefore chooses that
+        // result's `from` itself — out of the occurrences it was handed, which are the
+        // redex's ARGUMENTS. So the chain ended one level below the call: measured on
+        // `p.join(q, λ)`, the spliced `join_run` chained to `VarRef(p)` while this
+        // `template` chained `conjoin_of` → `join` → `.join`. Splicing them here is
+        // macro-agnostic — no macro has to know it should do this, and none can forget.
+        //
+        // Only a node the macro BUILT is re-parented — one stamped `macro_expand_pass`,
+        // which is what `make_apply` and `splice_query_runner` write. Its own `by` is then
+        // kept, because only the `from` was ever wrong.
+        //
+        // The gate is NOT merely "is it `Synthesized`" (the first cut, corrected in
+        // review). A macro that hands an argument straight back is returning an occurrence
+        // it did not build — and that argument is very often ALREADY `Synthesized`, since
+        // the `[simp]` engine rewrites children before parents. Re-parenting it would copy
+        // it into a fresh `Rc` that claims to be an expansion of the template CONTAINING
+        // it, and would drop `resolved_type_args` / `lowered_receiver` — and `None` there
+        // is not "unknown" but "no dot was ever typed here", a distinction those writes are
+        // unconditional in order to keep.
+        Ok(Value::Node(result)) => {
+            let macro_pass = crate::kb::occurrence::macro_expand_pass(kb);
+            Ok(Some(match &result.kind {
+                NodeKind::Expr {
+                    origin: OccurrenceOrigin::Synthesized { by, .. },
+                    ..
+                } if *by == macro_pass => result.reparented_from(Rc::clone(template), macro_pass),
+                _ => result,
+            }))
+        }
         // A macro's declared return is `NodeOccurrence`, so a non-`Node` value is a
         // type/evaluator invariant break — loud in debug, decline in release.
         Ok(other) => {
