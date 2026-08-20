@@ -2626,15 +2626,43 @@ private class AnthillParserImpl(
     }
 
   /** `provides Spec` (clause), `provides Spec :- goals` (conditional clause, WI-869 /
-    * 058 §3.8) or `provides Spec language X ... end` (block).
-    * Disambiguated by checking for the `language` keyword after the spec. */
+    * 058 §3.8), `default provides Spec` (WI-862 / 058 §3.6) or `provides Spec language
+    * X ... end` (block). Disambiguated by checking for the `language` keyword after
+    * the spec.
+    *
+    * The `default` modifier is LEADING and OPTIONAL, and its optionality is what keeps
+    * `default` an ordinary identifier everywhere else — the word is not reserved, which
+    * the corpus needs (an operation parameter is called `default`). The cut sits after
+    * `provides`, not after the modifier, so a `default` that is NOT followed by
+    * `provides` backtracks out of this production with nothing consumed instead of
+    * failing the file. It reaches here at all because `default` starts no earlier
+    * alternative of [[declaration]] and matches no visibility modifier.
+    *
+    * A `default` on a `provides ... language ... end` BLOCK is REFUSED. Rustland has no
+    * such form to refuse — its grammar gives the clause and the block separate
+    * productions and only the clause takes the modifier — but scaland shares one
+    * production between them, so the exclusion has to be stated rather than inherited
+    * from the shape. The rule itself is the same: a block is a host-mapping construct,
+    * and a mark keys a provision row it has not got. */
   private def providesDecl[$: P]: P[Item] =
-    P(located(keyword("provides") ~/ typeExpr ~ providesRest)).map {
-      case ((spec, Left(conds)), span) =>
-        Item.ProvidesClauseItem(ProvidesClause(spec, conds, span))
-      case ((spec, Right((lang, items))), span) =>
+    P(located(providesPrefix ~ providesRest)).map {
+      case ((dflt, spec, Left(conds)), span) =>
+        Item.ProvidesClauseItem(ProvidesClause(spec, conds, dflt.isDefined, span))
+      case ((dflt, spec, Right((lang, items))), span) =>
+        if dflt.isDefined then
+          errors += ParseError(
+            "`default` marks a provision, not a `provides ... language ... end` block: " +
+            "the modifier keys a `DefaultProvider` row derived from the provision it " +
+            "rides, and a host-mapping block declares none", span)
         Item.ProvidesBlockItem(ProvidesBlock(spec, lang, items, span))
     }
+
+  /** `[default] provides <spec>` — the head both the standalone declaration and the
+    * IN-BLOCK clause share, so the modifier and the cut cannot drift between them
+    * (WI-857's dual lesson: one channel, one owner). Only the TAIL differs — a
+    * declaration may continue into a `language … end` block, a nested clause may not. */
+  private def providesPrefix[$: P]: P[(Option[String], TypeExpr)] =
+    P(keyword("default").!.? ~ keyword("provides") ~/ typeExpr)
 
   private def providesRest[$: P]
     : P[Either[IndexedSeq[TypeExpr], (TermSymbol, IndexedSeq[ProvidesItem])]] =
@@ -2662,8 +2690,23 @@ private class AnthillParserImpl(
       providesConstMap |
       providesProof |
       providesRule |
-      providesFact
+      providesFact |
+      providesNestedClause
     )
+
+  /** WI-862 (058 §4): a `provides Spec[…]` clause written INSIDE a binding block —
+    * the block opens the carrier's scope, so the claim is a provision of that carrier.
+    * The whole shipped `anthill-stl` needs it (21 rows over 5 files).
+    *
+    * CLAUSE ONLY, matching rustland, whose `_provides_content` admits `provides_clause`
+    * and not `provides_block`. A nested `provides X language …` therefore parses its
+    * head here, finds no arm for `language`, and fails at the block's `end` — loud,
+    * which is the same outcome rustland gives it. */
+  private def providesNestedClause[$: P]: P[ProvidesItem] =
+    P(located(providesPrefix ~ providesConditions)).map {
+      case ((dflt, spec, conds), span) =>
+        ProvidesItem.ProvidesClauseI(ProvidesClause(spec, conds, dflt.isDefined, span))
+    }
 
   private def providesArtifact[$: P]: P[ProvidesItem] =
     P(keyword("artifact") ~/ stringText).map(p => ProvidesItem.ArtifactI(p))

@@ -18,6 +18,12 @@ class ParserIntegrationTest extends munit.FunSuite:
   private val examplesDir = sys.env.getOrElse("ANTHILL_EXAMPLES",
     System.getProperty("user.dir") + "/../examples")
 
+  /** The Rust-side binding files (proposal 038). Not `stdlib/` — a binding file is
+    * per-language and lives with its host, which is why a stdlib-only parse never saw
+    * the nested `provides` clause below. */
+  private val stlDir = sys.env.getOrElse("ANTHILL_STL",
+    System.getProperty("user.dir") + "/../rustland/anthill-stl/anthill")
+
   private def readFile(path: String): String =
     val source = scala.io.Source.fromFile(path)
     try source.mkString finally source.close()
@@ -501,6 +507,45 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other => fail(s"expected Parameterized spec, got $other")
   }
 
+  test("WI-862: `default provides` marks THAT clause, and only that one") {
+    val src =
+      """sort ListOrd
+        |  default provides Ord[T = List[T = E]]
+        |  provides PartialOrd[T = List[T = E]]
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<default-provides>").toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val provides = sort.items.collect { case Item.ProvidesClauseItem(pc) => pc }
+    assertEquals(provides.length, 2)
+    assertEquals(provides.head.isDefault, true)
+    // THE CONTROL, and it is what makes the first assertion mean something: a modifier
+    // that leaked across clauses would mark both, and a parser that read `default` as
+    // an item of its own would leave the marked clause unmarked while still parsing.
+    assertEquals(provides(1).isDefault, false)
+  }
+
+  test("WI-862: `default` is a modifier in that one position and an identifier elsewhere") {
+    // PASSES EITHER WAY, AND UNREACHABLE BY CONSTRUCTION — said here rather than left to
+    // be discovered, because the arm reads like a control and is not one. Reservation is
+    // unrepresentable in this parser: `ident` is `identToken.map(intern)` with no
+    // keyword-exclusion set, and `keyword(kw)` is `identToken.filter(_ == kw)` — a
+    // filter, not a reservation — so adding `keyword("default")` to `providesDecl`
+    // cannot take the word away from an identifier position. The fixture never even
+    // reaches the new production: `operationDecl` precedes `providesDecl` in
+    // `declaration` and consumes this whole item. Kept as a standing property of the
+    // surface (the corpus does name a parameter `default`), so a FUTURE change that
+    // introduced a reserved-word set would be caught here.
+    val src =
+      """sort Cfg
+        |  operation pick(default: Int64) -> Int64 = default
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<default-ident>").toOption.get
+    val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val ops = sort.items.collect { case Item.OperationItem(o) => o }
+    assertEquals(ops.length, 1)
+    assertEquals(ops.head.params.map(p => pf.symbols.name(p.name)).toList, List("default"))
+  }
+
   test("WI-869: a `provides Spec :- goals` tail parses and its conditions are kept") {
     val src =
       """sort Pair
@@ -536,6 +581,55 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(pf.symbols.name(b.language), "anthill")
     val ruleItems = b.items.collect { case ProvidesItem.RuleI(r) => r }
     assertEquals(ruleItems.length, 1)
+  }
+
+  test("WI-862: a `provides Spec` clause INSIDE a binding block parses (the shipped stl)") {
+    // THE ACCEPTANCE, and it is a corpus assertion rather than a fixture: WI-862 retired
+    // the `fact` spelling of a provision, and the 21 rows across these five files moved
+    // to `provides` — written inside `provides <Carrier> language rust … end`, where a
+    // binding block opens the carrier's scope. scaland had no arm for that position, so
+    // MEASURED before this change: every one of these five was
+    // `Left(bool.anthill:7:13: parse error: found " PartialEq")`. A parser that cannot
+    // read the shipped binding files is not a reference parser.
+    val files = IndexedSeq("bool", "bigint", "float", "int64", "string")
+    for f <- files do
+      val src = readFile(s"$stlDir/$f.anthill")
+      val result = Parser.parse(src, s"$f.anthill")
+      assert(result.isRight,
+        s"$f.anthill must parse; got ${result.left.toOption.map(_.map(_.message).mkString("; "))}")
+    // …and the clauses are KEPT, not skipped: a `.rep` arm that matched and dropped
+    // would leave the files parsing with nothing recorded, which the assertion above
+    // cannot tell apart from success.
+    val pf = Parser.parse(readFile(s"$stlDir/bool.anthill"), "bool.anthill").toOption.get
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(n) => n }.get
+    val block = ns.items.collectFirst { case Item.ProvidesBlockItem(pb) => pb }.get
+    val nested = block.items.collect { case ProvidesItem.ProvidesClauseI(pc) => pc }
+    assertEquals(nested.length, 2)
+    assertEquals(
+      nested.map(pc => pc.spec match {
+        case TypeExpr.Parameterized(n, _) => pf.symbols.name(n.last)
+        case other                        => fail(s"expected Parameterized spec, got $other")
+      }).toList,
+      List("PartialEq", "Eq"))
+    // The control for the modifier one production over: none of these is marked.
+    assert(nested.forall(!_.isDefault), "no stl provision is marked `default`")
+  }
+
+  test("WI-862: `default` on a provides BLOCK is refused, not silently marked") {
+    // scaland shares ONE production between the clause and the block, so this exclusion
+    // has to be stated; rustland's grammar gives them separate productions and only the
+    // clause takes the modifier, so it has no such form to refuse. Driven because an
+    // untested error arm is an error arm that may not fire — and the failure direction
+    // here is a mark parsed onto a construct that declares no provision to key it.
+    val src =
+      """default provides Stack[T = Int]
+        |  language anthill
+        |  rule push(?s, ?x) = cons(head: ?x, tail: ?s)
+        |end""".stripMargin
+    val errs = Parser.parse(src, "<default-provides-block>").left.toOption
+      .getOrElse(fail("a `default` on a provides BLOCK must be refused"))
+    assert(errs.exists(_.message.contains("not a `provides ... language ... end` block")),
+      s"the refusal must name the construct it is refusing; got ${errs.map(_.message)}")
   }
 
   test("WI-152: examples/webots-modelling/lf1/safety_common.anthill parses (structured-proof example)") {

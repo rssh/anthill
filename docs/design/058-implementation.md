@@ -96,6 +96,7 @@ Tagged sequence `modinst`; WI-648 is the umbrella.
 | 8d | an omitted NAMED slot inferred INTO THE TYPE, and the ERASED one refused (§26's bound) | ✅ **WI-1094** (`wi1094_named_slot_inference_test`) — see §27 |
 | — | selection on the OP-SCOPED route (§4.5's bracket reaching an operation's own `requires`) | ✅ **WI-1091** (`wi841_call_site_selection_test::an_op_scoped_selection_decides_and_the_value_shows_it`) — see §28 |
 | deferred | named instance facts; implicit scoped selection; the general existential (WI-402); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault` | — |
+| — | **the umbrella closes** | ✅ **WI-648** — every row above Delivered, **295** tests over the 21 sequence files green (311 with `wi817`'s, which hold the acceptance program), and the `scaland` grammar residue closed with it — WI-862's `default` modifier AND the in-block `provides` clause the shipped stl needs. See §31 |
 
 **The standing lesson** (earned three times before delivery, once after): a design that moves an error — or asserts a mechanism already runs — must enumerate the consumers of the thing it moves and check each still has a site to complain from and a check that fires there. Rung 2a's flip inventory (§3) is written before implementation for exactly this reason.
 
@@ -816,3 +817,101 @@ the spec would have repeated the sin §3 indicts.
   `Rival` beside a separate one about `Other` would also satisfy — and *one refusal naming
   both* is the entire claim. It now requires a **single** error carrying both, which the
   shipped load emits.
+
+## §31 — WI-648: the umbrella closes, and what did NOT ship (DELIVERED 2026-08-20)
+
+The ticket's own second feedback set the bar: *"WI-648 stays OPEN as the umbrella and
+depends on all ten; close it when the sequence is green."* It is. All 18 dependencies
+Delivered; **295** tests across the 21 `modinst` test files pass — 311 counting
+`wi817_polyrec_requirement_test`, which is where the acceptance program lives — with the
+full workspace green at `5b7025c4`.
+
+**Each of the ticket's three SCOPE legs has a named driver, and each drives a VALUE:**
+
+| leg | delivered by | driven by |
+|---|---|---|
+| (a) **declare** a named / local instance | WI-840 (the binder, the only new grammar), WI-843 (coexistence) | `wi840_named_requires_slot_test`; `wi843::two_witnesses_for_one_carrier_coexist` |
+| (b) **select** one at a use site | WI-841 (key→slot), WI-870 (composition), WI-1091 (op-scoped) | `wi843::each_coexisting_monoid_is_selectable_to_its_own_value` — 9 and 24, one carrier, one body |
+| (c) **thread** the selection through the requirement dictionary | WI-857 (the layout), WI-861/WI-1094 (what silence gets) | `wi857_dictionary_layout_test`; `wi817::two_describers_pinned_per_site_survive_the_closure_hop` — **75**, the acceptance program the WI-825 fold-in named |
+
+The `SortedSet` driver the ticket was opened for is shipped, not a fixture:
+`stdlib/anthill/prelude/sortedset.anthill` carries `requires O: WeakOrd[T]`, the
+stdlib's one NAMED embedded requirement, driven by `wi844_sorted_set_driver_test` and
+`wi858_pair_orderings_test`.
+
+**WHAT DID NOT SHIP, and was rejected rather than deferred.** The ticket sketched two
+surfaces and neither is the delivered one — worth stating, because "the umbrella closed"
+would otherwise read as if they had:
+
+- **`SortedSet.new(cmp)` as written in the ticket's July-5 description** — a comparator
+  passed as a **value**. That reading is refused by §3.9 (a witness is not a value — sorts
+  are not terms — and a dictionary *value* may fill an anonymous slot but never a named
+  one, since a named slot is a type parameter and a value cannot determine a type). But
+  the ticket did not stand on it: its own July-23 feedback (4) replaced the sketch with
+  the **bracket** channel, `fold[Monoid = AddM](xs)`, and that is what shipped. So this is
+  the ticket self-correcting, not a request refused — the delivered surface is the one it
+  asked for in the end.
+
+  The delivered spelling is `SortedSet.empty[T = Pair[Int64, Int64], O = ByFst]()`
+  (`wi858_pair_orderings_test:441`), and it differs from the shorthand `SortedSet.new[Ord]`
+  in three ways, each of which is a rule rather than a naming accident:
+  **`empty`, not `new`** — that is the constructor `sortedset.anthill:126` declares;
+  **`WeakOrd`, not `Ord`** — WI-1109 split the ordering into three floors and the set's
+  clause is `requires O: WeakOrd[T]`, `Ord` being the strictly stronger one above it; and
+  **the key is `O`, not the spec's short name** — §5.4's two rungs, where a slot the author
+  NAMED is reached by its binder under rung (1) and *is no longer answered by its spec's
+  short name*, so one bracket cannot bind one slot twice. A `[WeakOrd = …]` key on this
+  slot is refused at load. Keying by spec short name is rung (2), and it is for the
+  **anonymous** slots — which is what `Ord.compare[Ord = ByFst](p, q)` uses.
+- **A `using` / `given`-scoped instance in a lexical region.** Rejected by §7 and by
+  §3's ruling: scope-directed selection cannot express two providers in one body, and an
+  added `import` would silently change results. Explicit per-call selection first;
+  implicit scoped selection deferred, and WI-845 amended the spec so it no longer
+  promises it.
+
+**THE SCALAND LEG.** The ticket's description said "Rust + scaland". Almost all of 058 is
+typer and dispatch machinery, which scaland does not have and by WI-151's standing ruling
+is not going to — *"scaland remains a reference parser + loader + lightweight resolver,
+not a full prove/check pipeline."* What IS scaland's job is the **grammar**, and 058 added
+**four** things to it, of which two were already ported: WI-840's named requirement binder
+(`requiresItem` / `requiresDeclItem`) and WI-869's `:- goals` tail (`providesConditions`).
+Both missing ones are WI-862's, and they share one production here so they cannot drift:
+
+- **`default provides X[…]`** — the inline mark. Measured absent: `ProvidesClause` had no
+  `isDefault` and the word reached no production.
+- **`provides Spec[…]` INSIDE a binding block** — the position WI-862's retirement made
+  load-bearing, since a `provides <Carrier> language rust … end` opens the carrier's scope
+  and is the only place a migrated `fact` row could go. **This one was found by
+  `/code-review`, not by me**, and the first cut of this section asserted the opposite —
+  *"three things … accepts every program rustland accepts"*. Measured: the 21 nested rows
+  across `rustland/anthill-stl/anthill/{bool,bigint,float,int64,string}.anthill` were a
+  parse error at every one (`bool.anthill:7:13: found " PartialEq"`). A reference parser
+  that cannot read the shipped binding files is the plainest possible falsification of
+  that sentence, and nothing in the ticket, the proposal or §29 would have surfaced it —
+  only running the corpus did.
+
+**THE ARMS, and which of them is a control.** `a provides Spec clause INSIDE a binding
+block parses (the shipped stl)` is the measurement: backed out (the alternation arm
+removed), exactly **1** test fails, with that same error. It asserts the clauses are KEPT
+as well as accepted, since a `.rep` arm that matched and dropped would parse identically.
+`default provides marks THAT clause, and only that one` measures too — without the
+modifier the fixture does not parse at all — and carries its own control in the unmarked
+sibling. `default on a provides BLOCK is refused` drives an arm rustland has no need of
+(its grammar gives the clause and the block separate productions; scaland shares one), so
+the exclusion is stated rather than inherited from the shape. **`default` is a modifier in
+that one position and an identifier elsewhere PASSES EITHER WAY, and is unreachable by
+construction** — `ident` has no keyword-exclusion set and `keyword(kw)` is a *filter*, so
+reservation is unrepresentable here, and the fixture's `operation pick(default: …)` is
+consumed by `operationDecl` before `providesDecl` is ever tried. Kept as a standing
+property of the surface, labelled, not credited.
+
+**WHAT IS DELIBERATELY NOT LOADED.** Both flags stop at the IR. `isDefault`'s consumers
+are the `one_default` check and rung 2a — dispatch machinery scaland has none of — so a KB
+row would be write-only. The nested clause is worse than useless if filed: `loadProvidesBlock`
+receives the **enclosing** scope, not the carrier's, so reusing `loadProvidesClause` there
+would assert the provision against the wrong owner, silently. The arm says so and records
+nothing; opening the carrier's scope is the port that remains, the same one `OperationMapI`
+has been waiting on. The `ProvidesItem` exhaustivity error (a build setting, from WI-1007)
+is what forced that decision to be made rather than defaulted — it named the one site.
+
+scaland green: **527** tests over three modules (1 + 23 + 503).

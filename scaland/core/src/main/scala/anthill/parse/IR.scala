@@ -667,10 +667,28 @@ case class MappingEntry(source: Name, target: String)
   *
   * WI-869 (058 §3.8): `conditions` is the `:- goals` tail, scoping the provision's
   * conditions to THAT provision instead of to the whole sort. Empty for the
-  * unconditioned form. */
+  * unconditioned form.
+  *
+  * WI-862 (058 §3.6, §4): `isDefault` is the leading `default` modifier — the inline
+  * spelling of a `DefaultProvider` row, marking this provision as the one a
+  * bracket-less dispatch takes. The carrier is deliberately NOT written: it is
+  * derived from this very provision, so a conditional provision's mark lands at the
+  * carrier the provision wrote.
+  *
+  * NOT a defaulted field, deliberately: rustland's WI-862 review recorded that a
+  * modifier which parses and marks nothing leaves a clean load behind it, so the one
+  * construction site is made to say which it is rather than inherit `false`.
+  *
+  * CARRIED, NOT ACTED ON. scaland is a reference parser + loader + lightweight
+  * resolver (WI-151's standing scope), and 058's consumers of this flag — the
+  * `one_default` load check and §3.2's rung 2a — are dispatch machinery scaland does
+  * not have. Emitting a KB row nothing reads would be a write-only channel, which is
+  * how a field drifts from its producer. So the flag stops in the IR, where it makes
+  * the parser accept every program rustland accepts, and waits for a reader. */
 case class ProvidesClause(
   spec: TypeExpr,
   conditions: IndexedSeq[TypeExpr],
+  isDefault: Boolean,
   span: Span
 )
 
@@ -699,6 +717,18 @@ enum ProvidesItem:
   // `const`. A const is not an operation, so it has no place in `operation_map`,
   // whose reader refuses a non-operation by design.
   case ConstMapI(entries: IndexedSeq[ConstMapEntry])
+  // WI-862 (058 §4): a `provides Spec[…]` CLAUSE inside a binding block. A
+  // `provides <Carrier> language rust … end` opens the CARRIER's scope, so a spec
+  // claim written there is a provision of that carrier — filed exactly as one written
+  // in `sort <Carrier> … end`. It had to be admitted: the `fact` spelling of a
+  // provision retired, and without this the retirement would have left a spelling to
+  // move to in a sort body and NONE in a binding block. Measured on this tree before
+  // it existed: the 21 nested rows across `anthill-stl/anthill/*.anthill` were a parse
+  // error at every one (`bool.anthill:7:13: found " PartialEq"`).
+  //
+  // A nested BLOCK is deliberately not admitted, matching rustland, whose
+  // `_provides_content` lists `provides_clause` alone.
+  case ProvidesClauseI(clause: ProvidesClause)
 
 case class CarrierBinding(anthillParam: TermSymbol, hostType: TermId)
 case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: TermId)

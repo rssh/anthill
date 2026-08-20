@@ -286,9 +286,15 @@ end
 fact DefaultProvider(spec: Ord, provider: lib_b.MoneyByAmount)
 ```
 
-## 6. What does not change
+## 6. What does not change — and how this meets [library/004](library/004-partial-vs-total-equality-and-ordering.md)
 
-The `Eq`/`Ord` hierarchy and its laws (§3.7 makes "untouched" enforced); `TotalFloat` for `Map[K = Float]` — a container's key requirement is anonymous, hence a constraint, hence outside the type's identity: the newtype changes the *type*, selection changes the *witness*.
+The `Eq`/`Ord` hierarchy and its laws are untouched, and §3.7 makes "untouched" **enforced** rather than merely intended.
+
+Library proposal 004 built the `PartialEq` / `Eq` / `PartialOrd` / `Ord` split on **canonical** instances — one provider per carrier, chosen by nobody — and named this proposal as its deliberately-deferred modular sibling. The two meet cleanly, and the reason is §3.4's distinction rather than a negotiated exception:
+
+- **004's `Eq` family stays canonical, permanently.** Semantic equality dispatches from *unification*, so no call site exists at which a bracket could be written; a second `eq` supplier for one carrier is refused at load however nameable it is (§3.7). Selection never reaches the spec 004 restructured.
+- **004's `TotalFloat` newtype is not replaced by selection**, because the two answer different questions. A container's key requirement (`Map requires Eq[T = K]`) is **anonymous**, hence a constraint, hence outside the type's identity — so there is nothing there for a witness to be selected *into*. The newtype changes the **type**; selection changes the **witness**. `Map[K = Float]` is still a load error and `Map[K = TotalFloat]` still loads, unchanged by anything here.
+- **004's ordering floors are where selection does apply**, and only because they are reached by ordinary calls. An alternative order is a witness bundle over the floors ([library/007](library/007-weak-vs-strong-ordering.md)'s `WeakOrd`/`Ord` split), never one floor over shared lower ones (§3.8) — and `SortedSet`'s `requires O: WeakOrd[T]` is **named**, so the chosen order is part of the set's type and two differently-ordered sets cannot be merged (§3.4). That is the `SortedSet`-custom-`Ord` case 004 pointed at, delivered without touching 004's hierarchy.
 
 ## 7. Rejected alternatives
 

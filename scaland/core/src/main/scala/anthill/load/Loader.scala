@@ -1353,7 +1353,19 @@ object Loader:
         kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope)
-      case ProvidesItem.ArtifactI(_)
+      // WI-862 (058 §4): PARSED, and deliberately not filed — the one thing this arm
+      // must not do is call `loadProvidesClause`. That helper files the provision at
+      // `scope`, and `scope` here is the ENCLOSING namespace, not the carrier: a
+      // binding block opens the CARRIER's scope in rustland, and scaland's loader never
+      // opens one. Reusing the helper would therefore assert `provides_clause(sort_ref:
+      // <namespace>, spec: …)` — a provision filed against the wrong owner, silently.
+      // Two other things make the omission cost nothing today: the guard above returns
+      // for every language but `anthill`, and every block in the tree is `language
+      // rust`; and scaland has no reader of provisions at all. Opening the carrier's
+      // scope is the port that remains, and it is the same one `OperationMapI` below
+      // is waiting on.
+      case ProvidesItem.ProvidesClauseI(_)
+         | ProvidesItem.ArtifactI(_)
          | ProvidesItem.CarrierI(_)
          | ProvidesItem.NamespaceMapI(_)
          // WI-876: parsed so scaland can READ a binding file that uses the clause;

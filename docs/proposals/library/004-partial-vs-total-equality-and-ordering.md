@@ -6,7 +6,7 @@ Continues [051](../051-structural-vs-semantic-equality.md) (the `===` / semantic
 
 **Depends on:** [051-structural-vs-semantic-equality](../051-structural-vs-semantic-equality.md), [049-equality-and-unification](../049-equality-and-unification.md)
 **Driver / implementation:** WI-644 (this proposal is that ticket's resolution — it evolved from "drop the universal `Eq` default" to this split).
-**Related:** WI-616 (semantic-`eq` dispatch, delivered), WI-645 (interpreter Float `eq`/`ordered` violate IEEE — the concrete soundness bug this closes, its direction B), WI-648 (deferred modular/scoped instances — the `SortedSet`-custom-`Ord` sibling), WI-300 (rule-body requirement goals), [043-simp-rewrite](../043-simp-rewrite.md)
+**Related:** WI-616 (semantic-`eq` dispatch, delivered), WI-645 (interpreter Float `eq`/`ordered` violate IEEE — the concrete soundness bug this closes, its direction B), [058-modular-instances](../058-modular-instances.md) / WI-648 (the `SortedSet`-custom-`Ord` sibling — **landed**, and 058 §6 states the interaction from that side: the `Eq` family stays canonical because unification-fired dispatch has no call site to select at, `TotalFloat` is not replaced by selection because an anonymous key requirement is outside the type's identity, and the ordering floors are where selection applies), WI-300 (rule-body requirement goals), [043-simp-rewrite](../043-simp-rewrite.md)
 **Affects:** `stdlib/anthill/prelude/{eq,ordered,set,map,float,…}.anthill`, `rustland/anthill-core/src/kb/{resolve,load}.rs`, `rustland/anthill-cpp-gen/src/lib.rs`, `docs/kernel-language.md`, `scaland/.../{parse,resolve}`
 
 ## Motivation
