@@ -3,9 +3,9 @@
 - id: WI-20260820-CTD6D-an-effect-row-carried-as-a
 - created: 2026-08-20T18:22:55Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-20T18:22:55Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-08-20T18:55:24Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

@@ -1161,6 +1161,16 @@ impl SearchStream {
             // which is why `not` — a builtin — was the one shape that could not
             // see an assumption identical to itself.
             //
+            // WHAT MAKES THE FALL-THROUGH SAFE, stated because it is load-bearing and
+            // reads as incidental: a Γ HIT makes this frame a `ChoicePoint` over
+            // `gamma_cands`, so `step_naf` is never reached on their exhaustion. That is
+            // sound only because `gamma_candidates_for` filters with
+            // `views_structurally_equal` and yields `Candidate::Assumption(σ)`, which
+            // cannot fail deeper. Relax that filter to something that unifies at the head
+            // but may fail below, and a `not` goal with a Γ candidate would FAIL outright
+            // instead of falling back to NAF — a completeness loss, not merely a missed
+            // discharge.
+            //
             // Inert outside the typer bridge: `gamma` is `None` for every other
             // resolution, so the block above returns nothing and this dispatch is
             // reached with `force_delay` false — the pre-WI-567 path exactly.
