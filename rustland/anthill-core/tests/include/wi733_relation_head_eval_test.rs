@@ -314,20 +314,33 @@ end
 /// ONLY load error the fixture produces.
 ///
 /// WHAT THIS DOES NOT SAY. It is tempting to read this as "the guard stays
-/// because the carrier is lazy, unlike `head(cons(h, t))` on a `List`". MEASURED,
-/// that is false: `operation pureHead() -> Int64 = head(cons(7, nil))` is refused
-/// with the same `undeclared effect: Error[T = EmptyStream]`, and so is `head(xs)`
-/// under `if not(isEmpty(xs))`. Guard discharge IS implemented and DOES fire —
-/// `Int64.div(a, 5)` against a literal divisor loads clean while `div(a, b)` is
-/// refused — it simply never fires for `isEmpty`, on ANY carrier. WI-567 (Open)
-/// owns that gap and its acceptance names these two shapes verbatim; it had
-/// ALREADY recorded this same measurement, with the root cause I had not found:
-/// a guard discharges iff its predicate bottoms out in NATIVE SCALAR BUILTINS,
-/// and `isEmpty` is anthill-rule-defined, so refuting it needs those rules fired
-/// on the prove path — which the type-erased resolver cannot do. That is WI-502,
-/// the real wall, and WI-567 already depends on it. So this test is a
-/// relation-shaped instance of a currently-global refusal; when the discharge
-/// half lands, the `List` half starts discharging and THIS half must not.
+/// because the carrier is lazy, unlike `head(cons(h, t))` on a `List`".
+///
+/// THAT READING IS NOW THE CORRECT ONE, AND THE PARAGRAPH THAT STOOD HERE SAID
+/// THE OPPOSITE — rewritten by WI-567 (delivered 2026-08-20), which this site's
+/// own closing instruction anticipated. What it used to record, as measured
+/// fact, was that `head(cons(7, nil))` and `head(xs)` under `if not(isEmpty(xs))`
+/// were BOTH refused, that discharge "simply never fires for `isEmpty`, on ANY
+/// carrier", and that WI-502 type erasure was "the real wall". Every one of those
+/// four claims is now false, and the last was already refuted by WI-567's own
+/// 2026-08-20 re-measurement before this change. They are quoted rather than
+/// deleted because the wrong diagnosis outlived its measurement once and cost a
+/// re-derivation; anyone who reads it elsewhere should know it was retired here.
+///
+/// WHAT IS TRUE NOW. Discharge fires for `isEmpty` on a CONCRETE `List` — by
+/// literal abstract interpretation (`head(cons(7, nil))`, since WI-818 gave
+/// `List.head`/`headOption`/`splitFirst` foldable bodies) and, since WI-567, from
+/// a flow fact too (`if not(isEmpty(xs)) then List.head(xs)`). It must still NOT
+/// fire here, because on an abstract/lazy `Stream` emptiness is an EFFECTFUL
+/// observation with no static value — WI-567's LOAD-BEARING SCOPING, and the
+/// reason this test exists. So this is no longer a relation-shaped instance of a
+/// global refusal: it is now the DISCRIMINATING half, and the only thing standing
+/// between a correct fix and one that discharges too widely.
+///
+/// The Γ-fed shape is pinned separately by
+/// [`wi733_guarded_relation_head_still_does_not_discharge`] below — this test's
+/// operation has no `if`, so its Γ is EMPTY and it cannot detect over-discharge
+/// through the flow path WI-567 opened.
 ///
 /// `expect_load_errors`, not `.any()`: an earlier revision scanned with `.any`
 /// and PASSED while the stdlib itself was failing to load with seven unrelated
@@ -347,6 +360,53 @@ namespace test.wi733guard
 
   operation underDeclared() -> (name: String) effects Error =
     one_name.head
+end
+"#;
+    expect_load_errors(
+        try_load_kb_with(src),
+        &["type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
+           got undeclared effect: Error[T = EmptyStream]"],
+    );
+}
+
+/// THE SAME REFUSAL, REACHED THROUGH Γ — the control the test above cannot be.
+///
+/// WI-567 made a `not(P)` goal consult the proposal-050 flow environment Γ before
+/// negation-as-failure claims it, and made an `if` condition's `Bool.not` enter Γ
+/// in goal vocabulary. That path is CARRIER-AGNOSTIC by construction: Γ knows
+/// nothing about `List` versus `Relation`, it matches a fact against a goal
+/// structurally. So "the `List` half discharges and this half must not" needs a
+/// fixture that actually PUTS the emptiness fact in Γ — and
+/// [`wi733_head_guard_does_not_discharge_on_a_relation`] cannot, because its
+/// operation has no `if` and its Γ is empty.
+///
+/// Here the relation IS narrowed by `if not(one_name.isEmpty)`, the exact shape
+/// that discharges on a `List` (`wi567_flow_guard_discharge_test::
+/// then_branch_not_is_empty_discharges`). It must still be refused: on an
+/// abstract/lazy `Stream` the guard `isEmpty(s)` is an EFFECTFUL observation, so
+/// the Γ fact and the guard are not the same proposition and the discharge is not
+/// available — WI-567's LOAD-BEARING SCOPING, now exercised on the path that
+/// could actually violate it.
+///
+/// WHAT WOULD TURN THIS GREEN, i.e. what it detects: a `goal_form` /
+/// `refute_guard` that discharged on "Γ mentions a `not(isEmpty(..))` fact"
+/// without the per-receiver structural match, or any widening of the Γ overlay's
+/// `views_structurally_equal` filter.
+#[test]
+fn wi733_guarded_relation_head_still_does_not_discharge() {
+    let src = r#"
+namespace test.wi733gguard
+  import anthill.prelude.{String, Int64, Option, List, Bool}
+
+  sort Person
+    entity person(name: String, age: Int64)
+  end
+  fact person(name: "alice", age: 30)
+
+  rule one_name(?name) :- person(name: ?name, age: 30)
+
+  operation underDeclared() -> (name: String) effects Error =
+    if not(one_name.isEmpty) then one_name.head else (name: "none")
 end
 "#;
     expect_load_errors(

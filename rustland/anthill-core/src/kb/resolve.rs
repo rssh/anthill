@@ -1021,10 +1021,6 @@ impl SearchStream {
 
         // 4. Builtin goal — classify by functor read through TermView.
         if let Some(tag) = kb.get_builtin_view(&goal_val) {
-            // NAF needs sub-resolution context — handle it specially
-            if tag == BuiltinTag::Not {
-                return self.step_naf(kb, &goal_val, depth, delay_mode);
-            }
             // HO predicate application: replace goal with the applied term.
             // Carrier-neutral (WI-482 follow-up): `lower_ho_apply` reads the goal
             // through `TermView`, so a rule-body `ho_apply` occurrence lowers
@@ -1139,6 +1135,41 @@ impl SearchStream {
                 // match cases that DO know `neq(b, 0)` discharged above via the Γ
                 // fact; this is the symbolic fall-through.
                 force_delay = kb.value_has_open_world_ref(&goal_value, &frame_subst);
+            }
+            // NAF needs sub-resolution context — handle it specially.
+            //
+            // WI-567: dispatched HERE, *below* the Γ consult, not above it. `not`
+            // is the one builtin whose goal a Γ fact is routinely spelled as — an
+            // `if not(isEmpty(xs))` fork assumes exactly the shape a guard's
+            // `negate_goal` later asks for — and while it was dispatched first,
+            // that fact could never be reached: `step_naf` re-derives `¬P` from
+            // scratch by sub-resolving `P`, so an OPEN-WORLD `P` (`isEmpty` of a
+            // symbolic parameter) floundered and the assumption sitting in Γ,
+            // structurally identical to the goal, was never consulted. `not` now
+            // consults Γ first and on a MISS falls through to `step_naf`
+            // unchanged.
+            //
+            // WHICH BUILTINS THIS LADDER COVERS, stated because "every other
+            // builtin consults Γ first" is what a reader assumes here and it is
+            // FALSE: `HoApply`, `PushChoice` and `Cut` each return from their own
+            // blocks ABOVE the Γ consult and so never reach it. That is right for
+            // the latter two — a `cut` / `push_choice` goal is a CONTROL operator
+            // whose effect is on the choice-point stack, not a proposition an
+            // assumption could stand in for — and untested for `HoApply`, which
+            // has no Γ fixture. A NON-builtin goal is covered by a SECOND consult
+            // further down (`gamma_candidates_for` again, alongside the KB rules),
+            // which is why `not` — a builtin — was the one shape that could not
+            // see an assumption identical to itself.
+            //
+            // Inert outside the typer bridge: `gamma` is `None` for every other
+            // resolution, so the block above returns nothing and this dispatch is
+            // reached with `force_delay` false — the pre-WI-567 path exactly.
+            // `force_delay` is deliberately NOT consulted here: `step_naf` owns
+            // the same open-world floundering guard for its INNER goal (it sets
+            // `open_world_param` off `value_has_open_world_ref` too), so honouring
+            // it at this level as well would only delay twice.
+            if tag == BuiltinTag::Not {
+                return self.step_naf(kb, &goal_val, depth, delay_mode);
             }
             // WI-580 (design §3.3): abstract-interpretation fallback. A `SemEq`
             // goal whose operand is an unground, rule-less bodied op-call is

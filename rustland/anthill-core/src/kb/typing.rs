@@ -2425,7 +2425,85 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
 /// asserting would turn legal (if unprovable) source into a debug panic. `⊥` is
 /// treated the same — an elaborated-away conclusion is not a goal, and lowering
 /// it would put a `⊥` term where a proposition belongs.
+///
+/// TWO HALVES, in order. [`goal_form_carrier`] settles how the fact is CARRIED
+/// (everything above); [`goal_form_proposition`] then settles how its connectives
+/// are SPELLED, because a fact arriving from a VALUE position spells `not` as the
+/// dispatched `Bool.not` where every goal spells it `anthill.reflect.not`
+/// (WI-567). Both are needed and neither subsumes the other: WI-756's `Red` case
+/// is a carrier mismatch inside a correctly-spelled goal, WI-567's is the reverse.
 pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
+    let v = goal_form_carrier(kb, v);
+    goal_form_proposition(kb, v)
+}
+
+/// WI-567 — the PROPOSITION half of the Γ vocabulary, applied at the two doors
+/// [`goal_form`] serves and nowhere else.
+///
+/// [`goal_form_carrier`] settles how a fact is CARRIED; this settles how its
+/// connectives are SPELLED. An `if` condition is VALUE position — it is an
+/// operation-body expression and must evaluate at run time — so `if not(P)` loads
+/// as the dispatched `Bool.not` (WI-529). The consumer that later reads it as a
+/// PROPOSITION builds goal vocabulary (`negate_goal` mints `anthill.reflect.not`,
+/// the NAF primitive). Γ is matched STRUCTURALLY, so before WI-567 an
+/// `if not(isEmpty(xs))` fork deposited a fact that was structurally unequal to the
+/// very goal it was about, and `head(xs)` in the then-branch kept its
+/// `Error[EmptyStream]` — WI-567's one remaining acceptance clause. The routing
+/// table is [`KnowledgeBase::goal_position_boolean`], shared with the loader's two
+/// directions rather than re-spelled here.
+///
+/// REACH: the head, and then only through a NEGATION's operand. That bound is the
+/// point, not thrift — `not`'s argument is the one operand position guaranteed to be
+/// a proposition. Routing an ARBITRARY operand would be a category error: the `b` in
+/// a fact `eq(x, not(b))` is a boolean VALUE, and rewriting it to the NAF primitive
+/// would change what the fact says. `and` / `or` conditions are therefore left in
+/// their value spelling and simply discharge nothing (conservative — the guard stays
+/// present), which is what §6.6 leaves them as: `and` has no goal reading at all.
+fn goal_form_proposition(kb: &mut KnowledgeBase, v: Value) -> Value {
+    let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        named_arity,
+    } = v.head(kb)
+    else {
+        return v;
+    };
+    // SHAPE FIRST, NAMES SECOND: a negation is unary and positional, so this test
+    // rejects the common Γ fact (`eq(a, b)`, a match pattern, a `requires` clause)
+    // before any symbol lookup — and this runs once per fact entering Γ, i.e. per
+    // `if` / `match` arm / `let` in every operation body the typer walks.
+    // `named_arity == 0` is not just thrift: the swap rebuilds POSITIONALLY,
+    // exactly as `negate_goal`'s functor swap does, so a named-form
+    // `not(query: ..)` must keep its value spelling rather than lose the named
+    // channel into a wrong-arity goal.
+    if pos_arity != 1 || named_arity != 0 {
+        return v;
+    }
+    // No `reflect.not` (a prelude-less KB) ⇒ no goal vocabulary to route INTO, so
+    // the fact rides in its value spelling rather than be dropped.
+    let Some(not_sym) = kb.try_resolve_symbol("anthill.reflect.not") else {
+        return v;
+    };
+    // A NEGATION is the goal primitive itself (a `negate_goal` wrapper, already in
+    // goal vocabulary) or the value op that routes to it (a source `if not(..)`).
+    if f != not_sym && kb.goal_position_boolean(f, 1) != Some(not_sym) {
+        return v;
+    }
+    // Within the declared arity, so a `None` is a malformed goal rather than a case
+    // to skip — the same stance `negate_goal` takes one function below.
+    let inner = v
+        .pos_arg(kb, 0)
+        .expect("pos_arg in range during goal_form_proposition")
+        .to_value();
+    // Recurse on the operand only (`goal_form_proposition`, not `goal_form`): the
+    // carrier pass already ran over the whole fact, and re-running it would re-lower
+    // an already-lowered child.
+    let inner = goal_form_proposition(kb, inner);
+    kb.make_goal_value(not_sym, vec![inner])
+}
+
+/// The CARRIER half of [`goal_form`] — see its doc for the whole contract.
+fn goal_form_carrier(kb: &mut KnowledgeBase, v: Value) -> Value {
     match v {
         Value::Node(occ) => {
             let lowered = super::node_occurrence::try_occurrence_to_term(kb, &occ)
@@ -2442,17 +2520,17 @@ pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
             named,
         } => Value::Entity {
             functor,
-            pos: pos.iter().map(|c| goal_form(kb, c.clone())).collect(),
+            pos: pos.iter().map(|c| goal_form_carrier(kb, c.clone())).collect(),
             named: named
                 .iter()
-                .map(|(k, c)| (*k, goal_form(kb, c.clone())))
+                .map(|(k, c)| (*k, goal_form_carrier(kb, c.clone())))
                 .collect(),
         },
         Value::Tuple { pos, named } => Value::Tuple {
-            pos: pos.iter().map(|c| goal_form(kb, c.clone())).collect(),
+            pos: pos.iter().map(|c| goal_form_carrier(kb, c.clone())).collect(),
             named: named
                 .iter()
-                .map(|(k, c)| (*k, goal_form(kb, c.clone())))
+                .map(|(k, c)| (*k, goal_form_carrier(kb, c.clone())))
                 .collect(),
         },
         other => other,

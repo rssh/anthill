@@ -3799,7 +3799,14 @@ fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
 /// `add_import(<global>, …)` had, which forced the WI-476 collision blocklist.
 ///
 /// `not` → `anthill.reflect.not` keeps the boolean-`!` / negation-as-failure
-/// conflation INTACT (a deliberate, separate decision — its own ticket).
+/// conflation INTACT (a deliberate, separate decision). THAT TICKET NOW EXISTS
+/// and is WI-20260820-MH90F: `not` is the one resolver primitive filed outside
+/// `anthill.kernel` — it sits directly above `kernel.or` / `.push_choice` /
+/// `.unify` / `.cut` in this very list while having `push_choice`'s exact shape
+/// — and the ticket carries both halves, the move and the harder question of how
+/// the value and goal readings should COMPILE (proposal 052 open question 7,
+/// whose uniform `eq(op(args), true)` goal routing `not` is precisely the
+/// instance that breaks).
 /// `push_choice` (the kernel disjunction primitive that `or` lifts) is here too:
 /// it is a globally-visible language primitive, named bare from any namespace.
 /// The reflection `*Info` result sorts are here as well — a reflection vocabulary
@@ -14793,15 +14800,7 @@ impl<'a> Loader<'a> {
     /// (or when the Bool target is not loaded). `and`/`neg` need no entry — they have no
     /// resolver primitive and already route to `Bool.and` / `Numeric.neg` everywhere.
     fn redirect_op_body_boolean(&self, sym: Symbol) -> Symbol {
-        let map = |from: &str, to: &str| -> Option<Symbol> {
-            if self.kb.symbols.by_qualified_name.get(from).copied() != Some(sym) {
-                return None;
-            }
-            self.kb.symbols.by_qualified_name.get(to).copied()
-        };
-        map("anthill.reflect.not", "anthill.prelude.Bool.not")
-            .or_else(|| map("anthill.kernel.or", "anthill.prelude.Bool.or"))
-            .unwrap_or(sym)
+        self.kb.value_position_boolean(sym).unwrap_or(sym)
     }
 
     /// WI-1046 — the RULE-BODY half of WI-529's position-directed boolean routing, and
@@ -14839,14 +14838,7 @@ impl<'a> Loader<'a> {
             });
             return sym;
         }
-        let map = |from: &str, to: &str, at: usize| -> Option<Symbol> {
-            (arity == at && q(from) == Some(sym))
-                .then(|| q(to))
-                .flatten()
-        };
-        map("anthill.prelude.Bool.not", "anthill.reflect.not", 1)
-            .or_else(|| map("anthill.prelude.Bool.or", "anthill.kernel.or", 2))
-            .unwrap_or(sym)
+        self.kb.goal_position_boolean(sym, arity).unwrap_or(sym)
     }
 
     /// `remap_name_str` without the op-body boolean redirect (the resolution itself).

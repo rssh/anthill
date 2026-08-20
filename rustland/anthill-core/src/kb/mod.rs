@@ -7182,6 +7182,70 @@ impl KnowledgeBase {
         self.symbols.by_qualified_name.get(name).copied()
     }
 
+    /// THE position-directed boolean vocabulary (WI-567) — one row per operator
+    /// that has BOTH a value spelling and a goal spelling, and the only place the
+    /// correspondence is written down.
+    ///
+    /// `not` / `or` are POSITION-DIRECTED. A VALUE position — an operation body, and
+    /// so an `if` condition — means the dispatched `Bool` value op; a GOAL position
+    /// means the resolver primitive (`anthill.reflect.not` NAF, `anthill.kernel.or`
+    /// disjunction), which is the only one with resolver behaviour at all. The loader
+    /// routes source both ways at load time: [`Self::goal_position_boolean`] backs
+    /// `route_body_goal_boolean` (rule-body direction, WI-1046) and
+    /// [`Self::value_position_boolean`] backs `redirect_op_body_boolean` (op-body
+    /// direction, WI-529). Those two were INDEPENDENTLY HAND-SPELLED mirrors of each
+    /// other until WI-567 needed a third reader and made them one row set instead —
+    /// two copies of one correspondence is how the directions come to disagree.
+    ///
+    /// THE THIRD READER is Γ, which needs the same table at a LATER moment than
+    /// loading, and is why this lives on the KB rather than on the loader: a
+    /// proposal-050 flow fact enters Γ from a VALUE position (`if not(isEmpty(xs))`)
+    /// and is matched against goals built in GOAL vocabulary (a guard's
+    /// `negate_goal`), so unless the two spellings are reconciled the fact is
+    /// structurally unequal to the very goal it is *about* and discharges nothing
+    /// (`typing::goal_form`).
+    ///
+    /// `and` is absent DELIBERATELY, not overlooked: it has no goal reading to route
+    /// to (kernel-language.md §6.6 — "goal conjunction is the comma"), so the loader
+    /// REFUSES it in goal position instead of routing it, and Γ keeps a conjunctive
+    /// condition unsplit (conservative — the guard stays present).
+    const POSITION_DIRECTED_BOOLEANS: [(&'static str, &'static str, usize); 2] = [
+        // (value spelling, goal spelling, goal-position arity)
+        ("anthill.prelude.Bool.not", "anthill.reflect.not", 1),
+        ("anthill.prelude.Bool.or", "anthill.kernel.or", 2),
+    ];
+
+    /// VALUE spelling → GOAL spelling, for a reference in goal position. `None` when
+    /// `sym` is not a position-directed boolean at that arity, or when the goal
+    /// primitive is not loaded (a prelude-less KB) — the caller then keeps `sym`.
+    ///
+    /// ARITY-CHECKED, where [`Self::value_position_boolean`] is not: this direction
+    /// runs where the arity is known (a goal's argument count), and a user operation
+    /// that merely shares the name at another arity must not be rerouted.
+    pub(crate) fn goal_position_boolean(&self, sym: Symbol, arity: usize) -> Option<Symbol> {
+        let q = |name: &str| self.symbols.by_qualified_name.get(name).copied();
+        Self::POSITION_DIRECTED_BOOLEANS
+            .iter()
+            .find(|(value, _, at)| *at == arity && q(value) == Some(sym))
+            .and_then(|(_, goal, _)| q(goal))
+    }
+
+    /// GOAL spelling → VALUE spelling, for a reference in value position (an
+    /// operation / macro body). `None` when `sym` is not a position-directed boolean,
+    /// or when the `Bool` op is not loaded — the caller then keeps `sym`.
+    ///
+    /// NO ARITY CHECK, deliberately and unlike its inverse: this direction runs at
+    /// NAME RESOLUTION (`remap_name_str`), which resolves a name string before any
+    /// argument list is in hand. Widening it to take an arity would change which
+    /// references load, so the asymmetry is preserved rather than tidied away.
+    pub(crate) fn value_position_boolean(&self, sym: Symbol) -> Option<Symbol> {
+        let q = |name: &str| self.symbols.by_qualified_name.get(name).copied();
+        Self::POSITION_DIRECTED_BOOLEANS
+            .iter()
+            .find(|(_, goal, _)| q(goal) == Some(sym))
+            .and_then(|(value, _, _)| q(value))
+    }
+
     /// THE NAME LADDER AT `<global>` — what a HOST-supplied name (an extent owner's
     /// functor, a [`FactRef`](crate::kb::extent::FactRef)'s owner) denotes. The same
     /// question every other position asks, so the same function

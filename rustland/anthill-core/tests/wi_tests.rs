@@ -1335,3 +1335,6 @@ mod wi_5r2xt_macro_spliced_call_name_test;
 
 #[path = "include/wi888_equational_head_connective_test.rs"]
 mod wi888_equational_head_connective_test;
+
+#[path = "include/wi567_flow_guard_discharge_test.rs"]
+mod wi567_flow_guard_discharge_test;
