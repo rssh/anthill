@@ -4691,10 +4691,13 @@ fn duplicate_type_message(
 ///   advice would trade a working rule for a dead one. That a guarded equation fires
 ///   nowhere is a KNOWN, OWNED gap rather than a WI-888 consequence: `is_equation`
 ///   requires an empty body and every firing site gates on it
-///   (`is_directional_equation`, `is_simp_equation`), while WI-139 unindexes the head
-///   regardless. WI-292's "SIBLING GAP" records it with a fix sketch, and
+///   (`is_directional_equation`, `is_simp_equation`). WI-20260820-8RJK8 owns it (split out of
+///   WI-292's "SIBLING GAP" note, which was delivered and so had no live owner), and
 ///   docs/design/constrained-term-substrate.md §"Conditional rewrite rules" has the
-///   frame.
+///   frame. Note the gap is NOT "unindexed": indexing tracks the `[simp]` TAG alone
+///   (WI-139 keys on the head shape, not the body), so a tagged guarded equation IS in
+///   the bucket and IS reachable by `simp_equation_rids` — measured under that ticket.
+///   Every firing site rejects it on the empty-body clause instead.
 ///
 /// `subject` is `None` when the left operand names nothing (`rule ?x === ?x`), and the
 /// sentence then omits it rather than substituting something. A first cut put the

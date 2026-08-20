@@ -32,6 +32,9 @@
 //!     migration boundary at the EMPTY BODY ("the loader's existing `is_equation`
 //!     classification"), and WI-526 delivered it that way — `map.anthill:119` writes one
 //!     directly beneath its `<=>` siblings. Refusing it would be a second decision.
+//!     That such a rule fires NOWHERE is a separate, pre-existing gap owned by
+//!     WI-20260820-8RJK8; the refusal message says so, which is why it withholds the
+//!     "give it a body goal" remedy `===` gets.
 //!   * `=` in a BODY GOAL, a contract or a constraint. That is where §5.3's
 //!     test-vs-bind distinction actually holds, and it is untouched.
 //!   * the KB-side `is_equality_connective_functor`, which still answers for `eq`
