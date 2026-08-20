@@ -84,7 +84,7 @@ Tagged sequence `modinst`; WI-648 is the umbrella.
 | 3a | reader hardening (§5) | ✅ WI-842 (+ WI-837) |
 | 3b | coexistence; `UnselectedInstance` + `TieRepair`; nameability | ✅ WI-843 (+ WI-838) |
 | 4 | `SortedSet` driver; σ-read; three producers, one channel | ✅ WI-844 (+ WI-836) |
-| 5 | `kernel-language.md` amendment (proposal §8) | open — **WI-845**, last (its §8 text includes the defaults sentence, so it follows 8c; see its feedback) |
+| 5 | `kernel-language.md` amendment (proposal §8) | ✅ **WI-845** (`wi845_import_is_visibility_test`) — see §30. Landed LAST, as its feedback required: §8's text includes the defaults sentence, so it followed 8c |
 | 6 | **WI-857 settlement, extended**: one chain, one owner; the q4e reproducer; the locality rule | ✅ **WI-857** (`wi857_dictionary_layout_test`) — see §7 |
 | 7 | library: `Pair` provides `PartialEq`/`Eq` componentwise; 058's coexistence driven over `Pair` by two PROGRAM-declared orderings. An `Ord[Pair]` provision waited for **WI-876** | ✅ **WI-858** (`wi858_pair_orderings_test`) — see §9 |
 | 7a | the host mapping: `operation_map` in a binding block; per-carrier keying; `PartialOrd`/`Ord` default bodies. A structural `Ord` carrier needs only `compare` | ✅ **WI-876** (`wi876_operation_mapping_test`) — see §10. Unblocks **WI-877** (`Ord[Pair]`) |
@@ -728,3 +728,91 @@ The first two are now **channel-complete rather than channel-swapped**: `modifia
 **Counts.** 39 corpus sites migrated (`stdlib/` 18, `anthill-stl/anthill/` 21) plus 6 in the non-embedded `anthill-todo` / `anthill-cpp-gen` trees, and 57 in the wi84x–wi87x modinst fixtures; 14 namespace-level `.anthill` facts and the WI-431 op-binding instance facts in the fixtures deliberately kept. Two of the fixture edits had to be REVERTED after the suite refused them — `wi859`'s `fact PartialEq[T = Pebble, eq = pebbleEq]` and `fact Desc[T = Leaf, describe = rivalDescribe]` are namespace-level op-binding facts my block scanner misread, and the tests named for them are tests OF the `fact` spelling. Corpus deprecations: **39 → 0**, asserted with a live-channel canary in the same load, since a zero count over a dead channel reads identically. Full workspace green (29 binaries, 4837 tests).
 
 **WHAT THE REVIEW CHANGED, because four of its six findings were defects rather than tidying.** (1) `LoadWarning::format_with_source` had no `Located` arm while `LoadWarning::span()` reports the inner span THROUGH the wrapper — so the method's whole purpose, called on a shipped warning (the loader wraps every one), returned `12:5: probe.anthill:10:10: warning: …`: two locations, the leading one resolved against whatever text the caller held. `LoadError::format_at` matches `Located` first for exactly this reason. (2) `emit_default_provider_row` reached `DefaultProvider` with `resolve_symbol`, which PANICS on an unresolved name — and unlike its sibling `SortProvidesInfo` that entity is bootstrapped by no `register_prelude`, only by `stdlib/anthill/reflect/typing.anthill`. So `default provides` was the one construct that aborted the loader on a stdlib-less KB where a plain `provides` loads. Now a `LoadError`, driven with no stdlib at all. (3) The codegen arm excluded a parameterized spec but not a CONDITIONAL one, so `provides Store :- …` would have rendered the unconditional bound `trait X: Store`; the `fact` twin could carry no conditions, so WI-869's tail reaches that list for the first time. (4) `next_provides_clause_index`'s doc claimed one owner while the counter sat on the per-FILE `Loader`: a scope's clauses can come from two files — the shipped tree already splits `Float` across `stdlib/` and `anthill-stl/` — so the second file restarts at 0 and merges two clauses' condition sets. Moved to the `KnowledgeBase`. Two further findings were about this section's own honesty: the located-warning test asserted a bare `line:col` while its doc claimed a file-backed load (the probe now carries a path, so the wrapper's `path` arm is covered at all), and "four readers" was followed by three bullets — two of the four are the region pair. Back-outs re-measured after the fixes: the `Located` arm and the `try_resolve_symbol` each fail exactly one of the two new regression tests. Full workspace green (29 binaries, 4843 tests).
+
+## §30 — WI-845: the spec amendment, and the one sentence nothing pinned (DELIVERED 2026-08-20)
+
+Phase 5, and deliberately last. Proposal §3 indicted the spec for describing three
+different rules in three texts, none matching the code; this ticket makes the spec the
+fourth text and the only one that matches. What changed in `docs/kernel-language.md`:
+
+| item | where | what |
+|---|---|---|
+| (b) | §8.7, the sentence before *Instance coherence* | *"A consumer chooses which instantiation to use via `import`"* → an import governs **visibility**; the rule below is **global**, decided from what every loaded file declares, and among the providers it admits the **call** selects |
+| (a)+(c) | §8.7 *Instance coherence* | the whole paragraph replaced by proposal §8's text in six labelled clauses — one default per carrier, the nameability gate, which one a call gets, named-vs-anonymous embedded requirements, and the consequence. The retained clause *"resolved in that sort's scope and captured when its instance is constructed"* is **dropped, not reworded** — §3.4: an anonymous slot records nothing, and it is anonymous slots the clause was describing |
+| (d) | §5.2, §5.4 | §5.2 already carried the named slot and WI-1094's two readings of an omitted one; added WI-861's **withholding** — a default does not fill an omitted named slot either, with the `Descending`-reads-ascending measurement. §5.4 gained the op-level boundary: a named op-scoped slot is addressable in a bracket but rides in no value's type, so §5.2's inference stops at the sort level |
+| (e) | §5.4 | the operation-level `requires` list split in two — **value** precondition (WI-539, proved from Γ at the call, refutation-only in a rule body) vs **type** precondition (WI-448, never proved from Γ; it declares a slot dispatch fills) — citing the check that draws the line, `is_value_precondition_clause` applied per **conjunct** because one comma list may mix them (WI-862) |
+| — | §5.1 | WI-862's forward reference (*"the `kernel-language.md` statement of it arrives with the §Instance-coherence amendment (WI-845)"*) retargeted: that paragraph states the **spelling**, §8.7 states what a default means at dispatch |
+
+**THE TICKET'S OWN CENSUS HAD GONE STALE, and the review re-took it.** WI-845's July
+text justified dropping the *"captured when its instance is constructed"* clause partly
+on *"every embedded requirement in the stdlib today is anonymous (`requires Eq[T = K]`,
+map.anthill:7; `requires Eq[T]`, set.anthill:10)"*. That is no longer the population:
+`stdlib/anthill/prelude/sortedset.anthill:119` writes `requires O: WeakOrd[T]`, annotated
+in-file as *"NAMED ⇒ a parameter of the type"* — it arrived with WI-844's driver, months
+after the ticket was written. Exactly one, and the drop still stands, on the half of the
+reason that was ever load-bearing: an **anonymous** slot records nothing, and an anonymous
+slot is what the retired clause described. The replacement states the named case properly
+instead of asserting there is none. Recorded because the count, not the ruling, was what
+went stale — an inherited justification is not a measurement.
+
+**TWO CROSS-REFERENCES WERE STALE AND ARE REPAIRED IN PASSING**, both leftovers of the
+proposal's restructure: *Where the ambiguity error is raised* cited "§4.3" for
+nameability, which in `kernel-language.md` is *Primitive Types*; and that paragraph now
+opens by saying what a tie reaching it **is** — one the default rung did not arbitrate —
+since rung 2a landed between its writing and this one.
+
+**ONE SENTENCE OF THE AMENDMENT WAS DRIVEN BY NOTHING, and it is the ticket's own
+headline.** Every other clause has an owner — wi843 the coexistence gate, wi860/wi862
+the rows and `one_default`, wi861 rung 2a, wi844/wi858 the bracket, wi1094 the named
+slot. *An import governs visibility, not selection* had none, and could not have: before
+this ticket the spec asserted the opposite. `wi845_import_is_visibility_test` drives it
+over four namespaces — `base` (spec, carrier, the `requires`-bearing holder), `rival`
+and `other` (a witness each), and `use`, which imports **only** `rival`:
+
+- the bracket-less call is refused, and the refusal names its candidates by QUALIFIED
+  name — `wi845.rival.Rival, wi845.other.Other` — the second being a sort `use` has no
+  import for and could not write. The candidate set is what the program declares.
+- **the same program one word apart** — `default provides` on `other`'s provision, in the
+  namespace the caller never imports — answers **9**. Arms 1 and 2 are therefore each
+  other's back-out, with no perturbation to describe: a scoped candidate set would load
+  arm 1 clean and answer `7` in arm 2.
+- the bracket control answers `7`, so the refusal is known to be about *selection* and
+  not about a program that never ran.
+
+**WHAT THE AMENDMENT DELIBERATELY DOES NOT SAY.** `Coherent` rows and the `coherent sort`
+sugar are deferred (proposal §3.6/§4), so the permanent coherence of the `Eq` family is
+stated as what the code actually enforces — `AmbiguousEqDispatch` from
+`build_eq_dispatch_index`, whose own doc gives the reason: equality dispatches from
+unification, so that reader has no later site to complain from. Writing `Coherent` into
+the spec would have repeated the sin §3 indicts.
+
+**WHAT THE REVIEW CHANGED, and its first finding was a defect in the amendment itself.**
+`/code-review high`, post-implementation:
+
+- **THE NEW §5.2 PARAGRAPH STATED THE PRE-WI-1094 RULE**, and contradicted the paragraph
+  directly above it. It concluded *"the default rung is withheld at a named slot, and such
+  a dispatch stays the error above"* — WI-861's rule, verbatim, written five months after
+  WI-1094 narrowed it. `infer_named_slot_bindings` answers an `Unspoken` binder through
+  `resolve`, which **is** `resolve_with_rung(…, DefaultRung::Consult)`, so a construction
+  such as `SortedSet.empty[T = Widget]()` over two providers one of which is marked
+  `default` LOADS and binds that default into the value's type. `rung_for_dep`'s own doc
+  says the gate's remaining job is the **sub-goal recursion** alone — and the corrected
+  sentence is already DRIVEN, by `wi858::a_bracketless_pair_set_takes_the_prelude_ordering`,
+  whose bracket-less `SortedSet.empty[T = Pair[…]]()` renders `(1,9)(2,1)` because §3.6
+  makes `Pair`'s own provision the answer to an unbound named binder. The paragraph now
+  splits the three states the way the code does: unbound anywhere ⇒ the ladder answers in
+  full, default included, into the parameter; signature-quantified ⇒ refused before any
+  default is asked; inside a resolution tree ⇒ withheld. **This is exactly the failure
+  §3 indicts** — a spec sentence promising what the implementation does not do — and it
+  got in because the ticket's WORK list predates the mechanism it describes.
+- **"AN ERROR NAMING EVERY CANDIDATE AND THE REPAIR AVAILABLE TO IT" OVERSTATED ONE
+  ROUTE.** Measured on this ticket's own fixture: the bracket-less call raises the
+  requirement-supply mismatch, whose repair clause says *"pin the element at the call site
+  … or align the enclosing `requires` element"* and never mentions `[Desc = Rival]` —
+  which the same file's third arm proves is the working fix. The sentence now says which
+  routes offer the bracket and which do not, rather than promising it everywhere.
+- **THE HEADLINE ARM'S ASSERTION COULD HAVE BEEN SATISFIED BY TWO ERRORS.** It read
+  `errs.join("\n")` and asked for both names in the joined text, which one error about
+  `Rival` beside a separate one about `Other` would also satisfy — and *one refusal naming
+  both* is the entire claim. It now requires a **single** error carrying both, which the
+  shipped load emits.

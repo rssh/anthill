@@ -917,6 +917,9 @@ mod wi860_default_provider_relations_test;
 #[path = "include/wi861_rung2a_default_dispatch_test.rs"]
 mod wi861_rung2a_default_dispatch_test;
 
+#[path = "include/wi845_import_is_visibility_test.rs"]
+mod wi845_import_is_visibility_test;
+
 #[path = "include/wi862_default_provides_sugar_test.rs"]
 mod wi862_default_provides_sugar_test;
 

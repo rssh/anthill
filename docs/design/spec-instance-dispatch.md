@@ -437,6 +437,29 @@ If the spec declares `effects {Modify[s], Error}` (param `s`) and the impl decla
 
 ## Coherence
 
+> **SUPERSEDED — rule (B) was REJECTED, and the need it names is met a different way**
+> (proposal 058 §7, landed; `kernel-language.md` §8.7 *Instance coherence* as of WI-845).
+> Everything below this banner is the WI-210 design record and is kept for its reasoning,
+> not as a plan. What actually shipped: (C) stands as the floor — two providers of one
+> spec for one carrier still refuse — but **coexistence is now permitted when every
+> candidate can be NAMED**, and the choice is made **per call** by a bracket
+> (`fold[Monoid = AddM](xs)`), never by scope distance. Rule (B)'s *priority = scope
+> distance* is the "scope-distance ranking" 058 §7 rejects by name: it couples supply to
+> the caller's imports, it makes an added `import` silently change results, and it cannot
+> express the driving case at all — `fold[Monoid = AddM](xs)` beside `fold[Monoid =
+> MulM](ys)` needs both providers in ONE body, and at most one can be nearest. The
+> **low-priority default** §"Why (B) is the interesting rule" argues for is real and is
+> delivered without the priority table: a per-`(spec, carrier)` `DefaultProvider` relation
+> (058 §3.6 — `default provides X[…]`, or a by-reference fact), arbitrated by the
+> `one_default` load check, consulted by §3.2's rung 2a when a bracket-less dispatch faces
+> a tie. It is *fill silence, never overwrite speech* rather than *nearest wins*, so no
+> one line can flip what every linked library's bracket-less dispatch means. The
+> `project.anthill` explicit pin below is the same shape as the by-reference
+> `fact DefaultProvider(…)` — the assembler's act — and is where that idea landed.
+> One more half of (B) survived, promoted: the **specificity** secondary key floated
+> below is 058 §3.2's *primary* ranking — a strictly-more-specific provision wins
+> outright, and the default is consulted only among the candidates still tied after it.
+
 What if two sorts assert `fact WorkItemStore[State = WIS]` (same Spec, same State binding)?
 
 Three options, in increasing flexibility:
@@ -911,7 +934,7 @@ When WI-210 lands:
 - Convergence with proposal 027 effect handlers — separate proposal.
 - Convergence with WI-186 free-standing parametrics — incremental opportunity, not a hard dependency.
 - Signature inheritance for impl ops (per open question 1) — follow-up; WI-210 ships under explicit-signature assumption.
-- Coherence rule (B) (scoped priority + low-priority defaults) — planned evolution, not an "if-needed" follow-up; (C) ships v1 because no stdlib defaults exist yet. See "Coherence" §"Why (B) is the interesting rule" for the priority-table design.
+- Coherence rule (B) (scoped priority + low-priority defaults) — **not the plan any more**: 058 §7 rejected scope-distance ranking and 058 §3.6 delivered the defaults it wanted, without a priority table. See the banner at §"Coherence".
 - Variance annotations on type parameters — see "Effect compatibility" §"Out of scope (v1)". Effect polymorphism via `sort E = ?` (Stream-style) is *in* scope and works automatically via the existing WI-209 + WI-211 substitution machinery.
 - Effect subsorting / lattice (e.g. `RaiseEither[E1] ≤ RaiseEither[E1, E2]`) — out of scope; subset check uses structural set membership today.
 - Self-typed specs (where the spec uses `Self` rather than `Cell[V = State]`) — handled in principle by extracting bindings from any param; not specifically tested in v1.
@@ -920,4 +943,4 @@ When WI-210 lands:
 
 Land WI-210 as **static dispatch + coherence rule (C) + explicit impl signatures**. Defer dynamic dispatch and signature inheritance as separate WIs. Bundle phase 3 unblocks immediately.
 
-Plan to upgrade to coherence rule (B) — `(candidate, priority)` table with priority = scope distance, ties → error — once stdlib starts shipping default impls or a project signals it wants to override one. `SortProvidesInfo` already carries everything (B) needs; the upgrade is local to the typer's dispatch query. Every (C)-accepted program is also (B)-accepted, so the transition is monotonic.
+~~Plan to upgrade to coherence rule (B)~~ — **withdrawn.** Proposal 058 took the other branch: `SortProvidesInfo` did carry everything, but what it fed is a per-`(spec, carrier)` `DefaultProvider` relation and a per-call bracket rather than a scope-distance priority table. The monotonicity argument still holds of what shipped — every (C)-accepted program is accepted by 058's ladder too, since a single provider is tier 2 and unchanged. See the banner at §"Coherence".
