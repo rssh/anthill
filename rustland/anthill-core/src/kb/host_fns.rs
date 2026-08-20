@@ -111,7 +111,16 @@ pub enum HostFnImpl {
 }
 
 impl HostFn {
-    /// Invoke it, whichever half it came from.
+    /// Invoke it, whichever half it came from. Consumed only by tests today
+    /// (`#[allow(dead_code)]`, as on `EqChange` in `kb::resolve`) — kept compiled rather
+    /// than `#[cfg(test)]`-gated so a change to `HostFnImpl` or to the function signature
+    /// still breaks a plain `cargo build`. The sole caller is WI-881's
+    /// `every_host_fn_key_declares_the_arity_its_function_accepts`, which probes every
+    /// entry of the CLOSED `HOST_FNS` table; it does NOT reach the embedder registry,
+    /// whose arity stays taken on trust for the reason this type's own doc gives above.
+    /// Production dispatch goes through [`Self::register_on`] into the interpreter's
+    /// builtin map, never through here.
+    #[allow(dead_code)]
     pub(crate) fn call(
         &self,
         interp: &mut Interpreter,
