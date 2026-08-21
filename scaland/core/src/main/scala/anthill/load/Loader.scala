@@ -544,10 +544,10 @@ object Loader:
   /** Define a symbol of `kind` unless its qualified name is already
     * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
     * entity arm). Shared by operations and consts. A kernel operation such as
-    * `anthill.reflect.not` is FIRST registered as a builtin by
-    * `Prelude.registerBuiltinTags` (into the prelude's `anthill.reflect` scope); the
-    * stdlib then ALSO declares `operation not(...)` in reflect.anthill, and minting a
-    * SECOND `anthill.reflect.not` makes a bare rule-body use (`:- not(...)` in
+    * `anthill.kernel.not` is FIRST registered as a builtin by
+    * `Prelude.registerBuiltinTags` (into the prelude's `anthill.kernel` scope); the
+    * stdlib then ALSO declares `operation not(...)` in kernel.anthill, and minting a
+    * SECOND `anthill.kernel.not` makes a bare rule-body use (`:- not(...)` in
     * typing.anthill) collect both through `resolveInScope` and report `AmbiguousSymbol`
     * (WI-212).
     *
@@ -1631,7 +1631,7 @@ object Loader:
     * making their exported operations (add, sub, mul, etc.) globally visible.
     *
     * Skips the primitive type sorts (Bool/Int/Float/BigInt/String) — their
-    * operations conflict with the kernel builtins (`anthill.reflect.not`,
+    * operations conflict with the kernel builtins (`anthill.kernel.not`,
     * etc.) that Prelude.registerBuiltinTags already imports at global.
     * Mirrors rustland's `register_prelude`, which only imports explicit
     * global aliases instead of bulk-parenting every prelude sort.

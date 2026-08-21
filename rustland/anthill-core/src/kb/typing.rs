@@ -2429,7 +2429,7 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
 /// TWO HALVES, in order. [`goal_form_carrier`] settles how the fact is CARRIED
 /// (everything above); [`goal_form_proposition`] then settles how its connectives
 /// are SPELLED, because a fact arriving from a VALUE position spells `not` as the
-/// dispatched `Bool.not` where every goal spells it `anthill.reflect.not`
+/// dispatched `Bool.not` where every goal spells it `anthill.kernel.not`
 /// (WI-567). Both are needed and neither subsumes the other: WI-756's `Red` case
 /// is a carrier mismatch inside a correctly-spelled goal, WI-567's is the reverse.
 pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
@@ -2444,7 +2444,7 @@ pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
 /// connectives are SPELLED. An `if` condition is VALUE position — it is an
 /// operation-body expression and must evaluate at run time — so `if not(P)` loads
 /// as the dispatched `Bool.not` (WI-529). The consumer that later reads it as a
-/// PROPOSITION builds goal vocabulary (`negate_goal` mints `anthill.reflect.not`,
+/// PROPOSITION builds goal vocabulary (`negate_goal` mints `anthill.kernel.not`,
 /// the NAF primitive). Γ is matched STRUCTURALLY, so before WI-567 an
 /// `if not(isEmpty(xs))` fork deposited a fact that was structurally unequal to the
 /// very goal it was about, and `head(xs)` in the then-branch kept its
@@ -2479,9 +2479,9 @@ fn goal_form_proposition(kb: &mut KnowledgeBase, v: Value) -> Value {
     if pos_arity != 1 || named_arity != 0 {
         return v;
     }
-    // No `reflect.not` (a prelude-less KB) ⇒ no goal vocabulary to route INTO, so
+    // No `kernel.not` (a prelude-less KB) ⇒ no goal vocabulary to route INTO, so
     // the fact rides in its value spelling rather than be dropped.
-    let Some(not_sym) = kb.try_resolve_symbol("anthill.reflect.not") else {
+    let Some(not_sym) = kb.try_resolve_symbol("anthill.kernel.not") else {
         return v;
     };
     // A NEGATION is the goal primitive itself (a `negate_goal` wrapper, already in
@@ -2594,7 +2594,7 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 /// overlay — a `not(eq(..))` wrapper would not match the `neq` fact and could
 /// only ever flounder. Any other predicate
 /// negates by the reflect `not(..)` wrapper (resolved open-world by NAF +
-/// floundering). `None` when reflect's `not` is unavailable (a prelude-less
+/// floundering). `None` when the kernel's `not` is unavailable (a prelude-less
 /// KB) — the caller then keeps the effect rather than guess.
 fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
@@ -2630,7 +2630,7 @@ fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
             return Some(kb.make_goal_value(target, args));
         }
     }
-    kb.try_resolve_symbol("anthill.reflect.not")
+    kb.try_resolve_symbol("anthill.kernel.not")
         .map(|not_sym| kb.make_goal_value(not_sym, vec![goal.clone()]))
 }
 
@@ -55613,7 +55613,7 @@ fn check_rule_body_goal_ops(kb: &KnowledgeBase) -> Vec<TypeError> {
     // minimal KB → no recursion, harmless. `and` is not here: rule-body
     // conjunction is the comma (separate atoms), not a functor (WI-529 §C.1).
     let connectives = [
-        kb.try_resolve_symbol("anthill.reflect.not"),
+        kb.try_resolve_symbol("anthill.kernel.not"),
         kb.try_resolve_symbol("anthill.kernel.or"),
         kb.try_resolve_symbol("anthill.kernel.push_choice"),
     ];

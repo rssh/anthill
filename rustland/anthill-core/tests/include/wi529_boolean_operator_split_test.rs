@@ -7,9 +7,9 @@
 //!   * an **operation body** is value/eval context — `not`/`or`/`and` mean the
 //!     dispatched Bool VALUE ops (`Bool.not`/`Bool.or`/`Bool.and`, which have eval
 //!     builtins). This is the NEW capability: op-body `not(x)` was broken before
-//!     (it resolved to `reflect.not`, the NAF primitive, which has no eval builtin).
+//!     (it resolved to `kernel.not`, the NAF primitive, which has no eval builtin).
 //!   * a **rule body goal** is resolver context — `not(goal)` stays
-//!     negation-as-failure (`anthill.reflect.not`) and `or(g1,g2)` stays disjunction
+//!     negation-as-failure (`anthill.kernel.not`) and `or(g1,g2)` stays disjunction
 //!     (`anthill.kernel.or`), unchanged.
 //!
 //! `neg` (a new spec op, defaulted to `sub(zero-val, a)`) routes to `Numeric.neg`
@@ -18,7 +18,7 @@
 //! negative literals (`-1`, `-0.45`) lex directly and are unaffected.
 //!
 //! The eval tests below are the load-routing proof: if op-body `not(true)` still
-//! resolved to `reflect.not`, eval would error (no eval builtin) rather than yield
+//! resolved to `kernel.not`, eval would error (no eval builtin) rather than yield
 //! `false`. The resolver side (rule-body `not` = NAF, `or` = disjunction) is also
 //! covered by `push_choice_test` and the typing tests; one NAF test is repeated
 //! here to nail the position-direction contrast.
@@ -59,7 +59,7 @@ end
 "#;
 
 /// Op-body `not`/`!`/`and`/`or` resolve to the dispatched `Bool` value ops and
-/// evaluate. Reaching a Bool result at all proves the routing: `reflect.not` /
+/// evaluate. Reaching a Bool result at all proves the routing: `kernel.not` /
 /// `kernel.or` have no eval builtin, so a mis-route would error here.
 #[test]
 fn op_body_boolean_ops_eval_as_bool_values() {
@@ -114,19 +114,19 @@ fn neg_evals_via_numeric_neg() {
     assert_eq!(expect_int(negvar), -7, "neg(x) with x=7 is -7");
 }
 
-/// Regression (review finding): a namespace may BOTH `import anthill.reflect.{not}`
+/// Regression (review finding): a namespace may BOTH `import anthill.kernel.{not}`
 /// (to use NAF `not(goal)` in its rules) AND use `not(x)` in an OPERATION body. The
-/// import resolves `not` → reflect.not via a `Found` hit, which would shadow the op-body
-/// routing; the post-resolution redirect maps reflect.not → Bool.not in op-body context
+/// import resolves `not` → kernel.not via a `Found` hit, which would shadow the op-body
+/// routing; the post-resolution redirect maps kernel.not → Bool.not in op-body context
 /// regardless, so `flip()` evaluates as boolean negation while the rule's `not` stays NAF.
 #[test]
-fn op_body_not_is_bool_even_when_reflect_not_imported() {
+fn op_body_not_is_bool_even_when_kernel_not_imported() {
     let src = r#"
 namespace test.wi529.shadow
-  import anthill.reflect.{not}
+  import anthill.kernel.{not}
   import anthill.prelude.{Bool}
   fact p(1)
-  rule has_p() :- not(p(2))            -- rule-body NAF: stays reflect.not
+  rule has_p() :- not(p(2))            -- rule-body NAF: stays kernel.not
   operation flip() -> Bool = not(true) -- op-body value: must be Bool.not
 end
 "#;
@@ -136,20 +136,20 @@ end
         .expect("call flip");
     assert!(
         !expect_bool(r),
-        "op-body not(true) = false (Bool.not) even though reflect.not is imported"
+        "op-body not(true) = false (Bool.not) even though kernel.not is imported"
     );
 }
 
 /// Contrast: in a RULE BODY, `not(goal)` is still negation-as-failure
-/// (`anthill.reflect.not`), unaffected by the op-body Bool routing. `allowed(?x)`
+/// (`anthill.kernel.not`), unaffected by the op-body Bool routing. `allowed(?x)`
 /// holds for the `num` that is not `blocked` — pure NAF semantics.
 ///
 /// NOTE THE MISSING HALF, which this fixture's shape is exactly why it was missed:
 /// there is no `import anthill.prelude.Bool` here, so `not` reaches
-/// `anthill.reflect.not` through the implicit-prelude FALLBACK — and a fallback is
+/// `anthill.kernel.not` through the implicit-prelude FALLBACK — and a fallback is
 /// below scope resolution. Add that import and this test's own claim stopped being
 /// true: `not` became `Bool.not` and NAF silently went off. The op-body direction
-/// above HAS its import-shadow twin (`op_body_not_is_bool_even_when_reflect_not_imported`);
+/// above HAS its import-shadow twin (`op_body_not_is_bool_even_when_kernel_not_imported`);
 /// the rule-body direction did not get one until **WI-1046**, which routes it with the
 /// mirror redirect. That ticket's suite is `wi1046_boolean_goal_routing_test`; this
 /// test stays as the un-imported baseline the pair is measured against.

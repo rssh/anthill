@@ -726,6 +726,50 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    operations, and stream multiplicity remain under exploration in
    [Operation and relational rules sharing one symbol](../design/brainstorms/operation-rule-shared-name.md).
 
+   **The one instance the uniform routing cannot serve — `not` (WI-20260820-MH90F).** The goal-position
+   rule above is sound because a Bool operation's relational reading IS its graph: `List.contains` and the
+   relation it induces have the same extension, and the two faces differ only in how a caller consumes
+   them. `not` is the member of the boolean vocabulary where that stops being true, and it is worth
+   stating why, because it BOUNDS the replacement direction rather than merely inconveniencing it.
+
+   `anthill.prelude.Bool.not` takes a Bool VALUE and returns one. `anthill.kernel.not` takes a reified
+   GOAL (a `Term`) and is a control operator over the search: it SUCCEEDS when its goal has no solution,
+   FAILS when it has one, and DELAYS while the goal still carries an unbound variable (floundering) or
+   while its inner search only ran out of depth rather than refuting anything (WI-628). Three outcomes,
+   and failure is not the VALUE `false` — a failed goal contributes no answer at all. So routing
+   uniformly would not re-spell the goal, it would change what the goal says: `eq(Bool.not(P), true)`
+   EVALUATES `P` as a boolean expression, where the `P` in `not(empty(?x))` is a goal to be RESOLVED and
+   has no value to evaluate.
+
+   The distance is measurable in `sort Bool`'s own law block, which asserts five laws about `not`:
+   `not_true` / `not_false`, `not_not`, and both de Morgan directions. They are untagged, so nothing
+   rewrites on them today (§5.3) — but they are the DECLARED algebra of the symbol, i.e. what `Bool.not`
+   *means*, and one symbol cannot mean that and also mean NAF. Read as goals, none of them survives:
+
+   - `not_true: not(true) <=> false` (and its `not_false` twin) — NAF over a goal that succeeds FAILS,
+     and failing is not producing the value `false`. The equation has no goal-side reading at all,
+     because neither side is a value.
+   - `not_not: not(not(?a)) <=> ?a` — the equation says the two sides are interchangeable, and they are
+     not: `?a` BINDS its variables where `not(not(?a))` discards whatever the inner search found, and for
+     a non-ground `?a` the inner `not` flounders exactly where `?a` would have bound. Double negation
+     under NAF is a check with the bindings thrown away, not an identity.
+   - de Morgan — both directions need a goal `and`, and there is no `kernel.and`: goal conjunction is the
+     comma (§6.6). Two of the five are not even spellable in goal position.
+
+   **So the replacement direction is bounded, not blocked.** "An explicit form that selects the same
+   symbol's relational face" presupposes a symbol whose relational face is the wanted one. `not` has
+   none: NAF is not the graph of any function on values, so a `relation(Bool.not)` would select the
+   singleton `{false}` — correctly, and uselessly. Two readings under two symbols chosen BY POSITION
+   (WI-529 the value side, WI-1046 the goal side) is therefore not a gap in the mechanism this question
+   is looking for; it is the right answer for the case where the two readings are two different
+   FUNCTIONS. What the explicit form has to serve is the other case — one predicate, two consumptions —
+   and its scope statement should say so rather than leave `not` looking like a counter-example to it.
+
+   The third option — fold both into one operator over `Term`, with the Bool case a coercion that reifies
+   `b` as the goal `eq(b, true)` — is REJECTED. It loses the law block above, and it costs the value
+   side its lowering: an operation body must EVALUATE, and a codegen backend emits `Bool.not` as the
+   host's `!`, which it cannot do for a primitive whose meaning is an effect on the resolver's search.
+
 ## Out of scope
 
 - The `Branch` effect, `reflect(stream)`, solvers-as-handlers, the `match <solver> case` surface, and

@@ -18,7 +18,7 @@
 -- `Map[K = Float]` field type is a load error (WI-644) — is `check_use_site_requires_eq`:
 -- a parametric sort `requires Eq[param]` bound to a `NonEq` carrier is rejected.
 sort anthill.prelude.PartialEq
-  import anthill.reflect.{not}
+  import anthill.kernel.{not}
 
   sort T = ?
   operation {

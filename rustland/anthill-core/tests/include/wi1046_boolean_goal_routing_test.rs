@@ -5,7 +5,7 @@
 //! body (evaluated), but a goal form in a rule body (resolved) … **Resolution is by
 //! syntactic position**, not by a distinct glyph or operand type."*
 //!
-//! It was not. WI-529 routed ONE direction with a redirect (`reflect.not` → `Bool.not`
+//! It was not. WI-529 routed ONE direction with a redirect (`kernel.not` → `Bool.not`
 //! inside an op body) and left the rule-body direction to the implicit-prelude
 //! FALLBACK — which sits BELOW scope resolution, so any name in scope shadows it. An
 //! ordinary `import anthill.prelude.Bool` therefore repointed `not` and `|` in every
@@ -48,7 +48,7 @@
 //!
 //! `Bool.and` / `Bool.or` / `Bool.not` appear in **no** rule-body goal position across
 //! stdlib + rust bindings, + anthill-testcases, + examples and + anthill-todo. The
-//! probe's CONTROL is that in the same walk `anthill.reflect.not` appears 3–4 times and
+//! probe's CONTROL is that in the same walk `anthill.kernel.not` appears 3–4 times and
 //! `anthill.kernel.push_choice` once — so it was looking in the right places and the
 //! zero is a real zero. Nothing in the tree was relying on either behaviour.
 //!
@@ -400,7 +400,7 @@ fn a_query_pattern_discharge_does_not_refuse_its_own_hypothesis() {
 ///
 /// `Bool.not(?a, ?r)` is the WI-938 functional-relation spelling — the result rides the
 /// last argument — and it is a different call from the unary `not(goal)`. An
-/// identity-only redirect rewrote it to `anthill.reflect.not`, the arity-1 NAF builtin,
+/// identity-only redirect rewrote it to `anthill.kernel.not`, the arity-1 NAF builtin,
 /// which then SUCCEEDED VACUOUSLY: 1 solution with `?r` unbound (`?_`) and reported
 /// DEFINITE. That is a wrong answer, and worse than the 0 solutions it replaced.
 ///

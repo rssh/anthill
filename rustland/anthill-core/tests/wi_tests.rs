@@ -1347,3 +1347,6 @@ mod wi_ffpgd_answer_dedup_test;
 
 #[path = "include/wi980_rule_head_order_test.rs"]
 mod wi980_rule_head_order_test;
+
+#[path = "include/wimh90f_kernel_not_test.rs"]
+mod wimh90f_kernel_not_test;

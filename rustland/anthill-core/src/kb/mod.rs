@@ -3236,16 +3236,16 @@ impl KnowledgeBase {
             if !body_goals.is_empty() {
                 // Negate each body goal: `not(g)`, carrier-faithful (WI-518) — `g`
                 // may be a Term or an occurrence Node. Use the QUALIFIED NAF builtin
-                // symbol `anthill.reflect.not` (`syms.not`), the SAME symbol the
+                // symbol `anthill.kernel.not` (`syms.not`), the SAME symbol the
                 // shared lowerer's `negation` arm uses, so `get_builtin_view`
                 // classifies the goal as `BuiltinTag::Not` and NAF fires. A bare
                 // `intern("not")` is a DIFFERENT, unregistered symbol — `not(g)`
                 // would then resolve as an ordinary unmatched predicate (0
                 // solutions), so a VIOLATED forall would silently "hold" (the
-                // loud-over-silent rule's classic failure). Loud if reflect's `not`
+                // loud-over-silent rule's classic failure). Loud if the kernel's `not`
                 // is unavailable, mirroring the `negation` arm.
                 let not_sym = syms.not.ok_or(execute::LowerError::NotYetImplemented(
-                    "forall body negation without loaded anthill.reflect.not",
+                    "forall body negation without loaded anthill.kernel.not",
                 ))?;
                 for g in body_goals {
                     goals.push(self.make_goal_value(not_sym, vec![g]));
@@ -7207,7 +7207,7 @@ impl KnowledgeBase {
     ///
     /// `not` / `or` are POSITION-DIRECTED. A VALUE position — an operation body, and
     /// so an `if` condition — means the dispatched `Bool` value op; a GOAL position
-    /// means the resolver primitive (`anthill.reflect.not` NAF, `anthill.kernel.or`
+    /// means the resolver primitive (`anthill.kernel.not` NAF, `anthill.kernel.or`
     /// disjunction), which is the only one with resolver behaviour at all. The loader
     /// routes source both ways at load time: [`Self::goal_position_boolean`] backs
     /// `route_body_goal_boolean` (rule-body direction, WI-1046) and
@@ -7230,7 +7230,7 @@ impl KnowledgeBase {
     /// condition unsplit (conservative — the guard stays present).
     const POSITION_DIRECTED_BOOLEANS: [(&'static str, &'static str, usize); 2] = [
         // (value spelling, goal spelling, goal-position arity)
-        ("anthill.prelude.Bool.not", "anthill.reflect.not", 1),
+        ("anthill.prelude.Bool.not", "anthill.kernel.not", 1),
         ("anthill.prelude.Bool.or", "anthill.kernel.or", 2),
     ];
 
@@ -8568,7 +8568,7 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.qualified_name", BuiltinTag::QualifiedName);
         self.register_builtin_tag("anthill.reflect.short_name", BuiltinTag::ShortName);
         self.register_builtin_tag("anthill.reflect.lookup_symbol", BuiltinTag::LookupSymbol);
-        self.register_builtin_tag("anthill.reflect.not", BuiltinTag::Not);
+        self.register_builtin_tag("anthill.kernel.not", BuiltinTag::Not);
         self.register_builtin_tag(
             "anthill.reflect.typing.is_entity_of",
             BuiltinTag::IsEntityOf,

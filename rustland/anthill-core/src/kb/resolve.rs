@@ -143,7 +143,7 @@ pub enum BuiltinTag {
     /// the carrier a provision's dictionary DISPATCHES AT, as a type term. See
     /// [`SearchStream::builtin_dispatch_carrier`].
     DispatchCarrier,
-    /// `anthill.reflect.not(goal)` — negation-as-failure.
+    /// `anthill.kernel.not(goal)` — negation-as-failure.
     Not,
     /// `anthill.reflect.resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
     /// extract a named arg value from a ParameterizedType term by parameter name.
@@ -9779,7 +9779,7 @@ mod tests {
         // consults the sub-stream's `truncated` flag (WI-616 substrate) and folds
         // truncation into the floundered/undecided branch.
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
         let loop_sym = kb.intern("loop");
@@ -9884,7 +9884,7 @@ mod tests {
         // refutation. Now `self.truncated |= v.truncated` folds it up and
         // `drain_all` surfaces it.
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let sort = ClauseKind::Rule;
         let domain = kb.intern("test");
         let loop_sym = kb.intern("loop");
@@ -12752,7 +12752,7 @@ mod tests {
     fn not_succeeds_when_goal_fails() {
         // not(p(a)) with no p(a) fact → succeeds
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
@@ -12780,7 +12780,7 @@ mod tests {
     fn not_fails_when_goal_succeeds() {
         // not(p(a)) with p(a) fact → fails (no solutions)
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
@@ -12815,7 +12815,7 @@ mod tests {
     fn not_delays_on_unbound_var() {
         // not(p(?x)) with ?x unbound → residualizes
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -12845,7 +12845,7 @@ mod tests {
         // Goals: [not(p(?x)), f(?x)] where f(a) exists and p(a) does not.
         // not(p(?x)) delays initially, f(?x) binds ?x=a, then not(p(a)) succeeds.
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -12909,7 +12909,7 @@ mod tests {
         // `f(?x)` binds `?x = a`, then `not(not(p(a)))` decides DEFINITELY (p(a)
         // holds ⇒ not(p(a)) fails ⇒ not(not(p(a))) succeeds).
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let f_sym = kb.intern("f");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
@@ -12976,7 +12976,7 @@ mod tests {
         // not(r()) behind the tail, so `s(a)` is attempted, fails, and the whole
         // conjunction correctly has NO solution.
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let r_sym = kb.intern("r");
         let s_sym = kb.intern("s");
@@ -13040,7 +13040,7 @@ mod tests {
         // read as ground and DECIDE: p(a) holds ⇒ not(p(a)) fails ⇒ not(not(p(a)))
         // succeeds, a single definite solution.
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let p_sym = kb.intern("p");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
         let sort = ClauseKind::Fact;
@@ -13083,7 +13083,7 @@ mod tests {
         // limit and returns ZERO solutions (verdict-dishonest — an UNDECIDED
         // conjunction read as refuted).
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let nonvar_sym = kb.resolve_symbol("anthill.reflect.nonvar");
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
@@ -13151,7 +13151,7 @@ mod tests {
         // asserted a DEFINITE success, i.e. the very decide-from-incomplete-search
         // bug: it read the truncated empty stream as "r(a) is refuted".)
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let r_sym = kb.intern("r");
         let a = kb.alloc(Term::Const(Literal::String("a".into())));
 
@@ -13221,7 +13221,7 @@ mod tests {
         // Facts: thing(a), thing(b), dangerous(b)
         // Expected: only ?x=a
         let mut kb = kb_with_prelude();
-        let not_sym = kb.resolve_symbol("anthill.reflect.not");
+        let not_sym = kb.resolve_symbol("anthill.kernel.not");
         let thing_sym = kb.intern("thing");
         let dangerous_sym = kb.intern("dangerous");
         let safe_sym = kb.intern("safe");

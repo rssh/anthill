@@ -91,7 +91,7 @@ fn forall_single_atom_body_loads() {
 /// absent), so the load is rejected with a labeled ConstraintViolated error.
 ///
 /// Regression for WI-513: the forall→`no … not(body)` transform must build the
-/// `not(body)` goal with the registered NAF builtin symbol `anthill.reflect.not`,
+/// `not(body)` goal with the registered NAF builtin symbol `anthill.kernel.not`,
 /// not a bare `intern("not")`. With the wrong symbol NAF never fires, the body
 /// negation matches nothing, every forall reports "holds", and a violated forall
 /// loads silently — the exact silent-skip the loud-error principle forbids. The

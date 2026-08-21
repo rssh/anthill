@@ -251,7 +251,7 @@ impl LogicalQuerySymbols {
             body: kb.intern("body"),
 
             is_entity_of: r(kb, "anthill.reflect.typing.is_entity_of"),
-            not: r(kb, "anthill.reflect.not"),
+            not: r(kb, "anthill.kernel.not"),
             or: r(kb, "anthill.kernel.or"),
         }
     }
@@ -928,7 +928,7 @@ impl KnowledgeBase {
                 })?;
             let inner_goals = self.lower_query_with(&inner, syms)?;
             let not_sym = syms.not.ok_or(LowerError::NotYetImplemented(
-                "negation without loaded anthill.reflect.not",
+                "negation without loaded anthill.kernel.not",
             ))?;
             let arg = self.coerce_to_single_goal_value(
                 inner_goals,

@@ -20,7 +20,7 @@
 //!     operation-body VALUE expression, so `if not(..)` loads as the dispatched
 //!     `anthill.prelude.Bool.not` (WI-529's `redirect_op_body_boolean` — the one
 //!     routing event in a whole stdlib load). The consumer builds GOAL
-//!     vocabulary: `refute_guard` → `negate_goal` mints `anthill.reflect.not`.
+//!     vocabulary: `refute_guard` → `negate_goal` mints `anthill.kernel.not`.
 //!     Γ is matched STRUCTURALLY, so the fact was unequal to the very goal it
 //!     was about. `typing::goal_form` now routes the fact's connective through
 //!     `KnowledgeBase::goal_position_boolean` — the loader's own table, shared
@@ -108,7 +108,7 @@ fn assert_effect_refused(errs: &[String], what: &str) {
 fn then_branch_not_is_empty_discharges() {
     // THE TICKET'S OWN CLAUSE (2), verbatim: `head` inside `if not(isEmpty(l))`
     // types PURE. Γ(then) carries the condition, whose `Bool.not` head is routed
-    // to the goal `reflect.not` on the way in (defect 2); the guard's negation is
+    // to the goal `kernel.not` on the way in (defect 2); the guard's negation is
     // the same goal, and the Γ overlay is now consulted for it before NAF can
     // flounder (defect 1). Needs BOTH fixes.
     let src = caller(
@@ -126,7 +126,7 @@ fn then_branch_not_is_empty_discharges() {
 #[test]
 fn else_branch_is_empty_discharges() {
     // The other polarity: the ELSE arm of `if isEmpty(xs)`. Here Γ's fact is
-    // minted by `negate_goal` and so is ALREADY `reflect.not(isEmpty(xs))` —
+    // minted by `negate_goal` and so is ALREADY `kernel.not(isEmpty(xs))` —
     // defect 2 never applied. It was defect 1 alone that refused it, which is
     // why this arm and the one above measure different halves of the fix.
     let src = caller(

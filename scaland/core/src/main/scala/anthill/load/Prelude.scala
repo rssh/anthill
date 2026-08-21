@@ -25,15 +25,17 @@ object Prelude:
     *
     * `private[load]` for that test alone — nothing outside this file constructs one.
     *
-    * THREE fields, not four: the enclosing `anthill` namespace is a step on the way to
-    * the other three and no later step reads it, so it stays a local. A field with no
-    * reader is a field nothing can catch being wrong — and all three have the SAME type,
-    * so a positional slip between them would type-check.
+    * FOUR fields, not five: the enclosing `anthill` namespace is a step on the way to the
+    * other four and no later step reads it, so it stays a local. A field with no reader is
+    * a field nothing can catch being wrong — and all four have the SAME type, so a
+    * positional slip between them would type-check. `kernel` joined them in
+    * WI-20260820-MH90F, which made that argument one slip stronger, so every construction
+    * and every read of this record is in this file and within a screen of the other.
     *
     * `S` is the KB's scope type (WI-1004) — the record is held outside the table that
     * issues one, so it names the table the way [[anthill.intern.SymbolDef]] does. */
   private[load] case class StdlibScopes[S](
-    prelude: S, reflect: S, reflectTyping: S)
+    prelude: S, reflect: S, reflectTyping: S, kernel: S)
 
   def register(kb: KnowledgeBase): Unit =
     val scopes = registerStdlibScopes(kb)
@@ -68,7 +70,11 @@ object Prelude:
     val preludeScope = defineNamespace("prelude", "anthill.prelude", anthillScope)
     val reflectScope = defineNamespace("reflect", "anthill.reflect", anthillScope)
     val typingScope = defineNamespace("typing", "anthill.reflect.typing", reflectScope)
-    StdlibScopes(preludeScope, reflectScope, typingScope)
+    // WI-20260820-MH90F: `not` is a RESOLVER PRIMITIVE and lives with the others, so
+    // the spine needs `anthill.kernel` before `registerBuiltinTags` can define it there.
+    // `kernel.anthill` re-opens this scope rather than minting a second one (WI-992).
+    val kernelScope = defineNamespace("kernel", "anthill.kernel", anthillScope)
+    StdlibScopes(preludeScope, reflectScope, typingScope, kernelScope)
 
   /** Define `short` in `scope`, with the qualified name DERIVED from the scope (WI-990).
     *
@@ -190,7 +196,7 @@ object Prelude:
     *
     * The scope used to be re-derived here from the qualified name, with a degrade arm for
     * the miss: `kb.intern(qualName)` registered the tag on a symbol whose whole spelling
-    * was `anthill.reflect.not`, in no scope at all — so `not(...)` would resolve to
+    * was `anthill.kernel.not`, in no scope at all — so `not(...)` would resolve to
     * nothing and the builtin would be unreachable BY NAME, with nothing said. The scope is
     * now passed in, so the miss has no arm to take.
     *
@@ -199,13 +205,14 @@ object Prelude:
   private def registerBuiltinTags(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val reflect = scopes.reflect
     val typing = scopes.reflectTyping
+    val kernel = scopes.kernel
     val builtinDefs = IndexedSeq(
       (reflect, "nonvar", BuiltinTag.NonVar),
       (reflect, "ground", BuiltinTag.Ground),
       (reflect, "qualified_name", BuiltinTag.QualifiedName),
       (reflect, "short_name", BuiltinTag.ShortName),
       (reflect, "lookup_symbol", BuiltinTag.LookupSymbol),
-      (reflect, "not", BuiltinTag.Not),
+      (kernel, "not", BuiltinTag.Not),
       (typing, "is_entity_of", BuiltinTag.IsEntityOf),
       (typing, "extract_sort_ref", BuiltinTag.ExtractSort),
       (reflect, "resolve_sort_instantiation_param", BuiltinTag.ResolveSortInstParam),
@@ -215,10 +222,26 @@ object Prelude:
     )
 
     for (scope, short, tag) <- builtinDefs do
-      kb.registerBuiltinTag(defineIn(kb, scope, short, SymbolKind.Operation), tag)
+      val sym = defineIn(kb, scope, short, SymbolKind.Operation)
+      kb.registerBuiltinTag(sym, tag)
+      // WI-20260820-MH90F: `anthill.kernel` is deliberately NOT a `<global>` parent (see
+      // `registerGlobalParents`), so a kernel builtin carries its own single-symbol
+      // import. `not` is written BARE in rule bodies (`:- not(...)` in typing.anthill)
+      // and had that reach through the `reflect` parent until it moved namespaces; this
+      // preserves exactly that one name and widens nothing. Keyed on the SCOPE, so a
+      // later kernel builtin gets the same reach without a second decision.
+      if scope == kernel then
+        kb.symbols.addImport(kb.globalScope, short, sym, ImportOrigin.Builtin)
 
   /** Add anthill.prelude and anthill.reflect as parents of <global>,
     * making their exports visible everywhere.
+    *
+    * `anthill.kernel` is NOT parented here, though `registerStdlibScopes` now defines it
+    * (WI-20260820-MH90F). Its members are reached through their OPERATORS (`<=>` → `unify`,
+    * `===` → `struct_eq`, `|` → `or`, a bare `!` → `cut`) or by qualified name; bulk-parenting the
+    * namespace would additionally put those short names into every user scope as ambiguity
+    * candidates, which is a wider change than moving one symbol. The one member spelled bare
+    * — `not` — imports itself, in `registerBuiltinTags` above.
     */
   private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val globalScope = kb.globalScope

@@ -8,7 +8,8 @@ namespace anthill.realization
   import anthill.prelude.Meta.{ProofResult}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.List.{cons}
-  import anthill.reflect.{Term, Symbol, not}
+  import anthill.reflect.{Term, Symbol}
+  import anthill.kernel.{not}
 
   -- Links host-language code to an anthill algebra spec.
   --

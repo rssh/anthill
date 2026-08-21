@@ -225,7 +225,7 @@ fn make_apply_resolves_an_implicit_tier_functor() {
     };
     match occ.as_expr().expect("make_apply returns an expression node") {
         Expr::Apply { functor, .. } => {
-            assert_eq!(interp.kb().qualified_name_of(*functor), "anthill.reflect.not")
+            assert_eq!(interp.kb().qualified_name_of(*functor), "anthill.kernel.not")
         }
         other => panic!("expected Expr::Apply, got {other:?}"),
     }

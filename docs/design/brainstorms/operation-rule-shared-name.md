@@ -315,6 +315,22 @@ For qualification, `relation(S.f)`'s macro argument must be recognized as a qual
 whereas an ordinary value receiver `x.f()` remains operation/dot dispatch. Both resolve through the normal
 name ladder appropriate to their position; neither chooses by arity or by load order.
 
+## Boundary case — `not`, and what it bounds (WI-20260820-MH90F)
+
+`not` looks like this exploration's subject — one written name, a value reading and a goal reading — and
+it is not. `anthill.prelude.Bool.not` and `anthill.kernel.not` are two different FUNCTIONS: a two-valued
+operation on a Bool VALUE, and a three-valued control operator (succeed / fail / DELAY) over a reified
+GOAL. They are already selected by position — by a rule of their own (kernel-language.md §6.6), not the
+`relation(f)` table above — and that is the correct answer for them rather than a stopgap awaiting this
+form. The full argument — including the `sort Bool` laws that are false of NAF, and why the coercion
+alternative is rejected — is in
+[proposal 052 §Open questions 7](../../proposals/052-rules-as-stream-valued-operations.md#open-questions).
+
+What it costs this exploration is one sentence of scope, item 9 below: `relation(f)` selects a symbol's
+relational FACE, which presupposes that the symbol's two readings are one extension under two
+consumptions. `not` has no such face — NAF is not the graph of any function on values — so it must be
+outside the form's domain by statement, not left as an apparent counter-example to it.
+
 ## Decisions required before promotion into proposal 052
 
 A concrete proposal must settle all of the following, with grammar, typing and evaluation rules rather
@@ -351,5 +367,11 @@ than schematic helper names:
 8. **Compatibility:** the exact change to kernel §8.6 and `check_operation_body_and_clauses`, plus driven
    controls for bodyless relational definitions, builtin lemmas, the WI-580 derived view, and the
    proposal-059 short-name-capture refusal.
+9. **Scope — which symbols the form can serve at all:** state the precondition that makes "the same
+   symbol's relational face" meaningful, namely that the operation's graph IS the relation wanted. A
+   position-directed pair whose two readings are two different functions (`not`, above) is OUT, and so is
+   anything else whose goal reading is a resolver effect rather than a predicate; the refusal belongs at
+   the name occurrence with the "no written predicate clauses" refusal of item 1, and needs its own driven
+   control (`relation(not)` refused, `relation(colouring)` accepted).
 
 Only after these decisions are closed should a condensed normative section return to proposal 052.

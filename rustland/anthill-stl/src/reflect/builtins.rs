@@ -244,7 +244,7 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
         move |i, a| subst_bindings(i, a, &s),
     )?;
 
-    register_if_present(interp, "anthill.reflect.not", reflect_not)?;
+    register_if_present(interp, "anthill.kernel.not", kernel_not)?;
 
     Ok(())
 }
@@ -1190,17 +1190,24 @@ fn subst_bindings(
     Ok(build_list_value(syms, pairs))
 }
 
-// ── reflect.not (WI-080) ────────────────────────────────────────
+// ── kernel.not (WI-080) ────────────────────────────────────────
+//
+// The one non-`anthill.reflect` binding in this file, since WI-20260820-MH90F moved
+// `not` to `anthill.kernel` where the rest of the resolver primitives live. It stays
+// HERE rather than moving with its namespace: what it binds is an eval-time face over a
+// reified `Term`, so it needs this module's `expect_term` / `require_symbol` substrate
+// and shares its registration pass — and `anthill.kernel`'s other members have no
+// eval-side binding at all for it to sit beside.
 
-/// `reflect.not(query: Term) -> Bool` — eval-time negation-as-failure.
+/// `kernel.not(query: Term) -> Bool` — eval-time negation-as-failure.
 /// Wraps `query` in a resolver `not(...)` goal and runs a fresh one-shot
 /// SLD search. If the resolver surfaces a residual (floundering: query
 /// has unbound variables), raises an error — NAF is unsound on ungrounded
 /// goals and the eval context has no outer frame to resume on.
-fn reflect_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [q] = expect_args::<1>("reflect.not", args)?;
-    let goal_tid = expect_term(q, "reflect.not")?;
-    let not_sym = require_symbol(interp, "anthill.reflect.not", "not")?;
+fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [q] = expect_args::<1>("kernel.not", args)?;
+    let goal_tid = expect_term(q, "kernel.not")?;
+    let not_sym = require_symbol(interp, "anthill.kernel.not", "not")?;
     let not_goal = interp.kb_mut().alloc(CoreTerm::Fn {
         functor: not_sym,
         pos_args: vec![goal_tid].into(),
@@ -1220,7 +1227,7 @@ fn reflect_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         None => Ok(Value::Bool(false)),
         Some((sol, _rest)) if sol.residual.is_empty() => Ok(Value::Bool(true)),
         Some(_) => Err(EvalError::Internal(
-            "reflect.not: floundering — query has unbound variables; bind them before calling"
+            "kernel.not: floundering — query has unbound variables; bind them before calling"
                 .into(),
         )),
     }
@@ -1942,7 +1949,7 @@ end
     }
 
     #[test]
-    fn reflect_not_on_satisfiable_goal_returns_false() {
+    fn kernel_not_on_satisfiable_goal_returns_false() {
         // A ground goal that has a fact → not(goal) should be Bool(false).
         let mut interp = load_stdlib_and_source(
             r#"
@@ -1972,8 +1979,8 @@ end
             named_args: vec![(entity_field, red_ref)].into(),
         });
         let result = interp
-            .call("anthill.reflect.not", &[Value::term(goal)])
-            .expect("reflect.not");
+            .call("anthill.kernel.not", &[Value::term(goal)])
+            .expect("kernel.not");
         assert!(
             matches!(result, Value::Bool(false)),
             "satisfiable goal → not should be false, got {result:?}"
@@ -1981,7 +1988,7 @@ end
     }
 
     #[test]
-    fn reflect_not_on_unsatisfiable_goal_returns_true() {
+    fn kernel_not_on_unsatisfiable_goal_returns_true() {
         // A ground goal with no matching fact → not(goal) should be Bool(true).
         let mut interp = load_stdlib_and_source(
             r#"
@@ -2010,8 +2017,8 @@ end
             named_args: vec![(entity_field, green_ref)].into(),
         });
         let result = interp
-            .call("anthill.reflect.not", &[Value::term(goal)])
-            .expect("reflect.not");
+            .call("anthill.kernel.not", &[Value::term(goal)])
+            .expect("kernel.not");
         assert!(
             matches!(result, Value::Bool(true)),
             "unsatisfiable goal → not should be true, got {result:?}"
@@ -2066,7 +2073,7 @@ end
     }
 
     #[test]
-    fn reflect_not_on_ungrounded_goal_flounders() {
+    fn kernel_not_on_ungrounded_goal_flounders() {
         // Free variable in the query → NAF is unsound → error.
         let mut interp = load_stdlib_and_source(
             r#"
@@ -2091,7 +2098,7 @@ end
             pos_args: Default::default(),
             named_args: vec![(entity_field, var_term)].into(),
         });
-        let result = interp.call("anthill.reflect.not", &[Value::term(goal)]);
+        let result = interp.call("anthill.kernel.not", &[Value::term(goal)]);
         match result {
             Err(EvalError::Internal(msg)) => {
                 assert!(

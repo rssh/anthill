@@ -10,6 +10,35 @@ namespace anthill.kernel
   -- on backtrack. Both branches inherit σ unchanged.
   operation push_choice(a: Term, b: Term) -> Bool
 
+  -- Negation-as-failure: succeeds if `query` has no solutions, fails if it has
+  -- one. DELAYS while `query` still contains an unbound variable — NAF over a
+  -- non-ground goal is unsound, so the floundering guard rotates the goal rather
+  -- than answering, and a search that merely ran out of DEPTH is undecided too,
+  -- never a refutation (WI-628).
+  --
+  -- HERE, and not in `anthill.reflect`, since WI-20260820-MH90F. It is a resolver
+  -- primitive by every test `push_choice` above passes — same shape (a reified
+  -- goal as a `Term`), same `-> Bool` naming the test outcome, and its whole
+  -- behaviour is an effect on the search rather than a value computed from its
+  -- argument. `anthill.reflect` is the term-level face — the namespace whose
+  -- members return DATA about a program, and where `unify`'s doc below sends you
+  -- for the substitution its own `-> Bool` does not return. Filing the primitive
+  -- there put the one member of this namespace outside it.
+  --
+  -- NO IMPORT NEEDED, and the header above means it: a bare `not` reaches this
+  -- declaration from every namespace through the implicit prelude (load.rs
+  -- `PRELUDE_QUALIFIED`), so application code never names `anthill.kernel` to negate.
+  -- Two `rules.anthill` files did import it and both were retired when the move
+  -- landed — an import here buys nothing and contradicts what this namespace is for.
+  --
+  -- NOT the boolean `!`. `anthill.prelude.Bool.not` is a different function: it
+  -- takes a Bool VALUE and is two-valued, where this takes a reified GOAL and is
+  -- three-valued. The two are selected BY POSITION (kernel-language.md §6.6) — a
+  -- rule-body goal means this one, an operation-body expression means `Bool.not`
+  -- — and the reason it must be by position rather than by proposal 052's uniform
+  -- `eq(op(args), true)` routing is written up in 052 §Open questions 7.
+  operation not(query: Term) -> Bool
+
   -- Structural unification (proposal 049). The object-level face of `<=>`
   -- (and `let ?v = e`): resolver-implemented, carrier-agnostic, binding via a
   -- frame effect rather than a return value (parallels Eq.eq). `-> Bool` names

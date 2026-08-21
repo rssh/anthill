@@ -2,6 +2,7 @@ package anthill.load
 
 import anthill.intern.{GLOBAL_SCOPE_NAME, ResolveResult, SymbolDef, SymbolKind}
 import anthill.kb.{BuiltinTag, KnowledgeBase}
+import anthill.term.Term
 
 import scala.compiletime.testing.typeCheckErrors
 
@@ -83,7 +84,7 @@ class PreludeScopesTest extends munit.FunSuite:
     val builtins = IndexedSeq(
       ("anthill.reflect", "nonvar"), ("anthill.reflect", "ground"),
       ("anthill.reflect", "qualified_name"), ("anthill.reflect", "short_name"),
-      ("anthill.reflect", "lookup_symbol"), ("anthill.reflect", "not"),
+      ("anthill.reflect", "lookup_symbol"), ("anthill.kernel", "not"),
       ("anthill.reflect.typing", "is_entity_of"),
       ("anthill.reflect.typing", "extract_sort_ref"),
       ("anthill.reflect", "resolve_sort_instantiation_param"),
@@ -113,4 +114,47 @@ class PreludeScopesTest extends munit.FunSuite:
       kb.symbols.resolveInScope(short, scope) match
         case ResolveResult.Found(found) => assertEquals(found, sym)
         case other => fail(s"`$short` should resolve inside `$nsPrefix`, got $other")
+  }
+
+  /** WI-20260820-MH90F — `not` moved to `anthill.kernel`, and `anthill.kernel` is
+    * deliberately NOT a `<global>` parent (bulk-parenting it would put `or` / `cut` /
+    * `unify` / `struct_eq` into every user scope as ambiguity candidates). The ONE thing
+    * keeping a bare `not` reachable after the move is the single-symbol import
+    * `registerBuiltinTags` adds for it.
+    *
+    * IT NEEDS ITS OWN CASE, because nothing else here can notice its absence. MEASURED:
+    * disable that import and the whole suite still passes. And the failure it would let
+    * through is SILENT by construction — `Loader.resolveName` ends
+    * `case ResolveResult.NotFound => kb.intern(name)`, so a lost `not` mints a fresh
+    * UNTAGGED symbol of the right spelling and negation-as-failure simply stops firing,
+    * with no diagnostic anywhere. Rustland's twin regression is caught at load by
+    * WI-1034's rule-body-goal check (its test's module header records that measurement);
+    * scaland has no typer and therefore no such backstop, so the guard has to be a test.
+    *
+    * Driven from `anthill.reflect.typing` — the scope `typing.anthill` actually writes
+    * `:- not(...)` in, and the one whose resolution PATH the move changed, from an
+    * enclosing-scope hit under `anthill.reflect` to this import. It asserts the TAG and
+    * not merely that a name resolved: an untagged same-named symbol is exactly what the
+    * silent failure produces, so a `Found` alone would keep passing through it.
+    */
+  test("WI-20260820-MH90F: a bare `not` in a stdlib scope reaches the kernel NAF builtin") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+
+    val typingScope = kb.symbols.scopeOf(
+      kb.tryResolveSymbol("anthill.reflect.typing")
+        .getOrElse(fail("`anthill.reflect.typing` should be a defined namespace")))
+
+    val notSym = kb.symbols.resolveInScope("not", typingScope) match
+      case ResolveResult.Found(sym) => sym
+      case other =>
+        fail(s"a bare `not` should resolve inside `anthill.reflect.typing`, got $other")
+
+    assertEquals(kb.qualifiedNameOf(notSym), "anthill.kernel.not")
+
+    val goal = kb.alloc(Term.Fn(notSym, IArray.empty, IArray.empty))
+    assertEquals(
+      kb.getBuiltin(goal),
+      Some(BuiltinTag.Not),
+      "the resolved `not` must carry the NAF tag — an untagged one resolves and does nothing")
   }

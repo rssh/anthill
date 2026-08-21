@@ -333,10 +333,6 @@ namespace anthill.reflect
   -- resources in scope.
   operation is_modifiable(t: Type) -> Bool
 
-  -- Negation-as-failure: succeeds if query has no solutions.
-  -- Delays if query contains unbound variables (floundering prevention).
-  operation not(query: Term) -> Bool
-
   -- Meta-level primitives: inspect a value's instantiation state. One name and
   -- one arity in both phases (WI-982).
   --

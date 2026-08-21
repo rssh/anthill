@@ -3991,15 +3991,33 @@ fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
 /// go AMBIGUOUS against a user name — the failure mode the old flat
 /// `add_import(<global>, …)` had, which forced the WI-476 collision blocklist.
 ///
-/// `not` → `anthill.reflect.not` keeps the boolean-`!` / negation-as-failure
-/// conflation INTACT (a deliberate, separate decision). THAT TICKET NOW EXISTS
-/// and is WI-20260820-MH90F: `not` is the one resolver primitive filed outside
-/// `anthill.kernel` — it sits directly above `kernel.or` / `.push_choice` /
-/// `.unify` / `.cut` in this very list while having `push_choice`'s exact shape
-/// — and the ticket carries both halves, the move and the harder question of how
-/// the value and goal readings should COMPILE (proposal 052 open question 7,
-/// whose uniform `eq(op(args), true)` goal routing `not` is precisely the
-/// instance that breaks).
+/// `not` → `anthill.kernel.not` since WI-20260820-MH90F, which moved it out of
+/// `anthill.reflect`: it was the one resolver primitive filed outside the
+/// resolver-primitive namespace, sitting in this very list directly above
+/// `kernel.or` / `.push_choice` / `.unify` / `.cut` while having `push_choice`'s
+/// exact shape. NO ALIAS was left behind, and nothing needed one: no source in the
+/// tree CALLS the qualified name — every NAF site writes the bare `not` this
+/// fallback answers, and the `import anthill.reflect.{not}` lines that
+/// existed were retargeted with the move. An alias would also have had to live in
+/// `anthill.reflect`, i.e. a SECOND symbol named `not` reachable from reflect's
+/// own rule bodies, which is precisely the ambiguity WI-212 hit.
+///
+/// The boolean-`!` / negation-as-failure split the ticket's other half asked
+/// about is NOT a conflation to be resolved away: they are two different
+/// functions (a two-valued op on a Bool VALUE vs a three-valued primitive on a
+/// reified GOAL), so they keep two symbols and are selected BY POSITION —
+/// `redirect_op_body_boolean` one way, `route_body_goal_boolean` the other. The
+/// argument, and why proposal 052's uniform `eq(op(args), true)` goal routing
+/// cannot serve `not`, is written up in 052 §Open questions 7.
+///
+/// AN ENTRY THAT NAMES NOTHING IS NOT NECESSARILY SILENT, measured while moving `not`:
+/// point this one back at the retired `anthill.reflect.not` and the STDLIB STOPS
+/// LOADING with `UndefinedRuleBodyGoal { functor: "not" }` at `anthill.reflect.typing`.
+/// The guard is WI-1034's rule-body-goal check, so what it covers is an entry the
+/// stdlib itself names in a GOAL position — `not` / `or` / `push_choice`. An entry
+/// reached only from value positions has no such backstop and a rename of one would go
+/// unremarked; check by spelling, not by assuming this list is guarded as a whole.
+///
 /// `push_choice` (the kernel disjunction primitive that `or` lifts) is here too:
 /// it is a globally-visible language primitive, named bare from any namespace.
 /// The reflection `*Info` result sorts are here as well — a reflection vocabulary
@@ -4041,13 +4059,13 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.Bool.and",
     "anthill.prelude.BigInt.to_bigint",
     "anthill.prelude.BigInt.to_int",
-    "anthill.reflect.not", // logic operator `not` / `!` (NAF; conflation deferred)
-    "anthill.kernel.or",   // logic operator `or` / `|`
+    "anthill.kernel.not", // logic operator `not` / `!` (NAF over a reified goal)
+    "anthill.kernel.or",  // logic operator `or` / `|`
     "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
     "anthill.kernel.unify", // structural-unification primitive (`<=>` / `let` lift it)
     "anthill.kernel.struct_eq", // structural identity test (`===`); proposal 051 / WI-615
     "anthill.kernel.find_dictionary", // rule-body requirement guard (`requires(X)`); WI-300
-    "anthill.kernel.cut",  // cut control primitive (`!`); proposal 033.1 / WI-568
+    "anthill.kernel.cut", // cut control primitive (`!`); proposal 033.1 / WI-568
     // Reflection result sorts — a reflection VOCABULARY queried bare (by short
     // name) from reflection infrastructure (the `anthill-stl` reflect bridge's
     // `SortQuery`, CLI reflection queries). Globally resolvable like the rest, and
@@ -14537,7 +14555,7 @@ struct Loader<'a> {
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
     // a value expression in an op body means the dispatched Bool VALUE op
     // (`Bool.not`/`Bool.or`, which have eval builtins), whereas a rule-body goal means
-    // the resolver primitive (`reflect.not` NAF / `kernel.or` disjunction, which have
+    // the resolver primitive (`kernel.not` NAF / `kernel.or` disjunction, which have
     // NO eval builtin). This flag selects the Bool target in `remap_name_str`; outside
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
@@ -15432,9 +15450,9 @@ impl<'a> Loader<'a> {
         let sym = self.remap_name_str_inner(name, span);
         // WI-529: an operation body is value/eval context, so the boolean operators
         // `not`/`or` mean the dispatched Bool VALUE ops, NEVER the resolver primitives
-        // (`reflect.not` NAF / `kernel.or` disjunction — neither has an eval builtin).
+        // (`kernel.not` NAF / `kernel.or` disjunction — neither has an eval builtin).
         // Redirect AFTER resolution so it catches the name however `not`/`or` resolved:
-        // the implicit fallback OR an explicit `import anthill.reflect.{not}` (which
+        // the implicit fallback OR an explicit `import anthill.kernel.{not}` (which
         // would otherwise shadow the routing via a `Found` hit). A user's own `not`/`or`
         // operation resolves to a different symbol and is left untouched. No-op outside
         // an op body.
@@ -15445,7 +15463,7 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-529: in op-body value context, map a resolved resolver-primitive symbol to
-    /// its dispatched Bool value-op counterpart (`reflect.not` → `Bool.not`,
+    /// its dispatched Bool value-op counterpart (`kernel.not` → `Bool.not`,
     /// `kernel.or` → `Bool.or`). Returns `sym` unchanged when it is neither primitive
     /// (or when the Bool target is not loaded). `and`/`neg` need no entry — they have no
     /// resolver primitive and already route to `Bool.and` / `Numeric.neg` everywhere.
@@ -15456,7 +15474,7 @@ impl<'a> Loader<'a> {
     /// WI-1046 — the RULE-BODY half of WI-529's position-directed boolean routing, and
     /// the mirror of [`Self::redirect_op_body_boolean`].
     ///
-    /// A goal-position `not` / `or` means the resolver primitive (`anthill.reflect.not`
+    /// A goal-position `not` / `or` means the resolver primitive (`anthill.kernel.not`
     /// NAF / `anthill.kernel.or` disjunction), never the dispatched `Bool` VALUE op —
     /// which has no resolver behaviour at all, so a rule that reaches one simply stops
     /// answering. WI-529 routed the op-body direction with a redirect and left this one
@@ -22858,7 +22876,7 @@ impl<'a> Loader<'a> {
     /// a WI-526 revisit if a migrated rule false-positives). Operates on the
     /// BUILT occurrence body (resolved functors), classifying each atom with the
     /// same `get_builtin_view` the resolver uses, so `unify` / `not` are matched
-    /// by their canonical `anthill.kernel.unify` / `anthill.reflect.not`
+    /// by their canonical `anthill.kernel.unify` / `anthill.kernel.not`
     /// symbols, not by parse-time spelling.
     fn check_negated_unify_allowedness(&mut self, body_nodes: &[Rc<NodeOccurrence>]) {
         let mut violations: Vec<(String, Span)> = Vec::new();

@@ -314,7 +314,7 @@ fn an_abstract_spec_declaring_the_family_is_not_a_carrier_override() {
     // spells it `neq` and is the row that actually stands on the filter.
     let src = r#"
 namespace wi1125.userspec
-  import anthill.reflect.{not}
+  import anthill.kernel.{not}
   import anthill.prelude.Bool
   sort MyEq
     sort T = ?

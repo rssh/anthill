@@ -185,10 +185,13 @@ implements. 049's rows are `=`→`Eq.eq` vs `<=>`→`kernel.unify`; the boolean 
 
 | operator | value expression (dispatched op) | rule-body goal (resolver primitive) |
 |----------|----------------------------------|-------------------------------------|
-| `!` / `not` | `Bool.not` | `anthill.reflect.not` (NAF over a `Term`) |
+| `!` / `not` | `Bool.not` | `anthill.kernel.not` (NAF over a `Term`) |
 | `\|` / `or` | `Bool.or` | `anthill.kernel.or` (disjunction; `or(?a,?b) :- push_choice(?a,?b)`) |
 | `&` / `and` | `Bool.and` | conjunction — **the comma**; there is no `kernel.and` primitive |
 | prefix `-` | `Numeric.neg` | — (no goal sense) |
+
+(`not` lived in `anthill.reflect` until WI-20260820-MH90F moved it to `anthill.kernel`, where the
+rest of the resolver-primitive column already was; the spellings above are the current ones.)
 
 **Correction (the dispatched ops already exist).** Contrary to this section's first draft, the
 value-side ops are *already implemented*: `bool.anthill` declares `sort anthill.prelude.Bool`
@@ -198,13 +201,13 @@ a full Boolean-algebra rule set (`not_true`, `not_false`,
 `bool_or`, `eval/builtins.rs:50-52`). So there is **no `Bool.not` home to invent** — the home
 is `anthill.prelude.Bool`, and most of WI-529 is **resolution routing**, not new stdlib.
 
-**What the routing is today** (`load.rs` implicit-prelude fallback): `not` → `reflect.not`
+**What the routing is today** (`load.rs` implicit-prelude fallback): `not` → `kernel.not`
 (line 846, conflation deferred), `or` → `kernel.or` (line 847), `and` → *no entry*, prefix
 `-`/`neg` → *nothing*. So `a | b` on two `Bool` values currently hits the disjunction
 primitive, not `Bool.or` — the same NAF-vs-boolean confusion as `not`.
 
 **Decision: disambiguate by syntactic position, not by operand type or a distinct glyph.** A
-`not(arg)` / `or(a,b)` term resolves to the **resolver primitive** (`reflect.not` / `kernel.or`)
+`not(arg)` / `or(a,b)` term resolves to the **resolver primitive** (`kernel.not` / `kernel.or`)
 in a **body goal** position and to the **`Bool` operation** as a **value sub-expression**.
 `and` is value-only (`Bool.and`); goal conjunction stays the comma. This mirrors 049's
 *classification-driven* split (an `is_equation` rule head migrates `=`→`<=>`; a body-position
@@ -220,11 +223,11 @@ its own (`neg(?a) = sub(0, ?a)`). Add `operation neg(a: T) -> T` to `Numeric` wi
 Int64's existing `neg` becomes the carrier instance (WI-444 carrier-override). Routed via the
 implicit-Prelude fallback like the other math operators; *not* position-directed.
 
-**Build-independent of 049.** WI-529 consumes only *already-shipped* machinery (`reflect.not`,
+**Build-independent of 049.** WI-529 consumes only *already-shipped* machinery (`kernel.not`,
 `kernel.or`, `Bool.*`); it does not depend on any unbuilt 049 ticket (WI-522–528), nor they on
 it — siblings in design, orthogonal in build order. WI-529 also *sharpens* 049's "NAF
 discipline for `<=>`": once the value ops (`Bool.not`/`or`/`and`) and the goal primitives
-(`reflect.not`/`kernel.or`) are distinct, "a variable in a `<=>` under `not`" unambiguously
+(`kernel.not`/`kernel.or`) are distinct, "a variable in a `<=>` under `not`" unambiguously
 means "under NAF."
 
 **No new proposal.** 049 supplies the principle; this section (Part C already owns
@@ -237,11 +240,11 @@ position note covering `not` / `or` / `and`; plus the §"Infix and prefix operat
 **Delivered** (Rust): the op-body/resolver cut is a `Loader::in_op_body_value` flag set inside
 `convert_expr_term` (the sole, non-reentrant op-body builder — guarded by an entry
 `debug_assert`). `remap_name_str` resolves normally, then in op-body context **redirects the
-resolver primitives to their Bool value ops** (`reflect.not`→`Bool.not`, `kernel.or`→`Bool.or`)
+resolver primitives to their Bool value ops** (`kernel.not`→`Bool.not`, `kernel.or`→`Bool.or`)
 *after* resolution — so it catches `not`/`or` however they resolved: the implicit fallback OR an
-explicit `import anthill.reflect.{not}` (which resolves via a `Found` hit and would otherwise
+explicit `import anthill.kernel.{not}` (which resolves via a `Found` hit and would otherwise
 shadow the routing). A user's own `not`/`or` operation is a different symbol and is left
-untouched. The resolver-world default (`reflect.not`/`kernel.or`) is byte-for-byte unchanged
+untouched. The resolver-world default (`kernel.not`/`kernel.or`) is byte-for-byte unchanged
 outside op bodies (neq, NAF, `push_choice` disjunction all untouched).
 `Bool.and` and `Numeric.neg` were added to the general `PRELUDE_QUALIFIED` fallback (value-only;
 not position-directed). Stdlib: `Numeric.neg` op + `neg_def: neg(?a) = sub(zero-val, ?a)` in

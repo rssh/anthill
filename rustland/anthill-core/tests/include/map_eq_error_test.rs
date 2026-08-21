@@ -305,7 +305,7 @@ fn abstract_spec_redeclaring_eq_loads_clean() {
     // filter (shared `unbacked_eq_carrier`) to stay clean rather than spuriously erroring.
     let src = r#"
         namespace mapeq.userspec
-          import anthill.reflect.{not}
+          import anthill.kernel.{not}
           import anthill.prelude.Bool
           sort MyEq
             sort T = ?
