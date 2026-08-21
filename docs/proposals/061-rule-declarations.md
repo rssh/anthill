@@ -18,24 +18,68 @@ WI-980 closed the ordering by asking a question the pass cannot move — *does s
 
 > **A logical rule's head functor names a DECLARED predicate. A declaration is written once, in one file, in the scope that owns the name; a rule head is always a clause OF something and never brings a name into existence.**
 
-The declaration is a head with no body and no clauses:
+**The declaration is a rule with no body** (decided 2026-08-21; §below):
 
 ```anthill
 namespace demo
-  ⟨declaration of p — SPELLING NOT YET SETTLED, see open question 1⟩
+  rule p(?x, ?y)              -- the DECLARATION: no body, asserts nothing
 
-  rule p(1, 2)                -- a clause of it
+  fact p(1, 2)                -- a clause of it
   sort Rec
-    rule p(3, 4)              -- also a clause of it — resolution, not introduction
+    rule p(3, ?y) :- q(?y)    -- also a clause of it -- resolution, not introduction
   end
 end
 ```
 
-The declaration's **spelling is deliberately left as a placeholder** through this proposal. What it must DO is settled — bring the name into existence in pass 1, in one scope, asserting nothing — and that is what the rules below are written against. Which text carries it is open question 1, and the proposal is readable without fixing it.
+What it must DO was settled first — bring the name into existence in pass 1, in one scope, **asserting nothing** — and the rules below are written against that. The spelling follows in the next section.
 
 Nothing about resolution changes: the head runs the ordinary ladder, exactly as §WI-896 says, and contributes a clause to whatever it lands on. What changes is that there is now something to land on, put there by pass 1 like every other name — so *when* the ladder is asked stops mattering, which is the invariant WI-321 gives every other name kind.
 
 **A scope that wants its own predicate where an enclosing one resolves declares it.** That is §WI-896's own remedy, which today has no form: the only way to declare a predicate name is a body-less `operation`, and that drags in a signature and membership of the dispatch surface (059 §Definitions: "the dispatch surface of `X` is exactly the operations"). A rule declaration is the form the remedy always assumed.
+
+## The declaration's syntax: a rule with no body
+
+> **No body ⇒ DECLARES. A body ⇒ asserts.** A rule with no body declares its head's predicate and asserts nothing. `fact` is how a body-less assertion is written, and it desugars to an explicit `:- true`.
+
+| written | reads as |
+|---|---|
+| `rule p(?x, ?y)` | **DECLARES** `p` — asserts nothing, has no clauses |
+| `rule p(?x, ?y) :- G` | a **clause** of `p` |
+| `fact p("a", "b")` | an **assertion** — desugars to `rule p("a", "b") :- true` |
+| `rule lhs <=> rhs` | a **defining equation** — untouched (§5.3, WI-881) |
+
+**It makes the language uniform, and removes `rule`'s exception.** `operation f(…) -> R` declares and `= body` defines; `const N: T` declares and `= expr` defines. `rule` was the sole construct where the body-less form *asserted*, and only because §6.1's desugaring — titled *"Fact (body-less rule)"* — spent that form on `fact`. Moving one `:- true` into the desugaring gives all four constructs one reading.
+
+**It also settles the groundness question by removing it.** The old objection to any head form was that `head` means `head :- true` and that reading does not vary with groundness — the ground spelling asserts one tuple, the variable spelling the universal relation — and the language must not give one syntax two readings according to whether its arguments are ground. Under this rule the **arguments stop carrying the distinction and the body carries it**, so `rule p(?x, ?y)` and `rule p(1, 2)` are read the same way: both declare.
+
+**The split point already exists and is already load-bearing.** `body: None` is *not* newly overloaded by this proposal — the language already reads a body-less rule head two ways, and `EQUATION_FUNCTORS` is where. It has exactly one member, `unify` (`<=>`), and its own doc defines an equation as the node "**as a body-less rule head**"; `=` and `===` are the test column and their body-less heads are already refused (WI-888, WI-1090). So the reader this proposal needs — *is this body-less head a minted equation connective, or anything else* — is the reader the loader already runs, paired with `SimpleTermStore::is_minted` because `unify` is also an ordinary identifier a user may call (WI-948: *a name, not a verdict*).
+
+Measured over the corpus, that split is what carries the weight:
+
+| body-less rule heads | count |
+|---|---|
+| minted equation (`<=>`) — **unchanged** | **97** |
+| plain head — **re-read as a declaration** | **20** |
+
+**Migration: 20 sites.** Parser-driven census over 148 corpus files (stdlib, `anthill-stl`, `examples`, CLI fixtures, `anthill-todo`; the 4 that do not parse are WI-852's deliberately-malformed fixtures). **17 in the stdlib and 3 in `examples/github-todo`** — *not* stdlib-only, as an earlier regex census of this proposal claimed at 25:
+
+| file | sites |
+|---|---|
+| `logic/constructive.anthill` | 8 — `identity`, `modus_ponens`, `conjunction_intro`, `conjunction_elim_l/r`, `disjunction_intro_l/r`, `ex_falso` |
+| `logic/classical.anthill` | 3 — `excluded_middle`, `contradiction`, `double_negation` |
+| `reflect/typing.anthill` | 2 — `list_contains`, `type_compatible` |
+| `prelude/lattice.anthill` | 2 — `less`, both inside one `rule { … }` block |
+| `prelude/set.anthill` | 1 — `subset` |
+| `realization/realization.anthill` | 1 — `effect_map_entry` |
+| `examples/github-todo/rules.anthill` | 3 — `all_deps_verified_rest`, `description_view` ×2 |
+
+Each becomes `fact …` or gains an explicit `:- true`, and **both targets are live**: measured, `fact p(?x, ?y)`, `fact p(?A, ?A)` and `fact p(?x, cons(head: ?x, tail: ?))` all load clean, so §6.1's *"ground assertion"* is descriptive prose rather than an enforced restriction — which matters here, because **18 of the 20 sites carry variables**. Which of the two a site wants is a per-site reading, not a mechanical rewrite: the logic axioms read as assertions (`fact`), while a pattern clause like `rule type_compatible(?A, ?A)` may prefer to keep the `rule` keyword and say `:- true`.
+
+**The grammar does not move.** `fact` is already its own IR item (`"fact_declaration" => convert_fact(…).map(Item::Fact)`) and a body-less rule is already `Item::Rule { body: None }`, so the two are distinguishable before any desugaring. The change is what the **loader** reads `body: None` as — from *assert* to *declare* — with `Item::Fact` untouched.
+
+**One consequence must be handled, and it is measured.** §6.1's desugaring is **read by other guards**: §8.3 refuses a `fact lhs === rhs` explicitly *"a fact being a body-less rule (§6.1)"*. That is not commentary — driven, `fact aa() === bb()` is refused with a message that names *"the **rule** `aa(…) === …`"*, so the fact reaches the guard **as a desugared body-less rule**. Desugar `fact` to `:- true` instead and `fact lhs === rhs` and `fact lhs = rhs` escape the WI-888 / WI-1090 refusals in silence. The repair is to key those two guards on the **head functor** rather than on body-lessness — which is the question they were always asking — and it must land **with** the desugaring change, not after it. This is WI-1090's own recorded lesson (*narrowing a list reaches readers that ask another question*) arriving from the opposite direction.
+
+**What it does not reach.** No corpus rule head is a body-less **paren-less nullary** (`rule holds`): the four sites the spec names all carry bodies (`rule holds :- base(1)`, `rule gps_drift_axiom :- …`). So the separate paren-less scoping gap — that such a head introduces nothing anywhere and falls to one global intern — is untouched by this rule and still needs its own answer.
 
 ## Auto-declaration, and where it stops
 
@@ -78,105 +122,28 @@ An equational rule (`lhs <=> rhs`) is about **extending unification**, not about
 
 So this proposal governs **logical rules only**. An equational head neither needs a declaration nor is auto-declared by one, and `[simp]`'s enablement (§5.3, WI-881) is untouched.
 
+**This section is also where the declaration's syntax lands its weight**, now that the declaration is a body-less rule. The two constructs share the shape `body: None` and are told apart by the head's functor — a minted `unify` node is an equation, anything else is a declaration — which is the reader the loader already runs (`EQUATION_FUNCTORS` has one member and its doc defines an equation as exactly "a body-less rule head"). The corpus makes the stakes concrete: **97** body-less heads are minted equations and must not move, against **20** plain heads that this proposal re-reads. The pairing with `SimpleTermStore::is_minted` is not optional — `unify` is also an ordinary identifier a user may call, and WI-948 records that this predicate is *a name, not a verdict*.
+
 ## Open questions
 
-1. **Spelling — OPEN.** What the declaration must DO is settled: bring the name into existence in pass 1, in one scope, **asserting nothing**. Which text carries it is not.
+1. **Spelling — SETTLED (2026-08-21): a rule with no body.** The rule, the split point and the 20-site migration are in §"The declaration's syntax" above.
 
-   **The negative half IS settled: no body-less HEAD can serve.** `head` is `head :- true`, and that reading does not vary with groundness — the ground spelling asserts one tuple, the variable spelling the universal relation — and the language must not give one syntax two readings according to whether its arguments are ground. Each candidate head form is already spoken for:
+   The **nine candidate spellings**, what each was measured against, and the cross-language survey are in **[docs/brainstorms/rule-declaration-syntax.md](../brainstorms/rule-declaration-syntax.md)**. They are not repeated here — this proposal states the rule; the search that found it is a record. Three of its conclusions bear on the rule and stay below.
 
-   | head form | what it already means |
-   |---|---|
-   | `rule p("a", "b")` | a clause: that tuple holds |
-   | `rule p(?x, ?y)` | the universal relation. Worse than useless: it **entails** every `p(a,b)`, so later clauses add nothing — measured, adding or removing plugin clauses beneath it changes no answer |
-   | `rule p(?x: T, ?y: U)` | 060 §2's generator — a `domain(?x, T)` goal that ENUMERATES over T |
-   | `rule p/2` | nothing else uses `/arity`, and arity is not part of a predicate's identity, so the number identifies nothing |
-   | `rule ns.p(…)` | a clause of an existing predicate; by §WI-896 it can never introduce one |
+   **Why a head form was available at all.** Every head form looked spoken for, on the reasoning that `head` means `head :- true`, and that reading does not vary with groundness — the ground spelling asserts one tuple, the variable spelling the universal relation — so a head form would give one syntax two readings according to whether its arguments are ground. **That objection is conditional, and its condition is §6.1's desugaring rather than anything about heads.** `head :- true` is what a body-less head means *because `fact` was desugared onto that form*; move the `:- true` into the desugaring and the objection lapses for every head form at once. It is also why this spelling wins on the two things a spelling is judged by here: it costs no grammar and no keyword, and it *removes* an irregularity instead of adding a construct to work around one.
 
-   **What a declaration MEANS, and why every short form is an abbreviation of it.** Written out, the declaration is a **second-order existential**: *there exists a predicate p* —
+   **The account of what a declaration MEANS is not discarded with the variants.** The most principled candidate was a namespace-scoped **assumption** — the hereditary-Harrop antecedent `(forall(?x), p(?x) -: G)` with the namespace as the implication's scope — because an assumption asserts nothing *by construction*, which is exactly the property `head :- true` lacked. It was not chosen because it never supplied a surface text, which is what was being chosen. It remains the right reading of what a body-less rule **is**, written in syntax the language already has.
 
-   ```
-   ∃p . declared(p)              -- the technically correct form; long, and second-order
+   **The one interaction worth spelling out, because 060 and this proposal look like they collide and do not.** 060 §2 reads `?x: T` on a relational head as a `domain(?x, T)` **goal**, prepended to the rule's body — the ascription is spent generating values. That reading is about a **clause**. A body-less head is not a clause and has no body for such a goal to go into, so the ascription is free to be what it looks like: the **column's type**. So this spelling gets *name plus typed columns* — the form Soufflé and SQL both land on, and the thing 052 says a relation's schema **is** — with no new keyword:
+
+   ```anthill
+   rule allowed(?from: Stage, ?to: Stage)               -- declaration: two columns, both Stage
+   rule allowed(?f: Stage, ?t: Stage) :- edge(?f, ?t)   -- clause: 060's domain(…) goals apply
    ```
 
-   That is the reading every variant below abbreviates, and it explains the shape of the whole search. An existential **binds** its variable, which makes `p` a MENTION rather than a use.
+   **Not claimed as delivered**: 060's typed-head work is WI-742 and unimplemented, and which reading a body-less typed head takes must be written into 060 rather than assumed from here.
 
-   **The language already HAS a mention position — scoped to an implication.** Anthill is not first-order: it carries Miller's fragment, the unbounded **hereditary-Harrop** form `(forall(?x), Q(?x) -: P(?x))` used by the auto-generated induction principles, and higher-order predicate variables (`rule ind(?P) :- ?P(nil)`, desugaring to `ho_apply`). And §"A rule head functor is resolved, not declared" already says the antecedent of such a discharge **declares** its functor. Measured:
-
-   ```
-   rule ind(?x) :- (forall(?n), undeclared_here(?n) -: undeclared_here(?n))   →  LOADS
-   rule ind(?x) :- undeclared_here(?x)                                        →  REFUSED,
-       "rule-body goal `undeclared_here` names nothing"
-   ```
-
-   So the question this proposal asks is not *invent a mention position* — it is **give the language, at NAMESPACE scope, the declaration-by-assumption it already has at implication scope**. That is also how λProlog, the source of this fragment, answers it: a separate **signature** (`sig mymod. type append list A -> list A -> list A -> o.`) declares what a module's predicates are, distinct from the clauses that define them.
-
-   Each candidate below is a way of getting that mention position into a namespace:
-
-   - **V1 / V1a** borrow one from `operation`, which already has a declaration form.
-   - **V2 / V3 / V5** mint one with a keyword.
-   - **V4 / V6** try to reuse a rule form, and fail because a rule USES its functor rather than mentioning it.
-   - **V7** tries argument position, and fails on exactly this point — measured, the argument is a `Ref` only when the predicate already exists and degrades to `Ident` when it does not, which is the difference between a use and a mention made visible.
-   - **V8** — a namespace-scoped **assumption**: the hereditary-Harrop antecedent with the NAMESPACE as the implication's scope.
-
-     ```
-     (forall(?x), p(?x) -: G)          -- an assumption scoped to a goal — exists today
-     ⟨declare p⟩ inside namespace demo -- the same assumption, scoped to the namespace
-     ```
-
-     This is the variant most native to the logic the language already implements, and it supplies the property every head form failed to: **an assumption asserts nothing.** It is not a claim added to the knowledge base; it is a hypothesis the scope is elaborated under and discharged by. That is exactly why `head :- true` cannot serve and this can — the difference is assertion versus assumption, not syntax.
-
-     It also makes the multi-file rule fall out instead of being stipulated: a namespace spans files, so an assumption scoped to the namespace covers every file that writes into it — which is the scope §Auto-declaration needs. And it is λProlog's module semantics directly: `sig` declares, `module` supplies the clauses, and the signature is the assumption the module is elaborated under.
-
-     Open within V8: what the surface text is (it still needs one), whether the assumption is discharged at the namespace boundary or persists into the KB, and how it interacts with 059's secondary entries, which let a second file write into one scope.
-
-   **The variants fall into two DIRECTIONS, and the syntax question is downstream of which one is taken.**
-
-   - **A — the declaration is an OPERATION of the same name, with a standard body** (V1a). The predicate *is* an operation; its body runs its own clauses. No new syntax. It makes 052's claim — a rule is a stream-valued operation — literally true rather than aspirational, and answers 052 OQ2 for free, since `Sort.p` is then a member. Its two consequences are not side effects but the design itself: the predicate joins the **dispatch surface**, and it has a **return type**, which is exactly 052's `Relation[T]` question.
-   - **B — the declaration is its own kind** (V2–V5). A declared predicate is not an operation: no dispatch surface, no return type, nothing to run. Needs new syntax, and keeps rules and operations distinct — so 052's claim stays partly aspirational and `Sort.p` still needs OQ2's arm.
-
-   **So the real fork is whether rules and operations converge or stay distinct.** Measured, they are distinct today: a rule head is not on the dispatch surface (`x.p(y)` → *"expected operation declared on the receiver's sort, got no such member (dot dispatch)"*, while the sibling operation is found), and a rule-introduced name earns `SymbolKind::Goal`, not `Operation`. **B is the status quo made explicit; A is a genuine unification.**
-
-   **Variants to choose among.** Each does the job; they differ in what they cost and what else they buy.
-
-   | | spelling | for | against |
-   |---|---|---|---|
-   | **V1** | `operation p(from: String, to: String) -> Bool` — body-less | **exists today**; documented (*"a body-less operation carrying clauses is one definition written relationally"*); measured working at namespace AND sort level, declaration-alone resolving with zero clauses | it has a GOAL face and **no value-call face** (below); joins the **dispatch surface** (059), so `receiver.p(x)` becomes callable; carries a **return type**, and `-> Bool` reads as a test where 052 reads a rule as `Relation[T]` |
-   | **V1a** | V1 plus a **standard body** — the declaration's body is "consult my own clauses" | closes V1's missing face without a new keyword, and is 052's own claim (a rule IS a stream-valued operation) made operational | needs a canonical body to exist and to be specified — what it returns for a multi-solution relation is exactly 052's `Relation[T]` question |
-   | **V2** | `relation p(from: String, to: String)` | reads natively; names what 052 already calls `Relation[T]`; carries column names AND types, which is the schema 052 says a relation *is*; no dispatch-surface question | a new keyword |
-   | **V3** | `shared rule p(?x, ?y)` / `multifile rule p(?x, ?y)` | Prolog's `multifile` precedent; says *why* the declaration exists, so the diagnostic writes itself | a new keyword, and it covers only the multi-file case — §WI-896's *"to introduce a name that already resolves, declare it"* still has no form |
-   | **V4** | `rule p(?x, ?y) [decl]` | **no grammar change** — 043's attribute channel already exists | attributes say how a rule *fires*, not whether it is one; and to a human the head still reads as the universal relation |
-   | **V9** | **change `fact`'s desugaring to carry the body explicitly** — `fact p("a","b")` → `rule p("a","b") :- true` — which frees the body-less `rule` form to be the declaration | no new keyword, and it makes the language UNIFORM: `operation f(…) -> R` declares and `= body` defines; `const N: T` declares and `= expr` defines; `rule p(…)` would declare and `:- body` define. **No body ⇒ declares; a body ⇒ asserts**, across all four constructs, with `rule` no longer the exception. It also removes the groundness question entirely: the ARGUMENTS stop carrying the distinction and the BODY carries it, so `rule p(?x,?y)` and `rule p("a","b")` are read the same way. Migration measured at **25 sites**, all in the stdlib. **The grammar does not move**: `fact` is already its own IR item (`"fact_declaration" => convert_fact(…).map(Item::Fact)`) and a body-less rule is already `Item::Rule { body: None }`, so the two are distinguishable before any desugaring — the change is what the LOADER reads `body: None` as, from "assert" to "declare", with `Item::Fact` untouched | §6.1's desugaring changes, and with it the sentence calling a fact a "ground assertion"; the 25 sites — the logic axioms `rule modus_ponens(?p, ?q)` / `rule excluded_middle(?p)`, and pattern clauses like `rule type_compatible(?A, ?A)` — must each become `fact …` or gain an explicit `:- true`, and which of the two they want is a per-site reading, not a mechanical rewrite |
-   | **V7** | `rule declared(allowed)` — a reflective fact the loader reads, Prolog's directive idea in anthill's own reflective-fact idiom (`SortInfo`, `OperationInfo`, `DescriptionInfo`) | no new syntax at all; reuses the fact machinery; precedent in both Prolog's `:- dynamic p/2` and this language's own `anthill.reflect` facts | **the argument cannot reference what does not exist yet**, measured: `declared(allowed)` resolves to `Ref(Symbol)` when `allowed` already has a clause and degrades to `Ident(Symbol)` when it does not — which is exactly the case a declaration is for. Making it work means the loader special-cases `declared` and reads the `Ident`, so the argument is a NAME rather than a reference: `declared(allowd)` then declares a phantom in silence, and `Ident` is the carrier `functor_sym` is already known to miss |
-   | **V6** | `rule :- p(?x, ?y)` — a headless rule | **the spelling is free**: measured, both `rule :- p(?x,?y)` and a bare `:- p(?x,?y)` are syntax errors today, since anthill's denial form is keyword-tagged (`constraint c :- …`). No new keyword | `:- B` means DENIAL to every logic programmer, and §6.2 is literally titled *"Constraint (headless rule / denial)"* — so it would read as *"p never holds"*, an assertion of the opposite. Logically backwards: a declaration asserts nothing, `:- B` asserts ¬B. And a body is a conjunction, so `rule :- p(?x), q(?y)` does not say which predicate it declares |
-   | **V5** | `defines p(?x, ?y)` at namespace level | parallel to `requires` / `provides`; reads as a statement about what this namespace defines | a new keyword; says nothing about columns or types |
-
-   **V1 has a goal face and no value-call face, measured.** With `operation allowed(from, to) -> Bool` declared body-less and `rule allowed("a","b")` supplying a clause:
-
-   ```
-   as a GOAL   — allowed("a","b") in a rule body            →  answers (1 solution)
-   as a CALL   — operation use() -> Bool = allowed("a","b") →  ERROR "operation has no body:
-                 cw.allowed — nothing this runtime can run is registered for it"
-   ```
-
-   The stdlib is no different: `Set.empty` fails the same way, because its body-less operations are **spec** operations backed per-carrier through the requirement dictionary, not things called directly. So "defined relationally" today means *usable as a goal*, and the value-level call is simply absent.
-
-   That is what V1a addresses — give the declaration a canonical body meaning "consult my own clauses", so the call face is defined in terms of the clauses that already answer the goal face. It is also where 052 and this proposal meet: 052 says a rule IS a stream-valued operation, and a standard body is that claim made runnable rather than asserted.
-
-   **What other languages do**, since every one of them that lets clauses span files has an explicit declaration and none auto-declares across them:
-
-   | language | form | bearing |
-   |---|---|---|
-   | Prolog | `:- multifile p/2.` `:- discontiguous p/2.` | `multifile` IS this proposal's rule, by name. Its spelling — a top-level directive — is unavailable here: §6.2 spends the headless form on denial |
-   | Mercury | `:- pred p(int, int).` / `:- func f(int) = int.` | declarations MANDATORY; and `pred` vs `func` keeps predicates and functions **distinct kinds with distinct syntax** — external evidence for direction B over A |
-   | Soufflé (Datalog) | `.decl edge(x:number, y:number)` | declaration with **typed columns** — V2 almost verbatim |
-   | SQL | `CREATE TABLE t(a INT, b TEXT)` | the relation is declared with typed columns before any row exists |
-   | Haskell / Rust | `class C a where m :: a -> Int`, instances elsewhere | the extension-point pattern: signature in one place, definitions across modules — C666A's spec/implementor shape |
-
-   Two independent traditions (Soufflé, SQL) land on **name plus typed columns**, which is what 052 says a relation's schema *is*. And the one language that took predicate declarations most seriously, Mercury, kept predicates and functions apart rather than unifying them.
-
-   **Two candidates stand out, for opposite reasons.** **V8** is the only one where the declaration asserts nothing *by construction* — an assumption is not an assertion — and it is native to the Miller fragment the language already implements. **V9** is the only one that needs no new syntax AND leaves the language more uniform than it found it: *no body ⇒ declares* would hold for `operation`, `const` and `rule` alike, and `rule` is currently the sole exception only because `fact`'s desugaring took its body-less form.
-
-   **The decision is to pick one of these or to propose another.** V1 is the only one that ships today, and V2 is the only one that carries 052's schema; the two consequences under V1 — dispatch surface and return type — are what a choice has to weigh against V2's new keyword.
+   **What it does not settle.** Whether a declared predicate is an **operation** — on the dispatch surface, with a return type — is untouched by the spelling: that is open question 4 and 052 OQ2. The earlier [declared-relations](../brainstorms/declared-relations.md) session answered it independently (Decision 5: a relation is a distinct kind, *not* an operation without a return), which is the direction §"What it removes" already assumes but does not argue.
 
 2. **Arity is NOT part of a predicate's identity, and that is measured.** Operations refuse two declarations of one name (WI-1049), while predicates accept clauses of mixed arity and **dispatch** them correctly — driven over `{ rule p(1); rule p(1,2); rule p(7) }`: `p(1)`→1, `p(7)`→1, `p(1,2)`→1, `p(9)`→0, `p(1,9)`→0. So the language is inconsistent with itself here (WI-20260821-ZW940). But the deciding fact is that **a bare name is a VALUE**: `apply1(twice, 3)` loads, `twice` alone denoting the function, and 052 OQ2 wants bare `Queen.find` citable as a `Relation[T]`. Arity is visible in call position and invisible in value position, so signature-keyed overloading would make the bare name ambiguous — which is exactly what the duplicate-operation refusal means by "a scope maps a name to one symbol". Corpus census: of 41 multi-clause predicates, **1** has mixed arity, and it is the kernel's own `Constraint`.
 3. **A single-file mutual cycle** — `namespace mA { import mB.*; rule p(1) } namespace mB { import mA.*; rule p(2) }` in one file — is auto-declared with no outermost scope to pick, so WI-980's cycle handling is still needed for it. It is visible to its own author, which is 059's argument for the file boundary, but it is the residue and should be stated rather than assumed away.
