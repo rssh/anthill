@@ -3079,6 +3079,16 @@ const DEFAULT_STORE_FILE: &str = "workitems.anthill";
 const MIRROR_ACCESS_ENV: &str = "ANTHILL_TODO_MIRROR";
 
 /// The `ExtentBinding` `init` scaffolds. Text twin of [`default_binding`].
+///
+/// IT NAMES `MirrorEntry` AND THIS REPO'S OWN `project.anthill` DOES NOT, which is
+/// a deliberate asymmetry rather than drift. A `covers` entry is resolved at
+/// startup, so naming a functor a given BINARY does not define is a hard refusal —
+/// which is why the declaration must never get ahead of the backend (design §14.1).
+/// A scaffold satisfies that BY CONSTRUCTION: the file is written by the same
+/// binary that has the functor. A checked-in `project.anthill` does not — it is
+/// pulled by checkouts whose `anthill-todo` is older, and every one of them stops
+/// working the moment it lands. MEASURED, on this repo: adding the entry to a
+/// tracker with no mirror bought nothing and broke every un-rebuilt binary.
 const EXAMPLE_BINDING: &str = "\
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.IndexedFileStore(

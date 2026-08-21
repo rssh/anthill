@@ -36,9 +36,18 @@ fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
 -- a config file has no business naming an absolute path.
 --
 -- `covers` is the set of functors this file durably holds, and it is the set the
--- bundle persists (WorkItem / Feedback / Tag / MirrorEntry / StoreFormat). A functor
--- missing here keeps no durable home: its retract would drop the in-memory row and
--- leave the line on disk.
+-- bundle persists. A functor missing here keeps no durable home: its retract would
+-- drop the in-memory row and leave the line on disk.
+--
+-- NO `MirrorEntry`, AND THAT IS NOT AN OMISSION (WI-1117). The link row exists only
+-- for a project that publishes to a mirror, and this one declares no `Mirror` fact,
+-- so it can hold none — which is why the coverage check asks for it only of a
+-- project that HAS a mirror. Naming it here anyway would be decoration, and
+-- decoration is not free: `covers` is resolved at startup, so an entry naming a
+-- functor a given BINARY does not define is a hard refusal, and every checkout
+-- whose `anthill-todo` predates that functor stops working the moment it pulls.
+-- That is §14.1's "backend before declaration, always", and the declaration is due
+-- the day this repo configures a mirror — not before.
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
@@ -46,4 +55,4 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])
+  covers: [WorkItem, Feedback, Tag, StoreFormat])
