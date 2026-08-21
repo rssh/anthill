@@ -383,6 +383,15 @@ pub struct ScopeInclusion {
     pub is_enclosing: bool,
 }
 
+/// WI-980 — names a caller can make visible at a scope without a symbol carrying them.
+///
+/// Answers, for one scope, "does this scope hold the name the resolution is looking
+/// for", returning a symbol to report when it does. The rule-head mint guard's `Some`
+/// is a SENTINEL: what it knows is that a head of this name is *written* there, not
+/// which symbol will end up owning it — the decision being taken is precisely that.
+/// Only the presence of an answer is read.
+pub type ScopeNameOverlay<'a> = dyn Fn(ScopeId) -> Option<Symbol> + 'a;
+
 // ── Resolution result ───────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1191,6 +1200,46 @@ impl SymbolTable {
     /// [`Self::internal_visible_from`] read, so two links this call cannot tell
     /// apart are two no walk could tell apart either. O(P) per push against P in
     /// the tens, paid at load, against an O(P) every lookup pays forever.
+    /// WI-980 — is `outer` an ENCLOSING ancestor of `inner`, walking the real
+    /// `is_enclosing` edges?
+    ///
+    /// THE TIE-BREAK A CYCLE OTHERWISE LACKS, and it must be asked of the graph rather
+    /// than of the printed address. The first version compared
+    /// `scope_display_name(inner).strip_prefix(scope_display_name(outer))` — which
+    /// answers a question about TEXT, not about visibility: it says `true` for two
+    /// scopes with no edge between them whenever one address happens to spell a prefix
+    /// of the other, and it cannot see an enclosure the addresses do not spell. Measured
+    /// through the caller, that let a scope in NO cycle decide a cycle's winner and
+    /// delete another scope's predicate.
+    ///
+    /// ENCLOSING EDGES ONLY. `requires` and wildcard-import parents are visibility
+    /// edges too, but "outermost" is a statement about NESTING (§"the enclosing chain"),
+    /// and an import edge is exactly the symmetric relation the tie-break exists to
+    /// break. Following them would make the predicate non-antisymmetric again.
+    pub fn encloses(&self, outer: ScopeId, inner: ScopeId) -> bool {
+        if outer == inner {
+            return false;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut frontier = vec![inner];
+        while let Some(s) = frontier.pop() {
+            if !seen.insert(s) {
+                continue;
+            }
+            let Some(data) = self.scopes.get(&s) else { continue };
+            for inc in &data.parents {
+                if !inc.is_enclosing {
+                    continue;
+                }
+                if inc.parent_scope == outer {
+                    return true;
+                }
+                frontier.push(inc.parent_scope);
+            }
+        }
+        false
+    }
+
     pub fn add_parent(&mut self, scope: ScopeId, inclusion: ScopeInclusion) {
         // WI-995 — every non-import writer of a parent link says so, so an edge that a
         // declaration justifies stays visible even when a foreign file's import also
@@ -1375,6 +1424,48 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
+    /// WI-980 — the same question [`Self::resolve_captured_name`] answers, with names
+    /// the caller supplies for scopes that do not carry them as symbols yet.
+    ///
+    /// THE MINT GUARD IS ITS CALLER, and it exists because that guard cannot ask
+    /// `resolve_in_scope` plainly. A rule head is introduced by the very pass that
+    /// decides it, so a symbol-table question answers differently depending on how much
+    /// of the pass has run — measured, one predicate or two purely by which line came
+    /// first. What the guard needs is "would this name resolve here IF every scope's
+    /// rule heads were already symbols", and the overlay supplies that IF.
+    ///
+    /// IT IS THE RESOLVER'S OWN WALK, and that is the point rather than an economy. The
+    /// first attempt at this was a SECOND traversal, built from the parent-eligibility
+    /// filter alone — and a per-EDGE filter is not the whole of what a reference obeys:
+    /// `EnclosingLinks` and `ExposureLinks` are PATH properties recomputed at every hop
+    /// (WI-1089's import stop, WI-999's exposure upgrade), the `internal` post-filter
+    /// runs on the matched symbol, and each scope short-circuits on its own locals and
+    /// imports before any parent is considered. Measured, that walk climbed out of a
+    /// wildcard-imported scope into namespaces no reference can reach, and REFUSED three
+    /// programs that load clean — one of them containing no import at all, under a
+    /// diagnostic about mutual imports. Hence the overlay: ONE walk, told about names
+    /// that are not symbols yet.
+    pub fn resolve_captured_name_with_overlay(
+        &self,
+        name: &str,
+        scope: ScopeId,
+        overlay: &ScopeNameOverlay<'_>,
+    ) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Skipped,
+            ExposureLinks::Skipped,
+            EnclosingLinks::Followed,
+            Some(overlay),
         );
         self.filter_internal_visibility(raw, scope)
     }
@@ -1394,6 +1485,7 @@ impl SymbolTable {
             OwnLocals::Visible,
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
+            None,
         )
     }
 
@@ -1412,6 +1504,7 @@ impl SymbolTable {
         own_locals: OwnLocals,
         exposure: ExposureLinks,
         enclosing: EnclosingLinks,
+        overlay: Option<&ScopeNameOverlay<'_>>,
     ) -> ResolveResult {
         if !visited.insert(scope) {
             return ResolveResult::NotFound; // cycle
@@ -1423,6 +1516,14 @@ impl SymbolTable {
             // 1. Local: check locals defined in this scope — O(1) lookup
             if own_locals == OwnLocals::Visible {
                 if let Some(&sym) = data.locals.get(name) {
+                    return ResolveResult::Found(sym);
+                }
+                // WI-980 — a name the CALLER says this scope holds, though no symbol
+                // carries it yet. Read exactly where a local is read, so an overlaid
+                // name shadows and short-circuits precisely as a declared one does; the
+                // `OwnLocals::Visible` gate is what keeps it off the ENTRY scope, which
+                // is the whole reason [`OwnLocals::Skipped`] exists.
+                if let Some(sym) = overlay.and_then(|f| f(scope)) {
                     return ResolveResult::Found(sym);
                 }
             }
@@ -1558,6 +1659,7 @@ impl SymbolTable {
                 OwnLocals::Visible,
                 below,
                 enclosing_below,
+                overlay,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),
                 ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),

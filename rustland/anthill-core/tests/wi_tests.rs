@@ -1344,3 +1344,6 @@ mod wi329_handler_discharge_test;
 
 #[path = "include/wi_ffpgd_answer_dedup_test.rs"]
 mod wi_ffpgd_answer_dedup_test;
+
+#[path = "include/wi980_rule_head_order_test.rs"]
+mod wi980_rule_head_order_test;

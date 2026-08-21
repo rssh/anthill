@@ -1151,6 +1151,35 @@ pub enum LoadError {
         /// declaration whose contents were dropped.
         span: Span,
     },
+    /// WI-980 — no scope introduces a rule head's name, so it denotes nothing.
+    ///
+    /// A BACKSTOP, NOT A VERDICT — it should be unreachable, and it exists so that if it
+    /// ever is reached the load says so instead of succeeding.
+    ///
+    /// The decision gives ownership to any scope with a file that reaches NOTHING (rule 1
+    /// on [`Ownership`]), so a yielding site always reaches something and this cannot
+    /// fire. What it guards is the gap between that argument and the loader's own ladder:
+    /// the two ask through different flags, and a head the decision believed was a clause
+    /// of something would otherwise fall to the WI-476 bare intern — a symbol nothing can
+    /// cite — while the load still reported success.
+    ///
+    /// A CYCLE IS NO LONGER ONE OF ITS CAUSES, and the earlier wording here said it was.
+    /// Two scopes that can each see the other (mutual wildcard imports; also `requires`
+    /// between sorts declaring no entity variants, whose empty `exposed` set disables the
+    /// per-hop filter) used to leave each yielding to the other and produce one error per
+    /// member. They now each INTRODUCE their own — the only answer that does not depend
+    /// on file order — so that program loads. Nesting still breaks the tie in favour of
+    /// the enclosing scope.
+    RuleHeadOwnedByNoScope {
+        name: String,
+        /// The scope the head is written in — the author needs the line AND the place.
+        scope: String,
+        /// Retained for a caller that can name the scope the head was believed to be a
+        /// clause of. The one live construction site passes `None`: by the time this
+        /// fires, the belief is exactly what has proven wrong.
+        owner: Option<String>,
+        span: Span,
+    },
     Other {
         message: String,
     },
@@ -1758,7 +1787,8 @@ impl LoadError {
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::CarrierlessProvisionFact { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
-            | LoadError::ProvidesClauseNeedsSort { span, .. } => Some(*span),
+            | LoadError::ProvidesClauseNeedsSort { span, .. }
+            | LoadError::RuleHeadOwnedByNoScope { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
@@ -2175,6 +2205,31 @@ impl LoadError {
             // as `error: load error: …`. `Other` is now a blocking front-door
             // diagnostic, so it matches its siblings.
             LoadError::Other { message } => message.clone(),
+            LoadError::RuleHeadOwnedByNoScope {
+                name,
+                scope,
+                owner,
+                span,
+            } => {
+                let cause = match owner {
+                    Some(o) => format!(" It was decided to be a clause of '{o}'."),
+                    None => String::new(),
+                };
+                format!(
+                    "{}: the rule head `{}` written in '{}' resolves to nothing, so this \
+                     clause would be stored under a name no scope can cite.{} This is a \
+                     loader invariant failing rather than a fault in the program — the \
+                     binding decision and the name ladder have disagreed. Please report \
+                     it; as a workaround, declaring `{}` in '{}' gives the head something \
+                     to resolve to.",
+                    loc.format_start(*span),
+                    name,
+                    scope,
+                    cause,
+                    name,
+                    scope
+                )
+            }
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -3072,6 +3127,15 @@ impl std::fmt::Display for LoadError {
             LoadError::Other { message } => {
                 write!(f, "{}", message)
             }
+            LoadError::RuleHeadOwnedByNoScope {
+                name, scope, span, ..
+            } => {
+                write!(
+                    f,
+                    "the rule head '{}' in '{}' resolves to nothing (at {}..{})",
+                    name, scope, span.start, span.end
+                )
+            }
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -3660,19 +3724,95 @@ pub fn scan_definitions_with_sources(
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
     // inherited/existing origin where one resolves (proposal 044 / B2).
+    //
+    // WI-980 / 059 R6 — IN THREE PHASES, AND NONE OF THEM DEPENDS ON THE ORDER THE
+    // TEXT IS WALKED IN. Phase 1 collects every head across every file. Phase 2 asks
+    // the ladder about all of them BEFORE any mint, so every answer is read off the
+    // same table — declarations, imports and `requires`-inherited names, all of which
+    // pass 1 and pass 2 finished. Phase 3 mints.
+    //
+    // The DECISION is what changed, not a schedule. `name_denotes_for_rule_head` alone
+    // cannot answer this question: it asks "has a symbol been minted", which is true or
+    // false depending on how much of the pass has run. What decides it is whether the
+    // name is WRITTEN as a head in a scope this one can see — a syntactic property of
+    // the finished program, the same answer whichever file or line came first.
+    //
+    // "THE PROGRAM" IS THE FILES OF THIS SCAN, and a STAGED load has more than one.
+    // `load_incremental` is an alias of `load_all`, so each batch runs its own
+    // `scan_definitions` and a head decided in an earlier one cannot be re-decided —
+    // the symbol is already minted. Load `namespace demo { sort Rec { rule p(2) } }`
+    // first and `namespace demo { rule p(1) }` second and the two stay separate, where
+    // one `load_all` over the identical pair joins them. The other order is already
+    // right (the second batch's head finds the first batch's symbol through the
+    // ordinary ladder). Not repairable here: it is a property of deciding anything
+    // before the whole program is in hand, and the guarantee this pass offers is over
+    // ONE scan's files.
+    let mut heads: Vec<RuleHeadSite<'_>> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-745 / WI-953: this pass reports now, so its errors are stamped with
-        // the file they came from exactly as sub-pass 2's are.
+        // the file they came from exactly as sub-pass 2's are. Every error the DESCENT
+        // can raise belongs to phase 1, which is still per-file; phase 3's own refusal
+        // stamps itself from `RuleHeadSite::file_idx`.
         let mut file_errors = Vec::new();
-        let mut pass = RuleHeadPass {
+        let mut pass = RuleHeadCollectPass {
             kb,
             parse_sym: &file.symbols,
             parse_terms: &file.terms,
+            file_idx,
+            sites: &mut heads,
             errors: &mut file_errors,
         };
         walk_scopes(&mut pass, &file.items, global);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
+    }
+    // Phase 2 — every ladder answer read off the pre-mint table. Collected in full
+    // before phase 3 starts, which is what makes them order-free.
+    let denotes: Vec<bool> = heads
+        .iter()
+        .map(|h| {
+            kb.symbols.set_asking_file(Some(source_ids[h.file_idx]));
+            name_denotes_for_rule_head(kb, h.name, h.scope)
+        })
+        .collect();
+    // Phase 3 — DECIDE every head, then mint. Deciding reads the table and minting
+    // writes it, so they cannot interleave: `Ownership::decide` takes the KB immutably
+    // for the whole decision, and no mint has happened when any of these answers is
+    // taken. It reports an owning scope with a per-scope SENTINEL symbol — what it knows
+    // is that a head introduces there, not which symbol results.
+    let sentinels = mint_head_sentinels(kb, &heads);
+    let decision = Ownership::decide(kb, &heads, &denotes, source_ids, global, &sentinels);
+    for (head, &denotes_already) in heads.iter().zip(&denotes) {
+        // WI-995: imports are file-local, so the ladder must ask on behalf of the file
+        // the HEAD is written in — this loop no longer sits inside the per-file one.
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        if denotes_already {
+            continue;
+        }
+        // PER SITE, on this head's OWN file's behalf — not the scope's verdict. Imports
+        // are file-local, so a sibling head at the same scope written in a file without
+        // that import gets a different answer.
+        if decision.verdict(head.scope, head.name, source_ids[head.file_idx]) != Owned::Here {
+            // YIELDED, not refused. Some scope this one can see introduces the name, so
+            // this head is a clause of THAT predicate — §WI-896's "resolved, not
+            // declared", with the resolution taken over the finished program.
+            //
+            // REFUSING THE PAIR INSTEAD WAS MEASURED AND IS NOT AVAILABLE. It is the
+            // principled shape — 059 R4 clause 3 refuses exactly this coexistence for
+            // every other kind of declaration (WI-999, settling WI-939 as its option
+            // (c)) — and both readings it would replace are silent and non-monotone:
+            // joining makes this clause EXTEND someone else's predicate, while
+            // introducing a shadowing local CAPTURES the name, so a body reading a bare
+            // `p` in that scope answered `[1]` before the line was added and `[2]`
+            // after. But the STDLIB IS BUILT ON THE JOIN: refusing it reports 99 errors
+            // across 43 names — `eq`, `gte`, `add`, `mul`, `union`, `subset`, `min` … —
+            // the whole law layer, of which `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)`
+            // is the shape §"A rule head functor is resolved, not declared" documents.
+            // 2154 tests fall with it. The refusal is affordable for declarations (3
+            // sites, amended in WI-999) and not for rule heads.
+            continue;
+        }
+        scan_rule_goal(kb, head);
     }
 
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
@@ -3697,6 +3837,59 @@ pub fn scan_definitions_with_sources(
                 .located_in(files[p.file_idx]),
             ),
         }
+    }
+
+    // WI-980 — THE AGREEMENT CHECK: every head must now resolve to EXACTLY ONE thing.
+    //
+    // WHY IT EXISTS. The decision above asks the ladder through an OVERLAY, and the
+    // overlay is not the finished table: `<global>` is excluded from it (a head inside a
+    // namespace never yields to a name every file shares), while the real resolver of
+    // course still sees `<global>`. So a head can be decided "a clause of `nd.p`" and
+    // then, once minted, find BOTH `nd.p` and a top-level `p` — measured, three files
+    //
+    //     rule p(0)  |  namespace nd { rule p(5) }  |  namespace nb { import nd.*; rule p(93) }
+    //
+    // left `p` genuinely ambiguous inside `nb`, and the loader ABORTED the process on
+    // `debug_assert_eq!`(WI-581) — "head functor … is a non-canonical same-FQN copy" —
+    // storing the clause under a divergent symbol in release, where the assert is
+    // compiled out and the rule silently no-matches. §"the same ladder, to the rung"
+    // (WI-900) already says what should happen instead: an ambiguous name RESOLVES, so
+    // the head concludes about it and the ambiguity is reported AT THE REFERENCE. This
+    // is that report.
+    //
+    // AFTER SUB-PASS 4, deliberately. An earlier version of this check ran before it and
+    // so could not see a deferred selective predicate import — the very remedy its own
+    // message tells the author to reach for. Measured: adding `import ext.{p}` did not
+    // save a program the check had already refused.
+    //
+    // IT ASKS THE LOADER'S OWN LADDER (`name_denotes_for_rule_head`), not the overlay
+    // walk — that is the point. The two asking different questions is exactly the class
+    // of defect this catches, so the check must speak the consumer's language.
+    for head in &heads {
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        // AMBIGUOUS is NOT reported here, deliberately: `remap_name_str` reports it at
+        // this very head when the rule is loaded, with the same name, scope and
+        // candidate list, so a second report would be one defect printed twice. What is
+        // reported here is the case NOTHING else reports.
+        if !matches!(
+            resolve_name_in_kb(kb, head.name, head.scope),
+            ResolveResult::NotFound
+        ) {
+            continue;
+        }
+        // NOTHING — unreachable by construction (a scope with a file that reaches
+        // nothing is given ownership, so a yielding site always reaches something), and
+        // reported rather than trusted: without it the clause goes to the WI-476 bare
+        // intern, where nothing can cite it and the load still reports success.
+        errors.push(
+            LoadError::RuleHeadOwnedByNoScope {
+                name: head.name.to_owned(),
+                scope: kb.scope_display_name(head.scope).to_owned(),
+                owner: None,
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
     }
 
     // WI-040: the kernel DESUGARING VOCAB (reflect `Expr` / `Pattern`
@@ -4317,6 +4510,22 @@ fn scan_rule(
 /// name already resolves in scope (proposal 044 / B2). Runs in pass 3, so the
 /// `requires` parent chain and every declared name already exist.
 ///
+/// WI-980 / 059 R6 — THE MINT, and no longer the DECISION. The guard here reads the
+/// symbol table, and this pass is the only one whose own work changes what that table
+/// says, so on its own it answered "the name already resolves" against a half-built
+/// one: `rule p(1)` beside `sort Rec { rule p(2) }` loaded as ONE predicate with two
+/// clauses when the namespace-level rule was written first, and as TWO predicates —
+/// `p` and `Rec.p`, one clause each — when it was written second. Measured across
+/// FILES too, at one address. Same pair, opposite order, two different programs; and
+/// the split silently decides whether a rule EXTENDS someone else's predicate, which
+/// is non-monotone.
+///
+/// [`Ownership`] is what closed it, by asking a question the pass cannot move:
+/// whether the name is WRITTEN as a head in a scope this one can see. The caller
+/// consults it first and reaches this function only for a head that introduces. A
+/// scope that wants its own name where an enclosing one resolves DECLARES it — the
+/// remedy §WI-896 prescribes.
+///
 /// WI-894 — A RULE DOES NOT TRAVEL TO THE GLOBAL NAMESPACE FROM ITS PLACE. A
 /// name a rule introduces belongs to the scope the rule is WRITTEN IN: the sort
 /// when written inside a sort, the namespace when written at namespace level —
@@ -4359,22 +4568,18 @@ fn scan_rule(
 /// ([`KnowledgeBase::cites_a_relation`]) rather than patched onto the stamp here — a
 /// scope that writes one name in both shapes would otherwise be classified by
 /// whichever of its two rules this pass reached first.
-fn scan_rule_goal(
-    kb: &mut KnowledgeBase,
-    r: &Rule,
-    parse_sym: &crate::intern::SymbolTable,
-    parse_terms: &SimpleTermStore,
-    scope: ScopeId,
-    prefix: &str,
-) {
-    let Some((functor_name, introduced_by)) =
-        rule_introduced_functor_name(r, parse_sym, parse_terms)
-    else {
-        return;
-    };
-    if name_denotes_for_rule_head(kb, functor_name, scope) {
-        return;
-    }
+fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>) {
+    // NO RE-CHECK HERE. It asked `name_denotes_for_rule_head` once more — a question the
+    // decision phase already froze — against the table THIS LOOP IS FILLING, which is the
+    // very defect WI-980 removes, one layer down. Measured: three files, `rule zq(0)` with
+    // no namespace beside `namespace zq1 { rule zq(1) }` and `namespace zq2 { rule zq(2) }`,
+    // loaded as THREE predicates in one file order and as ONE — the global head holding all
+    // three clauses, `zq1.zq` and `zq2.zq` nonexistent — in the other. Both loaded clean.
+    //
+    // It was there to make a SECOND head of one name in one scope idempotent, and
+    // [`SymbolTable::define`] already merges a repeated (name, scope). Two heads of one
+    // name in one scope are two clauses of one predicate, and now they say so through the
+    // kind SET rather than through whichever the pass reached first (WI-898).
     // WI-1075: a MARKED head (`..a.b`) can never reach this mint, and does not need
     // its own arm here — the marker is built from the separator, so every marked name
     // contains a `.` and [`rule_introduced_functor_name`]'s older refusal ("a qualified
@@ -4383,16 +4588,20 @@ fn scan_rule_goal(
     // that names nothing would otherwise fall to the WI-476 bare intern and store a
     // clause under a symbol nothing can cite: that is
     // [`Loader::refuse_unresolvable_absolute_head`], at the LOAD of a rule or a fact.
-    let qualified = make_qualified(prefix, functor_name);
-    kb.symbols
-        .define(functor_name, &qualified, introduced_by.symbol_kind(), scope);
+    let qualified = make_qualified(&site.prefix, site.name);
+    kb.symbols.define(
+        site.name,
+        &qualified,
+        site.introduced_by.symbol_kind(),
+        site.scope,
+    );
 }
 
 /// WI-898 — WHICH HEAD SHAPE introduced the name, and therefore WHICH KIND the
 /// symbol earns. Both shapes mint a scope-local symbol for a genuinely-new name
 /// (that is WI-894, one rule for both), but they differ in the one property every
 /// downstream reader cares about: WHERE THE CLAUSES ARE INDEXED.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum RuleIntroduction {
     /// A bodyless EQUATION's subject (`ite(true, ?t, ?_) = ?t`). The stored clause
     /// is headed by the `eq`/`unify` CONNECTIVE, so this head indexes nothing under
@@ -5267,7 +5476,7 @@ impl DeclLedger {
 // ── The scope spine ────────────────────────────────────────────────────────
 //
 // WI-953: ONE walker, not one per pass. Five walks over a file's items —
-// [`DefinePass`], [`ImportPass`], [`RuleHeadPass`], the WI-936 declaration pass
+// [`DefinePass`], [`ImportPass`], [`RuleHeadCollectPass`], the WI-936 declaration pass
 // ([`DeclarePass`]) and the load phase ([`LoadPass`]) — each re-spelled the same
 // descent: join the written segments, qualify against the enclosing prefix,
 // obtain the child scope, recurse with the new (scope, prefix) pair. They differ
@@ -6592,9 +6801,9 @@ impl SecondaryEntryPass<'_> {
 ///
 /// THE BLANKET BAN IS WHAT AN IMPLEMENTATION DOES TODAY, not the intended rule.
 /// 059's narrow rule admits a rule whose head INTRODUCES and whose predicate is owned
-/// by one entry; both conditions are undecidable until WI-980 makes a head's binding
-/// independent of text order and WI-895 stops a rule body referencing what resolves to
-/// nothing. WI-1001 lands the narrow rule when they close.
+/// by one entry. Both conditions were undecidable while a head's binding depended on
+/// text order (WI-980) and while a rule body could reference what resolves to nothing
+/// (WI-895); both are delivered, so WI-1001 can land the narrow rule.
 const RULE_REASON: &str = "the search over rules is NOT monotone, so a clause added \
     here can make a statement that was true false — and every proof discharged from \
     it was verified against a knowledge base that no longer exists. A rule about the \
@@ -6900,22 +7109,464 @@ fn wire_provides_scope_parent(
 
 // ── Sub-pass 3: rule head functors ─────────────────────────────────────────
 
-/// Sub-pass 3 — register unlabeled rule head functors as Goal symbols, now that
-/// `requires`/import parents are wired (pass 2). A head functor that already
-/// resolves — an inherited operation or a locally declared one — binds to that
-/// origin rather than minting a shadowing sort-local symbol (proposal 044 / B2).
+/// WI-980 — the family of symbols [`Ownership`]'s overlay reports an owning scope with.
 ///
-/// WI-953: it now carries an `errors` vec. It never had one, which is why its
-/// missing-scope arm could not report even in principle — the subtree's rule
-/// heads went unregistered and the load reported success.
-struct RuleHeadPass<'a> {
-    kb: &'a mut KnowledgeBase,
-    parse_sym: &'a crate::intern::SymbolTable,
-    parse_terms: &'a SimpleTermStore,
+/// ONE PER SCOPE, and that is not a detail. A single shared sentinel made every overlay
+/// hit report the SAME `Symbol`, so `resolve_in_scope_recursive_with_mode`'s
+/// `matches.dedup()` collapsed two genuinely different owners into one `Found` where two
+/// real symbols would have reported `Ambiguous` — and the parent loop does not stop at
+/// the first hit, so which owner was reported was last-writer-wins over parent order.
+/// Distinct symbols make the resolver's own ambiguity signal survive the overlay, which
+/// is what lets [`Ownership`] see that a scope reaches TWO owners rather than one.
+///
+/// NOT AN IDENTIFIER, deliberately: the angle brackets make it unspellable in source, so
+/// it can collide with no declared name and carry no other symbol's `internal` flag
+/// through the resolver's visibility filter.
+fn head_present_sentinel(index: usize) -> String {
+    format!("<wi980-head-present:{index}>")
+}
+
+/// ONE RULE HEAD, its introduced name already read off the head, waiting for the
+/// binding decision — sub-pass 3's unit of work since WI-980 split the pass in two.
+///
+/// The split exists because deciding a head is *asking the ladder*, and this pass is
+/// the only one whose own work changes what the ladder answers. Collected first, and
+/// decided only once every collection is in hand.
+struct RuleHeadSite<'f> {
+    /// Index into `scan_definitions`' `files` — the file this head is WRITTEN in, so
+    /// the decision can be taken on that file's behalf (`set_asking_file`) and its
+    /// refusal stamped with the right source. The decision phases run outside the
+    /// per-file loop, and imports are file-local (WI-995).
+    file_idx: usize,
+    scope: ScopeId,
+    prefix: String,
+    /// Borrowed from the FILE's parse-time symbol table, which outlives the scan.
+    name: &'f str,
+    introduced_by: RuleIntroduction,
+    /// The rule's own span, for [`LoadError::RuleHeadOwnedByNoScope`].
+    span: Span,
+}
+
+/// WHAT ONE RULE HEAD DOES — WI-980's verdict for one site.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Owned {
+    /// A head written at this scope introduces the name here.
+    Here,
+    /// This head is a CLAUSE of something else: `Some(s)` where `s`'s own rule head
+    /// introduces the name, `None` where it yields to an ordinary DECLARATION — which
+    /// §WI-896 admits equally, and which no scope in `heads` answers for.
+    Yields(Option<ScopeId>),
+}
+
+/// WHAT A SCOPE CAN SEE for one name, under one overlay — the answer
+/// [`Ownership`] takes every decision from.
+enum Reach {
+    /// Nothing at all: a head written here must INTRODUCE.
+    Nothing,
+    /// One or more scopes whose rule heads introduce the name. More than one is a
+    /// genuine ambiguity the resolver reported and the overlay preserved.
+    Scopes(SmallVec<[ScopeId; 2]>),
+    /// An ordinary DECLARATION answered — not a rule head. The head is a clause of it.
+    Declaration,
+}
+
+impl Reach {
+    fn is_nothing(&self) -> bool {
+        matches!(self, Reach::Nothing)
+    }
+}
+
+/// WHICH SCOPE INTRODUCES A RULE-INTRODUCED NAME — WI-980's answer to "when is the
+/// ladder asked".
+///
+/// THE QUESTION A MINT GUARD ACTUALLY WANTS. `name_denotes_for_rule_head` asks whether a
+/// SYMBOL exists, and during this pass that is a moving target: the pass mints, so the
+/// same head got one verdict written above a sort and the opposite written below it.
+/// What decides the binding is whether some scope this one can SEE already INTRODUCES
+/// the name — a property of the finished text, with the same answer in every order.
+///
+/// INTRODUCES, NOT "WRITES A HEAD", and the difference is a measured regression not a
+/// nicety. An outer head that BINDS through a FILE-LOCAL import (WI-995) leaves nothing
+/// for a sibling file to reach: `namespace zdemo { import zlib.*; rule q(2) }` beside a
+/// second file's `namespace zdemo { sort Rec { rule q(3) } }` loaded clean before this
+/// pass existed and was refused by the version that read the text.
+///
+/// A ROUND-BASED FIXPOINT, NOT A DEMAND-DRIVEN RECURSION, and the rewrite is the whole
+/// of this type's history. The first version answered `owns(scope, name)` by recursing
+/// through the resolver and breaking cycles with a `visiting` stack, memoising as it
+/// went. That is unsound for this question, because the relation is NOT monotone — the
+/// more scopes own a name, the more heads yield, and so the fewer scopes own it — and a
+/// verdict computed under a provisional cycle break was cached and then read by sites
+/// outside the cycle. Measured, six permutations of three files gave two different
+/// programs (`nA.p` = 3 clauses with `nB.p` absent, or 2 and 1), which is precisely the
+/// order dependence WI-980 exists to remove. It is replaced by three settled rules,
+/// each applied only where its premise is certain:
+///
+/// 1. **A scope that can see NOTHING even optimistically OWNS.** If, with every other
+///    candidate treated as an owner, some file's head at this scope still reaches
+///    nothing, then no smaller overlay can make it reach something.
+/// 2. **A scope that can see a SETTLED owner from every one of its files YIELDS.**
+/// 3. **Only when neither rule can move do we have a tie** — a cycle of mutual
+///    visibility — and it is broken inside one strongly-connected component at a time,
+///    never across the whole undecided set. A member ENCLOSED by another member yields
+///    (§"outermost-first"); with no enclosure among them, every member introduces its
+///    own, which is what two mutually-importing namespaces mean.
+///
+/// Nothing is memoised under a provisional assumption, so no order can leak in. It also
+/// removes the recursion, and with it the stack-overflow bound the recursive version
+/// needed: `owns` used to nest a whole resolver walk per link of the visible-scope
+/// chain, and 700 chained scopes sharing one head name ABORTED the process.
+struct Ownership<'f> {
+    /// FINAL verdict per site. Computed once, up front, with no interleaved minting.
+    ///
+    /// NOT KEYED BY THE HEAD'S KIND, and the attempt is recorded because it looks like
+    /// the fix for WI-20260821-D0EXD and is not. Splitting the decision so an EQUATION's
+    /// subject and a PREDICATE head form two populations does repair that ticket's
+    /// fixture — but the DECISION is kind-aware while PLACEMENT is not, and placement is
+    /// ordinary name resolution, which maps one name to one symbol per scope. Measured:
+    /// `namespace qlib { rule f(2); sort Rec { rule f() <=> 1; rule f(3) } }` then decides
+    /// `rule f(3)` a clause of `qlib.f` and PLACES it on `qlib.Rec.f`, because the
+    /// equation minted a local `f` there that shadows — so `qlib.f(3)` answers 0 and
+    /// `qlib.Rec.f(3)` answers 1, while renaming the equation to `other` gives 1 and 0.
+    /// One token, an unrelated clause moved. That is D0EXD one coordinate over, and it
+    /// shares a root with WI-20260820-JR7BB: the decision does not place the clause.
+    verdicts: HashMap<(ScopeId, &'f str, SourceId), Owned>,
+}
+
+/// One name's candidate scopes and the files each writes a head in.
+type Candidates = Vec<(ScopeId, SmallVec<[SourceId; 2]>)>;
+
+impl<'f> Ownership<'f> {
+    /// Decide every head, reading the pre-mint table only. `sentinels` is indexed by the
+    /// same order as `scopes_in_play`.
+    fn decide(
+        kb: &KnowledgeBase,
+        sites: &[RuleHeadSite<'f>],
+        denotes: &[bool],
+        source_ids: &[SourceId],
+        global: ScopeId,
+        sentinels: &HashMap<ScopeId, Symbol>,
+    ) -> Self {
+        // Candidate scopes PER NAME. A head whose name already denoted introduces
+        // nothing — it is a clause about that thing — so it is not a candidate and does
+        // not appear in any overlay.
+        let mut by_name: HashMap<&'f str, HashMap<ScopeId, SmallVec<[SourceId; 2]>>> =
+            HashMap::new();
+        for (site, &denoted) in sites.iter().zip(denotes) {
+            if denoted {
+                continue;
+            }
+            by_name
+                .entry(site.name)
+                .or_default()
+                .entry(site.scope)
+                .or_default()
+                .push(source_ids[site.file_idx]);
+        }
+
+        let mut verdicts = HashMap::new();
+        for (name, scopes) in &by_name {
+            let candidates: Candidates = {
+                // A DETERMINISTIC ORDER, so a tie broken by position cannot vary with
+                // the hash map's iteration. Nothing below should depend on it — this is
+                // the belt to the braces.
+                let mut v: Candidates = scopes.iter().map(|(s, f)| (*s, f.clone())).collect();
+                v.sort_by_key(|(s, _)| kb.scope_display_name(*s).to_owned());
+                v
+            };
+            let owners = Self::owners_for(kb, name, &candidates, global, sentinels);
+            for (scope, files) in &candidates {
+                for file in files {
+                    let verdict = if owners.contains(scope) {
+                        Owned::Here
+                    } else {
+                        match Self::reach(kb, name, *scope, *file, &owners, global, sentinels) {
+                            // UNREACHABLE BY CONSTRUCTION, and stated rather than
+                            // silently folded: rule 1 gives ownership to any scope with
+                            // a file that reaches nothing, so a yielding site always
+                            // reaches something. If it ever did not, the clause would
+                            // land on the WI-476 bare intern — the hole the caller's
+                            // agreement check reports.
+                            Reach::Nothing => Owned::Yields(None),
+                            Reach::Declaration => Owned::Yields(None),
+                            Reach::Scopes(v) => Owned::Yields(v.first().copied()),
+                        }
+                    };
+                    verdicts.insert((*scope, *name, *file), verdict);
+                }
+            }
+        }
+        Self { verdicts }
+    }
+
+    /// The owner set for ONE name — the fixpoint described on the type.
+    fn owners_for(
+        kb: &KnowledgeBase,
+        name: &str,
+        candidates: &Candidates,
+        global: ScopeId,
+        sentinels: &HashMap<ScopeId, Symbol>,
+    ) -> HashSet<ScopeId> {
+        let all: HashSet<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
+        let mut owners: HashSet<ScopeId> = HashSet::new();
+        let mut undecided: Vec<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
+        let files_of = |scope: ScopeId| -> SmallVec<[SourceId; 2]> {
+            candidates
+                .iter()
+                .find(|(s, _)| *s == scope)
+                .map(|(_, f)| f.clone())
+                .unwrap_or_default()
+        };
+
+        // THE OPTIMISTIC REACH, COMPUTED ONCE. `reach(.., &all, ..)` does not depend on
+        // `owners`, so it is the same in every round — and it was being recomputed inside
+        // the loop, which put an extra factor of n on the whole decision (n reach calls
+        // per round, n rounds). Both readers below take it from here: rule 1 asks whether
+        // it is empty, and rule 3's edge set asks which scopes it names.
+        let optimistic: HashMap<ScopeId, Vec<Reach>> = candidates
+            .iter()
+            .map(|(s, files)| {
+                let per_file = files
+                    .iter()
+                    .map(|f| Self::reach(kb, name, *s, *f, &all, global, sentinels))
+                    .collect();
+                (*s, per_file)
+            })
+            .collect();
+
+        // RULE 1, once: a scope some of whose files reach nothing even with every other
+        // candidate treated as an owner can never be made to reach something.
+        undecided.retain(|&s| {
+            let blind = optimistic[&s].iter().any(Reach::is_nothing);
+            if blind {
+                owners.insert(s);
+            }
+            !blind
+        });
+
+        while !undecided.is_empty() {
+            // RULE 2: yields as soon as EVERY file sees a settled owner.
+            let before = undecided.len();
+            undecided.retain(|&s| {
+                !files_of(s).iter().all(|f| {
+                    !Self::reach(kb, name, s, *f, &owners, global, sentinels).is_nothing()
+                })
+            });
+            if undecided.len() < before {
+                continue;
+            }
+
+            // RULE 3: a tie. Break it inside ONE strongly-connected component — the
+            // members that can each still see each other — and never across the whole
+            // undecided set. Scanning wider was measured to let a scope in no cycle at
+            // all decide a cycle's winner and delete another scope's predicate.
+            let live: HashSet<ScopeId> = undecided.iter().copied().collect();
+            let edges: HashMap<ScopeId, HashSet<ScopeId>> = undecided
+                .iter()
+                .map(|&s| {
+                    let mut out: HashSet<ScopeId> = HashSet::new();
+                    for r in &optimistic[&s] {
+                        if let Reach::Scopes(v) = r {
+                            out.extend(v.iter().copied().filter(|t| live.contains(t)));
+                        }
+                    }
+                    (s, out)
+                })
+                .collect();
+            let component = Self::sink_component(&undecided, &edges);
+
+            // Inside the component, "outermost-first" is the only thing that names a
+            // winner — asked of the real enclosing edges, never of the printed address.
+            let enclosed: Vec<ScopeId> = component
+                .iter()
+                .copied()
+                .filter(|&inner| {
+                    component
+                        .iter()
+                        .any(|&outer| outer != inner && kb.symbols.encloses(outer, inner))
+                })
+                .collect();
+            for s in &component {
+                if !enclosed.contains(s) {
+                    owners.insert(*s);
+                }
+            }
+            // An enclosed member is settled too: it yields to the enclosing member that
+            // just became an owner. Removing the whole component is what guarantees
+            // progress, so the loop cannot spin.
+            undecided.retain(|s| !component.contains(s));
+        }
+        owners
+    }
+
+    /// A strongly-connected component of `edges` with no edge leaving it — the one whose
+    /// members' answers depend on nothing still undecided, so it can be settled now.
+    ///
+    /// Mutual reachability by transitive closure rather than Tarjan: the node set here is
+    /// the scopes writing ONE name, which the corpus census puts in single digits, and an
+    /// iterative closure has no recursion to overflow.
+    fn sink_component(
+        undecided: &[ScopeId],
+        edges: &HashMap<ScopeId, HashSet<ScopeId>>,
+    ) -> Vec<ScopeId> {
+        let reaches = |from: ScopeId| -> HashSet<ScopeId> {
+            let mut seen = HashSet::new();
+            let mut stack = vec![from];
+            while let Some(n) = stack.pop() {
+                for &t in edges.get(&n).into_iter().flatten() {
+                    if seen.insert(t) {
+                        stack.push(t);
+                    }
+                }
+            }
+            seen
+        };
+        let closure: HashMap<ScopeId, HashSet<ScopeId>> =
+            undecided.iter().map(|&s| (s, reaches(s))).collect();
+        let component_of = |s: ScopeId| -> Vec<ScopeId> {
+            let mut c: Vec<ScopeId> = undecided
+                .iter()
+                .copied()
+                .filter(|&t| {
+                    t == s
+                        || (closure[&s].contains(&t) && closure[&t].contains(&s))
+                })
+                .collect();
+            c.sort_by_key(|x| x.owner().index());
+            c
+        };
+        for &s in undecided {
+            let c = component_of(s);
+            let leaves = c
+                .iter()
+                .any(|m| edges[m].iter().any(|t| !c.contains(t)));
+            if !leaves {
+                return c;
+            }
+        }
+        // Every component has an outgoing edge, which for a finite graph means a cycle
+        // among components — impossible, since components are maximal. Kept as a defined
+        // answer rather than an `unreachable!`: settling the first node alone still makes
+        // progress, so the loop terminates either way.
+        vec![undecided[0]]
+    }
+
+    /// What a head named `name`, written at `scope` in `file`, can SEE — with `owners`
+    /// overlaid as though their rule heads were already symbols.
+    fn reach(
+        kb: &KnowledgeBase,
+        name: &str,
+        scope: ScopeId,
+        file: SourceId,
+        owners: &HashSet<ScopeId>,
+        global: ScopeId,
+        sentinels: &HashMap<ScopeId, Symbol>,
+    ) -> Reach {
+        let previous = kb.symbols.set_asking_file(Some(file));
+        let overlay = |s: ScopeId| -> Option<Symbol> {
+            // `<global>` IS NEVER YIELDED TO. It is the one scope every file shares and
+            // nobody opts into, so a name introduced there must not absorb a head
+            // written inside some namespace — measured, the stdlib's `modus_ponens`
+            // ceased to exist and its axiom became a clause of a one-line user file's
+            // predicate. It may still OWN what is written at it, which is why the
+            // exclusion lives here and not in the candidate set.
+            if s == global || s == scope || !owners.contains(&s) {
+                return None;
+            }
+            sentinels.get(&s).copied()
+        };
+        let found = kb
+            .symbols
+            .resolve_captured_name_with_overlay(name, scope, &overlay);
+        kb.symbols.set_asking_file(previous);
+        let of_symbol = |sym: Symbol| -> Option<ScopeId> {
+            sentinels
+                .iter()
+                .find(|(_, v)| **v == sym)
+                .map(|(k, _)| *k)
+        };
+        match found {
+            ResolveResult::NotFound => Reach::Nothing,
+            ResolveResult::Found(sym) => match of_symbol(sym) {
+                Some(s) => Reach::Scopes(SmallVec::from_elem(s, 1)),
+                None => Reach::Declaration,
+            },
+            ResolveResult::Ambiguous(cands) => {
+                let scopes: SmallVec<[ScopeId; 2]> =
+                    cands.iter().filter_map(|s| of_symbol(*s)).collect();
+                // A REAL symbol among the candidates means an ordinary declaration is
+                // one of the things the name reaches, so the head is a clause of it
+                // either way; the ambiguity itself is reported at the reference
+                // (§"the same ladder, to the rung", WI-900).
+                if scopes.len() < cands.len() && scopes.is_empty() {
+                    Reach::Declaration
+                } else {
+                    Reach::Scopes(scopes)
+                }
+            }
+        }
+    }
+
+    fn verdict(&self, scope: ScopeId, name: &'f str, file: SourceId) -> Owned {
+        // A head whose name ALREADY denoted is not in the map: it introduces nothing.
+        self.verdicts
+            .get(&(scope, name, file))
+            .copied()
+            .unwrap_or(Owned::Yields(None))
+    }
+}
+
+/// Mint one sentinel per scope that writes a rule head — before [`Ownership`] takes the
+/// KB immutably, since interning needs it mutably.
+fn mint_head_sentinels(
+    kb: &mut KnowledgeBase,
+    sites: &[RuleHeadSite<'_>],
+) -> HashMap<ScopeId, Symbol> {
+    let mut scopes: Vec<ScopeId> = sites.iter().map(|s| s.scope).collect();
+    scopes.sort_by_key(|s| s.owner().index());
+    scopes.dedup();
+    scopes
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| (s, kb.intern(&head_present_sentinel(i))))
+        .collect()
+}
+
+/// Sub-pass 3, PHASE 1 — read each rule head's introduced name and remember WHERE it
+/// is written. Takes no decision and mints nothing, so nothing it does depends on the
+/// order it runs in; [`scan_rule_goal`] is the mint.
+///
+/// WI-953: it carries an `errors` vec. Sub-pass 3 never had one, which is why its
+/// missing-scope arm could not report even in principle — the subtree's rule heads
+/// went unregistered and the load reported success.
+struct RuleHeadCollectPass<'a, 'f> {
+    kb: &'a KnowledgeBase,
+    parse_sym: &'f crate::intern::SymbolTable,
+    parse_terms: &'f SimpleTermStore,
+    file_idx: usize,
+    sites: &'a mut Vec<RuleHeadSite<'f>>,
     errors: &'a mut Vec<LoadError>,
 }
 
-impl ScopePass for RuleHeadPass<'_> {
+impl<'f> RuleHeadCollectPass<'_, 'f> {
+    fn collect(&mut self, r: &Rule, scope: ScopeId, prefix: &str) {
+        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
+        let Some((name, introduced_by)) = rule_introduced_functor_name(r, parse_sym, parse_terms)
+        else {
+            return;
+        };
+        self.sites.push(RuleHeadSite {
+            file_idx: self.file_idx,
+            scope,
+            prefix: prefix.to_owned(),
+            name,
+            introduced_by,
+            span: r.span,
+        });
+    }
+}
+
+impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
     fn parse_symbols(&self) -> &crate::intern::SymbolTable {
         self.parse_sym
     }
@@ -6925,12 +7576,11 @@ impl ScopePass for RuleHeadPass<'_> {
     }
 
     fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
-        let (kb, parse_sym, parse_terms) = (&mut *self.kb, self.parse_sym, self.parse_terms);
         match item {
-            Item::Rule(r) => scan_rule_goal(kb, r, parse_sym, parse_terms, scope, prefix),
+            Item::Rule(r) => self.collect(r, scope, prefix),
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    scan_rule_goal(kb, rule, parse_sym, parse_terms, scope, prefix);
+                    self.collect(rule, scope, prefix);
                 }
             }
             _ => {}
@@ -14967,7 +15617,22 @@ impl<'a> Loader<'a> {
             span,
             scope_name: self.scope_display_name(),
         });
-        self.kb.symbols.intern(name)
+        // A CANDIDATE, NOT A FRESH INTERN — the load has already failed, and what this
+        // returns only has to keep the KB structurally consistent until the caller
+        // discards it. `intern(name)` did not: it mints a symbol keyed on the SHORT
+        // name, which for a top-level candidate is also its qualified name, so the
+        // result was a second symbol with the SAME FQN. Measured, that aborted the
+        // process on `assert_rule_debruijn_with_nodes`' WI-581 `debug_assert_eq!`
+        // ("head functor … is a non-canonical same-FQN copy of resolved symbol"), and in
+        // release — where the assert is compiled out — stored the clause under a
+        // divergent functor that, in that assert's own words, "silently no-matches in
+        // both rule-firing indexes". `Ambiguous` carries at least two candidates, so
+        // `first()` always answers; which one is immaterial, since the error above is
+        // what the caller acts on.
+        candidates
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.kb.symbols.intern(name))
     }
 
     /// Strict scope-aware symbol resolution: errors on unresolved names.
@@ -25323,13 +25988,29 @@ end
     fn the_rule_head_pass_reports_a_scope_the_define_pass_never_defined() {
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
-        let file = parsed();
+        // ITS OWN FIXTURE, not the shared `SRC` — and the extra line is the point.
+        // WI-980's `sites` assertion below is vacuous over `SRC`, whose only rule sits
+        // INSIDE `demo`: the subtree is abandoned, so `sites` is empty whether or not
+        // collection works at all. `at_the_top` is a site the same walk DOES reach, so
+        // the pair distinguishes "the subtree was abandoned" from "collection is dead
+        // code". It lives here rather than in the shared `SRC` so this module's other
+        // rows keep the fixture they were written against.
+        const SRC_WITH_A_REACHED_HEAD: &str = "\
+namespace demo
+  rule reddish(?s) :- Red(shade: ?s)
+end
+rule at_the_top(1)
+";
+        let file = parse::parse(SRC_WITH_A_REACHED_HEAD).expect("parse");
         let global = kb.global_scope();
         let mut errors = Vec::new();
-        let mut pass = RuleHeadPass {
-            kb: &mut kb,
+        let mut sites = Vec::new();
+        let mut pass = RuleHeadCollectPass {
+            kb: &kb,
             parse_sym: &file.symbols,
             parse_terms: &file.terms,
+            file_idx: 0,
+            sites: &mut sites,
             errors: &mut errors,
         };
         walk_scopes(&mut pass, &file.items, global);
@@ -25338,6 +26019,16 @@ end
             missed(&errors),
             vec!["demo".to_string()],
             "sub-pass 3 now has a channel, and uses it"
+        );
+        // WI-980 — the DESCENT is what reports, and it is phase 1. The abandoned
+        // subtree's `reddish` contributes NO site while the top-level head, which the
+        // same walk reaches, contributes exactly one.
+        let collected: Vec<(&str, &str)> =
+            sites.iter().map(|s| (s.prefix.as_str(), s.name)).collect();
+        assert_eq!(
+            collected,
+            vec![("", "at_the_top")],
+            "the reached head is collected and the abandoned subtree's is not"
         );
     }
 

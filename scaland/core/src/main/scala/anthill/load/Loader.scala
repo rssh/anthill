@@ -113,6 +113,31 @@ object Loader:
     autoImportPrelude(kb)
 
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898).
+    //
+    // DIVERGES FROM RUSTLAND — WI-980 / 059 R6 IS NOT PORTED HERE, and the absence is a
+    // gap, not a shape scaland lacks. OWNED BY WI-20260821-SBZ2A, which carries the
+    // algorithm and the acceptance rows. `scanRuleGoal`'s guard below asks whether the name
+    // ALREADY DENOTES, and this loop mints as it walks, so the table it reads is the one
+    // it is filling: `namespace demo { rule p(1); sort Rec { rule p(2) } }` is ONE
+    // predicate with two clauses, and moving `rule p(1)` below the sort makes it TWO.
+    // Rustland now decides it on a question the pass cannot move — does some scope this
+    // one can SEE already INTRODUCE the name — answered by `Ownership` over
+    // `SymbolTable.resolve_captured_name_with_overlay`, which runs the resolver's OWN
+    // walk over an overlay of the program's rule heads (a second traversal built from
+    // the parent-eligibility filter alone refused three programs that load clean).
+    //
+    // A ROUND-BASED FIXPOINT, not a recursion: the relation is non-monotone (the more
+    // scopes own a name, the more heads yield, so the fewer own it), so a demand-driven
+    // recursion has to break cycles provisionally, and caching anything computed under
+    // such a break reintroduced the very order dependence — measured, six permutations
+    // of three files gave two different programs. Three rules instead: a scope that can
+    // see nothing even optimistically OWNS; a scope that sees a settled owner from every
+    // file YIELDS; and a remaining tie is broken inside ONE strongly-connected
+    // component, by real enclosing edges, never across the whole undecided set.
+    // `<global>` may own what is written at it and is never yielded to.
+    //
+    // docs/kernel-language.md §"A rule head functor is resolved, not declared" states
+    // the rule for BOTH implementations; this one does not yet meet it.
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(RuleHeadPass(kb, file.symbols, file.terms, errors), file.items)

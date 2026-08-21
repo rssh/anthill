@@ -222,8 +222,10 @@ end
 // same namespace also declares"), and the pair is refused either way, always
 // naming the member. [`rule_capture_is_refused_written_after_the_rule`] and
 // [`rule_capture_is_refused_written_before_the_rule`] are the two text orders, and
-// that they agree is the point: R6/WI-980 leaves a rule head's BINDING order-
-// dependent, so a check reading it had to be shown not to inherit that.
+// that they agree is the point: a rule head's BINDING was order-dependent when these
+// rows were written (R6/WI-980, since delivered), so a check reading it had to be shown
+// not to inherit that. The rows stay — they are what shows the two questions are
+// separate, and they would go red if this check ever started reading the mint.
 //
 // AND THE MESSAGE HAD TO LEARN A SECOND ORIGIN (WI-939). A rule head is resolved,
 // not declared (§8.6, WI-896), so `f` here is in no `DeclSite` and the refusal
@@ -307,7 +309,7 @@ fn rule_capture_is_refused_written_after_the_rule() {
 #[test]
 fn rule_capture_is_refused_written_before_the_rule() {
     // THE OTHER TEXT ORDER, sort first. Same refusal: the check runs after pass 2
-    // over the finished KB, so it does not inherit R6/WI-980's order-dependent
+    // over the finished KB, so it never inherited R6/WI-980's then order-dependent
     // reading of where a rule head binds.
     //
     // BACKED OUT: this test FAILS — the fixture loads clean.

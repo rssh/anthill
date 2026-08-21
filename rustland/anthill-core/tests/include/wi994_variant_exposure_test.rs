@@ -137,11 +137,24 @@ end
             "ambiguous symbol 'guarded' in scope 'wi994.amb': candidates \
              [\"anthill.prelude.EffectExpression.guarded\", \
              \"anthill.reflect.LogicalQuery.guarded\"]",
-            // …and the cascade behind it, pinned so a later change to the
-            // ambiguity's blast radius is visible rather than silent.
-            "'guarded' has no field 'label' (declares: query, condition)",
-            "'guarded' has no field 'guard' (declares: query, condition)",
-            "type mismatch in guarded.apply: expected known operation or arrow-typed variable",
+            // THE CASCADE IS GONE, and this note is the "visible rather than silent"
+            // the previous version of this comment asked for. It used to pin three more
+            //   'guarded' has no field 'label' (declares: query, condition)
+            //   'guarded' has no field 'guard' (declares: query, condition)
+            //   type mismatch in guarded.apply: expected known operation or arrow-typed variable
+            // — all three, as the note above says, ABOUT THE WRONG SORT. They existed
+            // because `push_ambiguous_symbol` used to answer with `intern(name)`, a bare
+            // symbol carrying no sort at all, so every later reader re-diagnosed the
+            // reference it could not resolve. WI-980 made it answer with one of the real
+            // candidates instead — it had to, because for a TOP-LEVEL candidate the bare
+            // intern is a second symbol with the same qualified name, and storing a rule
+            // head under it aborted the process on the WI-581 assert. A real candidate
+            // has the fields, so the follow-on questions simply do not arise.
+            //
+            // WHICH candidate is arbitrary and the fix says so; what is NOT arbitrary is
+            // that it is one of the two the user is being asked to choose between. The
+            // count dropping from five to two is therefore the blast radius SHRINKING to
+            // the one error that names the actual choice.
         ],
     );
 }
