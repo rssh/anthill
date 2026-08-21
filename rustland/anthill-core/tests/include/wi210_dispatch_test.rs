@@ -309,10 +309,25 @@ fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Subs
 /// Read `rustland/anthill-todo/anthill/store.anthill` and load it on top of stdlib + rustland
 /// bindings. Used by the WorkItemStore dispatch tests below.
 fn load_with_store() -> KnowledgeBase {
-    let path = crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
-    let src =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    load_with(&src)
+    load_with(&bundle_sources(&["coordination.anthill", "store.anthill"]))
+}
+
+/// The named bundle assets, concatenated. WI-1117: `store.anthill` imports
+/// `MirrorEntry` from `coordination.anthill`, so the two travel together — the
+/// DECLARATION only, since its rust binding names host functions only the
+/// anthill-todo binary registers.
+fn bundle_sources(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|name| {
+            let path = crate::common::workspace_root()
+                .join("rustland/anthill-todo/anthill")
+                .join(name);
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Run dispatch for `WorkItemStore.<op_short>` at the State=WIS binding;
@@ -718,15 +733,11 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     use smallvec::SmallVec;
     // Exercises the typer's check_apply path end-to-end (parse → unify →
     // dispatch), not just the manual-subst entry point above.
-    let domain_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
-    )
-    .expect("read domain.anthill");
-    let store_src = std::fs::read_to_string(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"),
-    )
-    .expect("read store.anthill");
-    let combined = format!("{domain_src}\n{store_src}");
+    let combined = bundle_sources(&[
+        "domain.anthill",
+        "coordination.anthill",
+        "store.anthill",
+    ]);
 
     let mut kb = load_with(&combined);
     let commit_sym = kb

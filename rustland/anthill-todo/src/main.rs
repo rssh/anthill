@@ -14,6 +14,7 @@ use anthill_core::parse::ir::ParsedFile;
 use smallvec::SmallVec;
 
 mod anthill_bundle;
+mod forge;
 
 static SKILL_MD: &str = r#"---
 name: anthill-todo
@@ -434,7 +435,7 @@ fn collect_mapping_facts(
                     "SatelliteList" => out.lists.push(document::SatelliteListSpec {
                         functor: functor_of("functor", "SatelliteList")?,
                         named: field("named", "SatelliteList")?,
-                        field: field("field", "SatelliteList")?,
+                        fields: ir_string_list(pf, named_args, "fields"),
                         key: field("key", "SatelliteList")?,
                     }),
                     _ => {}
@@ -1083,9 +1084,14 @@ fn check_covers_every_retracted_functor(
         .iter()
         .map(|s| interp.kb().qualified_name_of(*s))
         .collect();
+    let mirrored = project_is_mirrored(interp);
     let required: Vec<&str> = STORED_FUNCTORS
         .iter()
-        .filter(|(_, r)| *r == Retracted::Yes)
+        .filter(|(_, r)| match r {
+            Retracted::Yes => true,
+            Retracted::No => false,
+            Retracted::WhenMirrored => mirrored,
+        })
         .map(|(name, _)| *name)
         .collect();
     let missing: Vec<&str> = required
@@ -3008,29 +3014,69 @@ fn default_binding(
 /// flagged with whether the bundle also RETRACTS its rows.
 ///
 /// The flag is `store.anthill` §0's `non_monotone` set, read from the other side:
-/// `WorkItem` (forget / replace), `Feedback` (forget, since WI-1123) and `Tag`
-/// (forget / untag_item). `StoreFormat` is persisted and never retracted.
+/// `WorkItem` (forget / replace), `Feedback` (forget, since WI-1123), `Tag`
+/// (forget / untag_item) and `MirrorEntry` (forget, since WI-1117 — but only a
+/// project with a mirror can hold one, so its coverage is required only there).
+/// `StoreFormat` is persisted and never retracted.
 ///
 /// ONE LIST, TWO READERS, deliberately: `default_binding` takes every name, and
 /// [`check_covers_every_retracted_functor`] takes the flagged ones. Kept apart they
 /// drift, and the drift is silent in the direction that matters — a functor added
 /// to the default while the guard still names three.
-const STORED_FUNCTORS: [(&str, Retracted); 4] = [
+const STORED_FUNCTORS: [(&str, Retracted); 5] = [
     ("anthill.stage0.WorkItem", Retracted::Yes),
     ("anthill.stage0.Feedback", Retracted::Yes),
     ("anthill.stage0.Tag", Retracted::Yes),
+    // WI-1117: `export` persists the link, and `forget` retracts it with the item
+    // it names — the same cascade, and for the same reason, as the two above.
+    ("anthill.stage0.MirrorEntry", Retracted::WhenMirrored),
     ("anthill.stage0.StoreFormat", Retracted::No),
 ];
 
-/// Whether the bundle ever asks the store to remove a functor's rows.
+/// Whether the bundle ever asks the store to remove a functor's rows — and, for
+/// one of them, whether that can happen in THIS project at all.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Retracted {
     Yes,
     No,
+    /// Retracted, but only a project WITH A MIRROR can hold such a row: `export`
+    /// is the only thing that writes one (WI-1117). Requiring coverage
+    /// unconditionally would refuse, at startup, every existing project that has
+    /// no mirror and cannot reach the failure the requirement exists to prevent
+    /// — a false alarm on a tracker where nothing is wrong, which is not what
+    /// "loud over silent" asks for.
+    WhenMirrored,
+}
+
+/// Whether this project can hold `MirrorEntry` rows: it declares a mirror to
+/// publish to, or it already carries links from one.
+///
+/// BOTH HALVES, because either alone is reachable. A project that adds a `Mirror`
+/// fact has not exported yet and holds no rows; a project whose mirror was
+/// removed from the config still holds every link the last `export` wrote, and
+/// `delete` would still be asked to retract one.
+///
+/// A read failure answers TRUE. The question is "must coverage be declared", and
+/// the safe answer when it cannot be decided is the one that asks for the
+/// declaration rather than the one that quietly drops the requirement.
+fn project_is_mirrored(interp: &Interpreter) -> bool {
+    use anthill_core::kb::extent::BodiedRulePolicy;
+    ["anthill.stage0.Mirror", "anthill.stage0.MirrorEntry"]
+        .iter()
+        .any(|name| match interp.kb().try_resolve_symbol(name) {
+            None => false,
+            Some(sym) => match interp.kb().read_facts(sym, &[], BodiedRulePolicy::Refuse) {
+                Ok(rows) => !rows.is_empty(),
+                Err(_) => true,
+            },
+        })
 }
 
 /// The file the default store writes to — the same one the loader reads.
 const DEFAULT_STORE_FILE: &str = "workitems.anthill";
+
+/// The per-checkout override of the project's `Mirror.access` (WI-1117).
+const MIRROR_ACCESS_ENV: &str = "ANTHILL_TODO_MIRROR";
 
 /// The `ExtentBinding` `init` scaffolds. Text twin of [`default_binding`].
 const EXAMPLE_BINDING: &str = "\
@@ -3040,7 +3086,7 @@ fact anthill.persistence.ExtentBinding(
     convention: anthill.persistence.filesystem.FileConvention.single_file(
       file: \"workitems.anthill\")),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])";
+  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])";
 
 /// The qualified names of the backends this build provides.
 const INDEXED_FILE_STORE: &str = "anthill.persistence.filesystem.IndexedFileStore";
@@ -3391,6 +3437,41 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         }
     }
 
+    // `ANTHILL_TODO_MIRROR=on|off` REACHES THE BUNDLE AS `--mirror <value>`
+    // (WI-1117, design §3.2). The environment is where a PER-CHECKOUT override
+    // of a project-wide default belongs — a CI test job, an air-gapped machine,
+    // a fork with no write token — and the host is the only side that can see
+    // it, so the translation happens here rather than in anthill.
+    //
+    // ONLY FOR THE TWO COMMANDS THAT DECLARE THE FLAG: `--mirror` on any other
+    // subcommand is an unknown argument, so injecting it unconditionally would
+    // make `ANTHILL_TODO_MIRROR` break every command in the tool.
+    //
+    // AN EXPLICIT FLAG WINS. Someone who typed `--offline` or `--mirror` on the
+    // command line has answered the question for this run, and a second answer
+    // arriving from the environment would silently overrule the one they can see.
+    if matches!(bundle_argv.first().map(String::as_str), Some("export") | Some("import"))
+        && !bundle_argv
+            .iter()
+            .any(|a| a == "--mirror" || a.starts_with("--mirror=") || a == "--offline")
+    {
+        // SET-BUT-EMPTY IS ABSENT. `std::env::var` answers `Ok("")` for
+        // `ANTHILL_TODO_MIRROR=`, which is how a CI system writes a variable it
+        // has no value for — and injecting `--mirror ""` would hard-fail both
+        // commands with "`--mirror ` is neither `on` nor `off`" on a job that
+        // configured nothing.
+        match std::env::var(MIRROR_ACCESS_ENV) {
+            Ok(value) if !value.trim().is_empty() => {
+                // The BUNDLE decides whether the value is legal, and says so
+                // naming the flag. Refusing here would need a second copy of that
+                // rule and a second message that could disagree with it.
+                bundle_argv.push("--mirror".to_string());
+                bundle_argv.push(value);
+            }
+            _ => {}
+        }
+    }
+
     // `--version` / `-V` (any position) and the `version` subcommand print
     // the build stamp and exit (WI-160). Served host-side like `init` /
     // `skill` — no KB load or project directory required, so the stamp is
@@ -3571,6 +3652,18 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     }
 
     let mut kb = KnowledgeBase::new();
+    // THE FORGE HOST FUNCTIONS, AND THEY GO IN BEFORE THE LOAD (WI-1117/WI-1122).
+    // `coordination.anthill`'s binding block names five functions this crate owns
+    // — anthill-core's `HOST_FNS` is a closed slice that knows nothing about
+    // forges — and the seam seals its registry when the loader builds its mapping
+    // cache, so registering after `load_all` is refused. It has to be here even
+    // for a project with no mirror at all: the mapping is in the BUNDLE, and an
+    // unknown key stops every interpreter built for the program, including the
+    // scratch one each bridged evaluation makes.
+    if let Err(e) = forge::register(&mut kb, &scan_dir(&project_dir)) {
+        eprintln!("error: {e}");
+        return runner::EXIT_COMPILE;
+    }
     let all_refs: Vec<&ParsedFile> = stdlib_parsed
         .iter()
         .chain(bundle_parsed.iter())

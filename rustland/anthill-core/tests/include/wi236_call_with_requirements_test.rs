@@ -42,6 +42,13 @@ fn load_with_driver() -> KnowledgeBase {
     files.push(
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     );
+    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
+    // imports for the delete cascade. The DECLARATION only — its rust binding is a
+    // separate file, and loading that here would demand host functions only the
+    // anthill-todo binary registers.
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
+    );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
     let mut parsed: Vec<_> = files
@@ -241,6 +248,13 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     // now imports (WI-434) — load it before store or the import is unresolved.
     files.push(
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    );
+    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
+    // imports for the delete cascade. The DECLARATION only — its rust binding is a
+    // separate file, and loading that here would demand host functions only the
+    // anthill-todo binary registers.
+    files.push(
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
     );
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 

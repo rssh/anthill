@@ -110,6 +110,33 @@ rule puts 35 descriptions inline and 1092 in a chapter, and moves an author's te
 the moment their prose crosses the line. Length is only a **diagnostic** (§7) —
 a long value in this chapter means a prose field has not been declared as one.
 
+### 3.2.1 Satellite lists
+
+A `SatelliteList` writes **many facts on one line**: one attributes field whose
+value is the elements, separated by `, `.
+
+```
+- tags: wi437, prover
+- mirrors: github:rssh/anthill=42
+```
+
+Each element writes the mapping's `fields` in order, joined by `=` when there is
+more than one. Most satellites have one written field — `Tag` has `name`, and its
+line is exactly what it was before elements could carry two — and the one that has
+two is `MirrorEntry`, which names WHICH external system and WHICH entry there:
+neither half identifies the link on its own.
+
+**The last field takes the remainder on read.** The reader splits an element
+exactly `fields.len() - 1` times from the left, so a value carrying `=` — a URL
+with a query string — reads back whole in the last position. An **earlier** field
+carrying one would move the boundary and re-attribute the halves, so the writer
+refuses it; there is no escape at this position, the same rule and the same reason
+as the `, ` between elements.
+
+**A `ChapterGroup` is not the alternative.** Its body field is prose, so writing
+an opaque external identifier through it would render an id as a paragraph and
+claim to be something it is not.
+
 ### 3.3 Blank lines and field groups
 
 A blank line separates every field line from the next, except that fields named
@@ -462,11 +489,12 @@ namespace anthill.stage0.document
     field     : String)        -- the field carried by the entry body
 
   -- A repeated satellite WITHOUT prose: one attributes field holding a list, one
-  -- fact per element (§3.1).
+  -- fact per element (§3.1). An element writes `fields` in order, joined by `=`
+  -- when there is more than one (§3.2.1).
   entity SatelliteList(
     functor : Term,
-    named   : String,   -- the attributes field
-    field   : String,   -- the field each element fills
+    named   : String,             -- the attributes field
+    fields  : List[T = String],   -- the fields each element fills, in order
     key     : String)   -- the field taking the item's id (§4.3: from the fact)
 
   -- A RECORD-VALUED field written as SIBLING attribute lines (§3.4).
@@ -493,7 +521,13 @@ namespace anthill.stage0.document
     key: "workitem", heading: ["at", "author"], field: "content")
 
   fact SatelliteList(
-    functor: Tag, named: "tags", field: "name", key: "workitem")
+    functor: Tag, named: "tags", fields: ["name"], key: "workitem")
+
+  -- WI-1117, and declared beside the mirror rather than here: the entity and the
+  -- line it is written on belong to the same feature.
+  fact SatelliteList(
+    functor: MirrorEntry, named: "mirrors",
+    fields: ["target", "entry"], key: "workitem")
 end
 ```
 
@@ -505,7 +539,8 @@ documents that lose data.
 
 - **Every field of a mapped functor has exactly one home.** For a `ChapterGroup`,
   `key`, each name in `heading`, and `field` must be distinct and together cover
-  every field of `functor`; for a `SatelliteList`, `key` and `field` must cover it.
+  every field of `functor`; for a `SatelliteList`, `key` and every name in
+  `fields` must cover it.
   A field with no home is silently dropped on write — the failure this rule exists
   for, and the one a satellite gaining a field would otherwise meet. A field may be
   left uncovered only if the declaration gives it an explicit default.

@@ -2079,8 +2079,9 @@ fn prose_text(
     }
 }
 
-/// The value one satellite-list element is written as: its `field`, spelled by
-/// the declared type, or the backticked term when it has no data spelling.
+/// The value one satellite-list element is written as: its declared `fields`,
+/// each spelled by its type (or the backticked term when it has no data
+/// spelling), joined by [`document::ELEMENT_SEPARATOR`].
 ///
 /// A value carrying `, ` would be indistinguishable from two elements, so it has
 /// no data spelling either and takes the term form — which is exactly what
@@ -2097,42 +2098,71 @@ fn list_element_value(
             spec.functor
         )));
     };
-    let value = get_named_arg(kb, named_args, &spec.field).ok_or_else(|| {
-        PersistenceError::Io(format!(
-            "a `{}` row carries no `{}`, and that field IS its written value",
-            spec.functor, spec.field
-        ))
-    })?;
-    let ty = mapping
-        .schema
-        .field_type(&spec.functor, &spec.field)
-        .ok_or_else(|| {
+    // A mapping naming no fields is refused when the mapping is CHECKED, so this
+    // is unreachable through the loader — surfaced rather than left to underflow
+    // `len() - 1` into a panic, because the mapping is data and a second
+    // construction path could reach here without passing that check.
+    let Some(last) = spec.fields.len().checked_sub(1) else {
+        return Err(PersistenceError::Io(format!(
+            "`{}` is mapped as a satellite list naming no fields, so an element of `{}` \
+             would carry nothing",
+            spec.functor, spec.named
+        )));
+    };
+    let mut parts: Vec<String> = Vec::with_capacity(spec.fields.len());
+    for (i, name) in spec.fields.iter().enumerate() {
+        let value = get_named_arg(kb, named_args, name).ok_or_else(|| {
             PersistenceError::Io(format!(
-                "`{}.{}` is not declared, so its value has no spelling",
-                spec.functor, spec.field
+                "a `{}` row carries no `{name}`, and that field IS part of its written value",
+                spec.functor
             ))
         })?;
-    // BOTH SPELLINGS MUST BE COMMA-FREE, and the fallback is the one that is
-    // easy to forget. A satellite list is written as ONE attributes field with
-    // its elements separated by `, `, so an element carrying that separator has
-    // no spelling at all here — not even the backticked term, which the reader
-    // splits before it ever looks for a backtick. Guarding only the data
-    // spelling produced a file this store's own reader refuses.
-    //
-    // REFUSED, rather than encoded: §3.2's "the writer never has to refuse a
-    // value" is about a field of the item's own fact, where the term spelling is
-    // total. This position has no total escape, so the honest answer is to fail
-    // before anything is written.
-    let text = document::spell_write(kb, value, &ty, mapping)
-        .unwrap_or_else(|| document::term_value(kb, value));
-    if text.contains(", ") {
-        return Err(PersistenceError::Io(format!(
-            "a `{}` row's `{}` is {text}, which carries the `, ` that separates the elements \
-             of `{}` — one element would read back as two",
-            spec.functor, spec.field, spec.named
-        )));
+        let ty = mapping
+            .schema
+            .field_type(&spec.functor, name)
+            .ok_or_else(|| {
+                PersistenceError::Io(format!(
+                    "`{}.{name}` is not declared, so its value has no spelling",
+                    spec.functor
+                ))
+            })?;
+        // BOTH SPELLINGS MUST BE COMMA-FREE, and the fallback is the one that is
+        // easy to forget. A satellite list is written as ONE attributes field with
+        // its elements separated by `, `, so an element carrying that separator has
+        // no spelling at all here — not even the backticked term, which the reader
+        // splits before it ever looks for a backtick. Guarding only the data
+        // spelling produced a file this store's own reader refuses.
+        //
+        // REFUSED, rather than encoded: §3.2's "the writer never has to refuse a
+        // value" is about a field of the item's own fact, where the term spelling is
+        // total. This position has no total escape, so the honest answer is to fail
+        // before anything is written.
+        let text = document::spell_write(kb, value, &ty, mapping)
+            .unwrap_or_else(|| document::term_value(kb, value));
+        if text.contains(", ") {
+            return Err(PersistenceError::Io(format!(
+                "a `{}` row's `{name}` is {text}, which carries the `, ` that separates the \
+                 elements of `{}` — one element would read back as two",
+                spec.functor, spec.named
+            )));
+        }
+        // THE LAST FIELD IS EXEMPT, and that is the whole reason the reader
+        // splits a bounded number of times: it takes the remainder, so a URL
+        // with a query string is writable. An EARLIER field carrying the
+        // separator would move the boundary and re-attribute the halves.
+        if i != last && text.contains(document::ELEMENT_SEPARATOR) {
+            return Err(PersistenceError::Io(format!(
+                "a `{}` row's `{name}` is {text}, which carries the `{}` that separates it \
+                 from `{}` inside one element of `{}`",
+                spec.functor,
+                document::ELEMENT_SEPARATOR,
+                spec.fields[i + 1],
+                spec.named
+            )));
+        }
+        parts.push(text);
     }
-    Ok(text)
+    Ok(parts.join(&document::ELEMENT_SEPARATOR.to_string()))
 }
 
 /// The `WI-<YYYYMMDD>-<digest>` part of a MINTED id — everything up to the slug,

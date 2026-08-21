@@ -28,9 +28,14 @@ fn load_stdlib_and_project_kb() -> KnowledgeBase {
     // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus,
     // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — without it store.anthill's import is unresolved.
+    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
+    // imports for the delete cascade. The DECLARATION only — its rust binding is a
+    // separate file, and loading that here would demand host functions only the
+    // anthill-todo binary registers.
     let project_files = vec![
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
     ];
     let parsed: Vec<_> = project_files
         .iter()

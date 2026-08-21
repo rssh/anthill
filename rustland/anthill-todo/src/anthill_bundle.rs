@@ -36,6 +36,24 @@ const BUNDLE_SOURCES: &[(&str, &str)] = &[
         "anthill.stage0.workflow/rules",
         include_str!("../anthill/rules.anthill"),
     ),
+    // The mirror's domain and the `Forge` carrier's contract (WI-1117). Bundled
+    // beside the domain and for the same reason (WI-505): a project's own copy
+    // may predate the entity, and an unresolved import fails the whole load.
+    // Loads AFTER the domain — `MirrorEntry` is a stage0 entity like `Tag`, and
+    // the `document` namespace's mapping facts name it.
+    (
+        "anthill.stage0/coordination",
+        include_str!("../anthill/coordination.anthill"),
+    ),
+    // The rust binding for the `Forge` carrier, SEPARATE from its declaration —
+    // that file's header says why, and it is not tidiness: a binding block naming
+    // a host function the runtime does not have is fatal for the whole program,
+    // and anthill-core's own type-check fixtures load the declaration without
+    // this binary behind it.
+    (
+        "anthill.stage0/coordination_rust",
+        include_str!("../anthill/coordination_rust.anthill"),
+    ),
     (
         "anthill-todo/store",
         include_str!("../anthill/store.anthill"),

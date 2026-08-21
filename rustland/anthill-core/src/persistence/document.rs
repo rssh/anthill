@@ -113,8 +113,16 @@ pub struct SatelliteListSpec {
     pub functor: String,
     /// The attributes field the list is written as.
     pub named: String,
-    /// The field each element fills.
-    pub field: String,
+    /// The fields each element fills, in written order, joined by
+    /// [`ELEMENT_SEPARATOR`] when there is more than one.
+    ///
+    /// USUALLY ONE, AND THAT CASE IS UNCHANGED (`Tag` writes `- tags: a, b`).
+    /// More than one is what lets a satellite whose identity needs two data
+    /// carry both without a chapter: `MirrorEntry` names WHICH external system
+    /// and WHICH entry there, and neither half means anything alone (WI-1117).
+    /// The alternative — a `ChapterGroup`, whose body field is prose — would
+    /// have written an opaque external id as a paragraph.
+    pub fields: Vec<String>,
     pub key: String,
 }
 
@@ -445,7 +453,18 @@ impl DocumentMapping {
             })?;
         }
         for l in &self.lists {
-            self.check_covers(&l.functor, vec![l.key.clone(), l.field.clone()])?;
+            if l.fields.is_empty() {
+                return Err(format!(
+                    "`{}` is written as a satellite list naming no fields, so its elements \
+                     would carry nothing",
+                    l.functor
+                ));
+            }
+            self.check_covers(&l.functor, {
+                let mut homes = vec![l.key.clone()];
+                homes.extend(l.fields.iter().cloned());
+                homes
+            })?;
             if self.slot_of(item, &l.named).is_some() {
                 return Err(format!(
                     "`{}` writes the attributes field `{}`, which is also a field of `{item}`",
@@ -715,6 +734,19 @@ pub const HEADING_SEPARATOR: &str = " — ";
 
 /// The prefix marking a heading field value that has no literal spelling (§4.3).
 pub const B64_PREFIX: &str = "b64:";
+
+/// The separator BETWEEN the fields of one satellite-list element, written only
+/// when a [`SatelliteListSpec`] names more than one — so a one-field list (`Tag`)
+/// is byte-for-byte what it was before multi-field elements existed (WI-1117).
+///
+/// `=` and not `:`, because the values on both sides are external identifiers and
+/// a URL carries `:` in its scheme. Only the fields BEFORE the last must avoid it:
+/// the reader splits from the left exactly `fields.len() - 1` times, so the last
+/// field takes the remainder and may hold as many `=` as it likes (a query string
+/// does). The writer refuses an earlier field that carries one — there is no
+/// escape at this position, the same rule and the same reason as the `, ` between
+/// elements.
+pub const ELEMENT_SEPARATOR: char = '=';
 
 /// A value longer than this in the attributes chapter is a diagnostic: a prose
 /// field wants declaring as a chapter (§4.2). Not a rule — length decides
@@ -1625,27 +1657,71 @@ pub fn document_facts(
     // one constructor call at the end.
     let mut args: Vec<String> = Vec::new();
     let mut nested: Vec<(String, String, Vec<String>)> = Vec::new();
-    let mut satellites: Vec<(&SatelliteListSpec, Vec<String>)> = Vec::new();
+    // Per declared list: its spec, and one entry per element holding that
+    // element's fields already spelled, in the spec's order.
+    let mut satellites: Vec<(&SatelliteListSpec, Vec<Vec<String>>)> = Vec::new();
 
     for line in &doc.attributes {
         if let Some(spec) = mapping.list_named(&line.key) {
             // A satellite list is one attributes field holding many facts.
-            let ty = mapping
-                .schema
-                .field_type(&spec.functor, &spec.field)
-                .unwrap_or(FieldType::Text);
+            //
+            // THE SAME GUARD THE WRITER HAS, and it must be here too rather than
+            // left to `DocumentMapping::check`: `splitn(0, sep)` yields ZERO
+            // parts, so the arity test below reads `0 != 0` and PASSES — every
+            // element would be accepted carrying nothing, and the fact emitted
+            // with only its key. Silent, and the one shape the count check
+            // cannot catch by itself.
+            if spec.fields.is_empty() {
+                out.faults.push(DocumentFault::blocking(format!(
+                    "line {}: `{}` is mapped as a satellite list naming no fields, so its                      elements would carry nothing",
+                    line.line, line.key
+                )));
+                continue;
+            }
             let mut elements = Vec::new();
             let mut bad = false;
             for e in line.value.split(", ").filter(|e| !e.trim().is_empty()) {
-                match spell_read(e.trim(), &ty, mapping) {
-                    Ok(text) => elements.push(text),
-                    Err(message) => {
-                        out.faults.push(DocumentFault::blocking(format!(
-                            "line {}: `{}`: {message}",
-                            line.line, line.key
-                        )));
-                        bad = true;
+                // SPLIT EXACTLY `fields.len() - 1` TIMES, from the left, so the
+                // LAST field takes the remainder — an external id carrying the
+                // separator (a URL query string) reads back whole. Too FEW parts
+                // is a fault rather than a short fact: a `MirrorEntry` missing
+                // its target names no system, and inventing an empty one would
+                // make the row silently unmatchable at the next export.
+                let parts: Vec<&str> = e.trim().splitn(spec.fields.len(), ELEMENT_SEPARATOR).collect();
+                if parts.len() != spec.fields.len() {
+                    out.faults.push(DocumentFault::blocking(format!(
+                        "line {}: `{}`: the element `{}` carries {} of `{}`'s {} written \
+                         field(s) ({}), which are separated by `{ELEMENT_SEPARATOR}`",
+                        line.line,
+                        line.key,
+                        e.trim(),
+                        parts.len(),
+                        spec.functor,
+                        spec.fields.len(),
+                        spec.fields.join(", "),
+                    )));
+                    bad = true;
+                    continue;
+                }
+                let mut spelled = Vec::with_capacity(parts.len());
+                for (name, part) in spec.fields.iter().zip(parts) {
+                    let ty = mapping
+                        .schema
+                        .field_type(&spec.functor, name)
+                        .unwrap_or(FieldType::Text);
+                    match spell_read(part.trim(), &ty, mapping) {
+                        Ok(text) => spelled.push(text),
+                        Err(message) => {
+                            out.faults.push(DocumentFault::blocking(format!(
+                                "line {}: `{}`: its `{name}` {message}",
+                                line.line, line.key
+                            )));
+                            bad = true;
+                        }
                     }
+                }
+                if !bad {
+                    elements.push(spelled);
                 }
             }
             if !bad {
@@ -1728,10 +1804,12 @@ pub fn document_facts(
 
     for (spec, elements) in satellites {
         for e in elements {
-            out.source.push_str(&format!(
-                "fact {}({}: {id_literal}, {}: {e})\n",
-                spec.functor, spec.key, spec.field
-            ));
+            let mut args = vec![format!("{}: {id_literal}", spec.key)];
+            for (name, text) in spec.fields.iter().zip(e) {
+                args.push(format!("{name}: {text}"));
+            }
+            out.source
+                .push_str(&format!("fact {}({})\n", spec.functor, args.join(", ")));
         }
     }
 
@@ -2536,7 +2614,7 @@ mod tests {
             lists: vec![SatelliteListSpec {
                 functor: "Tag".into(),
                 named: "tags".into(),
-                field: "name".into(),
+                fields: vec!["name".into()],
                 key: "workitem".into(),
             }],
             flat_records: vec![FlatRecordSpec {
@@ -2635,6 +2713,144 @@ delivered.
         assert!(
             DOC[seg.body.clone()].contains("### the id has three parts"),
             "a heading below the structural level rides along inside its chapter"
+        );
+    }
+
+    // ── multi-field satellite elements (WI-1117) ─────────────────
+
+    /// A `MirrorEntry`-shaped satellite: two written fields, joined by `=`.
+    fn two_field_mapping() -> DocumentMapping {
+        let mut m = mapping();
+        m.schema.functors.push(FunctorSchema {
+            name: "MirrorEntry".into(),
+            fields: vec![
+                FieldSchema {
+                    name: "workitem".into(),
+                    ty: FieldType::Text,
+                },
+                FieldSchema {
+                    name: "target".into(),
+                    ty: FieldType::Text,
+                },
+                FieldSchema {
+                    name: "entry".into(),
+                    ty: FieldType::Text,
+                },
+            ],
+        });
+        m.lists.push(SatelliteListSpec {
+            functor: "MirrorEntry".into(),
+            named: "mirrors".into(),
+            fields: vec!["target".into(), "entry".into()],
+            key: "workitem".into(),
+        });
+        m
+    }
+
+    fn with_line(line: &str) -> String {
+        DOC.replacen("- tags: wi437\n", &format!("- tags: wi437\n{line}\n"), 1)
+    }
+
+    /// AN ELEMENT SPLITS INTO ITS DECLARED FIELDS, and the LAST one takes the
+    /// remainder — the reader splits `fields.len() - 1` times from the left, so
+    /// an external id carrying a `=` of its own reads back whole.
+    ///
+    /// The second element is what carries that: `?a=b` in the entry half would
+    /// come back as `?a` under a naive split, and the link would then address an
+    /// entry that does not exist.
+    #[test]
+    fn a_two_field_element_splits_into_both_fields() {
+        let m = two_field_mapping();
+        let src = with_line("- mirrors: github:o/r=42, other=https://x/y?a=b");
+        let doc = read_document(&src, &m).expect("reads");
+        let facts = document_facts(&doc, &m, "id").expect("denotes");
+        assert!(facts.faults.is_empty(), "{:#?}", facts.faults);
+
+        let rows: Vec<&str> = facts
+            .source
+            .lines()
+            .filter(|l| l.starts_with("fact MirrorEntry"))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "fact MirrorEntry(workitem: \"WI-1121\", target: \"github:o/r\", entry: \"42\")",
+                "fact MirrorEntry(workitem: \"WI-1121\", target: \"other\", \
+                 entry: \"https://x/y?a=b\")",
+            ],
+        );
+    }
+
+    /// An element with too FEW parts is a blocking fault, not a short fact. A
+    /// `MirrorEntry` missing its target names no system, and inventing an empty
+    /// one would make the row silently unmatchable at the next export.
+    #[test]
+    fn a_short_element_is_a_fault_rather_than_a_field_left_empty() {
+        let m = two_field_mapping();
+        let src = with_line("- mirrors: 42");
+        let doc = read_document(&src, &m).expect("reads");
+        let facts = document_facts(&doc, &m, "id").expect("denotes");
+
+        assert!(
+            facts.faults.iter().any(|f| f.blocking
+                && f.message.contains("target, entry")),
+            "names the fields it wanted: {:#?}",
+            facts.faults
+        );
+    }
+
+    /// THE CONTROL, and it is the reason the change is safe: a ONE-field list is
+    /// byte-for-byte what it was. `Tag` is in the same document and must read
+    /// back exactly as before multi-field elements existed.
+    #[test]
+    fn the_control_a_one_field_element_is_unchanged() {
+        let m = two_field_mapping();
+        let src = with_line("- mirrors: github:o/r=42");
+        let doc = read_document(&src, &m).expect("reads");
+        let facts = document_facts(&doc, &m, "id").expect("denotes");
+        assert!(facts.faults.is_empty(), "{:#?}", facts.faults);
+        assert!(
+            facts
+                .source
+                .lines()
+                .any(|l| l == "fact Tag(workitem: \"WI-1121\", name: \"wi437\")"),
+            "{}",
+            facts.source
+        );
+    }
+
+    /// A `SatelliteList` naming NO fields is refused when the mapping is checked,
+    /// rather than producing elements that carry nothing.
+    #[test]
+    fn a_satellite_list_with_no_fields_is_refused() {
+        let mut m = two_field_mapping();
+        m.lists.last_mut().expect("the list").fields.clear();
+        let err = m.check().expect_err("must refuse");
+        assert!(err.contains("MirrorEntry"), "names the functor: {err}");
+    }
+
+    /// AND THE READER REFUSES IT TOO, which is not the same claim. `check` is
+    /// what keeps a no-fields list out of a loaded mapping, but the reader is
+    /// reachable from any other construction path — and its arity test cannot
+    /// catch this shape: `splitn(0, sep)` yields zero parts, so `0 != 0` passes
+    /// and every element is accepted carrying nothing.
+    #[test]
+    fn the_reader_refuses_a_no_field_list_rather_than_emitting_an_empty_fact() {
+        let mut m = two_field_mapping();
+        m.lists.last_mut().expect("the list").fields.clear();
+        let src = with_line("- mirrors: whatever");
+        let doc = read_document(&src, &m).expect("reads");
+        let facts = document_facts(&doc, &m, "id").expect("denotes");
+
+        assert!(
+            facts.faults.iter().any(|f| f.blocking && f.message.contains("naming no fields")),
+            "a blocking fault, not a fact with only its key: {:#?}",
+            facts.faults
+        );
+        assert!(
+            !facts.source.contains("fact MirrorEntry"),
+            "and no row is emitted for it: {}",
+            facts.source
         );
     }
 

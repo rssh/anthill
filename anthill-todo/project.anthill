@@ -36,9 +36,9 @@ fact Module(name: "scaland", root: "scaland", language: "scala", build: "sbt")
 -- a config file has no business naming an absolute path.
 --
 -- `covers` is the set of functors this file durably holds, and it is the set the
--- bundle persists (WorkItem / Feedback / Tag / StoreFormat). A functor missing here
--- keeps no durable home: its retract would drop the in-memory row and leave the
--- line on disk.
+-- bundle persists (WorkItem / Feedback / Tag / MirrorEntry / StoreFormat). A functor
+-- missing here keeps no durable home: its retract would drop the in-memory row and
+-- leave the line on disk.
 fact anthill.persistence.ExtentBinding(
   store: anthill.persistence.filesystem.ItemPerFileStore(
     root: ".",
@@ -46,4 +46,4 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])

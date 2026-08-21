@@ -22,6 +22,15 @@ namespace anthill.todo
   import anthill.stage0.{Project, Feedback, WorkItem, ToolPasses,
                          AcceptanceCriterion, WorkStatus, StatusChange,
                          StoreFormat}
+  -- WI-1117: the mirror's configuration, its link rows, and the algebra an
+  -- export target satisfies. `MirrorAccess` is deliberately NOT imported — the
+  -- access variant is read by functor NAME off the fact's term, the same way
+  -- every other configuration value in this file is.
+  import anthill.stage0.{Mirror, MirrorEntry, Forge, ForgeEntry, ForgeComment}
+  -- The effect every forge call carries (proposal 054): its result depends on
+  -- state the runtime does not mediate, so it is non-replayable and never
+  -- equational. It reaches `main`'s own row through `dispatch`.
+  import anthill.prelude.{External}
   import anthill.stage0.WorkStatus.{Open, PreOpened, Draft}
   import anthill.prelude.{List, Stream, Map, Unit}
   import anthill.prelude.Map.{empty, put, get, contains}
@@ -39,7 +48,7 @@ namespace anthill.todo
   import anthill.cli.parse.{Binding}
   import anthill.prelude.Option.{Option, none, some}
   import anthill.prelude.Pair.{Pair, pair}
-  import anthill.prelude.Ord.{lt, lte}
+  import anthill.prelude.Ord.{lt, lte, gte}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Int64.{to_string}
@@ -48,6 +57,7 @@ namespace anthill.todo
   import anthill.prelude.FiniteCollection.{size}
   import anthill.reflect.{Term, Substitution, Solution, term_functor_name,
                           term_field, term_as_string, term_as_int,
+                          term_as_entity,
                           fresh_var, make_fn, term_to_string,
                           term_list_items}
   import anthill.reflect.Solution.{definite, undecided}
@@ -93,6 +103,8 @@ namespace anthill.todo
     , spec_tag_change("tag",          "Add a work item to a named list")
     , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
+    , spec_mirror("export", "Publish every work item to the project's mirror target")
+    , spec_mirror("import", "Ingest the mirror target's comments as feedback")
     , spec_named("migrate",           "Stamp a pre-versioning project with the current data format")
     -- Host-served, like `init` / `skill` / `version`: it inspects the on-disk
     -- LAYOUT against the facts, which is a property of the concrete backend and
@@ -109,6 +121,29 @@ namespace anthill.todo
       name: name,
       description: description,
       params: nil(),
+      parent: none())
+
+  -- `export` / `import` (WI-1117). Both take the same per-checkout access
+  -- override and nothing else: WHICH target and WHETHER to publish by default
+  -- are the project's to state, in its `Mirror` fact, and a flag that could
+  -- redirect the publish would be a second writable home for that answer.
+  operation spec_mirror(name: String, description: String) -> OperationSpec =
+    OperationSpec(
+      name: name,
+      description: description,
+      params: cons(
+        ParamSpec(
+          name: "mirror",
+          kind: flag(),
+          required: false,
+          description: "on|off — override the project's mirror access for this run"),
+        cons(
+          ParamSpec(
+            name: "offline",
+            kind: bool_flag(),
+            required: false,
+            description: "Do not talk to the target (same as --mirror off)"),
+          nil())),
       parent: none())
 
   -- Spec for subcommands taking a single required positional `id`. Used
@@ -421,6 +456,34 @@ namespace anthill.todo
     entity status_unknown
   end
 
+  -- ── The mirror's result ladders (WI-1117, design §7) ────────────
+
+  -- The mirror this run should publish to, after the override ladder. Each
+  -- not-ready outcome is its own variant so the caller dispatches with a total
+  -- `match` and picks its own exit code: being configured-and-quiet is a
+  -- SUCCESS (that is what `disabled` means, and CI runs it that way), while
+  -- being unconfigured or ambiguous is a usage error.
+  enum MirrorTarget
+    entity mirror_ready(target: Term)
+    entity mirror_quiet(why: String)
+    entity mirror_absent
+    entity mirror_ambiguous
+    entity mirror_malformed
+    entity mirror_bad_override(given: String)
+  end
+
+  -- The per-checkout override of the project's `Mirror.access`, in three states
+  -- plus a refusal. A CHECKOUT overrides the PROJECT because access is a
+  -- property of where the command runs — a CI test job, an air-gapped machine, a
+  -- fork with no write token — and none of those is something the project's own
+  -- file can know.
+  enum MirrorOverride
+    entity override_absent
+    entity override_on
+    entity override_off
+    entity override_bad(given: String)
+  end
+
   sort Main
     sort State = ?
     requires anthill.cli.Main
@@ -442,7 +505,7 @@ namespace anthill.todo
     operation main(args: List[String],
                    wis_cell: Cell[State], agent: String) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[wis_cell],
-               Error, Clock}
+               External, Error, Clock}
     =
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
@@ -509,7 +572,7 @@ namespace anthill.todo
     -- together would make a tracker that needs `migrate` read as corrupt.
     operation undated_gate(name: String, args: List[Binding], agent: String,
                            s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error, Clock}
     =
       match items_missing_created()
         case nil() -> dispatch(name, args, agent, s)
@@ -542,8 +605,12 @@ namespace anthill.todo
     operation dispatch(name: String, args: List[Binding],
                        agent: String,
                        s: Cell[State]) -> Int64
+      -- `External` (WI-1117) rides here because `export` / `import` talk to a
+      -- system outside the tracked heap. It is on `dispatch` and `main` for the
+      -- ordinary reason a row propagates: an operation may not call one whose
+      -- effects its own row does not admit.
       effects {ConsoleOutput, ConsoleError, Modify[s],
-               Error, Clock}
+               External, Error, Clock}
     =
       -- `skill` and `init` are intercepted host-side (static doc print /
       -- pre-KB scaffolding); their specs stay in the catalogue for --help.
@@ -570,6 +637,8 @@ namespace anthill.todo
       else if eq(name, "untag") then cmd_untag(args, s)
       else if eq(name, "insert") then cmd_insert(args, agent, s)
       else if eq(name, "migrate") then cmd_migrate(s)
+      else if eq(name, "export") then cmd_export(args, s)
+      else if eq(name, "import") then cmd_import(args, s)
       else not_yet(name)
 
     -- ── Store integrity gate ──────────────────────────────────────
@@ -3617,6 +3686,513 @@ namespace anthill.todo
         let _ = println(console(), "No claimable items (all blocked or none open).")
         0
       else 0
+
+    -- ── The mirror: export and import (WI-1117, design §7) ──────────
+    --
+    -- TWO ONE-SHOT COMMANDS, NOT A CONTINUOUS SYNC. `export` writes the
+    -- tracker's current state to the configured target and `import` reads its
+    -- comments back as feedback. Neither reconciles: exported state has one
+    -- writable home (the tree) and comments have one (the target), so no datum
+    -- is writable on both sides and the two-sources-of-truth failure cannot
+    -- arise. What a reader on the target sees is therefore the LAST EXPORT, not
+    -- live state — the cost this shape pays, and the reason running `export`
+    -- from CI on `main` is worth doing.
+
+    -- `--offline` is `--mirror off` under a name people reach for, so it is read
+    -- FIRST and wins: someone who typed both meant the more emphatic one.
+    -- `ANTHILL_TODO_MIRROR=on|off` arrives as `--mirror <value>`, injected by
+    -- the host — the environment is where a per-checkout override lives, and the
+    -- host is the only side that can see it.
+    operation mirror_override(args: List[Binding]) -> MirrorOverride =
+      match get_arg(args, "offline")
+        case some(_) -> override_off()
+        case none() ->
+          match get_arg(args, "mirror")
+            case none() -> override_absent()
+            case some(v) ->
+              if eq(v, "on") then override_on()
+              else if eq(v, "off") then override_off()
+              else override_bad(v)
+
+    operation mirror_target(args: List[Binding]) -> MirrorTarget =
+      match mirror_override(args)
+        case override_bad(given) -> mirror_bad_override(given)
+        case override_on() -> resolved_target(true, true)
+        case override_off() -> resolved_target(true, false)
+        case override_absent() -> resolved_target(false, false)
+
+    -- `forced` says whether the override decided access at all; `on` is what it
+    -- decided. Split rather than an `Option[Bool]` because the fact is only
+    -- consulted in the un-forced case, and threading a three-state answer
+    -- through one boolean is what makes that easy to get backwards.
+    operation resolved_target(forced: Bool, on: Bool) -> MirrorTarget =
+      match facts_of(kb(), Mirror)
+        case nil() -> mirror_absent()
+        case cons(m, rest) ->
+          match rest
+            -- REFUSED, not "first wins": two mirror facts is a project that
+            -- disagrees with itself about where it publishes, and picking one
+            -- would publish to it silently.
+            case cons(_, _) -> mirror_ambiguous()
+            case nil() ->
+              match term_field(m, "target")
+                case none() -> mirror_malformed()
+                case some(t) ->
+                  let publish = if forced then on else fact_access_enabled(m)
+                  let why = if forced
+                            then "this run was asked not to talk to it"
+                            else "the project's `Mirror` fact says `disabled`"
+                  if publish then mirror_ready(t) else mirror_quiet(why)
+
+    -- `access: enabled()` and nothing else. A malformed or absent access field
+    -- reads as OFF: publishing is the irreversible half, so an unreadable
+    -- configuration must not be what turns it on.
+    operation fact_access_enabled(m: Term) -> Bool =
+      match term_field(m, "access")
+        case none() -> false
+        case some(a) ->
+          match term_functor_name(a)
+            case none() -> false
+            case some(n) -> eq(n, "enabled")
+
+    -- Report why nothing was published, and answer the exit code. Shared by
+    -- `export` and `import`: the ladder is the same question for both, and one
+    -- reader keeps their diagnostics from drifting apart.
+    operation mirror_refusal(what: String, t: MirrorTarget) -> Int64
+      effects {ConsoleOutput, ConsoleError}
+    =
+      match t
+        case mirror_ready(_) -> 0
+        case mirror_quiet(why) ->
+          -- EXIT 0. `disabled` is a configured state, not a failure: it is what
+          -- a CI test job and an air-gapped checkout run in, and failing there
+          -- would break builds that are behaving exactly as configured.
+          let _ = println(console(),
+            concat(what, concat(": nothing published — ", why)))
+          0
+        case mirror_absent() ->
+          let _ = eprintln(console(),
+            concat("error: this project declares no mirror, so `",
+              concat(what, concat("` has nowhere to go. Add a `fact Mirror(target: …, ",
+                                  "access: enabled())` to project.anthill."))))
+          2
+        case mirror_ambiguous() ->
+          let _ = eprintln(console(),
+            "error: this project declares more than one `Mirror` fact — it disagrees with itself about where it publishes. Keep exactly one.")
+          2
+        case mirror_malformed() ->
+          let _ = eprintln(console(),
+            "error: this project's `Mirror` fact carries no `target`, so nothing names where to publish.")
+          2
+        case mirror_bad_override(given) ->
+          let _ = eprintln(console(),
+            concat("error: `--mirror ", concat(given, "` is neither `on` nor `off`.")))
+          2
+
+    -- A `Term` field read as text, or "" when the field is absent or is not a
+    -- string literal. The same shape `store.anthill`'s `string_field_of` takes,
+    -- and safe for the same reason: the rows read through it are rows this tool
+    -- WROTE, and the document reader refuses a malformed `- mirrors:` line
+    -- before it can reach the KB. An empty answer matches no real id and no real
+    -- target name, so a hand-written malformed row is inert rather than matched
+    -- to the wrong item.
+    operation text_field(t: Term, field: String) -> String =
+      match term_field(t, field)
+        case none() -> ""
+        case some(v) ->
+          match term_as_string(v)
+            case none() -> ""
+            case some(str) -> str
+
+    -- ── export ──────────────────────────────────────────────────────
+
+    -- Write every work item to the target: one entry each, created on the first
+    -- run and OVERWRITTEN on every run after.
+    --
+    -- UNCONDITIONALLY TRACKER-WINS, which is what makes this a loop and not a
+    -- reconciliation: there is nothing to compare against, because whatever is
+    -- on the target was either written by an earlier export or is drift, and
+    -- both answers are "overwrite it".
+    --
+    -- IDEMPOTENT, KEYED ON `MirrorEntry`: a second run finds the link and
+    -- updates, so it produces the same target state and no second entry.
+    operation cmd_export(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match mirror_target(args)
+        case mirror_ready(t) -> export_to(t, s)
+        case other -> mirror_refusal("export", other)
+
+    -- The ready half, its own operation so that the outer ladder's catch-all arm
+    -- is not written after a nested `match` — where it would bind to the inner
+    -- one and silently drop the outer arm.
+    operation export_to(t: Term, s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match term_as_entity[Forge](t)
+        case none() ->
+          let _ = eprintln(console(),
+            "error: this project's `Mirror.target` is not an entity, so it names no target to build.")
+          1
+        case some(f) -> export_named(f, Forge.target_name(f), s)
+
+    -- Whether the target's own name can be WRITTEN as a link, and why not when
+    -- it cannot.
+    --
+    -- ASKED ONCE, BEFORE ANYTHING IS PUBLISHED, and that ordering is the point.
+    -- A link is written as `<target>=<entry>` inside one comma-separated
+    -- attributes line, so a name carrying either separator has no spelling
+    -- there — and learning that at the PERSIST step means the entry was already
+    -- created on the target and the command then failed, which on a forge is a
+    -- real issue nobody asked for, on every item.
+    --
+    -- WHITESPACE IS THE QUIET ONE and the reason this is a check rather than a
+    -- comment: it survives the write and is TRIMMED on read, so the link would
+    -- read back as a different target, match nothing, and every export would
+    -- publish a fresh entry for every item — no error at any point.
+    operation target_fault(target: String) -> Option[String] =
+      if isEmpty(target) then some("is empty, so a link could not say which system it names")
+      else if not(eq(trim(target), target)) then
+        some("has leading or trailing whitespace, which a link line does not keep — the link would read back as a different target and every export would publish again")
+      else if gte(indexOf(target, "="), 0) then
+        some("carries `=`, which separates the target from the entry inside one link")
+      else if gte(indexOf(target, ", "), 0) then
+        some("carries `, `, which separates one link from the next")
+      else none()
+
+    operation report_target_fault(target: String, why: String) -> Int64
+      effects ConsoleError
+    =
+      let _ = eprintln(console(),
+        concat("error: the mirror target names itself `",
+          concat(target, concat("`, which ", concat(why, " — nothing was published.")))))
+      1
+
+    operation export_named(f: Forge, target: String, s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match target_fault(target)
+        case some(why) -> report_target_fault(target, why)
+        case none() ->
+          let items = WorkItemStore.all(s)
+          let links = links_for(facts_of(kb(), MirrorEntry), target, empty())
+          -- THE LISTING IS ONLY PAID WHEN IT CAN CHANGE AN ANSWER. It exists for
+          -- ADOPTION — an item whose link is missing but whose entry is already
+          -- there under the `<id>: ` title prefix — so a tracker whose items all
+          -- carry links never asks for it.
+          let known = match unlinked_ids(items, links)
+            case nil() -> empty()
+            case cons(_, _) -> entries_by_id(Forge.list_entries(f), empty())
+          export_items(f, target, items, links, known, s, 0, 0)
+
+
+    -- `workitem -> entry`, for the rows naming THIS target. Rows naming another
+    -- target are skipped rather than merged: an item's external ids are a set
+    -- with one member per target, and merging them would update the wrong
+    -- system's entry.
+    operation links_for(rows: List[Term], target: String,
+                        acc: Map[String, String]) -> Map[String, String]
+    =
+      match rows
+        case nil() -> acc
+        case cons(r, rest) ->
+          if eq(text_field(r, "target"), target)
+          then links_for(rest, target,
+                         put(acc, text_field(r, "workitem"), text_field(r, "entry")))
+          else links_for(rest, target, acc)
+
+    -- The ids with no link on this target — what decides whether the listing is
+    -- worth asking for.
+    operation unlinked_ids(items: List[WorkItem],
+                           links: Map[String, String]) -> List[String] =
+      match items
+        case nil() -> nil()
+        case cons(w, rest) ->
+          match w
+            case WorkItem(id, _, _, _, _, _, _, _, _) ->
+              if contains(links, id) then unlinked_ids(rest, links)
+              else cons(id, unlinked_ids(rest, links))
+
+    -- `<item id> -> entry`, read out of the target's own listing by the title
+    -- prefix §7.1 makes load-bearing. An entry whose title carries no `: ` names
+    -- no item and is simply not indexed — the map is only ever LOOKED UP by a
+    -- real item id, so an unrelated entry cannot be adopted by accident.
+    operation entries_by_id(entries: List[ForgeEntry],
+                            acc: Map[String, String]) -> Map[String, String] =
+      match entries
+        case nil() -> acc
+        case cons(e, rest) ->
+          match e
+            case ForgeEntry(entry, title) ->
+              let cut = indexOf(title, ": ")
+              if lt(cut, 1) then entries_by_id(rest, acc)
+              else entries_by_id(rest, put(acc, substring(title, 0, cut), entry))
+
+    operation export_items(f: Forge, target: String, items: List[WorkItem],
+                           links: Map[String, String], known: Map[String, String],
+                           s: Cell[State], wrote: Int64, made: Int64) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match items
+        case nil() ->
+          let _ = println(console(),
+            concat("export: ", concat(to_string(wrote),
+              concat(" item(s) written to ", concat(target,
+                concat(" (", concat(to_string(made), " newly linked)")))))))
+          0
+        case cons(w, rest) ->
+          match w
+            case WorkItem(id, _, _, _, _, _, _, _, _) ->
+              let title = entry_title(w)
+              let body = entry_body(w)
+              match get(links, id)
+                case some(entry) ->
+                  let _ = Forge.update_entry(f, entry, title, body)
+                  export_items(f, target, rest, links, known, s, wrote + 1, made)
+                case none() ->
+                  let entry = adopt_or_create(f, known, id, title, body)
+                  -- THE LINK IS WRITTEN AFTER THE ENTRY EXISTS, never before: a
+                  -- crash between the two leaves an entry with no link, which
+                  -- the NEXT run adopts by title. The other order leaves a link
+                  -- to an entry that was never made, and every later export
+                  -- fails trying to update it.
+                  let _ = WorkItemStore.link_entry(s, id, target, entry)
+                  export_items(f, target, rest, links, known, s, wrote + 1, made + 1)
+
+    -- Reuse the entry already there under this item's title prefix, or make one.
+    --
+    -- ADOPTION IS WHAT KEEPS EXPORT IDEMPOTENT WITHOUT THE LINK. A fresh clone,
+    -- a project whose `covers:` omitted `MirrorEntry`, a link lost to a bad
+    -- merge — in each the tree has forgotten a published entry that is still
+    -- there, and creating a second one beside it is the failure this avoids.
+    operation adopt_or_create(f: Forge, known: Map[String, String], id: String,
+                              title: String, body: String) -> String
+      effects {ConsoleOutput, External, Error}
+    =
+      match get(known, id)
+        case some(entry) ->
+          let _ = Forge.update_entry(f, entry, title, body)
+          let _ = println(console(),
+            concat("  adopted existing entry ", concat(entry, concat(" for ", id))))
+          entry
+        case none() -> Forge.create_entry(f, title, body)
+
+    -- `<id>: <summary>` (§7.1). The `<id>: ` PREFIX IS LOAD-BEARING — adoption
+    -- reads it back — so the summary half may be rewritten freely and the prefix
+    -- may not. `short_desc` is the same first-line cut `list` renders, so the
+    -- two cannot drift.
+    operation entry_title(w: WorkItem) -> String =
+      match w
+        case WorkItem(id, _, _, _, _, _, _, _, _) ->
+          concat(id, concat(": ", short_desc(description_w(w))))
+
+    -- A pointer to the item, the fields a reader scanning entries wants, the
+    -- notice that this is a mirror, and the description.
+    --
+    -- THE DESCRIPTION IS INCLUDED, and §7.1's sketch said "a pointer to the
+    -- file, and nothing else of substance". That was written for a mirror
+    -- re-derived on every state change, where the duplicated prose was a cost
+    -- paid over and over. Export writes the body once per run either way, and an
+    -- entry whose body is only a pointer is one nobody on the target can act on
+    -- — which defeats the reason for publishing at all.
+    operation entry_body(w: WorkItem) -> String =
+      match w
+        case WorkItem(id, _, _, _, _, _, deps, _, _) ->
+          let head = concat("Tracked as `", concat(id,
+            ".anthill.md` in this repository's anthill-todo tree.\n\n"))
+          let facts = concat("Status: ", concat(status_name_w(w),
+            concat(deps_clause(normalize_deps(deps)), "\n\n")))
+          let notice = concat("This entry is a MIRROR. The work item lives in the ",
+            concat("repository and is edited with `anthill-todo`; edits made here are ",
+              concat("not read back — but comments are: `anthill-todo import` ingests ",
+                     "them as tracker feedback.\n\n")))
+          concat(head, concat(facts, concat(notice, description_w(w))))
+
+    operation deps_clause(deps: List[String]) -> String =
+      match deps
+        case nil() -> ""
+        case cons(_, _) -> concat(" · Depends on: ", join_strings(deps, ", "))
+
+    -- The item's description as a String, or "" — the same peel
+    -- `print_description_w` and `row_of_w` do, named once so three readers
+    -- cannot answer differently for one item.
+    operation description_w(w: WorkItem) -> String =
+      match w
+        case WorkItem(_, _, _, description, _, _, _, _, _) ->
+          match description
+            case none() -> ""
+            case some(t) ->
+              match term_as_string(t)
+                case none() -> ""
+                case some(str) -> str
+
+    -- ── import ──────────────────────────────────────────────────────
+
+    -- Read the target's comments back as `Feedback`.
+    --
+    -- A COMMENT IS NEW INFORMATION, NOT A SECOND COPY. Nothing in the tree
+    -- generates comments, so reading them in does not breach the one-writable-
+    -- home rule that everything else here keeps — the channel has exactly one
+    -- writer, and it is on the other side.
+    --
+    -- A COMMENT IS ADVICE, NEVER A COMMAND: "verified!" in a comment does not
+    -- flip a status. State changes stay tracker operations, which is the line
+    -- that keeps an inbox from becoming bidirectional control.
+    operation cmd_import(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match mirror_target(args)
+        case mirror_ready(t) -> import_from(t, s)
+        case other -> mirror_refusal("import", other)
+
+    -- The ready half — split for the same reason `export_to` is.
+    operation import_from(t: Term, s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match term_as_entity[Forge](t)
+        case none() ->
+          let _ = eprintln(console(),
+            "error: this project's `Mirror.target` is not an entity, so it names no target to read.")
+          1
+        case some(f) -> import_named(f, Forge.target_name(f), s)
+
+    -- THE SAME NAMING CHECK AS `export`, and it earns its place here for a
+    -- different reason: `import` only COMPARES the name against the links in the
+    -- tree, so an unusable one matches nothing and the command reports "0 new
+    -- comment(s)" — a silent all-clear on a tracker whose return channel is not
+    -- working at all.
+    operation import_named(f: Forge, target: String, s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match target_fault(target)
+        case some(why) -> report_target_fault(target, why)
+        case none() ->
+          let seen = ingested_keys(facts_of(kb(), Feedback), empty())
+          import_links(f, target, mirror_rows(facts_of(kb(), MirrorEntry), target),
+                       seen, s, 0)
+
+    -- The `MirrorEntry` rows naming this target, as (workitem, entry) pairs.
+    operation mirror_rows(rows: List[Term], target: String)
+      -> List[Pair[String, String]]
+    =
+      match rows
+        case nil() -> nil()
+        case cons(r, rest) ->
+          if eq(text_field(r, "target"), target)
+          then cons(pair(text_field(r, "workitem"), text_field(r, "entry")),
+                    mirror_rows(rest, target))
+          else mirror_rows(rest, target)
+
+    -- Every `(workitem, author, at)` already recorded. THE DEDUP KEY, and the
+    -- reason `import` is safe to re-run: the same comment read twice adds one
+    -- row. Later edits or deletions of a comment do not propagate — the fact
+    -- records what was said when it was said.
+    operation ingested_keys(rows: List[Term], acc: Map[String, Bool])
+      -> Map[String, Bool]
+    =
+      match rows
+        case nil() -> acc
+        case cons(r, rest) ->
+          ingested_keys(rest,
+            put(acc, feedback_key(text_field(r, "workitem"),
+                                  text_field(r, "author"),
+                                  text_field(r, "at")), true))
+
+    -- A newline separator, because no id, author or timestamp carries one — so
+    -- three fields cannot run together into a key that means something else.
+    operation feedback_key(id: String, author: String, at: String) -> String =
+      concat(id, concat("\n", concat(author, concat("\n", at))))
+
+    operation import_links(f: Forge, target: String,
+                           links: List[Pair[String, String]],
+                           seen: Map[String, Bool], s: Cell[State],
+                           added: Int64) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error}
+    =
+      match links
+        case nil() ->
+          let _ = println(console(),
+            concat("import: ", concat(to_string(added),
+              concat(" new comment(s) from ", target))))
+          0
+        case cons(link, rest) ->
+          match link
+            case pair(id, entry) ->
+              match WorkItemStore.lookup(s, id)
+                -- LOUD, not skipped. A link naming no item is a broken tree —
+                -- `forget` retracts the link with the item it names — and
+                -- ingesting its comments would file feedback against an id
+                -- nothing holds.
+                case none() ->
+                  let _ = eprintln(console(),
+                    concat("warning: the link to entry ", concat(entry,
+                      concat(" names work item ", concat(id,
+                             ", which this tracker does not hold — its comments were not read")))))
+                  import_links(f, target, rest, seen, s, added)
+                case some(_) ->
+                  -- READ ONCE. `entry_comments` is `External`, so two calls may
+                  -- disagree with nothing between them; asking twice — once to
+                  -- ingest and once to fold into the seen-set — could ingest a
+                  -- comment the second read no longer reports.
+                  let comments = Forge.entry_comments(f, entry)
+                  let after = ingest_comments(target, id, comments, seen, s, added)
+                  import_links(f, target, rest,
+                               mark_ingested(seen, target, id, comments), s, after)
+
+    operation ingest_comments(target: String, id: String,
+                              comments: List[ForgeComment],
+                              seen: Map[String, Bool], s: Cell[State],
+                              added: Int64) -> Int64
+      effects {ConsoleOutput, ConsoleError, Modify[s], Error}
+    =
+      match comments
+        case nil() -> added
+        case cons(c, rest) ->
+          match c
+            case ForgeComment(author, at, body) ->
+              -- THE MIRROR MUST NOT ECHO INTO THE TRACKER IT MIRRORS: a comment
+              -- this tool wrote opens with a fixed marker and is skipped, so a
+              -- future `sync` that explains itself in a comment cannot ingest
+              -- its own explanation as feedback.
+              if startsWith(trim(body), tool_comment_marker()) then
+                ingest_comments(target, id, rest, seen, s, added)
+              else
+                let who = mirror_author(target, author)
+                if contains(seen, feedback_key(id, who, at)) then
+                  ingest_comments(target, id, rest, seen, s, added)
+                else
+                  let _ = WorkItemStore.commit_feedback(s,
+                    Feedback(workitem: id, author: who, content: body, at: at))
+                  let _ = println(console(),
+                    concat("  ", concat(id, concat(" <- ", concat(who, concat(" ", at))))))
+                  ingest_comments(target, id, rest, seen, s, added + 1)
+
+    -- Fold one entry's comments into the seen-set, so a SECOND link naming the
+    -- same item cannot re-add what the first just ingested.
+    operation mark_ingested(seen: Map[String, Bool], target: String, id: String,
+                            comments: List[ForgeComment]) -> Map[String, Bool] =
+      match comments
+        case nil() -> seen
+        case cons(c, rest) ->
+          match c
+            case ForgeComment(author, at, _) ->
+              mark_ingested(put(seen, feedback_key(id, mirror_author(target, author), at),
+                                true),
+                            target, id, rest)
+
+    -- `<target>:<login>` — the target's own name, then the identity on it.
+    --
+    -- THE TARGET IS PART OF THE NAME, and the design's `github:<login>` is the
+    -- one-target special case of it. The prefix keeps external identities from
+    -- colliding with local agent names and makes the channel greppable; naming
+    -- the target as well is what keeps two accounts called `octocat` on two
+    -- systems from reading as one person.
+    operation mirror_author(target: String, login: String) -> String =
+      concat(target, concat(":", login))
+
+    -- What this tool's own comments open with. Anything starting with it is not
+    -- read back in.
+    operation tool_comment_marker() -> String = "[anthill-todo]"
 
     -- ── WI-434: data-format version stamp ───────────────────────────
     -- The data-format version this binary understands. Bumping it (and the

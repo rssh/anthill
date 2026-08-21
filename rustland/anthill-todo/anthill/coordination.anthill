@@ -1,0 +1,184 @@
+-- The mirror: WHERE a work item is published, and WHAT it was published as.
+--
+-- Design: `rustland/anthill-todo/docs/design/backend-github-coordination.md`
+-- §3.2, §7 (amended 2026-08-17), §8.3. WI-1117.
+--
+-- TWO ONE-SHOT COMMANDS, NOT A CONTINUOUS SYNC. §7 was written as a mirror kept
+-- in step: drift detection in every direction, a close honoured as a verify
+-- gesture, tombstones. That is a future extension. What is here is:
+--
+--   * `export` — write the tracker's current state to the target. Idempotent,
+--     keyed by `MirrorEntry`, and unconditionally TRACKER-WINS.
+--   * `import` — pull comments back in as `Feedback`, for review before they land.
+--
+-- Every datum still has exactly ONE writable home. The exported state — title
+-- and body — is written only from the tree: editing it on the target is drift,
+-- overwritten by the next `export`, never read back. Comments are the converse:
+-- written only on the target, read into the tree as `Feedback`. Neither
+-- channel's data is writable on both sides, so the two-sources-of-truth failure
+-- cannot arise.
+--
+-- BUNDLED WITH THE DOMAIN rather than expected in a project's own
+-- `domain.anthill`, on the `StoreFormat` precedent (WI-505/WI-684): a project's
+-- copy may predate the entity, and an unresolved import fails the WHOLE bundle
+-- load — on exactly the projects that most need the new code path.
+namespace anthill.stage0
+  import anthill.prelude.{List, Option, Unit, External}
+  import anthill.reflect.{Term}
+
+  -- ── Configuration (§3.2) ────────────────────────────────────────
+
+  -- WHETHER there is a mirror, and WHERE.
+  --
+  -- `target` is a `Term`, on the exact `ExtentBinding.store` precedent: it names
+  -- a thing to BUILD, written in a configuration file where no such thing exists
+  -- yet, and the host resolves it to one of its compiled-in implementations.
+  -- `Forge` below is the algebra a built one satisfies, which is a different
+  -- thing and one a config file cannot hold.
+  --
+  -- `target`, NOT `forge`, and the rename is not cosmetic. A *forge* is a
+  -- repository host with issues attached. Export needs far less: somewhere to
+  -- put an entry and read comments back. Jira, Linear, a static site or a
+  -- directory of files can all be that, and none of them is a forge.
+  --
+  -- NO `Option`, and no allocation field. An ABSENT `Mirror` fact means no
+  -- mirror — that is what absence is for — so every state means exactly one
+  -- thing: no fact, no mirror; fact plus `enabled`, publish; fact plus
+  -- `disabled`, configured but quiet. Ids are minted locally either way
+  -- (WI-1121), so nothing about the tracker needs a mirror to work.
+  entity Mirror(target: Term, access: MirrorAccess)
+
+  -- Whether to TALK to the target at all: publish on `export`, read on `import`.
+  --
+  -- The fact is the project-wide DEFAULT; a single checkout overrides it with
+  -- `ANTHILL_TODO_MIRROR=on|off` or `--offline` / `--mirror on|off` — CI test
+  -- jobs, air-gapped machines, and fork checkouts without write access run off.
+  -- `disabled` does not disable the tracker: every command still works. What it
+  -- removes is the publishing, never the work.
+  enum MirrorAccess
+    entity enabled
+    entity disabled
+  end
+
+  -- One entity per target, carrying that target's own parameters. Adding GitLab,
+  -- Gitea, or a plain issue tracker is ONE entity here plus ONE carrier
+  -- implementation — never a new config variant for the model, because the model
+  -- is the same and only the target differs.
+  --
+  -- NO `project` FIELD, and its absence is a decision. §3.2 sketched
+  -- `project: Option[T = String]` for a GitHub Project board, and §8.3's
+  -- `add_to_board` — the only thing that would have read it — is not in the
+  -- narrowed operation set. A declared field nothing reads is the silent skip
+  -- this repo's rules forbid: a user writing `project: some("Roadmap")` would
+  -- get no board and no complaint. It comes back with its consumer.
+  entity GithubForge(repo: String)
+
+  -- The SECOND implementation of a first-class seam, not a test trick: it is
+  -- what makes `export` and `import` drivable with no network. Its `dir` holds
+  -- one file per entry and one per entry's comments, so the state survives
+  -- between two runs of the CLI — which is what an idempotence test has to
+  -- observe. The path is resolved against the project directory by the host.
+  --
+  -- Deliberately NOT over-engineered: §8.3 justified a fake that could force
+  -- §6.1's lost-race interleavings deterministically and let tests search whole
+  -- schedule spaces under `Branch`. There is no race left, so there is no
+  -- schedule space.
+  entity FakeForge(dir: String)
+
+  -- ── The link (§7, and the key export is idempotent on) ──────────
+
+  -- WHAT this item was published as, on WHICH target.
+  --
+  -- AN ITEM'S EXTERNAL IDS ARE A SET, and the relational form already is one: N
+  -- `MirrorEntry` facts for one item is N rows, exactly how `Tag` gives an item
+  -- a set of tags. No list field, no nesting, and it stays OUT of `WorkItem` —
+  -- a field there would read `none` in 1110 of 1112 items and would put a mirror
+  -- concern in the stage0 domain.
+  --
+  -- `entry` is a STRING, not an Int64. An external id is an OPAQUE HANDLE and
+  -- must be: a Jira key is `PROJ-123`, a Linear id is a ULID, a URL is a URL.
+  -- Requiring a counter would exclude every target that is not a forge.
+  --
+  -- `target` says WHICH external system — implicit while there was one GitHub
+  -- repo, and it cannot stay implicit once an item's external ids are a set. It
+  -- is the target's OWN name for itself (`Forge.target_name`), so two GitHub
+  -- repos are two targets rather than one.
+  entity MirrorEntry(workitem: String, target: String, entry: String)
+
+  -- ── The carrier's contract (§8.3) ───────────────────────────────
+
+  -- One entry as the target reports it. `entry` is the same opaque handle
+  -- `MirrorEntry.entry` holds, so an entry read back here can be linked to an
+  -- item without a second lookup.
+  entity ForgeEntry(entry: String, title: String)
+
+  -- One comment as the target reports it. `(author, at)` is what ingestion
+  -- dedups on, so both must be stable across reads — §8.3's contract item (4).
+  entity ForgeComment(author: String, at: String, body: String)
+
+  -- The algebra an export target satisfies. GitHub is ONE implementation of it,
+  -- not its definition: everything above it consumes only this contract, so
+  -- substituting GitLab, Gitea or a plain issue tracker is one config entity
+  -- plus one carrier implementation, with zero change to the commands.
+  --
+  -- THE OPERATION SET IS SMALL, and smaller than §8.3's draft: `fresh_token`,
+  -- `retitle`, `close`/`reopen` and `entries_titled` were all §6.1's allocator
+  -- machinery and went with WI-1116. Ids are minted locally and purely (WI-1121),
+  -- so no entropy source is needed here at all.
+  --
+  -- EVERY OPERATION BUT `target_name` IS `External` (proposal 054): its result
+  -- depends on state the runtime does not mediate, so it is non-replayable,
+  -- non-reorderable, never equational, and two reads may disagree with no
+  -- tracked `Modify` between them. `target_name` reads only the carrier value it
+  -- is handed, so it is none of those things.
+  sort Forge {
+    -- The target's OWN name for itself, as `MirrorEntry.target` records it.
+    -- Only the carrier can answer: two GitHub repos are two targets, and what
+    -- distinguishes them is a GitHub parameter.
+    operation target_name(f: Forge) -> String
+
+    -- Create an entry, and answer the handle it got. The handle is opaque: this
+    -- side stores it and hands it back, and never parses it.
+    operation create_entry(f: Forge, title: String, body: String) -> String
+      effects {External, Error}
+
+    -- Overwrite an entry's title and body. UNCONDITIONALLY — export is
+    -- tracker-wins, so there is nothing to compare against and nothing to merge.
+    operation update_entry(f: Forge, entry: String, title: String,
+                           body: String) -> Unit
+      effects {External, Error}
+
+    -- Every entry the target holds, newest first. What ADOPTION reads (§7.1):
+    -- an item whose `MirrorEntry` is missing but whose entry is already there
+    -- under the `WI-<id>: ` title prefix is linked rather than duplicated.
+    operation list_entries(f: Forge) -> List[T = ForgeEntry]
+      effects {External, Error}
+
+    -- One entry's comments, oldest first. The return channel `import` reads.
+    operation entry_comments(f: Forge, entry: String) -> List[T = ForgeComment]
+      effects {External, Error}
+  }
+end
+
+-- ── Where a `MirrorEntry` is written (WI-1120's document format) ─
+--
+-- A SATELLITE LIST, exactly how `Tag` gives an item a set of tags: N rows for
+-- one item is N elements of one attributes line, and the item's own `id` fills
+-- `workitem` so it is never written. `- mirrors: github:rssh/anthill=42`.
+--
+-- TWO WRITTEN FIELDS, which is what made `SatelliteList.fields` a list. `target`
+-- and `entry` identify a link only together — an entry handle with no target is
+-- a number belonging to nobody — and neither is prose, so the alternative
+-- (`ChapterGroup`, whose body field IS prose) would have written an opaque
+-- external id as a paragraph.
+--
+-- IT LIVES BESIDE THE MIRROR, not in `domain.anthill` with the rest of the
+-- mapping: a project without a mirror has no `MirrorEntry` rows, and the entity
+-- and the line it is written on belong to the same feature.
+namespace anthill.stage0.document
+  import anthill.stage0.{MirrorEntry}
+
+  fact SatelliteList(
+    functor: MirrorEntry, named: "mirrors",
+    fields: ["target", "entry"], key: "workitem")
+end

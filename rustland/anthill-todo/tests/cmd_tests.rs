@@ -106,6 +106,9 @@ mod wi830_declared_store_test;
 #[path = "include/wi1114_item_per_file_backend_test.rs"]
 mod wi1114_item_per_file_backend_test;
 
+#[path = "include/wi1117_mirror_export_import_test.rs"]
+mod wi1117_mirror_export_import_test;
+
 #[path = "include/wi1118_migrate_test.rs"]
 mod wi1118_migrate_test;
 

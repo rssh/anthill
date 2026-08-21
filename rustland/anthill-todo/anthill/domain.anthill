@@ -337,11 +337,22 @@ namespace anthill.stage0.document
 
   -- A repeated satellite WITHOUT prose: one attributes field holding a list,
   -- one fact per element.
+  --
+  -- `fields` is a LIST because a satellite's written value is not always one
+  -- datum. `Tag` writes one (`- tags: prover, typing`); `MirrorEntry` writes two
+  -- — WHICH external system, and WHICH entry there — and neither half identifies
+  -- the row alone (WI-1117). An element writes them in this order, joined by `=`
+  -- when there is more than one, so the one-field case is exactly what it was.
+  -- The last field takes the remainder on read, which is what lets an external id
+  -- carry a `=` of its own.
+  --
+  -- NOT a `ChapterGroup`: that one's body field is PROSE, and an opaque external
+  -- id written as a paragraph would claim to be something it is not.
   entity SatelliteList(
     functor : Term,
-    named   : String,   -- the attributes field
-    field   : String,   -- the field each element fills
-    key     : String)   -- the field taking the item's id
+    named   : String,             -- the attributes field
+    fields  : List[T = String],   -- the fields each element fills, in order
+    key     : String)             -- the field taking the item's id
 
   -- A RECORD-VALUED field written as SIBLING attribute lines rather than as one
   -- nested value.
@@ -397,5 +408,5 @@ namespace anthill.stage0.document
   -- `Tag` carries no prose, so it is one comma-separated element of one
   -- attributes field rather than a chapter of its own.
   fact SatelliteList(
-    functor: Tag, named: "tags", field: "name", key: "workitem")
+    functor: Tag, named: "tags", fields: ["name"], key: "workitem")
 end

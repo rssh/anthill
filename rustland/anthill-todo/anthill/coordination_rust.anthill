@@ -1,0 +1,61 @@
+-- Rust binding for the mirror's `Forge` carrier (proposal 038 / WI-1117).
+--
+-- SEPARATE FROM THE DECLARATION, on the `anthill.persistence` precedent: the
+-- spec and its entities are language-agnostic and live in `coordination.anthill`;
+-- WHICH HOST FUNCTION realizes each operation, and WHICH TARGETS this host
+-- realizes at all, live here.
+--
+-- IT IS NOT TIDINESS. A binding block naming a host function the runtime does
+-- not have is FATAL — no interpreter can be built for the program, at any call
+-- site. The five functions below are `anthill-todo`'s own, registered on the KB
+-- before load through the WI-1122 seam, so a reader that loads the domain WITHOUT
+-- this binary — anthill-core's own `store.anthill` type-check fixtures do exactly
+-- that — must be able to take the declaration and leave the binding. Merged into
+-- one file, adding `MirrorEntry` to `store.anthill`'s imports broke ten
+-- anthill-core tests, which is how this was found.
+
+-- ── The rust realization (proposal 038) ─────────────────────────
+--
+-- THE OPERATIONS ARE COMMON, so they are declared and mapped ONCE — the same
+-- shape, and for the same reason, as `anthill.persistence`'s six storage
+-- operations in `rustland/anthill-stl/anthill/persistence.anthill`. Each is one
+-- rust function taking the target as its first argument and resolving THAT
+-- VALUE to the implementation it names. There is no per-target variant to name:
+-- `GithubForge` and `FakeForge` reach the same five, so mapping them per carrier
+-- would be five signatures copied per target to say the same thing twice.
+--
+-- WHICH TARGETS THIS HOST REALIZES is the separate question, and the one-line
+-- blocks below answer it. A spec-level mapping says the OPERATION has an
+-- implementation, never that a given carrier is realized (WI-876) — without the
+-- carrier blocks an arbitrary `entity ZzNotAForge(v: Int64)` could claim
+-- `fact Forge[ZzNotAForge]` and load clean.
+--
+-- THE HOST FUNCTIONS ARE THE EMBEDDER'S, NOT THE RUNTIME'S. `HOST_FNS` in
+-- anthill-core is a closed `const` slice and knows nothing about forges; putting
+-- the `gh` shell-out there would make the kernel learn about them. They are
+-- registered on the `KnowledgeBase` by `anthill-todo`'s own `main` before load,
+-- through the seam WI-1122 opened — and they are CLOSURES, because the fake
+-- needs the project directory to resolve its `dir` against.
+namespace anthill.stage0
+  provides Forge language rust
+    artifact "rustland/anthill-todo/src/forge/mod.rs"
+    operation_map {
+      target_name:    "forge_target_name",
+      create_entry:   "forge_create_entry",
+      update_entry:   "forge_update_entry",
+      list_entries:   "forge_list_entries",
+      entry_comments: "forge_entry_comments"
+    }
+  end
+
+  provides GithubForge language rust
+    artifact "rustland/anthill-todo/src/forge/gh.rs"
+  end
+
+  provides FakeForge language rust
+    artifact "rustland/anthill-todo/src/forge/fake.rs"
+  end
+
+  fact Forge[GithubForge]
+  fact Forge[FakeForge]
+end

@@ -1599,6 +1599,55 @@ tie-break is what keeps the order total and the sort stable.
 > Everything below is the continuously-reconciled design, kept as the record of
 > what a future extension would have to handle. §7.1's issue *content* is the part
 > that survives unchanged: export writes exactly that.
+>
+> **DELIVERED 2026-08-20 (WI-1117).** What shipped, and the four places it differs
+> from the sketch above — each because building it made the sketch's reason
+> lapse:
+>
+> * **`Forge` has five operations, not four.** `target_name` was added: an item's
+>   external ids are a set with one member per target, so `MirrorEntry.target` has
+>   to be filled from somewhere, and only the carrier can distinguish TWO GITHUB
+>   REPOS. Without it a project repointed at another repo would read its old links
+>   as current and try to update entries living somewhere else.
+> * **`list_entries` earns its place by ADOPTION.** Under the narrowed scope
+>   nothing needed a listing — export is keyed on `MirrorEntry` — so the operation
+>   was about to ship with no caller. It now has one: an item whose link the tree
+>   has lost, but whose entry is on the target under the `<id>: ` title prefix, is
+>   LINKED rather than duplicated. That is what makes a fresh clone, a bad merge,
+>   and a project whose `covers:` omitted `MirrorEntry` recoverable, and it is why
+>   §7.1's title prefix stays load-bearing after the allocator that motivated it
+>   was retired.
+> * **The body carries the description.** §7.1 says "a pointer to the file, and
+>   nothing else of substance", which was right for a body re-derived on every
+>   state change. Export writes the body once per run either way, and an entry
+>   whose body is only a pointer is one nobody on the target can act on.
+> * **`Feedback.author` is `<target>:<login>`, not `github:<login>`.** The design's
+>   spelling is the one-target special case; naming the target is what keeps two
+>   accounts called `octocat` on two systems from reading as one person — the same
+>   argument that put `target` on `MirrorEntry`.
+>
+> The link is written as a satellite list line (`- mirrors: github:o/r=42`),
+> exactly how `Tag` gives an item a set of tags. That needed `SatelliteList` to
+> carry a LIST of written fields rather than one — see `document-mapping.md`
+> §3.2.1 — because `target` and `entry` identify a link only together, and the
+> other repeated-satellite mapping (`ChapterGroup`) writes its payload as prose.
+>
+> `MirrorEntry` coverage in `ExtentBinding.covers` is required only of a project
+> that HAS a mirror (a `Mirror` fact, or links already on disk). Requiring it
+> unconditionally would refuse, at startup, every existing project that cannot
+> reach the failure the requirement exists to prevent.
+>
+> **THE ONE §7.1 LINE THAT DID NOT SHIP: the entry's own open/closed STATE.** An
+> item's status reaches the target in the entry BODY (`Status: Verified`), but a
+> verified item's GitHub issue is left open, so it stays in the default listing.
+> It is not folded in here because doing it correctly is a design increment, not a
+> parameter: export is unconditional, so a `close`/`reopen` per item per run is N
+> extra API calls and a rate-limit hazard, and avoiding that means `list_entries`
+> must report each entry's state so export can change only what differs. Nor is
+> the behaviour of `gh issue close` on an already-closed issue something a test in
+> this repo can pin — the whole reason the fake exists. Left as a named gap rather
+> than shipped unverified. §7.1's LABELS are absent too, and that one the section
+> already called optional and config-gated.
 
 ### 7.1 Issue content
 
@@ -2387,7 +2436,7 @@ preference, the substrate refactor is first, not last.
 | 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one. DELIVERED** (§6.5, §6.6, §6.7). The `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter and its idempotent-retry rule, the resolution ladder, the identity-prefix collision check, grandfathered legacy ids; the host's counter seed deleted. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. NOT shipped here and deliberately: `fact Mirror(target:, access:)` and `MirrorEntry` belong to row 5, where the mirror is and where they have a consumer — with one policy the config carries no allocation field, so this row had no config to write; and `fsck --renumber` is a repair with its own ticket (§6.6). | collision-free `add`, offline, no forge |
 | ~~3~~ | ~~WI-1115~~ | ~~**`Forge` carrier.**~~ — **split unbuilt (2026-08-17)**, because what remained was two unlike things and no independent value (this column said "nothing alone", which is the smell). The **embedder host-fn seam** became **WI-1122** — `anthill-core` substrate, needed by any host binding a carrier, deliberately outside this chain. The **carrier, its bindings and the fake** moved to row 5, where their only consumer is. | — |
 | ~~4~~ | ~~WI-1116~~ | ~~**Coordinated `add`**~~ — **retired unbuilt** (§6.0, §12). `MirrorEntry` moves to row 5, where the mirror is. | — |
-| 5 | WI-1117 | **`export` / `import`** (§7, amended), **plus the `Forge` carrier** absorbed from row 3: the sort, its `provides`/`operation_map` bindings, and the `gh` and fake implementations. The operation set is small now — create/update an entry, list entries, list comments — since `fresh_token`, `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were all the allocator's. Depends on **WI-1122** (an `operation_map` naming `gh_create_entry` is not constructible without it). Export is idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. Continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` — is a future extension. | a published snapshot + a return channel |
+| 5 | WI-1117 | **`export` / `import`. DELIVERED** (§7, amended; what shipped and where it differs is at the head of §7), **plus the `Forge` carrier** absorbed from row 3: the sort, its `provides`/`operation_map` bindings, and the `gh` and fake implementations. The operation set is small now — create/update an entry, list entries, list comments — since `fresh_token`, `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were all the allocator's. Depends on **WI-1122** (an `operation_map` naming `gh_create_entry` is not constructible without it). Export is idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. Continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` — is a future extension. | a published snapshot + a return channel |
 
 ### 14.1 The self-hosting constraint
 

@@ -10,7 +10,8 @@
 -- pattern-matchable `WorkItem` entities instead of opaque `Term`s.
 
 namespace anthill.todo.store
-  import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag, StoreFormat}
+  import anthill.stage0.{WorkItem, WorkStatus, Feedback, Tag, StoreFormat,
+                         MirrorEntry}
   import anthill.persistence.{NonMonotonicStore}
   import anthill.persistence.{persist, retract, update, flush}
   import anthill.prelude.{Cell, Option, List, Int64, String, Unit, Bool}
@@ -53,6 +54,13 @@ namespace anthill.todo.store
   rule fact_monotonicity(WorkItem) <=> non_monotone() [simp]
   rule fact_monotonicity(Feedback) <=> non_monotone() [simp]
   rule fact_monotonicity(Tag) <=> non_monotone() [simp]
+  -- WI-1117: a `MirrorEntry` is a satellite of its item, so it goes when the
+  -- item goes — `forget` retracts it with the Feedback and Tag rows. Nothing
+  -- else removes one: `export` only ever ADDS a link (the entry it names is
+  -- overwritten in place, never re-created), so the append-only reading held for
+  -- everything except the delete cascade — and that is exactly the half WI-1123
+  -- found `Feedback` had wrong, leaving rows describing an id nothing holds.
+  rule fact_monotonicity(MirrorEntry) <=> non_monotone() [simp]
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl
@@ -119,6 +127,19 @@ namespace anthill.todo.store
     operation tag_item(s: Cell[V = State], id: String, name: String) -> Unit
       effects {Modify[s], Error}
     operation untag_item(s: Cell[V = State], id: String, name: String) -> Unit
+      effects {Modify[s], Error}
+    -- Record WHAT this item was published as, on WHICH target (WI-1117,
+    -- design §7). Written once per (item, target) by `export`, and read back by
+    -- the next `export` as the key it is idempotent on — so the link is what
+    -- makes a second run an update instead of a second entry.
+    --
+    -- THERE IS NO `unlink`, and the absence is deliberate: a link is dropped
+    -- only WITH its item, by `forget`, which is why the row is `non_monotone`.
+    -- Retracting one on its own would leave the entry standing on the target
+    -- with nothing in the tree pointing at it, and the next `export` would
+    -- create a second entry beside it.
+    operation link_entry(s: Cell[V = State], id: String, target: String,
+                         entry: String) -> Unit
       effects {Modify[s], Error}
     -- Stamp the store's data-format version (WI-434): persist a
     -- `fact StoreFormat(version)` through the same backend. `migrate` calls
@@ -515,20 +536,22 @@ namespace anthill.todo.store
         case some(row) -> retract_row(s, row)
 
     -- Buffer a retract of every SATELLITE row describing `target` — the
-    -- Feedback and Tag rows keyed `workitem: target` (WI-1123). Does NOT
+    -- Feedback, Tag and MirrorEntry rows keyed `workitem: target` (WI-1123). Does NOT
     -- flush: forget buffers these together with the item's own row so one
     -- flush drops them all, which is what lets ItemPerFileStore remove the
     -- item's file instead of leaving it holding rows that name nothing.
     --
-    -- The two functors are named one by one rather than swept generically:
+    -- The three functors are named one by one rather than swept generically:
     -- `stored_facts_of` is keyed by functor, and a satellite kind that is
     -- added later must be added HERE deliberately, not inherited silently by
-    -- a scan that happens to see a `workitem` field.
+    -- a scan that happens to see a `workitem` field. `MirrorEntry` is the one
+    -- that was added later (WI-1117), through exactly this line.
     operation forget_satellites_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
       let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Feedback), target))
       let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Tag), target))
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), MirrorEntry), target))
       ()
 
     -- The stored rows whose `workitem` field is the string `target`.
@@ -734,6 +757,13 @@ namespace anthill.todo.store
       effects {Modify[s], Error}
     =
       persist_through(s, as_term(StoreFormat(version: version)))
+
+    operation link_entry(s: Cell[V = WIS], id: String, target: String,
+                         entry: String) -> Unit
+      effects {Modify[s], Error}
+    =
+      persist_through(s,
+        as_term(MirrorEntry(workitem: id, target: target, entry: entry)))
 
     -- Retract the Tag fact matching (id, name), then flush. The cmd
     -- layer guards existence via has_tag, so a missing fact is a silent
