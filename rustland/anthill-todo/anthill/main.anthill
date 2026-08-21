@@ -111,7 +111,7 @@ namespace anthill.todo
     -- not of the store algebra this bundle sees. It is listed here because the
     -- registry is what `--help` prints, and a command absent from help is a
     -- command nobody finds. (WI-1114; design §10.)
-    , spec_named("fsck",              "Check the on-disk layout against the facts (--fix repairs)")
+    , spec_named("fsck",              "Check the on-disk layout against the facts (--fix, --renumber repair)")
     , spec_named("skill",             "Print Claude Code skill definition")
     , spec_named("version",           "Print version (semver + git SHA + build date)")
     ]

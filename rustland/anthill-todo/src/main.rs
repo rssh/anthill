@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -772,7 +773,8 @@ use anthill_core::persistence::document::{
     self, ChapterGroupSpec, ChapterSpec, Document, DocumentMapping,
 };
 use anthill_core::persistence::item_per_file_store::{
-    ItemFields, ItemPerFileStore, LayoutFault, ITEM_DOCUMENT_SUFFIX, ITEM_PLAIN_SUFFIX,
+    identity_prefix, ItemFields, ItemPerFileStore, LayoutFault, ITEM_DOCUMENT_SUFFIX,
+    ITEM_PLAIN_SUFFIX,
 };
 use anthill_core::persistence::{print, Store};
 
@@ -1144,18 +1146,44 @@ fn register_declared_store(
     Ok(declared.value)
 }
 
-/// `anthill-todo fsck [--fix]` — check the on-disk layout against the facts, and
-/// optionally move each misplaced file to the path its own fact names.
+/// `anthill-todo fsck [--fix] [--renumber [<id>]]` — check the on-disk layout
+/// against the facts, and optionally repair it.
 ///
-/// The directory is an index and the fact is the truth (design §4), so the repair
-/// direction is settled: the FACT wins. What `--fix` will not do is choose between
-/// two files claiming one id — that is a real disagreement about which is the item,
-/// and only whoever interrupted the move knows.
-fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -> i32 {
+/// TWO REPAIRS, TWO VERBS, because they differ in what they change and therefore
+/// in what can be looking at it. `--fix` moves a file to the path its own fact
+/// names: the directory is an index and the fact is the truth (design §4), so the
+/// direction is settled and nothing outside that file cared where it sat.
+/// `--renumber` changes an IDENTITY (§6.6) — every `depends_on` in the tree and
+/// every commit message outside it may be naming the id it retires.
+///
+/// What NEITHER will do is choose between two files claiming ONE id: that is a
+/// real disagreement about which file is the item, and only whoever interrupted
+/// the move knows. Two files whose ids merely COLLIDE are the opposite case —
+/// two real items — and that one `--renumber` can decide alone, because §6.6's
+/// order is computed from the rows rather than negotiated.
+fn run_fsck(
+    interp: &mut Interpreter,
+    store: &mut BuiltStore,
+    store_root: &Path,
+    args: &[String],
+) -> i32 {
     let mut fix = false;
-    for arg in args {
+    let mut renumber = false;
+    let mut forced_loser: Option<String> = None;
+    let mut rest = args.iter().peekable();
+    while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--fix" => fix = true,
+            "--renumber" => {
+                renumber = true;
+                // THE ID IS OPTIONAL: bare, this repairs every collision by
+                // §6.6's order; with an id, that id is the side that loses. It is
+                // read positionally because the bare form is the common one and
+                // `--renumber=<id>` would read as the only form there is.
+                if rest.peek().is_some_and(|next| !next.starts_with('-')) {
+                    forced_loser = rest.next().cloned();
+                }
+            }
             // `fsck` is in the bundle's command registry so `--help` finds it, so
             // asking it for its own help is a likely first move (found in review).
             "--help" | "-h" => {
@@ -1178,11 +1206,17 @@ fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -
         return runner::EXIT_RUNTIME;
     }
 
+    // `--fix` FIRST, and the order is load-bearing when both are asked for: a
+    // re-mint reads the item's `created`, and filling a missing one is `--fix`'s
+    // job. The stamps it wrote are handed across because they are not in the KB —
+    // that repair goes through the store, and `fsck` never reloads.
+    let mut filled_created = std::collections::HashMap::new();
     if fix {
         match repair_created(interp, store) {
             Ok(filled) => {
-                for (id, stamp) in &filled {
+                for (rule, id, stamp) in filled {
                     println!("dated {id} from its file: {stamp}");
+                    filled_created.insert(rule, stamp);
                 }
             }
             Err(e) => {
@@ -1217,6 +1251,22 @@ fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -
         }
     }
 
+    if renumber {
+        match repair_ids(
+            interp,
+            store,
+            store_root,
+            forced_loser.as_deref(),
+            &filled_created,
+        ) {
+            Ok(report) => report.print(),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        }
+    }
+
     // Re-asked after a repair, so what is reported is what is still true.
     let faults = match store.checked_layout() {
         Ok(faults) => faults,
@@ -1238,8 +1288,24 @@ fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -
             eprintln!("warning: {fault}");
         }
     }
-    if blocking > 0 && !fix {
-        eprintln!("run `anthill-todo fsck --fix` to repair what can be repaired mechanically");
+    if blocking > 0 {
+        // NAMED PER FAULT, not as one line about `--fix`. A collision is repaired
+        // by the OTHER verb, and telling its reader to run `--fix` sends them to a
+        // command that leaves the tree exactly as it found it and then reports the
+        // same error — the circle WI-1123's covers check was written not to draw.
+        //
+        // AND ONLY THE VERBS THIS RUN DID NOT TRY. Suggesting the command that has
+        // just run and left the fault standing is the same circle, one turn later.
+        let untried: Vec<&str> = remedies_for(&faults)
+            .into_iter()
+            .filter(|v| !(fix && *v == FSCK_FIX) && !(renumber && *v == FSCK_RENUMBER))
+            .collect();
+        if !untried.is_empty() {
+            eprintln!(
+                "run {} to repair what can be repaired mechanically",
+                untried.join(" and then ")
+            );
+        }
     }
     if blocking > 0 {
         runner::EXIT_RUNTIME
@@ -1249,15 +1315,25 @@ fn run_fsck(interp: &mut Interpreter, store: &mut BuiltStore, args: &[String]) -
 }
 
 const FSCK_USAGE: &str = "\
-usage: anthill-todo fsck [--fix]
+usage: anthill-todo fsck [--fix] [--renumber [<id>]]
 
 Check the on-disk layout against the facts: that each item's file sits at the path
-its own `id` and `status` name, that no id is held twice, and that every feedback
-or tag row is in its item's file.
+its own `id` and `status` name, that no id is held twice, that no two items were
+minted into one identity, and that every feedback or tag row is in its item's file.
 
-  --fix   move each misplaced file to the path its own fact names (the fact wins).
-          It will not choose between two files claiming one id, split a file
-          holding several items, or guess where an unreadable row belongs.";
+  --fix   move each misplaced file to the path its own fact names (the fact wins),
+          and date an item whose `created` was left out from its file. It will not
+          choose between two files claiming one id, split a file holding several
+          items, or guess where an unreadable row belongs.
+
+  --renumber [<id>]
+          re-mint one side of every collision between two items whose ids share a
+          `<time>-<hash>` identity. Which side loses is decided from the rows —
+          later `created`, then author, then description — so two checkouts
+          repairing the same collision without talking produce the same tree.
+          Give an <id> to force THAT one to be the side that is renumbered.
+          It rewrites the id, the item's satellite rows and every `depends_on`
+          entry in the tree; mentions in PROSE are reported and left alone.";
 
 /// `anthill-todo migrate --to item-per-file` — the LAYOUT move (design §11).
 ///
@@ -1678,7 +1754,7 @@ fn run_migrate(
 fn repair_created(
     interp: &mut Interpreter,
     store: &mut BuiltStore,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(anthill_core::kb::RuleId, String, String)>, String> {
     let BuiltStore::ItemPerFile(inner) = store else {
         return Ok(Vec::new());
     };
@@ -1705,7 +1781,7 @@ fn repair_created(
         inner
             .update(interp.kb(), rule, new, kind, domain, meta)
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        filled.push((id, stamp));
+        filled.push((rule, id, stamp));
     }
     if !filled.is_empty() {
         inner
@@ -1713,6 +1789,654 @@ fn repair_created(
             .map_err(|e| format!("writing the dated rows: {e}"))?;
     }
     Ok(filled)
+}
+
+
+// ── fsck --renumber: the repair half of §6.6 (WI-VDXAM) ────────
+
+/// One item as the renumber reads it: the four values the deterministic order
+/// and the re-mint are computed from, and nothing else.
+///
+/// READ ONCE, BEFORE ANYTHING IS WRITTEN. Every decision below is taken over
+/// these values; nothing consults the filesystem, the clock, or the order the
+/// files happened to be walked in. That is what makes two checkouts resolving
+/// the same collision independently produce byte-identical trees — the property
+/// §6.6 calls load-bearing, because a repair that two sides disagree about turns
+/// one collision into a second and worse divergence.
+struct ItemRow {
+    rule: anthill_core::kb::RuleId,
+    path: PathBuf,
+    id: String,
+    created: String,
+    author: String,
+    description: String,
+}
+
+impl ItemRow {
+    /// The total order §6.6 states: LATER `created` LOSES, ties broken on
+    /// author, then on the full description.
+    ///
+    /// THE ID IS THE LAST TIE-BREAK, and it is what makes the order TOTAL rather
+    /// than merely usually-total. The three fields above cannot all agree between
+    /// two items in a collision — equal `created` and equal description with an
+    /// equal author would digest identically, which is one item under a different
+    /// name (`DuplicateId`, whose remedy is the opposite one) — but that argument
+    /// rests on both ids having been MINTED, and a hand-written id shaped like a
+    /// minted one is exactly what a tracker of two id shapes can hold. The ids
+    /// differ by construction here, so appending one closes the case.
+    fn order_key(&self) -> (&str, &str, &str, &str) {
+        (&self.created, &self.author, &self.description, &self.id)
+    }
+}
+
+/// What a renumber did, so `fsck` can say it.
+#[derive(Default)]
+struct Renumbering {
+    /// Per repaired item: the id it lost, the id it gained, and the two paths its
+    /// file moved between. The DESTINATION is read back out of the store after the
+    /// flush rather than computed here — the path is the store's rule (an id and a
+    /// status directory), and a second copy of that rule in the reporting code
+    /// would be free to disagree with the bytes on disk.
+    minted: Vec<(String, String, PathBuf, PathBuf)>,
+    satellites: usize,
+    dependents: usize,
+    /// Places the old id still appears, after every field this rewrites has been
+    /// rewritten — prose, and anything else the repair deliberately leaves alone.
+    mentions: Vec<(PathBuf, usize, String)>,
+}
+
+impl Renumbering {
+    /// Say what was done, and — just as loudly — what was deliberately not.
+    ///
+    /// A REPAIR THAT PRINTS NOTHING IS INDISTINGUISHABLE FROM ONE THAT DID NOT
+    /// RUN, which is the same argument `fsck`'s `layout ok` line already makes.
+    fn print(&self) {
+        if self.minted.is_empty() {
+            println!("no id collisions");
+            return;
+        }
+        for (old, new, from, to) in &self.minted {
+            println!("renumbered {old} -> {new}");
+            println!("  moved {} -> {}", from.display(), to.display());
+        }
+        println!(
+            "re-pointed {} satellite row(s) and rewrote `depends_on` in {} item(s)",
+            self.satellites, self.dependents
+        );
+        if self.mentions.is_empty() {
+            return;
+        }
+        // NOT AN ERROR AND NOT A WARNING. Every one of these may correctly name
+        // the item that KEPT the id — the two were minted into one day partition
+        // and a reader wrote about one of them — so the honest report is the
+        // locations and the reason, not a verdict this cannot reach.
+        println!(
+            "{} prose mention(s) of a renumbered id remain, and were NOT rewritten — a \
+             `WI-…` in feedback text may legitimately mean the item that kept the id:",
+            self.mentions.len()
+        );
+        for (path, line, text) in &self.mentions {
+            let text: String = text.chars().take(100).collect();
+            println!("  {}:{line}: {text}", path.display());
+        }
+        println!("note: references outside this tree — commit messages, branch names — are not \
+                  visible here and were not checked");
+    }
+}
+
+/// The commands that repair what these faults are, spelled the way they must be
+/// typed, in the order they have to run.
+///
+/// PER FAULT, BECAUSE THE VERBS ARE NOT INTERCHANGEABLE (WI-VDXAM). `--fix` moves
+/// a file, `--renumber` changes an identity, and `migrate` converts an encoding;
+/// naming one of them at a tree that needs another sends the reader to a command
+/// that reports the same error again, having done nothing. Faults with no
+/// mechanical repair — a duplicate id, an unroutable row — contribute nothing, and
+/// an EMPTY answer is the honest one there: only whoever left the tree in that
+/// state can say what it should be.
+///
+/// `--fix` FIRST when both are named, which is the order `fsck` itself runs them
+/// in and for the same reason: a re-mint reads a `created` that `--fix` fills.
+fn remedies_for(faults: &[LayoutFault]) -> Vec<&'static str> {
+    let mut verbs: Vec<&'static str> = Vec::new();
+    for fault in faults.iter().filter(|f| f.blocking()) {
+        let verb = match fault {
+            LayoutFault::PathDisagreement { .. } => FSCK_FIX,
+            LayoutFault::IdCollision { .. } => FSCK_RENUMBER,
+            LayoutFault::PlainItemFile { .. } => "`anthill-todo migrate --to document`",
+            LayoutFault::SharedFile { .. } => "`anthill-todo migrate --to item-per-file`",
+            // A BLOCKING `DocumentFault` NAMES NO VERB, and `--fix` in particular is
+            // the wrong one: `repair_layout` SKIPS a blocking document fault by
+            // design, because re-rendering a file the reader had to drop a field
+            // from would make the loss permanent. Sending its reader to `--fix`
+            // produced `no misplaced files` and then the identical error.
+            LayoutFault::DocumentFault { .. } => continue,
+            LayoutFault::DuplicateId { .. } | LayoutFault::UnroutableRow { .. } => continue,
+            LayoutFault::OrphanRow { .. } | LayoutFault::MisfiledRow { .. } => continue,
+        };
+        if !verbs.contains(&verb) {
+            verbs.push(verb);
+        }
+    }
+    verbs.sort_by_key(|v| *v != FSCK_FIX);
+    verbs
+}
+
+const FSCK_FIX: &str = "`anthill-todo fsck --fix`";
+const FSCK_RENUMBER: &str = "`anthill-todo fsck --renumber`";
+
+/// `anthill-todo fsck --renumber [<id>]` — resolve every `<time>-<hash>` identity
+/// collision by re-minting one side (design §6.6).
+///
+/// SEPARATE FROM `--fix`, AND NOT AS A MATTER OF TASTE. `--fix` moves a file to
+/// the path its own fact names: the fact is authoritative, the direction is
+/// settled, and nothing outside that file can be looking at the old path. This
+/// changes an IDENTITY, which every `depends_on` in the tree and every commit
+/// message outside it may be naming. Different blast radius, different verb.
+///
+/// WHAT IT REWRITES: the loser's `id:` field (which carries its filename with it,
+/// since the path is a function of the row), its satellites' `workitem:` fields,
+/// and every `depends_on` entry in the tree. WHAT IT REFUSES TO REWRITE: prose. A
+/// `WI-…` in a feedback entry may legitimately mean the winner — the two items
+/// are neighbours in one day's partition and a reader wrote about one of them —
+/// so those are REPORTED with locations and left exactly as they are.
+///
+/// `forced_loser` overrides which side loses, for when one id has already escaped
+/// into commit messages and branch names. It names the id that must be renumbered.
+fn repair_ids(
+    interp: &mut Interpreter,
+    store: &mut BuiltStore,
+    store_root: &Path,
+    forced_loser: Option<&str>,
+    filled_created: &std::collections::HashMap<anthill_core::kb::RuleId, String>,
+) -> Result<Renumbering, String> {
+    let BuiltStore::ItemPerFile(inner) = store else {
+        return Err(format!(
+            "this project's store is `{INDEXED_FILE_STORE}`, which holds every row in one \
+             file — `--renumber` repairs a collision between two item FILES, and there are \
+             none to repair"
+        ));
+    };
+
+    // THE COLLISION MUST BE THE ONLY THING WRONG, checked before a byte moves.
+    //
+    // ONE RULE RATHER THAN A LIST, because every other blocking fault breaks this
+    // repair in its own way and the shared reason is enough: a renumber rewrites
+    // whole FILES through the store, so it needs the store's picture of the tree to
+    // be right everywhere it writes. A duplicate id is the sharp case — two rows
+    // carrying one id would be re-minted to two different ids under one key, and
+    // whichever landed second would take the other's file. But a misplaced file
+    // would be silently moved as a side effect and its fault left standing in the
+    // report; an unplaceable row has no destination at all; a plain file would be
+    // renamed to a document's name; and a file the document reader had to drop a
+    // field from would be re-rendered without it.
+    //
+    // IT IS NOT A DEADLOCK, and that is what the check costs. `fsck --fix` repairs
+    // every one of these that is mechanically repairable, and it runs on a colliding
+    // tree — the collision blocks nothing there, because two colliding ids name two
+    // different destinations (see `repair_paths`). So `fsck --fix` then
+    // `fsck --renumber`, which is the order the combined form already runs in.
+    if let Some(blocker) = inner
+        .layout_faults()
+        .into_iter()
+        .find(|f| f.blocking() && !matches!(f, LayoutFault::IdCollision { .. }))
+    {
+        return Err(format!(
+            "{blocker}. Resolve that first — `anthill-todo fsck --fix` repairs what is \
+             mechanical: renumbering rewrites whole files, and it needs every other \
+             disagreement between this tree and its facts already settled"
+        ));
+    }
+
+    // Every primary row, read once. `primary_rows` comes back sorted by path,
+    // and that order is used for nothing but iteration.
+    let mut rows: Vec<ItemRow> = Vec::new();
+    for (rule, path) in inner.primary_rows() {
+        let head = interp.kb().rule_head(rule);
+        let Some(id) = named_string(interp.kb(), head, STAGE0_ID_FIELD) else {
+            continue;
+        };
+        rows.push(ItemRow {
+            rule,
+            path,
+            // A stamp `--fix` has just written in this same run is not in the KB
+            // — that repair goes through the store, and `fsck` never reloads —
+            // so the two sources are merged here rather than in the KB. Without
+            // it `fsck --fix --renumber` would refuse over a field its own first
+            // half had already filled.
+            created: filled_created
+                .get(&rule)
+                .cloned()
+                .or_else(|| named_string(interp.kb(), head, "created"))
+                .unwrap_or_default(),
+            author: prose_string(interp.kb(), head, STAGE0_AGENT_FIELD).unwrap_or_default(),
+            description: prose_string(interp.kb(), head, "description").unwrap_or_default(),
+            id,
+        });
+    }
+
+    // The groups: every identity prefix two or more rows share. Folded before it
+    // is compared, because minting checks occupancy that way (§6.5) and a repair
+    // that disagreed with the mint would renumber into a prefix the mint calls
+    // taken.
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, row) in rows.iter().enumerate() {
+        if let Some(prefix) = identity_prefix(&row.id) {
+            groups.entry(prefix.to_lowercase()).or_default().push(i);
+        }
+    }
+    groups.retain(|_, g| g.len() > 1);
+
+    // AN UNDATED ITEM CANNOT BE ORDERED, SO IT IS REFUSED RATHER THAN PLACED.
+    // `created` is a required field the loader fills with a fresh var when it is
+    // omitted, so an item that never got one reads back as no string at all — and
+    // the empty string sorts BEFORE every real timestamp, which would silently make
+    // the undated item the WINNER of a rule that says the earlier one wins. It is
+    // also the input a re-mint needs. Both halves want the same answer, and the
+    // answer is that this item is not datable from here.
+    for group in groups.values() {
+        for &i in group {
+            if rows[i].created.is_empty() {
+                return Err(format!(
+                    "{}: `{}` is one side of an id collision and carries no `created`, so \
+                     neither side can be ordered against it — later `created` is what \
+                     decides which one is renumbered. Run `anthill-todo fsck --fix` first: \
+                     it dates an undated item from its own file",
+                    rows[i].path.display(),
+                    rows[i].id
+                ));
+            }
+        }
+    }
+
+    if let Some(forced) = forced_loser {
+        let in_a_group = groups
+            .values()
+            .flatten()
+            .any(|&i| rows[i].id.eq_ignore_ascii_case(forced));
+        if !in_a_group {
+            return Err(format!(
+                "`{forced}` is not one side of an id collision, so there is nothing to \
+                 renumber it away from. `--renumber` without an id repairs every collision \
+                 there is; run `anthill-todo fsck` to see them"
+            ));
+        }
+    }
+
+    // Which prefixes are spoken for. Seeded with EVERY id in the tree, including
+    // both sides of every collision: the loser is moving away from the shared
+    // prefix, and the winner is staying on it.
+    let mut taken: BTreeSet<String> = rows
+        .iter()
+        .filter_map(|row| identity_prefix(&row.id))
+        .map(|p| p.to_lowercase())
+        .collect();
+
+    // Decide, for every group, before rewriting anything.
+    let mut renames: BTreeMap<String, String> = BTreeMap::new();
+    let mut report = Renumbering::default();
+    for group in groups.values() {
+        let mut ordered = group.clone();
+        ordered.sort_by(|&a, &b| rows[a].order_key().cmp(&rows[b].order_key()));
+        // The winner is the first under the order — unless it is the id the
+        // caller named, in which case the next one keeps the prefix and every
+        // other side of the group is renumbered exactly as it would have been.
+        let winner = match forced_loser {
+            Some(forced) if rows[ordered[0]].id.eq_ignore_ascii_case(forced) => ordered[1],
+            _ => ordered[0],
+        };
+        for &i in &ordered {
+            if i == winner {
+                continue;
+            }
+            let new_id = remint(interp, &rows[i], &mut taken)?;
+            report.minted.push((
+                rows[i].id.clone(),
+                new_id.clone(),
+                rows[i].path.clone(),
+                PathBuf::new(),
+            ));
+            renames.insert(rows[i].id.clone(), new_id);
+        }
+    }
+    if renames.is_empty() {
+        return Ok(report);
+    }
+
+    // ── The rewrite ─────────────────────────────────────────────
+    //
+    // ONE `update` PER ROW, and that is a requirement rather than tidiness: the
+    // store pairs a write with the retract it replaces, and a row retracted twice
+    // in one flush has two writes claiming it. So every change a row needs — its
+    // own id, and every `depends_on` entry naming a renumbered item — is applied
+    // to one term and written once.
+    for row in &rows {
+        let head = interp.kb().rule_head(row.rule);
+        let mut new = head;
+        if let Some(minted) = renames.get(&row.id) {
+            let one = std::iter::once((row.id.clone(), minted.clone())).collect();
+            new = rewrite_field_strings(interp.kb_mut(), new, STAGE0_ID_FIELD, &one).ok_or_else(
+                || {
+                    format!(
+                        "{}: `{}` carries no `{STAGE0_ID_FIELD}` field to renumber",
+                        row.path.display(),
+                        row.id
+                    )
+                },
+            )?;
+        }
+        if let Some(rewritten) = rewrite_field_strings(interp.kb_mut(), new, "depends_on", &renames)
+        {
+            new = rewritten;
+            report.dependents += 1;
+        }
+        if new == head {
+            continue;
+        }
+        write_through(interp, inner, row.rule, new, &row.path)?;
+    }
+
+    // The satellites, by ROUTE rather than by file: a feedback row that is
+    // misfiled or orphaned still names the item, and leaving it pointing at an id
+    // no row carries would turn a repaired collision into an orphan.
+    for (old, new) in &renames {
+        let one: BTreeMap<String, String> =
+            std::iter::once((old.clone(), new.clone())).collect();
+        for (rule, path) in inner.satellite_rows_of(old) {
+            let head = interp.kb().rule_head(rule);
+            let Some(rewritten) =
+                rewrite_field_strings(interp.kb_mut(), head, STAGE0_REF_FIELD, &one)
+            else {
+                return Err(format!(
+                    "{}: a row routed as a satellite of `{old}` carries no \
+                     `{STAGE0_REF_FIELD}` field to re-point",
+                    path.display()
+                ));
+            };
+            write_through(interp, inner, rule, rewritten, &path)?;
+            report.satellites += 1;
+        }
+    }
+
+    inner
+        .flush(interp.kb())
+        .map_err(|e| format!("writing the renumbered items: {e}"))?;
+
+    for (_, new_id, _, landed) in &mut report.minted {
+        *landed = inner
+            .item_location(new_id)
+            .ok_or_else(|| {
+                format!("`{new_id}` was written and this store holds no file for it")
+            })?
+            .to_path_buf();
+    }
+    report.mentions = remaining_mentions(store_root, &renames)?;
+    Ok(report)
+}
+
+/// Stage the replacement of one row through the store, carrying its clause kind,
+/// domain and metadata across unchanged.
+fn write_through(
+    interp: &mut Interpreter,
+    store: &mut ItemPerFileStore,
+    rule: anthill_core::kb::RuleId,
+    new: TermId,
+    path: &Path,
+) -> Result<(), String> {
+    let (kind, domain, meta) = {
+        let kb = interp.kb();
+        (
+            kb.rule_clause_kind(rule),
+            kb.rule_domain(rule),
+            kb.rule_meta(rule),
+        )
+    };
+    store
+        .update(interp.kb(), rule, new, kind, domain, meta)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// The most attempts a re-mint will make before refusing. Nowhere near reachable
+/// — §6.5 measures a re-hash at roughly zero on this tracker, and each attempt
+/// draws from 33.5 million values in one day's partition — so reaching it means
+/// the digest is not spreading, which is a defect to report rather than a load to
+/// absorb.
+const REMINT_ATTEMPTS: i64 = 64;
+
+/// Re-mint one item's id, by §6.5's rule and its attempt counter.
+///
+/// STARTS AT 1, NEVER 0. Attempt 0 is what produced the id this is replacing, so
+/// re-deriving it would answer with the colliding id — and, worse, would look
+/// like it had worked.
+///
+/// THE AUTHOR IS THE ONE THE ROW RECORDS. §6.5 mints from the FILING author, and
+/// §6.7 settles that a work item does not record who filed it; what it records is
+/// the agent of its last status change, which for an item still `Open` is the one
+/// who filed it and after a `claim` is the one who claimed it. That is a weaker
+/// input than the mint's, and it does not matter: what a re-mint owes its caller
+/// is a free prefix reached by a rule two checkouts compute identically, and a
+/// value read out of the row is exactly that. It is used for the tie-break above
+/// for the same reason, so there is one reading of "author" here rather than two.
+fn remint(
+    interp: &mut Interpreter,
+    row: &ItemRow,
+    taken: &mut BTreeSet<String>,
+) -> Result<String, String> {
+    let day = day_partition(&row.created).ok_or_else(|| {
+        format!(
+            "{}: `{}` cannot be re-minted — its `created` is {:?}, and the day it names is \
+             the first segment of every minted id. Run `anthill-todo fsck --fix` to date it \
+             from its file",
+            row.path.display(),
+            row.id,
+            row.created
+        )
+    })?;
+    for attempt in 1..=REMINT_ATTEMPTS {
+        // The digest's input, spelled exactly as `FileBasedWorkitemStore.digest_input`
+        // spells it — the two must agree or `add` and this would mint into
+        // different spaces.
+        let input = format!(
+            "{}\n{}\n{}\n{}",
+            row.author, row.created, row.description, attempt
+        );
+        let digest = string_op(interp, "anthill.prelude.String.digestBase32", &input, 5)?;
+        let prefix = format!("WI-{day}-{digest}");
+        if !taken.insert(prefix.to_lowercase()) {
+            continue;
+        }
+        let slug = string_op(interp, "anthill.prelude.String.slug", &row.description, 30)?;
+        return Ok(if slug.is_empty() {
+            prefix
+        } else {
+            format!("{prefix}-{slug}")
+        });
+    }
+    Err(format!(
+        "`{}` could not be re-minted: {REMINT_ATTEMPTS} attempts all landed on an identity \
+         prefix this tracker already holds",
+        row.id
+    ))
+}
+
+/// One of the two minting primitives, through the interpreter.
+///
+/// NOT RE-IMPLEMENTED HERE, and that is the point (§6.7). `slug` and
+/// `digestBase32` MINT AN IDENTITY from content, so a second implementation that
+/// disagreed by one character would hand one item two ids — which is the very
+/// collision this command exists to repair, arriving by the one route no
+/// coordination could catch. The repair calls what `mint_id` calls.
+fn string_op(
+    interp: &mut Interpreter,
+    op: &str,
+    text: &str,
+    width: i64,
+) -> Result<String, String> {
+    match interp.call(op, &[Value::Str(text.to_string()), Value::Int(width)]) {
+        Ok(Value::Str(out)) => Ok(out),
+        Ok(other) => Err(format!("`{op}` answered {other:?}, which is not a string")),
+        Err(e) => Err(format!("`{op}`: {e}")),
+    }
+}
+
+/// `2026-08-17T10:22:03Z` -> `20260817`, the day partition a minted id opens with.
+///
+/// THE SAME THREE CUTS `FileBasedWorkitemStore.day_of` MAKES, and cuts rather
+/// than a separator strip for the reason stated there: dropping every `-` would
+/// swallow one out of a garbled stamp and yield a shorter partition that still
+/// looks like one. `None` where that sort names no day, so the caller can refuse
+/// instead of minting into a partition it invented.
+fn day_partition(created: &str) -> Option<String> {
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    if !created.is_ascii() || created.len() < 10 {
+        return None;
+    }
+    let (y, m, d) = (&created[0..4], &created[5..7], &created[8..10]);
+    (digits(y) && digits(m) && digits(d)).then(|| format!("{y}{m}{d}"))
+}
+
+/// Every place a renumbered id still appears, once every field this repair
+/// rewrites has been rewritten (§6.6).
+///
+/// REPORTED, NEVER REWRITTEN, and the limit is honest rather than lazy. The two
+/// sides of a collision were minted in the same day partition, so a feedback
+/// entry or a description that names `WI-<day>-<hash>…` may perfectly well mean
+/// the side that KEPT the id — and prose is the one place nothing distinguishes
+/// the two readings. §6.4 states the same limit for provisional ids; this is that
+/// limit on a rare path instead of on every offline `add`.
+///
+/// It sees the tracker's own files and nothing else. A commit message, a branch
+/// name and a conversation are all outside this tree, and saying so is why the
+/// report exists at all.
+fn remaining_mentions(
+    root: &Path,
+    renames: &BTreeMap<String, String>,
+) -> Result<Vec<(PathBuf, usize, String)>, String> {
+    let mut files = Vec::new();
+    fs_util::collect_files_by_suffix_recursive(root, &PROJECT_FILE_SUFFIXES, &mut files)?;
+    files.sort();
+    let mut out = Vec::new();
+    for path in files {
+        let text = fs::read_to_string(&path)
+            .map_err(|e| format!("re-reading {} for stale references: {e}", path.display()))?;
+        for (n, line) in text.lines().enumerate() {
+            if renames.keys().any(|old| line.contains(old.as_str())) {
+                out.push((path.clone(), n + 1, line.trim().to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Rewrite every `String` literal `renames` names, inside the value of ONE named
+/// field of a fact — and nowhere else.
+///
+/// THE FIELD RESTRICTION IS THE WHOLE SAFETY ARGUMENT. A renumber must reach
+/// `depends_on`'s elements, wherever a list encoding happens to put them, and
+/// must not reach the description sitting two fields away — which is the same
+/// string appearing in two places meaning two different things. Walking the whole
+/// term and matching on the literal would rewrite both; walking one field's
+/// subterm cannot touch the other, whatever shape either has.
+///
+/// `None` when nothing under the field changed, so a caller can tell a rewrite
+/// from a no-op and write only what moved.
+fn rewrite_field_strings(
+    kb: &mut KnowledgeBase,
+    term: TermId,
+    field: &str,
+    renames: &BTreeMap<String, String>,
+) -> Option<TermId> {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(term).clone()
+    else {
+        return None;
+    };
+    let at = named_args
+        .iter()
+        .position(|(s, _)| kb.local_name_of(*s) == field)?;
+    let replaced = substitute_strings(kb, named_args[at].1, renames)?;
+    let mut named = named_args;
+    named[at].1 = replaced;
+    Some(kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args: named,
+    }))
+}
+
+/// The recursive half: every `String` literal under `t` that `renames` names,
+/// replaced. `None` when nothing under `t` changed.
+///
+/// SHAPE-BLIND BY DESIGN. `depends_on` is `Option[T = List[T = String]]`, which
+/// reaches a store as an `Option` wrapper around a cons chain, a `ListLiteral`, or
+/// a bare list depending on how the row was written and which desugaring ran; a
+/// walk that knew any of those spellings would silently miss the others.
+fn substitute_strings(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    renames: &BTreeMap<String, String>,
+) -> Option<TermId> {
+    match kb.get_term(t).clone() {
+        Term::Const(Literal::String(s)) => renames
+            .get(&s)
+            .map(|to| kb.alloc(Term::Const(Literal::String(to.clone())))),
+        Term::Fn {
+            functor,
+            mut pos_args,
+            mut named_args,
+        } => {
+            let mut changed = false;
+            for arg in pos_args.iter_mut() {
+                if let Some(new) = substitute_strings(kb, *arg, renames) {
+                    *arg = new;
+                    changed = true;
+                }
+            }
+            for (_, arg) in named_args.iter_mut() {
+                if let Some(new) = substitute_strings(kb, *arg, renames) {
+                    *arg = new;
+                    changed = true;
+                }
+            }
+            changed.then(|| {
+                kb.alloc(Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                })
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A field written either bare (`"x"`) or wrapped (`some(value: "x")`), reached
+/// through a dotted PATH so a flattened record's member is one argument away.
+///
+/// BOTH SPELLINGS REACH THE STORE and neither is a deviation — the field is
+/// declared `Option[T = String]`, the loader accepts a bare literal for it and the
+/// printer emits the wrapped form, so one tracker holds both. Comparing the
+/// wrapped form against a bare value is how WI-1121's idempotence check silently
+/// failed its first time out; the bundle's own `prose_field_of` is this function,
+/// and the two have to keep agreeing.
+fn prose_string(kb: &KnowledgeBase, term: TermId, path: &str) -> Option<String> {
+    let segments: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
+    let value = document::value_at(kb, term, &segments)?;
+    match kb.get_term(value) {
+        Term::Const(Literal::String(s)) => Some(s.clone()),
+        Term::Fn { named_args, .. } => named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == "value")
+            .and_then(|(_, inner)| match kb.get_term(*inner) {
+                Term::Const(Literal::String(s)) => Some(s.clone()),
+                _ => None,
+            }),
+        _ => None,
+    }
 }
 
 /// When a file was created, in `now()`'s spelling — the fallback source for a
@@ -2870,6 +3594,12 @@ fn item_per_file_binding(covers: &[&str]) -> String {
 const STAGE0_STATUS_FIELD: &str = "last_status_change.status";
 const STAGE0_ID_FIELD: &str = "id";
 const STAGE0_REF_FIELD: &str = "workitem";
+/// The author a work item DOES record (WI-VDXAM). §6.7 settles that it records no
+/// FILER; what it holds is the agent of its last status change, which is the one
+/// who filed it while the item is still `Open`. It is stage0's own path rather
+/// than a configured one — the binding names the id, status and reference fields
+/// because the store routes on them, and this is read by the renumber alone.
+const STAGE0_AGENT_FIELD: &str = "last_status_change.agent";
 
 /// The backends this build compiles in.
 enum Backend {
@@ -3750,7 +4480,12 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // layout, not of storage. It is served here, between building the store and handing
     // it to the registry, because that is the only point at which the host still holds it.
     if bundle_argv.first().map(|s| s.as_str()) == Some("fsck") {
-        return run_fsck(&mut interp, &mut declared.store, &bundle_argv[1..]);
+        return run_fsck(
+            &mut interp,
+            &mut declared.store,
+            &store_root,
+            &bundle_argv[1..],
+        );
     }
 
     // `migrate --to <layout>` is served here for the same reason and one more.
@@ -3823,7 +4558,14 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         }
     }
     if blocking > 0 {
-        eprintln!("error: run `anthill-todo fsck --fix` to move each file to the path its own fact names");
+        match remedies_for(&faults).join(" and then ") {
+            remedy if remedy.is_empty() => eprintln!(
+                "error: no command repairs this — the fault above needs a hand: either it \
+                 is a disagreement only you can settle, or repairing it mechanically \
+                 would lose what it is reporting"
+            ),
+            remedy => eprintln!("error: run {remedy} to repair this"),
+        }
         return runner::EXIT_RUNTIME;
     }
 

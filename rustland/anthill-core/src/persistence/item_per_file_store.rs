@@ -201,6 +201,11 @@ pub enum LayoutFault {
     /// The whole-id comparison is also what tells the two faults apart, for the
     /// same reason: under `ContentHash` a shared prefix AND a shared slug means a
     /// shared description, which means one item.
+    ///
+    /// DERIVED WHEN IT IS ASKED FOR, not recorded while seeding (WI-VDXAM) — see
+    /// [`ItemPerFileStore::identity_collisions`]. `fsck --renumber` repairs this,
+    /// and a fault pushed onto a list at load could not be un-pushed by the repair
+    /// that resolved it.
     IdCollision {
         prefix: String,
         first: PathBuf,
@@ -648,6 +653,18 @@ enum PendingRow {
 struct PendingWrite {
     route: Route,
     row: PendingRow,
+    /// The row this write REPLACES, when it came from [`Store::update`].
+    ///
+    /// THE PAIRING IS EXPLICIT RATHER THAN INFERRED FROM THE KEY (WI-VDXAM), and
+    /// that is the whole reason this field exists. The flush recognizes a
+    /// retract-plus-persist as one row MOVING (§5.1), and it used to recognize it
+    /// by the primary key both halves carry — which works exactly while the key
+    /// does not change, and `fsck --renumber` changes precisely that. Keyed on the
+    /// id, a renumber reads as an unrelated delete and an unrelated create: the
+    /// old file is removed, a new one is written, and the satellites and prose
+    /// that ride in that file do not travel. Keyed on the RULE, it is the same
+    /// move it always was, at a new path.
+    replaces: Option<RuleId>,
 }
 
 // ── The store ──────────────────────────────────────────────────
@@ -668,11 +685,6 @@ pub struct ItemPerFileStore {
     rows: HashMap<RuleId, RowInfo>,
     /// The routing index for satellites, and the source of a relocation.
     by_item: HashMap<String, PathBuf>,
-    /// The file each minted id's `<time>-<hash>` IDENTITY PREFIX was seen in
-    /// (WI-1121 §6.6). Separate from `by_item` because it is keyed on a PREFIX:
-    /// the slug after it is a rendering, and two colliding items differ in
-    /// exactly that.
-    by_identity: HashMap<String, PathBuf>,
     faults: Vec<LayoutFault>,
     pending_retracts: Vec<PendingRetract>,
     pending_writes: Vec<PendingWrite>,
@@ -687,7 +699,6 @@ impl ItemPerFileStore {
             files: BTreeMap::new(),
             rows: HashMap::new(),
             by_item: HashMap::new(),
-            by_identity: HashMap::new(),
             faults: Vec::new(),
             pending_retracts: Vec::new(),
             pending_writes: Vec::new(),
@@ -857,23 +868,6 @@ impl ItemPerFileStore {
                         });
                     }
                     None => {
-                        // §6.6, and the check has to be HERE rather than in a
-                        // merge driver or a git hook: two unsynced writers who
-                        // mint the same digest produce different FILENAMES, so
-                        // git merges them cleanly and the case that matters never
-                        // reaches a hook at all. The tracker is the only detector.
-                        if let Some(prefix) = identity_prefix(id) {
-                            match self.by_identity.get(&prefix) {
-                                Some(first) => self.faults.push(LayoutFault::IdCollision {
-                                    prefix,
-                                    first: first.clone(),
-                                    second: path.clone(),
-                                }),
-                                None => {
-                                    self.by_identity.insert(prefix, path.clone());
-                                }
-                            }
-                        }
                         self.by_item.insert(id.clone(), path.clone());
                     }
                 }
@@ -1049,18 +1043,6 @@ impl ItemPerFileStore {
                         second: path.clone(),
                     }),
                     None => {
-                        if let Some(prefix) = identity_prefix(id) {
-                            match self.by_identity.get(&prefix) {
-                                Some(first) => self.faults.push(LayoutFault::IdCollision {
-                                    prefix,
-                                    first: first.clone(),
-                                    second: path.clone(),
-                                }),
-                                None => {
-                                    self.by_identity.insert(prefix, path.clone());
-                                }
-                            }
-                        }
                         self.by_item.insert(id.clone(), path.clone());
                     }
                 }
@@ -1101,6 +1083,13 @@ impl ItemPerFileStore {
     /// file has been recorded (a satellite may be read before its item).
     pub fn layout_faults(&self) -> Vec<LayoutFault> {
         let mut out = self.faults.clone();
+        out.extend(self.identity_collisions().into_iter().map(
+            |(prefix, first, second)| LayoutFault::IdCollision {
+                prefix,
+                first,
+                second,
+            },
+        ));
         for info in self.rows.values() {
             let Route::Satellite { item, functor } = &info.route else {
                 continue;
@@ -1126,6 +1115,79 @@ impl ItemPerFileStore {
         out
     }
 
+    /// Every `<time>-<hash>` identity prefix two or more items share, with the
+    /// files that hold them — §6.6's collision, and the input `fsck --renumber`
+    /// repairs from.
+    ///
+    /// DERIVED FROM THE CURRENT INDEX, NOT RECORDED WHILE SEEDING (WI-VDXAM).
+    /// It used to be a fault pushed by whichever `record_*` call met the second
+    /// file, which was right about the tree as READ and wrong about the tree as
+    /// it now stands: a renumber that resolves the collision cannot un-push it,
+    /// so `fsck` reported the tree as broken in the same breath as repairing it.
+    /// Asked of `by_item` it is a function of the state, and the answer changes
+    /// when the state does.
+    ///
+    /// THE PREFIX IS FOLDED BEFORE IT IS COMPARED, which is §6.5's rule and not a
+    /// nicety here: minting checks occupancy case-INsensitively, so a detector
+    /// that compared case-sensitively would call a prefix free that the mint
+    /// calls taken — and the repair would renumber into a prefix the very next
+    /// `fsck` flags again. The two questions are the same question.
+    ///
+    /// The pairs come out sorted by path, so two checkouts asking independently
+    /// are told the same thing in the same order.
+    fn identity_collisions(&self) -> Vec<(String, PathBuf, PathBuf)> {
+        let mut by_prefix: BTreeMap<String, Vec<(&str, &Path)>> = BTreeMap::new();
+        for (id, path) in &self.by_item {
+            let Some(prefix) = identity_prefix(id) else {
+                continue;
+            };
+            by_prefix
+                .entry(prefix.to_lowercase())
+                .or_default()
+                .push((id, path));
+        }
+        let mut out = Vec::new();
+        for group in by_prefix.values_mut() {
+            if group.len() < 2 {
+                continue;
+            }
+            group.sort_by_key(|(_, path)| *path);
+            // Every later file against the FIRST, which is the shape the fault
+            // already had and the one a reader wants: three files sharing a
+            // prefix are two collisions with a common winner-candidate, not
+            // three unordered pairs.
+            let (first_id, first_path) = group[0];
+            for (_, path) in &group[1..] {
+                out.push((
+                    identity_prefix(first_id).expect("grouped on a prefix it has"),
+                    first_path.to_path_buf(),
+                    path.to_path_buf(),
+                ));
+            }
+        }
+        out
+    }
+
+    /// Every SATELLITE row naming `item`, with the file it lives in — what a
+    /// renumber has to carry with the item whose id it changes (§6.6).
+    ///
+    /// BY ROUTE, NOT BY FILE, and the difference is the case that matters: a
+    /// satellite that is misfiled or orphaned still NAMES the item, and leaving
+    /// its `workitem:` pointing at an id nothing holds would turn a repaired
+    /// collision into an orphan. Sorted, so a repair walks them in one order.
+    pub fn satellite_rows_of(&self, item: &str) -> Vec<(RuleId, PathBuf)> {
+        let mut out: Vec<(RuleId, PathBuf)> = self
+            .rows
+            .iter()
+            .filter(|(_, info)| {
+                matches!(&info.route, Route::Satellite { item: named, .. } if named == item)
+            })
+            .map(|(rule, info)| (*rule, info.path.clone()))
+            .collect();
+        out.sort_by(|a, b| (&a.1, a.0.index()).cmp(&(&b.1, b.0.index())));
+        out
+    }
+
     /// Move each misplaced file to the path its own fact names (`fsck --fix`).
     /// The FACT wins, per §4: the status field carries a payload no directory
     /// name can hold, so it is the truth and the directory is the projection.
@@ -1144,11 +1206,19 @@ impl ItemPerFileStore {
         // misplaced file's destination may be the other copy. An unroutable row
         // means this store does not know where that file's item belongs at all.
         // A shared file is not misplaced items, it is a different layout.
+        //
+        // AN `IdCollision` IS NOT ON THIS LIST, AND WAS WRONGLY ADDED TO IT
+        // (WI-VDXAM). The reason the duplicate blocks is that both rows name ONE
+        // path, so a move could land on the other copy. Two rows whose ids merely
+        // COLLIDE have different whole ids, hence different filenames, hence
+        // different destinations — the ambiguity this guard exists for cannot
+        // arise. Refusing there deadlocked the two repairs against each other:
+        // `--fix` would not run while a collision stood, and `--renumber` reads a
+        // `created` that `--fix` is the thing that fills.
         if let Some(blocker) = faults.iter().find(|f| {
             matches!(
                 f,
                 LayoutFault::DuplicateId { .. }
-                    | LayoutFault::IdCollision { .. }
                     | LayoutFault::PlainItemFile { .. }
                     | LayoutFault::UnroutableRow { .. }
                     | LayoutFault::SharedFile { .. }
@@ -1706,10 +1776,45 @@ impl ItemPerFileStore {
         )))
     }
 
+    /// Route and render one row, and buffer it — the body `persist` and `update`
+    /// share. `replaces` is what tells them apart, and it is the only thing that
+    /// does.
+    fn buffer_write(
+        &mut self,
+        kb: &KnowledgeBase,
+        fact: TermId,
+        meta: Option<TermId>,
+        replaces: Option<RuleId>,
+    ) -> Result<(), PersistenceError> {
+        let route = self.route_of(kb, fact)?;
+        let row = self.render_row(kb, fact, meta)?;
+        self.pending_writes.push(PendingWrite {
+            route,
+            row,
+            replaces,
+        });
+        Ok(())
+    }
+
     /// Re-key one file's whole model, carrying every row in it — the item, its
     /// feedback, its tags, its mirror link. The unit of relocation is the FILE,
     /// not the row, and this is the line that says so.
     fn relocate(&mut self, from: &Path, to: &Path) -> Result<(), PersistenceError> {
+        // NEVER ONTO A FILE THIS STORE ALREADY HOLDS (WI-VDXAM). `refuse_unknown_occupant`
+        // guards the destination against a file the store never READ; this guards it
+        // against one it did, which that check deliberately passes and this line would
+        // then overwrite — the model is replaced, and the flush writes the survivor over
+        // the other item's bytes. Unreachable through a status change, because two files
+        // at one id-and-status is a `DuplicateId` and that blocks every command; reachable
+        // through `fsck`, which is the one thing that runs on a faulty tree.
+        if self.files.contains_key(to) {
+            return Err(PersistenceError::Io(format!(
+                "{} would move onto {}, which this store already holds a row for; refusing \
+                 rather than overwriting it",
+                from.display(),
+                to.display()
+            )));
+        }
         let model = self.files.remove(from).ok_or_else(|| {
             PersistenceError::Io(format!("no model for {} to relocate", from.display()))
         })?;
@@ -1720,15 +1825,6 @@ impl ItemPerFileStore {
             }
         }
         for home in self.by_item.values_mut() {
-            if same_path(home, from) {
-                *home = to.to_path_buf();
-            }
-        }
-        // The identity index too (WI-1121): it is read only while seeding, so a
-        // stale path here is unobservable today — which is exactly why it is
-        // worth keeping true rather than leaving as a fact about the current
-        // call order.
-        for home in self.by_identity.values_mut() {
             if same_path(home, from) {
                 *home = to.to_path_buf();
             }
@@ -1746,10 +1842,7 @@ impl Store for ItemPerFileStore {
         _domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<(), PersistenceError> {
-        let route = self.route_of(kb, fact)?;
-        let row = self.render_row(kb, fact, meta)?;
-        self.pending_writes.push(PendingWrite { route, row });
-        Ok(())
+        self.buffer_write(kb, fact, meta, None)
     }
 
     fn retract(&mut self, kb: &KnowledgeBase, id: RuleId) -> Result<bool, PersistenceError> {
@@ -1779,8 +1872,8 @@ impl Store for ItemPerFileStore {
         kb: &KnowledgeBase,
         id: RuleId,
         new: TermId,
-        clause_kind: ClauseKind,
-        domain: Symbol,
+        _clause_kind: ClauseKind,
+        _domain: Symbol,
         meta: Option<TermId>,
     ) -> Result<bool, PersistenceError> {
         if !self.retract(kb, id)? {
@@ -1788,8 +1881,9 @@ impl Store for ItemPerFileStore {
         }
         // Buffered, both of them: it is the single flush below that recognizes
         // the pair as one move (§5.1), so composing them here is the mechanism,
-        // not a caller-visible retract-then-persist.
-        self.persist(kb, new, clause_kind, domain, meta)?;
+        // not a caller-visible retract-then-persist. The write carries the rule
+        // it replaces, which is what the flush pairs on — see `PendingWrite`.
+        self.buffer_write(kb, new, meta, Some(id))?;
         Ok(true)
     }
 
@@ -1808,39 +1902,59 @@ impl Store for ItemPerFileStore {
         // model there.
         let mut moved: HashMap<PathBuf, PathBuf> = HashMap::new();
 
-        // A retract is pairable by the primary key it carries. Only a primary
-        // row has one — a satellite retract is never a move, it is a row leaving
-        // a file that stays where it is.
-        let mut pairable: HashMap<String, usize> = HashMap::new();
+        // A retract is pairable when a write in this same flush names it as the
+        // row it REPLACES — which is exactly what `update` buffers, and nothing
+        // else does. Only a primary row moves; a satellite update is a row leaving
+        // one place in a file and arriving at another, in a file that stays put.
+        let mut at_rule: HashMap<RuleId, usize> = HashMap::new();
         for (i, r) in retracts.iter().enumerate() {
-            if let Route::Item { id, .. } = &r.route {
-                pairable.insert(id.clone(), i);
-            }
+            at_rule.insert(r.rule, i);
         }
         let mut paired = vec![false; retracts.len()];
 
-        // Pass 1 — the relocation rule. A persist whose primary key a retract in
-        // this same flush also names is that row MOVING: rewrite its block where
-        // it sits, then carry the whole file to the new path.
+        // Pass 1 — the relocation rule. An update of a primary row is that row
+        // MOVING: rewrite its block where it sits, then carry the whole file to
+        // the new path. The path is a function of the row's own id and status, so
+        // a renumber (`fsck --renumber`, §6.6) and a status change are ONE
+        // mechanism — the id changes rather than the directory, and the item's
+        // satellites and prose ride along in the file either way.
         let mut unpaired_writes: Vec<PendingWrite> = Vec::new();
         for write in writes {
             let Route::Item { id, .. } = &write.route else {
                 unpaired_writes.push(write);
                 continue;
             };
-            let Some(&i) = pairable.get(id) else {
+            let Some(replaced) = write.replaces else {
                 unpaired_writes.push(write);
                 continue;
             };
+            let &i = at_rule.get(&replaced).ok_or_else(|| {
+                PersistenceError::Io(format!(
+                    "`{id}` was persisted as a replacement for a row this flush does not \
+                     retract; an update buffers both halves together"
+                ))
+            })?;
             if paired[i] {
                 return Err(PersistenceError::Io(format!(
-                    "two rows keyed `{id}` were persisted against one retract in a single \
-                     flush; a primary key names one row"
+                    "two rows were persisted against one retract in a single flush, the \
+                     second keyed `{id}`; a row is replaced once"
                 )));
             }
             paired[i] = true;
 
             let old_path = retracts[i].path.clone();
+            let old_id = match &retracts[i].route {
+                Route::Item { id, .. } => id.clone(),
+                // A primary write replacing a row that routed as anything else is
+                // a caller handing this store two different rows as one. Loud: the
+                // silent reading files the new row and strands the old one's bytes.
+                other => {
+                    return Err(PersistenceError::Io(format!(
+                        "`{id}` was persisted as a replacement for a row that routes as \
+                         {other:?}, which is not a work item"
+                    )))
+                }
+            };
             let new_path = self.path_of(&write.route)?;
             // THE ROW IS REWRITTEN BEFORE THE FILE MOVES, while the model is
             // still keyed at the old path. Its chapters are rewritten only where
@@ -1848,7 +1962,7 @@ impl Store for ItemPerFileStore {
             // renames the file, and the description must come through
             // byte-identical — that is the invariant that keeps hand-added prose
             // alive.
-            match &write.row {
+            let slot = match &write.row {
                 PendingRow::Plain(text) => {
                     let model = self.files.get_mut(&old_path).ok_or_else(|| {
                         PersistenceError::Io(format!("no model for {}", old_path.display()))
@@ -1860,15 +1974,13 @@ impl Store for ItemPerFileStore {
                         ))
                     })?;
                     model.blocks[at] = Block {
-                        kind: Kind::Row(None),
+                        kind: Kind::Row(Some(retracts[i].rule)),
                         text: row_text(text),
                     };
+                    Slot::Block
                 }
-                row => {
-                    self.place_document_row(&old_path, Some(&retracts[i].slot), row)?;
-                }
-            }
-            self.rows.remove(&retracts[i].rule);
+                row => self.place_document_row(&old_path, Some(&retracts[i].slot), row)?,
+            };
             if !same_path(&old_path, &new_path) {
                 self.refuse_unknown_occupant(&new_path, &deleted)?;
                 self.relocate(&old_path, &new_path)?;
@@ -1876,7 +1988,32 @@ impl Store for ItemPerFileStore {
                 deleted.insert(old_path.clone());
                 dirty.remove(&old_path);
             }
+            // A RENUMBER RETIRES THE OLD KEY (WI-VDXAM). `relocate` re-points every
+            // index entry whose PATH matched, so the old id would otherwise survive
+            // pointing at the renamed file — a store claiming to hold an item under
+            // an id no row carries, and a satellite still naming it would route
+            // silently to the winner's file instead of failing.
+            if old_id != *id {
+                self.by_item.remove(&old_id);
+            }
             self.by_item.insert(id.clone(), new_path.clone());
+            // THE ROW STAYS ADDRESSABLE (WI-VDXAM). This used to drop it from the
+            // index, on the reasoning that the KB retracts the rule an `update`
+            // names and asserts a fresh one, so the handle is dead — true of the
+            // KB, and not the store's business. What it cost is that a store
+            // silently stopped holding a row it is still holding: `primary_rows`
+            // lost it, so a SECOND repair in the same process could not see it and
+            // reported a smaller tree than the one on disk. A stale handle here is
+            // inert (`retract` answers `false` for a rule the KB has retracted);
+            // a missing row is a silent under-report.
+            self.rows.insert(
+                retracts[i].rule,
+                RowInfo {
+                    path: new_path.clone(),
+                    route: write.route.clone(),
+                    slot,
+                },
+            );
             dirty.insert(new_path);
         }
 
@@ -2170,7 +2307,12 @@ fn list_element_value(
 ///
 /// `None` for a grandfathered `WI-NNN` or anything hand-written: those cannot
 /// collide by this mechanism, because nothing derives them.
-fn identity_prefix(id: &str) -> Option<String> {
+///
+/// PUBLIC BECAUSE THE DETECTOR AND THE REPAIR MUST NOT DISAGREE. `fsck --renumber`
+/// groups the tree by this exact answer and re-mints until it is free; a second
+/// reading of "what is the identity part" living in the CLI would be a rule with
+/// two implementations, which is the drift §6.6 exists to catch.
+pub fn identity_prefix(id: &str) -> Option<String> {
     let body = id.strip_prefix("WI-")?;
     let mut parts = body.splitn(3, '-');
     let day = parts.next()?;

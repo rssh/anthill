@@ -123,3 +123,6 @@ mod wi1121_content_hash_ids_test;
 
 #[path = "include/wi1123_delete_cascade_test.rs"]
 mod wi1123_delete_cascade_test;
+
+#[path = "include/wivdxam_fsck_renumber_test.rs"]
+mod wivdxam_fsck_renumber_test;

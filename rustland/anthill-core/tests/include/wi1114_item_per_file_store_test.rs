@@ -232,6 +232,11 @@ impl Fixture {
     fn flush(&mut self) {
         self.store.flush(&self.kb).expect("flush");
     }
+
+    /// The same, for the tests that assert a flush REFUSES.
+    fn try_flush(&mut self) -> Result<(), String> {
+        self.store.flush(&self.kb).map_err(|e| e.to_string())
+    }
 }
 
 fn sym(kb: &KnowledgeBase, name: &str) -> anthill_core::intern::Symbol {
@@ -883,6 +888,161 @@ fn two_items_sharing_an_identity_prefix_are_a_collision_not_a_duplicate() {
     assert!(
         faults.iter().any(|x| x.blocking()),
         "it blocks — the next write would not know which item it means"
+    );
+}
+
+/// AN ID CHANGE IS A RELOCATION, NOT A DELETE PLUS A CREATE (WI-VDXAM) — which is
+/// what makes `fsck --renumber` possible at all. The path is a function of the
+/// row's own id and status, so re-keying the id moves the file exactly as a status
+/// change does, and everything else in that file travels with it.
+///
+/// THE CONTROL IS THE SATELLITE AND THE COMMENT. "The new file exists" would pass
+/// for a store that wrote the new row and dropped the old one; the `Note` and the
+/// inter-row comment are named by nothing in this update and must arrive anyway.
+/// Before the change the flush paired a retract with a persist by the PRIMARY KEY
+/// both carried, so a changed key paired with nothing: the old file was removed
+/// and a bare new one written.
+#[test]
+fn a_renumber_relocates_the_file_and_carries_its_satellites() {
+    let mut f = Fixture::new(&[("open/WI-1.anthill", WI1)]);
+    let rule = f.rule("open/WI-1.anthill", 0);
+    let open = f.open();
+    let renumbered = f.item("WI-9", "first", open);
+
+    assert!(f.update(rule, renumbered).expect("update"), "the row is known");
+    f.flush();
+
+    assert!(!f.exists("open/WI-1.anthill"), "the old path is gone");
+    let text = f.read("open/WI-9.anthill");
+    assert!(text.contains("id: \"WI-9\""), "the row is re-keyed: {text}");
+    assert!(
+        text.contains("workitem: \"WI-1\""),
+        "and its satellite rode along, still naming the old id — re-pointing it is \
+         the CALLER's business, because only the caller knows the reference field: {text}"
+    );
+    assert!(
+        text.contains("a comment nobody should lose"),
+        "and so did the file's own text: {text}"
+    );
+}
+
+/// A ROW IS STILL ADDRESSABLE AFTER AN UPDATE, so a second one in the same process
+/// reaches it (WI-VDXAM).
+///
+/// WHAT FAILED BEFORE THE FIX (found in review): the flush dropped the row from the
+/// index on the reasoning that the KB retracts the rule an `update` names — true of
+/// the KB, and not this store's business. The store went on HOLDING the row while
+/// reporting that it did not: `primary_rows` lost it, so a second repair in the
+/// same run saw a smaller tree than the one on disk and quietly did less.
+///
+/// THE CONTROL IS `primary_rows`, not the file. The bytes were always right; what
+/// was wrong was the index, and only a caller that asks the store what it holds can
+/// see the difference.
+#[test]
+fn a_row_stays_addressable_after_an_update() {
+    let mut f = Fixture::new(&[("open/WI-1.anthill", WI1)]);
+    let rule = f.rule("open/WI-1.anthill", 0);
+    let open = f.open();
+    let edited = f.item("WI-1", "edited once", open);
+    f.update(rule, edited).expect("first update");
+    f.flush();
+
+    assert_eq!(
+        f.store.primary_rows().len(),
+        1,
+        "the store still says it holds the row it just wrote"
+    );
+
+    let claimed = f.claimed("claude");
+    let again = f.item("WI-1", "edited twice", claimed);
+    assert!(
+        f.update(rule, again).expect("second update"),
+        "and a second update reaches it"
+    );
+    f.flush();
+    let text = f.read("claimed/WI-1.anthill");
+    assert!(text.contains("edited twice"), "{text}");
+    assert!(!f.exists("open/WI-1.anthill"));
+}
+
+/// AND THE OLD KEY IS RETIRED. `relocate` re-points every index entry whose PATH
+/// matched, so without an explicit removal the store would go on claiming to hold
+/// an item under an id no row carries — and a later satellite naming it would route
+/// silently into the renamed file instead of failing.
+#[test]
+fn a_renumber_leaves_no_route_under_the_retired_id() {
+    let mut f = Fixture::new(&[("open/WI-1.anthill", WI1)]);
+    let rule = f.rule("open/WI-1.anthill", 0);
+    let open = f.open();
+    let renumbered = f.item("WI-9", "first", open);
+    f.update(rule, renumbered).expect("update");
+    f.flush();
+
+    let stray = f.note("WI-1", "written after the renumber");
+    let err = f.persist(stray).err().unwrap_or_default() + &f.try_flush().err().unwrap_or_default();
+    assert!(
+        err.contains("WI-1"),
+        "a row naming the retired id is refused, not filed: {err}"
+    );
+}
+
+/// THE COLLISION IS A FUNCTION OF THE CURRENT INDEX, NOT OF WHAT SEEDING SAW
+/// (WI-VDXAM). It used to be a fault pushed by whichever `record_*` call met the
+/// second file, which a repair could not un-push — so `fsck --renumber` fixed the
+/// tree and then reported it as broken in the same breath.
+///
+/// WHAT FAILS WITHOUT THE CHANGE: the second assertion only. The first passes
+/// either way, and is here to prove the fault was there to lose.
+#[test]
+fn a_collision_stops_being_reported_once_one_side_is_renumbered() {
+    let alice = "namespace test.wi1114\n\
+                 \x20 fact Item(id: \"WI-20260817-K7M2Q-alpha-thing\", note: \"a\", status: Open)\n\
+                 end\n";
+    let bob = "namespace test.wi1114\n\
+               \x20 fact Item(id: \"WI-20260817-K7M2Q-beta-thing\", note: \"b\", status: Open)\n\
+               end\n";
+    let mut f = Fixture::new(&[
+        ("open/WI-20260817-K7M2Q-alpha-thing.anthill", alice),
+        ("open/WI-20260817-K7M2Q-beta-thing.anthill", bob),
+    ]);
+    assert!(
+        f.store.layout_faults().iter().any(|x| matches!(x, LayoutFault::IdCollision { .. })),
+        "the collision is reported while it is true"
+    );
+
+    let rule = f.rule("open/WI-20260817-K7M2Q-beta-thing.anthill", 0);
+    let open = f.open();
+    let renumbered = f.item("WI-20260817-721H4-beta-thing", "b", open);
+    f.update(rule, renumbered).expect("update");
+    f.flush();
+
+    let faults = f.store.layout_faults();
+    assert!(
+        !faults.iter().any(|x| matches!(x, LayoutFault::IdCollision { .. })),
+        "and stops the moment it is not: {faults:?}"
+    );
+}
+
+/// THE PREFIX IS FOLDED BEFORE IT IS COMPARED (§6.5). Minting checks occupancy
+/// case-insensitively — the filesystem is why — so a detector that compared as
+/// written would call a prefix free that the mint calls taken, and the repair
+/// would renumber into a prefix the next check flags again.
+#[test]
+fn an_identity_prefix_collides_case_insensitively() {
+    let upper = "namespace test.wi1114\n\
+                 \x20 fact Item(id: \"WI-20260817-K7M2Q-alpha\", note: \"a\", status: Open)\n\
+                 end\n";
+    let lower = "namespace test.wi1114\n\
+                 \x20 fact Item(id: \"WI-20260817-k7m2q-beta\", note: \"b\", status: Open)\n\
+                 end\n";
+    let f = Fixture::new(&[
+        ("open/WI-20260817-K7M2Q-alpha.anthill", upper),
+        ("open/WI-20260817-k7m2q-beta.anthill", lower),
+    ]);
+    let faults = f.store.layout_faults();
+    assert!(
+        faults.iter().any(|x| matches!(x, LayoutFault::IdCollision { .. })),
+        "two spellings of one prefix are one identity: {faults:?}"
     );
 }
 

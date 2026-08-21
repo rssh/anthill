@@ -1395,16 +1395,15 @@ GitHub what has been allocated, because allocation leaves no trace outside the
 tree. That second one is the only loss with teeth, and it is the price of not
 needing the network. Sayability was the third, and the slug buys it back.
 
-### 6.6 When two unsynced writers mint the same id (detection delivered)
+### 6.6 When two unsynced writers mint the same id (delivered)
 
-**Added 2026-08-17. THE DETECTION IS DELIVERED (WI-1121), THE REPAIR IS NOT.**
-`LayoutFault::IdCollision` is raised at load when two files hold items whose
-`<time>-<hash>` prefixes agree and whose whole ids do not, and it BLOCKS — which
-is the half that matters, because git merges the two files cleanly and nothing
-else can see the problem. `fsck --renumber` is a separate capability (a
-deterministic loser, a re-mint, and a rewrite of every `depends_on` in the tree)
-and is filed as `WI-20260818-VDXAM-anthill-todo-backend-fsck` rather than
-smuggled in here.
+**Added 2026-08-17. DETECTION DELIVERED 2026-08-18 (WI-1121); REPAIR DELIVERED
+2026-08-21 (WI-VDXAM).** `LayoutFault::IdCollision` is raised when two files hold
+items whose `<time>-<hash>` prefixes agree and whose whole ids do not, and it
+BLOCKS — which is the half that matters, because git merges the two files cleanly
+and nothing else can see the problem. `fsck --renumber` is the other half: a
+deterministic loser, a re-mint, and a rewrite of every `depends_on` in the tree.
+What building the repair settled is at §6.8.
 
 Under `ContentHash` the whole-id comparison IS the content comparison this
 section's table asks for: a shared prefix and a shared slug means a shared
@@ -1444,10 +1443,13 @@ must be separate faults. They are mechanically distinguishable:
 | the **same** item (same author, `created`, description) | interrupted move | delete one — cannot auto-pick |
 | **different** items | hash collision | renumber the loser — *can* auto-pick |
 
-**`fsck --renumber` proposes and applies the repair.** It is deliberately not part
-of `--fix`: that verb moves a file to match its fact, where the fact is
-authoritative and the direction settled, while this one changes an **identity**.
-Different blast radius, different verb.
+**`fsck --renumber` applies the repair.** It is deliberately not part of `--fix`:
+that verb moves a file to match its fact, where the fact is authoritative, the
+direction settled, and nothing outside that file cared where it sat. This one
+changes an **identity**, which every `depends_on` in the tree and every commit
+message outside it may be naming. Different blast radius, different verb — and
+the fault names its own verb, so a reader is never sent to the one that would
+report the same error again having done nothing.
 
 **The loser is chosen by a deterministic total order, and this is the load-bearing
 requirement.** Both checkouts must reach the same answer without talking, or the
@@ -1568,6 +1570,117 @@ tie-break, not the other way round. A content-derived id carries the DAY and the
 a digest, so within one day id order is digest order — no order at all. Ties are
 common (a back-dated migration stamps every item of one commit alike), so the
 tie-break is what keeps the order total and the sort stable.
+
+### 6.8 What building the repair settled (WI-VDXAM, delivered)
+
+**THE FLUSH PAIRED A RETRACT WITH A PERSIST BY THE PRIMARY KEY, AND A RENUMBER IS
+EXACTLY THE CASE THAT BREAKS.** §5.1's move — rewrite the row where it sits, then
+carry the whole file to the new path — was recognized in the flush by the id both
+halves carried. That is correct while the id is what stays fixed and the directory
+is what changes, which is every state change. It reads a renumber as an unrelated
+delete plus an unrelated create: the old file is removed, a new one is written,
+and the satellites and hand-added prose that ride in that file do not travel. The
+pairing is now on the RULE the write REPLACES, which `update` buffers and nothing
+else does — so a renumber and a `claim` are one mechanism, differing only in which
+half of the path changed.
+
+**DETECTION HAD TO MOVE FROM THE SEEDING TO THE QUESTION.** `IdCollision` was
+pushed onto a fault list by whichever `record_*` call met the second file. A
+repair cannot un-push it, so `fsck --renumber` fixed the tree and then reported it
+as broken in the same breath. Asked instead of the CURRENT index, the answer
+changes when the state does. That deleted `by_identity` outright — an index kept
+in step for a read that no longer exists.
+
+**AND THE DETECTOR AND THE MINT HAVE TO FOLD CASE THE SAME WAY.** Minting checks
+occupancy case-insensitively (§6.5, and the filesystem is why). Detection compared
+the prefix as written. Nothing reaches that gap by minting — the digest is
+uppercase — but a hand-edited id does, and the two answers disagreeing is worse
+than either being wrong: the repair would re-mint into a prefix the *next* `fsck`
+flags again, and the loop has no fixed point. One question, one reading.
+
+**THE RE-MINT CALLS WHAT `add` CALLS, THROUGH THE INTERPRETER.** `slug` and
+`digestBase32` are host primitives, and §6.7 already recorded why leaving one host
+unmapped was refused: they MINT AN IDENTITY from content, so two implementations
+that disagree by one character hand one item two ids. A repair with its own copy
+would be a third implementation of the same rule, in the one command whose whole
+job is to clean up after that rule. It calls the operations.
+
+**THE ATTEMPT COUNTER STARTS AT 1, NOT 0.** Attempt 0 is what produced the id
+being replaced, so re-deriving it answers with the colliding id — and looks like
+it worked. The counter is the same one §6.5 describes, entered one step in.
+
+**THE AUTHOR IS THE ONE THE ROW RECORDS, AND THAT IS WEAKER THAN THE MINT'S.**
+§6.5 mints from the filing author; §6.7 settles that a work item does not record
+who filed it. What it records is the agent of its last status change — the filer
+while the item is still `Open`, the claimer after a `claim`. That is used for the
+tie-break AND for the re-mint's digest input, one reading rather than two, and it
+is sufficient for the only property either needs: a value read out of the row is a
+value two checkouts compute identically. The mint's stronger input buys
+distinctness at CREATION, which a re-mint gets from the counter instead.
+
+**THE ORDER NEEDS A FOURTH KEY TO BE TOTAL.** `created`, then author, then
+description is total *given both ids were minted* — equal on all three means equal
+digests, which is one item under two names (`DuplicateId`, the opposite remedy).
+But a tracker holds two id shapes permanently (§6.5), so a hand-written id shaped
+like a minted one can sit in a collision and satisfy none of that argument. The
+full id is appended as the last key: the ids differ by construction here, so it
+closes the case at no cost.
+
+**WHAT IS REWRITTEN IS SCOPED BY FIELD, NOT BY MATCHING THE STRING.** A renumber
+must reach every element of `depends_on` — whatever shape the `Option`-around-list
+happens to have arrived in — and must not reach the description two fields away,
+where the same string means something the repair cannot adjudicate. Walking one
+NAMED FIELD's subterm and substituting inside it does both at once, and it is the
+whole safety argument: the description is not reachable from `depends_on`, so no
+rule about prose has to be enforced anywhere else.
+
+**AND `--fix` HAS TO RUN BEFORE `--renumber` IN A COMBINED RUN, WHICH THE KB DOES
+NOT KNOW ABOUT.** A re-mint reads the item's `created`; filling a missing one is
+`--fix`'s job (§6.7); and that repair writes through the STORE, leaving the KB
+holding the unbound var it started with. `fsck` never reloads, so the stamps
+`--fix` just wrote are handed across in-process. Without that, `fsck --fix
+--renumber` refuses over a field its own first half had already filled — the
+circle §6.7's gate was rewritten to stop drawing.
+
+**THE TWO VERBS DEADLOCKED, AND THE FAULT WAS `--fix`'S REFUSAL LIST.**
+`repair_paths` would not run while ANY `IdCollision` stood. Its reason is real for
+a DUPLICATE id — both rows name one path, so a move could land on the other copy —
+and it does not transfer: two ids that merely COLLIDE differ in their whole
+string, hence in their filenames, hence in their destinations. With the collision
+on that list, `--fix` refused until the renumber had run and the renumber needed
+`--fix` to have run, and the report told its reader to run the command that had
+just refused. A collision blocks no path repair, and it no longer says it does.
+
+**WHICH SETTLES WHAT `--renumber` REQUIRES: the collision is the ONLY thing
+allowed to be wrong.** One rule rather than a list, and it is affordable exactly
+because `--fix` now runs first: a renumber rewrites whole files through the store,
+so it needs the store's picture of the tree to be right everywhere it writes. The
+first cut tolerated a misplaced file, and the cost was a repair that WORKED and
+then failed: the update moved the file, the `PathDisagreement` recorded at load
+outlived its cause, and `fsck` exited non-zero naming a path and an id that no
+longer existed.
+
+**AN ABSENT `created` READ BACK AS THE EMPTY STRING, WHICH SORTS FIRST.** So the
+rule "later `created` loses" handed the collision to the item with no date at all
+and renumbered the well-formed one — a silent wrong answer from a total order that
+was total over the wrong domain. An undated side is refused, and the refusal names
+`--fix`, which dates it from its file.
+
+**A STORE MUST NOT FORGET A ROW IT IS STILL HOLDING.** The flush dropped an
+updated row from its index, reasoning that the KB retracts the rule an `update`
+names and asserts a fresh one, so the handle is dead. True of the KB, and not the
+store's business: `primary_rows` then reported a smaller tree than the one on
+disk, so `--fix` dating an item made it INVISIBLE to the `--renumber` in the same
+run — its collision group dropped to one side and the repair reported nothing to
+do while `fsck` went on reporting the collision. A stale handle is inert (a
+retract answers `false` for a rule the KB has retracted); a missing row is a silent
+under-report.
+
+**AND A FAULT WITH NO MECHANICAL REPAIR MUST NAME NO COMMAND.** A blocking
+`DocumentFault` was routed to `--fix`, which SKIPS it by design — re-rendering a
+file the reader had to drop a field from would make the loss permanent (§5.3). The
+honest answer is that this one needs a hand, and saying so is the same discipline
+as naming `--renumber` rather than `--fix` for a collision.
 
 ## 7. The mirror — demoted to import / export
 
@@ -2094,18 +2207,18 @@ a silent skip or a fallback:
 * **Duplicate id** — the same id in two files, holding the **same item** → loud
   load error. **Delivered (WI-1114)**; `fsck --fix` reports it and does *not* pick a
   winner, because which file is the item is a real disagreement and only whoever
-  interrupted the move knows.
+  interrupted the move knows. It blocks `fsck --fix`'s path repair outright, and
+  that is the case the guard is FOR: both rows name one path, so a move could land
+  on the other copy.
 * **Id collision** — the same `<time>-<hash>` in two files holding **different
-  items** (§6.6). A separate fault from the above, because the remedy is the
-  opposite one — renumber, do not delete — and the two are told apart by whether
-  the files' author / `created` / description agree. Compared on the identity
-  PREFIX, never the whole id: the colliding items have different slugs, hence
-  different filenames, and a whole-string comparison misses every case.
-  `fsck --renumber` repairs it, convergently.
-* **Id collision** — two files whose items' `<time>-<hash>` prefixes agree and
-  whose whole ids do not (§6.6). **Detection delivered (WI-1121)**, blocking;
-  `fsck --renumber` is not built — it is
-  `WI-20260818-VDXAM-anthill-todo-backend-fsck`, blocked on WI-1121.
+  items** (§6.6). **Detection delivered (WI-1121)**, blocking; **repair delivered
+  (WI-VDXAM)**. A separate fault from the duplicate above, because the remedy is
+  the opposite one — renumber, do not delete — and the two are told apart by
+  whether the whole ids agree. Compared on the identity PREFIX and folded for
+  case, never the whole id as written: the colliding items have different slugs,
+  hence different filenames, and a whole-string comparison misses every case.
+  `fsck --renumber` repairs it convergently, and the fault names that verb rather
+  than `--fix`.
 * **A chapter heading that disagrees with its fact** — a reordered or hand-edited
   entry (§5.3). **Delivered (WI-1120)**, NOT blocking: the rows are unambiguous
   (they are positional siblings), and what is wrong is a rendering, which
@@ -2433,7 +2546,7 @@ preference, the substrate refactor is first, not last.
 | 2 | WI-1114 | **`ItemPerFileStore`. DELIVERED.** The new `Store` implementation (§5.2, §5.2.1), the relocation rule, the per-backend host wiring arm, `fsck`, loader coverage, tests against a null forge. The store-spec change came out narrower than §8.2.1 predicted and `open_store` did not survive the measurement — §8.2.2 records what shipped in its place (`FileBasedWorkitemStore.open`, and `WIS.backend` typed by the spec) and why the WI-402 existential does not fit this spec's shape. | conflict-free multi-dev on *state changes* |
 | **2a** | WI-1118 | **`migrate` — the split.** Explode `workitems.anthill` into one file per item under `<state>/`, rewrite the store term, stamp the format version. **Renumbered from row 6 and unblocked (2026-08-17):** it waited on 2b and 2c under a "migrates exactly once" rule that only held while migration created ~1110 issues over the network. Migration is now a purely local rewrite (§11 step 2 is optional), so repeating it costs one mechanical commit — and running it FIRST is what makes §5's conflict-freedom real, since until it runs WI-1114 is delivered and unused. Measured: the exploded tree loads in 1.38 s against the single file's 1.30 s. | **this repo stops conflicting on `workitems.anthill`** |
 | 2b | WI-1120 | **Work items are documents. DELIVERED** (§5.3, §5.4, §5.5). The declared fact↔markdown mapping (§5.3 rules, §5.4 artifact): `WI-NNN.anthill.md`, anthill head in a fenced block, prose chapters, repeated chapters for feedback, eight malformed-editing rules. Separate from row 2 per §14.1 — bundled, a format bug would mask a store bug on the tracker we are running on. (Not because of the loader glob: row 2 already carries loader coverage.) The blocking edge on migration was withdrawn: WI-1118 ran first and this shipped `migrate --to document` as the second pass, converting 1118 files with no data change. | items readable and editable as documents |
-| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one. DELIVERED** (§6.5, §6.6, §6.7). The `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter and its idempotent-retry rule, the resolution ladder, the identity-prefix collision check, grandfathered legacy ids; the host's counter seed deleted. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. NOT shipped here and deliberately: `fact Mirror(target:, access:)` and `MirrorEntry` belong to row 5, where the mirror is and where they have a consumer — with one policy the config carries no allocation field, so this row had no config to write; and `fsck --renumber` is a repair with its own ticket (§6.6). | collision-free `add`, offline, no forge |
+| 2c | WI-1121 | **Allocation is a policy, and `ContentHash` is the local one. DELIVERED** (§6.5, §6.6, §6.7). The `created` field on `WorkItem`, the three-part Crockford-base32 id, the attempt counter and its idempotent-retry rule, the resolution ladder, the identity-prefix collision check, grandfathered legacy ids; the host's counter seed deleted. **Reorders what follows**: this alone closes the §1 id-collision half with no network, so rows 3–5 stop being on the critical path to the umbrella's shipping value. NOT shipped here and deliberately: `fact Mirror(target:, access:)` and `MirrorEntry` belong to row 5, where the mirror is and where they have a consumer — with one policy the config carries no allocation field, so this row had no config to write; and `fsck --renumber` is a repair with its own ticket (§6.6, delivered as WI-VDXAM). | collision-free `add`, offline, no forge |
 | ~~3~~ | ~~WI-1115~~ | ~~**`Forge` carrier.**~~ — **split unbuilt (2026-08-17)**, because what remained was two unlike things and no independent value (this column said "nothing alone", which is the smell). The **embedder host-fn seam** became **WI-1122** — `anthill-core` substrate, needed by any host binding a carrier, deliberately outside this chain. The **carrier, its bindings and the fake** moved to row 5, where their only consumer is. | — |
 | ~~4~~ | ~~WI-1116~~ | ~~**Coordinated `add`**~~ — **retired unbuilt** (§6.0, §12). `MirrorEntry` moves to row 5, where the mirror is. | — |
 | 5 | WI-1117 | **`export` / `import`. DELIVERED** (§7, amended; what shipped and where it differs is at the head of §7), **plus the `Forge` carrier** absorbed from row 3: the sort, its `provides`/`operation_map` bindings, and the `gh` and fake implementations. The operation set is small now — create/update an entry, list entries, list comments — since `fresh_token`, `retitle`, `close`/`reopen`-for-retreat and `entries_titled` were all the allocator's. Depends on **WI-1122** (an `operation_map` naming `gh_create_entry` is not constructible without it). Export is idempotent and tracker-wins, creating `MirrorEntry` as it goes; import pulls comments back as `Feedback` for review. Continuously-reconciled `sync` — drift detection, close-as-verify, tombstones, `--check` — is a future extension. | a published snapshot + a return channel |
