@@ -459,6 +459,24 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// WI-20260822-J38JE item 4 (spec §5.3): a NON-BOOLEAN CONSTANT written in a
+    /// rule-body GOAL position — `:- 42`, `:- "hello"`, `:- 1.5`.
+    ///
+    /// The complement of the ONE constant reading: `true` and `false` in goal position
+    /// are a SEARCH (`true` succeeds, `false` fails). Every other constant has no goal
+    /// reading at all, and before this had no diagnostic either — WI-1034's "names
+    /// nothing" refusal tests a goal's FUNCTOR and a constant has none, so a literal
+    /// fell through every gate. Load-blocking for the reason WI-1046's neighbour is:
+    /// nothing goes wrong LATER, the rule simply loads clean and never fires.
+    ///
+    /// Its own variant rather than an `Other` because `Other` carries no span, and the
+    /// position is the whole diagnostic — a constant names nothing to cite a rule by.
+    ConstantInGoalPosition {
+        /// The constant as written (`42`, `"hello"`, `1.5`) — what the author must find.
+        literal: String,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-1033 (058 §3.8): a CONDITIONAL provision is certified by the carrier's own
     /// conditional provision of the spec it requires, and the outer conditions do not
     /// ENTAIL the inner ones — so the outer holds at bindings where the inner does not,
@@ -1842,6 +1860,7 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::BooleanOperatorInGoalPosition { span, .. }
+            | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::CarrierlessProvisionFact { span, .. }
@@ -2128,6 +2147,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     boolean_operator_in_goal_message(operator)
+                )
+            }
+            LoadError::ConstantInGoalPosition { literal, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    constant_in_goal_position_message(literal)
                 )
             }
             LoadError::UnbackedProviderOperation {
@@ -3060,6 +3086,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     boolean_operator_in_goal_message(operator),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::ConstantInGoalPosition { literal, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    constant_in_goal_position_message(literal),
                     span.start,
                     span.end
                 )
@@ -5125,6 +5160,19 @@ fn head_carries_typed_column(
 
 /// Is this ARGUMENT a `?x: T` marker, or does it contain one? Split from
 /// [`head_carries_typed_column`] so the head node itself can never be asked.
+///
+/// A BARE NAME TEST, and its false positive is known and tolerated. `typed_var` is also
+/// an ordinary identifier a user may write, and the converter's `typed_var_arg` arm does
+/// not `mark_minted` its node, so there is no provenance to pair the name with — the
+/// split above narrowed WI-948's "a name, not a verdict" trap from the HEAD to the
+/// arguments rather than removing it. MEASURED, `rule p(typed_var(1))` with no body is
+/// refused citing a typed column the source does not contain (/code-review found it).
+/// It is a false REFUSAL, not just a misleading sentence: under 061 that head would
+/// otherwise DECLARE `p`. Left standing here because the repair is at the CONVERTER —
+/// `mark_minted` the `typed_var_arg` node, then pair the name with `is_minted` — and
+/// `is_minted` has TEN readers (arrow functors, connective heads, the equation-subject
+/// gate), so adding a producer is a censused change and not a drive-by. Owned by
+/// **WI-20260822-AK2AJ**; the population is one program shape nobody has written.
 fn is_typed_column(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -9933,6 +9981,27 @@ fn boolean_operator_in_goal_message(operator: &str) -> String {
          answers nothing. Goal conjunction is the COMMA — write `a, b` instead of \
          `a {operator} b` (kernel-language.md §6.6). The `&` form is still a boolean \
          value operator inside an OPERATION body, where it is evaluated."
+    )
+}
+
+/// WI-20260822-J38JE item 4 — the ONE wording of [`LoadError::ConstantInGoalPosition`],
+/// shared by the located `format_with_source` rendering, the span-less `Display`, and
+/// the `TypeError` face the typer raises it through.
+///
+/// Names the SYMPTOM first, like its two neighbours above, because the symptom is what
+/// the author observed: a clause that loads and answers nothing. The repair is TWO
+/// sentences because the two causes measured are opposite — a constant reached goal
+/// position either as a TYPO (an argument that lost its functor, a stray comma splitting
+/// one goal into two) or as a deliberate always-fail, for which `false` is the spelling
+/// that means it.
+pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
+    format!(
+        "constant `{literal}` in a rule-body GOAL position: a constant names no \
+         predicate, so this goal can NEVER match and the rule it is written in can never \
+         fire. Only `true` and `false` read as goals there — `true` is the search that \
+         succeeds and `false` the one that fails (kernel-language.md §5.3). If this is \
+         data, it belongs in a goal's ARGUMENT (`p({literal})`) or in a comparison \
+         (`?x = {literal}`); if the clause is meant to be dead, write `false`."
     )
 }
 

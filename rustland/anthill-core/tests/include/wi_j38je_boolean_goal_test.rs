@@ -1,18 +1,26 @@
-//! WI-20260822-J38JE — A BOOLEAN CONSTANT IN GOAL POSITION IS A SEARCH: `true` succeeds,
-//! `false` fails.
+//! WI-20260822-J38JE — WHAT A TERM IN GOAL POSITION MEANS.
 //!
-//! USER DECISION (2026-08-22): "`x :- true` should be a successful search, `x :- false`
-//! unsuccessful." So `false` is legal-and-DEAD rather than refused, and both readings
-//! hold at EVERY goal position — which is what §6.6 already requires of the boolean
-//! OPERATORS ("at every GOAL position: the body's atoms, and the goal slots of the
-//! connectives above them").
+//! Two halves, delivered in two passes and pinned together here because they are one
+//! rule read from both ends:
+//!
+//!   * **A BOOLEAN CONSTANT IS A SEARCH** — `true` succeeds, `false` fails, at every
+//!     goal position (user decision 2026-08-22). `false` is legal-and-DEAD rather than
+//!     refused, which is what §6.6 already requires of the boolean OPERATORS ("at every
+//!     GOAL position: the body's atoms, and the goal slots of the connectives above
+//!     them").
+//!   * **EVERY OTHER CONSTANT IS A LOAD ERROR** (item 4) — `:- 42`, `:- "hello"`,
+//!     `:- 1.5` name no predicate, so the clause can never fire. The complement of the
+//!     one constant reading, and the corollary of item 1's decision: goal position is
+//!     CLOSED (spec §5.3), so a term with no reading is refused rather than given a
+//!     third meaning.
 //!
 //! ── WHAT WAS WRONG, MEASURED ─────────────────────────────────────────────────
 //!
-//! Nothing gave a constant a reading, so a boolean literal in goal position became NO
-//! GOAL AT ALL: it resolved to no clause and no builtin, and WI-1034's "rule-body goal
-//! names nothing" refusal cannot reach it because a CONSTANT NAMES NO NAME. `false`
-//! therefore gave the right answer for the wrong reason and `true` gave the wrong one:
+//! Nothing gave a constant a reading, so a constant in goal position became NO GOAL AT
+//! ALL: it resolved to no clause and no builtin, and WI-1034's "rule-body goal names
+//! nothing" refusal cannot reach it because a CONSTANT NAMES NO NAME. `false` therefore
+//! gave the right answer for the wrong reason, `true` gave the wrong one, and `42` gave
+//! none at all:
 //!
 //! | body | logic | before | now |
 //! |---|---|---|---|
@@ -21,32 +29,57 @@
 //! | `:- not(true)` | 0 | **1** | 0 |
 //! | `:- not(false)` | 1 | 1 | 1 |
 //! | `:- base(9) \| true` | 1 | **0** | 1 |
+//! | `:- 42` | — | loads, answers 0, **no diagnostic** | **load error** |
+//! | `:- not(42)` | — | loads, answers **1** | **load error** |
 //!
-//! The two wrong rows share one cause, and 061 is half of it: `:- true` got its meaning
-//! from a strip over the body's TOP-LEVEL goal list, which by construction cannot reach a
-//! goal nested under `not` or `|`. Before 061 both positions answered the same (wrongly);
-//! after it, one spelling had two readings decided by DEPTH. The reading now lives in
-//! `SearchStream::step_init`, where every goal passes.
+//! The two wrong boolean rows share one cause, and 061 is half of it: `:- true` got its
+//! meaning from a strip over the body's TOP-LEVEL goal list, which by construction
+//! cannot reach a goal nested under `not` or `|`. Before 061 both positions answered the
+//! same (wrongly); after it, one spelling had two readings decided by DEPTH. The reading
+//! now lives in `SearchStream::step_init`, where every goal passes.
 //!
 //! ── THE BACK-OUTS ────────────────────────────────────────────────────────────
 //!
 //! * **THE GOAL READING** — gate off the `ViewHead::Const(Literal::Bool(b))` arm in
-//!   `step_init` (kb/resolve.rs). VERIFIED over this file plus `wi_fqc85` and `wi980`,
-//!   **exactly 1 row fails**: [`the_reading_holds_at_every_goal_position`]. An earlier
-//!   draft of this list predicted 2, adding
-//!   [`a_false_goal_fails_by_the_rule_not_by_accident`] — running it says otherwise, and
-//!   the reason is the point of that row's own comment: `false` answers 0 under BOTH
-//!   readings, by the rule now and by resolving-to-nothing before, so no count of its
-//!   own can separate them. `not(true)` is what separates them, and it lives in the row
-//!   that does fail. The top-level rows pass either way (the loader strip answers
-//!   `true`, and `false` fails by accident) — which is why the nested ones are here.
+//!   `step_init` (kb/resolve.rs). RUN over the whole `wi_tests` binary (3283 rows),
+//!   **exactly 2 fail**: [`the_reading_holds_at_every_goal_position`] and
+//!   [`the_boolean_constants_keep_their_reading`], each on the same two goals —
+//!   `not(<false-ish>)` and a disjunction whose live branch is `true`. It felled ONE
+//!   row when it shipped, and the second is the control this pass added; the count
+//!   moved because the file grew, not because the reading did.
+//!   [`a_false_goal_fails_by_the_rule_not_by_accident`] still passes either way, and
+//!   that is the point of its own comment: `false` answers 0 under BOTH readings, by
+//!   the rule now and by resolving-to-nothing before, so no count of its own can
+//!   separate them. `not(true)` is what separates them. The top-level rows pass either
+//!   way too (the loader strip answers `true`) — which is why the nested ones are here.
 //! * **THE LOADER STRIP** — gate off `is_empty_conjunction_goal` in `load_rule`'s body
-//!   loop (kb/load.rs, 061). VERIFIED over the same 44 rows, **exactly 1 fails**:
+//!   loop (kb/load.rs, 061). RUN over the same 3283 rows, **exactly 1 fails**:
 //!   [`a_top_level_true_is_still_erased_at_load`]. Everything else passes, INCLUDING all
 //!   of `wi_fqc85`, because the resolver arm now answers the goal the strip would have
 //!   removed. That is a guard absorbing a neighbour's domain: when 061 shipped, this
 //!   same back-out felled 24 rows. It is the reason this row asserts the BODY and not an
 //!   answer count, and `wi_fqc85`'s own back-out list has been corrected to say so.
+//! * **THE CONSTANT REFUSAL** (item 4) — neutralize the `Expr::Const(lit)` arm in
+//!   `check_goal_atom_reading` (kb/typing.rs) so a constant falls through to `continue`.
+//!   RUN over the whole `wi_tests` binary (3283 rows), **exactly 3 fail**:
+//!   [`a_non_boolean_constant_goal_is_a_load_error`],
+//!   [`the_refusal_holds_at_every_goal_position`] and
+//!   [`the_refusal_names_the_position_not_just_the_rule`]. Every reading row and both
+//!   controls pass either way, by design — a control measures what must not move.
+//! * **THE DESCENT** (a SECOND axis of the same fix, so it gets its own back-out) —
+//!   make `proved_goal_children` return empty for `forall_in` / `some_in` /
+//!   `forall_impl`, which is the hole the retired three-symbol allowlist had. RUN over
+//!   the same 3283 rows, **exactly 1 fails**:
+//!   [`the_refusal_holds_at_every_goal_position`], on its last two sub-rows.
+//!   [`the_boolean_constants_keep_their_reading`] passes either way and that is the
+//!   point — the RESOLVER answers a boolean constant inside a quantifier whatever the
+//!   loader checks, which is exactly how the two readings came apart.
+//! * **THE LOCALIZATION** — replace the `Some(o.span.source)` tag with `None` at both
+//!   pushes in `check_goal_atom_reading`. RUN over the same 3283 rows, **exactly 1
+//!   fails**: [`the_refusal_names_the_position_not_just_the_rule`]. The message
+//!   survives and still names the constant, so no other row can see the difference —
+//!   it renders `… at 61..63`, a byte offset naming no file, no line and no column.
+//!   That is why the row asserts the PREFIX and not the text.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
@@ -54,6 +87,14 @@ use anthill_core::kb::KnowledgeBase;
 fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
     let goal = crate::common::query_pattern_term(kb, pattern);
     kb.resolve(&[goal], &ResolveConfig::default()).len()
+}
+
+/// Load `src` and return its rendered load errors, failing if it LOADS — for the
+/// refusal rows, whose whole content is that the program no longer loads.
+fn refusal(src: &str) -> Vec<String> {
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_else(|| panic!("expected a load error, but this loaded clean:\n{src}"))
 }
 
 /// One namespace carrying every shape, so the rows below differ only in the goal they
@@ -152,30 +193,210 @@ fn a_top_level_true_is_still_erased_at_load() {
     );
 }
 
+// ── ITEM 4 — every other constant is a load error ────────────────────────────
+//
+// Each refusal fixture is its OWN namespace and its own load. Sharing one would make
+// the rows unmeasurable in both directions: a single load error fails the whole file,
+// so a fixture holding all four would pass while only one of them fired, and — worse —
+// the controls below would die of a neighbour's error rather than of their own reading.
+
 #[test]
-fn what_this_decision_does_not_reach() {
-    // THE BOUND ON THE READING, pinned so that widening it is visible. Two neighbouring
-    // populations keep today's behaviour:
+fn a_non_boolean_constant_goal_is_a_load_error() {
+    // THE HEADLINE GAP: three constant sorts, three separate loads. Before this each
+    // one loaded clean and answered nothing — indistinguishable from a deliberate
+    // `:- false`, which is the whole reason it needed a word said about it.
     //
-    //  * A NON-BOOL CONSTANT GOAL is still silently dead — no reading, no diagnostic.
-    //    That is WI-20260822-J38JE item 4, which wants a located error rather than a
-    //    third meaning for constants, and it is NOT what "true succeeds, false fails"
-    //    decided. This row will fail when that lands, which is the intent.
-    //  * A BOOL-RETURNING OPERATION CALL in goal position already evaluates, through
-    //    WI-938's derived relational view at the operation's own arity — a different
-    //    mechanism from this one, and the reason item 1 (is a general boolean EXPRESSION
-    //    a condition?) is still open.
+    // BACKED OUT (delete the `Expr::Const(lit)` arm from `check_goal_atom_reading`):
+    // every assertion here fails — the loads succeed.
+    for (literal, body) in [("42", "42"), (r#""hello""#, r#""hello""#), ("1.5", "1.5")] {
+        let src = format!("namespace j38jec{}\n  rule p(1) :- {body}\nend\n", literal.len());
+        let errs = refusal(&src);
+        assert!(
+            errs.iter().any(|e| e.contains(literal) && e.contains("GOAL position")),
+            "the refusal must quote the constant AS WRITTEN ({literal}) and name the \
+             position; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn the_refusal_holds_at_every_goal_position() {
+    // THE ROW THAT MAKES ITEM 4 AGREE WITH THE READING IT COMPLEMENTS. `true`/`false`
+    // are answered at every goal position, so their complement must be REFUSED at every
+    // goal position, or the two halves disagree by depth — the exact defect 061 left
+    // behind for `true`. `not(42)` is the sharpest: before this it answered ONE, a
+    // negation succeeding over a goal with no meaning at all.
+    //
+    // The `|` row is where this pass's descent is WIDER than `undefined_rule_body_goals`'
+    // (WI-863/WI-1034 tolerate a name that means nothing in a bare `or` branch, because
+    // it may mean something in another program). A constant has no such defence, and
+    // that difference is stated at `check_goal_atom_reading`.
+    //
+    // BACKED OUT (same arm): all five fail — the loads succeed, and `not(42)` answers 1.
+    //
+    // THE LAST TWO ARE THE REVIEW'S FINDING. The pass used to descend through a
+    // hand-written allowlist of three symbols, so a bounded quantifier's body and a
+    // discharge's consequent — both goal positions the resolver runs — were never
+    // entered, while `SearchStream`'s boolean arm answered `true`/`false` inside them
+    // perfectly well. That is the same "one spelling, two readings, decided by depth"
+    // shape this ticket exists to remove, one connective further out. The descent now
+    // reads the ONE slot table (`proved_goal_children`).
+    for (label, body) in [
+        ("under not", "not(42)"),
+        ("in a bare or branch", "base(9) | 42"),
+        ("mid-conjunction", "base(7), 42"),
+        ("in a bounded quantifier's body", "(forall ?x in [1]: 42)"),
+        ("in a discharge's consequent", "(forall(?x), base(?x) -: base(?x), 42)"),
+    ] {
+        let src = format!(
+            "namespace j38jed{}\n  import anthill.prelude.List\n  rule base(7) :- true\n  \
+             rule p(1) :- {body}\nend\n",
+            body.len()
+        );
+        let errs = refusal(&src);
+        assert!(
+            errs.iter().any(|e| e.contains("42") && e.contains("GOAL position")),
+            "a constant {label} must be refused too; got: {errs:?}"
+        );
+    }
+}
+
+#[test]
+fn the_refusal_names_the_position_not_just_the_rule() {
+    // A CONSTANT NAMES NOTHING TO CITE A RULE BY, so the SPAN is the whole diagnostic —
+    // and the pass this refusal lives in is one of the late whole-KB passes, whose
+    // errors are pushed UNTAGGED and render a bare byte offset. Two constants on the
+    // same line, at different columns, in ONE file: if the location were not carried
+    // through, both would render the same prefix (or none).
+    //
+    // BACKED OUT (drop the `Some(o.span.source)` tag at the call site): the messages
+    // still name `42` and `99`, but render `… at 61..63` — no file, no line, no column.
+    let errs = refusal(
+        "namespace j38jee\n  rule base(7) :- true\n  rule p(1) :- 42\n  rule q(1) :- 99\nend\n",
+    );
+    let cols: Vec<&String> = errs.iter().filter(|e| e.contains("GOAL position")).collect();
+    assert_eq!(cols.len(), 2, "one error per constant goal; got: {errs:?}");
+    assert!(
+        cols[0].starts_with("3:") && cols[1].starts_with("4:"),
+        "each error must render `line:col` for ITS OWN constant, not a shared byte \
+         offset; got: {cols:?}"
+    );
+}
+
+#[test]
+fn a_constant_in_a_value_position_is_untouched() {
+    // THE CONTROL, and the one that decides whether the refusal is a POSITION rule or a
+    // blanket ban on literals. Every row here puts a constant where a constant belongs —
+    // a goal's ARGUMENT, an `eq` operand, a list element, an entity field — and all of
+    // them must keep loading AND keep answering.
+    //
+    // Its own namespace, away from the refusal fixtures: a control that shared a file
+    // with an arm would die of the arm's load error and prove nothing (the arms above
+    // are each their own load for the same reason).
+    //
+    // PASSES EITHER WAY under the item-4 back-out, by design — a control measures what
+    // the change must not touch.
     let mut kb = crate::common::load_kb_with(
-        "namespace j38jec\n  import anthill.prelude.{Int64, Bool, String}\n  \
-         rule pint(1) :- 42\n  rule pstr(1) :- \"hello\"\n  \
+        "namespace j38jef\n  import anthill.prelude.{Int64, List, String}\n  \
+         sort Box\n    entity box(n: Int64)\n  end\n  \
+         fact base(42)\n  \
+         rule arg(1)  :- base(42)\n  \
+         rule cmp(?x) :- ?x = 42\n  \
+         rule lst(?l) :- ?l = [1, 2]\n  \
+         rule fld(1)  :- base(?n), box(n: ?n) = box(n: 42)\nend\n",
+    );
+    assert_eq!(answers(&mut kb, "j38jef.arg(1)"), 1, "a constant ARGUMENT is data");
+    assert_eq!(answers(&mut kb, "j38jef.cmp(?r)"), 1, "a constant `eq` operand is a value");
+    assert_eq!(answers(&mut kb, "j38jef.lst(?r)"), 1, "a constant list element is a value");
+    assert_eq!(answers(&mut kb, "j38jef.fld(1)"), 1, "a constant entity field is a value");
+}
+
+#[test]
+fn the_boolean_constants_keep_their_reading() {
+    // THE OTHER CONTROL, and the one that pins item 4's BOUNDARY: the refusal is over
+    // "every constant EXCEPT the two booleans", so a `Bool` literal in each of the four
+    // positions the row above refuses must still LOAD and still answer by the search
+    // reading. Without this, narrowing the refusal's exemption to, say, top-level
+    // `true` alone would go unmeasured.
+    //
+    // A CONTROL FOR ITEM 4 AND A DRIVER FOR THE READING — it passes either way under
+    // the constant-refusal back-out, and FAILS under the goal-reading one (on `pneg`,
+    // where `not(false)` answers 0 once `false` stops being a goal that fails). One row
+    // can be both; what it must not be is silent about which change it measures.
+    let mut kb = crate::common::load_kb_with(
+        "namespace j38jeg\n  import anthill.prelude.{Bool, List}\n  rule base(7) :- true\n  \
+         rule ptop(1)  :- true\n  \
+         rule pneg(1)  :- not(false)\n  \
+         rule pdis(1)  :- base(9) | true\n  \
+         rule pcon(1)  :- base(7), true\n  \
+         rule pqua(1)  :- (forall ?x in [1]: true)\n  \
+         rule pqub(1)  :- (forall ?x in [1]: false)\nend\n",
+    );
+    // `p`-prefixed on purpose: a bare `neg` head collides with `Numeric.neg` (§6.6's
+    // prefix operator) and the rule then answers NOTHING — measured, and it is what the
+    // first draft of this row tripped over. The refusal under test has nothing to do
+    // with it, which is exactly why the name must not be able to fake a failure.
+    for (pred, want) in [("ptop", 1), ("pneg", 1), ("pdis", 1), ("pcon", 1), ("pqua", 1), ("pqub", 0)] {
+        assert_eq!(
+            answers(&mut kb, &format!("j38jeg.{pred}(1)")),
+            want,
+            "`{pred}`: a boolean constant at every position keeps the SEARCH reading, \
+             not the refusal"
+        );
+    }
+}
+
+#[test]
+fn what_the_closed_reading_still_does_not_reach() {
+    // THE BOUND ON ITEM 1, pinned so that widening it is visible. Spec §5.3 says goal
+    // position is CLOSED — a term with no reading is a load error — and two shapes are
+    // deliberately still outside the refusal:
+    //
+    //  * A `const` REFERENCE (`:- flag`) loads and silently never matches. Withheld on
+    //    purpose: there is no repair to point at, because a `const` does not fold
+    //    ANYWHERE in a rule body — the second row here is the measurement, and it is the
+    //    defect to fix before this one — WI-20260822-NDG34 owns it, and the same
+    //    reference inside an OPERATION body folds correctly, so the split is eval-vs-SLD
+    //    rather than value-vs-goal. Refusing the goal while the repair is also broken
+    //    would only move the author's dead end.
+    //  * A BOOL-RETURNING OPERATION CALL in goal position already evaluates, through
+    //    WI-938's derived relational view at the operation's own arity — the reading
+    //    item 1 settled, arriving by a mechanism this ticket did not write.
+    //  * A DISCHARGE'S ANTECEDENT slot takes no constant reading either way. It is a
+    //    hypothesis, not a goal the resolver proves — `SlotReading::Assumed`, which
+    //    `proved_goal_children` deliberately filters out — so a constant written there
+    //    is neither refused nor answered. Left alone rather than widened: an antecedent
+    //    DECLARES the predicate its consequent proves against, which is why every walk
+    //    that refuses a dead goal leaves the slot alone, and widening it would silently
+    //    move WI-583's op check into a position nobody has legislated.
+    //
+    // Written to FAIL when any of them lands, which is the intent.
+    let mut kb = crate::common::load_kb_with(
+        "namespace j38jeh\n  import anthill.prelude.{Int64, Bool}\n  \
+         const flag: Bool = true\n  const nn: Int64 = 5\n  \
+         rule pconst(1) :- flag\n  \
+         rule pfold(1)  :- Int64.gt(nn, 3)\n  \
+         rule plit(1)   :- Int64.gt(5, 3)\n  \
          sort Box\n    entity box(n: Int64)\n    \
          operation isbig(b: Box) -> Bool = Int64.gt(1, 0)\n    \
          operation issmall(b: Box) -> Bool = Int64.gt(0, 1)\n  end\n  \
-         rule pop(1) :- Box.isbig(box(n: 5))\n  \
+         rule pop(1)  :- Box.isbig(box(n: 5))\n  \
          rule pop2(1) :- Box.issmall(box(n: 5))\nend\n",
     );
-    assert_eq!(answers(&mut kb, "j38jec.pint(1)"), 0, "a non-Bool constant goal: item 4");
-    assert_eq!(answers(&mut kb, "j38jec.pstr(1)"), 0, "…and it loads clean, which is the gap");
-    assert_eq!(answers(&mut kb, "j38jec.pop(1)"), 1, "a Bool operation call ALREADY evaluates");
-    assert_eq!(answers(&mut kb, "j38jec.pop2(1)"), 0, "…and is not vacuous");
+    assert_eq!(answers(&mut kb, "j38jeh.pconst(1)"), 0, "a `const` goal: still silent");
+    assert_eq!(answers(&mut kb, "j38jeh.pfold(1)"), 0, "…because a const folds NOWHERE here");
+    assert_eq!(answers(&mut kb, "j38jeh.plit(1)"), 1, "CONTROL: the same call with the literal");
+    assert_eq!(answers(&mut kb, "j38jeh.pop(1)"), 1, "a Bool operation call ALREADY evaluates");
+    assert_eq!(answers(&mut kb, "j38jeh.pop2(1)"), 0, "…and is not vacuous");
+
+    // The antecedent slot, in its own load — the refusal fires per FILE, so a fixture
+    // that also carried a refused shape would report that instead and say nothing about
+    // this one.
+    let mut kb = crate::common::load_kb_with(
+        "namespace j38jei\n  rule base(7) :- true\n  \
+         rule pant(1) :- (forall(?x), 42 -: base(?x))\n  \
+         rule plive(1) :- (forall(?x), base(?x) -: base(?x))\nend\n",
+    );
+    assert_eq!(answers(&mut kb, "j38jei.pant(1)"), 0, "a constant ANTECEDENT: still silent");
+    assert_eq!(answers(&mut kb, "j38jei.plive(1)"), 1, "CONTROL: the discharge itself works");
 }

@@ -13,6 +13,38 @@ use crate::kb::node_occurrence::{
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
 use crate::kb::KnowledgeBase;
 
+/// A literal in `.anthill` SURFACE spelling — a quoted `String`, a `Float` that keeps
+/// its decimal point, `true`/`false`.
+///
+/// Free rather than a `TermPrinter` method (which delegates here) because it reads no
+/// `view`: a literal is already the whole term. The second caller is a DIAGNOSTIC —
+/// `load::constant_in_goal_position_message` quotes the constant the author wrote
+/// (WI-20260822-J38JE) — and the surface spelling is exactly what a diagnostic wants,
+/// so the two share one renderer rather than growing a second copy that could print
+/// `hello` where the source says `"hello"`.
+pub fn write_literal(lit: &Literal, buf: &mut String) {
+    match lit {
+        Literal::Int(n) => {
+            buf.push_str(&n.to_string());
+        }
+        Literal::BigInt(n) => {
+            buf.push_str(&n.to_string());
+        }
+        Literal::Float(f) => {
+            let s = f.to_string();
+            buf.push_str(&s);
+            // Ensure there's a decimal point so it parses back as float
+            if !s.contains('.') {
+                buf.push_str(".0");
+            }
+        }
+        Literal::String(s) => write_anthill_string(s, buf),
+        Literal::Bool(b) => {
+            buf.push_str(if *b { "true" } else { "false" });
+        }
+    }
+}
+
 /// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
 /// `\r`, `\t`. Shared by `TermPrinter` and any other code that needs to
 /// emit a string literal in canonical form.
@@ -1456,26 +1488,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     }
 
     fn write_literal(&self, lit: &Literal, buf: &mut String) {
-        match lit {
-            Literal::Int(n) => {
-                buf.push_str(&n.to_string());
-            }
-            Literal::BigInt(n) => {
-                buf.push_str(&n.to_string());
-            }
-            Literal::Float(f) => {
-                let s = f.to_string();
-                buf.push_str(&s);
-                // Ensure there's a decimal point so it parses back as float
-                if !s.contains('.') {
-                    buf.push_str(".0");
-                }
-            }
-            Literal::String(s) => write_anthill_string(s, buf),
-            Literal::Bool(b) => {
-                buf.push_str(if *b { "true" } else { "false" });
-            }
-        }
+        write_literal(lit, buf)
     }
 }
 

@@ -6,7 +6,7 @@
 //!
 //! The happy-path resolution is inherited from WI-580 inc2
 //! (`bare_bodied_bool_relation` routing in `resolve.rs::step_init`); the loud
-//! error for a non-Bool op in goal position (`check_rule_body_goal_ops` in
+//! error for a non-Bool op in goal position (`check_rule_body_goal_readings` in
 //! `kb/typing.rs`) is WI-583's own contribution.
 
 use anthill_core::kb::resolve::ResolveConfig;

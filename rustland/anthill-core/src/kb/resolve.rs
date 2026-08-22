@@ -1111,8 +1111,11 @@ impl SearchStream {
         // strip cannot see.
         //
         // A NON-BOOL constant goal (`:- 42`, `:- "hello"`) is deliberately NOT given a
-        // reading here and stays silently dead — that is WI-20260822-J38JE item 4, which
-        // wants a located error rather than a third meaning for constants.
+        // reading here, and never reaches this arm at runtime: item 4 REFUSES it at
+        // load, in the typer's `check_goal_atom_reading`, rather than inventing a third
+        // meaning for constants. That is the complement of this arm and it is what makes
+        // the two exhaustive — a constant in goal position is either one of these two
+        // searches or a located load error, with nothing silently dead in between.
         if let ViewHead::Const(Literal::Bool(b)) = goal_val.head(kb) {
             if b {
                 let f = self.stack.last_mut().unwrap();
@@ -8020,7 +8023,7 @@ impl KnowledgeBase {
         // Bool-returning? `sort_sym_is_bool` compares by short name — robust to
         // how `Bool` is qualified; a hypothetical user `Bool` merely routes a
         // meaningless bare goal to `= true` (harmless), never a wrong answer.
-        // Shared with the typer's `check_rule_body_goal_ops` so the goal-routing
+        // Shared with the typer's `check_rule_body_goal_readings` so the goal-routing
         // gate and its static check cannot drift.
         let returns_bool = super::typing::sort_functor_of_view(self, &sig.return_type)
             .is_some_and(|s| self.sort_sym_is_bool(s));

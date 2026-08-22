@@ -534,8 +534,27 @@ pub enum TypeError {
         span: Option<Span>,
         op_sym: Symbol,
         /// The op's declared return sort head — always a concrete non-`Bool`
-        /// sort (a non-concrete return is not flagged; see `check_goal_atom_op`).
+        /// sort (a non-concrete return is not flagged; see `check_goal_atom_reading`).
         return_sort: Symbol,
+    },
+    /// WI-20260822-J38JE item 4: a NON-BOOLEAN CONSTANT written in a rule-body GOAL
+    /// position — `:- 42`, `:- "hello"`, `:- 1.5`.
+    ///
+    /// The sibling of [`Self::NonBoolOpInGoalPosition`] for the population that names
+    /// NO NAME, and the reason it needed a variant of its own: WI-1034's "rule-body
+    /// goal names nothing" refusal tests a goal's FUNCTOR, and a constant has none, so
+    /// a literal fell through every existing gate. MEASURED before this: `rule p(1) :-
+    /// 42` loaded clean and answered nothing, indistinguishable from a deliberate
+    /// `:- false`, and `rule p(1) :- not(42)` answered ONE — a negation succeeding over
+    /// a goal with no meaning.
+    ///
+    /// `true` / `false` are NOT this error: a BOOLEAN constant in goal position is a
+    /// search (§5.3, the decided half of this ticket) — `true` succeeds, `false` fails.
+    /// That is the one constant reading, and this variant is its complement.
+    ConstantInGoalPosition {
+        span: Option<Span>,
+        /// The constant as written, for the diagnostic — `42`, `"hello"`, `1.5`.
+        literal: String,
     },
     /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
@@ -1108,6 +1127,9 @@ impl TypeError {
                     short_name_of(op_qn),
                 )
             }
+            TypeError::ConstantInGoalPosition { literal, .. } => {
+                crate::kb::load::constant_in_goal_position_message(literal)
+            }
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort);
                 format!(
@@ -1230,6 +1252,7 @@ impl TypeError {
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
+            | TypeError::ConstantInGoalPosition { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
@@ -1596,6 +1619,15 @@ impl TypeError {
                         "operation returning `{ret}` in rule-body goal position — no relational reading"
                     ),
                     span: self.span(kb),
+                }
+            }
+            TypeError::ConstantInGoalPosition { literal, .. } => {
+                LoadError::ConstantInGoalPosition {
+                    literal: literal.clone(),
+                    // WI-1034's convention: the span is the GOAL's own text, which is
+                    // where the author must look. A constant carries no functor to name
+                    // a citing rule by, so the location is the whole diagnostic's anchor.
+                    span: self.span(kb).unwrap_or_default(),
                 }
             }
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
@@ -51686,14 +51718,26 @@ fn type_check_sorts_collect(
     // per-arg `inferred_type` the carrier decision reads is stamped.
     errors.extend(check_rule_body_requirements(kb));
 
-    // WI-583: the STATIC face of WI-580's rule-body Bool-op routing. A
-    // Bool-returning op used bare in a goal (`:- valid(?x)`) is gated to
-    // `eq(valid(?x), true)` at resolve time (`bare_bodied_bool_relation`); a
-    // NON-Bool op in goal position has no relational reading and would otherwise
-    // fall through to a silent failed relation lookup — flag it loudly here. Same
+    // WI-583 / WI-20260822-J38JE item 4: the STATIC face of the resolver's goal
+    // routing — refuse a rule-body goal that has no goal reading. A Bool-returning op
+    // used bare in a goal (`:- valid(?x)`) is gated to `eq(valid(?x), true)` at resolve
+    // time (`bare_bodied_bool_relation`) and a boolean CONSTANT is a search answered in
+    // `step_init`; a NON-Bool op and a non-boolean constant have no reading and would
+    // otherwise fall through to a silent failed lookup — flag both loudly here. Same
     // rule-body-walk phase as `check_rule_body_requirements`, after
     // `build_op_signatures` so every op's return type is available.
-    errors.extend(check_rule_body_goal_ops(kb));
+    //
+    // WI-745's localization, for the ONE late pass that can supply it: every error
+    // this pass raises is anchored on a body occurrence, whose `SourceSpan` names its
+    // file. The block's other passes push untagged errors (padded `None` below), so the
+    // pad has to happen HERE, before these are pushed, or `sources` would fall out of
+    // step with `errors`. Without it both this pass's errors render a bare byte offset,
+    // which names nothing — measured on `:- 42`, which reported `at 98..100`.
+    sources.resize(errors.len(), None);
+    for (err, src) in check_rule_body_goal_readings(kb) {
+        errors.push(err);
+        sources.push(src);
+    }
 
     // WI-650: flag a semantic `=`/`eq`/`neq` call whose operand's sort declares
     // its OWN `eq` override with no backing (a bodyless placeholder — `Map` after
@@ -55587,63 +55631,173 @@ fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
     errors
 }
 
-/// WI-583: flag a rule-less operation with a CONCRETE non-`Bool` return used
-/// bare as a rule-body goal (goal position), at the operation's declared arity.
-/// Such a call has no relational reading — a `Bool`-returning op is the
-/// operation's relational view, gated to `eq(op(args), true)` by WI-580's
-/// [`KnowledgeBase::bare_bodied_bool_relation`] at resolve time (true ⇒ success,
-/// false ⇒ fail, unground ⇒ suspend), but a concrete non-`Bool` op falls through
-/// to a silent failed relation lookup, which the repo principle "prefer a loud
-/// error over a silent skip" rejects. This is the static, load-time face of that
-/// routing — the sibling of [`check_rule_body_requirements`] (WI-642), run in the
-/// same phase so `build_op_signatures` has settled every op's return type.
+/// WI-583 / WI-20260822-J38JE item 4 — refuse every rule-body GOAL that has no goal
+/// reading. Two shapes reach that verdict, and the pass is one because the question is
+/// one: *is this term readable as a goal at all?*
+///
+///   * a rule-less OPERATION with a CONCRETE non-`Bool` return, used bare at its
+///     declared arity (WI-583). A `Bool`-returning op there IS meaningful — it is the
+///     operation's relational view, gated to `eq(op(args), true)` by WI-580's
+///     [`KnowledgeBase::bare_bodied_bool_relation`] at resolve time (true ⇒ success,
+///     false ⇒ fail, unground ⇒ suspend) — but a concrete non-`Bool` op falls through
+///     to a silent failed relation lookup.
+///   * a non-BOOLEAN CONSTANT (`:- 42`, `:- "hello"`), which names no predicate at all
+///     (item 4). `true` / `false` ARE readable and are not flagged: a boolean constant
+///     in goal position is a SEARCH, answered in `SearchStream::step_init` — `true`
+///     succeeds, `false` fails, at every goal position (spec §5.3).
+///
+/// Both are what the repo principle "prefer a loud error over a silent skip" rejects,
+/// and both were SILENT before their respective fixes: the op fell through to a failed
+/// relation lookup, the constant to no lookup at all. This is the static, load-time
+/// face of the resolver's goal routing — the sibling of [`check_rule_body_requirements`]
+/// (WI-642), run in the same phase so `build_op_signatures` has settled every op's
+/// return type.
+///
+/// Each error carries the `SourceId` of the occurrence it was raised on, which is what
+/// makes it render `path:line:col` — the surrounding block's other passes are whole-KB
+/// and push untagged errors (see the `sources.resize` at the call site).
 ///
 /// DELIBERATELY NOT flagged (each is either correct or pre-existing, never a
 /// regression): a `Bool`-returning op whose body is absent (an abstract spec op,
 /// which dispatches through its `requires` dictionary — WI-573) or effectful
 /// (which `bare_bodied_bool_relation` already declines to route on purity
 /// grounds); a NON-concrete return (a bare type parameter that may instantiate
-/// to `Bool`); the functional-relation form `f(args, result)` (arity + 1); and a
-/// rule-backed functor (a genuine relation). See `check_goal_atom_op`.
-fn check_rule_body_goal_ops(kb: &KnowledgeBase) -> Vec<TypeError> {
-    let mut errors: Vec<TypeError> = Vec::new();
-    // The goal-connective allowlist: resolver primitives whose ARGUMENTS are
-    // themselves goal positions (unlike `eq`/`neq`, whose operands are VALUE
-    // positions and may legitimately hold a non-Bool op-call). Absent in a
-    // minimal KB → no recursion, harmless. `and` is not here: rule-body
-    // conjunction is the comma (separate atoms), not a functor (WI-529 §C.1).
-    let connectives = [
-        kb.try_resolve_symbol("anthill.kernel.not"),
-        kb.try_resolve_symbol("anthill.kernel.or"),
-        kb.try_resolve_symbol("anthill.kernel.push_choice"),
-    ];
+/// to `Bool`); the functional-relation form `f(args, result)` (arity + 1); a
+/// rule-backed functor (a genuine relation); and a `const` REFERENCE in goal position,
+/// which is silently dead today but has no working repair to point at — a const does
+/// not fold anywhere in a rule body, so refusing it here would strand the author
+/// (MEASURED: with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where
+/// `Int64.gt(5, 3)` answers 1, while the SAME reference inside an operation body folds
+/// — WI-20260822-NDG34 owns it). See `check_goal_atom_reading`.
+fn check_rule_body_goal_readings(
+    kb: &KnowledgeBase,
+) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
+    let mut errors: Vec<(TypeError, Option<crate::span::SourceId>)> = Vec::new();
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
         }
         for atom in kb.rule_body_nodes(rid) {
-            check_goal_atom_op(kb, atom, &connectives, &mut errors);
+            check_goal_atom_reading(kb, atom, &mut errors);
         }
     }
     errors
 }
 
-/// Classify one goal-position occurrence for [`check_rule_body_goal_ops`]:
-/// recurse THROUGH a goal connective into its (goal) arguments, else flag a
-/// rule-less non-Bool operation head. Iterative (explicit worklist) so a
-/// deeply-nested connective body cannot overflow the host stack — mirrors
-/// [`check_occ_spec_op_requirements`].
-fn check_goal_atom_op(
+/// The children of `expr` the resolver PROVES as goals, `tuple(…)` wrapper unwrapped —
+/// the occurrence-side reading of the ONE slot table
+/// ([`KnowledgeBase::goal_slot_readings`]), filtered to [`SlotReading::Proved`].
+///
+/// READ FROM THE TABLE, not written here. This pass used to carry a hand-written
+/// allowlist of three symbols (`reflect.not`, `kernel.or`, `kernel.push_choice`) and
+/// that list was WRONG BY OMISSION: a bounded quantifier's body and a discharge's
+/// consequent are goal positions the resolver runs, and neither was entered — so
+/// `(forall ?x in [1]: 42)` loaded clean and answered nothing while `not(42)` was
+/// refused, one spelling with two readings decided by depth, which is the exact defect
+/// WI-20260822-J38JE exists to remove. Found by /code-review. WI-1058 built the table
+/// for this reason and typing.rs' `child_body_positions` already reads it; this is the
+/// last hand-written copy retired.
+///
+/// `Assumed` is deliberately NOT here. A discharge's ANTECEDENTS are hypotheses — the
+/// predicates its consequent proves against — so they are a binding position, not a
+/// proved one, and the walks that refuse a dead goal have always left them alone
+/// ([`GoalCommit`]'s doc carries the measurement). `Binders` is not a goal at all.
+///
+/// The three functor-bearing shapes are all read, because the SAME connective arrives
+/// as an `Apply` when the loader lowered it from source and as a `Constructor` when it
+/// was materialized from a term (`forall_impl` names no operation) — the point
+/// `assumed_body_functors` makes about its own head test.
+fn proved_goal_children(kb: &KnowledgeBase, expr: &Expr) -> Vec<Rc<NodeOccurrence>> {
+    let (functor, pos_args) = match expr {
+        Expr::Apply {
+            functor, pos_args, ..
+        } => (*functor, pos_args),
+        Expr::Constructor { name, pos_args, .. } | Expr::Instantiation { name, pos_args, .. } => {
+            (*name, pos_args)
+        }
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for slot in kb.goal_slot_readings(functor, pos_args.len()) {
+        if slot.reading != crate::kb::SlotReading::Proved {
+            continue;
+        }
+        let Some(child) = pos_args.get(slot.index) else {
+            continue;
+        };
+        if slot.tuple_wrapped {
+            out.extend(tuple_goal_children_occ(kb, child));
+        } else {
+            out.push(Rc::clone(child));
+        }
+    }
+    out
+}
+
+/// The components of a tuple-wrapped goal slot — the occurrence-side peer of
+/// `KnowledgeBase::tuple_goal_children`, and the same defensive fallback: a body that
+/// is not a `tuple` is ONE goal, returned as-is rather than dropped, so no goal escapes
+/// the walk. Reached only from the slot table's `tuple_wrapped` rows, which is what
+/// keeps a user functor named `tuple` from having its data arguments walked as goals.
+fn tuple_goal_children_occ(kb: &KnowledgeBase, body: &Rc<NodeOccurrence>) -> Vec<Rc<NodeOccurrence>> {
+    let wrapper_args = body.as_expr().and_then(|e| match e {
+        Expr::Apply {
+            functor, pos_args, ..
+        } if kb.local_name_of(*functor) == "tuple" => Some(pos_args),
+        Expr::Constructor { name, pos_args, .. } | Expr::Instantiation { name, pos_args, .. }
+            if kb.local_name_of(*name) == "tuple" =>
+        {
+            Some(pos_args)
+        }
+        _ => None,
+    });
+    match wrapper_args {
+        Some(args) => args.iter().map(Rc::clone).collect(),
+        None => vec![Rc::clone(body)],
+    }
+}
+
+/// Classify one goal-position occurrence for [`check_rule_body_goal_readings`]:
+/// recurse THROUGH a goal connective into its (goal) arguments, else flag a head with
+/// no goal reading — a rule-less non-Bool operation, or a non-boolean constant.
+/// Iterative (explicit worklist) so a deeply-nested connective body cannot overflow the
+/// host stack — mirrors [`check_occ_spec_op_requirements`].
+///
+/// THE DESCENT IS THIS PASS'S OWN, and it is WIDER than `undefined_rule_body_goals`'
+/// (WI-863/WI-1034): every PROVED goal slot is checked here — a bare `or` /
+/// `push_choice` branch, a bounded quantifier's body, a discharge's consequent — where
+/// a goal that merely NAMES NOTHING in one of those is tolerated. The two rules are not
+/// in conflict; they answer different questions. A name in a branch that may never need
+/// to answer might exist in another program or another load phase, and refusing it
+/// would reject a program that computes the right answer (`push_choice_test` names
+/// undefined branches on purpose). A term with NO READING has no such defence: `42` is
+/// not a goal in any program, in any branch, under any binding. MEASURED before this:
+/// `:- base(9) | 42` and `:- (forall ?x in [1]: 42)` both loaded clean.
+///
+/// The slots come from [`proved_goal_children`], which reads the ONE table. A
+/// hand-written list is what made the quantifier hole, so the list is not written here.
+fn check_goal_atom_reading(
     kb: &KnowledgeBase,
     atom: &Rc<NodeOccurrence>,
-    connectives: &[Option<Symbol>; 3],
-    errors: &mut Vec<TypeError>,
+    errors: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(atom)];
     while let Some(o) = stack.pop() {
         let Some(expr) = o.as_expr() else {
-            continue; // a var / literal goal head — not an operation call
+            // A non-`Expr` occurrence kind (Pattern / Type / EffectExpr) — never a goal.
+            // A LITERAL goal is NOT here: it arrives as `Expr::Const`, which the match
+            // below reads (WI-20260822-J38JE item 4); this arm's old comment claimed it,
+            // and that claim is what let `:- 42` through.
+            continue;
         };
+        // DESCEND FIRST, and unconditionally. The old order asked "is this a
+        // connective?" against a three-symbol allowlist and `continue`d, which meant a
+        // goal-bearing functor OUTSIDE that list (`forall_in`, `forall_impl`) fell to
+        // the `is_builtin` skip below with its goal slots never visited. Reading the
+        // slot table instead makes the descent total over the connectives the resolver
+        // actually runs, and costs nothing on a plain atom — whose arguments are DATA,
+        // so the table answers empty.
+        stack.extend(proved_goal_children(kb, expr));
         let (f, provided) = match expr {
             Expr::Apply {
                 functor,
@@ -55664,15 +55818,30 @@ fn check_goal_atom_op(
                 ..
             } => (*name, pos_args.len() + named_args.len()),
             Expr::Ref(s) | Expr::Ident(s) => (*s, 0), // a nullary reference
+            // WI-20260822-J38JE item 4 — a CONSTANT goal. The BOOLEAN one has a
+            // reading and is not this pass's business: `true` succeeds and `false`
+            // fails, at every goal position, answered in `SearchStream::step_init`.
+            // Every other constant has no reading, and before this had no diagnostic
+            // either — the goal-position gates all key on a FUNCTOR (this pass's op
+            // record, WI-1034's `undefined_functor`), and a constant has none.
+            Expr::Const(lit) => {
+                if !matches!(lit, Literal::Bool(_)) {
+                    errors.push((
+                        TypeError::ConstantInGoalPosition {
+                            span: Some(o.span.span),
+                            literal: {
+                                let mut buf = String::new();
+                                crate::persistence::print::write_literal(lit, &mut buf);
+                                buf
+                            },
+                        },
+                        Some(o.span.source),
+                    ));
+                }
+                continue;
+            }
             _ => continue,
         };
-        // A goal connective (`not` / `or` / `push_choice`): its arguments are
-        // goal positions too — recurse into each. The connective itself is a
-        // resolver primitive (no op signature), never classified here.
-        if connectives.contains(&Some(f)) {
-            for_each_child(expr, |c| stack.push(Rc::clone(c)));
-            continue;
-        }
         // A resolver builtin (`eq`/`neq`/`gt`/`find_dictionary`/…) has its own
         // goal semantics — skip. We deliberately do NOT recurse into its value
         // operands: a non-Bool op-call inside `eq(length(?l), 3)` is a value, not
@@ -55719,11 +55888,14 @@ fn check_goal_atom_op(
         if kb.rules_by_functor_iter(f).next().is_some() {
             continue;
         }
-        errors.push(TypeError::NonBoolOpInGoalPosition {
-            span: Some(o.span.span),
-            op_sym: f,
-            return_sort,
-        });
+        errors.push((
+            TypeError::NonBoolOpInGoalPosition {
+                span: Some(o.span.span),
+                op_sym: f,
+                return_sort,
+            },
+            Some(o.span.source),
+        ));
     }
 }
 

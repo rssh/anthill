@@ -1447,6 +1447,25 @@ rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
 These illustrate the `<=>` equational-rule *mechanism*. In the current prelude such per-constructor equations for an operation with a body (`length`, `append`, `contains`) are **not** hand-written: WI-580 makes the operation body the single source of truth and derives its equational and relational views from it on demand (the SLD one-step body-unfold; see docs/design/abstract-interpreter-and-rules.md §3.3). Hand-written `<=>` rules survive for genuine standalone equations (`neq(?a, ?b) <=> not(eq(?a, ?b))`, carrier `eq` overrides).
 
+**Goal position is CLOSED** (WI-20260822-J38JE item 1). A term written where the resolver expects a goal — a rule body's atoms, and the goal slots of the connectives above them — is read by exactly one of the following. The readings are *enumerated*, not derived from a term's type, and a term that fits none of them is a **load error**, never a silently-dead clause.
+
+| in goal position | reads as |
+|---|---|
+| a name carrying clauses — rule, fact, entity | ordinary **resolution** |
+| a resolver **builtin** or scoping marker (`eq`, `unify`, `find_dictionary`, `field_access`, `forall_impl`, …) | that builtin's own goal semantics |
+| `not` / `or` | the resolver **primitives** — `and` has none, and is refused naming the comma (§6.6) |
+| a `Bool`-returning **operation** at its declared arity | an evaluated **condition**, `eq(op(…), true)` (next paragraph) |
+| the same operation at **arity + 1** | its **functional-relation** view (below) |
+| `true` / `false` | a **search** — succeeds / fails (below, with `rule`'s declaration form) |
+| a **variable** | higher-order: read once bound, by whichever row its binding matches |
+| anything else | a **load error** — today a non-`Bool` operation, and any other constant |
+
+Evaluation therefore enters goal position only where this table admits it. That is what keeps §6.6's refusal of `a & b` coherent beside the condition reading: the three operator names are position-directed *before* anything is classified, so `Bool.and` in a goal is refused while a user's own `Bool`-returning `myand(?a, ?b)` is a condition — one rule, applied in order, not two rules in tension. It is also why `b.flag` in goal position asks whether the **projection succeeds** rather than whether the field is `true` (`field_access` is a builtin, and its own goal reading wins); the condition is written `b.flag = true`.
+
+"A goal the resolver expects" means one it **proves**: the body's atoms, a `not` negand, an `or` / `push_choice` branch, a bounded quantifier's body, a discharge's **consequent**. A discharge's **antecedents** are not among them — a hypothesis *declares* the predicate the consequent proves against, so the slot binds rather than proves, and nothing above reads it.
+
+*Not yet enforced* for one shape: a **`const` reference** in goal position (`:- flag`) still loads and silently never matches. The refusal is withheld deliberately — there is no repair to point at, because a `const` does not fold anywhere in a rule body (measured: with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where `:- Int64.gt(5, 3)` answers 1, while the *same* reference inside an operation body folds), so const *folding* is the defect to fix first (**WI-20260822-NDG34**).
+
 A **`Bool`-returning operation may be used directly as a rule-body goal** (WI-583): `:- valid(?x)` (with `valid: T -> Bool`) resolves as its relational view `eq(valid(?x), true)` — the operation reduces, `true` ⇒ the goal succeeds, `false` ⇒ it fails, an under-determined argument ⇒ it suspends as a residual (never NAF-decided). This is *position-directed*, like the boolean operators (§6.6): the gating applies only in **goal** position and at the operation's declared arity; the functional-relation form `f(args, result)` (one extra argument, the result column — e.g. `status(?fs, ?p, FileStatus(…))`) is the separate **arity+1** view described below, and a `Bool` operation in **value** position is just a value. A **non-`Bool`** operation in goal position has no such reading, so it is a **load error**, not a silently-failed relation lookup.
 
 **The functional-relation view: `f(a₁…aₙ, ?r)` (WI-938).** A goal at **arity + 1** on a *rule-less bodied* operation of arity n is that operation's relational view, with the result as the last positional column. It resolves to **`unify(f(a₁…aₙ), ?r)`** — the call is reduced through the body (the SLD→eval bridge) and the result is **bound**. So the relation *generates*: `vec_add(a, b, ?c)` answers one definite solution with `?c = Vec3(11.0, 22.0, 33.0)`.
@@ -1579,9 +1598,15 @@ This is §6.6's own rule for the boolean operators ("at every GOAL position: the
 atoms, and the goal slots of the connectives above them") applied to their constants.
 Both readings agree at the top of a body, where the `:- true` above has already been
 erased at load — that erasure is what keeps the body EMPTY, which is what makes `fact H`
-and `rule H :- true` one clause rather than two with equal answers. A **non-boolean**
-constant in goal position (`:- 42`) is a separate question and is not yet answered: it
-loads and silently never matches (WI-20260822-J38JE item 4).
+and `rule H :- true` one clause rather than two with equal answers. Every OTHER
+constant in goal position is a **load error** (item 4): `:- 42`, `:- "hello"` and `:- 1.5` name no
+predicate, so the clause can never fire — and before the refusal they loaded with no word
+said, indistinguishable from a deliberate `:- false`, while `:- not(42)` answered *one*.
+WI-1034's "goal names nothing" refusal cannot reach them, because it tests a goal's
+FUNCTOR and a constant has none; the refusal therefore sits with WI-583's non-`Bool`
+operation error, which answers the same question — *is this term readable as a goal at
+all?* — and the error names the constant, its position, and both repairs (an argument
+`p(42)` or a comparison `?x = 42`; `false` if the clause is meant to be dead).
 
 **Equations are not this construct.** An equational rule (`lhs <=> rhs`) extends
 unification; its clauses are indexed under the connective, not under its subject, so the

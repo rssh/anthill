@@ -8905,7 +8905,7 @@ impl KnowledgeBase {
     /// `Bool` is qualified / re-exported)? The single definition of "this sort
     /// is `Bool`" shared by the resolver's goal-routing gate
     /// ([`Self::bare_bodied_bool_relation`]) and the typer's static goal check
-    /// (`check_rule_body_goal_ops`), so the two cannot drift on how `Bool` is
+    /// (`check_rule_body_goal_readings`), so the two cannot drift on how `Bool` is
     /// recognized. A hypothetical user sort also named `Bool` is treated
     /// identically by both — harmless: it merely lets a bare goal route to
     /// `= true` rather than being flagged, never a wrong answer.
