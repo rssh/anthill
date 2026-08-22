@@ -93,8 +93,8 @@ namespace wi884.siblings
 
   -- `ite` at RULE level, where it does resolve, with a control that isolates the
   -- goal machinery from the functor under test.
-  rule ite_reduces(?x)  :- holds(ite(true, 10, 20)), ?x = 1
-  rule control_pred(?x) :- holds(10), ?x = 1
+  rule ite_reduces(1)  :- holds(ite(true, 10, 20))
+  rule control_pred(1) :- holds(10)
   fact holds(10)
 end
 "#;
@@ -319,6 +319,13 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
                 pos_args: SmallVec::from_slice(&[v]),
                 named_args: SmallVec::new(),
             });
+            // DEFINITE answers only (WI-20260822-WZX6B): a floundered solution is a
+            // suspension, and every row below claims a DECISION — the control's own
+            // message is "the control must answer, or nothing below proves anything".
+            // Both fixtures used to end in `, ?x = 1`, which cannot bind (`=` is
+            // `PartialEq.eq`, a test, §8.3) and so suspended: `total = 1, definite = 0`,
+            // and this counter reported that 1. The constant now sits in the HEAD, where
+            // head unification binds it, and the same claims decide.
             kb.resolve(
                 &[g],
                 &ResolveConfig {
@@ -326,7 +333,9 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
                     ..Default::default()
                 },
             )
-            .len()
+            .iter()
+            .filter(|s| s.is_definite())
+            .count()
         };
         for (goal, simplify, want, why) in [
             (

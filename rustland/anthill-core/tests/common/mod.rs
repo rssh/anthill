@@ -509,6 +509,34 @@ pub fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(eval::Value, bool)>
         .collect()
 }
 
+/// [`query_unary`] KEEPING ONLY THE DEFINITE ANSWERS — what a test asserting that
+/// something DECIDES must count.
+///
+/// WI-20260822-WZX6B. `query_unary` already carries definiteness in each pair's `bool`,
+/// and callers were dropping it: `query_unary(..).len()` counts FLOUNDERED answers too,
+/// and a floundered answer is a suspension — "I could not decide this" — which is the
+/// one outcome that must never read as success. `Solution::is_definite`'s own doc
+/// already says so ("a floundered solution must never be counted as a definite answer");
+/// this is the ergonomic half, so the shortest thing to write is also the right one.
+///
+/// MEASURED, and it is not a corner: `=` is `PartialEq.eq`, a semantic equality TEST
+/// that never binds (§8.3), so the common fixture idiom `rule p(?m) :- <goal>, ?m = 1`
+/// SUSPENDS — `total = 1, definite = 0` — and four suites were asserting that 1 as a
+/// decision, one of them a CONTROL whose message read "the control must answer, or
+/// nothing below proves anything". Put the constant in the HEAD (`rule p(1) :- <goal>`)
+/// and the same claim decides.
+///
+/// A test whose subject IS a residual should keep [`query_unary`] and assert the flag,
+/// or count derivations and say at its site that that is what it is counting.
+#[allow(dead_code)]
+pub fn definite_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<eval::Value> {
+    query_unary(kb, qn)
+        .into_iter()
+        .filter(|(_, definite)| *definite)
+        .map(|(v, _)| v)
+        .collect()
+}
+
 /// Every `SortProvidesInfo` fact as `(carrier qualified name, spec qualified
 /// name)` — "who provides what", the question several suites ask of a loaded KB.
 ///

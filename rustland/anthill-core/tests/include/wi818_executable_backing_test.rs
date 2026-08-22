@@ -440,10 +440,29 @@ end
         ("wi818.sld.pickie", "isEmpty"),
     ] {
         let sols = query_unary(&mut kb, rule);
+        // COUNTING DERIVATIONS, NOT PROOFS — and that distinction is why this row
+        // counts `.len()` where WI-20260822-WZX6B moved its neighbours to
+        // `definite_unary`. The subject is MULTIPLICITY: one derivation from the law +
+        // body pair, never two. Each derivation contributes a solution whether or not
+        // it decides, so `.len()` is the right instrument for that question and a
+        // definite-only count would measure something else.
+        //
+        // These solutions are NOT definite, and the second assertion pins that so the
+        // first cannot be misread as a proof. `?r` is free and `=` is `PartialEq.eq`, a
+        // semantic equality TEST that never binds (§8.3), so `<call> = ?r` suspends by
+        // construction — MEASURED, `total = 1, definite = 0`. The arity+1 relational
+        // form (`head(cons(7, nil), ?r)`), which WOULD bind through `unify`, answers
+        // NOTHING for three of these four ops, so it is not available as a repair here.
         assert_eq!(
             sols.len(),
             1,
-            "{what}'s law+body pair must prove exactly once (no body-derived double); got {sols:?}"
+            "{what}'s law+body pair must derive exactly once (no body-derived double); got {sols:?}"
+        );
+        assert!(
+            sols.iter().all(|(_, definite)| !definite),
+            "{what}: `<call> = ?r` cannot decide — `eq` never binds — so the count above \
+             is a derivation count, not a proof. A definite answer here would mean this \
+             row had quietly started measuring something else; got {sols:?}"
         );
     }
 }

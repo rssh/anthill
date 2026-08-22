@@ -75,14 +75,14 @@ fn list_contains_as_a_rule_body_goal() {
 namespace cr3
   import anthill.prelude.{List, Int64, Bool}
   import anthill.prelude.List.{contains, cons, nil}
-  rule yes(?m) :- contains(cons(head: 7, tail: nil), 7), ?m = 1
-  rule no(?m)  :- contains(cons(head: 7, tail: nil), 9), ?m = 1
+  rule yes(1) :- contains(cons(head: 7, tail: nil), 7)
+  rule no(1)  :- contains(cons(head: 7, tail: nil), 9)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(crate::common::query_unary(&mut kb, "cr3.yes").len(), 1);
+    assert_eq!(crate::common::definite_unary(&mut kb, "cr3.yes").len(), 1);
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr3.no").len(),
+        crate::common::definite_unary(&mut kb, "cr3.no").len(),
         0,
         "9 is not in [7] — a goal answering here is the WI-1096 shape"
     );
@@ -110,15 +110,12 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr3lit.yes")
-            .iter()
-            .filter(|(_, definite)| *definite)
-            .count(),
+        crate::common::definite_unary(&mut kb, "cr3lit.yes").len(),
         1,
         "7 IS in [7], and decided — not carried out as a residual"
     );
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr3lit.no").len(),
+        crate::common::definite_unary(&mut kb, "cr3lit.no").len(),
         0,
         "9 is not in [7], the literal spelling included (WI-1096)"
     );
@@ -135,18 +132,18 @@ fn set_contains_answers_over_the_symbolic_algebra() {
 namespace cr4
   import anthill.prelude.{Set, Int64, Bool}
   import anthill.prelude.Set.{empty, insert, contains}
-  rule yes(?m) :- contains(insert(insert(empty(), 1), 2), 2), ?m = 1
-  rule no(?m)  :- contains(insert(insert(empty(), 1), 2), 9), ?m = 1
+  rule yes(1) :- contains(insert(insert(empty(), 1), 2), 2)
+  rule no(1)  :- contains(insert(insert(empty(), 1), 2), 9)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr4.yes").len(),
+        crate::common::definite_unary(&mut kb, "cr4.yes").len(),
         1,
         "2 IS in the set — the renamed clauses must still answer"
     );
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr4.no").len(),
+        crate::common::definite_unary(&mut kb, "cr4.no").len(),
         0,
         "9 is NOT in the set — a predicate answering here would be vacuous"
     );
@@ -164,19 +161,19 @@ namespace cr5
   import anthill.prelude.{Set, Int64, Bool}
   import anthill.prelude.Set.{empty, insert}
   import anthill.prelude.PartialEq.{eq}
-  rule same(?m) :- eq(insert(insert(empty(), 1), 2), insert(insert(empty(), 2), 1)), ?m = 1
-  rule different(?m) :- eq(insert(empty(), 1), insert(empty(), 9)), ?m = 1
+  rule same(1) :- eq(insert(insert(empty(), 1), 2), insert(insert(empty(), 2), 1))
+  rule different(1) :- eq(insert(empty(), 1), insert(empty(), 9))
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr5.same").len(),
+        crate::common::definite_unary(&mut kb, "cr5.same").len(),
         1,
         "two spellings of one set are EQUAL — extensional equality, which reaches \
          `contains` through `subset`"
     );
     assert_eq!(
-        crate::common::query_unary(&mut kb, "cr5.different").len(),
+        crate::common::definite_unary(&mut kb, "cr5.different").len(),
         0,
         "different sets are not equal"
     );
