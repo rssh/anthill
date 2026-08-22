@@ -1571,6 +1571,18 @@ is the **empty conjunction**, so `:- true` is the explicit spelling of the empty
 produces exactly the clause `fact` produces — which is what a site needs when it wants an
 assertion *and* a citation label, since `fact` has no label form (§6.1).
 
+**A boolean constant in GOAL position is a search: `true` succeeds, `false` fails**
+(WI-20260822-J38JE). `rule p(1) :- false` is legal and its clause is **dead** — a
+deliberate way to disable one — and the reading holds at *every* goal position, not only
+at the top of a body: `not(true)` fails and `q | true` succeeds even where `q` does not.
+This is §6.6's own rule for the boolean operators ("at every GOAL position: the body's
+atoms, and the goal slots of the connectives above them") applied to their constants.
+Both readings agree at the top of a body, where the `:- true` above has already been
+erased at load — that erasure is what keeps the body EMPTY, which is what makes `fact H`
+and `rule H :- true` one clause rather than two with equal answers. A **non-boolean**
+constant in goal position (`:- 42`) is a separate question and is not yet answered: it
+loads and silently never matches (WI-20260822-J38JE item 4).
+
 **Equations are not this construct.** An equational rule (`lhs <=> rhs`) extends
 unification; its clauses are indexed under the connective, not under its subject, so the
 subject owns no clauses and there is no predicate to declare (§8.7, WI-898). A body-less

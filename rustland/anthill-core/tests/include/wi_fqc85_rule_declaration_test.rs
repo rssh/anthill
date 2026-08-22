@@ -30,7 +30,8 @@
 //! ── THE BACK-OUTS, each naming the line, each RUN ────────────────────────────
 //!
 //! All eight were applied and measured over this file plus `wi980_rule_head_order_test`
-//! (39 rows), and re-measured after /code-review's fixes. Each is present-but-wrong rather than deleted, so a control cannot fall
+//! (39 rows), re-measured after /code-review's fixes, and re-measured again after
+//! WI-20260822-J38JE — which moved one of them (see THE EMPTY CONJUNCTION). Each is present-but-wrong rather than deleted, so a control cannot fall
 //! with the thing it controls.
 //!
 //! * **THE DECLARATION READING** — in `Loader::load_rule`, drop the `return` at the end
@@ -43,9 +44,15 @@
 //!   mint off, so a declaration introduces nothing and pass 3 decides the name as
 //!   before. **12 rows fail**: five here, seven in wi980.
 //! * **THE EMPTY CONJUNCTION** — in `load_rule`'s body loop, gate off the
-//!   `is_empty_conjunction_goal` skip, so `:- true` carries a constant goal nothing
-//!   resolves. **24 rows fail** — the widest of them, because every `:- true` clause in
-//!   both files goes silent.
+//!   `is_empty_conjunction_goal` skip, so `:- true` carries a constant goal. **It felled
+//!   24 rows when 061 shipped, and it fells NONE of them now** — WI-20260822-J38JE gave
+//!   a boolean constant a reading in the RESOLVER (`step_init`), so a `:- true` the
+//!   loader no longer strips is answered there instead, and every count below is
+//!   unchanged. The strip is not thereby redundant: it is what keeps the body EMPTY, so
+//!   `fact H` and `rule H :- true` remain the same clause, and the row that measures it
+//!   is now `wi_j38je_boolean_goal_test::a_top_level_true_is_still_erased_at_load` —
+//!   the only row the back-out fells. Re-measured, not inherited: a neighbouring guard
+//!   absorbed this one's domain, which is exactly how a stated back-out goes stale.
 //! * **THE FILE BOUNDARY** — in `scan_definitions_with_sources`, raise the
 //!   `file_idxs.len() < 2` test so no predicate is ever reported. **6 rows fail**: the
 //!   four multi-file rows' refusal arms, `an_equation_subject_written_in_two_files_is_-

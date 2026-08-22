@@ -1087,6 +1087,46 @@ impl SearchStream {
             }
         }
 
+        // 3.7 A BOOLEAN CONSTANT GOAL — `true` is a SUCCESSFUL search, `false` an
+        // UNSUCCESSFUL one (user decision 2026-08-22, WI-20260822-J38JE). Nothing else
+        // gives a constant a reading, so before this a boolean literal in goal position
+        // simply became no goal at all: it resolved to no clause and no builtin, and
+        // WI-1034's "rule-body goal names nothing" cannot reach it because a CONSTANT
+        // NAMES NO NAME. `false` therefore gave the right answer for the wrong reason,
+        // and `true` gave the wrong one outright.
+        //
+        // HERE, NOT IN THE LOADER, because §6.6's own rule for the boolean OPERATORS is
+        // that they are redirected "at every GOAL position (the body's atoms, and the
+        // goal slots of the connectives above them)" — and the loader's `:- true` strip
+        // is over the body's TOP-LEVEL goal list, which by construction cannot reach a
+        // goal nested under `not` or `|`. MEASURED with the strip alone: `not(true)`
+        // answered 1 where logic says 0, and `base(9) | true` answered 0 where logic
+        // says 1, while the top-level `:- true` answered 1 — one spelling, two readings,
+        // decided by depth.
+        //
+        // THE LOADER STRIP STAYS, and the two do not overlap: §6.1 reads `fact H` as
+        // `H :- true`, and only an EMPTY body makes that the same clause `fact` stores
+        // (`is_equation` and WI-624's ground-fact fast path both read body-emptiness).
+        // The strip erases a top-level `true` at load; this arm answers every `true` the
+        // strip cannot see.
+        //
+        // A NON-BOOL constant goal (`:- 42`, `:- "hello"`) is deliberately NOT given a
+        // reading here and stays silently dead — that is WI-20260822-J38JE item 4, which
+        // wants a located error rather than a third meaning for constants.
+        if let ViewHead::Const(Literal::Bool(b)) = goal_val.head(kb) {
+            if b {
+                let f = self.stack.last_mut().unwrap();
+                f.goals.remove(0);
+                f.depth += 1;
+                f.state = FrameState::Init {
+                    delay_mode: delay_mode.reset(),
+                };
+            } else {
+                self.stack.pop();
+            }
+            return Some(StepResult::Continue);
+        }
+
         // 4. Builtin goal — classify by functor read through TermView.
         if let Some(tag) = kb.get_builtin_view(&goal_val) {
             // HO predicate application: replace goal with the applied term.

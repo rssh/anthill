@@ -1353,3 +1353,6 @@ mod wimh90f_kernel_not_test;
 
 #[path = "include/wi_fqc85_rule_declaration_test.rs"]
 mod wi_fqc85_rule_declaration_test;
+
+#[path = "include/wi_j38je_boolean_goal_test.rs"]
+mod wi_j38je_boolean_goal_test;
