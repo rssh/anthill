@@ -297,3 +297,102 @@ column the source does not contain. The repair is at the converter (`mark_minted
 readers asking different questions, so it is a censused change: WI-20260822-AK2AJ, with
 the census carried in it, and a note at the site.
 
+### 2026-08-22T07:45:48Z — feedback — claude
+
+USER DECISION (2026-08-22), REVERSING ITEM 1 AS DELIVERED: "of course any bool expression. How can be other?"
+
+A Bool-VALUED expression in goal position IS an evaluated CONDITION — it succeeds iff it
+evaluates to `true`. That is the ticket's own opening position ("x :- <any boolean
+expression>"), and the closed/enumerated reading I shipped narrowed it without being
+asked to. The reading is TYPE-DIRECTED, not a list of admitted shapes.
+
+WHAT THAT MAKES OF §6.6, since the delivered feedback claimed the two were in tension and
+they are not: `not` and `or` at a goal position resolve to the RESOLVER PRIMITIVES
+before anything is typed, so they never become Bool expressions there at all — §6.6 is
+untouched. WI-1046's `and` refusal is the part that has to move: it refuses `a & b` in a
+goal unconditionally, but its measurement was `l(?x) & r(?x)`, where the operands are
+GOALS and so not Bool values. Where the operands ARE Bool values (`Bool.and(?b, ?b)` with
+`?b: Bool` — the ticket's own `pand` row) the expression is a condition and must answer.
+
+STILL TO DO under the corrected decision — the population measured while delivering the
+narrow one, all of which now needs the condition reading:
+  * a Bool FIELD ACCESS. `:- b.flag` answers 1 for `flag: true` AND for `flag: false`
+    (and `:- b.n` on an Int64 field answers 1 too) — `builtin_field_access` at arity 2
+    reports that the PROJECTION succeeded. Under the decision a Bool-typed one must
+    instead mean `eq(b.flag, true)`, which is measured to answer 1 and 0 correctly.
+  * a Bool CONST reference. `:- flag` answers 0 — and so does `:- flag = true`, because a
+    const folds in an operation body and nowhere in a rule body (WI-20260822-NDG34). The
+    condition reading needs that folding underneath it.
+  * `Bool.and` / `&` at Bool operands, per above.
+  * the two shapes already delivered stay as they are, because both are instances of the
+    corrected rule rather than exceptions to it: `true`/`false` (a constant evaluates to
+    itself) and a Bool OPERATION call at declared arity (WI-583's `eq(op(…), true)`).
+
+Item 4 is UNAFFECTED: a NON-Bool constant in goal position has no truth to denote, so it
+stays a located load error, as does a non-Bool operation (§5.3, WI-583).
+
+### 2026-08-22T08:06:50Z — feedback — claude
+
+IMPLEMENTED UNDER THE CORRECTED DECISION (2026-08-22).
+
+"WHAT IS THE PROBLEM TO HAVE ANY BOOL EXPRESSION IN RHS?" — THERE IS NONE, and the
+delivered feedback's claim that there was is withdrawn. I took §6.6's refusal of `a & b`
+as evidence that goal position had to be closed to expressions. It is not evidence of
+that: §6.6 redirects three NAMES (`not` / `or` / `and`) to the resolver primitives before
+anything is typed, so those names never reach the question. I generalized a rule about
+NAMES into a rule about TERMS and then defended the result. §5.3 now states the reading
+type-directed: a Bool-valued expression in goal position is a CONDITION — it evaluates,
+and the goal succeeds iff the value is `true`.
+
+WHAT THAT CHANGED IN THE CODE. A bare dot projection is a Bool expression and now reads
+as one. `b.flag` lowers to `field_access(b, flag)` at arity 2, whose BUILTIN goal reading
+was "the projection landed":
+    :- box(n: 1, flag: true).flag     1 -> 1
+    :- box(n: 1, flag: false).flag    1 -> 0     <-- a WRONG answer, not a missing one
+    :- not(box(n: 1, flag: false).flag)   0 -> 1
+    :- box(n: 5).n   (an Int64 field)     1 -> 0
+It is routed in `step_init` to `eq(field_access(…), true)` — the SAME rewrite WI-580
+applies to a Bool operation's bare goal, one shape further out, so the declared `Eq`
+decides it and an under-determined receiver suspends to a WI-519 residual instead of a
+verdict being invented. Reusing that route is the whole point of the corrected decision:
+"is this expression true" gets ONE answer however the expression is spelled. Corpus
+impact: ZERO.
+
+WHAT IS BLOCKED, AND ON WHAT — this is the real finding, and it is not a design question.
+Two Bool expressions still do not condition, for ONE reason: A RULE BODY REDUCES A BODIED
+OPERATION AND A RESOLVER BUILTIN, AND NOTHING ELSE.
+    operation f() -> Bool = Bool.and(true, true)  ; :- f()          -> 1   REDUCES
+    operation f() -> Bool = Bool.and(true, false) ; :- f()          -> 0
+    :- Bool.and(true, true) = true                                  -> 0   DOES NOT
+    :- Int64.gt(2, 1) = true                       (control)        -> 1
+    :- Int64.gt(2, 1)                              (control)        -> 1
+`Int64.gt` answers because it is a resolver BUILTIN; `Box.isbig` answers because it has a
+BODY. `Bool.and` / `or` / `not` are declared body-less in `prelude/bool.anthill` ("backed
+by a host builtin") and their Boolean-algebra `<=>` laws are UNTAGGED, so by WI-881/884/888
+they are inert and cannot stand in for the reduction either. A `const` reference is the
+same shape: folds in an operation body, folds nowhere in a rule body. Filed as
+WI-20260822-ZJZS7 (host-backed ops) beside WI-20260822-NDG34 (consts); they may share a
+fix, since both are "the eval bridge is reachable from an operation body and not from a
+rule body" for a construct carrying no anthill body.
+
+SO `a & b` IN A GOAL STAYS REFUSED, and the MESSAGE is what changed rather than the
+verdict. It used to assert that `&` "has no meaning in a rule-body GOAL position", which
+is now false as design. It now separates the two things that were conflated: operands
+that are GOALS (WI-1046's own measured case, `l(?x) & r(?x)`) are not Bool values and the
+comma is the repair; operands that ARE Bool values are a condition by §5.3, which the
+evaluator cannot yet deliver — named, with ZJZS7. Admitting it instead would make it
+answer 0 silently, which is strictly worse than a located error.
+
+ITEM 4 IS UNAFFECTED and stays as delivered — a non-Bool constant denotes no truth, so it
+is a located load error. One NEW residue of the same kind is pinned rather than fixed: a
+non-Bool DOT projection (`:- b.n`) now answers 0 instead of 1, because `eq(5, true)` is
+false. Correct as logic, but SILENT where its two siblings are loud; the refusal wants the
+field's declared type, which the typer already stamps on that goal node.
+
+MEASURED: 35 binaries green, corpus impact zero. The new back-out (neutralize the
+`BuiltinTag::FieldAccess` arm) RUN over the full wi_tests binary fells exactly 2 rows —
+`a_bool_expression_in_goal_position_is_a_condition` on the `false` field, and
+`what_the_condition_reading_cannot_yet_reduce` on the non-Bool dot row going 0 -> 1. One
+arm decides both, so a back-out that fell only the Bool row would have left half of it
+unmeasured. Tests: `wi_j38je_boolean_goal_test.rs`, 11 rows.
+

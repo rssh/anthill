@@ -1132,6 +1132,37 @@ impl SearchStream {
 
         // 4. Builtin goal — classify by functor read through TermView.
         if let Some(tag) = kb.get_builtin_view(&goal_val) {
+            // WI-20260822-J38JE item 1 — A BOOL-VALUED EXPRESSION IN GOAL POSITION IS A
+            // CONDITION, and a bare dot projection (`:- b.flag`) is one. It lowers to
+            // `field_access(b, flag)` at arity 2, which as a BUILTIN GOAL meant only
+            // that the PROJECTION LANDED: measured, `:- b.flag` answered 1 for
+            // `flag: true` AND for `flag: false`, and `:- b.n` on an `Int64` field
+            // answered 1 too. That is a wrong answer, not a missing one.
+            //
+            // Routed to `eq(field_access(…), true)` — the SAME rewrite WI-580 applies to
+            // a Bool operation's bare goal, one shape further out, so the declared `Eq`
+            // decides it and an under-determined receiver suspends to a WI-519 residual
+            // rather than inventing a verdict. Reusing that route is the point: "is this
+            // expression true" must have ONE answer however the expression is spelled.
+            //
+            // ARITY 2 ONLY. `field_access(obj, field, ?r)` at arity 3 is the RELATIONAL
+            // form the reflection rules use — it binds the projection into `?r` and is
+            // not a condition — and rewriting it would strand `?r` unbound.
+            //
+            // The rewritten goal heads `eq`, so the projection re-enters as an ARGUMENT
+            // and never as a goal: no loop.
+            if tag == BuiltinTag::FieldAccess
+                && matches!(goal_val.head(kb), ViewHead::Functor { pos_arity: 2, .. })
+            {
+                let eq_sym = kb.eq_functor();
+                let eq_goal = kb.make_goal_value(eq_sym, vec![goal_val.clone(), Value::Bool(true)]);
+                let fr = self.stack.last_mut().unwrap();
+                // Same discipline as the WI-580 hook above: goal[0] in place, same goal
+                // count, `delay_mode` threaded through unchanged rather than reset.
+                fr.goals[0] = eq_goal;
+                fr.state = FrameState::Init { delay_mode };
+                return Some(StepResult::Continue);
+            }
             // HO predicate application: replace goal with the applied term.
             // Carrier-neutral (WI-482 follow-up): `lower_ho_apply` reads the goal
             // through `TermView`, so a rule-body `ho_apply` occurrence lowers

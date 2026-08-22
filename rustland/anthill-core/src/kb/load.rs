@@ -9973,14 +9973,33 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
 /// Gives BOTH spellings (`&` and the word form) because the operator table maps them to
 /// one functor and the author may have written either, and names the comma as the
 /// repair — which is the whole content of spec §6.6's "goal conjunction is the comma".
+///
+/// WHAT THE MESSAGE NO LONGER CLAIMS (WI-20260822-J38JE item 1). It used to say `&` "has
+/// no meaning in a rule-body GOAL position", full stop. That is now false as a design
+/// statement: §5.3 reads a `Bool`-VALUED expression in goal position as a CONDITION, and
+/// `and` of two `Bool` values is one. Two different things kept the refusal standing and
+/// the message must not conflate them:
+///
+///   * the case this was MEASURED on — `l(?x) & r(?x)`, where the operands are GOALS and
+///     therefore not `Bool` values at all. The comma is the repair, and always was.
+///   * the case the evaluator cannot yet serve — `Bool.and(?b, ?b)` with `?b: Bool`,
+///     which IS a condition by §5.3 but answers 0, because `Bool.and` is host-backed and
+///     a rule body reduces only bodied operations and resolver builtins
+///     (**WI-20260822-ZJZS7**). Refused rather than admitted, deliberately: a located
+///     error is the honest state of a reading the evaluator cannot deliver, and silently
+///     answering nothing is what this refusal exists to prevent.
 fn boolean_operator_in_goal_message(operator: &str) -> String {
     format!(
-        "`{operator}` (the `&` / `{operator}` operator) has no meaning in a rule-body GOAL \
-         position: it names `anthill.prelude.Bool.{operator}`, a boolean VALUE operation \
-         with no resolver behaviour, so this goal can never match and the rule silently \
-         answers nothing. Goal conjunction is the COMMA — write `a, b` instead of \
-         `a {operator} b` (kernel-language.md §6.6). The `&` form is still a boolean \
-         value operator inside an OPERATION body, where it is evaluated."
+        "`{operator}` (the `&` / `{operator}` operator) does not resolve in a rule-body \
+         GOAL position: it names `anthill.prelude.Bool.{operator}`, a boolean VALUE \
+         operation, and a rule body reduces only bodied operations and resolver builtins \
+         — so this goal can never match and the rule silently answers nothing. Goal \
+         conjunction is the COMMA: if you meant to conjoin two GOALS, write `a, b` \
+         instead of `a {operator} b` (kernel-language.md §6.6). If both operands really are \
+         `Bool` VALUES, §5.3 reads that as a condition, but the rule-body evaluator \
+         cannot yet reduce a host-backed operation (WI-20260822-ZJZS7) — spell the \
+         condition through a bodied operation for now. The `&` form is evaluated \
+         normally inside an OPERATION body."
     )
 }
 

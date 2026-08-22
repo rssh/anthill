@@ -1447,24 +1447,25 @@ rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
 These illustrate the `<=>` equational-rule *mechanism*. In the current prelude such per-constructor equations for an operation with a body (`length`, `append`, `contains`) are **not** hand-written: WI-580 makes the operation body the single source of truth and derives its equational and relational views from it on demand (the SLD one-step body-unfold; see docs/design/abstract-interpreter-and-rules.md §3.3). Hand-written `<=>` rules survive for genuine standalone equations (`neq(?a, ?b) <=> not(eq(?a, ?b))`, carrier `eq` overrides).
 
-**Goal position is CLOSED** (WI-20260822-J38JE item 1). A term written where the resolver expects a goal — a rule body's atoms, and the goal slots of the connectives above them — is read by exactly one of the following. The readings are *enumerated*, not derived from a term's type, and a term that fits none of them is a **load error**, never a silently-dead clause.
+**A `Bool`-valued expression in goal position is a CONDITION** (WI-20260822-J38JE item 1): it evaluates, and the goal succeeds iff the value is `true`. The reading is **type-directed** — it follows from the term denoting a truth value, not from a list of admitted shapes — so every spelling of a boolean expression means the same thing wherever a goal is expected.
 
 | in goal position | reads as |
 |---|---|
 | a name carrying clauses — rule, fact, entity | ordinary **resolution** |
-| a resolver **builtin** or scoping marker (`eq`, `unify`, `find_dictionary`, `field_access`, `forall_impl`, …) | that builtin's own goal semantics |
-| `not` / `or` | the resolver **primitives** — `and` has none, and is refused naming the comma (§6.6) |
-| a `Bool`-returning **operation** at its declared arity | an evaluated **condition**, `eq(op(…), true)` (next paragraph) |
-| the same operation at **arity + 1** | its **functional-relation** view (below) |
-| `true` / `false` | a **search** — succeeds / fails (below, with `rule`'s declaration form) |
-| a **variable** | higher-order: read once bound, by whichever row its binding matches |
-| anything else | a **load error** — today a non-`Bool` operation, and any other constant |
+| `not` / `or` | the resolver **primitives** (§6.6) — see below |
+| a **`Bool`-valued expression**: `true` / `false`, a `Bool` operation at its declared arity, a `Bool` dot projection, a variable bound to one | an evaluated **condition**, `eq(expr, true)` |
+| an **operation at arity + 1** | its **functional-relation** view (below) |
+| a resolver **builtin** or scoping marker (`unify`, `find_dictionary`, `forall_impl`, …) | that builtin's own goal semantics |
+| a **non-`Bool`** term that is not a relation — a non-`Bool` operation, a non-boolean constant | a **load error**: it denotes no truth, so it can never match |
 
-Evaluation therefore enters goal position only where this table admits it. That is what keeps §6.6's refusal of `a & b` coherent beside the condition reading: the three operator names are position-directed *before* anything is classified, so `Bool.and` in a goal is refused while a user's own `Bool`-returning `myand(?a, ?b)` is a condition — one rule, applied in order, not two rules in tension. It is also why `b.flag` in goal position asks whether the **projection succeeds** rather than whether the field is `true` (`field_access` is a builtin, and its own goal reading wins); the condition is written `b.flag = true`.
+`not` and `or` are not an exception to the condition reading, and §6.6 is not in tension with it. Those two names at a goal position resolve to the **resolver primitives** before anything is typed, so they never become `Bool` expressions there at all — the redirection is a rule about *names*, applied first. `and` has no primitive to be redirected to, which is why §6.6 names the comma; a genuine `Bool`-valued `and` of two `Bool` **values** is a condition like any other, and the refusal of `a & b` narrows to the case its measurement was about — operands that are **goals**, and so not values.
 
 "A goal the resolver expects" means one it **proves**: the body's atoms, a `not` negand, an `or` / `push_choice` branch, a bounded quantifier's body, a discharge's **consequent**. A discharge's **antecedents** are not among them — a hypothesis *declares* the predicate the consequent proves against, so the slot binds rather than proves, and nothing above reads it.
 
-*Not yet enforced* for one shape: a **`const` reference** in goal position (`:- flag`) still loads and silently never matches. The refusal is withheld deliberately — there is no repair to point at, because a `const` does not fold anywhere in a rule body (measured: with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where `:- Int64.gt(5, 3)` answers 1, while the *same* reference inside an operation body folds), so const *folding* is the defect to fix first (**WI-20260822-NDG34**).
+**What the rule-body evaluator cannot yet reduce, it cannot yet condition on.** The reading above is the design; two `Bool` expressions do not get it *yet*, and for one reason — a rule body reduces a **bodied** operation and a resolver **builtin**, and nothing else. Both are load-time gaps, not readings, and both are measured:
+
+* a **`const` reference** (`:- flag`) answers 0, and so does the spelled-out `:- flag = true` — with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where `:- Int64.gt(5, 3)` answers 1, while the *same* reference inside an operation body folds (**WI-20260822-NDG34**).
+* a **host-backed operation** — `Bool.and` / `Bool.or` / `Bool.not` are declared body-less and backed by a host builtin (`prelude/bool.anthill`), and their `<=>` laws are untagged, so they are inert in SLD. `Bool.and(true, true) = true` answers 0 in a rule body and 1 in an operation body (**WI-20260822-ZJZS7**). Until it reduces, `a & b` in a goal stays **refused** rather than silently answering nothing — a located error is the honest state of a reading the evaluator cannot yet deliver.
 
 A **`Bool`-returning operation may be used directly as a rule-body goal** (WI-583): `:- valid(?x)` (with `valid: T -> Bool`) resolves as its relational view `eq(valid(?x), true)` — the operation reduces, `true` ⇒ the goal succeeds, `false` ⇒ it fails, an under-determined argument ⇒ it suspends as a residual (never NAF-decided). This is *position-directed*, like the boolean operators (§6.6): the gating applies only in **goal** position and at the operation's declared arity; the functional-relation form `f(args, result)` (one extra argument, the result column — e.g. `status(?fs, ?p, FileStatus(…))`) is the separate **arity+1** view described below, and a `Bool` operation in **value** position is just a value. A **non-`Bool`** operation in goal position has no such reading, so it is a **load error**, not a silently-failed relation lookup.
 
