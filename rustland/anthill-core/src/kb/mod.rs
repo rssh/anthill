@@ -4073,8 +4073,11 @@ impl KnowledgeBase {
                 ]);
             }
             // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
-            // `kernel.anthill:48`), so `builtin_of` would miss it.
-            ("or", 2) => {
+            // `kernel.anthill:48`), so `builtin_of` would miss it — and its
+            // conjunctive PEER, added with `push_and` (WI-20260822-J38JE). Both are
+            // rules over a primitive, so both are here rather than in the
+            // `builtin_of` table below.
+            ("or" | "and", 2) => {
                 return SmallVec::from_slice(&[
                     slot(0, false, SlotReading::Proved),
                     slot(1, false, SlotReading::Proved),
@@ -4086,7 +4089,7 @@ impl KnowledgeBase {
             (Some(BuiltinTag::Not), 1) => {
                 SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
             }
-            (Some(BuiltinTag::PushChoice), 2) => SmallVec::from_slice(&[
+            (Some(BuiltinTag::PushChoice) | Some(BuiltinTag::PushAnd), 2) => SmallVec::from_slice(&[
                 slot(0, false, SlotReading::Proved),
                 slot(1, false, SlotReading::Proved),
             ]),
@@ -4105,6 +4108,21 @@ impl KnowledgeBase {
             } if self.local_name_of(*functor) == "tuple" => pos_args.iter().copied().collect(),
             _ => SmallVec::from_elem(tid, 1),
         }
+    }
+
+    /// WI-20260822-J38JE — is `functor` at `pos_arity` the GOAL CONJUNCTION
+    /// (`anthill.kernel.and`, or the `push_and` primitive it is a rule over)?
+    ///
+    /// Asked by the two walks that decide whether a dead goal is REFUSED or left to
+    /// resolution. A conjunct is as committed as its parent — if it can never match,
+    /// the whole conjunction can never match — so unlike a bare `or` branch it does not
+    /// relax the commitment. MEASURED before `and` had a goal reading at all:
+    /// `l(?x), absent(?x)` was refused and `l(?x) & absent(?x)` loaded clean, which
+    /// would have made `&` a quieter comma.
+    pub(crate) fn is_goal_conjunction(&self, functor: Symbol, pos_arity: usize) -> bool {
+        pos_arity == 2
+            && (self.local_name_of(functor) == "and"
+                || self.builtin_of(functor) == Some(crate::kb::resolve::BuiltinTag::PushAnd))
     }
 
     /// WI-1034 — the span a goal with no source location of its own is reported at,
@@ -4279,13 +4297,26 @@ impl KnowledgeBase {
                 out.push((sym, span));
             }
         }
-        let entering_not = matches!(
-            self.goal_head_sym_arity(goal),
-            Some((f, _)) if self.builtin_of(f) == Some(BuiltinTag::Not)
-        );
-        if under_not || entering_not {
+        let head = self.goal_head_sym_arity(goal);
+        let entering_not =
+            matches!(head, Some((f, _)) if self.builtin_of(f) == Some(BuiltinTag::Not));
+        // A CONJUNCTION passes the commitment through instead of opening or relaxing it
+        // ([`Self::is_goal_conjunction`]): its conjuncts are exactly as committed as the
+        // `and` itself, the way comma-separated atoms are. Descended into at ANY
+        // commitment for that reason — including the body's top level, where a bare `or`
+        // branch is not.
+        let entering_conj =
+            matches!(head, Some((f, a)) if self.is_goal_conjunction(f, a));
+        if under_not || entering_not || entering_conj {
+            let child_under_not = under_not || entering_not;
             for (child, child_span) in self.body_goal_children(goal, span) {
-                self.collect_undefined_body_goals(&child, child_span, true, assumed, out);
+                self.collect_undefined_body_goals(
+                    &child,
+                    child_span,
+                    child_under_not,
+                    assumed,
+                    out,
+                );
             }
         }
     }
@@ -7224,14 +7255,17 @@ impl KnowledgeBase {
     /// structurally unequal to the very goal it is *about* and discharges nothing
     /// (`typing::goal_form`).
     ///
-    /// `and` is absent DELIBERATELY, not overlooked: it has no goal reading to route
-    /// to (kernel-language.md §6.6 — "goal conjunction is the comma"), so the loader
-    /// REFUSES it in goal position instead of routing it, and Γ keeps a conjunctive
-    /// condition unsplit (conservative — the guard stays present).
-    const POSITION_DIRECTED_BOOLEANS: [(&'static str, &'static str, usize); 2] = [
+    /// `and` IS HERE NOW (WI-20260822-J38JE). It used to be absent for a stated reason
+    /// — "it has no goal reading to route to (§6.6 — goal conjunction is the comma)" —
+    /// and the loader REFUSED `a & b` in goal position instead of routing it. That was
+    /// a missing primitive described as a design: `not` and `or` each had one to be
+    /// redirected to and `and` did not. `anthill.kernel.and` (over the `push_and`
+    /// primitive) supplies it, the three are symmetric, and the refusal is gone.
+    const POSITION_DIRECTED_BOOLEANS: [(&'static str, &'static str, usize); 3] = [
         // (value spelling, goal spelling, goal-position arity)
         ("anthill.prelude.Bool.not", "anthill.kernel.not", 1),
         ("anthill.prelude.Bool.or", "anthill.kernel.or", 2),
+        ("anthill.prelude.Bool.and", "anthill.kernel.and", 2),
     ];
 
     /// VALUE spelling → GOAL spelling, for a reference in goal position. `None` when
@@ -8594,6 +8628,7 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
         // Resolver primitives (proposal 033 / 033.1 / 049)
         self.register_builtin_tag("anthill.kernel.push_choice", BuiltinTag::PushChoice);
+        self.register_builtin_tag("anthill.kernel.push_and", BuiltinTag::PushAnd);
         self.register_builtin_tag("anthill.kernel.cut", BuiltinTag::Cut);
         self.register_builtin_tag("anthill.kernel.unify", BuiltinTag::Unify);
         // WI-300 — rule-body requirement guard. A rule-body `requires(X)` desugars

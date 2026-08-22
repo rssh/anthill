@@ -164,6 +164,12 @@ pub enum BuiltinTag {
     /// `anthill.kernel.push_choice(?a, ?b)` — binary choice point.
     /// Special-cased in `step_init`; see proposal 033 / WI-075.
     PushChoice,
+    /// `anthill.kernel.push_and(?a, ?b)` — binary conjunction, the dual of
+    /// [`Self::PushChoice`]. Special-cased in `step_init` for the same reason: its
+    /// effect is on the frame's GOAL QUEUE (it splices both goals in place of itself),
+    /// not on σ. Simpler than its dual — one frame, no choice point, nothing to
+    /// backtrack into (WI-20260822-J38JE).
+    PushAnd,
     /// `anthill.kernel.cut` — cut control primitive (`!`). Surface form is the
     /// nullary `cut`; the resolver opens it to a barrier-tagged `cut(B)` when the
     /// enclosing rule body is entered. Special-cased in `step_init`: its effect
@@ -1189,7 +1195,7 @@ impl SearchStream {
             if tag == BuiltinTag::PushChoice {
                 let subst = frame.subst.clone();
                 if let Some((goal_a, goal_b)) =
-                    Self::resolve_push_choice_args(kb, &goal_val, &subst)
+                    Self::resolve_binary_goal_args(kb, &goal_val, &subst)
                 {
                     let candidates = vec![
                         Candidate::Continuation(vec![goal_a]),
@@ -1209,6 +1215,33 @@ impl SearchStream {
                         any_delayed: false,
                         child_solutions: 0,
                         cut_barrier: None,
+                    };
+                    return Some(StepResult::Continue);
+                } else {
+                    self.stack.pop();
+                    return Some(StepResult::Continue);
+                }
+            }
+            // WI-20260822-J38JE — `push_and(?a, ?b)`: goal CONJUNCTION, the dual of
+            // `push_choice` above and the primitive `and` in a goal position had been
+            // missing. Splice both goals in place of this one, in the SAME frame:
+            // [?a, ?b, ...tail]. No choice point, because a conjunction has no branch
+            // to backtrack into — which is the whole of why it is simpler than its dual.
+            //
+            // `delay_mode` is RESET, unlike the `push_choice` / Bool-relation rewrites
+            // that thread it through: those replace one goal with one goal, so the
+            // frame's delay accounting still lines up with `goals.len()`. This one
+            // changes the goal COUNT, so a carried-over `consecutive_delays` would be
+            // measured against a queue it was never counted on.
+            if tag == BuiltinTag::PushAnd {
+                let subst = frame.subst.clone();
+                if let Some((goal_a, goal_b)) = Self::resolve_binary_goal_args(kb, &goal_val, &subst)
+                {
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals.splice(0..1, [goal_a, goal_b]);
+                    f.depth += 1;
+                    f.state = FrameState::Init {
+                        delay_mode: delay_mode.reset(),
                     };
                     return Some(StepResult::Continue);
                 } else {
@@ -2392,14 +2425,19 @@ impl SearchStream {
         })
     }
 
-    /// Read both args of a `push_choice(?a, ?b)` goal, walked through σ, as
+    /// Read both args of a binary GOAL-BEARING primitive — `push_choice(?a, ?b)` and
+    /// its conjunctive dual `push_and(?a, ?b)` — walked through σ, as
     /// `(goal_a, goal_b)`. Carrier-neutral (WI-348): the goal is read through
-    /// [`TermView`] and each arg is [`Self::walk_arg`]'d to a `Value`, so a
-    /// `Value::Node` push_choice goal needs no whole-goal reify and a `Node`
-    /// continuation rides through as-is (rather than being lowered to a `TermId`
-    /// and re-wrapped) — the [`Self::eq_operands`] idiom. `None` if the goal is
-    /// malformed (not a 2-ary, unnamed application). Proposal 033 / WI-075.
-    fn resolve_push_choice_args(
+    /// [`TermView`] and each arg is [`Self::walk_arg`]'d to a `Value`, so such a
+    /// `Value::Node` goal needs no whole-goal reify and a `Node` continuation rides
+    /// through as-is (rather than being lowered to a `TermId` and re-wrapped) — the
+    /// [`Self::eq_operands`] idiom. `None` if the goal is malformed (not a 2-ary,
+    /// unnamed application). Proposal 033 / WI-075, WI-20260822-J38JE.
+    ///
+    /// Named for the SHAPE rather than for either caller: what it knows is "two
+    /// positional args, both of them goals", which is the only thing the two primitives
+    /// share — one then builds a choice point from them and the other splices them.
+    fn resolve_binary_goal_args(
         kb: &KnowledgeBase,
         goal: &Value,
         subst: &Substitution,
@@ -4095,6 +4133,9 @@ impl KnowledgeBase {
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => {
                 unreachable!("HoApply is handled in step_init, not execute_builtin")
+            }
+            BuiltinTag::PushAnd => {
+                unreachable!("PushAnd is handled in step_init, not execute_builtin")
             }
             BuiltinTag::PushChoice => {
                 unreachable!("PushChoice is handled in step_init, not execute_builtin")
@@ -8015,6 +8056,39 @@ impl KnowledgeBase {
         self.fold_gate(v, None, 0, HAS_BODIED_OP_CALL)
     }
 
+    /// WI-20260822-J38JE / WI-20260822-ZJZS7 — can a RULE BODY reduce a call on `f`?
+    ///
+    /// Two suppliers answer yes, and the second is why this predicate exists:
+    ///
+    ///   * `f` has a RUNNABLE ANTHILL BODY, which the derived views unfold; and
+    ///   * `f` is HOST-MAPPED for *this* interpreter ([`KnowledgeBase::is_interpreter_mapped_op`]),
+    ///     so the eval bridge can call the host function directly. `anthill.prelude.Bool`
+    ///     declares `and` / `or` / `not` body-less and backed by a host builtin, and
+    ///     `String.concat` and the rest of the prelude's host surface are the same shape.
+    ///
+    /// BEFORE THIS the gate read `op_body_node(f).is_some()` alone, and the second
+    /// supplier was simply missing — so a host-implemented operation was callable from
+    /// an OPERATION BODY and inert in a RULE BODY, for no reason anyone had stated.
+    /// MEASURED: `operation f() -> Bool = Bool.not(true)` with `:- f()` answered 0
+    /// correctly while `:- Bool.not(false)` answered NOTHING; with this, the second
+    /// answers 1. `Int64.gt` looked like a counterexample and is not — it is a resolver
+    /// BUILTIN (it carries a `BuiltinTag`), which is a third supplier and bails on the
+    /// line above.
+    ///
+    /// It asks the INTERPRETER's own registry, not `is_host_mapped_op`: a cpp
+    /// `operation_map` entry is a real supplier for a different runtime and this
+    /// process cannot call it (WI-876/WI-886). Same question `op_is_interpretable`
+    /// asks the typer's side, and the same one `reduce_op_value`'s body-less arm
+    /// already asks before building a scratch interpreter — "will the bridge be able
+    /// to run this".
+    ///
+    /// The callers' OTHER clauses are untouched and still do their work: effect-free
+    /// (an effectful host fn is no more a logical relation than an effectful body) and
+    /// rule-LESS (design §3.3 precedence — a hand-written clause still wins).
+    fn op_reducible_in_rule_body(&self, f: Symbol) -> bool {
+        self.op_body_node(f).is_some() || self.is_interpreter_mapped_op(f)
+    }
+
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the
     /// RELATIONAL VIEW of a bodied operation — a Bool-returning operation with a
     /// runnable body and NO hand-written rules? Such a goal (`member(?x, ?l)`) is
@@ -8033,7 +8107,7 @@ impl KnowledgeBase {
     /// builtin or a body-less predicate (the common case) bails before the
     /// `rules_by_functor` allocation, which is reached only for a bodied Bool op.
     pub(crate) fn bare_bodied_bool_relation(&self, f: Symbol) -> bool {
-        if self.builtins.get(&f).is_some() || self.op_body_node(f).is_none() {
+        if self.builtins.get(&f).is_some() || !self.op_reducible_in_rule_body(f) {
             return false;
         }
         // Read the cached signature by ref (no record clone).
@@ -8095,6 +8169,13 @@ impl KnowledgeBase {
     /// before any allocation, and `rules_by_functor_iter` short-circuits at the
     /// first rule.
     pub(crate) fn functional_relation_arity(&self, f: Symbol) -> Option<usize> {
+        // NOT [`Self::op_reducible_in_rule_body`], and that is measured rather than
+        // conservative: widening this gate to a host-mapped op changes NOTHING —
+        // `String.concat("a", "b", ?r)` still answers nothing with it widened, and still
+        // does with `reduce_op_value`'s body-less arm opened up beside it. Whatever
+        // blocks the arity+1 view for a host op is further in and is not either of those
+        // two gates (WI-20260822-ZJZS7 carries both negatives). The Bool sibling above
+        // DOES widen, because its route is the one that works.
         if self.builtins.get(&f).is_some() || self.op_body_node(f).is_none() {
             return None;
         }

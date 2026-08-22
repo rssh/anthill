@@ -396,3 +396,77 @@ MEASURED: 35 binaries green, corpus impact zero. The new back-out (neutralize th
 arm decides both, so a back-out that fell only the Bool row would have left half of it
 unmeasured. Tests: `wi_j38je_boolean_goal_test.rs`, 11 rows.
 
+### 2026-08-22T08:53:28Z — feedback — claude
+
+HOST-BACKED OPS ARE CALLABLE FROM RULES, AND `and` HAS A GOAL READING (2026-08-22).
+Both from user direction, and both were things I had written up as design when they were
+missing mechanism.
+
+1. "OPERATIONS IMPLEMENTED IN THE HOST LANGUAGE ARE NOT CALLED FROM RULES?" — they were
+not, and there was no reason. The gate `bare_bodied_bool_relation` read
+`op_body_node(f).is_some()` — "has a runnable ANTHILL body" — so a body-less host-backed
+op was inert in a rule body while working in an operation body. It now reads
+`op_reducible_in_rule_body`: a body OR `is_interpreter_mapped_op`, the same question
+`op_is_interpretable` already asks the typer's side and `reduce_op_value` asks before
+building a scratch interpreter. ONE LINE, measured:
+    :- Bool.not(false)   nothing -> 1        :- Bool.not(true)   nothing -> 0
+    :- Bool.or(false, true)  nothing -> 1
+`Int64.gt` looked like a counterexample to the diagnosis and is not: it is a resolver
+BUILTIN (it carries a `BuiltinTag`), a third supplier — `String.concat` is host-backed
+like `Bool.and` and was equally inert. The effect-free and rule-less clauses of both
+callers are untouched.
+
+WHAT DID NOT MOVE, measured, so ZJZS7 keeps two NEGATIVES rather than a hypothesis: the
+arity+1 functional-relation view on a host op (`String.concat("a","b",?r)`) still answers
+nothing, and widening `functional_relation_arity` the same way changes NOTHING — nor does
+opening `reduce_op_value`'s body-less arm beside it. Whatever blocks that is further in
+and is neither of those two gates. Both experiments were run and reverted; the
+`functional_relation_arity` gate carries the negative at its site.
+
+2. `push_and` AND A GOAL READING FOR `and`. §6.6 refused `a & b` in a goal because "there
+is no `kernel.and`" — a MISSING PRIMITIVE stated as a rule about the language, since
+`not` and `or` each had one to be redirected to. Added `operation push_and(a, b)` beside
+`push_choice` in `anthill.kernel` (a `BuiltinTag`, special-cased in `step_init`: splice
+both goals into the same frame, no choice point — a conjunction has no branch to
+backtrack into), plus `rule and(?a, ?b) :- push_and(?a, ?b)` and an `and` row in
+`POSITION_DIRECTED_BOOLEANS`. WI-1046's refusal is deleted. Measured, on WI-1046's own
+program:
+    l(?x) & r(?x)     0 -> 1      and the COMMA control answers 1
+    l(?x) & absent(?x)           REFUSED, as `l(?x), absent(?x)` already was
+    true & true  -> 1            true & false -> 0        Bool.and(true, false) -> 0
+    not(true & false) -> 1       (false & true) | true -> 1     l(?x) & r(?x) & true -> 1
+    operation f() -> Bool = true & false ; :- f()  -> 0   (the op-body direction intact)
+The conjunction reading SUBSUMES the value one wherever both apply — a Bool expression in
+goal position is a condition, so "?a succeeds" is "?a is true" — and it resolves the
+UNGROUND case, which no value reading can. That is why `and` needed no host call.
+
+A CONJUNCT IS AS COMMITTED AS A COMMA-SEPARATED GOAL, and that did not come for free.
+`GoalCommit::child` relaxed every non-`not` connective to `Tolerated`, so the first cut
+left `l(?x) & absent(?x)` LOADING while `l(?x), absent(?x)` was refused — `&` would have
+been a quieter comma. A conjunction now passes its commitment through
+(`is_goal_conjunction`, read by both walks), which is the same rule and not a fourth: a
+bare `or` branch is tolerated because it may never need to answer, and a conjunct always
+does.
+
+WHAT THIS COSTS, stated rather than buried: THE PRECEDENCE TRAP IS QUIET AGAIN. `&` binds
+looser than `=`, so `?r = ?a & ?b` parses as `and(eq(?r, ?a), ?b)` — the `&` is the goal
+conjunction and `?b` is a CONJUNCT. That misreading was a LOAD ERROR while `and` was
+refused; it is now a legal program that computes something else. It is not refusable by
+shape — `and(eq(…), g)` is an ordinary conjunction to write once `and` has a goal reading
+(`(?x = 1) & p(?x)`) — so it is PINNED in
+`the_equals_versus_ampersand_precedence_trap_is_a_silent_zero` with both polarities, and
+§6.6 keeps the precedence warning in prose.
+
+A MEASUREMENT DEFECT OF MY OWN, caught by the user's question "= is Eq here?". IT IS: `=`
+is `PartialEq.eq`, a semantic equality TEST that NEVER BINDS (§8.3). So every fixture of
+the form `?r = <expr>` with `?r` free SUSPENDS, and the helper counting `.len()` reported
+the residual as an answer. Measured: `?r = (?a & ?b)` is `total = 1, definite = 0`, and
+my first draft of the precedence row asserted that 1 as a success. Two repairs, both
+driven: the J38JE helper now counts DEFINITE solutions only — which immediately turned
+`a_constant_in_a_value_position_is_untouched`'s `?x = 42` row RED, a control that had
+been blessing a suspension, now rewritten with a ground operand and both polarities
+(`?n = 42` answers 1, `?n = 43` answers 0) — and the precedence row drives the PARSE
+through ground operands instead of a binding.
+
+MEASURED: 35 binaries, 5476 tests green; corpus impact zero for both changes.
+

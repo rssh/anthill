@@ -40,9 +40,13 @@
 //! BUILDING the body, so it cannot ask either walk, and a third hand-written copy is
 //! how the WI-1034 review found `and` listed as a conjunction in two of them.
 //!
-//! **`and` is REFUSED.** There is nothing to route it to: §6.6 says "goal conjunction
-//! is the comma (there is no `kernel.and`)". So `a & b` in a goal position had no
-//! meaning and silently did nothing; it is now a load error naming the comma.
+//! **`and` IS ROUTED TOO — since WI-20260822-J38JE.** It was REFUSED here, on the
+//! ground that "there is nothing to route it to: §6.6 says goal conjunction is the
+//! comma (there is no `kernel.and`)". That sentence described a MISSING PRIMITIVE as a
+//! rule about the language — `not` and `or` each had one and `and` did not.
+//! `anthill.kernel.and`, over the `push_and` conjunction primitive, supplies it. The
+//! two rows below that asserted the refusal now assert ANSWERS, and the program this
+//! file measured answering 0 answers what the comma answers.
 //!
 //! ## Blast radius: ZERO, measured over the corpus
 //!
@@ -62,13 +66,15 @@
 //! | `an_imported_bool_no_longer_captures_negation` | **FAILS** | ok | ok |
 //! | `an_imported_bool_no_longer_captures_disjunction` | **FAILS** | ok | ok |
 //! | `the_routing_reaches_a_nested_connective` | **FAILS** | ok | ok |
-//! | `a_goal_position_and_is_refused` | ok | **FAILS** | ok |
-//! | `the_equals_versus_ampersand_precedence_trap_is_now_loud` | ok | **FAILS** | ok |
+//! | `a_goal_position_and_is_the_conjunction` | ok | — | ok |
+//! | `the_equals_versus_ampersand_precedence_trap_is_a_silent_zero` | ok | — | ok |
 //! | `a_data_slot_keeps_the_value_operators` | ok | ok | **FAILS** |
 //! | `an_operation_body_still_evaluates_the_value_operators` | ok | ok | ok |
 //!
-//! Only the LAST row passes on all three, and it earns its place by guarding the other
-//! direction entirely (WI-529's half, which this must not disturb). Note especially
+//! The `and` refusal COLUMN IS RETIRED (the two rows that carried it now assert
+//! answers); its back-out today is "make `push_and` unreachable", under which both of
+//! them fail. Only the last row passes on all three, and it earns its place by guarding
+//! the other direction entirely (WI-529's half, which this must not disturb). Note especially
 //! that `a_data_slot_keeps_the_value_operators` is green under both real back-outs and
 //! red only under the shortcut — a suite without it would report "all green" for a fix
 //! that refuses every `and` a rule body mentions, data slots included.
@@ -222,35 +228,36 @@ fn the_routing_reaches_a_nested_connective() {
 /// route it to (§6.6), so the choice was between leaving it silently inert — MEASURED,
 /// `l(?x) & r(?x)` answers 0 with BOTH facts present — and refusing it.
 ///
-/// The message must carry the repair, because the repair is one character and the
-/// author cannot infer it from `Bool.and`, a name they never wrote.
+/// WI-20260822-J38JE — THIS ROW USED TO ASSERT A REFUSAL, and asserts an ANSWER now.
+///
+/// `a & b` in a goal position was refused because there was nothing to route it to
+/// ("goal conjunction is the comma — there is no `kernel.and`"). That was a missing
+/// primitive stated as a rule about the language: `not` and `or` each had a resolver
+/// primitive and `and` had none. `anthill.kernel.and` over `push_and` supplies it, so
+/// THIS EXACT PROGRAM — the one WI-1046 measured answering 0 — now answers what the
+/// comma answers, and the comma is driven beside it because agreeing with it is the
+/// whole claim.
 #[test]
-fn a_goal_position_and_is_refused() {
-    let src = "namespace test.wi1046.andgoal\n\
-               \x20 fact left1046(1)\n\
-               \x20 fact right1046(1)\n\
-               \x20 rule both1046(?x) :- left1046(?x) & right1046(?x)\n\
-               end\n";
-    let msg = crate::common::try_load_kb_with(src)
-        .err()
-        .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
-        .join("\n");
-    assert!(
-        msg.contains("Goal conjunction is the COMMA"),
-        "the repair must be named: {msg}"
-    );
-    assert!(
-        msg.contains("anthill.prelude.Bool.and"),
-        "the referent must be named: {msg}"
-    );
-    // Located, like every other rule-body refusal (WI-745): the operator's own line.
-    let (loc, _) = msg
-        .split_once(": ")
-        .unwrap_or_else(|| panic!("expected a `line:col: message` rendering, got: {msg}"));
-    assert!(
-        loc.starts_with("4:"),
-        "the refusal must point at the rule, got `{loc}`: {msg}"
-    );
+fn a_goal_position_and_is_the_conjunction() {
+    let mk = |op: &str| {
+        format!(
+            "namespace test.wi1046.andgoal{}\n\
+             \x20 fact left1046(1)\n\
+             \x20 fact right1046(1)\n\
+             \x20 fact left1046(2)\n\
+             \x20 rule both1046(?x) :- left1046(?x) {op} right1046(?x)\n\
+             end\n",
+            op.len()
+        )
+    };
+    let count = |op: &str| {
+        let ns = format!("test.wi1046.andgoal{}.both1046(?x)", op.len());
+        let mut kb = crate::common::load_kb_with(&mk(op));
+        let goal = crate::common::query_pattern_term(&mut kb, &ns);
+        kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default()).len()
+    };
+    assert_eq!(count("&"), 1, "`l(?x) & r(?x)` answers the one shared binding");
+    assert_eq!(count(","), 1, "…and the COMMA answers the same — that is the claim");
 }
 
 /// THE CONTROL THE REFUSAL MUST NOT CONSUME: an OPERATION body still evaluates `&` /
@@ -317,20 +324,60 @@ fn a_data_slot_keeps_the_value_operators() {
 /// branch happens to be a bare VARIABLE. Refusing that shape would refuse legitimate
 /// `or`s; what is actually wrong there is a variable in a goal branch, which is a
 /// different question (the `ho_apply` / unbound-predicate family) and not WI-1046's.
+/// THE PRECEDENCE TRAP IS QUIET AGAIN, AND THIS ROW IS WHERE THAT IS RECORDED.
+///
+/// `&` has priority 2 and `=` priority 3, and HIGHER BINDS TIGHTER — so `?r = ?a & ?b`
+/// parses as `and(eq(?r, ?a), ?b)`: the `&` is the GOAL conjunction and `?b` is its
+/// second CONJUNCT, not an operand of the value `and` the author meant. While `and` in
+/// a goal position was REFUSED that misreading was a load error; now it is a legal
+/// conjunction that computes something else.
+///
+/// DRIVEN THROUGH THE PARSE, not through a binding, and that is deliberate: `=` is
+/// `PartialEq.eq`, a semantic equality TEST that NEVER BINDS (§8.3), so the obvious
+/// fixture — `?r = ?a & ?b` with `?r` free — SUSPENDS, and counting `.len()` on it
+/// reports 1 for a residual that decided nothing. (Measured: `?r = (?a & ?b)` is
+/// `total = 1, definite = 0`. An earlier draft of this row asserted that 1.) So both
+/// operands are ground and the rows differ only in whether `?b` became a goal:
+///
+/// | body (`?a = true`, `?b = false`) | definite | why |
+/// |---|---|---|
+/// | `?a = true` | 1 | the `eq` test alone, and it decides |
+/// | `?a = true & ?b` | **0** | …and `?b` is now a CONJUNCT — the goal `false` fails |
+///
+/// IT IS NOT REFUSABLE BY SHAPE, which is why it is pinned rather than fixed: the
+/// trap's shape is `and(eq(…), g)`, an ordinary conjunction to write once `and` has a
+/// goal reading (`(?x = 1) & p(?x)`). Refusing it would refuse a legitimate program, so
+/// the lost loudness is a real cost of giving `and` its reading — recorded here instead
+/// of left to be rediscovered. §6.6 keeps the precedence warning in prose.
 #[test]
-fn the_equals_versus_ampersand_precedence_trap_is_now_loud() {
+fn the_equals_versus_ampersand_precedence_trap_is_a_silent_zero() {
     let src = "namespace test.wi1046.precedence\n\
                \x20 import anthill.prelude.Bool\n\
-               \x20 fact flag1046(true)\n\
-               \x20 rule anded1046(?r) :- flag1046(?a), flag1046(?b), ?r = ?a & ?b\n\
+               \x20 fact ft1046(true)\n\
+               \x20 fact ff1046(false)\n\
+               \x20 rule trap1046(1) :- ft1046(?a), ff1046(?b), ?a = true & ?b\n\
+               \x20 rule ctrl1046(1) :- ft1046(?a), ff1046(?b), ?a = true\n\
                end\n";
-    let msg = crate::common::try_load_kb_with(src)
-        .err()
-        .unwrap_or_else(|| panic!("expected a load refusal; the program loaded clean:\n{src}"))
-        .join("\n");
-    assert!(
-        msg.contains("Goal conjunction is the COMMA"),
-        "`?r = ?a & ?b` binds as `and(eq(?r, ?a), ?b)`, so the `and` is the goal: {msg}",
+    let mut kb = crate::common::load_kb_with(src);
+    let definite = |kb: &mut anthill_core::kb::KnowledgeBase, pred: &str| {
+        let goal =
+            crate::common::query_pattern_term(kb, &format!("test.wi1046.precedence.{pred}(1)"));
+        kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+            .iter()
+            .filter(|s| s.is_definite())
+            .count()
+    };
+    assert_eq!(
+        definite(&mut kb, "ctrl1046"),
+        1,
+        "CONTROL: the `eq` test alone decides — without it the row below measures nothing"
+    );
+    assert_eq!(
+        definite(&mut kb, "trap1046"),
+        0,
+        "`?a = true & ?b` is `and(eq(?a, true), ?b)`, so `?b` is a CONJUNCT and the \
+         goal `false` fails — the same program was a LOAD ERROR before `and` had a \
+         goal reading"
     );
 }
 

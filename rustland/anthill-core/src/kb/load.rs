@@ -16063,21 +16063,18 @@ impl<'a> Loader<'a> {
     /// The `not` row is a WRONG ANSWER rather than a missing one: negation-as-failure
     /// over a goal that fails must SUCCEED, and it silently stopped doing so.
     ///
-    /// `and` gets no redirect because it has no goal reading to be redirected TO —
-    /// spec §6.6: "goal conjunction is the comma (there is no `kernel.and`)". Rather
-    /// than leave `a & b` silently inert in a goal position (MEASURED: `l(?x) & r(?x)`
-    /// answers 0 with both facts present, with or without the import), it is REFUSED
-    /// here, naming the comma. A user's OWN `not`/`or`/`and` operation resolves to a
-    /// different symbol and is untouched, exactly as in the op-body direction.
+    /// `and` IS REDIRECTED NOW, and used to be REFUSED here instead (WI-1046), on the
+    /// ground that it "has no goal reading to be redirected TO — there is no
+    /// `kernel.and`". That was true and was not a design: `not` and `or` each had a
+    /// resolver primitive and `and` had none, so the missing primitive was written up
+    /// as a rule about the language. `anthill.kernel.and` over the `push_and`
+    /// conjunction primitive supplies it (WI-20260822-J38JE), so `l(?x) & r(?x)` — the
+    /// program WI-1046 measured answering 0 — now answers what `l(?x), r(?x)` answers,
+    /// and the three operators are symmetric. A user's OWN `not`/`or`/`and` operation
+    /// resolves to a different symbol and is untouched, exactly as in the op-body
+    /// direction.
     fn route_body_goal_boolean(&mut self, sym: Symbol, arity: usize, span: Span) -> Symbol {
-        let q = |name: &str| self.kb.symbols.by_qualified_name.get(name).copied();
-        if arity == 2 && q("anthill.prelude.Bool.and") == Some(sym) {
-            self.errors.push(LoadError::BooleanOperatorInGoalPosition {
-                operator: "and".to_string(),
-                span,
-            });
-            return sym;
-        }
+        let _ = span;
         self.kb.goal_position_boolean(sym, arity).unwrap_or(sym)
     }
 

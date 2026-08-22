@@ -57654,9 +57654,19 @@ impl GoalCommit {
     /// The commitment a GOAL CHILD of a node at `self` inherits, given what that node is.
     /// WI-1034's `collect_undefined_body_goals` gate, verbatim: a `not` opens the scope,
     /// a discharge closes it, and a bare connective leaves its branches to resolution.
-    fn child(self, is_not: bool, is_discharge: bool) -> Self {
+    ///
+    /// A CONJUNCTION PASSES ITS COMMITMENT THROUGH UNCHANGED, and that is not a fourth
+    /// rule but the same one: the reason a bare `or` branch is tolerated is that it may
+    /// never need to answer, and a CONJUNCT always does — if it is dead the whole
+    /// conjunction is. `a, b` and `a & b` must therefore be equally committed, and
+    /// before `push_and` gave `and` a goal reading (WI-20260822-J38JE) they were not:
+    /// MEASURED, `l(?x), absent(?x)` was refused and `l(?x) & absent(?x)` loaded clean.
+    fn child(self, is_not: bool, is_discharge: bool, is_conjunction: bool) -> Self {
         if is_discharge {
             return GoalCommit::Tolerated;
+        }
+        if is_conjunction {
+            return self;
         }
         if self == GoalCommit::UnderNot || is_not {
             GoalCommit::UnderNot
@@ -57722,6 +57732,7 @@ fn child_body_positions(
     let child_commit = commit.child(
         kb.builtin_of(*functor) == Some(crate::kb::resolve::BuiltinTag::Not),
         kb.local_name_of(*functor) == "forall_impl",
+        kb.is_goal_conjunction(*functor, pos_args.len()),
     );
     // `for_each_child` yields `pos_args` first, so a slot index is a child index.
     for slot in kb.goal_slot_readings(*functor, pos_args.len()) {

@@ -454,14 +454,17 @@ fn a_boolean_and_in_a_goal_position_is_refused_by_wi1046() {
                \x20 fact right1034(1)\n\
                \x20 rule both(?x) :- left1034(?x) & right1034(?x)\n\
                end\n";
-    let msg = refusal(src);
+    // WI-20260822-J38JE — `and` HAS a goal reading now (`anthill.kernel.and` over
+    // `push_and`), so this program LOADS and answers the conjunction. What this row
+    // still guards is unchanged and is the reason it lives here rather than in
+    // wi1046: `and` names SOMETHING, so WI-1034's "names nothing" must not fire on it
+    // — under the refusal that would have been a misattribution, and under the reading
+    // it would be a refusal of a working program.
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
     assert!(
-        msg.contains("Goal conjunction is the COMMA"),
-        "WI-1046's refusal, not this ticket's: {msg}",
+        !errs.iter().any(|e| e.contains("names nothing")),
+        "`and` names something — attributing it to a missing name is the error this \
+         row guards: {errs:?}",
     );
-    assert!(
-        !msg.contains("names nothing"),
-        "WI-1034's message must NOT fire here — `and` names something, the wrong \
-         thing, and attributing it to a missing name is the error this row guards: {msg}",
-    );
+    assert!(errs.is_empty(), "and the conjunction is a working program now: {errs:?}");
 }

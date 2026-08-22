@@ -11,6 +11,15 @@
 //!   * **EVERY OTHER CONSTANT IS A LOAD ERROR** (item 4) — `:- 42`, `:- "hello"`,
 //!     `:- 1.5` denote no truth, so the clause can never fire. The complement of the
 //!     constant reading.
+//!   * **AND `and` IN A GOAL IS THE CONJUNCTION** — `anthill.kernel.and` over the new
+//!     `push_and` primitive (USER DIRECTION 2026-08-22). §6.6 used to REFUSE `a & b`
+//!     there because "there is no `kernel.and`", which stated a missing primitive as a
+//!     rule about the language; `not` and `or` each had one to be redirected to and
+//!     `and` did not. The conjunction reading also SUBSUMES the value one wherever both
+//!     apply — a Bool expression in goal position is a condition, so "`?a` succeeds" is
+//!     "`?a` is true" — and it resolves the UNGROUND case, which no value reading can.
+//!     Owned by `wi1046_boolean_goal_routing_test`; the row here drives the Bool-value
+//!     operands this ticket's own table asked about.
 //!   * **AND THE READING IS TYPE-DIRECTED, NOT A LIST OF SHAPES** (item 1, USER DECISION
 //!     2026-08-22: "of course any bool expression. How can be other?"). A `Bool`-valued
 //!     expression in goal position is a CONDITION — it evaluates, and the goal succeeds
@@ -108,9 +117,19 @@
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
 
+/// DEFINITE solutions only. `.len()` counts RESIDUALS too, and a residual is a
+/// suspension — "I could not decide this" — which for a CONDITION is the one answer
+/// that must not be mistaken for success. Not hypothetical here: `=` is `PartialEq.eq`,
+/// a semantic equality TEST that never binds (§8.3), so `?r = <expr>` with `?r` free
+/// suspends, and a `.len()` of 1 on such a goal reads as an answer while nothing was
+/// decided (MEASURED: `?r = (?a & ?b)` is `total=1, definite=0`). Every row in this
+/// file asserts a decision.
 fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
     let goal = crate::common::query_pattern_term(kb, pattern);
-    kb.resolve(&[goal], &ResolveConfig::default()).len()
+    kb.resolve(&[goal], &ResolveConfig::default())
+        .iter()
+        .filter(|s| s.is_definite())
+        .count()
 }
 
 /// Load `src` and return its rendered load errors, failing if it LOADS — for the
@@ -245,9 +264,13 @@ fn a_bool_expression_in_goal_position_is_a_condition() {
          rule littrue(1)  :- true\n  \
          rule litfalse(1) :- false\n  \
          rule bitrue(1)   :- Int64.gt(2, 1)\n  \
-         rule bifalse(1)  :- Int64.gt(1, 2)\nend\n",
+         rule bifalse(1)  :- Int64.gt(1, 2)\n  \
+         rule andtt(1)    :- true & true\n  \
+         rule andtf(1)    :- true & false\nend\n",
     );
     for (pred, want) in [
+        ("andtt", 1),     // `and` of two Bool VALUES — the ticket's own `pand` row
+        ("andtf", 0),
         ("dottrue", 1),   // a Bool DOT PROJECTION
         ("dotfalse", 0),
         ("dotneg", 1),    // …and it composes under `not`, which is where a wrong
@@ -374,13 +397,22 @@ fn a_constant_in_a_value_position_is_untouched() {
          sort Box\n    entity box(n: Int64)\n  end\n  \
          fact base(42)\n  \
          rule arg(1)  :- base(42)\n  \
-         rule cmp(?x) :- ?x = 42\n  \
-         rule lst(?l) :- ?l = [1, 2]\n  \
+         rule cmp(1)  :- base(?n), ?n = 42\n  \
+         rule cmpno(1) :- base(?n), ?n = 43\n  \
+         rule lst(1)  :- base(?n), [?n, 1] <=> [42, 1]\n  \
          rule fld(1)  :- base(?n), box(n: ?n) = box(n: 42)\nend\n",
     );
     assert_eq!(answers(&mut kb, "j38jef.arg(1)"), 1, "a constant ARGUMENT is data");
-    assert_eq!(answers(&mut kb, "j38jef.cmp(?r)"), 1, "a constant `eq` operand is a value");
-    assert_eq!(answers(&mut kb, "j38jef.lst(?r)"), 1, "a constant list element is a value");
+    assert_eq!(answers(&mut kb, "j38jef.cmp(1)"), 1, "a constant `eq` operand is a value");
+    assert_eq!(
+        answers(&mut kb, "j38jef.cmpno(1)"),
+        0,
+        "…and the comparison DECIDES: the same shape against 43 answers 0. Both \
+         polarities, because `eq` never binds (§8.3) — an operand-position row written \
+         as `?x = 42` and counted with `.len()` answers 1 as a RESIDUAL, deciding \
+         nothing, which is what this row said before the counter was tightened"
+    );
+    assert_eq!(answers(&mut kb, "j38jef.lst(1)"), 1, "a constant list element is a value");
     assert_eq!(answers(&mut kb, "j38jef.fld(1)"), 1, "a constant entity field is a value");
 }
 
