@@ -413,6 +413,34 @@ pub enum LoadError {
         /// span, and a synthesized one carries its origin's.
         span: Span,
     },
+    /// WI-20260822-59CDQ: a `requires` / `ensures` clause goal whose functor names
+    /// nothing. The contract twin of [`Self::UndefinedRuleBodyGoal`], and a separate
+    /// variant because the CONSEQUENCE is a different one and needs its own sentence.
+    ///
+    /// A contract clause is not resolved at load anywhere else, so an undeclared
+    /// predicate in one is silent twice over. It is silent as a CONDITION — a
+    /// `requires` conjunct no clause can match can never be proved, an `ensures`
+    /// conjunct is assumed about a name nothing else can query. And it is silent in
+    /// the REFINEMENT check: `check_override_refinement` compares clauses
+    /// structurally, so an undeclared functor compares equal to another undeclared
+    /// functor of the same spelling and unequal to everything else — which lets the
+    /// check both accept and refuse on names that denote nothing. Measured on
+    /// `examples/guardians/fixtures/agent/good.anthill`, where replacing
+    /// `ensures mentions_all(result)` with `ensures totally_bogus_predicate(result)`
+    /// loaded byte-identically.
+    UndefinedContractGoal {
+        /// The goal's functor, qualified.
+        functor: String,
+        /// The operation whose contract carries it, qualified.
+        op: String,
+        /// `"requires"` or `"ensures"` — which clause list it was written in.
+        clause: &'static str,
+        /// Where the operation is declared. The clause's own goal terms carry no
+        /// recorded span (`term_span` is `None` for them), so the declaration site is
+        /// the finest location this pass has; the message names the clause kind and
+        /// the functor so the line within it is unambiguous.
+        span: Span,
+    },
     /// WI-1058 — the ARGUMENT-position twin of [`Self::UndefinedRuleBodyGoal`] (WI-895's
     /// remaining half): a COMPOUND TERM in a rule body's DATA slot whose functor names
     /// nothing. Raised by the typer's rule-body walk rather than by the loader's goal
@@ -1928,6 +1956,7 @@ impl LoadError {
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
+            | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::BooleanOperatorInGoalPosition { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
@@ -2211,6 +2240,18 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_rule_body_goal_message(functor)
+                )
+            }
+            LoadError::UndefinedContractGoal {
+                functor,
+                op,
+                clause,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    undefined_contract_goal_message(functor, op, clause)
                 )
             }
             LoadError::BooleanOperatorInGoalPosition { operator, span } => {
@@ -3192,6 +3233,21 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_rule_body_goal_message(functor),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UndefinedContractGoal {
+                functor,
+                op,
+                clause,
+                span,
+            } => {
+                // ONE message body for both faces, as its rule-body neighbour above.
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    undefined_contract_goal_message(functor, op, clause),
                     span.start,
                     span.end
                 )
@@ -10035,6 +10091,27 @@ fn undefined_rule_body_goal_message(functor: &str) -> String {
     )
 }
 
+/// WI-20260822-59CDQ — the ONE wording of [`LoadError::UndefinedContractGoal`],
+/// shared by the located `format_with_source` rendering and the span-less `Display`.
+///
+/// Names BOTH consequences, because they are independent and the second is the one
+/// that surprises: the clause states nothing checkable, AND the override-refinement
+/// check still compares it — by spelling — so an undeclared name is not merely inert
+/// but can decide whether a provider is accepted.
+fn undefined_contract_goal_message(functor: &str, op: &str, clause: &str) -> String {
+    format!(
+        "the `{clause}` clause of operation `{op}` names `{functor}`, which is declared \
+         nowhere: no rule, fact, operation, entity, const or builtin carries that name. \
+         No clause can ever match it, so a `requires` conjunct can never be proved and \
+         an `ensures` conjunct is assumed about a name nothing else can query. It is not \
+         merely inert: override refinement compares contract clauses by structure, so an \
+         undeclared name matches another undeclared name of the same spelling and \
+         mismatches every declared one — deciding whether a provider is accepted on a \
+         name that denotes nothing. Fix the spelling, or import the namespace that \
+         declares `{functor}`."
+    )
+}
+
 /// WI-1058 — the ONE wording of [`LoadError::UndefinedRuleBodyTerm`], the ARGUMENT-position
 /// twin of [`undefined_rule_body_goal_message`] (WI-895's remaining half). Same head test
 /// ([`KnowledgeBase::undefined_functor`]), different CONSEQUENCE, so a different sentence:
@@ -10155,6 +10232,134 @@ fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
                 }
                 .located_in_kb_source(kb, span.source),
             );
+        }
+    }
+    errors
+}
+
+/// WI-20260822-59CDQ — refuse every `requires` / `ensures` clause goal whose functor
+/// names nothing. The contract-clause peer of [`check_rule_body_goals`], sharing its
+/// head test and its descent rule.
+///
+/// A contract clause was the one goal position no name check reached. §5.3's
+/// "Naming one from elsewhere" refuses a bare name in an operation body and (WI-1034 /
+/// WI-1058) in a rule body's goal and argument positions; a `requires` / `ensures`
+/// clause is a goal written on a DECLARATION, so neither walk sees it. Measured: an
+/// `ensures totally_bogus_predicate(result)` loaded byte-identically to the real
+/// clause it replaced.
+///
+/// THREE AUTHORITIES, NONE OF THEM RE-SPELLED HERE, because each has a live second
+/// reader that this must not drift from:
+///
+///   * WHICH CONJUNCTS a clause has — [`super::typing::clause_conjuncts`], the same
+///     decomposer the prove/assume path uses. The loader lowers several comma-separated
+///     goals as one `conjunction(g1, …, gn)` (`convert_clause_list`), and that wrapper
+///     names nothing itself, so a walk that tested its head instead of splitting it
+///     would report `conjunction` on every multi-goal clause in the tree.
+///   * WHICH FUNCTORS ARE UNDEFINED, and how far to descend into connectives —
+///     [`KnowledgeBase::undefined_query_goal_functors`], which owns the scoping-marker
+///     exemption, the discrimination-tree backstop, and the rule that a BARE `or` /
+///     quantifier branch is left to resolution while a `not` is always entered.
+///   * WHICH OPERATIONS ARE THIS PHASE'S — [`KnowledgeBase::op_decl_sites_iter`], which
+///     is also where the span comes from.
+///
+/// SCOPED TO `Value::Term` CLAUSES. A denoted-bearing `Value::Node` clause is not a
+/// hash-consed term and `undefined_query_goal_functors` takes a `TermId`; such a clause
+/// is skipped rather than half-checked. That is a stated gap and not a silent one, and
+/// it is the reason the population census below is a LOWER BOUND.
+///
+/// WHAT THE CENSUS FOUND. Zero undeclared contract names across the stdlib and every
+/// `.anthill` project in the tree (examples/, docs/measurements/, the anthill-todo and
+/// cpp-gen libraries) — measured with a positive control that fired, so the zero is a
+/// real zero and not an inert walk. It was still not the whole population: the full test
+/// suite then found one, `wi618_bare_arrow_logic_test`'s placeholder `mentions`, in a
+/// fixture written inline in Rust where no `.anthill` census could reach it. The
+/// regression tests live in `wi347_override_refinement_test`.
+fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // SORTED, because `op_decl_sites` is a `HashMap` and its iteration order is not
+    // stable across runs. Two operations with undeclared contract names would
+    // otherwise report in a different order each load, which is a diagnostic a user
+    // reads and a future test could reasonably index into.
+    let mut sites: Vec<(Symbol, crate::span::SourceSpan)> = kb.op_decl_sites_iter().collect();
+    sites.sort_by_key(|(_, site)| (site.source.raw(), site.span.start, site.span.end));
+    let mut errors = Vec::new();
+    for (op, site) in sites {
+        let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+            // NOT a silent skip. This pass runs long after `build_op_signatures`, so a
+            // miss is not "the index is not built yet" — it is an operation the loader
+            // wrote a declaration site for and then recorded no signature under, and
+            // its whole contract silently goes unchecked. MEASURED zero over the 3342-test
+            // corpus (378 operations on a stdlib load, no misses), which is why it is an
+            // assert and not a diagnostic.
+            debug_assert!(
+                false,
+                "contract-clause check: no OperationInfo for `{}`, which the loader \
+                 recorded a declaration site for; its `requires`/`ensures` clauses are \
+                 not name-checked",
+                kb.qualified_name_of(op),
+            );
+            continue;
+        };
+        // Dedup PER (OPERATION, CLAUSE KIND), not globally and not per operation. One
+        // misspelling is one edit per place it is WRITTEN: two operations sharing it
+        // are two edits, and so are an operation's `requires` and its `ensures` — the
+        // clause kind is the only thing the message can use to tell those two apart,
+        // since both report at the same declaration span. Deduping by functor alone
+        // silenced the second until the first was fixed and the file reloaded.
+        let mut seen: Vec<(&'static str, Symbol)> = Vec::new();
+        for (kind, clauses) in [
+            ("requires", &info.requires),
+            ("ensures", &info.ensures),
+        ] {
+            for clause in clauses {
+                for conjunct in super::typing::clause_conjuncts(kb, clause) {
+                    // BOTH CARRIERS ARE CHECKED, at different depths, and the shallower
+                    // one is stated rather than dropped. A ground clause is a hash-consed
+                    // `TermId` and gets the full walk. A denoted-bearing clause rides as a
+                    // `Value::Node` (WI-366 B2 — `requires Modify[c]`-style occurrences),
+                    // which `undefined_query_goal_functors` cannot take, so it gets the
+                    // HEAD test that walk is built on — `undefined_functor` plus the
+                    // discrimination-tree backstop, both carrier-neutral and both the same
+                    // authority. What that misses is only the DESCENT: an undeclared name
+                    // nested inside a `not` on such a clause.
+                    //
+                    // THE NODE ARM HAS NO TEST, and cannot be given one from source today.
+                    // Measured: zero `Value::Node` conjuncts over the whole corpus (378
+                    // operations on a stdlib load, and every fixture in the 3348-test
+                    // suite) — `denoted` reaches an EFFECT label (`effects Modify[fs]`) and
+                    // no `requires`/`ensures` clause in the tree carries one. So the arm is
+                    // written to mirror the head test its `Term` sibling is built on rather
+                    // than to satisfy a fixture, and this comment is the record that
+                    // nothing drives it. It is here instead of a silent `continue` because
+                    // that `continue` made a whole carrier exempt from the check with
+                    // nothing in the program saying so.
+                    let undefined: Vec<Symbol> = match &conjunct {
+                        crate::eval::Value::Term { id, .. } => {
+                            kb.undefined_query_goal_functors(*id).into_iter().collect()
+                        }
+                        other => kb
+                            .undefined_functor(other)
+                            .filter(|_| kb.browse_program_clauses_matching(other).is_empty())
+                            .into_iter()
+                            .collect(),
+                    };
+                    for functor in undefined {
+                        if seen.contains(&(kind, functor)) {
+                            continue;
+                        }
+                        seen.push((kind, functor));
+                        errors.push(
+                            LoadError::UndefinedContractGoal {
+                                functor: kb.qualified_name_of(functor).to_string(),
+                                op: kb.qualified_name_of(op).to_string(),
+                                clause: kind,
+                                span: site.span,
+                            }
+                            .located_in_kb_source(kb, site.source),
+                        );
+                    }
+                }
+            }
         }
     }
     errors
@@ -10848,6 +11053,13 @@ fn load_phase_inner(
     // was still going to declare or index is already there.
     all_errors.extend(check_rule_body_goals(kb));
     mark!("check_rule_body_goals");
+    // WI-20260822-59CDQ: the same question at the one goal position that walk does not
+    // reach — a `requires` / `ensures` clause, which is a goal written on a
+    // DECLARATION. Placed beside its peer and for the same ordering reason: it reads
+    // the FINAL name set, so a name any earlier pass was still going to declare is
+    // already there.
+    all_errors.extend(check_contract_clause_goals(kb));
+    mark!("check_contract_clause_goals");
     // WI-999 (059 R4 clause 3): a declaration may not capture a name it does not
     // override. AFTER `eq_derive::run` + `build_provides_index`, because its exclusion
     // is a relation between sorts and the provider relation is not complete until

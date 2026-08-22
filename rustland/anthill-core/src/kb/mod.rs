@@ -2058,6 +2058,24 @@ impl KnowledgeBase {
         self.op_decl_sites.entry(op_sym).or_default().push(site);
     }
 
+    /// WI-20260822-59CDQ — every operation THIS load phase declared, with the FIRST
+    /// site it was written at. The population of the contract-clause name check
+    /// ([`load::check_contract_clause_goals`]), and the span it reports at.
+    ///
+    /// PER PHASE is what makes it both located and un-duplicated: the log is cleared
+    /// at the start of each phase (see [`Self::record_op_decl_site`]), so every
+    /// operation is checked exactly once — in the phase that wrote it, where its span
+    /// is in hand — rather than re-reported unlocated on every later phase. It is the
+    /// same phase scoping [`load::check_rule_body_goals`] states for rule bodies, and
+    /// carries the same promise: a name only a LATER phase declares is refused here.
+    pub(crate) fn op_decl_sites_iter(
+        &self,
+    ) -> impl Iterator<Item = (Symbol, crate::span::SourceSpan)> + '_ {
+        self.op_decl_sites
+            .iter()
+            .filter_map(|(s, sites)| sites.first().map(|site| (*s, *site)))
+    }
+
     /// WI-1049 — operations THIS load phase wrote more than one declaration for,
     /// with their sites in load order. The duplicate refusal's whole input.
     pub(crate) fn repeated_op_decl_sites(

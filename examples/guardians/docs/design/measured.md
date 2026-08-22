@@ -476,6 +476,14 @@ aligns the reserved name on both sides; an override that *renames* its result
 binder is still not recognized, which needs the declared name the table does not
 carry.
 
+**Narrowed afterwards** by WI-20260822-59CDQ, filed from this fix's own review.
+Aligning the two binders is a claim that they denote values of the same type, and
+this pass compared no return types — so an identical `ensures P(result)` was
+discharged between an operation returning `Report` and one returning `Int64`. The
+alignment is now made only where the return types agree, and a mismatch is refused
+naming both. The unconditional refusal C8 removed had been accidentally plugging
+that hole: nothing could be discharged, so nothing could be discharged wrongly.
+
 **Why it went unnoticed.** `ensures` on a spec operation is rare, and the
 failure only appears once something *provides* that spec. The example's task
 specification is exactly that shape, which is how it surfaced.

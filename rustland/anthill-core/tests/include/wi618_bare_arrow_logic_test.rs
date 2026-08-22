@@ -160,6 +160,14 @@ end
 /// just the uppercase case gate), over qualified names (whose dotted
 /// segments are not scope-resolvable leaves), over logical `?`-variables,
 /// and the effectful form over the empty effect row `{}`.
+///
+/// `mentions` CARRIES A RULE, and that is load-bearing rather than decoration.
+/// It was a bare invented name until WI-20260822-59CDQ made a contract clause's
+/// predicate resolve at load, at which point this fixture failed — the ONLY one
+/// in the tree that did, and it failed for a reason that has nothing to do with
+/// arrows. Deleting the rule puts the fixture back to asserting that an
+/// undeclared `ensures` predicate loads clean, which is now false and was never
+/// what this test is about.
 #[test]
 fn arrow_types_over_resolved_leaves_still_load() {
     let errs = load_errors(
@@ -181,6 +189,9 @@ namespace test.wi618.legit
 
   rule effectful_arrow_type(?t)
     :- ?t <=> (Int64 -> Int64 @ {})
+
+  rule mentions(?r, ?t)
+    :- ?t <=> (Int64 -> Int64)
 
   operation describe(f: (a: Int64) -> Int64) -> String
     ensures mentions(result, Int64 -> Int64)

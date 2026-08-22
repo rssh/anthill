@@ -31360,8 +31360,22 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
         if let Term::Fn { named_args, .. } = kb.get_term(spec_view).clone() {
             for (k, v) in &named_args {
-                if is_type_param_binding(kb, *k, &spec_qn) {
-                    sigma.push((*k, *v));
+                // σ keys on the RESOLVED spec-param symbol — the one the spec
+                // operations' own types reference (`Sp.op`'s `Ref(Sp.T)`) — and not
+                // on the raw binding key, which is a different `Symbol` copy
+                // resolved in the provision's scope. `substitute_impl_params_alloc`
+                // matches by `Symbol` equality, so keying on the raw copy makes
+                // every substitution below a SILENT NO-OP: measured on
+                // `provides Sp[T = Carrier]`, the key was `Symbol(2626)` where the
+                // spec's return type held `Symbol(2563)`. Both readers of σ then
+                // fail open — the effects leg sees a still-parametric spec row and
+                // skips, and the return-type guard below cannot decide a spec that
+                // returns its own parameter, which is the ordinary case. This is
+                // the same correction WI-431 (B) already carries at the two sibling
+                // σ sites (`check_instance_fact_op_signatures`,
+                // `requires_shadow_is_confusable`); this pass was the one outlier.
+                if let Some(param_sym) = type_param_sym_of_binding(kb, *k, &spec_qn) {
+                    sigma.push((param_sym, *v));
                 }
             }
         }
@@ -31390,14 +31404,84 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 continue;
             };
 
+            // ── the result binder, and the return type it commits to ───────
+            //
+            // The RESULT BINDER needs the same alignment as a parameter, and for
+            // the same reason. `result` is defined per operation as `<op>.result`
+            // (proposal 041), so the spec's and the override's are DIFFERENT
+            // symbols. Without this the contract legs below compare
+            // `Spec.op.result` against `Impl.op.result`, they never match, and
+            // **a spec operation carrying `ensures` has no possible provider** —
+            // an override restating the spec's postcondition VERBATIM was refused.
+            // Measured on `examples/guardians`, whose task spec wants
+            // `ensures mentions_all(result)`.
+            //
+            // GATED ON A CLAUSE EXISTING. Two qualified-name lookups per
+            // (spec-op, impl-op) pair on every load is not free — the stdlib alone
+            // carries ~146 provisions — and an op pair with no contract clauses can
+            // never read this entry. The disjuncts are the two legs' own driving
+            // lists: the postcondition leg iterates the SPEC's `ensures`, the
+            // precondition leg the IMPL's USER `requires`, so an impl `ensures`
+            // beside a spec that declares none is compared against nothing and does
+            // not put this gate up.
+            //
+            // `user_precondition_clauses`, NOT the raw list — the loader injects an
+            // `EffectsRuntime[Effects = E]` clause into `requires` for every free
+            // effect-row variable (`infer_effects_row_requires`), so the raw list is
+            // non-empty for every effect-polymorphic override whether or not its
+            // author wrote a contract. Reading it raw opened this gate on most of the
+            // stdlib and made the cost sentence above false. Asked with `any` rather
+            // than by building the filtered Vec, since only emptiness is wanted here.
+            let wants_result_alignment = !spec_info.ensures.is_empty()
+                || impl_info
+                    .requires
+                    .iter()
+                    .any(|c| !is_effects_runtime_clause(kb, c));
+            let mut result_binders: Option<(Symbol, TermId)> = None;
+            if wants_result_alignment {
+                match (
+                    super::region::resolve_op_result_sym(kb, spec_op),
+                    super::region::resolve_op_result_sym(kb, impl_op),
+                ) {
+                    (Some(sr), Some(ir)) if ir != sr => {
+                        // `find_term`, not `alloc`: this only NAMES a term the
+                        // symbol table already holds alive, and the entry rides in
+                        // a local dropped each iteration with no decref, so `alloc`
+                        // would leak a refcount per pair.
+                        let sr_ref = if let Some(t) = kb.find_term(&Term::Ref(sr)) {
+                            t
+                        } else {
+                            kb.alloc(Term::Ref(sr))
+                        };
+                        result_binders = Some((ir, sr_ref));
+                    }
+                    (Some(_), Some(_)) => {}
+                    // NOT a silent skip. Every operation gets a `result` binder at
+                    // scan time, so a miss here means the symbol was minted under a
+                    // different prefix than the op's qualified name, or lost its
+                    // `OpResult` kind. The consequence is the pre-fix bug verbatim —
+                    // every provider of an `ensures`-carrying spec op refused — with
+                    // nothing naming the cause, so say it.
+                    (s_r, i_r) => debug_assert!(
+                        false,
+                        "override refinement: no OpResult binder for {} (spec: {:?}, impl: {:?}); \
+                         contract clauses over `result` cannot be compared and every \
+                         provider of this spec op will be refused",
+                        kb.qualified_name_of(spec_op),
+                        s_r.is_some(),
+                        i_r.is_some(),
+                    ),
+                }
+            }
+
             // Impl-param → spec-param alignment, shared by the effects leg and
-            // the contract leg below. A GUARDED effect atom's guard is a
+            // the contract legs below. A GUARDED effect atom's guard is a
             // predicate over the op's own params (`Error[EmptyStream] :-
             // isEmpty(xs)`), so without the alignment an override restating the
             // spec's own guarded row verbatim — modulo its param name — read as
             // a widening and was refused (WI-818: `List.head` vs `Stream.head`,
             // the first carrier override to carry one).
-            let align: Vec<(Symbol, TermId)> = {
+            let param_align: Vec<(Symbol, TermId)> = {
                 let mut a = Vec::new();
                 for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
                     if ip != sp {
@@ -31405,88 +31489,91 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                         a.push((*ip, sp_ref));
                     }
                 }
-                // The RESULT BINDER needs the same alignment as a parameter, and
-                // for the same reason. `result` is defined per operation as
-                // `<op>.result` (proposal 041), so the spec's and the override's are
-                // DIFFERENT symbols. Without this the contract legs below compare
-                // `Spec.op.result` against `Impl.op.result`, they never match, and
-                // **a spec operation carrying `ensures` has no possible provider** —
-                // an override restating the spec's postcondition VERBATIM was
-                // refused. Measured on `examples/guardians`, whose task spec wants
-                // `ensures mentions_all(result)`.
-                //
-                // GATED ON A CLAUSE ACTUALLY MENTIONING SOMETHING. Two qualified-name
-                // lookups per (spec-op, impl-op) pair on every load is not free — the
-                // stdlib alone carries ~146 provisions — and an op pair with no
-                // contract clauses can never read this entry.
-                //
-                // GUARDED ON THE RETURN TYPES NOT DEMONSTRABLY DIFFERING, which is
-                // not tidiness but the soundness condition. `check_override_refinement`
-                // never compares return types (kernel-language.md §8.7; that is
-                // WI-935's scope), so aligning the binders unconditionally would let
-                // `ensures P(result)` match between an op returning `Report` and one
-                // returning `Int64` — discharging a postcondition about a value of
-                // the wrong type. Tracked as WI-20260822-59CDQ.
-                //
-                // CONFIDENT-GROUND ONLY, FAIL-OPEN OTHERWISE — the same shape the
-                // effects leg immediately below already uses, and for the same
-                // reason. Refusing the alignment needs the two return types to be
-                // KNOWN different, and that is decidable only when both are ground:
-                // a spec returning its own type parameter (`op(x: T) -> T`, the
-                // ordinary parametric case) is not comparable against a carrier's
-                // `-> Carrier` without a σ story this pass does not have, and
-                // treating "cannot decide" as "differs" would re-refuse every
-                // parametric provider — the C8 bug again, one case narrower.
-                // The unsoundness the review found is a GROUND mismatch, and that
-                // is exactly what this decides.
-                let wants_result_alignment =
-                    !spec_info.ensures.is_empty() || !impl_info.requires.is_empty();
-                if wants_result_alignment {
+                a
+            };
+            let full_align: Vec<(Symbol, TermId)> = {
+                let mut a = param_align.clone();
+                if let Some(entry) = result_binders {
+                    a.push(entry);
+                }
+                a
+            };
+
+            // WI-20260822-59CDQ — THE RETURN TYPES MUST AGREE WHEREVER THE RESULT
+            // BINDER IS WHAT DISCHARGES A CLAUSE. Aligning the two binders makes
+            // `ensures P(result)` on the spec and `ensures P(result)` on the
+            // override compare EQUAL; that is a claim that the two `result`s denote
+            // values of the same type, and nothing else on this pass compares return
+            // types (kernel-language.md §8.7 — a provision certifies that a member of
+            // that NAME exists, not that it fits; enforcing conformance generally is
+            // WI-20260822-1MAGR). Without this an op promising `mentions_all(result)`
+            // of a `Report` was discharged by one returning `Int64`.
+            //
+            // THE CONDITION IS THE DISCHARGE ITSELF, not "a clause mentions
+            // `result`" — the exact question, asked by running the comparison the
+            // legs below run, twice: is there a clause pair that matches WITH the
+            // binder aligned and does NOT match without it? Three cases separate
+            // only under that reading, and each wants a different message:
+            //
+            //   * spec `P(result)` / impl `P(result)` — discharged by the alignment
+            //     alone, so the return types decide and are what the refusal names.
+            //   * spec `P(x)` / impl `P(x)` — matches with or without, so the binder
+            //     decides nothing and a differing return type is the general
+            //     signature question this pass does not ask (§8.7 / WI-935).
+            //   * spec `P(x)` / impl `P(result)` — matches under neither, so the
+            //     override genuinely weakens the postcondition; naming the return
+            //     types there would send the author to fix the wrong line, since
+            //     fixing it would not make the program load.
+            //
+            // COVARIANT, NOT EQUAL: an override may return a SUBTYPE of the spec's
+            // return, and a predicate about a value of the subtype is the same
+            // proposition — so the test is `impl_ret <: spec_ret`, the same
+            // `types_compatible` direction the effects leg uses.
+            //
+            // CONFIDENT-GROUND ONLY, FAIL-OPEN OTHERWISE — the same shape the
+            // effects leg below uses, and for the same reason. Refusing needs the
+            // two types to be KNOWN incompatible, and treating "cannot decide" as
+            // "differs" would re-refuse providers the pass cannot judge. σ is what
+            // makes the ordinary parametric case decidable: a spec returning its
+            // own parameter (`op(x: T) -> T`) grounds to the provision's binding
+            // (`-> Carrier`) before the comparison. What still fails open is a
+            // return type σ does not ground — a parameter the provision binds
+            // nothing to, or a higher-kinded one.
+            let mut ret_mismatch: Option<(String, String)> = None;
+            if result_binders.is_some() {
+                let impl_pre = user_precondition_clauses(kb, &impl_info.requires);
+                let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
+                let discharges = result_binder_discharges(
+                    kb,
+                    &impl_info.ensures,
+                    &spec_info.ensures,
+                    &full_align,
+                    &param_align,
+                ) || result_binder_discharges(
+                    kb,
+                    &impl_pre,
+                    &spec_pre,
+                    &full_align,
+                    &param_align,
+                );
+                if discharges {
                     let spec_ret = sigma_subst_effect(kb, &spec_info.return_type, &p.sigma);
                     let is_ground = |kb: &KnowledgeBase, v: &Value| {
                         matches!(v, Value::Term { id: t, .. } if !contains_type_param(kb, *t))
                     };
-                    let demonstrably_differ = is_ground(kb, &spec_ret)
-                        && is_ground(kb, &impl_info.return_type)
-                        && !views_structurally_equal(kb, &spec_ret, &impl_info.return_type);
-                    if !demonstrably_differ {
-                        match (
-                            super::region::resolve_op_result_sym(kb, spec_op),
-                            super::region::resolve_op_result_sym(kb, impl_op),
-                        ) {
-                            (Some(sr), Some(ir)) if ir != sr => {
-                                // `find_term`, not `alloc`: this only NAMES a term the
-                                // symbol table already holds alive, and `align` is a
-                                // local dropped each iteration with no decref, so
-                                // `alloc` would leak a refcount per pair.
-                                if let Some(sr_ref) = kb.find_term(&Term::Ref(sr)) {
-                                    a.push((ir, sr_ref));
-                                } else {
-                                    a.push((ir, kb.alloc(Term::Ref(sr))));
-                                }
-                            }
-                            (Some(_), Some(_)) => {}
-                            // NOT a silent skip. Every operation gets a `result`
-                            // binder at scan time, so a miss here means the symbol
-                            // was minted under a different prefix than the op's
-                            // qualified name, or lost its `OpResult` kind. The
-                            // consequence is the pre-fix bug verbatim — every
-                            // provider of an `ensures`-carrying spec op refused —
-                            // with nothing naming the cause, so say it.
-                            (s_r, i_r) => debug_assert!(
-                                false,
-                                "override refinement: no OpResult binder for {} (spec: {:?}, impl: {:?}); \
-                                 contract clauses over `result` cannot be compared and every \
-                                 provider of this spec op will be refused",
-                                kb.qualified_name_of(spec_op),
-                                s_r.is_some(),
-                                i_r.is_some(),
-                            ),
+                    if is_ground(kb, &spec_ret) && is_ground(kb, &impl_info.return_type) {
+                        let mut subst = Substitution::new();
+                        if !types_compatible(kb, &mut subst, &impl_info.return_type, &spec_ret) {
+                            ret_mismatch = Some((
+                                type_display_name_value(kb, &spec_ret),
+                                type_display_name_value(kb, &impl_info.return_type),
+                            ));
                         }
                     }
                 }
-                a
-            };
+            }
+
+            let align = full_align;
 
             // ── effects-⊆ (confident-ground only; fail-open otherwise) ──────
             let spec_effs: Vec<Value> = spec_info
@@ -31521,6 +31608,34 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                         });
                     }
                 }
+            }
+
+            // WI-20260822-59CDQ. The two `result`s denote values of different types,
+            // so no clause over `result` may be discharged across them — and
+            // reporting that as a weakened postcondition would name the clause the
+            // author wrote correctly rather than the signature that makes it
+            // undischargeable.
+            //
+            // REPORTED BESIDE THE CONTRACT LEGS, NOT INSTEAD OF THEM. The legs still
+            // run, and still run with the binder ALIGNED — which is what keeps the
+            // `result` clause from also reporting as a weakening, the double-report
+            // this error exists to replace. What that buys is the independent half:
+            // an override that mismatches its return type AND strengthens a
+            // precondition, or drops some unrelated spec `ensures`, now says both at
+            // once instead of revealing the second only after the first is fixed and
+            // the file reloaded.
+            if let Some((spec_ret, impl_ret)) = ret_mismatch {
+                errors.push(LoadError::IncompatibleOverride {
+                    carrier: kb.qualified_name_of(p.carrier).to_string(),
+                    spec: kb.qualified_name_of(p.spec).to_string(),
+                    op: sn.clone(),
+                    reason: format!(
+                        "the contract clause it restates from the spec is one over `result`, \
+                         and it returns `{impl_ret}` where the spec operation returns \
+                         `{spec_ret}` — a condition promised about `{spec_ret}` is not \
+                         discharged by one about `{impl_ret}`"
+                    ),
+                });
             }
 
             // ── contract refinement (requires/ensures, structural subset) ───
@@ -32081,6 +32196,44 @@ fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, T
         }
         other => other.clone(),
     }
+}
+
+/// WI-20260822-59CDQ — does aligning the RESULT binder actually DISCHARGE anything?
+///
+/// True iff some impl clause matches some spec clause under `with_result` (the param
+/// alignment plus the `<impl op>.result ↦ <spec op>.result` entry) and does NOT match
+/// under `params_only`. That is the exact condition the return-type guard in
+/// [`check_override_refinement`] needs: the binder alignment, and nothing else, is what
+/// made the two clauses compare equal, so the two `result`s must denote values of the
+/// same type for the discharge to mean anything.
+///
+/// Asked by RUNNING THE COMPARISON THE LEGS RUN — [`substitute_clause`] then
+/// [`views_structurally_equal`], twice — rather than by a hand-written "does this clause
+/// mention the binder" walk. A separate reader listing the carriers
+/// [`substitute_impl_params_alloc`] rewrites would drift from it the first time a
+/// carrier is added, and it would answer the WRONG QUESTION besides: a clause can
+/// mention `result` and still be refused for weakening the postcondition, and naming the
+/// return types there sends the author to a line whose repair would not load.
+fn result_binder_discharges(
+    kb: &mut KnowledgeBase,
+    impl_clauses: &[Value],
+    spec_clauses: &[Value],
+    with_result: &[(Symbol, TermId)],
+    params_only: &[(Symbol, TermId)],
+) -> bool {
+    for ic in impl_clauses {
+        let with = substitute_clause(kb, ic, with_result);
+        for sc in spec_clauses {
+            if !views_structurally_equal(kb, &with, sc) {
+                continue;
+            }
+            let without = substitute_clause(kb, ic, params_only);
+            if !views_structurally_equal(kb, &without, sc) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Apply a provision's σ (spec param symbol → binding) to a spec operation's
