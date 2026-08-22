@@ -1,0 +1,55 @@
+-- ================================================================
+-- guardians.tasks — the task operations, DERIVED from the one primitive.
+--
+-- `summarize` is not a host function. It builds a prompt and completes it, in
+-- anthill, so two things follow that did not before:
+--
+--   * THE PROMPT TEXT IS IN THE REPOSITORY — reviewable, diffable, versioned —
+--     instead of buried in a Rust closure.
+--   * THE LABEL ARITHMETIC IS VISIBLE. A Public instruction joined with
+--     Untrusted content is an Untrusted prompt, so the reply is Untrusted and
+--     the sink refuses it. Nothing about that is special-cased for summarizing.
+-- ================================================================
+namespace guardians
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Text, Prompt, Llm, Message, Observed, Model,
+                    prompt_with, join_texts, bodies_of}
+  import guardians.TrustLevel.{Untrusted, Public}
+
+  -- The quarantined summarizer. Its body is the whole dual-LLM pattern:
+  -- the instruction is trusted, the content is not, and the join decides.
+  --
+  -- MONOMORPHIC AT `Untrusted`, AND MEASURED, NOT PREFERRED. Writing it
+  -- label-polymorphic (`?t` in, `?t` out) does not type: two label-polymorphic
+  -- operations DO NOT COMPOSE. `Llm.complete` is `Prompt[?t] ->
+  -- Text[?t]`, and calling it from a caller that is itself polymorphic
+  -- in `?t` yields `Text[Trust = p.Trust]` — a PROJECTION of the parameter's
+  -- type rather than a binding of the caller's variable — and the return check
+  -- fails. The control: the identical dispatch with a GROUND argument label
+  -- loads clean. Filed as WI-20260822-1FKR2, with the minimal case (no
+  -- labels, no specs) in docs/measurements/op-type-var-does-not-thread.anthill.
+  --
+  -- It is honest here rather than a workaround: in this pipeline the summarizer
+  -- only ever sees mailbox text, which is Untrusted by construction. The
+  -- PRIMITIVE stays polymorphic, and that is where it earns its keep — the same
+  -- `complete` serves the Public generation prompt and this Untrusted one, with
+  -- the label deciding what may happen to each result.
+  operation summarize(llm: Llm, msgs: List[T = Text[Untrusted]])
+      -> Text[Untrusted]
+    effects {External, Model, Error} =
+      let content = join_texts(msgs)
+      let p = prompt_with(
+        instruction: text(raw: "Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable."),
+        content:     content)
+      llm.complete(p)
+
+  -- The observation channel. Still host-bound, and for a reason worth stating:
+  -- its job is to PARSE the reply into the closed `Feature` vocabulary, and a
+  -- reply naming anything outside it must be refused at the boundary. That
+  -- parse is the enforcement `observe.anthill` describes; doing it in anthill
+  -- needs string machinery this example does not yet have, so the check lives
+  -- in the host binding and is the example's largest remaining fiction.
+  operation observe(llm: Llm, m: Message[Untrusted])
+      -> List[T = Observed]
+    effects {External, Model, Error}
+end

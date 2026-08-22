@@ -1,0 +1,24 @@
+-- THE TEST, isolated so one error does not mask the other.
+enum smoke.g.Level
+  entity Untrusted
+  entity Public
+end
+enum smoke.g.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+namespace smoke.g
+  import anthill.prelude.{Unit, String}
+  import smoke.g.Level.{Untrusted, Public}
+  import smoke.g.Text
+
+  operation fetch() -> Text[L = Untrusted]
+  operation summarize(body: Text[L = ?l]) -> Text[L = ?l]
+  operation sendPublic(body: Text[L = Public]) -> Unit
+
+  -- Summarizing must NOT launder: this is Meijer's exfiltration, and it
+  -- must be refused THROUGH the summarizer.
+  operation leak() -> Unit =
+    sendPublic(summarize(fetch()))
+end

@@ -271,8 +271,18 @@ fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
 /// [`op_boundary_effects`] can resolve it LAZILY — only when the result-region or
 /// callback-param arm actually fires — instead of the caller resolving it eagerly
 /// for every typed op (the common effect-free op never needs it).
-fn resolve_op_result_sym(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
-    kb.try_resolve_symbol(&format!("{}.result", kb.qualified_name_of(op_sym)))
+/// WI-1122-era note: `pub(crate)` because [`crate::kb::typing`]'s override-refinement
+/// pass needs the same symbol to align a spec op's result binder with an override's
+/// (contract clauses over `result` are otherwise incomparable — the two binders are
+/// distinct symbols). One resolver rather than two spellings of the same `format!`.
+pub(crate) fn resolve_op_result_sym(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    let sym = kb.try_resolve_symbol(&format!("{}.result", kb.qualified_name_of(op_sym)))?;
+    // The NAME is not the property; the KIND is. `<op>.<param>.result` is minted
+    // for a callback's result with kind `CallbackResult`, and a type parameter
+    // spelled `result` merges into the same symbol via `define`'s add_kind path,
+    // so a lookalike must not be treated as the op's own binder — the rule
+    // `region::result_region_is_kind_not_spelling` pins.
+    kb.is_result_binder(sym).then_some(sym)
 }
 
 /// Operation-boundary effect masking (WI-314 + WI-353). Given the body's

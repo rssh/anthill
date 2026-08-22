@@ -1,0 +1,19 @@
+-- SMOKE D3: is a COMPUTED region admissible in Modify[...]?
+namespace smoke.frame
+  import anthill.prelude.{Unit, String, List, Modify, Modifiable}
+
+  sort FileSystem
+  end
+
+  fact Modifiable[T = FileSystem]
+
+  operation glob(pattern: String) -> List[T = String]
+
+  -- (a) control: a plain PARAMETER region (the Cell idiom, known to work)
+  operation touch(fs: FileSystem) -> Unit
+    effects Modify[fs]
+
+  -- (b) THE QUESTION: an APPLICATION in the region slot
+  operation delete_files(fs: FileSystem, pattern: String) -> Unit
+    effects Modify[glob(pattern)]
+end

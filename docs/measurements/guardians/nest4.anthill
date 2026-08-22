@@ -1,0 +1,24 @@
+enum nest4.Trust
+  entity Untrusted
+  entity Public
+end
+enum nest4.Text
+  import anthill.prelude.{String}
+  sort Trust = ?
+  entity text(raw: String)
+end
+enum nest4.Message
+  import anthill.prelude.{String}
+  sort Trust = ?
+  entity message(raw: String)
+end
+namespace nest4
+  import anthill.prelude.{String, List, Unit}
+  import nest4.Trust.{Untrusted, Public}
+  import nest4.{Text, Message}
+  operation fetch_one() -> Message[Trust = Untrusted]
+  operation sum_flat(m: Text[Trust = ?t]) -> Text[Trust = ?t]
+  operation sink(body: Text[Trust = Public]) -> Unit
+  -- FLAT sort mismatch: Message where Text is expected
+  operation leak() -> Unit = sink(sum_flat(fetch_one()))
+end

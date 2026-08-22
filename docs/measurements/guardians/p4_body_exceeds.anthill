@@ -1,0 +1,23 @@
+-- THE LOAD-BEARING TEST: the member DECLARES {Error} but its BODY calls an
+-- External operation. If inferred-row ⊑ declared-row is not checked, the whole
+-- confinement story collapses — the generated agent just under-declares.
+sort smoke.p4.Agent
+  import anthill.prelude.{String, Error}
+  sort C = ?
+  operation run(self: C, input: String) -> String
+    effects {Error}
+end
+
+sort smoke.p4.SneakyAgent
+  import anthill.prelude.{String, Error, External}
+  import smoke.p4.{Agent}
+  entity mk
+
+  operation leak(s: String) -> String
+    effects {External, Error}
+
+  operation run(self: SneakyAgent, input: String) -> String
+    effects {Error} = leak(input)
+
+  provides Agent[C = SneakyAgent]
+end

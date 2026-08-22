@@ -1,0 +1,16 @@
+-- THE TEST: a provider whose operation row EXCEEDS the spec's.
+sort smoke.p2.Agent
+  import anthill.prelude.{String, Error}
+  sort C = ?
+  operation run(self: C, input: String) -> String
+    effects {Error}
+end
+
+sort smoke.p2.LeakyAgent
+  import anthill.prelude.{String, Error, External}
+  import smoke.p2.{Agent}
+  entity mk
+  operation run(self: LeakyAgent, input: String) -> String
+    effects {Error, External} = input
+  provides Agent[C = LeakyAgent]
+end

@@ -1,0 +1,78 @@
+-- ================================================================
+-- guardians.classify — WHAT COUNTS AS SUSPICIOUS.
+--
+-- Rules in the KB, not a prompt: versioned, queryable, testable. The model
+-- never emits a verdict; it emits `Observed` atoms and the verdict is DERIVED.
+--
+-- LIBRARY / FIXTURE BOUNDARY. Everything here is solution. This file asserts
+-- NO fact about any particular message, and `lib/` loads standalone with no
+-- fixture present — enforced by `lib_loads_without_any_fixture`. The two
+-- relations below are DECLARED here (so the rules that read them resolve) and
+-- POPULATED by whoever supplies data: a deployment from a real mailbox and
+-- address book, `fixtures/` from the article's inbox. An earlier draft had
+-- this backwards — the corroborators were asserted as ground facts in the
+-- fixture, which meant deleting the test data stopped the library loading.
+-- ================================================================
+namespace guardians
+  import anthill.prelude.{String, Bool}
+  import guardians.{MessageId, Message, Address, Mailbox, Observed, Span, Feature}
+  import guardians.Feature.{ForwardingInstruction, SecrecyInstruction,
+                            CredentialRequest, PaymentRedirect,
+                            UrgencyAppeal, InvestmentPitch, MeetingInvite}
+  import guardians.TrustLevel.{Untrusted}
+
+  -- ---- the two inputs a deployment supplies ----
+
+  -- What the mailbox holds. In a deployment this is what `fetch_mail` returned.
+  entity InMailbox(box: Mailbox, message: Message[Untrusted])
+
+  -- The owner's address book.
+  entity KnownContact(address: Address)
+
+  -- ---- what the library derives from them ----
+
+  rule fetched_message(?id)
+    :- InMailbox(box: ?,
+                 message: message(id: ?id, from: ?, reply_to: ?,
+                                  subject: ?, body: ?))
+
+  -- Which features are manipulative. A judgement, but a DECLARED one — written
+  -- once, reviewable, and not restated in every prompt.
+  fact manipulative(ForwardingInstruction)
+  fact manipulative(SecrecyInstruction)
+  fact manipulative(CredentialRequest)
+  fact manipulative(PaymentRedirect)
+
+  -- A verdict NEVER rests on the model alone. Each corroborator is COMPUTED
+  -- from the message with no model in the loop, so an observation that is wrong
+  -- or injected cannot carry a verdict by itself.
+  rule sender_not_in_contacts(?id)
+    :- InMailbox(box: ?,
+                 message: message(id: ?id, from: ?a, reply_to: ?,
+                                  subject: ?, body: ?)),
+       not(KnownContact(address: ?a))
+
+  rule reply_to_differs_from_from(?id)
+    :- InMailbox(box: ?,
+                 message: message(id: ?id, from: ?a, reply_to: ?r,
+                                  subject: ?, body: ?)),
+       not(eq(?a, ?r))
+
+  rule corroborated(?m) :- sender_not_in_contacts(?m)
+  rule corroborated(?m) :- reply_to_differs_from_from(?m)
+
+  -- THE CLASSIFICATION. Model atom AND declared judgement AND a computed
+  -- corroborator — three independent conditions for one verdict.
+  rule classified(?m, "Suspicious")
+    :- observed_feature(?m, ?f), manipulative(?f), corroborated(?m)
+
+  rule classified(?m, "Ordinary")
+    :- fetched_message(?m), not(suspicious(?m))
+
+  rule suspicious(?m) :- classified(?m, "Suspicious")
+
+  -- Bridge from the model's span-anchored atom to the feature alone. Kept
+  -- separate so the span can be checked independently of the verdict.
+  rule observed_feature(?m, ?f)
+    :- Observed(at: Span(message: ?m, start: ?, end: ?, quote: ?), feature: ?f)
+end

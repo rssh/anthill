@@ -1,0 +1,29 @@
+-- ================================================================
+-- FIXTURE — REFUSED because CODE GENERATION MAY NOT READ CONTENT.
+--
+-- This is the attack the whole staging argument rests on, and until
+-- `Harness.generate` demanded `Prompt[Public]` nothing stopped it: build the
+-- generation prompt out of the mailbox, and the agent that gets written is an
+-- agent an injected email had a hand in designing. Every downstream check
+-- still runs on the result — but the attacker is now shaping what gets
+-- checked, and "generation is blind to content" was prose.
+--
+-- `prompt_with(instruction: Public, content: ?t) -> Prompt[?t]` makes the
+-- prompt Untrusted the moment mailbox text enters it, and `generate` will not
+-- take one. Refused at the point of construction, not at the point of use.
+-- ================================================================
+sort guardians.agent.ContentPrimedGenerator
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Mailbox, Text, Prompt, Llm, Harness, Source, Model,
+                    fetch_mail, bodies_of, join_texts, prompt_with}
+  entity mk
+
+  operation build(self: ContentPrimedGenerator, box: Mailbox,
+                  h: Harness, llm: Llm) -> Source
+    effects {External, Model, Error} =
+      let msgs = fetch_mail(box)
+      let p = prompt_with(
+        instruction: text(raw: "Given these emails, write me a triage agent."),
+        content:     join_texts(bodies_of(msgs)))
+      h.generate(llm, p)
+end

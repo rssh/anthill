@@ -1,0 +1,115 @@
+-- ================================================================
+-- guardians.vocabulary — the data sorts and the non-model tools.
+--
+-- Nothing here is a new language feature. `Text` is an ordinary sort
+-- with an ordinary type parameter; the only unusual thing is WHAT the
+-- parameter ranges over — a trust level rather than an element type.
+-- Because anthill type arguments carry logical variables and unify,
+-- that one choice is the whole information-flow mechanism.
+-- ================================================================
+
+-- The trust lattice. Two points is all this example needs; an n-point
+-- lattice would cost O(n^2) coercions (docs/design/high-level-api.md D2).
+enum guardians.TrustLevel
+  entity Untrusted            -- came from outside; may be attacker-authored
+  entity Public               -- cleared to leave the system
+end
+
+-- Text, labelled by where it came from. `Trust` is the parameter SLOT;
+-- `TrustLevel` is the sort its arguments inhabit.
+enum guardians.Text
+  import anthill.prelude.{String}
+  sort Trust = ?
+  entity text(raw: String)
+end
+
+-- A message, labelled the same way: subject and body from one message
+-- are equally trusted.
+enum guardians.Message
+  import guardians.{Text, Address, MessageId}
+  sort Trust = ?
+  entity message(
+    id       : MessageId,
+    from     : Address,
+    reply_to : Address,
+    subject  : Text[Trust],
+    body     : Text[Trust])
+end
+
+-- An unforgeable declassification token. NO entity constructor, so no
+-- generated code can build one — authority lives in the value (054).
+sort guardians.Approval
+end
+
+-- A project-defined effect label: "this operation consults a model."
+-- Not a kernel effect (it is authority, not semantics — docs/design/
+-- effects.md), so it lives as project vocabulary.
+sort guardians.Model
+end
+
+-- A second project effect: touching the filesystem. Present so the row
+-- checks have a label to widen BY that is not `Modify` — a `Modify[p]`
+-- target is not compared by the refinement check (measured: C9).
+sort guardians.Filesystem
+end
+
+namespace guardians
+  import anthill.prelude.{String, List, Unit, Error, External, Effect}
+  import guardians.TrustLevel.{Untrusted, Public}
+  import guardians.{Text, Message, Approval, Model, Filesystem}
+
+  fact Effect[T = Model]
+  fact Effect[T = Filesystem]
+
+  entity MessageId(value: String)
+  entity Address(local: String, domain: String)
+  entity Mailbox(owner: Address)
+
+  -- The report SPLITS enumeration from prose. `items` is one Verdict per
+  -- fetched message, built by iterating the list `fetch_mail` returned —
+  -- the model never constructs it and therefore cannot drop a row from
+  -- it. That is what defeats the injection's CONCEALMENT half, which
+  -- freezing a tool sequence does not touch (docs/design/two-flows.md §1.3).
+  entity Verdict(message: MessageId, label: String)
+  entity Report(items: List[T = Verdict], summary: Text[Untrusted])
+
+  -- ---------------- tools that consult no model ----------------
+
+  -- The source. The label is fixed by the SIGNATURE, which is the only
+  -- place it can enter (measured: C6).
+  operation fetch_mail(box: Mailbox) -> List[T = Message[Untrusted]]
+    effects {External, Error}
+
+  -- Projection: a message's body carries the message's label.
+  -- NB NOT optional sugar. Without it a generated agent writes
+  -- `summarize(fetch_mail(box))`, and a sort mismatch against a parameter
+  -- containing a type variable is currently accepted SILENTLY (measured:
+  -- C7), leaving the label variable free to bind `Public` at the sink.
+  operation bodies_of(msgs: List[T = Message[?t]])
+      -> List[T = Text[?t]]
+
+  -- One Verdict per message, in the order given. This is the operation an
+  -- agent MUST call to satisfy `ensures mentions_all(result)`: the enumeration
+  -- is derived from the fetched list, so a generated body cannot drop a row
+  -- from it, which is what defeats the injection's CONCEALMENT half. An agent
+  -- that fabricates `items` instead fails the postcondition.
+  operation verdicts_of(msgs: List[T = Message[?t]]) -> List[T = Verdict]
+
+  -- The sink. `Public` is FIXED, so nothing untrusted can reach it.
+  operation send_email(to: Address, body: Text[Public]) -> Unit
+    effects {External, Error}
+
+  -- Widening is always safe and needs no licence.
+  operation widen(body: Text[Public]) -> Text[Untrusted]
+
+  -- The only route the other way, and it needs the token.
+  operation declassify(body: Text[Untrusted], approval: Approval)
+      -> Text[Public]
+
+  -- The recipient is chosen WITHOUT consulting a model. `-Model` is the
+  -- claim that defeats the article's attack at its root: the injection's
+  -- whole strategy is to make a model name `it@othercorp.com`.
+  -- NB the space in `{ -Model }` is REQUIRED: `{-` opens a block comment.
+  operation choose_recipient(r: Report, box: Mailbox) -> Address
+    effects { -Model }
+end

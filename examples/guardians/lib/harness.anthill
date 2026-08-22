@@ -1,0 +1,148 @@
+-- ================================================================
+-- guardians.harness — THE GENERATION LOOP, as declarations.
+--
+-- The harness is the only component that touches both the KB-as-data and the
+-- model. It renders the task from the trusted declarations, completes it,
+-- takes the reply as a candidate program, and checks it. The effect rows say
+-- which half is trusted:
+--
+--   render_task  {Error}                    reads declarations; no model
+--   Llm.complete {External, Model, Error}   the untrusted step
+--   check        {External, Error, -Model}  provably not steerable
+--
+-- `-Model` on the checker is the answer to "who guards the guard". A verifier
+-- that could itself be steered by a model is as manipulable as the thing it
+-- verifies.
+-- ================================================================
+
+-- A candidate program. Opaque and unverified: the ONLY thing that can be done
+-- with a `Source` is submit it to a `Checker`.
+--
+-- NOTE WHAT IT IS NOT: `Source` carries no trust LABEL, and that is deliberate.
+-- Taint asks "did attacker-controlled data influence this value?" — and for a
+-- program generated from a Public prompt the answer is NO. Unverified-ness is a
+-- different axis, and it rides on the type being opaque rather than on a label.
+-- Labelling generated code `Untrusted` would assert something false.
+sort guardians.Source
+  import anthill.prelude.{String}
+  entity source(text: String)
+end
+
+enum guardians.CheckResult
+  import anthill.prelude.{String, List}
+  -- The verdict a proof could cite (docs/design/high-level-api.md §4).
+  entity Accepted(carrier: String)
+  -- Prose, on purpose: a model repairs from a diagnostic better than from a
+  -- structured record, and these are fed straight back as `feedback`.
+  entity Rejected(diagnostics: List[T = String])
+end
+
+sort guardians.Harness
+  import anthill.prelude.{String, List, Error}
+  import guardians.{Prompt, Source, Text, Model, Llm}
+  import guardians.TrustLevel.{Public, Untrusted}
+
+  sort C = ?
+
+  -- Build the generator's prompt FROM THE TRUSTED DECLARATIONS. `Public` is
+  -- the claim that generation is blind to content, stated as a type rather
+  -- than as prose: no message can reach a prompt built out of declarations.
+  --
+  -- Reading the KB rather than transcribing it is the point — a hand-written
+  -- prompt goes stale against a changed signature SILENTLY, and the model then
+  -- codes against an interface the checker will not accept.
+  operation render_task(self: C, spec: String, tools: List[T = String],
+                        feedback: List[T = String]) -> Prompt[Public]
+    effects {Error}
+
+  -- CODE GENERATION MAY ONLY PROCEED FROM A CONTENT-FREE PROMPT, and this
+  -- signature is the whole of that claim.
+  --
+  -- `Prompt[Public]` is not decoration. It is the ONLY consumer of the label
+  -- on a prompt, and without it the label would be produced and never read —
+  -- `render_task` would return `Prompt[Public]` and nothing would check it.
+  -- With it, a generation prompt built from mailbox text is `Prompt[Untrusted]`
+  -- and does not type here: an agent whose CODE was written under the influence
+  -- of an injected email cannot be produced at all.
+  --
+  -- That is the difference between generation and every other model call in
+  -- this pipeline. `summarize` may read untrusted content — its OUTPUT is
+  -- confined. Generation may not, because its output is a PROGRAM, and a
+  -- program's confinement is the check, not a label.
+  --
+  -- The reply is `Untrusted` (a model's output always is), and `Source` carries
+  -- no label at all: unverified-ness is a different axis, riding on the type
+  -- being opaque with `Checker.check` its only elimination.
+  operation generate(self: C, llm: Llm, p: Prompt[Public]) -> Source
+    effects {External, Model, Error}
+end
+
+sort guardians.Checker
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Source, CheckResult, Model}
+
+  sort C = ?
+
+  -- Loads the candidate ALONGSIDE the trusted declarations and runs every
+  -- check: namespace isolation, types (taint), row conformance against the
+  -- spec (capability), and the contract legs. `External` because it touches
+  -- the loader and the filesystem; `-Model` because the guard must not be
+  -- steerable.
+  operation check(self: C, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model}
+end
+
+namespace guardians
+  import anthill.prelude.{String, List, Error, External}
+  import guardians.{Harness, Checker, Llm, Source, CheckResult, Model}
+
+  -- ONE ROUND of the loop: render, complete, check. The repair loop is the
+  -- caller's — `Rejected`'s diagnostics are exactly what `render_task` takes
+  -- as `feedback` on the next round, which is why the signature carries it.
+  operation attempt(h: Harness, llm: Llm, chk: Checker,
+                    spec: String, tools: List[T = String],
+                    feedback: List[T = String]) -> CheckResult
+    effects {External, Model, Error} =
+      let p = h.render_task(spec, tools, feedback)
+      chk.check(h.generate(llm, p), spec)
+end
+
+-- Carriers.
+sort guardians.FileHarness
+  import anthill.prelude.{String, List, Error}
+  import guardians.{Harness, Prompt, Source, Text, Llm, Model}
+  import guardians.TrustLevel.{Public, Untrusted}
+  entity file_harness(lib_dir: String)
+  operation render_task(self: FileHarness, spec: String, tools: List[T = String],
+                        feedback: List[T = String]) -> Prompt[Public]
+    effects {Error}
+  operation generate(self: FileHarness, llm: Llm, p: Prompt[Public]) -> Source
+    effects {External, Model, Error}
+  provides Harness
+end
+
+sort guardians.LoadChecker
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Checker, Source, CheckResult, Model}
+  entity load_checker(lib_dir: String)
+  operation check(self: LoadChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model}
+  provides Checker
+end
+
+namespace guardians
+  import guardians.{FileHarness, LoadChecker}
+
+  provides FileHarness language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map {
+      render_task: "guardians_render_task",
+      generate:    "guardians_generate"
+    }
+  end
+
+  provides LoadChecker language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map { check: "guardians_check" }
+  end
+end

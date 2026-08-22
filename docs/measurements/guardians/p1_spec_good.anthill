@@ -1,0 +1,16 @@
+-- The SPEC: the task as an algebra. CONTROL — a conforming provider.
+sort smoke.p1.Agent
+  import anthill.prelude.{String, Error}
+  sort C = ?
+  operation run(self: C, input: String) -> String
+    effects {Error}
+end
+
+sort smoke.p1.GoodAgent
+  import anthill.prelude.{String, Error}
+  import smoke.p1.{Agent}
+  entity mk
+  operation run(self: GoodAgent, input: String) -> String
+    effects {Error} = input
+  provides Agent[C = GoodAgent]
+end

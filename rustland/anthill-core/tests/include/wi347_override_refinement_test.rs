@@ -245,3 +245,111 @@ fn override_matching_contract_loads() {
         "matching precondition/postcondition on spec and override should load clean; got: {errs:?}"
     );
 }
+
+// ── result-binder alignment (the C8 fix) ────────────────────────────────
+//
+// `result` is defined per operation as `<op>.result` (proposal 041), so the
+// spec's binder and the override's are DIFFERENT symbols. The contract legs
+// compare clauses structurally, so before the alignment landed no clause
+// mentioning `result` could ever match — and a spec operation carrying ANY
+// `ensures` therefore had NO POSSIBLE PROVIDER, even one restating the
+// postcondition verbatim.
+//
+// WHICH TESTS FAIL IF THE ALIGNMENT IS BACKED OUT: only the first of the three
+// below. `override_matching_result_postcondition_loads` goes red; the other two
+// pass either way BY DESIGN and are here to stop the first from being satisfied
+// by an alignment that merely disabled the leg in the result position — one
+// pins that a genuinely different postcondition is still refused, the other
+// that a mismatched return type is still refused. The pre-existing
+// `override_matching_contract_loads` above passes either way too: its clauses
+// range over a PARAMETER, which the parameter zip already aligned.
+
+#[test]
+fn override_matching_result_postcondition_loads() {
+    // THE C8 CASE. Verbatim restatement of a `result`-mentioning postcondition.
+    // Fails when the result-binder alignment is removed.
+    let src = r#"
+        namespace wi347.result_ok
+          import anthill.prelude.{Int64}
+          import anthill.prelude.Ord.{gt}
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T ensures gt(result, 0)
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier ensures gt(result, 0) = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.is_empty(),
+        "an override restating the spec's `result` postcondition verbatim must load; got: {errs:?}"
+    );
+}
+
+#[test]
+fn override_weaker_result_postcondition_is_refused() {
+    // CONTROL for the above: the alignment must not turn the postcondition leg
+    // into a no-op in the result position. A DIFFERENT clause over `result` is
+    // still a weakening.
+    let src = r#"
+        namespace wi347.result_weak
+          import anthill.prelude.{Int64}
+          import anthill.prelude.Ord.{gt, lt}
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T ensures gt(result, 0)
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier ensures lt(result, 0) = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("weakens the postcondition")),
+        "a different `result` postcondition must still be refused; got: {errs:?}"
+    );
+}
+
+#[test]
+fn result_alignment_requires_the_return_types_to_agree() {
+    // CONTROL for the SOUNDNESS side (WI-20260822-59CDQ). This pass never
+    // compares return types — kernel-language.md §8.7 says so, and that is
+    // WI-935's scope — so aligning the binders unconditionally would let an
+    // IDENTICAL `ensures P(result)` match across two different return types,
+    // discharging a postcondition about a value of the wrong type.
+    //
+    // BOTH RETURN TYPES ARE GROUND HERE, DELIBERATELY. The guard decides only
+    // when it can: two ground types that differ. A spec returning its own type
+    // parameter is not comparable against a carrier's concrete type without a σ
+    // story this pass does not have, so that case FAILS OPEN and the hole
+    // remains open there — recorded on WI-20260822-59CDQ rather than papered
+    // over, because treating "cannot decide" as "differs" would re-refuse every
+    // parametric provider, which is the C8 bug one case narrower.
+    let src = r#"
+        namespace wi347.result_ret_mismatch
+          import anthill.prelude.{Int64, Bool}
+          import anthill.prelude.Ord.{gt}
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> Int64 ensures gt(result, 0)
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Bool ensures gt(result, 0) = true
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("weakens the postcondition")),
+        "an identical `result` clause must NOT be discharged across differing return types; got: {errs:?}"
+    );
+}

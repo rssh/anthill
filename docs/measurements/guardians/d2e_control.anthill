@@ -1,0 +1,10 @@
+-- CONTROL: does the call-site typer run at all? A blatant sort mismatch.
+namespace smoke.e
+  import anthill.prelude.{Unit, String, Int64}
+
+  operation number() -> Int64
+  operation takesString(s: String) -> Unit
+
+  operation blatant() -> Unit =
+    takesString(number())
+end

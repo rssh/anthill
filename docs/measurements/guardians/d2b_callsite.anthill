@@ -1,0 +1,34 @@
+-- SMOKE D2b: does the operation `requires` GATE A CALL SITE?
+enum smoke.b.Level
+  entity Untrusted
+  entity Public
+end
+
+enum smoke.b.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+
+namespace smoke.b
+  import anthill.prelude.{Unit, String}
+  import smoke.b.Level.{Untrusted, Public}
+  import smoke.b.Text
+  import smoke.b.Text.{mk}
+
+  fact flows_to(Public, Public)
+  fact flows_to(Untrusted, Untrusted)
+  -- ABSENT: flows_to(Untrusted, Public)
+
+  operation send(body: Text[L = ?l]) -> Unit
+    requires flows_to(?l, Public)
+
+  -- THE TEST: pass an UNTRUSTED text to a sink that requires Public.
+  -- If `requires` gates the call site, this must NOT load.
+  operation leak() -> Unit =
+    send(mk[L = Untrusted](raw: "secret"))
+
+  -- CONTROL: the same call with a Public label must load either way.
+  operation ok() -> Unit =
+    send(mk[L = Public](raw: "harmless"))
+end

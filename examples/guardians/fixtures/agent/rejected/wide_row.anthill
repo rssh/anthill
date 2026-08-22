@@ -1,0 +1,23 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY THE DECLARED ROW.
+--
+-- Leaks nothing. Identical to ../good.anthill except for `Filesystem` in the
+-- effect row — one token — so a refusal here measures the row and nothing else.
+-- Keeping it separate from leak.anthill is what shows the two chains are
+-- INDEPENDENT: neither test would catch the other's program.
+-- ================================================================
+sort guardians.agent.WideRowTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Model, Filesystem, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of}
+  entity mk
+
+  operation run(self: WideRowTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Filesystem, Error} =
+      let msgs = fetch_mail(box)
+      Report(items:   verdicts_of(msgs),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = WideRowTriage]
+end

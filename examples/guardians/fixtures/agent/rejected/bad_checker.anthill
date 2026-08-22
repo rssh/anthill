@@ -1,0 +1,33 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` implementation, REFUSED BY `-Model`.
+--
+-- The design's sharpest claim, and one no carrier discipline alone can make:
+-- the checker must PROVABLY not consult a model, or the guard is as steerable
+-- as the thing it guards.
+--
+-- The attack is realistic rather than contrived. `Checker.check` is handed no
+-- Llm, so a generated checker cannot reach a model through its parameters —
+-- authority in values, working as intended. So this one SMUGGLES ONE IN ITS
+-- OWN CARRIER (`entity mk(llm: Llm)`) and reaches it through `self`.
+--
+-- That defeats the parameter discipline and is caught anyway, by a different
+-- leg from wide_row.anthill: the row it DECLARES is the spec's, and it is the
+-- row INFERRED FROM THE BODY that carries `Model`. An earlier version of this
+-- fixture never called the Llm at all — it just declared `Model` — so it
+-- duplicated wide_row's declared-row check and left this leg untested.
+-- ================================================================
+sort guardians.agent.SteerableChecker
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Checker, Source, CheckResult, Model, Llm, Text, bodies_of, summarize}
+  import guardians.CheckResult.{Accepted}
+
+  -- The smuggled authority.
+  entity mk(llm: Llm)
+
+  operation check(self: SteerableChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model} =
+      let advice = summarize(self.llm, [])
+      Accepted(carrier: "the model said it was fine")
+
+  provides Checker[C = SteerableChecker]
+end

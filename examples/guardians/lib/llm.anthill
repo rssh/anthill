@@ -1,0 +1,100 @@
+-- ================================================================
+-- guardians.llm — THE PRIMITIVE. One call: text in, text out.
+--
+-- This is what an LLM API actually is, and it is the example's ONLY
+-- task-agnostic model surface. `summarize` and `observe` are ordinary anthill
+-- operations built on top (tasks.anthill), not separate host functions — a
+-- real integration binds one HTTP call, not one function per task.
+-- ================================================================
+
+-- A prompt is a VALUE, and it carries a trust label. That is not bookkeeping:
+-- the injection IS prompt content, so making the prompt a value makes the
+-- attack surface a value.
+enum guardians.Prompt
+  import guardians.{Text}
+  sort Trust = ?
+  entity prompt(body: Text[Trust])
+end
+
+sort guardians.Llm
+  import anthill.prelude.{Error, External}
+  import guardians.{Prompt, Text, Model}
+  import guardians.TrustLevel.{Untrusted}
+
+  sort C = ?
+
+  -- ANY prompt in; the reply is ALWAYS `Untrusted`. Never `?t` out.
+  --
+  -- This signature was `?t` in, `?t` out for one revision, and it was WRONG in
+  -- a way that had a working exploit. `Public` means "cleared to leave the
+  -- system", so a Public prompt yielding Public text let a model MINT
+  -- releasable output, and this loaded clean:
+  --
+  --     send_email(to: attacker,
+  --                body: llm.complete(prompt_with(instruction: "…", content: "")))
+  --
+  -- The mistake was conflating two things the label was carrying. Preserving a
+  -- label is right for a PURE transformation — whatever went in comes out. A
+  -- model is not one: its output is arbitrary text it chose, so the model
+  -- itself is an untrusted influence and belongs in the join.
+  -- `?t ⊔ Model = Untrusted` for every `?t`, which is why the output is fixed.
+  --
+  -- What the input label still buys: nothing here, and that is honest. It is
+  -- kept polymorphic so the operation ACCEPTS both a Public generation prompt
+  -- and an Untrusted summarization one, rather than needing two declarations.
+  operation complete(self: C, p: Prompt[?t]) -> Text[Untrusted]
+    effects {External, Model, Error}
+end
+
+sort guardians.LiveLlm
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Llm, Prompt, Text, Model}
+  import guardians.TrustLevel.{Untrusted}
+  entity live_llm(endpoint: String, model: String)
+  operation complete(self: LiveLlm, p: Prompt[?t]) -> Text[Untrusted]
+    effects {External, Model, Error}
+  provides Llm
+end
+
+sort guardians.FakeLlm
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Llm, Prompt, Text, Model}
+  import guardians.TrustLevel.{Untrusted}
+  entity fake_llm(fixture: String)
+  operation complete(self: FakeLlm, p: Prompt[?t]) -> Text[Untrusted]
+    effects {External, Model, Error}
+  provides Llm
+end
+
+namespace guardians
+  import anthill.prelude.{String, List}
+  import guardians.{Text, Prompt, LiveLlm, FakeLlm}
+  import guardians.TrustLevel.{Public}
+
+  -- THE LATTICE JOIN, and the one place a label is DECIDED.
+  --
+  -- A trusted instruction plus untrusted content makes an untrusted prompt.
+  -- For this two-point lattice the arithmetic is exact: `Public` is bottom, so
+  -- `Public ⊔ ?t = ?t` and the variable carries the answer with no ordering
+  -- machinery. An n-point lattice would need the general join, which the
+  -- label slot cannot express while it stays invariant — though variance IS
+  -- declarable (`fact Covariant(sort: Text, param: Trust)` over a provides-chain
+  -- of levels), which would give the ordering directly. Measured, and the
+  -- correction to an earlier claim: docs/design/measured.md C4.
+  operation prompt_with(instruction : Text[Public],
+                        content     : Text[?t]) -> Prompt[?t]
+
+  -- Concatenation preserves the label of its parts.
+  operation join_texts(parts: List[T = Text[?t]]) -> Text[?t]
+
+  -- ONE host function for the whole model surface, keyed per carrier.
+  provides LiveLlm language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map { complete: "guardians_live_complete" }
+  end
+
+  provides FakeLlm language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map { complete: "guardians_fake_complete" }
+  end
+end

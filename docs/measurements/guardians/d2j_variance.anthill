@@ -1,0 +1,24 @@
+-- SMOKE D2j: does entity-subtyping (§8.2) give variance in the label slot?
+enum smoke.j.Level
+  entity Untrusted
+  entity Public
+end
+enum smoke.j.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+namespace smoke.j
+  import anthill.prelude.{Unit, String}
+  import smoke.j.Level.{Untrusted, Public}
+  import smoke.j.{Text, Level}
+
+  operation banner() -> Text[L = Public]
+
+  -- The slot accepts the WHOLE sort. If the argument position is
+  -- covariant under entity subtyping, Text[L = Public] conforms.
+  operation sink(body: Text[L = Level]) -> Unit
+
+  operation widen_by_subtyping() -> Unit =
+    sink(banner())
+end

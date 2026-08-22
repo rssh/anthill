@@ -1,0 +1,27 @@
+-- SMOKE D2d: does the TYPE ARGUMENT gate the call site, with a control that
+-- proves the call-site typer runs at all.
+enum smoke.d.Level
+  entity Untrusted
+  entity Public
+end
+
+enum smoke.d.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+
+namespace smoke.d
+  import anthill.prelude.{Unit, String, Int64}
+  import smoke.d.Level.{Untrusted, Public}
+  import smoke.d.Text
+
+  operation fetch() -> Text[L = Untrusted]
+
+  -- (1) the sink FIXES the label to Public
+  operation sendPublic(body: Text[L = Public]) -> Unit
+
+  -- THE TEST: Untrusted into a Public-fixed slot.
+  operation leak() -> Unit =
+    sendPublic(fetch())
+end

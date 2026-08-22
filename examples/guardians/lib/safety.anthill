@@ -1,0 +1,67 @@
+-- ================================================================
+-- guardians.safety — where the three tiers COMPOSE.
+--
+-- The earlier tension in this design was "we use types, not proof — so
+-- what is the proof channel for?". This file is the answer, and it
+-- dissolves the question rather than choosing a side:
+--
+--     TYPES PRODUCE FACTS.  PROOFS CONSUME THEM.  SLD COMPOSES THEM.
+--
+-- The typer decides the per-implementation half — mechanically, totally,
+-- with no reification of the program. A solver decides the once-and-for-
+-- all half. Neither can do the other's job, and a plain rule joins them.
+--
+-- This is anthill's own idiom rather than a new mechanism: sort relations
+-- are facts, and proposal 022 already argues typing JUDGMENTS are facts
+-- (`TypeOf(occ, type)`). What is added here is the coarser grain — the
+-- VERDICT of a provision check — which is what a safety claim wants to
+-- cite. Emitting it as a FACT rather than as an opaque `ProofWitness`
+-- matters: a fact can be quantified over, joined and queried ("which
+-- agents are checked against Triage?", "is every deployed agent
+-- checked?"), and a certificate cannot.
+-- ================================================================
+namespace guardians
+  import anthill.prelude.{String}
+
+  -- ---- tier 1: the typer's verdict, as a relation ----
+  --
+  -- NOT YET EMITTED BY THE TYPER. The check runs on every load and already
+  -- knows the answer — it just discards the positive case and reports only
+  -- errors (`kb/typing.rs`, the override-refinement pass). Asserting this on a
+  -- clean check is the missing seam.
+  --
+  -- DECLARED HERE, ASSERTED NOWHERE IN `lib/`. An earlier draft named a sample
+  -- agent in this file, which put a fixture's identity inside the safety layer.
+  -- The relation is the library's; the rows are a deployment's.
+  entity Checked(carrier: String, spec: String)
+
+  -- ---- tier 2: the once-and-for-all half ----
+  --
+  -- "Every well-typed implementation against these tool signatures is
+  -- safe." A1..A3 of docs/design/measured.md show the typer refusing three
+  -- specific bad programs; they do NOT show it refuses all of them. That
+  -- gap is a theorem about the SIGNATURES, not about any implementation —
+  -- the right size for a solver, and what would justify trusting tier 1.
+  --
+  -- Left as an obligation on purpose: it has no proof yet, so
+  -- `agent_is_safe` below is currently underivable. That is the honest
+  -- state, and it is visible rather than assumed.
+  -- Declared, deliberately NOT asserted: there are no facts of this entity,
+  -- so `agent_is_safe` is currently UNDERIVABLE. The missing theorem is
+  -- visible in the KB as an unmet goal rather than hidden in prose — which
+  -- is the point of putting the tiers in one language.
+  entity ToolAlgebraSound(spec: String)
+
+  rule tool_algebra_sound(?spec)
+    :- ToolAlgebraSound(spec: ?spec)
+
+  -- ---- the composition ----
+  --
+  -- One ordinary rule. Tier 1 supplies a fact per implementation, tier 2 a
+  -- theorem per specification, and resolution joins them. `MetaCompose`
+  -- (proposal 030) is already the witness shape for exactly this: a proof
+  -- whose sub-witnesses were discharged by DIFFERENT tactics.
+  rule agent_is_safe(?impl, ?spec)
+    :- Checked(carrier: ?impl, spec: ?spec),
+       tool_algebra_sound(?spec)
+end

@@ -1,0 +1,32 @@
+-- SMOKE D2: can a taint level ride as a TYPE parameter carrying a logical
+-- variable, and can the operation's `requires` mention that variable?
+enum smoke.taint.Level
+  entity Untrusted
+  entity Public
+end
+
+enum smoke.taint.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+
+namespace smoke.taint
+  import anthill.prelude.{Unit, String}
+  import smoke.taint.Level.{Untrusted, Public}
+  import smoke.taint.Text
+  import smoke.taint.Text.{mk}
+
+  -- The lattice, as facts.
+  fact flows_to(Public, Public)
+  fact flows_to(Untrusted, Untrusted)
+  fact flows_to(Public, Untrusted)
+  -- deliberately ABSENT: flows_to(Untrusted, Public)
+
+  -- (a) the type-parameter variable in a parameter type
+  operation relay(body: Text[L = ?l]) -> Text[L = ?l]
+
+  -- (b) THE QUESTION: `requires` mentioning the TYPE-level variable
+  operation send(body: Text[L = ?l]) -> Unit
+    requires flows_to(?l, Public)
+end

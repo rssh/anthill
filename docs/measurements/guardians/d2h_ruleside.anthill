@@ -1,0 +1,22 @@
+-- SMOKE D2h: can a RULE BODY recover the label from a value's type?
+enum smoke.h.Level
+  entity Untrusted
+  entity Public
+end
+enum smoke.h.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+namespace smoke.h
+  import anthill.prelude.{Unit, String}
+  import smoke.h.Level.{Untrusted, Public}
+  import smoke.h.Text
+
+  fact flows_to(Public, Public)
+  fact flows_to(Untrusted, Untrusted)
+
+  -- WI-742 shape: a typed binding in a rule body that BINDS the type argument.
+  rule releasable(?x)
+    :- ?x: Text[L = ?l], flows_to(?l, Public)
+end

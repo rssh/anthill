@@ -1,0 +1,38 @@
+-- SMOKE D2c: labels introduced by OPERATION SIGNATURES (not constructor calls).
+enum smoke.c.Level
+  entity Untrusted
+  entity Public
+end
+
+enum smoke.c.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+
+namespace smoke.c
+  import anthill.prelude.{Unit, String}
+  import smoke.c.Level.{Untrusted, Public}
+  import smoke.c.Text
+  import smoke.c.Text.{mk}
+
+  fact flows_to(Public, Public)
+  fact flows_to(Untrusted, Untrusted)
+  -- ABSENT: flows_to(Untrusted, Public)
+
+  -- Sources: the label comes from the TOOL SIGNATURE.
+  operation fetch() -> Text[L = Untrusted]
+  operation banner() -> Text[L = Public]
+
+  -- The sink.
+  operation send(body: Text[L = ?l]) -> Unit
+    requires flows_to(?l, Public)
+
+  -- THE TEST: untrusted into a Public-only sink. Must NOT load if gated.
+  operation leak() -> Unit =
+    send(fetch())
+
+  -- CONTROL: public into the same sink. Must load either way.
+  operation ok() -> Unit =
+    send(banner())
+end

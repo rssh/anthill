@@ -1,0 +1,19 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` implementation, ACCEPTED.
+--
+-- CONTROL for rejected/bad_checker.anthill. Same shape, same spec, same row —
+-- and no route to a model. `Checker.check` is declared `-Model`, and this one
+-- honours it because there is nothing in scope that could consult one.
+-- ================================================================
+sort guardians.agent.HonestChecker
+  import anthill.prelude.{String, Error, External}
+  import guardians.{Checker, Source, CheckResult}
+  import guardians.CheckResult.{Accepted}
+  entity mk
+
+  operation check(self: HonestChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model} =
+      Accepted(carrier: "checked")
+
+  provides Checker[C = HonestChecker]
+end

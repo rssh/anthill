@@ -1,0 +1,27 @@
+-- Is the leak caused by a MISMATCHED ELEMENT SORT passing silently?
+enum nest3.Trust
+  entity Untrusted
+  entity Public
+end
+enum nest3.Text
+  import anthill.prelude.{String}
+  sort Trust = ?
+  entity text(raw: String)
+end
+enum nest3.Message
+  import anthill.prelude.{String}
+  sort Trust = ?
+  entity message(raw: String)
+end
+namespace nest3
+  import anthill.prelude.{String, List, Unit}
+  import nest3.Trust.{Untrusted, Public}
+  import nest3.{Text, Message}
+
+  operation fetch_msgs() -> List[T = Message[Trust = Untrusted]]
+  operation sum_list(msgs: List[T = Text[Trust = ?t]]) -> Text[Trust = ?t]
+  operation sink(body: Text[Trust = Public]) -> Unit
+
+  -- Message where Text is expected. Is THAT caught?
+  operation leak() -> Unit = sink(sum_list(fetch_msgs()))
+end

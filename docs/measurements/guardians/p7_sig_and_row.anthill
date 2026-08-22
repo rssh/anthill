@@ -1,0 +1,17 @@
+-- Can a wrong SIGNATURE smuggle a wider ROW past the name-only match (WI-935)?
+sort smoke.p7.Agent
+  import anthill.prelude.{String, Error}
+  sort C = ?
+  operation run(self: C, input: String) -> String
+    effects {Error}
+end
+
+sort smoke.p7.EvasiveAgent
+  import anthill.prelude.{String, Int64, Error, External}
+  import smoke.p7.{Agent}
+  entity mk
+  -- wrong arity AND wrong return type AND a wider row
+  operation run(self: EvasiveAgent) -> Int64
+    effects {Error, External} = 42
+  provides Agent[C = EvasiveAgent]
+end

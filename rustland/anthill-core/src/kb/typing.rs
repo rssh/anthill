@@ -31315,6 +31315,86 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                         a.push((*ip, sp_ref));
                     }
                 }
+                // The RESULT BINDER needs the same alignment as a parameter, and
+                // for the same reason. `result` is defined per operation as
+                // `<op>.result` (proposal 041), so the spec's and the override's are
+                // DIFFERENT symbols. Without this the contract legs below compare
+                // `Spec.op.result` against `Impl.op.result`, they never match, and
+                // **a spec operation carrying `ensures` has no possible provider** —
+                // an override restating the spec's postcondition VERBATIM was
+                // refused. Measured on `examples/guardians`, whose task spec wants
+                // `ensures mentions_all(result)`.
+                //
+                // GATED ON A CLAUSE ACTUALLY MENTIONING SOMETHING. Two qualified-name
+                // lookups per (spec-op, impl-op) pair on every load is not free — the
+                // stdlib alone carries ~146 provisions — and an op pair with no
+                // contract clauses can never read this entry.
+                //
+                // GUARDED ON THE RETURN TYPES NOT DEMONSTRABLY DIFFERING, which is
+                // not tidiness but the soundness condition. `check_override_refinement`
+                // never compares return types (kernel-language.md §8.7; that is
+                // WI-935's scope), so aligning the binders unconditionally would let
+                // `ensures P(result)` match between an op returning `Report` and one
+                // returning `Int64` — discharging a postcondition about a value of
+                // the wrong type. Tracked as WI-20260822-59CDQ.
+                //
+                // CONFIDENT-GROUND ONLY, FAIL-OPEN OTHERWISE — the same shape the
+                // effects leg immediately below already uses, and for the same
+                // reason. Refusing the alignment needs the two return types to be
+                // KNOWN different, and that is decidable only when both are ground:
+                // a spec returning its own type parameter (`op(x: T) -> T`, the
+                // ordinary parametric case) is not comparable against a carrier's
+                // `-> Carrier` without a σ story this pass does not have, and
+                // treating "cannot decide" as "differs" would re-refuse every
+                // parametric provider — the C8 bug again, one case narrower.
+                // The unsoundness the review found is a GROUND mismatch, and that
+                // is exactly what this decides.
+                let wants_result_alignment =
+                    !spec_info.ensures.is_empty() || !impl_info.requires.is_empty();
+                if wants_result_alignment {
+                    let spec_ret = sigma_subst_effect(kb, &spec_info.return_type, &p.sigma);
+                    let is_ground = |kb: &KnowledgeBase, v: &Value| {
+                        matches!(v, Value::Term { id: t, .. } if !contains_type_param(kb, *t))
+                    };
+                    let demonstrably_differ = is_ground(kb, &spec_ret)
+                        && is_ground(kb, &impl_info.return_type)
+                        && !views_structurally_equal(kb, &spec_ret, &impl_info.return_type);
+                    if !demonstrably_differ {
+                        match (
+                            super::region::resolve_op_result_sym(kb, spec_op),
+                            super::region::resolve_op_result_sym(kb, impl_op),
+                        ) {
+                            (Some(sr), Some(ir)) if ir != sr => {
+                                // `find_term`, not `alloc`: this only NAMES a term the
+                                // symbol table already holds alive, and `align` is a
+                                // local dropped each iteration with no decref, so
+                                // `alloc` would leak a refcount per pair.
+                                if let Some(sr_ref) = kb.find_term(&Term::Ref(sr)) {
+                                    a.push((ir, sr_ref));
+                                } else {
+                                    a.push((ir, kb.alloc(Term::Ref(sr))));
+                                }
+                            }
+                            (Some(_), Some(_)) => {}
+                            // NOT a silent skip. Every operation gets a `result`
+                            // binder at scan time, so a miss here means the symbol
+                            // was minted under a different prefix than the op's
+                            // qualified name, or lost its `OpResult` kind. The
+                            // consequence is the pre-fix bug verbatim — every
+                            // provider of an `ensures`-carrying spec op refused —
+                            // with nothing naming the cause, so say it.
+                            (s_r, i_r) => debug_assert!(
+                                false,
+                                "override refinement: no OpResult binder for {} (spec: {:?}, impl: {:?}); \
+                                 contract clauses over `result` cannot be compared and every \
+                                 provider of this spec op will be refused",
+                                kb.qualified_name_of(spec_op),
+                                s_r.is_some(),
+                                i_r.is_some(),
+                            ),
+                        }
+                    }
+                }
                 a
             };
 

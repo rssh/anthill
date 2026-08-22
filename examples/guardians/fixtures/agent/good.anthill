@@ -1,0 +1,33 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, ACCEPTED.
+--
+-- Stands in for what a model emits at site 1. It is the CONTROL for every
+-- refusal in `rejected/`: each of those differs from THIS FILE in exactly one
+-- respect, so a refusal there measures one thing.
+--
+-- The body composes declared tools and nothing else:
+--   fetch_mail   the source; everything it returns is Untrusted
+--   verdicts_of  one Verdict per fetched message — the enumeration is DERIVED,
+--                so no model can drop a row and conceal a message
+--   summarize    label-preserving, so the summary stays Untrusted
+-- ================================================================
+sort guardians.agent.GoodTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of}
+  entity mk
+
+  -- The row and the postcondition are RESTATED; the row half is checked
+  -- against the spec's (an override may not widen it).
+  operation run(self: GoodTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error} =
+      -- `fetch_mail` is External, so it is called ONCE and the result reused.
+      -- Calling it twice would be two different mailbox reads, which is
+      -- exactly the licence External revokes.
+      let msgs = fetch_mail(box)
+      Report(items:   verdicts_of(msgs),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = GoodTriage]
+end

@@ -1,0 +1,45 @@
+-- SMOKE D2f: does the label PROPAGATE through a transformation chain by
+-- unification, and is widening/declassification expressible without new machinery?
+enum smoke.f.Level
+  entity Untrusted
+  entity Public
+end
+
+enum smoke.f.Text
+  import anthill.prelude.{String}
+  sort L = ?
+  entity mk(raw: String)
+end
+
+-- An unforgeable approval token: no public constructor the agent can call.
+sort smoke.f.Approval
+end
+
+namespace smoke.f
+  import anthill.prelude.{Unit, String, List}
+  import smoke.f.Level.{Untrusted, Public}
+  import smoke.f.{Text, Approval}
+
+  operation fetch()  -> Text[L = Untrusted]
+  operation banner() -> Text[L = Public]
+
+  -- The quarantined summarizer: label in, the SAME label out.
+  operation summarize(body: Text[L = ?l]) -> Text[L = ?l]
+
+  -- Widening is always safe and needs no licence: Public data may be
+  -- treated as Untrusted.
+  operation widen(body: Text[L = Public]) -> Text[L = Untrusted]
+
+  -- Declassification takes an unforgeable token as a PARAMETER.
+  operation declassify(body: Text[L = Untrusted], approval: Approval) -> Text[L = Public]
+
+  operation sendPublic(body: Text[L = Public]) -> Unit
+
+  -- CONTROL A: a public value survives the summarizer and reaches the sink.
+  operation control_ok() -> Unit =
+    sendPublic(summarize(banner()))
+
+  -- CONTROL B: widening a public value then sending must be REFUSED.
+  operation control_widened() -> Unit =
+    sendPublic(widen(banner()))
+end

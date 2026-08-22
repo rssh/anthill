@@ -1,0 +1,35 @@
+-- ================================================================
+-- guardians.observe — the ONLY vocabulary the model may write at run time.
+--
+-- This enum is the entire expressive power of the untrusted channel. No
+-- constructor here names an address, a tool, or an action, so no injected
+-- sentence can be reflected back as one. That is Meijer's code/data
+-- separation enforced by the SORT rather than by a JSON convention.
+-- ================================================================
+
+enum guardians.Feature
+  entity UrgencyAppeal
+  entity CredentialRequest
+  entity PaymentRedirect
+  entity ForwardingInstruction     -- "send this elsewhere"
+  entity SecrecyInstruction        -- "do not tell the user"
+  entity InvestmentPitch
+  entity MeetingInvite
+end
+
+namespace guardians
+  import anthill.prelude.{String, Int64}
+  import guardians.{MessageId, Feature}
+
+  -- A span into the RAW bytes of one message. `quote` is redundant ON
+  -- PURPOSE: the kernel can slice the message and compare, so an
+  -- observation pointing at text that is not there is MALFORMED, not
+  -- merely wrong.
+  entity Span(message: MessageId, start: Int64, end: Int64, quote: String)
+
+  -- What the model is allowed to say: it attributes a feature to a
+  -- message and points at the text. It cannot say "this is spam", and
+  -- it cannot say anything about a message other than the one the span
+  -- names.
+  entity Observed(at: Span, feature: Feature)
+end

@@ -1,0 +1,50 @@
+-- ================================================================
+-- guardians.Triage — THE TASK, as a spec.
+--
+-- The agent generates a carrier that PROVIDES this. Four checks then run
+-- against it, and all four fire on the current loader:
+--
+--   B1  the provision must back `run`
+--   B2  the provider's declared row may not widen this one
+--   B3  the body may not exceed its own declaration
+--   A1..A3  the taint labels confine the DATA, independently of the row
+--
+-- `ensures mentions_all` is the tier-2 obligation: it is exactly the
+-- CONCEALMENT half of the injection ("do not include this email in the
+-- summary"), which no type expresses and which freezing a tool sequence
+-- does not touch. See docs/design/high-level-api.md §4.
+-- ================================================================
+sort guardians.Triage
+  import anthill.prelude.{Error, External}
+  import guardians.{Mailbox, Report, Model, Llm}
+
+  sort C = ?
+
+  -- The tier-2 obligation, and the reason it is here: `mentions_all` is exactly
+  -- the CONCEALMENT half of the injection ("do not include this email in the
+  -- summary"), which no type expresses and which freezing a tool sequence does
+  -- not touch. Writing it was blocked until the result binder was aligned in the
+  -- override-refinement check (kb/typing.rs): before that, a spec operation
+  -- carrying ANY `ensures` had no possible provider, because the spec's `result`
+  -- and the override's are distinct symbols. See docs/design/measured.md C8.
+  operation run(self: C, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error}
+end
+
+namespace guardians
+  import guardians.{Report, MessageId, Verdict}
+
+  -- The report mentions every fetched message. Decidable by comparing two
+  -- id sets, and it holds whatever the summarizer was told to omit.
+  rule mentions_all(?r)
+    :- not(omits_some(?r))
+
+  rule omits_some(?r)
+    :- fetched_message(?m), not(mentioned_in(?r, ?m))
+
+  rule mentioned_in(Report(items: ?items, summary: ?), ?m)
+    :- (some ?v in ?items: verdict_of(?v, ?m))
+
+  rule verdict_of(Verdict(message: ?m, label: ?), ?m)
+end
