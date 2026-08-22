@@ -3,9 +3,9 @@
 - id: WI-20260821-E85J5-in-a-mutual-import-cycle-each
 - created: 2026-08-21T21:19:16Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T21:19:16Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-22T11:20:14Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -116,4 +116,69 @@ the same name by the same mechanism?
 WHAT TO CHANGE HERE: re-spell the measured table with bodied clauses, add the one-file
 fact-vs-rule witness above, and add the 059-R4-now-covers-the-body-less-case observation
 to the two bullets under WHY IT IS A QUESTION RATHER THAN A DEFECT.
+
+### 2026-08-22T11:20:08Z — feedback — claude
+
+DELIVERED AS **REFUSE**, and 061 is what made the option choosable rather than the
+narrowest of three.
+
+WHY NOT ACCEPT. The ticket's ACCEPT case was "it is consistent with the rest of the
+language — a local beats an import everywhere". That is true and is KEPT: the shadow
+itself is not refused, and the `declare in EACH scope` arm reproduces it exactly, driven.
+What is refused is INVENTING it. 061 already says a predicate assembled from more than
+one file must be declared; the file check is keyed on the PREDICATE, and WI-980's
+tie-break splits a cycle into two SINGLE-FILE predicates *before* that check counts
+files. So the one assembly 061 exists to refuse was the one shape it could not see. This
+is not a new rule — it is 061's rule reaching the shape its own mechanism hid.
+
+WHY NOT WARN. WI-961: load warnings are invisible to tests, so the ticket's own bar
+("a warning needs a channel a test can read") is unmet.
+
+THE NARROWNESS THE TICKET ASKED FOR IS BY CONSTRUCTION, not by a census exclusion. The
+99-stdlib-errors measurement was of rule-head/import coexistence GENERALLY — a head whose
+name RESOLVES through an import is a clause of it (`denotes`, the law layer), and never
+reaches the decision. The tie-break is the only place in the loader where a head
+introduces a name its scope can already see. Corpus + fixtures: the refusal fires on
+exactly 2 pre-existing test rows and nothing else.
+
+MEASURED (post-061 tree, bodied clauses; the filed body-less table is dead because 061
+reads those heads as declarations):
+
+    mA{import mB.*; rule p(1):-true; rule usesp(?x):-p(?x)} | mB{import mA.*; rule p(2):-true}
+      before:  loads clean   usesp(1)=1  usesp(2)=0
+      CONTROL, mA with no own p:      usesp(1)=0  usesp(2)=1     <- the import DOES work
+      after:   REFUSED, naming mA, mB and both files
+
+    REMEDY 1, declare once in mA:  mA.p = 2 clauses, mB.p absent, usesp(1)=1 usesp(2)=1
+    REMEDY 2, declare in each:     mA.p = 1, mB.p = 1, usesp(1)=1 usesp(2)=0  (shadow, as written)
+
+TWO NON-CASES BOUND IT, each a pinned row:
+ * a NESTED two-file cycle (a facade importing its own submodule) is the ordinary
+   `heads in 2 files` error — the enclosing member owns, the heads become one predicate.
+   Same two files, same two heads, same name; only the nesting differs and it decides
+   WHICH message the author gets. Neither shape is silent afterwards.
+ * a cycle inside ONE file keeps auto-declaring, shadow and all — 061's file unit and its
+   open question 3, unchanged: both scopes are in front of the one author who wrote them.
+
+THE TICKET'S OWN FEEDBACK CARRIED TWO CLAIMS THAT DO NOT SURVIVE MEASUREMENT.
+ * "under 061 a body-less rule head IS a declaration, so for that spelling [059 R4
+   clause 3] now covers it directly". It does not. Measured: two body-less `rule p(…)`
+   heads in a mutual cycle LOAD CLEAN as two declarations. R4 clause 3 is asked only of
+   declarations whose scope owner is a SORT, so a namespace-level declaration never
+   reaches it. That spelling is the `declare in EACH scope` remedy, and admitting it is
+   correct.
+ * the `fact p(1)` vs `rule q(2) :- true` witness measures a DIFFERENT defect. Driven,
+   `mA6.p`, `mB6.p` and `p` all resolve to NOTHING while `mA6.q`/`mB6.q` each hold a
+   clause: the fact heads are not "leaving the import live", they are UNSCOPED — they
+   fall to the WI-476 bare intern and collapse two scopes onto one name. That is
+   WI-20260821-RDGQC / P85Z7's enumeration, already filed, not this ticket's shadow.
+   The divergence from `rule H :- true` is real and worth keeping; its root is not.
+
+WHERE IT IS RECORDED: `docs/kernel-language.md` §"A rule head functor is resolved, not
+declared" (a new paragraph after WI-980's cycle rule) and proposal 061 open question 3.
+Pinned by `wi980_rule_head_order_test::{a_multi_file_cycle_is_refused_and_both_-
+declarations_repair_it, a_single_file_cycle_still_introduces_separately_in_either_order,
+a_nested_cycle_across_two_files_is_the_ordinary_file_error}`, with the back-out named at
+the site (drop `splits.push(split)` in `Ownership::owners_for` ⇒ the load succeeds and
+the first two assertions fail; the two DECLARED arms pass either way, by design).
 
