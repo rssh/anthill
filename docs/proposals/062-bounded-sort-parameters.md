@@ -78,11 +78,15 @@ substitution does not load.
 
 The rest is *when* the goal may be resolved, and what its outcomes mean.
 
-### Readiness — a goal is resolved only once its parameters are ground
+### Readiness — a goal is resolved only once its parameters are CONCRETE
 
 Let `P(G)` be the sort parameters occurring in `G`. **`G` is not resolved at all until every
-variable in `P(G)` is ground.** Before that the constraint simply suspends; it is not run and
-its outcome is not consulted.
+member of `P(G)` is bound to a CONCRETE type.** Before that the constraint simply suspends; it
+is not run and its outcome is not consulted.
+
+*Concrete*, deliberately, and not *ground* — the two come apart on a skolem, and resting the
+rule on groundness would make it depend on an implementation accident. See "A skolem is
+ground" below.
 
 This is not caution, it is required for correctness, and the reason is measurable. Against
 `fact flows_to(Public, Public)` and `fact flows_to(Untrusted, Untrusted)`, the goal
@@ -97,8 +101,8 @@ Two consequences, both load-bearing:
 - **Guard resolution may never bind a sort parameter.** If it could, the guard would be choosing the program's types rather than checking them.
 - **Non-parameter variables in `G` are the goal's own locals**, existentially quantified as usual, and may bind freely. Only `P(G)` is protected.
 
-Readiness is therefore decided **structurally**, by groundness, and never by what resolution
-happens to answer. That is also what keeps this inside the substrate's stated decidable
+Readiness is therefore decided **structurally**, by what the parameters are bound to, and never
+by what resolution happens to answer. That is also what keeps this inside the substrate's stated decidable
 fragment — "subsort lattice + instance facts **over ground sorts**"
 ([`constrained-term-substrate.md`](../design/constrained-term-substrate.md)) — rather than
 requiring that invariant to be revised.
@@ -106,19 +110,33 @@ requiring that invariant to be revised.
 A goal with **no** parameters has `P(G)` empty, so it is ready immediately and is decided once,
 at load.
 
-**A skolem is not ground, and that is the right answer.** §5.4 quantifies a variable written in
-a parameter type, and WI-1FKR2 makes an operation's body *skolemize* it — so inside that body a
-parameter is rigid: not a concrete type, and not a flexible variable either. It can never become
-ground there, so a constraint over it is permanently not-ready and rides as residual. That is
-correct rather than a shortfall: the body must hold for **every** instantiation, so the body is
-not the place the goal can be discharged, and the obligation belongs to the caller that supplies
-the type. Readiness being decided by groundness gives this for free — there is no third rule to
-write, only a third state to name.
+**A skolem is ground, and is still not ready.** §5.4 quantifies a variable written in a
+parameter type, and WI-1FKR2 makes an operation's body *skolemize* it. Is such a body's goal
+ready? Three sources disagree, which is exactly why the criterion must not be groundness:
+classical logic says a skolemized formula IS ground, since skolemization replaces variables
+with fresh constants; the kernel spec agrees, calling a skolem "the opaque **constant** a
+consumer may assume nothing about"; while the implementation's `is_ground` answers no, because
+it reports `HasVar` for every `Term::Var` and a skolem is *represented* as a rigid variable.
+
+Only the third reading would have made a groundness gate behave, and it is the one most likely
+to be corrected. Were it corrected, a groundness gate would call the body's goal ready, resolve
+`is_entity_of(sk, TrustLevel)`, get no solutions, and refuse **every** label-polymorphic
+operation body — `bodies_of`, `verdicts_of`, and every signature like them.
+
+So the criterion is CONCRETENESS. A skolem is ground but not concrete: it stands for an
+arbitrary type, so no verdict about it is a verdict about the program. Inside that body the
+constraint is not-ready and rides as residual, and it can never become ready there — which is
+correct rather than a shortfall, since the body must hold for **every** instantiation and the
+obligation belongs to the caller that supplies the type.
+
+This also bounds *Outcomes* below: "complete search, no solutions" is refutation only over
+CONCRETE parameters. Over a skolem the same empty search means "not provable for an arbitrary
+type", which is the caller's obligation and not a refusal.
 
 ### Outcomes, once ready
 
 1. **Succeeds** — the binding stands.
-2. **Complete search, no solutions** — refuted. The binding is rejected: a load error naming the sort, the goal, and the bindings that refuted it. Where the goal is `is_entity_of(P, E)`, the message also lists `E`'s entities, the "what was admissible" the author can act on.
+2. **Complete search, no solutions** — refuted (readiness guarantees the parameters are concrete, which is what makes an empty search mean refutation here). The binding is rejected: a load error naming the sort, the goal, and the bindings that refuted it. Where the goal is `is_entity_of(P, E)`, the message also lists `E`'s entities, the "what was admissible" the author can act on.
 3. **Truncated search, or unlowerable goal** — a load error (WI-628, WI-513). Never read as refutation, and never a vacuous hold.
 
 ### Not ready, and never becoming ready
