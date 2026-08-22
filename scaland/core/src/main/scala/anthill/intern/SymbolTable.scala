@@ -36,6 +36,18 @@ enum ImportOrigin:
     * also justifies would be suppressed on the strength of a foreign file's import alone,
     * refusing a name the rule never meant to touch. */
   case Declaration
+  /** WI-M460D — §8.6's VARIANT-EXPOSURE link, and nothing else: the edge a
+    * variant-bearing `sort` gets from its ENCLOSING scope so its constructors can be
+    * written bare there (proposal 044 job 2). A declaration property like
+    * [[Declaration]] and visible exactly as widely; filed separately because this is
+    * the ONE link kind the `exposed` set governs.
+    *
+    * `exposed` is a property of THIS LINK, not of the scope at its far end. Read as
+    * the far scope's, it answers a question it was never asked — "what may a
+    * `requires` clause reach inward" — and answers it wrongly: one unrelated `entity`
+    * on a spec made `exposed` non-empty and hid every one of that spec's operations
+    * from every `requires` caller. Rustland's twin is `ImportOrigin::Exposure`. */
+  case Exposure
 
 /** Symbol table — maps strings to compact TermSymbol(Int) handles,
   * with optional resolution metadata (kind, scope, qualified name).
@@ -112,10 +124,13 @@ class SymbolTable:
     * type params.
     *
     * `exposed` holds the names this scope leaks to its enclosing scope through a
-    * (non-enclosing) variant-exposure parent link — a sort's entity-variant
-    * short names ONLY (proposal 044 job 2). An empty set disables the filter
-    * (the scope is reachable only via `requires`/wildcard, which see all of it).
-    * Names are visible by default; the `export` statement was removed in WI-291.
+    * variant-exposure parent link — a sort's entity-variant short names ONLY
+    * (proposal 044 job 2). It filters THAT LINK and no other (WI-M460D): a
+    * `requires`, a `provides` and a wildcard import are non-enclosing links too and
+    * see the scope whole, so a spec that acquires a constructor does not thereby hide
+    * its operations from the clauses that reach in for them. An empty set disables the
+    * filter outright. Names are visible by default; the `export` statement was removed
+    * in WI-291.
     *
     * Inner (WI-1004) because `parents` names [[ScopeId]], which is this table's. */
   class Scope:
@@ -135,7 +150,8 @@ class SymbolTable:
   /** A parent link in the scope graph (WI-976: `parent` is a scope identity, not the raw
     * `Int` a caller had to promise was one).
     *
-    * Inner and BUILT ONLY BY [[addParent]] (WI-1004). It was a top-level record, which
+    * Inner and BUILT ONLY BY this table's three `add*Parent` entry points (WI-1004,
+    * WI-1074, WI-M460D). It was a top-level record, which
     * once `parent` became this table's [[ScopeId]] meant a type parameter — on a two-field
     * bundle whose fifteen construction sites were all the immediate argument of
     * `addParent` and whose only reader is `resolveRecursive` below. Naming the fields at
@@ -150,7 +166,10 @@ class SymbolTable:
     * remove. The rustland twin is WI-984.
     *
     * WI-1074 — `origin` is who justified THIS link: the importing FILE for a wildcard
-    * import's splice, [[ImportOrigin.Declaration]] for everything [[addParent]] wires.
+    * import's splice, [[ImportOrigin.Exposure]] for the variant-exposure link
+    * [[addExposureParent]] wires (WI-M460D — the ONE link the `exposed` set filters,
+    * and this record is where that decision is read), [[ImportOrigin.Declaration]] for
+    * everything [[addParent]] wires.
     * On the link itself rather than in a per-`(scope, parent)` side table (which is
     * rustland's shape): scaland's `parents` is an append-only per-write list, so the
     * write and its justification stay one record, and an edge two producers justify is
@@ -306,7 +325,15 @@ class SymbolTable:
 
   /** Link `parent` into `scopeId`'s parent chain. `isEnclosing` is named at every call
     * site because the two kinds read the same and resolve differently — an ENCLOSING
-    * parent is searched whole, a non-enclosing one only through its `exposed` filter.
+    * parent is searched whole; a non-enclosing one is filtered by the far scope's type
+    * parameters, and by its `exposed` set ONLY across the variant-exposure link
+    * ([[addExposureParent]], WI-M460D).
+    *
+    * SO THIS IS THE ENTRY POINT THAT REACHES THE TARGET WHOLE — a `requires`, a
+    * `provides`, an enclosing body, the prelude parenting. Choosing it for a link whose
+    * job is leaking a sort's CONSTRUCTORS outward delivers that sort's operations too,
+    * silently, which is the direction `Loader.autoImportPrelude`'s `skip` set exists to
+    * prevent; that link takes [[addExposureParent]].
     *
     * WI-1074 — this entry point is for a link a DECLARATION at the address justifies (an
     * enclosing body, a `requires`, variant exposure, the prelude parenting), stamped
@@ -322,6 +349,22 @@ class SymbolTable:
     * its target in as a resolution parent), stamping the writing file on the link. */
   def addImportParent(scopeId: ScopeId, parent: ScopeId, isEnclosing: Boolean, origin: ImportOrigin): Unit =
     scopeEntry(scopeId).parents += ScopeInclusion(parent, isEnclosing, origin)
+
+  /** WI-M460D — [[addParent]] for the VARIANT-EXPOSURE link: the link whose whole
+    * purpose is leaking a sort's entity-constructor names outward, and so the only one
+    * the [[Scope.exposed]] set governs. §8.6's own link (a variant-bearing sort to its
+    * enclosing scope) and scaland's prelude auto-import, which does the same job at
+    * global scope.
+    *
+    * A separate entry point for the reason [[addImportParent]] is one: `requires`,
+    * `provides` and a wildcard import are all non-enclosing too, so a filter keyed on
+    * `isEnclosing` reaches four link kinds when it means one, and which of them a bare
+    * member name crossed then depended on whether the target happened to declare a
+    * variant.
+    *
+    * Always non-enclosing — the exposure link has no other reading. */
+  def addExposureParent(scopeId: ScopeId, parent: ScopeId): Unit =
+    scopeEntry(scopeId).parents += ScopeInclusion(parent, isEnclosing = false, ImportOrigin.Exposure)
 
   def scope(scopeId: ScopeId): Option[Scope] = scopes.get(scopeId)
 
@@ -373,7 +416,17 @@ class SymbolTable:
             case None => true
             case Some(parent) =>
               !parent.typeParams.contains(name) &&
-              (parent.exposed.isEmpty || parent.exposed.contains(name)))
+              // WI-M460D — THE `exposed` GATE IS THE EXPOSURE LINK'S, and asking it of
+              // any other link asks a second question. A `requires`/`provides` clause
+              // and a wildcard import reach the target WHOLE (§8.6: a sort's operations
+              // "are reached via `Sort.op`, `requires`, or wildcard"); only the exposure
+              // link says "these names, and no others". Per INCLUSION rather than per
+              // parent, which is what scaland's append-only `parents` list buys: an edge
+              // two clauses justify is two records, so the reaching clause's admits the
+              // name whatever order they were written in, and `visited` still visits the
+              // parent once.
+              (p.origin != ImportOrigin.Exposure ||
+                parent.exposed.isEmpty || parent.exposed.contains(name)))
         }
 
         // WI-1089 — ONE VISIT PER PARENT SCOPE, with the mode decided over ALL the
@@ -415,7 +468,7 @@ class SymbolTable:
     * no one — "nothing is asking" must not mean "everything is visible", or every
     * resolution outside the per-file passes would quietly get the pre-rule behaviour. */
   private def originVisible(origin: ImportOrigin): Boolean = origin match
-    case ImportOrigin.Builtin | ImportOrigin.Declaration => true
+    case ImportOrigin.Builtin | ImportOrigin.Declaration | ImportOrigin.Exposure => true
     case ImportOrigin.File(f) => askingFile.contains(f)
 
   /** Get the display name of a symbol. */

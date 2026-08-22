@@ -94,8 +94,14 @@
 //! be restated rather than merely re-checked.
 //!
 //! The exposure skip's three narrowings each have their own failing row, measured the
-//! same way. Drop the edge-local `parent_edge_is_imported` conjunct ⇒
-//! [`wildcard_import_of_a_variant_bearing_sort_is_a_capture`] alone fails. Drop the
+//! same way. Drop the edge-local conjunct that asks whether the hop IS the exposure
+//! link — `parent_edge_is_exposure_only`, leaving the skip keyed on
+//! `exposed.contains(name)` alone ⇒
+//! [`wildcard_import_of_a_variant_bearing_sort_is_a_capture`] alone fails, RE-MEASURED
+//! under WI-M460D. That conjunct used to be spelled `!parent_edge_is_imported`, an
+//! edge-local test for the one non-exposure writer the code could then name; both
+//! writers — an `import` and a `requires` — are one origin list away now, and the
+//! predicate asks about the edge instead of about the name. Drop the
 //! subtree flip that spends the skip after an imported edge ⇒
 //! [`wildcard_import_of_the_leaked_into_namespace_is_a_capture`] alone fails. Ask only
 //! for the capturing declaration's own file instead of every file with text at the
@@ -574,8 +580,8 @@ end
 /// parent, so `Red` is in view in `wi999.iwild` because THIS FILE asked. One hop:
 /// the imported edge IS the exposure-looking edge.
 ///
-/// BACKED OUT (the `parent_edge_is_imported` conjunct): this test FAILS — the
-/// fixture loads clean.
+/// BACKED OUT (the `parent_edge_is_exposure_only` conjunct, WI-M460D's spelling of
+/// what was `!parent_edge_is_imported`): this test FAILS — the fixture loads clean.
 ///
 /// WI-1089 CHANGED WHICH FORM THIS IS. It was written on the PLAIN spelling
 /// (`import wi999.ilib.Colour`), which then spliced the sort's scope in and made

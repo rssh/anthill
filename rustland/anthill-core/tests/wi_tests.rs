@@ -1365,3 +1365,6 @@ mod wi1fkr2_op_type_var_threads_test;
 
 #[path = "include/wi_ak2aj_written_typed_var_test.rs"]
 mod wi_ak2aj_written_typed_var_test;
+
+#[path = "include/m460d_requires_reaches_spec_members_test.rs"]
+mod m460d_requires_reaches_spec_members_test;

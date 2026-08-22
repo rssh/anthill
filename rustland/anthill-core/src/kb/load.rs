@@ -6617,14 +6617,13 @@ impl ScopePass for DefinePass<'_> {
                 // `add_parent` is idempotent (WI-994) — required here, not incidental:
                 // `load_incremental` re-scans files already in the KB, so an un-gated
                 // link is re-offered on every reload.
+                //
+                // WI-M460D — `add_exposure_parent`, the ONLY producer of the edge the
+                // `exposed` set governs. Before it, this edge and a `requires` one were
+                // one shape (`is_enclosing: false`) and the resolver told them apart by
+                // whether the far scope happened to declare variants.
                 if has_variant {
-                    kb.symbols.add_parent(
-                        actual_scope,
-                        ScopeInclusion {
-                            parent_scope: sort_scope,
-                            is_enclosing: false,
-                        },
-                    );
+                    kb.symbols.add_exposure_parent(actual_scope, sort_scope);
                 }
                 // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
                 // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type

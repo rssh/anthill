@@ -378,10 +378,19 @@ impl SymbolDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopeInclusion {
     pub parent_scope: ScopeId,
-    /// If true, this is an enclosing-scope relationship (sort/namespace body)
-    /// and the variant-exposure (`exposed`-set) filter is bypassed.
+    /// If true, this is an enclosing-scope relationship (sort/namespace body).
     pub is_enclosing: bool,
 }
+
+// WI-M460D — THE KIND OF A NON-ENCLOSING LINK IS NOT A FIELD HERE, deliberately: it
+// rides on `import_parent_origin`, beside the writer. This struct is the SET key
+// (`add_parent_raw` dedups on the whole of it), and a link can have two justifications
+// — `sort Outer { sort Inner { entity V }  requires Inner }` is both an exposure and a
+// `requires`. As a field that becomes two set entries for one edge, and the `visited`
+// guard in `resolve_in_scope_recursive_with_mode` then lets whichever was pushed first
+// decide the filter for both, making the answer depend on clause order. See
+// [`SymbolTable::add_exposure_parent`] and the unit row
+// `an_edge_a_requires_also_justifies_is_not_filtered_in_either_order`.
 
 /// WI-980 — names a caller can make visible at a scope without a symbol carrying them.
 ///
@@ -437,12 +446,21 @@ pub struct Scope {
     pub locals: HashMap<String, Symbol>,
     /// Imported aliases: local_name → original Symbol
     pub imports: HashMap<String, Symbol>,
-    /// Names this scope exposes to the enclosing scope through a
-    /// (non-enclosing) variant-exposure parent link — populated from a sort's
-    /// entity-variant short names ONLY. An empty set disables the filter (the
-    /// scope is reachable only via `requires`/wildcard, which see everything).
-    /// Names are visible by default (proposal 044); the `export` statement that
-    /// once restricted this was removed in WI-291.
+    /// Names this scope exposes to the enclosing scope through the VARIANT-EXPOSURE
+    /// parent link — populated from a sort's entity-variant short names ONLY.
+    ///
+    /// IT FILTERS THAT LINK AND NO OTHER (WI-M460D). `requires`, `provides` and a
+    /// wildcard import are non-enclosing links too and reach the scope WHOLE, so a
+    /// non-empty set here does not hide this sort's operations from them — that is
+    /// §8.6's own sentence, "reached via `Sort.op`, `requires`, or wildcard". Read as
+    /// a property of the SCOPE rather than of the link, the rule was "an empty set
+    /// disables the filter", and one unrelated `entity` on a spec then hid every one
+    /// of its operations from every caller. [`SymbolTable::add_exposure_parent`] is
+    /// what says which link a filter decision belongs to.
+    ///
+    /// An empty set still disables the filter outright. Names are visible by default
+    /// (proposal 044); the `export` statement that once restricted this was removed in
+    /// WI-291.
     pub exposed: HashSet<String>,
     /// Parent scope inclusions (enclosing + requires + imports)
     pub parents: Vec<ScopeInclusion>,
@@ -553,12 +571,26 @@ pub enum ImportOrigin {
     /// `anthill query -i <ns>` flags. Local to no file, so visible throughout the run.
     Invocation,
     /// Contributed by a DECLARATION at the address rather than by an import — an
-    /// enclosing body, a `requires`, a variant exposure, the prelude wiring. Visible
+    /// enclosing body, a `requires`/`provides` clause, the prelude wiring. Visible
     /// under every reading of the rule, and recorded rather than merely omitted
     /// because a link can have BOTH justifications: with only import writes recorded,
     /// an edge that a `requires` also justifies would be suppressed on the strength of
     /// a foreign file's import alone, refusing a name the rule never meant to touch.
     Declaration,
+    /// WI-M460D — §8.6's VARIANT-EXPOSURE link, and nothing else: the edge a
+    /// variant-bearing `sort` gets from its ENCLOSING namespace so its constructors
+    /// can be written bare there (proposal 044 job 2). A declaration property like
+    /// [`Self::Declaration`], and visible exactly as widely; it is filed separately
+    /// because this is the ONE edge kind the `exposed` set governs.
+    ///
+    /// THE `exposed` SET IS A PROPERTY OF THIS EDGE, not of the scope at its far end.
+    /// Read as a property of the far scope it answers a second question it was never
+    /// asked — "what may a `requires` clause reach inward" — and answers it wrongly:
+    /// adding an unrelated `entity` to a spec made `exposed` non-empty and hid every
+    /// one of that spec's operations from every `requires` caller (one line apart,
+    /// measured in `m460d_requires_reaches_spec_members_test`). Invisible until then
+    /// only because the stdlib's specs declare no variants.
+    Exposure,
 }
 
 /// WI-995 — how much of the import machinery a resolution may read.
@@ -1052,7 +1084,17 @@ impl SymbolTable {
         let import_edges = self
             .import_parent_origin
             .values()
-            .filter(|origins| origins.iter().any(|o| *o != ImportOrigin::Declaration))
+            .filter(|origins| {
+                origins
+                    .iter()
+                    // WI-M460D: `Exposure` joins `Declaration` here. Both are
+                    // declaration properties of the address; counting either would let
+                    // this guard pass on a run that recorded no import edge at all,
+                    // which is the exact failure it exists to catch. Every
+                    // variant-bearing sort files one `Exposure` edge, so admitting it
+                    // would have made the denominator ~30 on a load with zero imports.
+                    .any(|o| !matches!(o, ImportOrigin::Declaration | ImportOrigin::Exposure))
+            })
             .count();
         (alias_entries, import_edges)
     }
@@ -1129,11 +1171,18 @@ impl SymbolTable {
     /// WI-999 — did an `import` justify the `scope → parent` edge, as opposed to a
     /// declaration at the address (an enclosing body, a `requires`, §8.6's variant
     /// exposure)? Only [`Self::add_import_parent`] files a `File`/`Invocation` origin;
-    /// [`Self::add_parent`] files `Declaration` for every other edge (WI-995).
+    /// [`Self::add_exposure_parent`] files `Exposure` and [`Self::add_parent`]
+    /// `Declaration` for every other edge (WI-995, WI-M460D).
     ///
     /// Asked WHO WROTE THE EDGE, not whether it is visible: an import written in
     /// another file still makes the name one somebody asked for at this address, which
     /// is the whole reading `resolve_captured_name` takes of imports.
+    ///
+    /// ONE CALLER SINCE WI-M460D — the SUBTREE flip below, which spends §8.6's capture
+    /// exemption for everything reachable beneath an imported edge. The per-edge test
+    /// it used to share with the exposure skip now asks about the edge's KIND instead
+    /// ([`Self::parent_edge_is_exposure_only`]), which answers for a `requires` writer
+    /// as well as an import one.
     fn parent_edge_is_imported(&self, scope: ScopeId, parent: ScopeId) -> bool {
         self.import_parent_origin
             .get(&(scope, parent))
@@ -1176,7 +1225,10 @@ impl SymbolTable {
 
     fn origin_visible(&self, origin: ImportOrigin) -> bool {
         match origin {
-            ImportOrigin::Builtin | ImportOrigin::Declaration | ImportOrigin::Invocation => true,
+            ImportOrigin::Builtin
+            | ImportOrigin::Declaration
+            | ImportOrigin::Exposure
+            | ImportOrigin::Invocation => true,
             ImportOrigin::File(f) => self.asking_file() == Some(f),
         }
     }
@@ -1246,6 +1298,92 @@ impl SymbolTable {
         // wrote it. See [`ImportOrigin::Declaration`].
         self.record_parent_origin(scope, inclusion.parent_scope, ImportOrigin::Declaration);
         self.add_parent_raw(scope, inclusion);
+    }
+
+    /// WI-M460D — [`Self::add_parent`] for §8.6's VARIANT-EXPOSURE link: the
+    /// non-enclosing edge a namespace gets to a `sort` in it that declares entity
+    /// variants, by which those constructors are written bare there (proposal 044
+    /// job 2). ONE call site — `scan_items_pass1`'s `SortWithBody` arm — and it is the
+    /// only producer of the edge the [`Scope::exposed`] set governs.
+    ///
+    /// A separate entry point for the same reason [`Self::add_import_parent`] is one:
+    /// the KIND of the edge is what a resolution has to ask about, and `is_enclosing`
+    /// alone cannot say it. `requires`, `provides` and the exposure link are all
+    /// `is_enclosing: false`, so a filter keyed on that reaches three edge kinds when
+    /// it means one.
+    ///
+    /// The kind rides on the ORIGIN LIST rather than on [`ScopeInclusion`] because a
+    /// link can have two justifications and the inclusion list is a SET: giving the
+    /// struct a kind field splits `sort Outer { sort Inner { entity V }  requires
+    /// Inner }` into two entries for one edge, and the `visited` guard then lets
+    /// whichever was pushed first decide the filter for both. The origin list already
+    /// models exactly that (see [`ImportOrigin::Declaration`]), so an edge a `requires`
+    /// ALSO justifies is not exposure-only and keeps the full reach that clause gives
+    /// it, whichever order the two writers ran in.
+    pub fn add_exposure_parent(&mut self, scope: ScopeId, parent_scope: ScopeId) {
+        self.record_parent_origin(scope, parent_scope, ImportOrigin::Exposure);
+        self.add_parent_raw(
+            scope,
+            ScopeInclusion {
+                parent_scope,
+                is_enclosing: false,
+            },
+        );
+    }
+
+    /// WI-M460D — is §8.6's variant exposure the edge's ONLY justification, and so the
+    /// one thing [`Scope::exposed`] is entitled to filter?
+    ///
+    /// The shape of [`Self::parent_edge_is_import_only`], and for the same reason: an
+    /// edge a `requires` clause or an `import` also justifies is one the author asked
+    /// to reach INWARD with, which is a different question from what the sort leaks
+    /// OUTWARD. Only where exposure is the sole writer is the leak the whole of what
+    /// the edge means.
+    ///
+    /// OVER THE ORIGINS THE ASKING FILE CAN SEE, which is what makes this a WI-995
+    /// question and not merely a WI-999 one. `add_parent_raw` dedups on the whole
+    /// `ScopeInclusion`, so a wildcard import written IN the namespace that declares
+    /// the variant-bearing sort lands on the same `(scope, parent)` pair as the
+    /// exposure link — one entry, origins `[Exposure, File(X)]`. Answered over the raw
+    /// list that is "not exposure-only" for EVERY asker, so one file's import lifted
+    /// the `exposed` filter for every other file at the address: measured, a
+    /// third file writing a bare `shade` and no import at all loaded clean, and was
+    /// refused the moment the importing file was dropped from the load. That is the
+    /// file-local rule inverted — a foreign import GRANTING a name rather than being
+    /// suppressed — and it is the direction `import_parent_visible` already guards
+    /// going the other way. Found by `/code-review`, with the flip driven.
+    ///
+    /// `vis` rather than [`Self::origin_visible`] alone so the WI-995 AUDIT stays
+    /// faithful: under [`ImportVisibility::All`] it must answer as the pre-rule reading
+    /// would, or the counterfactual it measures is not the one that shipped.
+    ///
+    /// Probed off the hot path — every caller tests `!exposed.is_empty()` first, so the
+    /// map is consulted only for an edge into a variant-bearing sort, and only where a
+    /// filter decision is actually about to be taken.
+    fn parent_edge_is_exposure_only(
+        &self,
+        scope: ScopeId,
+        parent: ScopeId,
+        vis: ImportVisibility,
+    ) -> bool {
+        self.import_parent_origin
+            .get(&(scope, parent))
+            .is_some_and(|origins| {
+                let mut seen = false;
+                for o in origins {
+                    if vis == ImportVisibility::OwnFileOnly && !self.origin_visible(*o) {
+                        continue;
+                    }
+                    if *o != ImportOrigin::Exposure {
+                        return false;
+                    }
+                    seen = true;
+                }
+                // An edge whose every origin is invisible here is not one this asker
+                // reaches at all — `import_parent_visible` has already dropped it — so
+                // there is no filter decision to take and no exposure to claim.
+                seen
+            })
     }
 
     fn add_parent_raw(&mut self, scope: ScopeId, inclusion: ScopeInclusion) {
@@ -1540,9 +1678,11 @@ impl SymbolTable {
             // `internal` visibility is NOT filtered per-hop here — it is applied
             // as a post-filter on the matched symbol in `resolve_in_scope` (so a
             // transitively-reached or re-exported internal name is hidden too).
-            // `exposed` holds a sort's entity variants (proposal 044 job 2): a
-            // non-empty set leaks only those variants to the enclosing scope; an
-            // empty set (specs, namespaces) is fully visible via requires/wildcard.
+            // `exposed` holds a sort's entity variants (proposal 044 job 2): across
+            // the VARIANT-EXPOSURE edge, and only there, it leaks those variants and
+            // nothing else to the enclosing scope. A `requires`/`provides` clause or a
+            // wildcard import reaches everything (kernel-language.md §8.6, "reached
+            // via `Sort.op`, `requires`, or wildcard").
             data.parents
                 .iter()
                 .filter_map(|p| {
@@ -1553,9 +1693,12 @@ impl SymbolTable {
                     }
                     // WI-995: an IMPORT-contributed parent link written by another file
                     // is likewise absent under `OwnFileOnly`. Enclosing / `requires` /
-                    // exposure links have no entry in `import_parent_origin` and are
-                    // therefore always eligible — they belong to the declaration at the
-                    // address, not to one file's text.
+                    // exposure links stay eligible because their origin is visible to
+                    // every asker (`Declaration`, `Exposure`), not because they are
+                    // missing from `import_parent_origin` — EVERY edge has an entry
+                    // there, which is what `parent_edge_is_exposure_only` twenty lines
+                    // below reads to decide the `exposed` filter (WI-M460D). They
+                    // belong to the declaration at the address, not to one file's text.
                     if !self.import_parent_visible(scope, p.parent_scope, vis) {
                         return None;
                     }
@@ -1564,32 +1707,44 @@ impl SymbolTable {
                             if parent.type_params.contains(name) {
                                 return None;
                             }
-                            if !parent.exposed.is_empty() && !parent.exposed.contains(name) {
+                            // WI-M460D — THE `exposed` GATE IS THE EXPOSURE EDGE'S,
+                            // and asking it of any other edge asks a second question.
+                            // `requires`, `provides` and a wildcard import are all
+                            // `is_enclosing: false` too, so keying on that alone made
+                            // "does the target happen to declare variants" decide what
+                            // a `requires` clause reaches: adding one unrelated
+                            // `entity` to a spec hid every one of its operations from
+                            // every caller that reached them bare. Only the exposure
+                            // link says "these names, and no others"; see
+                            // [`Self::parent_edge_is_exposure_only`].
+                            let exposure_edge = !parent.exposed.is_empty()
+                                && self.parent_edge_is_exposure_only(scope, p.parent_scope, vis);
+                            if exposure_edge && !parent.exposed.contains(name) {
                                 return None;
                             }
-                            // WI-999 — the §8.6 VARIANT-EXPOSURE hop, and only it. The
-                            // line above already says a non-empty `exposed` admits its
-                            // members and nothing else, so a hop that reaches here on a
-                            // name IN that set is justified by the exposure — UNLESS an
-                            // import also justifies it. A `requires` hop into a spec
-                            // (whose `exposed` is empty — a spec declares no variants)
-                            // never reaches this test at all, which is what keeps R4's
-                            // relation exclusions the thing that governs it.
+                            // WI-999 — the §8.6 VARIANT-EXPOSURE hop, and only it: a
+                            // constructor leaked to the enclosing namespace is not a
+                            // statement that the bare name is in use at every address
+                            // inside it, so a DECLARATION taking that name does not
+                            // capture anything (059 R4 clause 3 — members and
+                            // constructors are named per TYPE).
                             //
-                            // THE IMPORT TEST IS NOT REDUNDANT. `import a.b.*` splices
-                            // `a.b` in as a non-enclosing parent, and where `a.b` is a
-                            // sort with variants that edge is indistinguishable from an
-                            // exposure edge by `exposed` alone. An import IS the author
-                            // asking for those bare names, so a declaration taking one
-                            // captures it and must stay refused. `add_import_parent`
-                            // records a `File`/`Invocation` origin for exactly those
-                            // edges, and `add_parent` a `Declaration` one for the rest
-                            // (WI-995) — so the WRITER is the discriminator, not the
-                            // shape.
+                            // THE IMPORT AND `requires` CASES ARE NOT THIS LINK. Both
+                            // are the author asking for those bare names here — `import
+                            // a.b.*` splices `a.b` in as a non-enclosing parent, and a
+                            // `requires` clause is a written request to reach the
+                            // target's members — so a declaration taking one of them
+                            // DOES capture it and must stay refused. Under WI-999 that
+                            // was expressed as "unless an import also justifies the
+                            // edge", because with `exposed` as the only discriminator a
+                            // `requires` hop into a variant-bearing sort was
+                            // indistinguishable from an exposure hop; it is one origin
+                            // list away now, so both non-exposure writers are handled
+                            // by one predicate instead of one of them being invisible.
                             //
-                            // WI-1089 EMPTIED ITS CORPUS POPULATION, and that is a
-                            // narrowing of the RULE, not a dead branch. The population
-                            // used to be ~10 plain imports of variant-bearing sorts
+                            // WI-1089 EMPTIED THE IMPORT POPULATION, and that is a
+                            // narrowing of the RULE, not a dead branch. It used to be
+                            // ~10 plain imports of variant-bearing sorts
                             // (`anthill.prelude.List`, `.Option`, `.Stream`, …), because
                             // `ImportKind::Plain` reached the same `add_import_parent`;
                             // a plain import now binds its name and links nothing, so
@@ -1598,11 +1753,7 @@ impl SymbolTable {
                             // `wi999_name_capture_test`'s wildcard row and its plain
                             // control, which is where a reader should look for what
                             // each spelling means.
-                            if exposure == ExposureLinks::Skipped
-                                && !parent.exposed.is_empty()
-                                && parent.exposed.contains(name)
-                                && !self.parent_edge_is_imported(scope, p.parent_scope)
-                            {
+                            if exposure == ExposureLinks::Skipped && exposure_edge {
                                 return None;
                             }
                         }
@@ -1924,9 +2075,10 @@ mod tests {
         let eq = scope(&mut st, "Eq");
         let ordered = scope(&mut st, "Ord");
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
-        st.add_exposed(eq, "eq");
 
-        // `Ord` includes `Eq`
+        // `Ord` includes `Eq` — a REQUIRES-shaped edge, which since WI-M460D reaches
+        // the parent WHOLE. It needed an `add_exposed("eq")` before that, and the line
+        // did nothing but get past a filter this edge was never subject to.
         st.add_parent(
             ordered,
             ScopeInclusion {
@@ -1948,12 +2100,10 @@ mod tests {
         let ordered = scope(&mut st, "Ord");
         // "T" is a type param of `Eq`
         let t_sym = st.define("T", "Eq.T", SymbolKind::Sort, eq);
-        st.add_exposed(eq, "T");
         st.add_type_param(eq, "T", t_sym);
         assert_eq!(st.type_param_sym(eq, "T"), Some(t_sym));
 
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
-        st.add_exposed(eq, "eq");
 
         st.add_parent(
             ordered,
@@ -1976,6 +2126,100 @@ mod tests {
         }
     }
 
+    // ── WI-M460D: the `exposed` set filters the EXPOSURE link and no other ──────
+    //
+    // Three shapes, one pair of scopes each: a sort `Colour` with a variant `Red` and
+    // a member `shade`, reached from another scope over each kind of link. Unit-level
+    // because the third has no source spelling a fixture can reach — an edge two
+    // clauses justify — and because the first two say in five lines what the loader
+    // says in a program.
+
+    /// Build `Colour` with one exposed variant `Red` and one ordinary member `shade`.
+    fn colour_scope(st: &mut SymbolTable) -> (ScopeId, Symbol, Symbol) {
+        let colour = scope(st, "Colour");
+        let red = st.define("Red", "Colour.Red", SymbolKind::Entity, colour);
+        st.add_exposed(colour, "Red");
+        let shade = st.define("shade", "Colour.shade", SymbolKind::Operation, colour);
+        (colour, red, shade)
+    }
+
+    /// §8.6's link leaks the CONSTRUCTOR and nothing else. The refusal half is what
+    /// `exposed` is for, and no other unit test drives it — the integration control is
+    /// `m460d_..._test::control_exposure_still_does_not_leak_an_operation_…`.
+    #[test]
+    fn an_exposure_link_admits_only_the_exposed_names() {
+        let mut st = SymbolTable::new();
+        let (colour, red, _shade) = colour_scope(&mut st);
+        let ns = scope(&mut st, "ns");
+        st.add_exposure_parent(ns, colour);
+
+        assert_eq!(st.resolve_in_scope("Red", ns), ResolveResult::Found(red));
+        assert_eq!(
+            st.resolve_in_scope("shade", ns),
+            ResolveResult::NotFound,
+            "a sort's operation must not leak to the enclosing scope"
+        );
+    }
+
+    /// THE TICKET, at unit level: the same `Colour`, reached over a `requires`-shaped
+    /// link, answers with the member too. Before WI-M460D the `exposed` set was read
+    /// off the far scope, so declaring `Red` was enough to hide `shade` from here.
+    #[test]
+    fn a_requires_link_reaches_a_member_the_exposed_set_omits() {
+        let mut st = SymbolTable::new();
+        let (colour, red, shade) = colour_scope(&mut st);
+        let user = scope(&mut st, "User");
+        st.add_parent(
+            user,
+            ScopeInclusion {
+                parent_scope: colour,
+                is_enclosing: false,
+            },
+        );
+
+        assert_eq!(st.resolve_in_scope("shade", user), ResolveResult::Found(shade));
+        assert_eq!(st.resolve_in_scope("Red", user), ResolveResult::Found(red));
+    }
+
+    /// AN EDGE TWO CLAUSES JUSTIFY IS NOT FILTERED, in BOTH write orders — the claim
+    /// `add_exposure_parent`'s doc makes for putting the kind on the origin LIST
+    /// rather than on `ScopeInclusion`. As a field it would split one edge into two
+    /// set entries, and the `visited` guard would then let whichever was pushed first
+    /// decide the filter for both, making this pair disagree. Nothing in the corpus
+    /// writes the shape (`sort Outer { sort Inner { entity V }  requires Inner }`), so
+    /// no fixture measures it.
+    ///
+    /// IT IS ALSO WHAT THE `_only` IN `parent_edge_is_exposure_only` BUYS. Measured:
+    /// weaken that predicate's `all` to `any` — exposure present among the writers
+    /// rather than being all of them — and this row alone fails, both orders, while
+    /// the whole rest of the crate stays green. Without it the reading would be "one
+    /// exposure writer filters the edge", which is the same conflation one coordinate
+    /// over.
+    #[test]
+    fn an_edge_a_requires_also_justifies_is_not_filtered_in_either_order() {
+        for exposure_first in [true, false] {
+            let mut st = SymbolTable::new();
+            let (colour, _red, shade) = colour_scope(&mut st);
+            let outer = scope(&mut st, "Outer");
+            let requires = ScopeInclusion {
+                parent_scope: colour,
+                is_enclosing: false,
+            };
+            if exposure_first {
+                st.add_exposure_parent(outer, colour);
+                st.add_parent(outer, requires);
+            } else {
+                st.add_parent(outer, requires);
+                st.add_exposure_parent(outer, colour);
+            }
+            assert_eq!(
+                st.resolve_in_scope("shade", outer),
+                ResolveResult::Found(shade),
+                "exposure_first={exposure_first}: the reaching clause governs"
+            );
+        }
+    }
+
     #[test]
     fn resolve_ambiguous() {
         let mut st = SymbolTable::new();
@@ -1983,9 +2227,7 @@ mod tests {
         let b = scope(&mut st, "B");
         let c = scope(&mut st, "C");
         st.define("foo", "A.foo", SymbolKind::Operation, a);
-        st.add_exposed(a, "foo");
         st.define("foo", "B.foo", SymbolKind::Operation, b);
-        st.add_exposed(b, "foo");
 
         st.add_parent(
             c,
@@ -2014,7 +2256,6 @@ mod tests {
         let a = scope(&mut st, "A");
         let b = scope(&mut st, "B");
         st.define("foo", "A.foo", SymbolKind::Operation, a);
-        st.add_exposed(a, "foo");
 
         let local_foo = st.define("foo", "B.foo", SymbolKind::Operation, b);
         st.add_parent(

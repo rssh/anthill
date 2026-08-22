@@ -141,6 +141,12 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
                 ImportOrigin::Declaration => format!("declaration→{target}"),
                 ImportOrigin::Invocation => format!("invocation→{target}"),
                 ImportOrigin::File(f) => format!("{}→{target}", name_of(Some(*f))),
+                // WI-M460D — this is the import-ALIAS channel; only `add_import`
+                // writes it, and it files Builtin/File/Invocation. An `Exposure`
+                // here would mean a parent-edge origin had leaked into the alias
+                // table, so it is rendered loudly rather than given a plausible
+                // spelling that would read as expected output in the report.
+                ImportOrigin::Exposure => format!("BUG:exposure-origin-in-alias→{target}"),
             })
             .collect();
         out.push_str(&format!("     `{name}` in `{scope}`: {}\n", w.join(", ")));

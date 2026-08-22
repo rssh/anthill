@@ -348,8 +348,12 @@ object Loader:
             case Item.EntityItem(e) => joinSegments(fileSym, e.name.segments)
           }
           for v <- variants do kb.symbols.addExposed(sortScope, v)
+          // WI-M460D — `addExposureParent`, so the link carries the clause that wrote
+          // it. Before it, this link and a `requires` one were one shape
+          // (`isEnclosing = false`) and the resolver told them apart by whether the far
+          // scope happened to declare variants.
           if variants.nonEmpty then
-            kb.symbols.addParent(target, sortScope, isEnclosing = false)
+            kb.symbols.addExposureParent(target, sortScope)
           // WI-452 (§5.4): a MARKED structured param (`sort [F] { … }`, the
           // higher-kinded carrier of `sort Spec[F[T]]`) is a NON-RIGID type
           // parameter of the enclosing sort — register it like the `sort T = ?`
@@ -1654,7 +1658,15 @@ object Loader:
       if qualName.startsWith(preludePrefix) then
         val afterPrelude = qualName.substring(preludePrefix.length)
         if !afterPrelude.contains('.') && !skip.contains(afterPrelude) then
-          kb.symbols.addParent(globalScope, kb.symbols.scopeOf(sym), isEnclosing = false)
+          // WI-M460D — `addExposureParent`, and this is the classification rather than
+          // a default. What this bulk link is FOR is making the prelude's entity
+          // variants (`some`, `nil`, …) writable bare at global scope; the `skip` set
+          // above is the evidence, since it lists exactly the sorts whose OPERATIONS
+          // collide when they arrive too. So it is filtered by `exposed` for the same
+          // reason §8.6's link is, and stamping it `Declaration` — which reaches the
+          // target whole — would deliver every prelude sort's members to the global
+          // scope and re-create the collisions `skip` exists to avoid.
+          kb.symbols.addExposureParent(globalScope, kb.symbols.scopeOf(sym))
 
   private def findSortTerm(kb: KnowledgeBase, qualName: String): TermId =
     kb.symbols.byQualifiedName.get(qualName) match

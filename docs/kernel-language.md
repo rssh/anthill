@@ -3445,10 +3445,14 @@ the latter to the unique symbol. Each scope holds:
 
 - **locals** — names defined directly in the scope;
 - **imports** — local aliases introduced by `import`;
-- **exposed** — the scope's entity-variant names (see *variant exposure*);
-- **parents** — included scopes, each flagged *enclosing* (the lexical
-  sort/namespace body it sits in) or *non-enclosing* (`requires`, wildcard
-  `import`, variant exposure);
+- **exposed** — the scope's entity-variant names, filtering its *variant
+  exposure* link alone (see below);
+- **parents** — included scopes, each carrying the CLAUSE THAT WROTE IT:
+  *enclosing* (the lexical sort/namespace body it sits in), a `requires` /
+  `provides`, a wildcard `import`, or a *variant exposure*. The three
+  non-enclosing kinds resolve differently, so the kind is recorded rather than
+  inferred from the shape (WI-M460D); a link two clauses justify carries both,
+  and the more permissive one governs;
 - **type parameters** — `sort T = ?` names, which do not leak to parents.
 
 **The top-level scope.** A file's top-level declarations land in one synthetic
@@ -3527,7 +3531,15 @@ model) were removed in WI-291.
 3. otherwise recurse into the **parent** scopes. A *non-enclosing* parent is
    skipped when the name is (a) a type parameter of that parent, (b) marked
    `internal` there, or (c) absent from a non-empty **exposed** set of that
-   parent (variant exposure, below). *Enclosing* parents are never filtered;
+   parent **across a variant-exposure link, and only there** (below).
+   *Enclosing* parents are never filtered;
+
+   (c) is a property of the **link**, not of the scope at its far end. A
+   `requires`, a `provides` and a wildcard import are non-enclosing links too,
+   and they see the target whole — so a spec that acquires an entity constructor
+   does not thereby hide its operations from the clauses that reach in for them.
+   Where one link is justified both ways — a `requires` on a nested sort that
+   also exposes variants — the reaching clause wins and nothing is filtered;
 4. collect and de-duplicate by symbol: zero matches → unresolved, one →
    resolved, two or more distinct symbols → **ambiguous** (a load/query error).
 
@@ -3735,6 +3747,16 @@ names. So bare `Open` resolves to `WorkStatus.Open`, while the sort's
 `requires`, or wildcard). Two sorts exposing the same variant name make that
 bare name **ambiguous** rather than letting one silently win.
 
+`exposed` filters **this link and no other**. It says what a sort leaks
+*outward* to the namespace around it, which is a different question from what a
+`requires` clause or a wildcard import reaches *inward* — and the two are told
+apart by which clause wrote the link, since all three are non-enclosing. Read as
+a property of the far scope instead, adding one unrelated `entity` to a spec
+made its `exposed` set non-empty and hid every one of its operations from every
+`requires` caller, one line apart, and made the last clause of the paragraph
+above false (WI-M460D). Invisible until then only because no stdlib spec
+declares a constructor.
+
 **Exposure reaches the enclosing scope, not the types inside it.** A constructor
 leaked this way is written unqualified *in that namespace*; it does not reserve
 its short name against the **members** of the other types declared there. Two
@@ -3751,6 +3773,14 @@ it binds the name `Colour` and brings no variant into view, so nothing at this
 address was asking for a bare `Red`. This holds along the whole path, not just at the
 imported hop: `import a.*` brings in the namespace, and the constructor arrives
 one exposure hop further on — it is still a name the import put in view.
+
+A `requires` or `provides` link is not the exposure link at all, so the capture
+walk follows it like any other — and every name it reaches is then excused by
+the relation itself, a sort being free to name its own members beside the spec
+it requires (§8.7). It therefore yields no refusal either way. Said as a rule
+rather than as a case, so the two questions stay apart: what a link filters is
+decided by which clause WROTE it, and never by whether the scope it lands on
+happens to declare a constructor (WI-M460D).
 
 **Constructor patterns resolve against the scrutinee, not the scope.** A
 constructor name in a `match` case (`case Red`, `case some(?x)`, `case nil()`) is

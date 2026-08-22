@@ -121,7 +121,10 @@ object Prelude:
       val sortScope = kb.symbols.scopeOf(sym)
       kb.registerSort(kb.makeNameTermFromSym(sym), SortKind.Defined)
       kb.symbols.addParent(sortScope, parentScope, isEnclosing = true)
-      kb.symbols.addParent(parentScope, sortScope, isEnclosing = false)
+      // WI-M460D — the exposure link says so on the link (`exposed` filters it and no
+      // other). Written before any `defineEntity` fills `exposed`, which is why it is
+      // added unconditionally here: an empty `exposed` disables the filter anyway.
+      kb.symbols.addExposureParent(parentScope, sortScope)
       sortScope
 
     // Helper to define an entity (variant) in a sort scope — exposed to the
