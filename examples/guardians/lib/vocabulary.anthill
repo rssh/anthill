@@ -30,18 +30,31 @@ end
 --
 -- The `= ?` IS a workaround, and it should go away. `sort Trust = ?` is
 -- UNCONSTRAINED, so the slot admits anything at all — `Text[Int64]` loads
--- clean, measured, and a `requires IsLevel[T = Trust]` does not bind it either.
--- So `TrustLevel` above is what these arguments are MEANT to inhabit, not what
--- they are required to. The lattice is a convention held up by the pairings
--- written below, and `Text[Publik]` would be a fresh type rather than a typo.
+-- clean, measured. A `requires IsLevel[T = Trust]` does not bind it either, and
+-- the reason is narrower than it looks: the only use-site enforcement that
+-- exists is hard-wired to `anthill.prelude.Eq` (WI-644/WI-835), so the clause
+-- is never consulted. Either way `TrustLevel` above is what these arguments are
+-- MEANT to inhabit, not what they are required to — the lattice is a convention
+-- held up by the pairings written below, and `Text[Publik]` would be a fresh
+-- type rather than a typo.
 --
--- Tracked as WI-20260822-T70A2. When a parameter can be bounded, this
--- declaration and `Message`'s below — and `Prompt`'s in lib/llm.anthill —
--- become the bounded form, and this note goes with them.
+-- Tracked as WI-20260822-T70A2, designed as proposal 062. What arrives is NOT a
+-- bound. A bound would be `<:`, which drags in variance, transitivity and
+-- higher-kinded parameters that none of this needs; what 062 settles on is a
+-- GOAL, discharged when the parameter binds. These three declarations — here,
+-- `Message` below, and `Prompt` in lib/llm.anthill — then read
 --
--- Not a security hole either way: a sink demands a LITERAL label, so
--- `Text[Int64]` reaches nothing. What is unsound is only the claim one level
--- up, that the parameter ranges over a lattice. It ranges over everything.
+--   sort Trust = ?
+--   requires is_entity_of(Trust, TrustLevel)
+--
+-- with the admissible set DERIVED from the enum above rather than restated
+-- beside it. This note goes with them.
+--
+-- Not a security hole either way, and measured: the suite passes 15/15 with the
+-- slot unconstrained, the exfiltration refusal among them, because a sink
+-- demands a LITERAL label and `Text[Int64]` reaches nothing. What is unsound is
+-- only the claim one level up, that the parameter ranges over a lattice. It
+-- ranges over everything.
 enum guardians.Text
   import anthill.prelude.{String}
   sort Trust = ?
