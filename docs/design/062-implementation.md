@@ -56,25 +56,37 @@ producer (§3 step 4).
 2. **Grammar + IR + convert** — the goal form on `requires_declaration`, fanned out at convert time into its own item, as `effects E = ?` already fans into `AbstractSort` + `RequiresDecl`. Corpus tests for both the bracket and paren forms.
 3. **Load — the producer** — attach the goal as a `Constraint::Type` on the parameter's variable, and emit one `SortGoalInfo` fact per clause (proposal §Decisions). The fact is declared once at load and never revised, unlike `SortRequiresInfo` — which the loader retracts and re-asserts as bindings complete (WI-1112) — so it is `constant()` for `fact_monotonicity` and may be indexed build-once.
 
-   **Attachment — file under every variable the goal mentions.** The two forms
-   `constrained-term-substrate.md` describes are *semantically equivalent*; they differ in
-   keying and timing. The per-variable wakeup files a constraint under one `VarId` and fires
-   at that variable's bind, BEFORE the commit, so it can veto the binding — it "prunes at the
-   bind site rather than after a full head match". The body-guard form is an ordinary goal
-   after the match, keyed by nothing, able to fail the clause but not a bind.
+   **Attachment — ONE record, a watch set, and a lifecycle.** An earlier draft said "file the
+   same goal under every variable it mentions". That is wrong as stated, and the store makes it
+   wrong in a specific way: `Constraint::Type` entries are independent `Value`s with no shared
+   identity, `Type` is deliberately never deduped, and `residual_constraints` returns EVERY
+   entry with no boundness filter (`subst.rs:606`). So two filed copies of one goal give a
+   discharged constraint AND a stale residual copy under an already-bound variable in the same
+   answer, and merge-on-alias can duplicate it further.
 
-   The doc calls a multi-variable guard "a compound the per-variable wakeup can't express",
-   and that is about the store being SINGLE-KEYED (`ImHashMap<VarId, Vec<Constraint>>`) — a
-   goal over `From` and `To` has no one key. It is not a limit on what the mechanism can
-   decide. Filing the same goal under EACH mentioned variable resolves it: every bind wakes
-   it, it re-resolves under what is bound so far, and while under-determined it suspends —
-   already outcome 3, not a new case. This is CLP-style re-suspension, and the three
-   outcomes (holds / refuted / suspend) are exactly its shape.
+   The record therefore needs an IDENTITY and a WATCH SET: one constraint, an id, the set of
+   parameter variables it waits on, and wake registrations under each. Discharge or refutation
+   removes it from **every** key it is registered under. The alternatives — a canonical owner
+   with forwarding, or explicit cross-key removal on any copy resolving — are equivalent in
+   effect; what is not acceptable is independent copies, which is what the store gives by
+   default.
 
-   Cost is one re-resolve per mentioned-variable bind — two for `flows_to(From, To)` — against
-   the body-guard's one. Bought with it: bind-site rejection, and a single-parameter goal
-   needs no special case, since filing under "every variable it mentions" degenerates to the
-   plain per-variable wakeup when there is one.
+   Tests must cover both binding orders, aliasing (`?a := ?b` after one copy has woken),
+   duplicate suppression, and — the one an implementation will miss — a SUCCESSFUL discharge
+   leaving no residual behind.
+
+   **Readiness, not per-bind evaluation.** A wake does not mean "resolve now". Proposal
+   §Semantics gates on groundness of `P(G)`: resolve only when every parameter variable in the
+   goal is ground, and never let resolution bind one. Measured reason —
+   `flows_to(Untrusted, ?to)` against the two-fact lattice answers `?to = Untrusted` rather than
+   suspending, so an early resolve pins a parameter the author never wrote. A wake is therefore
+   a readiness CHECK first and a resolution only if ready.
+
+   **The zero-variable case has no key and needs its own path.** A goal mentioning no
+   parameters is ready immediately, but "file under every mentioned variable" registers it
+   nowhere, so no wake ever fires. Such a goal is resolved once at LOAD, at the declaration,
+   with the same four outcomes (proved / refuted / truncated / unlowerable). Without this arm a
+   constant goal is silently inert — the exact failure this proposal exists to remove.
 
 4. **Eager path** — a written ground argument reports at its own span, via the WI-835 site record.
 5. **Guardians + spec** — the three declarations take the goal form; kernel-language §5.4 gains the clause.
@@ -94,11 +106,16 @@ goal entries. WI-1110 is the recorded cost of this class of conflation.
 The loader-side fan-out is what keeps this structural rather than remembered: two items
 leave convert, and no reader changes.
 
-## 5. The eager path (WI-835 reuse)
+## 5. The eager path — replay, not a second enforcer
 
-A ground written argument binds the parameter at the lowering, so the wakeup fires during
-load. `take_parameterized_type_sites()` supplies what the diagnostic needs and nothing has to
-be re-derived:
+The proposal calls the written-ground case "an earlier discovery of the same ill-formedness,
+not a second rule". That claim is only true if the eager path does NOT independently resolve
+the clause. It must be a **diagnostic replay**: the constraint is what enforces, and the site
+record supplies span and bindings so the refusal can be reported where the author wrote it. If
+the site walk resolves the goal itself, there are two enforcers, the "one mechanism" claim is
+false, and the two paths need equivalence tests against each other. Pick replay.
+
+What the WI-835 record supplies, none of it re-derived:
 
 - span of the base name, per site;
 - bindings with positionals **already mapped** onto declared parameter names (`Map[Float, Int64]` ⇒ `K = Float`);
@@ -106,6 +123,14 @@ be re-derived:
 
 `check_use_site_requires_eq` is **not** modified; the new discharge is a sibling in the same
 walk. Its `Eq` check keeps its negative reading and its own justification.
+
+**Ownership, and the plumbing that does not exist yet.** The typer and the resolver share the
+`Substitution` TYPE — `types_compatible(kb, &mut Substitution, …)` — so the carrier is not the
+problem. Three things are, and the build order must answer them before step 3:
+
+- **Where the constraint is created** for each sort instantiation, and which substitution owns it through type unification.
+- **Which bind API returns a verdict.** `bind_waking` returns `()` (`subst.rs:530`), so today it cannot reject: it commits and then wakes, and its wake step is inert. A pre-commit guard with reject power needs a bind entry point that can answer refuted / suspended / ok.
+- **How a refused guard prevents the binding** rather than unwinding one already made.
 
 ## 6. Measured boundaries
 
@@ -116,3 +141,6 @@ walk. Its `Eq` check keeps its negative reading and its own justification.
 - `is_entity_of` discriminates and is derived from the enum: `(Public, Level)` and `(Untrusted, Level)` true, `(Int64, Level)` no solutions. It is a name-keyed builtin (`register_builtin_tags`) shadowing the declared rule at `typing.anthill:33`, reading the O(1) `entity_parent` index.
 - `requires` at a sort item refuses a non-sort structurally: "a `requires` names a SPEC — only a sort (§5.2) has the operations a requiring sort dispatches against."
 - A sort-body `constraint` over the parameter loads but resolves nothing — the same file with both names replaced by garbage loads identically, 2675 facts either way.
+- **SLD binds a free parameter existentially rather than suspending.** With `fact flows_to(Public, Public)` and `fact flows_to(Untrusted, Untrusted)`, the goal `flows_to(Untrusted, ?to)` answers `?to = Untrusted` (1 solution), while `flows_to(Untrusted, Public)` answers none. So "resolve the guard and see" does NOT distinguish under-determined from refuted, and resolving early would pin a parameter. This is why readiness is decided by groundness, structurally, before any resolution — §3 step 3.
+- `residual_constraints` (`subst.rs:606`) returns every entry in the store and its parent chain, with **no** filter on whether the variable is bound; `Type` entries are never deduped. Independent copies of one goal therefore survive as stale residuals after discharge.
+- `bind_waking` (`subst.rs:530`) returns `()`, and commits before its (inert) wake step. There is no bind API today that can refuse.

@@ -73,23 +73,58 @@ remembered; how, and what it would otherwise cost, is
 **A substitution is well-formed only if every constraint it carries is satisfied.** That is
 the whole rule. A goal declared on a sort enters the substitution as a constraint when the
 sort is instantiated, and from then on it is part of what makes a substitution correct —
-not a check run beside one.
+not a check run beside one. Proof is **static**: a program that cannot present a well-formed
+substitution does not load.
 
-Proof is **static**: an obligation is discharged while loading, so a program carrying a
-substitution that cannot be made well-formed does not load.
+The rest is *when* the goal may be resolved, and what its outcomes mean.
 
-The rest is *when* a violation is discovered, and what an undecided constraint means:
+### Readiness — a goal is resolved only once its parameters are ground
 
-1. **A binding that would refute a carried constraint yields an ill-formed substitution**, so the binding is rejected — a load error naming the sort, the goal, and the bindings that refuted it. Where the goal is `is_entity_of(P, E)`, the message also lists `E`'s entities, the "what was admissible" the author can act on.
-2. **Undecided is not unsatisfied.** A constraint not yet decidable — because the variables it mentions are not all bound, or the relation cannot be settled over them — rides as a residual on the answer, which then means "under this constraint". Never decided by absence (WI-067). A goal over several parameters is undecided until enough of them bind; that is the ordinary case, not an edge one.
-3. **A constraint never decided stays residual** and is surfaced with the answer, rather than being quietly dropped or read as discharged.
-4. **A verdict that cannot be trusted is not a verdict.** A truncated proof search or an unlowerable goal is a load error (WI-628, WI-513), never a vacuous hold.
+Let `P(G)` be the sort parameters occurring in `G`. **`G` is not resolved at all until every
+variable in `P(G)` is ground.** Before that the constraint simply suspends; it is not run and
+its outcome is not consulted.
 
-A **written ground** argument is the eager case: writing `S[P = X]` binds `P` there, so the
-refusal lands at that span rather than wherever the parameter would otherwise have been
-resolved. That is an earlier discovery of the same ill-formedness, not a second rule — and
-it is what makes the common case (`Text[Int64]` in a signature) a diagnostic the author can
-read.
+This is not caution, it is required for correctness, and the reason is measurable. Against
+`fact flows_to(Public, Public)` and `fact flows_to(Untrusted, Untrusted)`, the goal
+`flows_to(Untrusted, ?to)` — `From` bound, `To` not yet — **answers `?to = Untrusted`**. SLD
+treats a free variable existentially, so resolving early does not suspend: it *succeeds*, and
+in succeeding it pins `To` to a lattice point the author never wrote. A complete empty search
+is the mirror hazard, since ordinary SLD reads it as refutation while an incomplete instance
+should be waiting.
+
+Two consequences, both load-bearing:
+
+- **Guard resolution may never bind a sort parameter.** If it could, the guard would be choosing the program's types rather than checking them.
+- **Non-parameter variables in `G` are the goal's own locals**, existentially quantified as usual, and may bind freely. Only `P(G)` is protected.
+
+Readiness is therefore decided **structurally**, by groundness, and never by what resolution
+happens to answer. That is also what keeps this inside the substrate's stated decidable
+fragment — "subsort lattice + instance facts **over ground sorts**"
+([`constrained-term-substrate.md`](../design/constrained-term-substrate.md)) — rather than
+requiring that invariant to be revised.
+
+A goal with **no** parameters has `P(G)` empty, so it is ready immediately and is decided once,
+at load.
+
+### Outcomes, once ready
+
+1. **Succeeds** — the binding stands.
+2. **Complete search, no solutions** — refuted. The binding is rejected: a load error naming the sort, the goal, and the bindings that refuted it. Where the goal is `is_entity_of(P, E)`, the message also lists `E`'s entities, the "what was admissible" the author can act on.
+3. **Truncated search, or unlowerable goal** — a load error (WI-628, WI-513). Never read as refutation, and never a vacuous hold.
+
+### Not ready, and never becoming ready
+
+A constraint whose parameters never all bind stays **residual**: it is surfaced with the
+answer, which then means "under this constraint". It is never decided by absence (WI-067),
+and never quietly dropped or read as discharged. A goal over several parameters is not-ready
+until the last of them binds; that is the ordinary case, not an edge one.
+
+### The eager case
+
+A **written ground** argument makes the parameters ground at the point they are written, so
+`S[P = X]` is ready there and the refusal lands at that span. That is an earlier discovery of
+the same ill-formedness, not a second rule — and it is what makes the common case
+(`Text[Int64]` in a signature) a diagnostic the author can read.
 
 ## Not in scope
 
@@ -154,6 +189,8 @@ bodies is a separate defect.
 
 - **The keyword is `requires`** (2026-08-22). Not a new keyword, and not `where`. The overload it asks for already exists one level down: WI-840 states that an op-scoped `requires` list "is OVERLOADED — one comma list carries both spec requirements (`requires Eq[T]`) and VALUE preconditions (`requires neq(b, 0)`, WI-539)". A reader therefore already meets a `requires` whose meaning turns on whether its argument is a type or a goal, and brackets-vs-parens is already the loader's discriminator for that question elsewhere (WI-618). The cost — that a reader must learn the two forms differ — is accepted, and the spec §5.4 text must state it outright rather than leaving it to be inferred.
 - **The goal is an ordinary goal — no decidable-subset restriction** (2026-08-22). An earlier draft asked whether to admit only a single atom or a conjunction of them. It buys nothing: logical resolution is well-defined, and the one hazard a restriction would have addressed — a goal that loops — is already handled by bounding rather than forbidding. `max_depth` cuts the search, binds are occurs-checked, and WI-628's truncation flag exists precisely so that "the EAGER `resolve` consumers (the constraint / quantifier guards, which read `is_empty()` / a count as a verdict)" cannot decide from an incomplete search. This discharge is such a consumer, and §Semantics rule 5 already refuses a truncated verdict. A restriction would therefore have duplicated a rule the proposal states while removing expressiveness for nothing. What remains is COST, not legality: the goal is discharged at every bind of the parameter, so an expensive goal is paid repeatedly — the author's choice, and measurable.
+
+  This does not conflict with §Semantics' readiness gate. That gate restricts *when* a goal runs, never its SHAPE — any goal is legal, and none is resolved before its parameters are ground.
 - **The goal is a reflect relation** (2026-08-22), not a Rust-side index. It joins the sort-relation family in `anthill.reflect`, one fact per clause — the `SortRequiresInfo` shape, and a separate entity for the reason `ProvidesConditionInfo` already records (a parameter may carry several goals, and a field would have to hold a list):
 
   ```anthill
