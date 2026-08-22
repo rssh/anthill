@@ -106,6 +106,15 @@ requiring that invariant to be revised.
 A goal with **no** parameters has `P(G)` empty, so it is ready immediately and is decided once,
 at load.
 
+**A skolem is not ground, and that is the right answer.** §5.4 quantifies a variable written in
+a parameter type, and WI-1FKR2 makes an operation's body *skolemize* it — so inside that body a
+parameter is rigid: not a concrete type, and not a flexible variable either. It can never become
+ground there, so a constraint over it is permanently not-ready and rides as residual. That is
+correct rather than a shortfall: the body must hold for **every** instantiation, so the body is
+not the place the goal can be discharged, and the obligation belongs to the caller that supplies
+the type. Readiness being decided by groundness gives this for free — there is no third rule to
+write, only a third state to name.
+
 ### Outcomes, once ready
 
 1. **Succeeds** — the binding stands.

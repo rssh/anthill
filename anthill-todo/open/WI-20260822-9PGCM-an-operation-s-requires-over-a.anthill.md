@@ -7,7 +7,7 @@
 - status_agent: user
 - status_at: 2026-08-22T17:19:41Z
 
-- acceptance: cargo-test, scaland-sbt-test
+- acceptance: cargo-test
 
 ## Description
 
@@ -49,4 +49,14 @@ THE ACTUAL CAUSE. The call-site check proves conditions from Γ, which carries V
 WHAT THIS CHANGES. The fix is narrower and better defined than "revisit §8.5": the call-site contract check must be able to prove a condition from the argument's TYPE bindings, not from value-Γ alone. The floating rule stays exactly as it is — an `?l` no caller has bound is still undetermined and must still float; what changes is that a BOUND one is now found. That is the same distinction this ticket's controls already turn on, so acceptance and controls are unchanged.
 
 ALSO IN SCOPE, being the same confusion: §8.5 should point at §5.4's split, and measured.md's C2 row should stop reading `by design (§8.5)`.
+
+### 2026-08-22T18:47:01Z — feedback — user
+
+RE-MEASURED after 1FKR2 (`e8efefa9`), which rewrote 206 lines of typing.rs in exactly this area: `docs/measurements/guardians/d2c_callsite.anthill` still loads clean. The ticket stands.
+
+1FKR2 CORROBORATES THIS TICKET'S CLASSIFICATION from an independent direction, which is worth recording because the feedback above derived it by reading `is_value_precondition_clause`. 1FKR2 builds an operation's bound-variable set from the shared `signature_bound_vars` and deliberately SUBTRACTS the `requires` source, giving as its reason that "§5.4 splits that list per conjunct into a type precondition (a type parameter) and a VALUE precondition (`requires p(x, ?v)`, naming no type), and minting a rigid for the latter would put a non-parameter into `TypingEnv::param_rigids`". Same split, same per-conjunct rule, reached by someone else for a different purpose. So `requires flows_to(?l, Public)` being a value precondition is not this ticket's interpretation — it is the rule the typer is already built on.
+
+NOTE THE INTERACTION, because it narrows where the fix may look. `?l` reaches the bound-variable set through the PARAMETER TYPE (`Text[L = ?l]`), not through the `requires` clause, which 1FKR2 subtracts. A fix that tried to read the label out of the requires clause's own variables would therefore be reading a set that is deliberately empty there; the binding lives in the argument's type, which is where the earlier feedback says the call-site check must learn to look.
+
+ACCEPTANCE CORRECTED: `cargo-test` only. The filed default carried `scaland-sbt-test` as well, which can never pass — this is a typer defect and scaland has no typer.
 
