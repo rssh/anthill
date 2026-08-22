@@ -465,6 +465,65 @@ loudly, so the widening check works — it just does not treat a `Modify` target
 as a widening. Not chased further; the example's fixture uses a plain label
 instead, and this is recorded rather than diagnosed.
 
+## C10 · A label-preserving operation could not be written in terms of another · **FIXED**
+
+**Scenario.** The design's load-bearing shape is an operation that PRESERVES a
+label — `f(x: T[L = ?l]) -> T[L = ?l]`. A1–A3 measure it working at the EDGES,
+where a call site supplies a concrete label, and that is what makes the article's
+exfiltration a type error. It did not work in the MIDDLE: a library operation
+that is itself label-preserving and delegates to another one could not be
+written.
+
+```anthill
+operation upcase(t: Text[L = ?l]) -> Text[L = ?l]
+operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
+```
+
+**Refused** — `summarize.return (op-return): expected Text[L = ?l], got
+Text[L = t.L]`. The callee's variable came back as a PROJECTION of the argument
+("the L of `t`") rather than as the variable the caller declared. The bare form
+(`docs/measurements/op-type-var-does-not-thread.anthill`, twelve lines with no
+labels, no specs and no dispatch — the identity delegating to the identity)
+printed the two sides identically: `expected ?t, got ?t`.
+
+**Control.** The identical delegation with a GROUND caller loads clean, which is
+what pins the failure on the CALLER's polymorphism rather than on delegation,
+arity or the sort.
+
+**Consequence while it stood.** The property composed through the type checker
+but not through user-written library code, which is what any real pipeline is
+made of. `guardians.summarize` was narrowed to monomorphic for exactly this
+reason.
+
+**Fixed in `kb/typing.rs` (WI-1FKR2), and the two symptoms were one root.**
+§5.4 "Which variables the ∀ quantifies" states that a variable written in a
+parameter type is quantified — "an operation that writes no brackets at all
+still generalizes". The body check skolemized only two of the three families
+that reach it (the operation's declared `[A]` brackets and its enclosing sort's
+parameters), so a variable the author wrote INLINE stayed *flexible* in the
+body. A flexible variable is precisely what the unwritten-slot walk reads as an
+omitted slot, so it overwrote the author's `?t` with the projection; and at the
+top level the two flexible variables never met an arm of the subtype relation
+that could relate them. Skolemizing the third family restores the premise the
+first reader's own doc states — "by then … nothing else is left flexible".
+
+**It is a soundness fix as well as an expressiveness one.** `operation
+leaky(x: ?t) -> Int64 = sink(x)` with `sink(n: Int64)` loaded clean before: the
+body PINNED the caller's universally-quantified variable, and the return type was
+`Int64` on both sides so nothing downstream re-asked. It is now refused at
+`sink.n (op-arg): expected Int64, got ?t`.
+
+**What did NOT come back, and it is not this defect.** `summarize` still cannot
+be `?t` in, `?t` out — measured on the fixed loader, refused at
+`summarize.return: expected Text[Trust = ?t], got Text[Trust = Untrusted]`.
+Its body ends in `llm.complete(p)`, and `complete` returns `Text[Untrusted]` for
+every prompt *by design* (see C4's neighbour in `lib/llm.anthill`: the `?t` in /
+`?t` out spelling let a model mint releasable text, kept as
+`fixtures/agent/rejected/minting.anthill`). The INPUT side alone does now widen
+— `List[T = Text[?t]] -> Text[Untrusted]` loads, `good` still loads and all five
+rejected fixtures stay refused — and is left as written because in this pipeline
+the summarizer only ever sees Untrusted mailbox text.
+
 ---
 
 # Summary
@@ -482,6 +541,7 @@ instead, and this is recorded rather than diagnosed.
 | C7 | sort mismatch vs a variable-containing type | ✅ **fixed** in `kb/typing.rs` |
 | C8 | a spec op with `ensures` had no provider | ✅ **fixed** in `kb/typing.rs` |
 | C9 | `Modify[p]` target vs the refinement check | ❌ not compared |
+| C10 | label-preserving operation in the MIDDLE of a pipeline | ✅ **fixed** in `kb/typing.rs` |
 | C2 | `requires` gating a call site | ❌ by design (§8.5) |
 | C3 | rule body reading a type argument | ❌ WI-742 |
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable via `Covariant` + a provides-chain |

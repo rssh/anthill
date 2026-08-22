@@ -1,38 +1,49 @@
 -- ================================================================
--- MINIMAL REPRODUCTION — an operation's own type variable does not thread
--- through a call when the CALLER is generic in it.
+-- MINIMAL REPRODUCTION, NOW A REGRESSION FIXTURE — an operation's own type
+-- variable did not thread through a call when the CALLER was generic in it.
 --
 -- Nothing here is about information flow, labels, specs, or dispatch. It is
 -- twelve lines of ordinary generic code, and it is the root the guardians
 -- example hit when a label-preserving operation could not be written in terms
--- of another one (WI-20260822-F7PW9, recorded there as C10).
+-- of another one (WI-20260822-1FKR2; recorded as C10 in
+-- examples/guardians/docs/design/measured.md).
 --
 --   anthill load docs/measurements/op-type-var-does-not-thread.anthill
 --
--- Expected: only the two cases marked MUST FAIL are refused. Measured on
--- 2026-08-22: the two MUST-FAIL cases fail, and so do neither of the controls —
--- i.e. the controls pass, which is what makes the failures meaningful.
+-- FIXED 2026-08-22 (WI-20260822-1FKR2): the WHOLE FILE loads clean. The two
+-- cases below are marked WAS REFUSED with the diagnostic each used to give, and
+-- the ground case is kept as the control that pinned the failure on the
+-- CALLER's polymorphism. `wi1fkr2_op_type_var_threads_test` loads this file and
+-- asserts the clean load, so the record cannot drift from the loader.
 -- ================================================================
 
 -- ── case 1: a BARE type variable ─────────────────────────────────────────
 -- The identity of the identity. `via_bare` promises exactly what `idv`
 -- promises and its body is exactly `idv(x)`.
 --
--- MUST FAIL, and the diagnostic asks to be reported:
+-- WAS REFUSED, with a diagnostic that asked to be reported:
 --   type mismatch in via_bare.return (op-return): expected ?t, got ?t
 --   (these render alike but are not the same type — the difference is in a
 --    component this diagnostic does not print; please report it)
+-- The two sides were two distinct FLEXIBLE variables — the caller's, and the
+-- callee's own returned un-substituted — which `types_compatible` has no arm
+-- for. Skolemizing the caller's makes them one `TermId` and one type.
 namespace tv1
   operation idv(x: ?t) -> ?t
   operation via_bare(x: ?t) -> ?t = idv(x)
 end
 
 -- ── case 2: a variable NESTED in a sort application ──────────────────────
--- MUST FAIL:
+-- WAS REFUSED:
 --   type mismatch in via.return (op-return): expected Box[T = ?t], got Box[T = b.T]
 --
--- `b.T` is the tell: the callee's `?t` is resolved to a PROJECTION — "the T of
--- the argument b" — rather than unified with the variable the caller declared.
+-- `b.T` was the tell, and it named the mechanism: the caller's own `?t` stayed
+-- FLEXIBLE in the body, which is exactly what the unwritten-slot walk reads as
+-- an omitted slot, so it overwrote the author's variable with the projection
+-- "the T of the parameter b". The return kept `?t`, and the two stopped naming
+-- one thing. Same root as case 1 — §5.4 quantifies a variable written in a
+-- parameter type, and the body check was skolemizing only the `[A]` brackets
+-- and the enclosing sort's parameters.
 enum tv2.Box
   import anthill.prelude.{Int64}
   sort T = ?
@@ -45,8 +56,10 @@ namespace tv2
 end
 
 -- ── CONTROL: the same delegation with a GROUND caller ────────────────────
--- MUST LOAD. This is what pins the failures above as being about the CALLER's
--- polymorphism and not about delegation, arity, or the sort itself.
+-- LOADED THEN AND LOADS NOW. This is what pinned the failures above as being
+-- about the CALLER's polymorphism and not about delegation, arity, or the sort
+-- itself; it stays as the row that would say so if a repair had merely stopped
+-- checking returns.
 enum tv3.Box
   import anthill.prelude.{Int64}
   sort T = ?

@@ -1359,3 +1359,6 @@ mod wi_j38je_boolean_goal_test;
 
 #[path = "include/wi_rkmd4_type_var_param_slot_test.rs"]
 mod wi_rkmd4_type_var_param_slot_test;
+
+#[path = "include/wi1fkr2_op_type_var_threads_test.rs"]
+mod wi1fkr2_op_type_var_threads_test;

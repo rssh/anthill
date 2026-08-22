@@ -19,21 +19,35 @@ namespace guardians
   -- The quarantined summarizer. Its body is the whole dual-LLM pattern:
   -- the instruction is trusted, the content is not, and the join decides.
   --
-  -- MONOMORPHIC AT `Untrusted`, AND MEASURED, NOT PREFERRED. Writing it
-  -- label-polymorphic (`?t` in, `?t` out) does not type: two label-polymorphic
-  -- operations DO NOT COMPOSE. `Llm.complete` is `Prompt[?t] ->
-  -- Text[?t]`, and calling it from a caller that is itself polymorphic
-  -- in `?t` yields `Text[Trust = p.Trust]` — a PROJECTION of the parameter's
-  -- type rather than a binding of the caller's variable — and the return check
-  -- fails. The control: the identical dispatch with a GROUND argument label
-  -- loads clean. Filed as WI-20260822-1FKR2, with the minimal case (no
-  -- labels, no specs) in docs/measurements/op-type-var-does-not-thread.anthill.
+  -- MONOMORPHIC AT `Untrusted`, AND THE REASON IS NOT THE ONE THIS COMMENT USED
+  -- TO GIVE. It said two label-polymorphic operations DO NOT COMPOSE — a caller
+  -- generic in `?t` got back a PROJECTION of its own parameter instead of a
+  -- binding of its variable — and filed WI-20260822-1FKR2. That was a real
+  -- defect and it is FIXED: a label-preserving operation written in terms of
+  -- another one now loads, which is what makes the property compose through
+  -- library code and not only through the type checker.
   --
-  -- It is honest here rather than a workaround: in this pipeline the summarizer
-  -- only ever sees mailbox text, which is Untrusted by construction. The
-  -- PRIMITIVE stays polymorphic, and that is where it earns its keep — the same
-  -- `complete` serves the Public generation prompt and this Untrusted one, with
-  -- the label deciding what may happen to each result.
+  -- What forces the monomorphic RETURN is `Llm.complete`, and it is a decision
+  -- rather than a limit. That comment described it as `Prompt[?t] -> Text[?t]`;
+  -- llm.anthill records at length why it is not — that spelling let a model MINT
+  -- releasable text out of an empty prompt, kept as
+  -- fixtures/agent/rejected/minting.anthill — so `complete` returns
+  -- `Text[Untrusted]` for EVERY prompt. A body ending in `llm.complete(p)`
+  -- therefore packs an `Untrusted` witness, and `-> Text[?t]` is refused at
+  -- `summarize.return (op-return): expected Text[Trust = ?t], got
+  -- Text[Trust = Untrusted]` — correctly, on the fixed loader. Measured; see
+  -- docs/design/measured.md C10.
+  --
+  -- The INPUT could now be widened to `List[T = Text[?t]]` — measured: it loads,
+  -- `good` still loads and all five rejected fixtures stay refused — and it is
+  -- left as written for the reason it was written. In this pipeline the
+  -- summarizer only ever sees mailbox text, which is Untrusted by construction,
+  -- so a variable there would claim a generality nothing exercises. llm.anthill
+  -- states the rule this follows: write no variable where no relationship
+  -- exists — and `complete`'s own bare `Prompt` parameter is that rule applied
+  -- to the primitive: it accepts the Public generation prompt and this Untrusted
+  -- one alike, and claims no relationship between what goes in and what comes
+  -- back, because there is none.
   operation summarize(llm: Llm, msgs: List[T = Text[Untrusted]])
       -> Text[Untrusted]
     effects {External, Model, Error} =

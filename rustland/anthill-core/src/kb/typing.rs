@@ -1826,6 +1826,16 @@ pub struct TypingEnv {
     /// push of the iterative typer and this is set once per body, so clones are a
     /// refcount bump, not a Vec copy.
     ///
+    /// "THE OPERATION'S" IS THREE SPELLINGS, NOT ONE (WI-1FKR2). Its own `[A]`
+    /// brackets, and the logical variables it WROTE INLINE in a parameter type
+    /// (`via(b: Box[?t]) -> Box[?t]`) — §5.4 quantifies both the same way, so
+    /// [`inline_signature_type_params`] adds the second to the op half. Still TWO
+    /// SCOPES: an inline variable is per-call and caller-instantiated, which is
+    /// what the op half means and what the sort prefix is not. Nothing about
+    /// `sort_rigid_len` or either view below changes; what changes is that
+    /// "the operation's own type parameters" must be read as §5.4 defines them
+    /// and not as "whatever `[A]` was written".
+    ///
     /// Read through the two NAMED views, never directly, because the halves are
     /// not interchangeable:
     ///  * [`Self::param_rigids`] — ALL of it, for every σ-class question ("are
@@ -7890,7 +7900,7 @@ fn generalize_eta_arrow(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
-    let binders = signature_bound_vars(kb, sym, op);
+    let binders = signature_bound_vars(kb, sym, &op.params, &op.requires, &op.type_params);
     if binders.is_empty() {
         return arrow;
     }
@@ -9477,6 +9487,15 @@ fn find_spec_op_for_required_sort(
 /// clause can mention a variable the author never wrote. The rigid list holds exactly the
 /// parameters in scope — the enclosing sort's and the operation's own (WI-942) — so it is
 /// the precise question, and it is the same list the σ-alignment below bridges through.
+///
+/// "THE OPERATION'S OWN" INCLUDES A VARIABLE WRITTEN INLINE in a parameter type
+/// (WI-1FKR2) — `via(b: Box[?t])`'s `?t` is a type parameter by §5.4 and is in the list.
+/// That keeps this gate precise rather than widening it: such a variable IS a parameter a
+/// `requires` clause can name and a call can instantiate, which is the property the test
+/// is for. What is deliberately kept OUT, so the sentence above stays true, is a VALUE
+/// precondition's variable (`requires p(x, ?v)`) — it names no type — and
+/// [`inline_signature_type_params`] states at its own site why it does not read the
+/// `requires` field to get there.
 fn constrained_param_receiver_type(
     kb: &KnowledgeBase,
     env: &TypingEnv,
@@ -53991,7 +54010,7 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
     let mut candidates: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
     super::node_occurrence::collect_value_type(kb, &op.return_type, &mut candidates, &mut seen);
-    let bound = signature_bound_vars(kb, callee_op, &op);
+    let bound = signature_bound_vars(kb, callee_op, &op.params, &op.requires, &op.type_params);
     let mut unbound = Vec::new();
     for vid in candidates {
         if bound.iter().any(|b| b.raw() == vid.raw()) {
@@ -54022,6 +54041,13 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
 /// — the ones the CALLER supplies or instantiates, as opposed to the existentials
 /// [`unbound_return_vars`] opens.
 ///
+/// THE THIRD CONSUMER IS THE BODY (WI-1FKR2), and it is what makes "caller supplies or
+/// instantiates" bite on the implementation side: a variable this set names is universally
+/// quantified, so [`check_operation_bodies`] SKOLEMIZES it exactly as WI-392 skolemizes an
+/// `[A]` binder — the body must hold for every instantiation. Takes the signature as SLICES
+/// rather than an [`OperationInfoFull`] only because that consumer holds an
+/// `OpInfoRecord`; the fields are the same three.
+///
 /// THE TWO QUESTIONS ARE ONE QUESTION, AND THAT IS THE POINT. Read negatively it says
 /// which return variables are existential (WI-1078). Read positively it says which
 /// variables a ∀ over this signature quantifies — the binder list of the [`TypeExtractor
@@ -54049,14 +54075,16 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
 fn signature_bound_vars(
     kb: &KnowledgeBase,
     callee_op: Symbol,
-    op: &OperationInfoFull,
+    params: &[(Symbol, Value)],
+    requires: &[Value],
+    type_params: &[(Symbol, Var)],
 ) -> Vec<VarId> {
     let mut bound: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
-    for (_, ty) in &op.params {
+    for (_, ty) in params {
         super::node_occurrence::collect_value_type(kb, ty, &mut bound, &mut seen);
     }
-    for r in &op.requires {
+    for r in requires {
         super::node_occurrence::collect_value_type(kb, r, &mut bound, &mut seen);
     }
     // DEDUPED THROUGH THE SAME `seen` the walks above use, which the WI-1078 reading did not
@@ -54065,7 +54093,7 @@ fn signature_bound_vars(
     // — `∀A, A. …` is not a type. Driven by
     // `wi1083_poly_type_tests::a_type_parameterized_operation_lifts_to_a_forall…`, which
     // asserts the binder count.
-    for (_, v) in &op.type_params {
+    for (_, v) in type_params {
         if let Var::Global(vid) = v {
             if seen.insert(vid.raw()) {
                 bound.push(*vid);
@@ -54505,6 +54533,141 @@ fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
     matches!(kb.local_name_of(name), "_" | "?" | "?_")
 }
 
+/// WI-1FKR2 — the canonical type-param vars of EVERY sort lexically enclosing `op_sym`, not
+/// only its immediate parent. Feeds [`inline_signature_type_params`]' exclusion set, which
+/// must never mistake an OUTER instance's parameter for one of this operation's own: the two
+/// halves of [`TypingEnv::param_rigids`] mean different things, and an outer parameter placed
+/// in the op half would drop out of [`TypingEnv::enclosing_instance_param_rigids`].
+///
+/// NOT DRIVEN, and the honest reason: the shape needs an outer sort's canonical var to reach
+/// a nested member's signature as a `Var::Global`, and nothing produces one. A human writes
+/// such a parameter as a `Ref` to its symbol ([`signature_bound_vars`]' own header states
+/// this), and WI-1082's elaboration fills only a SELF slot — `SlotPosition::fill_foreign`
+/// returns `None` at a declaration, so `grab(o: Outer)` inside `sort Outer.Inner` arrives
+/// variable-free. MEASURED by instrumenting the caller: over that fixture the only variable
+/// reaching it is the author's own `?` in `grab2(o: Outer[A = ?])`, which the anonymous filter
+/// removes for its own reason.
+///
+/// It is here because the alternative was relying on that: `/code-review` observed that an
+/// outer param would ALSO be filtered as anonymous — `sort A = ?` aliases to a `?`-named var —
+/// which is a coincidence of an unrelated mint's naming, not a rule. This makes the exclusion
+/// structural. The walk is the qualified-name prefix chain, the same decomposition
+/// [`impl_parent_of_op`] does one step of.
+fn enclosing_sort_param_vars(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<u32> {
+    let qn = kb.qualified_name_of(op_sym).to_owned();
+    let mut out = Vec::new();
+    let mut scope = qn.as_str();
+    while let Some((parent, _)) = scope.rsplit_once('.') {
+        scope = parent;
+        let Some(sym) = kb.try_resolve_symbol(parent) else {
+            continue;
+        };
+        if !kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
+            continue;
+        }
+        for (_, t) in sort_type_params_as_pairs(kb, sym).iter() {
+            if let Term::Var(Var::Global(vid)) = kb.get_term(*t) {
+                out.push(vid.raw());
+            }
+        }
+    }
+    out
+}
+
+/// WI-1FKR2 — THE THIRD FAMILY OF TYPE PARAMETERS AN OPERATION BODY IS CHECKED UNDER: the
+/// logical variables the author WROTE INLINE in the signature (`operation via(b: Box[?t]) ->
+/// Box[?t]`), which no `[A]` bracket and no enclosing sort declares. §5.4 "Which variables the
+/// ∀ quantifies" states they are quantified — "an operation that writes no brackets at all
+/// still generalizes" — and [`signature_bound_vars`] is that set; this is the part of it the
+/// two families the caller already rigidifies (`rec.type_params`, the enclosing sort's) do not
+/// cover, returned in the `(name, var)` shape [`rigidify_op_type_params`] takes.
+///
+/// WITHOUT IT NO GENERIC OPERATION CAN BE IMPLEMENTED IN TERMS OF ANOTHER, and the two ways
+/// it failed are one root. An inline variable stayed a FLEXIBLE `Var::Global` in the body,
+/// which (a) made [`SlotPosition::written_slot_is_unwritten`]'s body answer —
+/// [`value_is_flex_var`], whose whole justification is that by then "nothing else is left
+/// flexible" — read the author's own `?t` as an UNWRITTEN slot and overwrite it with
+/// [`UnwrittenFill::Projection`]'s `b.T`, so the parameter and the return stopped naming one
+/// variable (`expected Box[T = ?t], got Box[T = b.T]`); and (b) left the bare form `-> ?t` as
+/// two distinct flex Globals at the top level, where [`types_compatible`] has no variable arm
+/// at all and the identical rendering was the whole diagnostic (`expected ?t, got ?t`).
+/// Skolemizing restores that justification's premise rather than adding a case to either
+/// reader.
+///
+/// ANONYMOUS VARIABLES ARE EXCLUDED, and that is the same call [`unbound_return_vars`] makes
+/// for the same reason: `?` names nothing and ties nothing, so it IS the unwritten slot
+/// kernel-language §"Expansion during unification" describes, and it must keep taking the
+/// projection fill. Only a NAME can be the tie this function exists to preserve.
+///
+/// THE `requires` SOURCE IS DELIBERATELY NOT READ, and that is the one place this question
+/// and [`signature_bound_vars`]' differ — passed as an EMPTY slice rather than forked into a
+/// second walk, so the three sources they DO share cannot drift. §5.4 states why the source
+/// is not one thing: an operation's `requires` list holds **two kinds of item**, a TYPE
+/// precondition (`requires Ord[T]`, whose variable is a type parameter) and a VALUE
+/// precondition (`requires p(x, ?v)`, whose variable is a precondition existential and names
+/// no type at all), and `OpInfoRecord::requires` carries both — mixed within one clause, since
+/// §5.4's split is per CONJUNCT. Reading the field whole would mint a KB-lifetime `Var::Rigid`
+/// for a value-precondition variable and push it into [`TypingEnv::param_rigids`], which
+/// [`constrained_param_receiver_type`] reads as its PRECISION gate ("the rigid list holds
+/// exactly the parameters in scope") — a wrong answer to a third reader's question, bought for
+/// nothing. Found by `/code-review`, which built the case: `f(x: Int64) -> Int64 requires
+/// p(x, ?v) = x`.
+///
+/// NOTHING IS LOST, measured both ways. A type precondition's variable that this op could
+/// actually be checked against also appears in a PARAMETER (`cmp(a: ?t, b: ?t) requires
+/// Ord[T = ?t]`), so the parameter walk already has it; a variable reaching `requires` and the
+/// RETURN alone (`mk() -> ?t requires Ord[T = ?t] = 1`) is refused identically with and
+/// without this source — before because [`types_compatible`] refuses every variable pair,
+/// after because a rigid equals only itself. Should a driver appear, the repair is the
+/// per-conjunct split §5.4 already names (`is_value_precondition_clause`), not the whole field.
+///
+/// A RETURN-ONLY variable is not here either — [`signature_bound_vars`] never walks the
+/// return — which is the WI-1063 polarity split kept intact: that one is the existential
+/// [`open_existential_return`] opens per call, and skolemizing it in the body is the wrong
+/// quantifier the note on `OpInfo.return_type` records as measured and rejected.
+///
+/// HOW MUCH THIS REACHES, measured rather than estimated: instrumented over all 194 corpus
+/// `.anthill` files, exactly TWO operations come back with a non-empty list — the ticket's own
+/// `tv1.via_bare` and `tv2.via`, one variable each, both through a PARAMETER. Every other
+/// inline-variable signature in the corpus (`LogicalStream.mplus` / `interleave`, guardians'
+/// `bodies_of` / `join_texts` / `prompt_with`) is BODY-LESS, and a body-less operation never
+/// reaches this pass at all. That is the whole blast radius, and it agrees with the corpus
+/// load diff: two files change, both the ticket's.
+fn inline_signature_type_params(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    params: &[(Symbol, Value)],
+    type_params: &[(Symbol, Var)],
+    parent_sort_params: &[(Symbol, TermId)],
+) -> Vec<(Symbol, Var)> {
+    let mut already: Vec<u32> = type_params
+        .iter()
+        .filter_map(|(_, v)| match v {
+            Var::Global(vid) => Some(vid.raw()),
+            _ => None,
+        })
+        .chain(
+            parent_sort_params
+                .iter()
+                .filter_map(|(_, t)| match kb.get_term(*t) {
+                    Term::Var(Var::Global(vid)) => Some(vid.raw()),
+                    _ => None,
+                }),
+        )
+        .collect();
+    already.extend(enclosing_sort_param_vars(kb, op_sym));
+    // `&[]` for `requires` — see the header. Not an oversight and not a fork: the shared
+    // walk still answers for the parameters, the `[A]` binders and the enclosing sort.
+    signature_bound_vars(kb, op_sym, params, &[], type_params)
+        .into_iter()
+        .filter(|vid| !already.contains(&vid.raw()))
+        .filter(|vid| !anonymous_var_name(kb, vid.name()))
+        // The rigid is named after the variable itself (`?t`), which is the only name it has —
+        // `rigidify_op_type_params` reads `local_name_of` off this symbol purely to render.
+        .map(|vid| (vid.name(), Var::Global(vid)))
+        .collect()
+}
+
 fn rigidify_op_type_params(kb: &mut KnowledgeBase, type_params: &[(Symbol, Var)]) -> Substitution {
     let mut rigidify = Substitution::new();
     for (param_sym, var) in type_params {
@@ -54673,11 +54836,31 @@ fn check_operation_bodies(
         let mut param_rigids: Vec<(VarId, TermId)> = Vec::new();
         let mut sort_rigid_len = 0usize;
         let mut rigidify_subst = Substitution::new();
+        // WI-1FKR2: the THIRD family — a logical variable the author wrote INLINE in the
+        // signature (`via(b: Box[?t]) -> Box[?t]`), which §5.4 quantifies exactly as it does
+        // an `[A]` binder. Computed before `rec` is consumed below; empty for every operation
+        // that writes none, which is almost all of them.
+        let inline_type_params = inline_signature_type_params(
+            kb,
+            rec.op_sym,
+            &rec.params,
+            &rec.type_params,
+            &parent_sort_params,
+        );
+        // WI-1FKR2: the op's OWN half is its declared brackets PLUS its inline variables —
+        // both are per-call and caller-instantiated, so both sit after the enclosing sort's
+        // prefix in `param_rigids` (see that field's doc: the sort view means "THIS
+        // instance's params", which an inline variable is not). Joined HERE so the gate
+        // below stays one test over the op's half and one over the sort's.
+        let mut op_own_params = rec.type_params.clone();
+        op_own_params.extend(inline_type_params);
         let (params, return_type, declared_effects) =
-            if rec.type_params.is_empty() && parent_sort_params.is_empty() {
+            if op_own_params.is_empty() && parent_sort_params.is_empty() {
                 (rec.params, rec.return_type, rec.effects)
             } else {
-                let mut all_params = rec.type_params.clone();
+                let mut all_params = op_own_params;
+                // Read BEFORE the sort's half is appended — the split below is exactly here.
+                let op_param_len = all_params.len();
                 // WI-849: the op table is `Var`-typed; the sort table is still TermId-typed
                 // (its other consumers want the param as a TERM, under `&KnowledgeBase`
                 // where they could not re-alloc). Convert here — total, because
@@ -54714,11 +54897,12 @@ fn check_operation_bodies(
                         })
                         .collect()
                 };
-                // `all_params` is `rec.type_params ++ parent_sort_params`; `param_rigids` is
+                // `all_params` is `op_own_params ++ parent_sort_params`; `param_rigids` is
                 // the other order — enclosing SORT params first, so `sort_rigid_len` is where
                 // the op's own begin. Split and reverse explicitly rather than partitioning
-                // in-place: the length must be read BETWEEN the two halves.
-                let (op_half, sort_half) = all_params.split_at(rec.type_params.len());
+                // in-place: the length must be read BETWEEN the two halves, which is why
+                // `op_param_len` is taken above rather than here.
+                let (op_half, sort_half) = all_params.split_at(op_param_len);
                 param_rigids = to_rigids(sort_half);
                 sort_rigid_len = param_rigids.len();
                 param_rigids.extend(to_rigids(op_half));

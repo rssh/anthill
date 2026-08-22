@@ -62,7 +62,7 @@ first → topological / synthesis order; cycles, missing members, and an abstrac
 receiver with no such interface member are loud errors) applies to both — see
 WI-376.
 
-## 2. Threading is *written* — two mechanisms
+## 2. Threading is *written* — three mechanisms
 
 A relationship from a parameter to the result is stated, never implicit. Pick
 either:
@@ -84,11 +84,30 @@ splitFirst[Elem, Eff](s: Stream[T = Elem, E = Eff])
   -> Option[Pair[A = Elem, B = Stream[T = Elem, E = Eff]]] effects Eff
 ```
 
-Both are explicit and **per-call**. Operation type parameters are *already*
+**(c) A shared logical variable (WI-1FKR2) — (b) without the bracket.** Write one
+variable in both positions and the tie is the variable:
+
+```
+id(b: Box[?t]) -> Box[?t]
+summarize(t: Text[L = ?l]) -> Text[L = ?l]
+```
+
+This is the same mechanism as (b), not a third kind of thing: §5.4's *"Which
+variables the ∀ quantifies"* counts a variable named in a parameter type exactly
+as it counts an `[A]` binder, so `?t` is per-call and caller-instantiated, and the
+body is checked with it skolemized. It was listed nowhere for a while and did not
+work: the body left such a variable *flexible*, which is what the unwritten-slot
+filler reads as an omitted slot, so it overwrote the author's `?t` with (a)'s
+projection `b.T` and the two ends of the signature stopped naming one thing. That
+is why no generic operation could be implemented in terms of another one — the
+form a *library* is written in is (c) delegating to (c).
+
+All three are explicit and **per-call**. Operation type parameters are *already*
 per-call (042: "each invocation binds them afresh"), so **no separate
 "per-call scheme substrate" is needed** — 042 is the substrate. Prefer (a) for
 brevity and for wide sorts (`s.Sort` is one token for all parameters; `s.P7`
-picks one); (b) when you want no new surface.
+picks one); (b) when you want to name the parameter at the call site; (c) when the
+relationship is between two positions and nothing needs to name it from outside.
 
 ## 3. No implicit sort-parameter sharing
 
