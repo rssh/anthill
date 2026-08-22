@@ -17,6 +17,31 @@ end
 
 -- Text, labelled by where it came from. `Trust` is the parameter SLOT;
 -- `TrustLevel` is the sort its arguments inhabit.
+--
+-- WHY A PARAMETER, AND WHICH HALF OF IT IS A WORKAROUND.
+--
+-- The parameter is NOT a workaround. It is the only way an inner label becomes
+-- visible to a signature: without it `Text` is one single type, and
+-- `send_email(body: Text[Public])` — the declaration that refuses the article's
+-- exfiltration — cannot be written at all, because there is no slot to put
+-- `Public` into. A label sitting in a field is unreachable from a signature,
+-- and labels are erased at run time, so there is no later opportunity to check
+-- one. This parameter stays.
+--
+-- The `= ?` IS a workaround, and it should go away. `sort Trust = ?` is
+-- UNCONSTRAINED, so the slot admits anything at all — `Text[Int64]` loads
+-- clean, measured, and a `requires IsLevel[T = Trust]` does not bind it either.
+-- So `TrustLevel` above is what these arguments are MEANT to inhabit, not what
+-- they are required to. The lattice is a convention held up by the pairings
+-- written below, and `Text[Publik]` would be a fresh type rather than a typo.
+--
+-- Tracked as WI-20260822-T70A2. When a parameter can be bounded, this
+-- declaration and `Message`'s below — and `Prompt`'s in lib/llm.anthill —
+-- become the bounded form, and this note goes with them.
+--
+-- Not a security hole either way: a sink demands a LITERAL label, so
+-- `Text[Int64]` reaches nothing. What is unsound is only the claim one level
+-- up, that the parameter ranges over a lattice. It ranges over everything.
 enum guardians.Text
   import anthill.prelude.{String}
   sort Trust = ?

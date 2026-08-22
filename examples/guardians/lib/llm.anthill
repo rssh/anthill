@@ -10,6 +10,15 @@
 -- A prompt is a VALUE, and it carries a trust label. That is not bookkeeping:
 -- the injection IS prompt content, so making the prompt a value makes the
 -- attack surface a value.
+-- The `Trust` parameter has exactly ONE consumer, and that is what earns it:
+-- `Harness.generate` demands `Prompt[Public]`, so code generation may only
+-- proceed from a content-free prompt. Without the parameter `Prompt` would be a
+-- single type and that demand could not be written at all — the label would sit
+-- inside the `body` field where no signature can reach it.
+--
+-- `complete` does NOT consume it (any prompt, always an Untrusted reply), and
+-- the constructor cannot forge it: `prompt(body: t)` takes its label from `t`,
+-- so `Prompt[Public]` from untrusted text is a type error (measured).
 enum guardians.Prompt
   import guardians.{Text}
   sort Trust = ?
@@ -39,10 +48,32 @@ sort guardians.Llm
   -- itself is an untrusted influence and belongs in the join.
   -- `?t ⊔ Model = Untrusted` for every `?t`, which is why the output is fixed.
   --
-  -- What the input label still buys: nothing here, and that is honest. It is
-  -- kept polymorphic so the operation ACCEPTS both a Public generation prompt
-  -- and an Untrusted summarization one, rather than needing two declarations.
-  operation complete(self: C, p: Prompt[?t]) -> Text[Untrusted]
+  -- THE PARAMETER IS BARE, not `Prompt[?t]`, and this is worth a paragraph
+  -- because it is a general rule this file learned twice, both times the hard
+  -- way.
+  --
+  --   A TYPE VARIABLE THAT OCCURS ONCE IS A WILDCARD. Spelling it as a
+  --   variable claims a relationship that is not there.
+  --
+  -- `?t` here appeared in the parameter and never in the result, so it
+  -- constrained nothing — measured: `Prompt[?t]` and a bare `Prompt` accept a
+  -- Public and an Untrusted prompt alike, indistinguishably. What it DID do
+  -- was read like `f(x: T[?t]) -> T[?t]`, the shape that means "preserves the
+  -- label", to which this operation deliberately does not belong. A reviewer
+  -- scanning for label-preserving signatures would have counted this one.
+  --
+  -- That misreading is not hypothetical. `complete` WAS typed `?t` in, `?t`
+  -- out for a revision, and it let a model mint releasable text out of an
+  -- empty prompt and mail it away (the exploit is kept as a regression:
+  -- fixtures/agent/rejected/minting.anthill). Both defects found in this file
+  -- have the same shape — a signature asserting a relationship it does not
+  -- perform — so the cheapest defence is to write no variable where no
+  -- relationship exists.
+  --
+  -- Worth a diagnostic eventually: a once-occurring type variable in a
+  -- signature is almost always either a mistake or noise, and the typer knows.
+  -- Not filed; recorded here.
+  operation complete(self: C, p: Prompt) -> Text[Untrusted]
     effects {External, Model, Error}
 end
 
@@ -51,7 +82,7 @@ sort guardians.LiveLlm
   import guardians.{Llm, Prompt, Text, Model}
   import guardians.TrustLevel.{Untrusted}
   entity live_llm(endpoint: String, model: String)
-  operation complete(self: LiveLlm, p: Prompt[?t]) -> Text[Untrusted]
+  operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Model, Error}
   provides Llm
 end
@@ -61,7 +92,7 @@ sort guardians.FakeLlm
   import guardians.{Llm, Prompt, Text, Model}
   import guardians.TrustLevel.{Untrusted}
   entity fake_llm(fixture: String)
-  operation complete(self: FakeLlm, p: Prompt[?t]) -> Text[Untrusted]
+  operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Model, Error}
   provides Llm
 end
