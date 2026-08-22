@@ -342,33 +342,94 @@ fn a_head_that_binds_is_not_an_owner() {
 // ── The one shape ownership cannot decide ───────────────────────────────────
 
 #[test]
-fn mutual_visibility_introduces_separately_in_either_order() {
-    // TWO SCOPES THAT CAN EACH SEE THE OTHER, one head name between them. Neither is
-    // outermost, so no fact in the program names an owner — and each therefore
-    // introduces its OWN.
+fn a_multi_file_cycle_is_refused_and_both_declarations_repair_it() {
+    // TWO SCOPES THAT CAN EACH SEE THE OTHER, one head name between them, IN TWO FILES.
+    // Neither is outermost, so no fact in the program names an owner, and WI-980's
+    // tie-break gives each its OWN predicate. That is still the only order-free answer
+    // to "who owns it" — and WI-20260821-E85J5 measured what it costs a USE:
     //
-    // WHAT A *USE* THEN SEES, driven below rather than asserted in prose. A bare `p`
-    // written in `mA` resolves to `mA`'s OWN `p` and stops: `resolve_in_scope` reads a
-    // scope's `locals` and returns before it ever consults an import or a parent, so the
-    // name each scope just introduced SHADOWS the wildcard import that made the cycle.
-    // `mA.usesp(2)` therefore answers 0 — `mA`'s `import mB.*` is dead for `p`, silently.
+    //     mA.usesp(1)=1  mA.usesp(2)=0        <- `mA`'s own clause reached, `mB`'s not
+    //     CONTROL, mA with no `p` of its own:
+    //     mA.usesp(1)=0  mA.usesp(2)=1        <- so the import DOES work; the local shadows it
     //
-    // AN EARLIER VERSION OF THIS COMMENT CLAIMED THE OPPOSITE — that a bare `p` is
-    // "reported by the ordinary resolver as `ambiguous symbol`, which is the right place
-    // for it: the ambiguity is at the USE". That is structurally impossible for the
-    // reason just given, it was never driven, and the row asserted only clause counts,
-    // which are equally true of the silent shadow. It is corrected here rather than
-    // quietly dropped because the claim was the whole justification for the design.
+    // `resolve_in_scope` reads a scope's own `locals` and returns before consulting any
+    // import or parent, so the symbol the tie-break minted at `mA` short-circuits the
+    // `import mB.*` that made the cycle. No ambiguity is raised and none can be.
     //
-    // WHETHER THE SHADOW IS RIGHT IS AN OPEN QUESTION, NOT A SETTLED ONE
-    // (WI-20260821-E85J5). It is consistent with the rest of the language — a local beats
-    // an import everywhere — but 059 R4 clause 3 refuses exactly this capture for
-    // DECLARATIONS, and before WI-980 the cycle collapsed to one predicate so `p(2)` WAS
-    // reachable from `mA`. This row pins the behaviour so that a change to it is visible;
-    // it does not argue that the behaviour is correct.
+    // WHAT E85J5 SETTLED: THE SHADOW IS NOT THE DEFECT, INVENTING IT IS. A local beating
+    // an import is what every other name does, and an author who WRITES `rule p(?x)` in
+    // `mA` gets exactly this and should. What was wrong was that two files neither of
+    // which shows the cycle silently decided it. So this shape is now REFUSED, which is
+    // what 061 already says about every other predicate assembled from two files — the
+    // file rule could not see this one only because the tie-break splits it into two
+    // single-file predicates before the file rule counts them.
+    //
+    // BACKED OUT (drop the `splits.push(split)` recording in `Ownership::owners_for`, so
+    // the cycle is decided exactly as before but never reported): this test's first two
+    // assertions fail — the load succeeds. The two DECLARED arms below pass either way,
+    // by design: they are the control that shows the refusal is about the SILENCE and not
+    // about the shape, since the same two files with a declaration load in both.
+    const A: &str =
+        "namespace mA\n  import mB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    const B: &str = "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n";
+    for files in [[A, B], [B, A]] {
+        crate::common::expect_load_errors(
+            crate::common::try_load_kb_with_files(&files),
+            &["is written in 2 scopes that form an IMPORT CYCLE — mA, mB"],
+        );
+    }
+
+    // REMEDY 1, the one the message names first — DECLARE IT ONCE, in `mA`. `mB`'s head
+    // then resolves through its own `import mA.*` and is a CLAUSE of `mA.p`, so the
+    // predicate is shared and BOTH clauses answer. This is the reading the pre-WI-980
+    // loader reached by file order; it is now reached by the text saying so.
+    const A_DECL: &str = concat!(
+        "namespace mA\n  import mB.*\n  rule p(?x)\n  rule p(1) :- true\n",
+        "  rule usesp(?x) :- p(?x)\nend\n"
+    );
+    let mut shared =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B]));
+    assert_eq!(clauses(&shared, "mA.p"), Some(2), "one predicate, both clauses");
+    assert_eq!(clauses(&shared, "mB.p"), None, "`mB` introduced nothing");
+    assert_eq!(answers(&mut shared, "mA.usesp(1)"), 1);
+    assert_eq!(
+        answers(&mut shared, "mA.usesp(2)"),
+        1,
+        "the import is LIVE — this is the row that reads 0 under the silent split"
+    );
+
+    // REMEDY 2 — DECLARE IT IN EACH, which says they are separate predicates. The shadow
+    // is back, and that is the point: it is now what the author wrote. This arm is what
+    // shows the refusal is not a ban on the behaviour, only on inventing it.
+    const A_OWN: &str = A_DECL;
+    const B_OWN: &str = "namespace mB\n  import mA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n";
+    let mut split =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_OWN, B_OWN]));
+    assert_eq!(clauses(&split, "mA.p"), Some(1), "two predicates, one clause each");
+    assert_eq!(clauses(&split, "mB.p"), Some(1));
+    assert_eq!(answers(&mut split, "mA.usesp(1)"), 1, "its own clause is reached");
+    assert_eq!(
+        answers(&mut split, "mA.usesp(2)"),
+        0,
+        "and the imported one is NOT — the declared local shadows the import, as written"
+    );
+}
+
+#[test]
+fn a_single_file_cycle_still_introduces_separately_in_either_order() {
+    // THE RESIDUE THE REFUSAL ABOVE DELIBERATELY DOES NOT REACH — 061's own open
+    // question 3. The file is the unit for 059 §Definitions' reason: both scopes are in
+    // front of the one author who wrote them, so there is no second party for the
+    // declaration to be an agreement WITH. The tie-break auto-declares, and the shadow
+    // stays.
+    //
+    // IT IS THE CONTROL FOR THE REFUSAL'S NARROWNESS, not an oversight: the same two
+    // namespaces, the same two heads, the same name — only the file count differs, and
+    // it decides refusal versus silence. If a later change makes the refusal fire on one
+    // file too, this row is what says so.
     //
     // ORDER-FREE IS THE OTHER CLAIM. MEASURED under the demand-driven recursion this
-    // replaced: `mA.p=2, mB.p=None` in one file order and the mirror in the other,
+    // replaced: `sA.p=2, sB.p=None` in one text order and the mirror in the other,
     // because the provisional answer the cycle re-entry handed back was memoised into
     // whichever arm was asked first.
     //
@@ -376,35 +437,92 @@ fn mutual_visibility_introduces_separately_in_either_order() {
     // this test still passes — the cycle IS the whole undecided set here, so the two
     // agree. [`a_cycle_does_not_reach_a_bystander`] is the row that separates them, and
     // it is named here because this row alone would let that distinction go unmeasured.
-    const A: &str = "namespace mA\n  import mB.*\n  rule p(1) :- true\nend\n";
-    const B: &str = "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n";
-    for files in [[A, B], [B, A]] {
-        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+    const A_BLOCK: &str =
+        "namespace sA\n  import sB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    const B_BLOCK: &str = "namespace sB\n  import sA.*\n  rule p(2) :- true\nend\n";
+    for src in [
+        format!("{A_BLOCK}{B_BLOCK}"),
+        format!("{B_BLOCK}{A_BLOCK}"),
+    ] {
+        let mut kb =
+            crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[&src]));
+        assert_eq!(clauses(&kb, "sA.p"), Some(1), "each scope keeps its own clause");
+        assert_eq!(clauses(&kb, "sB.p"), Some(1));
+        // DRIVE THE USE. Clause counts alone cannot tell the shadow from the alternative.
+        assert_eq!(answers(&mut kb, "sA.usesp(1)"), 1, "its own clause is reached");
         assert_eq!(
-            clauses(&kb, "mA.p"),
-            Some(1),
-            "each scope keeps its own clause"
+            answers(&mut kb, "sA.usesp(2)"),
+            0,
+            "and the imported one is NOT — the local shadows the import that made the cycle"
         );
-        assert_eq!(clauses(&kb, "mB.p"), Some(1));
     }
-    // DRIVE THE USE. Clause counts alone cannot tell the shadow from the alternative.
-    const A_USES: &str =
-        "namespace mA\n  import mB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
-    let mut kb =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_USES, B]));
-    assert_eq!(answers(&mut kb, "mA.usesp(1)"), 1, "its own clause is reached");
-    assert_eq!(
-        answers(&mut kb, "mA.usesp(2)"),
-        0,
-        "and the imported one is NOT — the local shadows the import that made the cycle"
-    );
     // CONTROL — the same import, with nothing local to shadow it. This is what shows the
     // 0 above is the shadow and not a broken import.
-    const A_NO_OWN: &str = "namespace mA\n  import mB.*\n  rule usesp(?x) :- p(?x)\nend\n";
+    const A_NO_OWN: &str = "namespace sA\n  import sB.*\n  rule usesp(?x) :- p(?x)\nend\n";
+    let ctrl_src = format!("{A_NO_OWN}{B_BLOCK}");
     let mut ctrl =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_NO_OWN, B]));
-    assert_eq!(answers(&mut ctrl, "mA.usesp(2)"), 1, "CONTROL: the import works");
-    assert_eq!(answers(&mut ctrl, "mA.usesp(1)"), 0, "CONTROL: nothing local exists");
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[&ctrl_src]));
+    assert_eq!(answers(&mut ctrl, "sA.usesp(2)"), 1, "CONTROL: the import works");
+    assert_eq!(answers(&mut ctrl, "sA.usesp(1)"), 0, "CONTROL: nothing local exists");
+}
+
+#[test]
+fn a_cycle_member_reopened_in_a_second_file_is_reported_once() {
+    // ONE MISSING DECLARATION IS ONE MESSAGE. Both refusals can see this program: `wA`'s
+    // own heads span two files (the ordinary 061 file rule), and `wA`/`wB` are a cycle
+    // (the E85J5 rule). Reporting both prints one fault twice and prescribes two
+    // different owners for it — and the cycle message's own justification, that no single
+    // file shows the author the cycle, is FALSE here, because file 1 shows all of it.
+    //
+    // So the cycle error yields to the file error, which names a concrete owner whose
+    // repair fixes both: declare `p` in `wA` and `wB`'s head resolves to it through the
+    // `import wA.*` that made the cycle. The repair is DRIVEN below, not asserted.
+    //
+    // FOUND BY `/code-review`, not by a fixture: the suite had every other combination.
+    //
+    // BACKED OUT (drop the `reported_span_files` test in the cycle block): this row fails
+    // with TWO errors. [`a_multi_file_cycle_is_refused_and_both_declarations_repair_it`]
+    // passes either way — no member there spans files — which is what shows the two
+    // blocks are asking different questions rather than one guarding the other.
+    const F1: &str = concat!(
+        "namespace wA\n  import wB.*\n  rule p(1) :- true\nend\n",
+        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
+    );
+    const F2: &str = "namespace wA\n  import wB.*\n  rule p(9) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[F1, F2]),
+        &["has rule heads in 2 files"],
+    );
+    // THE REPAIR THE SURVIVING MESSAGE NAMES. One declaration in `wA` collects all three
+    // clauses — `wB`'s included — so the message is not merely the shorter of two, it is
+    // the one whose prescription works.
+    const F1_DECL: &str = concat!(
+        "namespace wA\n  import wB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n",
+        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
+    );
+    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[F1_DECL, F2]));
+    assert_eq!(clauses(&kb, "wA.p"), Some(3), "one predicate, all three clauses");
+    assert_eq!(clauses(&kb, "wB.p"), None, "`wB` introduced nothing");
+}
+
+#[test]
+fn a_nested_cycle_across_two_files_is_the_ordinary_file_error() {
+    // THE OTHER HALF OF THE REFUSAL'S NARROWNESS. A facade importing its own submodule
+    // while the submodule imports it back is also a two-file cycle — but its members are
+    // NESTED, so the enclosing one owns (§"outermost"), the two heads become ONE
+    // predicate, and 061's ordinary file rule reports it. Same two files, same two heads,
+    // same name; only the nesting differs, and it decides WHICH message the author gets.
+    //
+    // WHY IT IS HERE: it is what stops the new refusal from being stated over "a cycle".
+    // Neither shape is silent afterwards, and they are silent for different reasons, so
+    // both messages have to exist.
+    const A: &str =
+        "namespace nOuter\n  import nOuter.nInner.*\n  rule p(1) :- true\nend\n";
+    const B: &str = "namespace nOuter.nInner\n  import nOuter.*\n  rule p(2) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[A, B]),
+        &["has rule heads in 2 files"],
+    );
 }
 
 #[test]
@@ -418,10 +536,16 @@ fn a_global_head_absorbs_nothing_beside_a_cycle_or_a_nesting() {
     // PASSES EITHER WAY TODAY, and is here because it did not always: the shape was
     // reachable while a cycle produced a "nobody owns it" verdict, and the per-site split
     // removed that verdict rather than the route. Nothing else pins the route.
+    // ONE FILE for the cycle, since WI-20260821-E85J5: the two-file spelling is now
+    // refused, and the route this row exists for — a cycle re-asking the ordinary ladder
+    // through the overlay — is the same at one file as at two. What the split into files
+    // would add here is the E85J5 error, not the `<global>` question.
     const G: &str = "rule p(0) :- true\n";
-    const A: &str = "namespace mA\n  import mB.*\n  rule p(1) :- true\nend\n";
-    const B: &str = "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n";
-    for files in [[G, A, B], [A, B, G]] {
+    const A: &str = concat!(
+        "namespace mA\n  import mB.*\n  rule p(1) :- true\nend\n",
+        "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n"
+    );
+    for files in [vec![G, A], vec![A, G]] {
         let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
         assert_eq!(
             clauses(&kb, "p"),

@@ -1235,6 +1235,62 @@ pub enum LoadError {
         /// The first head, so the error has a line.
         span: Span,
     },
+    /// PROPOSAL 061, REACHING THE ONE SHAPE ITS FILE RULE COULD NOT SEE
+    /// (WI-20260821-E85J5) — TWO MUTUALLY-VISIBLE SCOPES WRITING ONE PREDICATE NAME IN
+    /// DIFFERENT FILES, DECLARED IN NEITHER.
+    ///
+    /// [`LoadError::PredicateHeadsSpanFiles`] above refuses a predicate assembled from
+    /// more than one file. It is keyed on the PREDICATE, so it only ever sees heads the
+    /// decision put on ONE owner — and a mutual-import cycle is exactly where the
+    /// decision does not do that. WI-980's tie-break gives every member of the cycle its
+    /// OWN predicate ("two scopes that can each see the other each introduce their own"),
+    /// so the two files hold two single-file predicates, the file rule counts one file
+    /// each, and nothing is reported.
+    ///
+    /// WHAT THAT COSTS THE AUTHOR, measured with a paired control:
+    ///
+    /// ```text
+    ///   file A  namespace mA { import mB.*  rule p(1) :- true  rule usesp(?x) :- p(?x) }
+    ///   file B  namespace mB { import mA.*  rule p(2) :- true }
+    ///     -> loads clean.  mA.usesp(1)=1,  mA.usesp(2)=0
+    ///   CONTROL, the same import with no `p` of mA's own
+    ///     -> mA.usesp(1)=0,  mA.usesp(2)=1
+    /// ```
+    ///
+    /// so `mA`'s `import mB.*` is DEAD for `p` and nothing says so. `resolve_in_scope`
+    /// reads a scope's own `locals` and returns before consulting any import or parent,
+    /// and the symbol the tie-break minted at `mA` is a local — no ambiguity is raised
+    /// and none can be.
+    ///
+    /// THE SHADOW ITSELF IS NOT THE DEFECT; INVENTING IT IS. A local beating an import is
+    /// what every other name in the language does, and an author who WRITES
+    /// `rule p(?x)` in `mA` gets exactly this and should. What the tie-break does is
+    /// make that choice on the author's behalf, out of two files neither of which shows
+    /// it. Refusing here says the same thing 061 says everywhere else: the program has
+    /// not stated who owns this predicate, so state it.
+    ///
+    /// THE CONTROL FOR THE REFUSAL'S NARROWNESS is the NESTED cycle. A facade importing
+    /// its own submodule while the submodule imports it back is also a cycle across two
+    /// files, and it is NOT this error: the enclosing member owns (§"outermost"), the two
+    /// heads become one predicate, and `PredicateHeadsSpanFiles` reports it. Same two
+    /// files, same two heads, same name — only the nesting differs, and it decides which
+    /// message the author gets. Neither shape is silent afterwards.
+    ///
+    /// THE SINGLE-FILE CYCLE IS DELIBERATELY UNTOUCHED — 061's own file unit and its
+    /// open question 3. Both scopes are in front of the one author who wrote them, which
+    /// is 059 §Definitions' entire argument for the file boundary, so the tie-break is
+    /// allowed to auto-declare there and the shadow stays. It is pinned, not assumed.
+    PredicateSplitByImportCycle {
+        /// The predicate's local name.
+        name: String,
+        /// The mutually-visible scopes the tie-break gave separate predicates to, in
+        /// display order. Named because no single file shows the author the cycle.
+        scopes: Vec<String>,
+        /// Every file holding one of their heads, in load order.
+        files: Vec<String>,
+        /// The first head, so the error has a line.
+        span: Span,
+    },
     /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
     /// `⊥` denial names no predicate, a multi-head rule names several, and a QUALIFIED
     /// or desugared head introduces no name at all. Under 061 such a rule asserts
@@ -1868,6 +1924,7 @@ impl LoadError {
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
+            | LoadError::PredicateSplitByImportCycle { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -2336,6 +2393,34 @@ impl LoadError {
                     files.join(", "),
                     name,
                     scope
+                )
+            }
+            LoadError::PredicateSplitByImportCycle {
+                name,
+                scopes,
+                files,
+                span,
+            } => {
+                format!(
+                    "{}: the predicate `{}` is written in {} scopes that form an IMPORT \
+                     CYCLE — {} — across {} files — {} — and is declared in none of \
+                     them. Each scope reaches the others, so nothing in the program says \
+                     which one owns the name, and each would silently get its OWN `{}`: \
+                     a bare `{}` written in any of them then reaches only that one, and \
+                     the wildcard import that made the cycle is dead for this name with \
+                     no ambiguity reported. Declare it (proposal 061): one body-less \
+                     `rule {}(…)` in the scope that owns it makes the other scopes' \
+                     heads its clauses, or one in EACH scope says they are separate \
+                     predicates.",
+                    loc.format_start(*span),
+                    name,
+                    scopes.len(),
+                    scopes.join(", "),
+                    files.len(),
+                    files.join(", "),
+                    name,
+                    name,
+                    name
                 )
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
@@ -3293,6 +3378,24 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::PredicateSplitByImportCycle {
+                name,
+                scopes,
+                files,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the predicate '{}' is written in {} scopes forming an import cycle ({}) across {} files ({}) and declared in none (at {}..{})",
+                    name,
+                    scopes.len(),
+                    scopes.join(", "),
+                    files.len(),
+                    files.join(", "),
+                    span.start,
+                    span.end
+                )
+            }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 write!(
                     f,
@@ -4009,6 +4112,9 @@ pub fn scan_definitions_with_sources(
     // A DECLARED predicate never reaches here: its heads all denote (pass 1 minted the
     // name), so they are not candidates and hold no verdict — which is what makes
     // "declare it" the remedy the message can name.
+    // Names this block reports, read by the cycle block below — one missing declaration
+    // must not be reported twice with two different prescribed owners.
+    let mut reported_span_files: HashSet<(ScopeId, &str)> = HashSet::new();
     {
         let mut by_predicate: HashMap<(ScopeId, &str), Vec<usize>> = HashMap::new();
         for (idx, (head, &denotes_already)) in heads.iter().zip(&denotes).enumerate() {
@@ -4044,6 +4150,7 @@ pub fn scan_definitions_with_sources(
             if file_idxs.len() < 2 {
                 continue;
             }
+            reported_span_files.insert((owner, name));
             // ONE error per predicate, located at its FIRST head — not one per head. The
             // defect is the predicate, and a report per clause would print it N times.
             let first = sites
@@ -4070,6 +4177,94 @@ pub fn scan_definitions_with_sources(
                 .located_in(files[heads[first].file_idx]),
             );
         }
+    }
+
+    // WI-20260821-E85J5 — AND THE ONE ASSEMBLY THE BLOCK ABOVE CANNOT SEE.
+    //
+    // The file rule is keyed on the PREDICATE, so it counts the files of heads the
+    // decision put on ONE owner. A mutual-import cycle is where the decision refuses to
+    // do that: WI-980's tie-break gives every member its own predicate, so two files
+    // hold two single-file predicates and the block above reports nothing — while a
+    // bare use in either scope now reaches only that scope's half, the import that made
+    // the cycle silently dead for the name. Same question, same answer: the program has
+    // not said who owns this predicate, so it must.
+    //
+    // THE FILE IS STILL THE UNIT, and that is not an inherited default — 061's open
+    // question 3 names the single-file cycle as the residue, and 059 §Definitions'
+    // argument applies to it unchanged: both scopes are in front of the one author who
+    // wrote them. So a cycle inside one file keeps auto-declaring, shadow and all.
+    for (name, scopes) in decision.splits() {
+        let sites: Vec<usize> = heads
+            .iter()
+            .enumerate()
+            .filter(|(idx, head)| {
+                // An EQUATION subject is out of 061's scope (its clauses index under the
+                // connective, so there is no predicate to declare) and out of this
+                // error's too; `denotes` heads never reached the decision at all.
+                head.name == *name
+                    && scopes.contains(&head.scope)
+                    && !denotes[*idx]
+                    && head.introduced_by == RuleIntroduction::Predicate
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        let mut file_idxs: Vec<usize> = sites.iter().map(|&i| heads[i].file_idx).collect();
+        file_idxs.sort_unstable();
+        file_idxs.dedup();
+        // ONE FILE ⇒ the residue above, deliberately allowed. FEWER THAN TWO SCOPES
+        // among the predicate heads ⇒ the split was decided for an equation subject and
+        // this name has no predicate to own.
+        let scopes_with_heads: HashSet<ScopeId> = sites.iter().map(|&i| heads[i].scope).collect();
+        if file_idxs.len() < 2 || scopes_with_heads.len() < 2 {
+            continue;
+        }
+        // AND ONE MISSING DECLARATION IS ONE MESSAGE. A split member whose OWN heads span
+        // files was already reported by the block above, which names a concrete owning
+        // scope and a repair that fixes this too — declare the name there and every
+        // member's head resolves to it through the import that made the cycle. Emitting
+        // both prints one fault twice and prescribes two different owners for it.
+        //
+        // IT IS ALSO WHAT MAKES THIS ERROR'S OWN JUSTIFICATION TRUE. The message says no
+        // single file shows the author the cycle; without this test that claim is false
+        // for a program whose members all sit in one file while one of them is REOPENED
+        // in a second (measured, `wA`+`wB` in file 1 and `wA` again in file 2: both
+        // errors fired and file 1 showed the whole cycle). With it, every surviving
+        // member is single-file, so two files means two members in two files and no file
+        // holds both. Found by `/code-review`.
+        if scopes_with_heads
+            .iter()
+            .any(|s| reported_span_files.contains(&(*s, *name)))
+        {
+            continue;
+        }
+        let first = sites
+            .iter()
+            .copied()
+            .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
+            .expect("a group with two files has at least one site");
+        let mut scope_names: Vec<String> = scopes_with_heads
+            .iter()
+            .map(|s| kb.scope_display_name(*s).to_owned())
+            .collect();
+        scope_names.sort();
+        errors.push(
+            LoadError::PredicateSplitByImportCycle {
+                name: (*name).to_owned(),
+                scopes: scope_names,
+                files: file_idxs
+                    .iter()
+                    .map(|&f| {
+                        files[f]
+                            .path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| format!("<file {f}>"))
+                    })
+                    .collect(),
+                span: heads[first].span,
+            }
+            .located_in(files[heads[first].file_idx]),
+        );
     }
 
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
@@ -7781,6 +7976,15 @@ struct Ownership<'f> {
     /// One token, an unrelated clause moved. That is D0EXD one coordinate over, and it
     /// shares a root with WI-20260820-JR7BB: the decision does not place the clause.
     verdicts: HashMap<(ScopeId, &'f str, SourceId), Owned>,
+    /// EVERY TIE THE CYCLE RULE BROKE BY SPLITTING — one entry per (name, component)
+    /// where rule 3 found no enclosure among two or more members and gave each its own
+    /// predicate. This is the ONLY place in the loader where a head introduces a name
+    /// its scope can already SEE, so it is the only place [`LoadError::
+    /// PredicateSplitByImportCycle`] can arise, and recording it here is what lets the
+    /// caller ask the file question 061 asks of every other assembly. A component the
+    /// ENCLOSURE arm settled is not recorded: its members joined, so the ordinary
+    /// [`LoadError::PredicateHeadsSpanFiles`] sees them as one predicate and reports.
+    splits: Vec<(&'f str, Vec<ScopeId>)>,
 }
 
 /// One name's candidate scopes and the files each writes a head in.
@@ -7815,6 +8019,7 @@ impl<'f> Ownership<'f> {
         }
 
         let mut verdicts = HashMap::new();
+        let mut splits: Vec<(&'f str, Vec<ScopeId>)> = Vec::new();
         for (name, scopes) in &by_name {
             let candidates: Candidates = {
                 // A DETERMINISTIC ORDER, so a tie broken by position cannot vary with
@@ -7824,7 +8029,9 @@ impl<'f> Ownership<'f> {
                 v.sort_by_key(|(s, _)| kb.scope_display_name(*s).to_owned());
                 v
             };
-            let owners = Self::owners_for(kb, name, &candidates, global, sentinels);
+            let (owners, split_components) =
+                Self::owners_for(kb, name, &candidates, global, sentinels);
+            splits.extend(split_components.into_iter().map(|c| (*name, c)));
             for (scope, files) in &candidates {
                 for file in files {
                     let verdict = if owners.contains(scope) {
@@ -7846,19 +8053,33 @@ impl<'f> Ownership<'f> {
                 }
             }
         }
-        Self { verdicts }
+        // A DETERMINISTIC report order, so two split names do not print in hash order.
+        splits.sort_by_key(|(name, scopes)| {
+            (
+                name.to_string(),
+                scopes
+                    .iter()
+                    .map(|s| kb.scope_display_name(*s).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        Self { verdicts, splits }
     }
 
     /// The owner set for ONE name — the fixpoint described on the type.
+    ///
+    /// Returns the owner set and, beside it, every component rule 3 settled by SPLITTING
+    /// two or more members — see [`Ownership::splits`].
     fn owners_for(
         kb: &KnowledgeBase,
         name: &str,
         candidates: &Candidates,
         global: ScopeId,
         sentinels: &HashMap<ScopeId, Symbol>,
-    ) -> HashSet<ScopeId> {
+    ) -> (HashSet<ScopeId>, Vec<Vec<ScopeId>>) {
         let all: HashSet<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
         let mut owners: HashSet<ScopeId> = HashSet::new();
+        let mut splits: Vec<Vec<ScopeId>> = Vec::new();
         let mut undecided: Vec<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
         let files_of = |scope: ScopeId| -> SmallVec<[SourceId; 2]> {
             candidates
@@ -7936,17 +8157,31 @@ impl<'f> Ownership<'f> {
                         .any(|&outer| outer != inner && kb.symbols.encloses(outer, inner))
                 })
                 .collect();
-            for s in &component {
-                if !enclosed.contains(s) {
-                    owners.insert(*s);
-                }
+            let split: Vec<ScopeId> = component
+                .iter()
+                .copied()
+                .filter(|s| !enclosed.contains(s))
+                .collect();
+            for s in &split {
+                owners.insert(*s);
+            }
+            // TWO OR MORE, because one is not a split. A single-member component reaches
+            // rule 3 when it has no LIVE outgoing edge — every scope it reaches is
+            // already settled — and that member owning is the ordinary "the ladder found
+            // nothing" answer, not a tie broken on the author's behalf. (Not a self-edge:
+            // [`Ownership::reach`]'s overlay returns `None` for `s == scope`, so a
+            // candidate never appears in its own `Reach::Scopes` and no self-edge is
+            // representable. An earlier version of this comment said otherwise;
+            // `/code-review` caught it.)
+            if split.len() > 1 {
+                splits.push(split);
             }
             // An enclosed member is settled too: it yields to the enclosing member that
             // just became an owner. Removing the whole component is what guarantees
             // progress, so the loop cannot spin.
             undecided.retain(|s| !component.contains(s));
         }
-        owners
+        (owners, splits)
     }
 
     /// A strongly-connected component of `edges` with no edge leaving it — the one whose
@@ -8055,6 +8290,11 @@ impl<'f> Ownership<'f> {
                 }
             }
         }
+    }
+
+    /// Every tie the cycle rule broke by SPLITTING — see [`Ownership::splits`].
+    fn splits(&self) -> &[(&'f str, Vec<ScopeId>)] {
+        &self.splits
     }
 
     fn verdict(&self, scope: ScopeId, name: &'f str, file: SourceId) -> Owned {
