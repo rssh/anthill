@@ -34,10 +34,30 @@ pub struct SimpleTermStore {
     /// Inline description blocks attached to variables: TermId → description texts.
     pub descriptions: HashMap<TermId, Vec<String>>,
     /// WI-618: `Term::Fn` nodes MINTED by the parse pipeline rather than
-    /// written as calls — the pratt operator desugar (`a + b` → `add/2`,
-    /// `a -> b` → `arrow/2`, `a -> b @ e` → `arrow_effect/3`, …; sole
-    /// sanctioned alloc path: `pratt::mint_op_node`) and the converter's
-    /// accessor builds (`a.b` → `field_access/2`, `a.m(…)` → `dot_apply`).
+    /// written as calls. THREE producer categories, not two:
+    ///
+    /// * the pratt operator desugar (`a + b` → `add/2`, `a -> b` → `arrow/2`,
+    ///   `a -> b @ e` → `arrow_effect/3`, …; sole sanctioned alloc path:
+    ///   `pratt::mint_op_node`);
+    /// * the converter's accessor builds (`a.b` → `field_access/2`,
+    ///   `a.m(…)` → `dot_apply`);
+    /// * the converter's SURFACE-FORM MARKERS — a node standing for syntax that is
+    ///   not a call at all. `?x: T` → `typed_var(?x, type: T)` is one
+    ///   (WI-20260822-AK2AJ, whose two readers in `kb/load.rs` pair the name with
+    ///   [`Self::is_minted`]); the binder forms `lambda_expr` / `let_expr` /
+    ///   `match_branch` are others.
+    ///
+    /// A READER MUST NOT ASSUME A CATEGORY FROM THE FLAG. `is_minted` answers "the
+    /// pipeline built this", nothing finer, and each reader pairs it with its own
+    /// NAME or POSITION test to say WHICH mint it will act on. Where a message
+    /// describes the flag it must describe the reachable population and not the
+    /// producer set — `load::bodyless_declares_nothing_detail` says "its head
+    /// functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, `?a + ?b`
+    /// carries `add`)", which stays true only because a marker can never BE a head
+    /// (`rule_heads` is `commaSep1($._goal)`; `typed_var_arg` sits only in
+    /// `_positional_fn_arg`). A future marker reachable in head position must move
+    /// that sentence.
+    ///
     /// Provenance is the exact discriminator consumers need — e.g. the
     /// loader's bare-arrow lambda-typo diagnostics tell the infix `->` from a
     /// user-written `arrow(a, b)` call by this set, not by name/scope
@@ -122,15 +142,19 @@ impl SimpleTermStore {
         self.entries.is_empty()
     }
 
-    /// WI-618: record that `id` was minted by the parse pipeline (a pratt
-    /// operator node or a converter accessor node), not written as a call.
+    /// WI-618: record that `id` was minted by the parse pipeline (a pratt operator
+    /// node, a converter accessor node, or a converter surface-form marker such as
+    /// `typed_var`), not written as a call. See the `minted` field — ADDING A PRODUCER
+    /// IS A CENSUSED CHANGE, because each reader pairs the flag with a different
+    /// name or position test.
     pub fn mark_minted(&mut self, id: TermId) {
         self.minted.insert(id);
     }
 
-    /// WI-618: was this `Term::Fn` minted by the parse pipeline (an
-    /// infix/prefix operator or an accessor form), as opposed to written
-    /// as a call?
+    /// WI-618: was this `Term::Fn` minted by the parse pipeline (an infix/prefix
+    /// operator, an accessor form, or a surface-form marker), as opposed to written
+    /// as a call? It does NOT say which of the three — pair it with a name or a
+    /// position test, as every reader does.
     pub fn is_minted(&self, id: TermId) -> bool {
         self.minted.contains(&id)
     }

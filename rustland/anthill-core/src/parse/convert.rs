@@ -960,6 +960,34 @@ impl<'a> Converter<'a> {
                     },
                     span,
                 );
+                // WI-AK2AJ: `typed_var` is ALSO an ordinary identifier a user may write,
+                // so the marker's two readers in `kb/load.rs` cannot recognise it by
+                // NAME alone -- WI-948's "a name, not a verdict" trap. MEASURED before
+                // this mint: `rule pa(typed_var(1))` was refused citing a typed column
+                // `?x: T` the source does not contain (a FALSE refusal -- under 061 that
+                // head declares `pa`), and `rule pc(typed_var(?x, type: Int64)) :- qc(?x)`
+                // was hijacked by `convert_term`'s strip into "WI-582: typed rule pattern
+                // `?x: T` is missing its type" plus the rewrite-shape refusal. Marking it
+                // is what lets both pair the name with `is_minted` (WI-618).
+                //
+                // ADDING A PRODUCER IS A CENSUSED CHANGE, and the census is per READER --
+                // "was this written as a call" is not the same question each `is_minted`
+                // site asks. NO EXISTING READER'S VERDICT MOVES, because every one of the
+                // nine pairs the mint with a NAME or a POSITION this node fails:
+                //  * `parse_connective_head`, `bodyless_declares_nothing_detail`,
+                //    `rule_introduced_functor_name` ask it of a rule HEAD (or an
+                //    equation's LHS operand). `rule_heads` is `commaSep1($._goal)` and
+                //    `typed_var_arg` sits only in `_positional_fn_arg`, so this node is
+                //    an ARGUMENT and can never occupy either position.
+                //  * `minted_connective_symbol` additionally requires
+                //    `is_equality_family_functor`; `parse_connective_head` also requires
+                //    2 positional args (this marker has one).
+                //  * `check_bare_arrow_typo` / `first_unresolvable_arrow_leaf` /
+                //    `convert_expr`'s arrow arm additionally require
+                //    `is_arrow_functor`, `binder_form_layout` (`lambda_expr` /
+                //    `match_branch` / `let_expr`), or `field_access` | `dot_apply`.
+                // `typed_var` is none of those names, so the mint is inert at all nine.
+                self.terms.mark_minted(tid);
                 results.push(tid);
             }
             "fn_term" => self.push_fn_term(node, work),

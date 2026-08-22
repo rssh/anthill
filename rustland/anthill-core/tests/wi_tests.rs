@@ -1362,3 +1362,6 @@ mod wi_rkmd4_type_var_param_slot_test;
 
 #[path = "include/wi1fkr2_op_type_var_threads_test.rs"]
 mod wi1fkr2_op_type_var_threads_test;
+
+#[path = "include/wi_ak2aj_written_typed_var_test.rs"]
+mod wi_ak2aj_written_typed_var_test;

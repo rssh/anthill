@@ -5339,14 +5339,15 @@ fn rule_reading(
 /// lowers one to a `typed_var` MARKER node (`convert.rs`, WI-582), so the question is
 /// asked of that functor rather than of a node kind.
 ///
-/// THE HEAD'S OWN FUNCTOR IS NOT ASKED, and that is not tidiness: a `typed_var` marker
-/// is only ever an ARGUMENT, while `typed_var` is also an ordinary identifier a user may
-/// write. Measured before this narrowing (found by /code-review): `rule typed_var(?x)`
-/// was refused with a message about a typed column the author never wrote — WI-948's
-/// "a name, not a verdict" trap, which `parse_connective_head` pairs with
-/// `SimpleTermStore::is_minted` to avoid. That pairing is NOT available here: the
-/// converter's `typed_var_arg` arm does not `mark_minted` the node it builds, so the
-/// position is the only provenance there is.
+/// THE HEAD'S OWN FUNCTOR IS NOT ASKED, and since WI-AK2AJ that is a SHAPE statement
+/// rather than a guard: `rule_heads` is `commaSep1($._goal)` while `typed_var_arg` sits
+/// only in `_positional_fn_arg`, so a marker is an ARGUMENT and can never be the head.
+/// It WAS the guard before — `typed_var` is also an ordinary identifier a user may
+/// write, and measured (found by /code-review) `rule typed_var(?x)` was refused with a
+/// message about a typed column the author never wrote. That is WI-948's "a name, not a
+/// verdict" trap, which `parse_connective_head` pairs with `SimpleTermStore::is_minted`
+/// to avoid; the position NARROWED the trap from the head to the arguments rather than
+/// removing it, and [`is_typed_column`] now carries that same pairing.
 fn head_carries_typed_column(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -5369,18 +5370,18 @@ fn head_carries_typed_column(
 /// Is this ARGUMENT a `?x: T` marker, or does it contain one? Split from
 /// [`head_carries_typed_column`] so the head node itself can never be asked.
 ///
-/// A BARE NAME TEST, and its false positive is known and tolerated. `typed_var` is also
-/// an ordinary identifier a user may write, and the converter's `typed_var_arg` arm does
-/// not `mark_minted` its node, so there is no provenance to pair the name with — the
-/// split above narrowed WI-948's "a name, not a verdict" trap from the HEAD to the
-/// arguments rather than removing it. MEASURED, `rule p(typed_var(1))` with no body is
-/// refused citing a typed column the source does not contain (/code-review found it).
-/// It is a false REFUSAL, not just a misleading sentence: under 061 that head would
-/// otherwise DECLARE `p`. Left standing here because the repair is at the CONVERTER —
-/// `mark_minted` the `typed_var_arg` node, then pair the name with `is_minted` — and
-/// `is_minted` has TEN readers (arrow functors, connective heads, the equation-subject
-/// gate), so adding a producer is a censused change and not a drive-by. Owned by
-/// **WI-20260822-AK2AJ**; the population is one program shape nobody has written.
+/// THE NAME IS PAIRED WITH PROVENANCE (WI-AK2AJ), because `typed_var` is also an
+/// ordinary identifier a user may write and the name ALONE is WI-948's "a name, not a
+/// verdict" trap. MEASURED before the pairing: `rule pa(typed_var(1))` with no body was
+/// refused citing a typed column the source does not contain (/code-review found it) —
+/// a false REFUSAL, not just a misleading sentence, because under 061 that head DECLARES
+/// `pa`. The converter's `typed_var_arg` arm now `mark_minted`s the node it builds, and
+/// the census justifying that new producer is recorded at that site. `convert_term`'s
+/// `typed_var` STRIP is this reader's sibling and pairs the same two questions; before
+/// WI-AK2AJ it was a bare name test too, and `rule pc(typed_var(?x, type: Int64)) :- qc(?x)`
+/// measured it — hijacked into "WI-582: typed rule pattern `?x: T` is missing its type"
+/// (the user's named arg is an ordinary term, never a `ParseAux::TypeExpr`) plus the
+/// rewrite-shape refusal that the bound it invented then triggered.
 fn is_typed_column(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -5394,7 +5395,7 @@ fn is_typed_column(
     else {
         return false;
     };
-    parse_sym.local_name(*functor) == "typed_var"
+    (parse_terms.is_minted(tid) && parse_sym.local_name(*functor) == "typed_var")
         || pos_args
             .iter()
             .chain(named_args.iter().map(|(_, v)| v))
@@ -5419,6 +5420,12 @@ fn bodyless_declares_nothing_detail(
         return "a `⊥` denial names no predicate, so there is nothing for it to declare"
             .to_owned();
     };
+    // THE SENTENCE DESCRIBES THE REACHABLE POPULATION, NOT THE PRODUCER SET, and the two
+    // stopped coinciding when WI-20260822-AK2AJ made `typed_var` a third mint category
+    // (`SimpleTermStore::minted`). It stays true only because a MARKER can never be a
+    // head — `rule_heads` is `commaSep1($._goal)` and `typed_var_arg` sits only in
+    // `_positional_fn_arg` — so every minted head really is an operator or an accessor.
+    // A future marker reachable in head position must move this text with it.
     if parse_terms.is_minted(*tid) {
         return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
                 `?a + ?b` carries `add`), not a name the rule introduces"
@@ -16626,7 +16633,22 @@ impl<'a> Loader<'a> {
                 // variable's DeBruijn index. A `typed_var` outside a rule head is
                 // a misuse (annotation on a non-pattern variable) — report loudly
                 // rather than silently dropping the bound.
-                if self.parsed.symbols.local_name(functor) == "typed_var"
+                //
+                // WI-AK2AJ — THE NAME IS PAIRED WITH `is_minted`, the sibling of the
+                // pairing in [`is_typed_column`] and for the same reason: `typed_var`
+                // is an ordinary identifier a user may write, and this arm reads
+                // `pos_args[0]` as a variable and `named_args["type"]` as a
+                // `ParseAux::TypeExpr` — neither of which a WRITTEN call carries.
+                // MEASURED before the guard, `rule pc(typed_var(?x, type: Int64)) :- qc(?x)`
+                // took this arm, found no `TypeExpr`, and reported "WI-582: typed rule
+                // pattern `?x: T` is missing its type" about an ascription the source
+                // does not contain — then the invented bound tripped the rewrite-shape
+                // refusal as well. The shape tests below stay: they are redundant by
+                // construction now (the mint and this exact layout are built together
+                // at `convert.rs`'s `typed_var_arg` arm), and stated rather than fused
+                // so a future marker shape cannot reach `pos_args[0]` by accident.
+                if self.parsed.terms.is_minted(parse_id)
+                    && self.parsed.symbols.local_name(functor) == "typed_var"
                     && pos_args.len() == 1
                     && named_args
                         .iter()
