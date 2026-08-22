@@ -1,0 +1,60 @@
+-- ================================================================
+-- MINIMAL REPRODUCTION — an operation's own type variable does not thread
+-- through a call when the CALLER is generic in it.
+--
+-- Nothing here is about information flow, labels, specs, or dispatch. It is
+-- twelve lines of ordinary generic code, and it is the root the guardians
+-- example hit when a label-preserving operation could not be written in terms
+-- of another one (WI-20260822-F7PW9, recorded there as C10).
+--
+--   anthill load docs/measurements/op-type-var-does-not-thread.anthill
+--
+-- Expected: only the two cases marked MUST FAIL are refused. Measured on
+-- 2026-08-22: the two MUST-FAIL cases fail, and so do neither of the controls —
+-- i.e. the controls pass, which is what makes the failures meaningful.
+-- ================================================================
+
+-- ── case 1: a BARE type variable ─────────────────────────────────────────
+-- The identity of the identity. `via_bare` promises exactly what `idv`
+-- promises and its body is exactly `idv(x)`.
+--
+-- MUST FAIL, and the diagnostic asks to be reported:
+--   type mismatch in via_bare.return (op-return): expected ?t, got ?t
+--   (these render alike but are not the same type — the difference is in a
+--    component this diagnostic does not print; please report it)
+namespace tv1
+  operation idv(x: ?t) -> ?t
+  operation via_bare(x: ?t) -> ?t = idv(x)
+end
+
+-- ── case 2: a variable NESTED in a sort application ──────────────────────
+-- MUST FAIL:
+--   type mismatch in via.return (op-return): expected Box[T = ?t], got Box[T = b.T]
+--
+-- `b.T` is the tell: the callee's `?t` is resolved to a PROJECTION — "the T of
+-- the argument b" — rather than unified with the variable the caller declared.
+enum tv2.Box
+  import anthill.prelude.{Int64}
+  sort T = ?
+  entity box(v: Int64)
+end
+namespace tv2
+  import tv2.{Box}
+  operation id(b: Box[?t]) -> Box[?t]
+  operation via(b: Box[?t]) -> Box[?t] = id(b)
+end
+
+-- ── CONTROL: the same delegation with a GROUND caller ────────────────────
+-- MUST LOAD. This is what pins the failures above as being about the CALLER's
+-- polymorphism and not about delegation, arity, or the sort itself.
+enum tv3.Box
+  import anthill.prelude.{Int64}
+  sort T = ?
+  entity box(v: Int64)
+end
+namespace tv3
+  import anthill.prelude.{Int64}
+  import tv3.{Box}
+  operation id(b: Box[?t]) -> Box[?t]
+  operation via_ground(b: Box[Int64]) -> Box[Int64] = id(b)
+end
