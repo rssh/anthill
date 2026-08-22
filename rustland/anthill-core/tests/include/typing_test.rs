@@ -1649,7 +1649,7 @@ fn wi295_cross_namespace_rule_predicate_import_resolves() {
     let mut kb = load_stdlib_kb();
     let source = concat!(
         "namespace wi295.a\n",
-        "  rule my_pred(?x, ?x)\n",
+        "  rule my_pred(?x, ?x) :- true\n",
         "end\n",
         "namespace wi295.b\n",
         "  import wi295.a.{my_pred}\n",
@@ -5852,7 +5852,7 @@ fn ho_predicate_resolves_with_bound_var() {
     let source = r#"
 sort TestSort
   rule test(?P) :- ?P(42)
-  rule my_pred(42)
+  rule my_pred(42) :- true
 end
 "#;
     let mut kb = load_with_source(source);

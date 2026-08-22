@@ -35,7 +35,7 @@ namespace anthill.stage0.workflow
        dep_satisfied(?dep),
        all_deps_satisfied_rest(?rest)
 
-  rule all_deps_satisfied_rest(nil())
+  rule all_deps_satisfied_rest(nil()) :- true
 
   rule all_deps_satisfied_rest(cons(head: ?dep, tail: ?rest))
     :- dep_satisfied(?dep),
@@ -57,8 +57,8 @@ namespace anthill.stage0.workflow
   -- A description slot viewed for listing: a present description unwraps
   -- to its term; an omitted one (stored as none() since WI-716) surfaces
   -- as none() so the item is still listed rather than dropped (WI-717).
-  rule description_view(some(?d), ?d)
-  rule description_view(none(), none())
+  rule description_view(some(?d), ?d) :- true
+  rule description_view(none(), none()) :- true
 
   -- Find all open work items
   rule open_item(?id, ?desc)

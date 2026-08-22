@@ -661,8 +661,8 @@ fn wi580_member_over_rule_defined_eq_decides() {
             entity red
             entity blue
             operation ceq(a: Color, b: Color) -> Bool
-            rule ceq(red, red)
-            rule ceq(blue, blue)
+            rule ceq(red, red) :- true
+            rule ceq(blue, blue) :- true
             provides PartialEq[T = Color, eq = ceq]
             provides Eq[T = Color]
           end

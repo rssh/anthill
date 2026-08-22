@@ -230,7 +230,7 @@ fn a_capture_outside_a_simp_head_lhs_is_refused() {
         "  rule trigger(?x, ?args) <=> pick(?x, ...?args) [simp]\nend\n",
         "  rule trigger(?x, ?y) <=> pick(?x, ?y) :- wrapped(...?z)\nend\n",
         "  operation bad(v: Int64) -> Int64 = wrapped(...?z)\nend\n",
-        "  rule trigger(?x, ...?args)\nend\n",
+        "  rule trigger(?x, ...?args) :- true\nend\n",
         "  rule trigger(?x, ?y) <=> pick(?x, wrapped(...?y)) [simp]\nend\n",
     ] {
         let msg = refusal(tail);

@@ -34,7 +34,7 @@ fn two_ary_predicate_head_unbounded_introducer_is_diagnosed() {
         r#"
 namespace test.wi619.unbounded
   import anthill.prelude.{Int64, Eq}
-  rule same_ty[t](?x, ?y)
+  rule same_ty[t](?x, ?y) :- true
 end
 "#,
     );

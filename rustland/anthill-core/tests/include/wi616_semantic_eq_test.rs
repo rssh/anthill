@@ -36,7 +36,7 @@ const SRC: &str = r#"
       rule se(?x, ?y) :- eq(?x, ?y)
       rule sne(?x, ?y) :- neq(?x, ?y)
       rule sid(?x, ?y) :- ?x === ?y
-      rule unbox0(box(v: ?v), ?v)
+      rule unbox0(box(v: ?v), ?v) :- true
       rule unbox1(box(v: ?v), ?v) :- eq(1, 1)
     end
 "#;

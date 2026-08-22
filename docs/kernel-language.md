@@ -1546,9 +1546,61 @@ Relevant design records: [proposal 032](proposals/032-symmetric-rule-arrows.md),
 [proposal 033.1](proposals/033.1-cut-and-the-barrier-mechanism.md), and
 [proposal 060](proposals/060-clause-level-requirements-and-typed-heads.md).
 
-- `fact X` = bodyless rule (ground assertion)
+- `fact X` = a clause with the empty body — `X :- true` (§6.1)
 - `constraint I :- G` = integrity-declaration sugar (the current executable
   subset and ordinary-denial boundary are in §6.2)
+
+**No body ⇒ DECLARES; a body ⇒ asserts (proposal 061).** A rule with no body
+**declares** its head's predicate and asserts nothing; it has no clauses. This removes
+`rule`'s exception: `operation f(…) -> R` declares and `= body` defines, `const N: T`
+declares and `= expr` defines, and `rule` was the sole construct whose body-less form
+*asserted* — only because §6.1's desugaring had spent that form on `fact`. Moving one
+`:- true` into that desugaring gives all four constructs one reading.
+
+| written | reads as |
+|---|---|
+| `rule p(?x, ?y)` | **DECLARES** `p` — asserts nothing, has no clauses |
+| `rule p(?x, ?y) :- G` | a **clause** of `p` |
+| `rule p(?x, ?y) :- true` | a **clause** of `p` with the empty body — what `fact` desugars to |
+| `fact p("a", "b")` | an **assertion** (§6.1) |
+| `rule lhs <=> rhs` | a **defining equation** — untouched (below, WI-881) |
+
+The arguments carry no part of the distinction: `rule p(?x, ?y)` and `rule p(1, 2)` are
+read the same way, because it is the **body** that says whether the rule asserts. `true`
+is the **empty conjunction**, so `:- true` is the explicit spelling of the empty body and
+produces exactly the clause `fact` produces — which is what a site needs when it wants an
+assertion *and* a citation label, since `fact` has no label form (§6.1).
+
+**Equations are not this construct.** An equational rule (`lhs <=> rhs`) extends
+unification; its clauses are indexed under the connective, not under its subject, so the
+subject owns no clauses and there is no predicate to declare (§8.7, WI-898). A body-less
+equational head therefore keeps defining, and `[simp]`'s enablement is untouched. The two
+shapes are told apart by the head's functor — a minted equality-family connective is an
+equation, anything else is a predicate head — which is the reader §8.3's own refusals
+already run.
+
+**A body-less rule that can declare nothing is refused.** A `⊥` denial names no
+predicate, a multi-head rule names several, and a **qualified** or desugared head
+introduces no name at all (§8.6). Two more shapes declare nothing for a different reason:
+a name **another construct already declares in that scope** (an `operation`, a `sort`, an
+entity) — the declaration merges into it and adds nothing, which is the no-op 059 R4
+clause 3 refuses everywhere else — and a head in a position the defining pass does not
+reach, which today is the interior of a `provides … language … end` block. Each would
+assert nothing and declare nothing, so each is a located load error rather than a silent
+drop; write a body (`:- true` asserts it, and against an operation that is a lemma about
+it — §8.6) or spell it as a `fact`. A **label, a description block, a `[…]` tag, a `[t]`
+type-variable introducer or a typed column `?x: T`** on a declaration is refused for the
+same reason: a declaration stores no clause, so there is nothing for a citation handle to
+cite, nothing for a tag to govern, no body goal to bound a `[t]` (§5.3's `:- Spec[t]`),
+and no rewrite for a typed-pattern bound to be enforced on. 060's reading of a body-less
+head's `?x: T` as the **column's type** is the intended future of that last one
+(WI-742); it is not delivered, so the ascription is refused rather than accepted and
+ignored.
+
+**A declaration carries no arity claim.** Clauses of one predicate may still differ in
+arity, exactly as today; whether they should is a separate question
+(WI-20260821-6WVJB / proposal 061 §"One arity per predicate"), and a declaration states
+its head's arity without enforcing it.
 
 ```
 Rule ::= DescriptionBlock*
@@ -1621,8 +1673,13 @@ with the unrelated work item WI-060.
 rule ancestor(?X, ?Z) :- parent(?X, ?Y), ancestor(?Y, ?Z)
 rule parent(?X, ?Y), ancestor(?Y, ?Z) -: ancestor(?X, ?Z)
 
--- Ground assertion (= fact): bodyless rule
-rule parent("alice", "bob")
+-- Ground assertion: a clause with the EMPTY BODY. `fact` is its short spelling;
+-- a body-less `rule parent("alice", "bob")` DECLARES the predicate instead (§5.3).
+rule parent("alice", "bob") :- true
+fact parent("alice", "bob")
+
+-- Predicate declaration (proposal 061): no body, asserts nothing
+rule ancestor(?X, ?Z)
 
 -- Denial / integrity constraint, backward and forward:
 rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, 0)
@@ -1652,13 +1709,27 @@ rule lower_bound: gte(?d, ?d_min)
 
 The question the guard asks is therefore **not** "has a symbol been minted" — that is true or false depending on how much of the pass has run — but "**is this name written as a head in a scope this one can see**". That is a property of the finished text and has the same answer in whatever order the files and lines arrive; whether the other head went on to introduce or to bind itself makes no difference, since either way the name resolves from here afterwards. *Can see* means whatever a **reference** written there would reach — the enclosing chain, `requires` parents and wildcard-import parents, but also the per-hop rules that govern them (an import stops the enclosing chain below it; an `internal` name is hidden; a scope answers from its own contents before any parent is consulted). It is asked by running the resolver itself, not by a second traversal resembling it. The scope's own contents are excluded, since two heads of one name in one scope are two clauses of one predicate. And what an outer scope must have is not merely a head of that name but one that **introduces** it there: a head that itself *binds* — through a file-local import, say — leaves nothing for a sibling file to reach. In the two programs above `p` is written at `demo` either way, so both are the first reading. A scope that wants its own name where an enclosing one resolves **declares** it, the remedy above. *Program* here means the files loaded together: a **staged** load decides each batch's heads as it reads it, and a head already decided cannot be re-decided, so loading an inner scope's clause in an earlier batch than its enclosing one leaves the two separate where a single load joins them.
 
-**Joining is not confined to one file, and that is the point of it.** A head in a scope you can see is a head in a scope you can see, whoever wrote it: a program that opens `namespace anthill.logic.Constructive` and writes `rule modus_ponens(7, 8)` **extends** the predicate the sort inside it introduces — measured, the sort's own `modus_ponens` then **does not exist** — not a predicate with no clauses, but no such name — and the enclosing namespace's holds both. The difference matters to anyone reading the KB: an empty predicate answers a goal with zero solutions, while an absent one is a name nothing resolves. That is the same reading as `demo { rule p(1); sort Rec { rule p(2) } }`, and it is deliberate: naming a namespace is how you opt into its names. Wanting your own instead is §WI-896's case — **declare** it, or write it somewhere else.
+**A predicate is DECLARED, not discovered ([proposal 061](proposals/061-rule-declarations.md)).** The paragraph above closes the *when* by making the question order-free; 061 removes the need to infer it at all. A rule with no body **declares** its head's predicate (§5.3) and asserts nothing, and its name is minted in the pass that defines every other name — so a head has something to land on, put there like every `sort`, `operation` and `const`, and the WI-321 invariant covers predicates too. Nothing about resolution changes: the head runs the ordinary ladder and contributes a clause to whatever it lands on. This is also the form §WI-896's own remedy always assumed — before it, the only way to declare a predicate name was a body-less `operation`, which drags in a signature and membership of the dispatch surface ([059](proposals/059-secondary-entries.md) §Definitions: the dispatch surface of `X` is exactly the operations). A declaration is **not** on the dispatch surface and has no return type; whether the name it declares is citable as a `Relation[T]` value is decided at the reader, from the clause index, exactly as it is for a rule-introduced name today (§8.7, [052](proposals/052-rules-as-stream-valued-operations.md) OQ2).
+
+**Auto-declaration, and where it stops (061).** Requiring a declaration for every predicate would be a migration for no gain in the common case, so:
+
+> A predicate whose heads are all written in **one file** is auto-declared, in the scope the ladder above already picks. A predicate with heads in **more than one file** must be declared explicitly; without a declaration it is a load error naming the files.
+
+The **file** is the unit for 059 §Definitions' own reason: what the rule guards against is a predicate "assembled by two parties that never agreed on it", and two blocks in one file are one author making one edit — a file boundary is the smallest place where *two parties* is real. It is also the unit `import` already uses, since an import resolves only in the file it is written in (WI-995). Corpus census over stdlib + `anthill-stl` + `examples/github-todo`: **102** predicates carry rule heads and every one has its heads in exactly one file, so the rule refuses nothing that exists.
+
+What it removes is every **cross-file absorption** the paragraphs below describe — a sibling file's head moving another file's clause, a mutual-import cycle picking an owner by file order, one pair at one address giving two different programs. Each of those is one predicate assembled from two files, and each is now that error instead. What remains is the single-file case, decided by the ladder as before — including a **single-file mutual cycle**, which is auto-declared with no outermost scope to pick, so the cycle rule below still governs it. A two-file cycle whose members each keep their own predicate is likewise untouched: each predicate is written in one file.
+
+It is a **whole-program property**, and that is a real cost rather than an oversight: a predicate becomes "multi-file" when someone adds a second file, so an edit in one place can require a declaration somewhere else. This is the same discomfort 059 records for secondary entries — a namespace becomes a secondary entry because someone else declared a sort at its address — and it is recorded here rather than discovered.
+
+**Joining is not confined to one SCOPE, and that is the point of it.** A head in a scope you can see is a head in a scope you can see: `demo { rule p(1) :- true; sort Rec { rule p(2) :- true } }` is **one** predicate with two clauses, because `Rec`'s head resolves `p` through its enclosing scope. Naming a scope is how you opt into its names, and wanting your own instead is §WI-896's case — **declare** it, or write it somewhere else. What 061 confines is not the scope but the **file**: the same two clauses split across two files at one address is a predicate assembled by two parties, and is refused unless the predicate is declared. With the declaration present the join is exactly as above, whoever wrote each clause — a program that opens a namespace and adds a clause to a predicate **declared** there extends it, and the declaration is what makes that an agreement rather than an accident.
+
+The difference between an **absent** predicate and an **empty** one matters to anyone reading the KB: an empty predicate answers a goal with zero solutions, while an absent one is a name nothing resolves. A declaration produces exactly the first — `anthill.logic.Constructive`'s axioms are declarations, so they are named symbols with no clauses (their file says so: they exist so a `proof … :- modus_ponens, …` hint block can reference them, and the `-:` pass will read them as schemas rather than facts).
 
 **Two scopes that can each see the other each introduce their own** (WI-980). Mutual wildcard imports put two scopes in a cycle with nothing to order them by, and the rule above — *does some scope I can see already introduce it* — is true of each in virtue of the other. Neither yields: each introduces its own predicate, which is the only answer that does not depend on which file was read first. A cycle whose members are **nested** one inside the other is not this case — the enclosing one owns, by the same "outermost" reading as everywhere else — so a facade re-exporting its own submodule keeps joining, at any depth.
 
 **`<global>` may own a name, and is never yielded to** (WI-980). It is the one scope nobody opts into — a namespace-less file's heads land there without naming it — so the opt-in argument above does not cover it, and it takes the one exception in this section. Those are two separate questions with different answers: such a head **introduces** its name there, exactly as the `**Forms:**` block above and `examples/classic-mini/ancestor` are written; but a head written *inside* a namespace never yields to it, so a name at `<global>` cannot absorb one. Fusing them fails either way round, both measured — treat `<global>` as yieldable and a one-line `rule modus_ponens(7, 8)` in a file with no `namespace` makes `anthill.logic.Constructive.Constructive.modus_ponens` cease to exist, on a program that loads clean; refuse it instead and the language's own documented first form stops loading.
 
-**The refusal does not reach a PAREN-LESS nullary head** (`rule holds :- base(1)`). Such a head introduces nothing anywhere — a bare identifier is not an application, so it carries no functor for §"A rule-introduced functor is scoped where it is written" to scope, and it falls to the one global intern that section exists to prevent. Two scopes writing the same nullary name therefore still share one uncitable predicate, measured, while the parenthesised twin `rule holds()` is scoped: two spellings of one nullary predicate, two behaviours. This predates the rule above and is not repaired by it, and it is not the only such shape: a **fact** head, and each functor of a **multi-head** rule, are likewise unscoped and likewise collapse two scopes onto one name — both measured, each against a `rule`-shaped control that scopes correctly — as is a head inside a `provides … language … end` block. Which head shapes introduce a name is an enumeration nothing states as a decision, and the shapes outside it fall through in silence. Corpus census of the paren-less spelling, at every depth rather than only at `<global>`: **four** — `anthill-cli/tests/fixtures/wi754/props.anthill:11,12`, `multi-query.anthill:8` (`fact holds`), and `examples/webots-modelling/lf1/safety_gps.anthill:82`, which is the nested shape this paragraph calls harmful, in a shipped example.
+**The refusal does not reach a PAREN-LESS nullary head** (`rule holds :- base(1)`). Such a head introduces nothing anywhere — a bare identifier is not an application, so it carries no functor for §"A rule-introduced functor is scoped where it is written" to scope, and it falls to the one global intern that section exists to prevent. Two scopes writing the same nullary name therefore still share one uncitable predicate, measured, while the parenthesised twin `rule holds()` is scoped: two spellings of one nullary predicate, two behaviours. This predates the rule above and is not repaired by it, and it is not the only such shape: a **fact** head, and each functor of a **multi-head** rule, are likewise unscoped and likewise collapse two scopes onto one name — both measured, each against a `rule`-shaped control that scopes correctly — as is a head inside a `provides … language … end` block. Which head shapes introduce a name is an enumeration nothing states as a decision, and the shapes outside it fall through in silence. Corpus census of the paren-less spelling, at every depth rather than only at `<global>`: **four** — `anthill-cli/tests/fixtures/wi754/props.anthill:11,12`, `multi-query.anthill:8` (`fact holds`), and `examples/webots-modelling/lf1/safety_gps.anthill:82`, which is the nested shape this paragraph calls harmful, in a shipped example. Proposal 061 narrows the silence rather than closing it: a **body-less** paren-less head now DECLARES, and since it names no functor to declare it is a located refusal (§5.3, "a body-less rule that can declare nothing") — as are a body-less multi-head rule and a body-less qualified head. All four corpus sites carry bodies, so none is reached; what stays silent is exactly the BODIED spellings, which is WI-20260821-P85Z7 and WI-20260821-RDGQC's enumeration.
 
 It is the **same ladder**, to the rung (WI-900), which settles the two edges. A name that is **ambiguous** at that scope resolves — to several things, which is still resolving — so the head concludes about it and the ambiguity is reported at the reference; introducing instead would put a scope-local ahead of the candidates and decide the conflict silently. And the implicit-prelude / reserved-kernel tier answers only when its **target is loaded**: in a knowledge base that does not load the declaring file, `and` resolves to nothing, so the head introduces it in its own scope — rather than falling to one shared global that a sibling scope's same-spelled head would collapse onto.
 
@@ -2368,8 +2439,21 @@ prefix is refused (§4.1). Describe the named relation/sort declaration instead.
 
 ```
 fact parent("alice", "bob")
-→  rule parent("alice", "bob")
+→  rule parent("alice", "bob") :- true
 ```
+
+The `:- true` is load-bearing (proposal 061): since a rule with **no body declares** its
+predicate (§5.3), an assertion must say so with a body, and `true` is the empty
+conjunction. `fact` is therefore the body-less *assertion*'s spelling and the only one
+whose head may be ground-and-silent about it.
+
+**A `fact` head introduces no scoped name**, and that is a known gap rather than a
+consequence of this desugaring: the head reaches the bare global intern, so two scopes
+writing one fact name share one uncitable predicate — measured, with a `rule`-shaped
+control that scopes correctly (WI-20260821-RDGQC, which owns the enumeration of which
+head shapes introduce a name; §8.6). Until it closes, `fact p(…)` and `rule p(…) :- true`
+are **not** the same program: only the second gives its predicate a name its own scope
+can cite.
 
 ### 6.2 Constraint (headless rule / denial)
 

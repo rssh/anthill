@@ -53,7 +53,7 @@ fn labeled_multi_head_rule_description_emits_once_on_the_citation_handle() {
     const SRC: &str = r#"
 namespace wi1072.rule
   {< one description for one citation handle >}
-  rule law: p(1), q(1)
+  rule law: p(1), q(1) :- true
   describe law {< standalone companion >}
 end
 "#;
@@ -123,7 +123,7 @@ fn anonymous_declaration_descriptions_are_refused_not_dropped() {
             "unlabeled rule",
             r#"namespace wi1072.anon_rule
                  {< has no target >}
-                 rule p(1)
+                 rule p(1) :- true
                end"#,
         ),
         (

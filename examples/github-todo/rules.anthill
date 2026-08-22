@@ -28,7 +28,7 @@ namespace anthill.stage0.workflow
        WorkItem(id: ?dep, status: Verified(at: ?)),
        all_deps_verified_rest(?rest)
 
-  rule all_deps_verified_rest(nil())
+  rule all_deps_verified_rest(nil()) :- true
 
   rule all_deps_verified_rest(cons(head: ?dep, tail: ?rest))
     :- WorkItem(id: ?dep, status: Verified(at: ?)),
@@ -41,8 +41,8 @@ namespace anthill.stage0.workflow
   -- A description slot viewed for listing: a present description unwraps
   -- to its term; an omitted one (stored as none() since WI-716) surfaces
   -- as none() so the item is still listed rather than dropped (WI-717).
-  rule description_view(some(?d), ?d)
-  rule description_view(none(), none())
+  rule description_view(some(?d), ?d) :- true
+  rule description_view(none(), none()) :- true
 
   -- Find all open work items
   rule open_item(?id, ?desc)

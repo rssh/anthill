@@ -2,9 +2,57 @@
 
 **Canonical reference:** [`kernel-language.md` §8.6](../kernel-language.md), §"A rule head functor is resolved, not declared" and §"A rule-introduced functor is scoped where it is written".
 
-## Status: Draft (2026-08-21). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
+## Status: DELIVERED (2026-08-21, WI-20260821-FQC85; drafted the same day). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
 
 ## Relates to: WI-980 (order-independent head binding — this proposal is its structural alternative), WI-896 (a head is resolved, not declared — amended here), 059 §Definitions (the FILE as the unit at which "two parties" becomes real), 052 (rules as stream-valued operations — a declared predicate is the name such a value is cited by), WI-898 (equational heads index under the connective — **out of scope**, see below), 060 (clause-level typed heads — the guard that makes a shared predicate safe), WI-995 (imports are file-local — the reason a predicate's clauses in two files can disagree).
+
+## Delivered — what the implementation settled that this text did not
+
+The rule and its staging shipped as written. Five things the draft above states were
+**corrected or decided by measurement** during delivery, and the text is left standing
+because a proposal keeps its own record:
+
+1. **`:- true` did not work, and had to be made to.** The draft prescribes `fact`'s
+   desugaring as `:- true` and calls both migration targets "live" on the evidence that
+   they LOAD. Driven: `rule p(1) :- true` loaded clean and answered **nothing** — `true`
+   is a `boolean_literal`, so the body carried a constant goal no clause and no builtin
+   resolves, and WI-1034's "names nothing" refusal cannot reach it because a constant
+   names no name. The loader now reads a `true` body goal as the **empty conjunction**,
+   which is what makes `fact H` and `rule H :- true` the same clause.
+2. **`fact` is NOT an available migration target for a named predicate.** A `fact` head
+   introduces no scoped symbol — measured, `fprobe.ff` does not resolve while
+   `fprobe.hh` (a rule head) does — so migrating a site to `fact` moves its clause to the
+   bare global intern and deletes the name its own scope could cite. The draft's per-site
+   reading ("the logic axioms read as assertions (`fact`)") would have broken
+   `logic_sorts_test`, which drives those symbols. This is WI-20260821-RDGQC's gap, now
+   recorded at kernel-language.md §6.1.
+3. **The logic axioms are DECLARATIONS, not assertions.** `constructive.anthill` and
+   `classical.anthill` say so themselves — "they exist as named symbols so a
+   `proof … :- modus_ponens, …` hint block can reference them" — and as facts their
+   variable heads asserted that every pair of propositions satisfies modus ponens. The
+   11 sites keep their body-less spelling and now mean it.
+4. **The corpus census was 23 sites, not 20.** `rustland/anthill-todo/anthill/rules.anthill`
+   carries three more (`all_deps_satisfied_rest`, `description_view` ×2), and
+   `docs/proposals/typing_pass_spec.anthill` — parsed and loaded by `typing_test` — eight
+   more. Measured with a parser-driven census through the loader itself, not by regex.
+   The **test** corpus is a separate population the draft did not count: 116 further
+   sites across 31 Rust fixture files.
+5. **A body-less rule that can declare NOTHING is refused** — a `⊥` denial, a multi-head
+   rule, a qualified head, a paren-less nullary, a name ANOTHER CONSTRUCT already declares
+   in that scope (measured: `operation has(x) -> Bool` beside `rule has(?x)` loaded clean
+   with a `Goal` kind merged onto the operation's own symbol), and a head the defining
+   pass never reaches (a `provides … language … end` block's interior) — as is a
+   declaration carrying a label, a `[…]` tag, a `[t]` introducer or a typed column. The
+   draft does not name any of these; each would otherwise have become a silent drop, and
+   two (WI-20260821-W9SD3's qualified head, WI-20260821-P85Z7's paren-less nullary) are
+   filed silences the refusal now covers in their body-less spelling. The last two were
+   found by `/code-review` after the first version of each guard shipped — the
+   never-reached one had asked the resolution LADDER, which any prelude name satisfies.
+
+Open question 2 (arity) is **not** settled by this delivery: a declaration states its
+head's arity and enforces nothing, and one-arity-per-predicate remains
+WI-20260821-6WVJB, which depends on the operation-side decision in WI-20260821-ZW940.
+Open questions 3–5 are recorded in kernel-language.md §8.6 as stated rules.
 
 ## The problem
 

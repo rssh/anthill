@@ -2025,7 +2025,7 @@ fn load_abstract_sort_description_emits_desc_fact() {
 
 #[test]
 fn parse_variable_with_description() {
-    let source = "rule test: foo(?x {< the x value >}?)\n";
+    let source = "rule test: foo(?x {< the x value >}?) :- true\n";
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -2062,7 +2062,7 @@ fn parse_variable_with_description() {
 
 #[test]
 fn load_variable_description_emits_fact() {
-    let source = "rule test: foo(?x {< the x value >}?)\n";
+    let source = "rule test: foo(?x {< the x value >}?) :- true\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
@@ -2250,7 +2250,7 @@ sort WorkStatus {
 
 #[test]
 fn parse_variable_multiple_descriptions() {
-    let source = "rule test: foo(?x {< first >} {< second >}?)\n";
+    let source = "rule test: foo(?x {< first >} {< second >}?) :- true\n";
     let parsed = parse::parse(source).expect("parse failed");
     match &parsed.items[0] {
         Item::Rule(r) => {

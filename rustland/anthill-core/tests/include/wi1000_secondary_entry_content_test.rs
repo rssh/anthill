@@ -319,7 +319,7 @@ fn an_ordinary_namespace_keeps_its_content_rules() {
     let body = r#"
     entity Thing(n: Int64)
     sort Param = ?
-    rule p(1)
+    rule p(1) :- true
     fact q(2)
     constraint no_three :- p(3)
     describe p {< a rule someone else could own >}
@@ -386,7 +386,7 @@ fn every_refused_production_is_refused() {
             "    requires Show[T = Rec]",
             "`requires`",
         ),
-        ("rule", "    rule freshp(1)", "`rule`"),
+        ("rule", "    rule freshp(1) :- true", "`rule`"),
         ("rule block", "    rule {\n      freshp(1)\n    }", "`rule`"),
         ("fact", "    fact freshq(2)", "`fact`"),
         (
@@ -444,7 +444,7 @@ fn every_allowed_production_loads() {
         ),
         (
             "nested namespace",
-            "    namespace Inner\n      rule inner_p(1)\n    end",
+            "    namespace Inner\n      rule inner_p(1) :- true\n    end",
         ),
         ("provides clause", "    provides Show[T = Rec]"),
         (
@@ -503,7 +503,7 @@ fn the_provides_block_interior_is_classified() {
         errors_of(&block(""))
     );
     for (label, inner, want) in [
-        ("a rule", "      rule freshp(1)\n", "`rule`"),
+        ("a rule", "      rule freshp(1) :- true\n", "`rule`"),
         ("a fact", "      fact Show[T = Rec]\n", "`fact`"),
     ] {
         let errs = r3_errors(&block(inner));

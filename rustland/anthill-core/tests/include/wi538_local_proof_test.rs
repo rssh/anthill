@@ -58,7 +58,7 @@ fn in_body_proof_short_form_loads_as_expr_proof_and_types() {
         namespace wi538.short
           sort Box
             entity box(value: Int64)
-            rule trivial(?x)
+            rule trivial(?x) :- true
             operation f(b: Box) -> Int64 =
               proof trivial by derivation end
               0
@@ -145,8 +145,8 @@ fn in_body_proofs_compose_in_sequence() {
         namespace wi538.seq
           sort Box
             entity box(value: Int64)
-            rule one(?x)
-            rule two(?x)
+            rule one(?x) :- true
+            rule two(?x) :- true
             operation f(b: Box) -> Int64 =
               proof one by derivation end
               proof two by derivation end

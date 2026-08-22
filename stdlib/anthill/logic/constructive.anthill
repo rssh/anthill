@@ -1,8 +1,11 @@
--- Logic.Constructive — intuitionistic axioms, declared as bare rule
--- heads with no Horn body. The resolver pass that handles `-:`
--- (nested implication) will treat these as introduction/elimination
--- schemas rather than facts; until then they exist as named symbols
--- so a `proof ... :- modus_ponens, …` hint block can reference them.
+-- Logic.Constructive — intuitionistic axioms, DECLARED: a rule with no body
+-- declares its predicate and asserts nothing (proposal 061, kernel-language.md
+-- §5.3). That is what these lines always meant — "they exist as named symbols
+-- so a `proof ... :- modus_ponens, …` hint block can reference them" — and until
+-- 061 the language had no form for it, so each read as a FACT whose variable head
+-- matched any pair of propositions. The resolver pass that handles `-:` (nested
+-- implication) will give them their schema reading; a declaration is what they
+-- are in the meantime, and it asserts nothing false while waiting.
 namespace anthill.logic.Constructive
   import anthill.logic.Minimal.{Minimal}
 

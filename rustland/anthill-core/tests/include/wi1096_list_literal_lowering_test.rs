@@ -276,7 +276,7 @@ fn a_longer_literal_and_an_empty_literal_both_decide() {
 #[test]
 fn a_literal_reached_through_a_head_or_a_fact_is_a_list() {
     let mut kb = kb_of(
-        "  rule pass([1, 2, 3])\n  \
+        "  rule pass([1, 2, 3]) :- true\n  \
            rule head_has(?m)   :- mark(?m), pass(?xs), contains(?xs, 2)\n  \
            rule head_lacks(?m) :- mark(?m), pass(?xs), contains(?xs, 9)\n  \
            fact stored([1, 2, 3])\n  \

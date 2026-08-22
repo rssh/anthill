@@ -249,9 +249,30 @@ pub fn try_load_kb_prepared_files(
     sources: &[&str],
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_named_prepared(sources, None, prepare)
+}
+
+/// The one recipe, with the file NAMES optional — see [`try_load_kb_with_named_files`]
+/// for why a test ever needs them. `names`, when given, is parallel to `sources`.
+#[allow(dead_code)]
+fn try_load_kb_named_prepared(
+    sources: &[&str],
+    names: Option<&[&str]>,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<KnowledgeBase, Vec<String>> {
+    if let Some(names) = names {
+        assert_eq!(names.len(), sources.len(), "one name per source");
+    }
     let user: Vec<_> = sources
         .iter()
-        .map(|s| parse::parse(s).expect("parse user source"))
+        .enumerate()
+        .map(|(i, s)| {
+            let mut f = parse::parse(s).expect("parse user source");
+            if let Some(names) = names {
+                f.path = Some(std::sync::Arc::from(std::path::Path::new(names[i])));
+            }
+            f
+        })
         .collect();
 
     let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
@@ -262,6 +283,23 @@ pub fn try_load_kb_prepared_files(
         Ok(_) => Ok(kb),
         Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
     }
+}
+
+/// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.
+///
+/// [`try_load_kb_with_files`]'s sources are path-less, so a diagnostic that NAMES the
+/// files it spans — 061's multi-file predicate refusal — renders `<file 0>` for every
+/// one of them and a test cannot tell which file it meant. This sets `ParsedFile::path`
+/// so the message carries the names the author would see.
+///
+/// Goes through [`try_load_kb_prepared_files`]' body, NOT a second copy of the load
+/// recipe: that function's own comment says why (one recipe, so a change to the pipeline
+/// cannot leave some call sites on an older one), and a duplicate here would also have
+/// silently dropped the `prepare` hook. Found by /code-review.
+#[allow(dead_code)]
+pub fn try_load_kb_with_named_files(files: &[(&str, &str)]) -> Result<KnowledgeBase, Vec<String>> {
+    let (names, sources): (Vec<&str>, Vec<&str>) = files.iter().copied().unzip();
+    try_load_kb_named_prepared(&sources, Some(&names), |_| {})
 }
 
 /// The messages of a source that must NOT parse — for a rule enforced at

@@ -344,7 +344,7 @@ namespace wi1090.inert
   sort S
     import anthill.prelude.{Int64, Bool}
     entity f1090(a: Int64, b: Int64)
-    rule struct_eq(f1090(a: ?x, b: ?y), f1090(a: ?y, b: ?x))
+    rule struct_eq(f1090(a: ?x, b: ?y), f1090(a: ?y, b: ?x)) :- true
     rule drive1090(?v) :- f1090(a: 1, b: 2) === f1090(a: 2, b: 1), ?v <=> 1
   end
 end

@@ -134,7 +134,7 @@ fn explicit_var_fact_matches_bodyless_rule_behavior() {
             entity q(x: Int64)
           end
           fact p(?x)
-          rule q(?y)
+          rule q(?y) :- true
         end
     "#;
     for (ctor, one_val, two_val) in [("test.wi635b.P.p", 1, 2), ("test.wi635b.Q.q", 3, 4)] {

@@ -78,7 +78,7 @@ namespace wi939d.rel
     entity nothing
     entity put(c: Coll, x: Int64)
     operation has(x: Int64, c: Coll) -> Bool
-    rule has(?x, put(?, ?x))
+    rule has(?x, put(?, ?x)) :- true
     rule has(?x, put(?c, ?)) :- has(?x, ?c)
   end
 end
@@ -302,7 +302,7 @@ namespace wi939d.boolarity
   sort Box
     entity box(n: Int64)
     operation isbig(b: Box) -> Bool = true
-    rule isbig(box(n: 0))
+    rule isbig(box(n: 0)) :- true
   end
 end
 "#,
@@ -344,7 +344,7 @@ namespace wi939d.eff
   sort Box
     entity box(n: Int64)
     operation risky(b: Box) -> Bool effects Error = true
-    rule risky(box(n: 0))
+    rule risky(box(n: 0)) :- true
   end
 end
 "#,

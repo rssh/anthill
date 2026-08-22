@@ -238,7 +238,7 @@ end
 /// `Vec3.vec_add/2`), reduced to the two declarations that collide.
 const RULE_BASE: &str = r#"
 namespace wi939.rel
-  rule f(?x, ?x)
+  rule f(?x, ?x) :- true
 
   sort Rec
     entity rec(n: Int64)
@@ -322,7 +322,7 @@ namespace wi939.rel2
     rule uses(?y) :- f(7, ?y)
   end
 
-  rule f(?x, ?x)
+  rule f(?x, ?x) :- true
 end
 "#,
     );

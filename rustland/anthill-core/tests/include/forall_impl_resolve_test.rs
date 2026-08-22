@@ -288,7 +288,7 @@ fn gap_minimal_rigid_vs_fact_concrete_does_not_match() {
             entity leaf
           end
 
-          rule tree_holds(leaf)
+          rule tree_holds(leaf) :- true
         end
     "#;
     let mut kb = load_with(src);

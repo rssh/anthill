@@ -1,6 +1,7 @@
 -- Logic.Classical — adds the non-constructive axioms (excluded
--- middle, double-negation, contradiction). Declared as bare rule
--- heads; see `constructive.anthill` for the same caveat.
+-- middle, double-negation, contradiction). DECLARED as bare rule heads
+-- (proposal 061: no body ⇒ declares, and asserts nothing); see
+-- `constructive.anthill` for the same caveat.
 --
 -- SMT-discharged proofs (`by z3`) are classical regardless of which
 -- logic the enclosing sort imports; this distinction matters only

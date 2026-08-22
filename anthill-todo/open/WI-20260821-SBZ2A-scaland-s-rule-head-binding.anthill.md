@@ -67,9 +67,35 @@ the rule for BOTH implementations, and it is the acceptance spec. proposal 059 R
 rustland's `wi980_rule_head_order_test.rs` is 24 rows with four stated back-outs, each
 naming the line and the rows it fells — port the rows, not just the code.
 
-ACCEPTANCE: sbt test green; the shape above gives ONE predicate in BOTH text orders and
-across two FILES at one address; a mutual-import pair each introduce their own in either
+AMENDED 2026-08-21 (WI-20260821-FQC85 shipped proposal 061 in rustland). THE PORT IS NOW
+TWO RULES, AND THE SECOND ONE SHRINKS THE FIRST:
+ * A BODY-LESS RULE DECLARES its head's predicate and asserts NOTHING; the name is minted
+   in pass 1, like every other name. `fact` is the body-less ASSERTION, and it desugars to
+   an explicit `:- true` — which scaland must also read as the EMPTY CONJUNCTION, or every
+   migrated site loads clean and answers nothing (measured on rustland before the fix:
+   `true` is a boolean_literal, so the body carried a constant goal nothing resolves).
+ * A PREDICATE WHOSE HEADS SPAN MORE THAN ONE FILE must be declared, or the load is
+   refused naming the files. Every cross-FILE shape in the list above is now that refusal
+   in rustland, so the fixpoint's remaining job is the single-file case — which is still
+   the whole of rules 1-3 and still needs the port.
+ * A body-less rule that can declare NOTHING (a `⊥` denial, a multi-head rule, a qualified
+   head, a paren-less nullary) is refused, as is a declaration carrying a label, a
+   description, a `[…]` tag, a `[t]` introducer or a typed column `?x: T`.
+DIVERGENCE TODAY, and it is silent: scaland's `Loader.scala` still reads `rule.body.isEmpty`
+as a FACT, so the stdlib's 11 intuitionistic axioms — now DECLARATIONS in the shipped
+source — are asserted there as universally-true facts, and every `:- true` clause loads as
+a bodied rule whose `true` goal never resolves. The shipped stdlib PARSES in scaland
+(`ParserIntegrationTest`), which is what keeps sbt green; nothing drives those predicates.
+
+REFERENCE for the amendment: docs/kernel-language.md §5.3 ("No body ⇒ DECLARES"), §6.1 and
+§8.6 ("Auto-declaration, and where it stops"); rustland's
+`wi_fqc85_rule_declaration_test.rs` is 12 rows with four stated back-outs.
+
+ACCEPTANCE: sbt test green; the shape above gives ONE predicate in BOTH text orders and,
+WITH A DECLARATION, across two FILES at one address; the same pair WITHOUT one is a
+located refusal naming both files; a mutual-import pair each introduce their own in either
 file order; a facade importing its own submodule joins at TWO and THREE levels of nesting;
-`<global>` is never yielded to, with the documented top-level form still loading. Say at
-each site which rows fail when the change is backed out.
+`<global>` is never yielded to, with the documented top-level form still loading; a
+body-less rule asserts nothing and `rule H :- true` asserts exactly what `fact H` does. Say
+at each site which rows fail when the change is backed out.
 

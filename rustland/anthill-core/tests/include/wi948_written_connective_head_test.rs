@@ -109,12 +109,12 @@ fn a_written_connective_head_keeps_its_type_var_introducer() {
     // rule, so the number is a DELTA and not a stdlib census.
     const WITH_RULE: &str = r#"
 namespace wi948.inert
-  rule eq(?x, ?y)
+  rule eq(?x, ?y) :- true
 end
 "#;
     const WITHOUT_RULE: &str = r#"
 namespace wi948.inert
-  rule unrelated948(?x)
+  rule unrelated948(?x) :- true
 end
 "#;
     let mut with_rule = crate::common::load_kb_with(WITH_RULE);
@@ -143,11 +143,16 @@ end
          `same_ty[t]` does. Got: {bounded:?}",
     );
 
+    // `:- true` — the empty conjunction (§6.1), so this is the same CLAUSE the bare
+    // spelling used to be. Without a body the rule would be a 061 DECLARATION, and its
+    // unbounded `[t]` gets that construct's own refusal instead of WI-582's; the row is
+    // about which node the introducer is read off, and a clause is where it can be
+    // bounded at all.
     let unbounded = load_errors(
         r#"
 namespace wi948.unbounded
   import anthill.prelude.{Int64, Eq}
-  rule eq[t](?x, ?y)
+  rule eq[t](?x, ?y) :- true
 end
 "#,
     );
@@ -184,8 +189,8 @@ namespace wi948.subject
   sort S
     import anthill.prelude.{Int64}
     entity boxed948(v: Int64)
-    rule unify(f948(?x), ?x)
-    rule mine948(boxed948(v: ?x), ?x)
+    rule unify(f948(?x), ?x) :- true
+    rule mine948(boxed948(v: ?x), ?x) :- true
     rule drive948(?v) :- mine948(boxed948(v: 7), ?v)
   end
 end
@@ -231,7 +236,7 @@ namespace wi948.subject
   sort S
     import anthill.prelude.{Int64}
     entity boxed948(v: Int64)
-    rule mine948(boxed948(v: ?x), ?x)
+    rule mine948(boxed948(v: ?x), ?x) :- true
   end
 end
 "#;
@@ -265,7 +270,7 @@ fn an_argument_is_not_reported_as_defined_by_equations() {
 namespace wi948.cite
   sort S
     import anthill.prelude.{Int64}
-    rule unify(f948(?x), ?x)
+    rule unify(f948(?x), ?x) :- true
     operation drive(n: Int64) -> Int64 = f948(n)
   end
 end

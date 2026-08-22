@@ -47,7 +47,7 @@ sort anthill.prelude.Set
   -- O(n·m) element compares per subset direction — fine for the rule-body
   -- tests it serves; a hashed host-bodied `eq` is the WI-625 bridge's job.
   rule eq(?a, ?b) :- subset(?a, ?b), subset(?b, ?a)
-  rule subset(empty(), ?)
+  rule subset(empty(), ?) :- true
   rule subset(insert(?s, ?x), ?s2) :- contains(?s2, ?x), subset(?s, ?s2)
   rule contains(insert(?, ?y), ?x) :- PartialEq.eq(?x, ?y)
   rule contains(insert(?s, ?), ?x) :- contains(?s, ?x)

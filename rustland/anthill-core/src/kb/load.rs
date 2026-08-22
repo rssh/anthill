@@ -1180,6 +1180,65 @@ pub enum LoadError {
         owner: Option<String>,
         span: Span,
     },
+    /// PROPOSAL 061 — A PREDICATE WHOSE HEADS ARE IN MORE THAN ONE FILE MUST BE
+    /// DECLARED.
+    ///
+    /// A predicate whose clauses are all in one file has one author, who can see all of
+    /// them, and is AUTO-DECLARED in the scope §WI-896's ladder already picks. The file
+    /// is the unit for 059 §Definitions' own reason — it is the smallest place where
+    /// "assembled by two parties that never agreed on it" is real, and it is the unit
+    /// `import` already uses, since an import resolves only in the file it is written
+    /// in (WI-995).
+    ///
+    /// WHAT IT REMOVES, all of it measured under WI-980 and all of it cross-FILE: a
+    /// sibling file's head MOVING another file's clause; a mutual-import cycle picking
+    /// its owner by file order; one pair at one address giving two different programs
+    /// depending on which file was read first. Each of those is an ABSORPTION across a
+    /// file boundary, and each is now this error instead.
+    ///
+    /// CENSUS, over stdlib + `anthill-stl` + `examples/github-todo`: 102 predicates
+    /// carry rule heads and every one has its heads in exactly one file. The rule
+    /// refuses nothing that exists.
+    ///
+    /// "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as the binding decision it reads
+    /// from is (`load_incremental` is an alias of `load_all`, so each batch runs its own
+    /// `scan_definitions`). A predicate assembled across two BATCHES is therefore not
+    /// caught: the earlier batch's heads are already minted, so the later batch's denote
+    /// and never become candidates. Same boundary, same reason — the guarantee is over
+    /// one scan's files — and stated rather than implied.
+    PredicateHeadsSpanFiles {
+        /// The predicate's local name.
+        name: String,
+        /// The scope that owns it — where the declaration must go.
+        scope: String,
+        /// Every file holding one of its heads, in load order. Named because the whole
+        /// point is that no single file shows the author what happened.
+        files: Vec<String>,
+        /// The first head, so the error has a line.
+        span: Span,
+    },
+    /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
+    /// `⊥` denial names no predicate, a multi-head rule names several, and a QUALIFIED
+    /// or desugared head introduces no name at all. Under 061 such a rule asserts
+    /// nothing and declares nothing, so it is refused rather than silently dropped.
+    BodylessRuleDeclaresNothing {
+        /// Which of those shapes it is, phrased for the author.
+        detail: String,
+        span: Span,
+    },
+    /// PROPOSAL 061 — a DECLARATION stores no clause, so a citation label, a
+    /// description block, a `[…]` tag, a `[t]` type-variable introducer or a typed
+    /// column `?x: T` on it has nothing to attach to. Refused rather than dropped: a
+    /// label would define a `Rule` symbol that `using` finds nothing under, and each of
+    /// the others has exactly one reader that a body-less rule never reaches. The full
+    /// list, with each one's reason, is [`Loader::declaration_clause_carrier`].
+    DeclarationCarriesClauseText {
+        /// The declared predicate's name, for the message.
+        name: String,
+        /// WHICH carrier — phrased for the author, one per rule (the first found).
+        carrier: &'static str,
+        span: Span,
+    },
     Other {
         message: String,
     },
@@ -1788,7 +1847,10 @@ impl LoadError {
             | LoadError::CarrierlessProvisionFact { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
-            | LoadError::RuleHeadOwnedByNoScope { span, .. } => Some(*span),
+            | LoadError::RuleHeadOwnedByNoScope { span, .. }
+            | LoadError::PredicateHeadsSpanFiles { span, .. }
+            | LoadError::BodylessRuleDeclaresNothing { span, .. }
+            | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
@@ -2228,6 +2290,49 @@ impl LoadError {
                     cause,
                     name,
                     scope
+                )
+            }
+            LoadError::PredicateHeadsSpanFiles {
+                name,
+                scope,
+                files,
+                span,
+            } => {
+                format!(
+                    "{}: the predicate `{}` has rule heads in {} files — {} — and no \
+                     declaration. A predicate whose clauses are all in ONE file is \
+                     declared by them; one assembled from several must be declared \
+                     once, in the scope that owns it, by a rule with no body: write \
+                     `rule {}(…)` in '{}' (proposal 061).",
+                    loc.format_start(*span),
+                    name,
+                    files.len(),
+                    files.join(", "),
+                    name,
+                    scope
+                )
+            }
+            LoadError::BodylessRuleDeclaresNothing { detail, span } => {
+                format!(
+                    "{}: a rule with no body DECLARES a predicate (proposal 061), and \
+                     this one declares nothing — {}. Give it a body (`:- true` asserts \
+                     it), or write it as a `fact`.",
+                    loc.format_start(*span),
+                    detail
+                )
+            }
+            LoadError::DeclarationCarriesClauseText {
+                name,
+                carrier,
+                span,
+            } => {
+                format!(
+                    "{}: the body-less rule `{}` DECLARES the predicate and stores no \
+                     clause (proposal 061). {} Add `:- true` to make it an assertion, or \
+                     move it to a clause.",
+                    loc.format_start(*span),
+                    name,
+                    carrier
                 )
             }
             LoadError::UndefinedAfterDefinePass {
@@ -3136,6 +3241,41 @@ impl std::fmt::Display for LoadError {
                     name, scope, span.start, span.end
                 )
             }
+            LoadError::PredicateHeadsSpanFiles {
+                name,
+                scope,
+                files,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the predicate '{}' in '{}' has heads in {} files ({}) and no declaration (at {}..{})",
+                    name,
+                    scope,
+                    files.len(),
+                    files.join(", "),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::BodylessRuleDeclaresNothing { detail, span } => {
+                write!(
+                    f,
+                    "a body-less rule declares nothing here — {} (at {}..{})",
+                    detail, span.start, span.end
+                )
+            }
+            LoadError::DeclarationCarriesClauseText {
+                name,
+                carrier,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the body-less rule '{}' DECLARES the predicate and stores no clause. {} (at {}..{})",
+                    name, carrier, span.start, span.end
+                )
+            }
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -3643,6 +3783,7 @@ pub fn scan_definitions_with_sources(
         let mut pass = DefinePass {
             kb,
             parse_sym: &file.symbols,
+            parse_terms: &file.terms,
             file_idx,
             source_id: source_ids[file_idx],
             ledger: &mut ledger,
@@ -3813,6 +3954,87 @@ pub fn scan_definitions_with_sources(
             continue;
         }
         scan_rule_goal(kb, head);
+    }
+
+    // PROPOSAL 061 — AUTO-DECLARATION STOPS AT THE FILE BOUNDARY.
+    //
+    // A predicate whose heads are all in ONE file is auto-declared by them, in the scope
+    // the ladder above just picked. One with heads in MORE THAN ONE file is a predicate
+    // assembled by two parties that never agreed on it (059 §Definitions), and must be
+    // DECLARED — a body-less rule, minted in pass 1 — or the load is refused naming the
+    // files.
+    //
+    // KEYED ON THE PREDICATE, NOT THE SCOPE THE HEAD IS WRITTEN IN. The whole class this
+    // removes is ABSORPTION across a file boundary — `zlib.q` 2→1 and `zdemo.q` 0→2 with
+    // the first file unedited, a mutual-import cycle picking its owner by file order, one
+    // pair at one address giving two different programs — and in every one of those the
+    // clause that moved was written at a DIFFERENT scope from the predicate it landed on.
+    // Grouping by `head.scope` would see one file each and refuse nothing.
+    //
+    // A DECLARED predicate never reaches here: its heads all denote (pass 1 minted the
+    // name), so they are not candidates and hold no verdict — which is what makes
+    // "declare it" the remedy the message can name.
+    {
+        let mut by_predicate: HashMap<(ScopeId, &str), Vec<usize>> = HashMap::new();
+        for (idx, (head, &denotes_already)) in heads.iter().zip(&denotes).enumerate() {
+            if denotes_already {
+                continue;
+            }
+            // An EQUATION is out of scope (061 §"Equational rules are NOT this
+            // construct"): its clauses index under the connective, so its subject owns
+            // none and there is no predicate to declare.
+            if head.introduced_by != RuleIntroduction::Predicate {
+                continue;
+            }
+            let owner = match decision.verdict(head.scope, head.name, source_ids[head.file_idx])
+            {
+                Owned::Here => head.scope,
+                Owned::Yields(Some(s)) => s,
+                // Yields to an ordinary DECLARATION — an operation, an entity — which is
+                // already the "declared once, in one place" this rule asks for.
+                Owned::Yields(None) => continue,
+            };
+            by_predicate.entry((owner, head.name)).or_default().push(idx);
+        }
+        // A DETERMINISTIC report order, so a program with two such predicates does not
+        // print them in hash order.
+        let mut groups: Vec<((ScopeId, &str), Vec<usize>)> = by_predicate.into_iter().collect();
+        groups.sort_by_key(|((scope, name), _)| {
+            (kb.scope_display_name(*scope).to_owned(), name.to_string())
+        });
+        for ((owner, name), sites) in groups {
+            let mut file_idxs: Vec<usize> = sites.iter().map(|&i| heads[i].file_idx).collect();
+            file_idxs.sort_unstable();
+            file_idxs.dedup();
+            if file_idxs.len() < 2 {
+                continue;
+            }
+            // ONE error per predicate, located at its FIRST head — not one per head. The
+            // defect is the predicate, and a report per clause would print it N times.
+            let first = sites
+                .iter()
+                .copied()
+                .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
+                .expect("a group with two files has at least one site");
+            errors.push(
+                LoadError::PredicateHeadsSpanFiles {
+                    name: name.to_owned(),
+                    scope: kb.scope_display_name(owner).to_owned(),
+                    files: file_idxs
+                        .iter()
+                        .map(|&f| {
+                            files[f]
+                                .path
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| format!("<file {f}>"))
+                        })
+                        .collect(),
+                    span: heads[first].span,
+                }
+                .located_in(files[heads[first].file_idx]),
+            );
+        }
     }
 
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
@@ -4506,13 +4728,25 @@ fn register_callback_places(
 ///
 /// `prefix` is the fully-qualified path of the enclosing scope (empty at top level).
 /// Nested items get `qualified_name = prefix + "." + name`.
-/// Define a rule's label as a scoped symbol (pass 1). The head-functor Goal
-/// identity is registered later, in `scan_rule_goal` (pass 3), once `requires`
-/// parents are wired — see proposal 044.
+/// Define a rule's label as a scoped symbol (pass 1) — and, since proposal 061, the
+/// predicate a body-less rule DECLARES.
+///
+/// A CLAUSE's head-functor Goal identity is still registered later, in `scan_rule_goal`
+/// (pass 3), once `requires` parents are wired — see proposal 044. A DECLARATION's is
+/// not: it is minted HERE, in the pass that defines every other name, which is the whole
+/// of 061. A predicate was the only name in the language created as a side effect of
+/// USING it, so the pass that decided its binding was the pass that created it; every
+/// other name kind is immune because pass 1 defines all of them before anything resolves
+/// anything (WI-321). A declaration gives the head something to land on, put there like
+/// every other name, so WHEN the ladder is asked stops mattering.
+///
+/// [`rule_reading`] is the single decider, shared with `Loader::load_rule`: pass 1 mints
+/// exactly the names the load then declines to assert.
 fn scan_rule(
     kb: &mut KnowledgeBase,
     r: &Rule,
     parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
     scope: ScopeId,
     prefix: &str,
 ) {
@@ -4521,6 +4755,17 @@ fn scan_rule(
         let qualified = make_qualified(prefix, &name);
         kb.symbols
             .define(&name, &qualified, SymbolKind::Rule, scope);
+    }
+    if rule_reading(r, parse_sym, parse_terms) == RuleReading::Declaration {
+        // `expect` rather than a silent skip: `RuleReading::Declaration` is reached
+        // only through the `Some((_, Predicate))` arm of this very call, so a `None`
+        // here would mean the two disagree — which is the defect this pairing exists
+        // to make impossible.
+        let (name, introduced_by) = rule_introduced_functor_name(r, parse_sym, parse_terms)
+            .expect("a Declaration reading names the predicate it declares");
+        let qualified = make_qualified(prefix, name);
+        kb.symbols
+            .define(name, &qualified, introduced_by.symbol_kind(), scope);
     }
 }
 
@@ -4717,6 +4962,235 @@ fn parse_equation_lhs(
         .map(|(_, lhs)| lhs)
 }
 
+/// §6.1 (proposal 061) — `true` IS THE EMPTY CONJUNCTION, so a body goal spelling it
+/// contributes no goal at all.
+///
+/// WHY THE SPELLING HAD TO BE MADE REAL, rather than merely prescribed. 061 moves
+/// `fact`'s `:- true` into the desugaring, which makes the explicit `:- true` the way to
+/// write an assertion that keeps the `rule` keyword — and its LABEL, which `fact` has no
+/// grammar for (`fact_declaration` carries no `label` field, while
+/// `prelude/lattice.anthill`'s `less_bottom:` law is exactly that shape). MEASURED
+/// before this existed: `rule p(1) :- true` LOADED CLEAN AND ANSWERED NOTHING — `true`
+/// is a `boolean_literal`, so the body carried a constant goal that no clause and no
+/// builtin can resolve, and WI-1034's "names nothing" refusal does not reach it because
+/// the constant names no name. A migration written from the proposal's text alone would
+/// have silently emptied every site it touched.
+///
+/// `false` gets NO reading here, deliberately: §6.1 gives `true` one because that is
+/// what `fact` desugars to, and nothing in the language makes `:- false` mean anything
+/// but the ordinary unresolvable goal it already is.
+fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: TermId) -> bool {
+    matches!(parse_terms.get(tid), Term::Const(Literal::Bool(true)))
+}
+
+/// Does this rule's body add NOTHING to its head — no body at all, or a body that is
+/// exactly the empty conjunction? Asked by [`rule_introduced_functor_name`], for which
+/// an equation is BODYLESS (§8.3).
+///
+/// IT IS NOT THE SAME EMPTINESS `load_rule` READS, and an earlier version of this
+/// comment claimed it was (found by /code-review). `load_rule` judges its own body off
+/// `body_nodes` — AFTER WI-582's `Spec[t]` guard folding — while this reads the raw goal
+/// list, so `rule f[t](?x) <=> rhs :- Spec[t]` is a bodyless equation there and a bodied
+/// rule here, and its subject takes no `EquationFunctor` mint. That divergence predates
+/// 061 (`body.is_none()` had it too) and is not repaired here; what 061 adds is the
+/// `true` goal, which both sides count as absent.
+///
+/// NOT the same question as "is this a DECLARATION", which is
+/// [`rule_reading`]'s and is keyed on the SYNTACTIC absence of a body
+/// (`body: None`). That is 061's split point: `rule p(?x)` declares and
+/// `rule p(?x) :- true` asserts, so the two must never be fused.
+fn rule_body_is_empty_conjunction(r: &Rule, parse_terms: &SimpleTermStore) -> bool {
+    r.body
+        .as_ref()
+        .is_none_or(|goals| goals.iter().all(|&t| is_empty_conjunction_goal(parse_terms, t)))
+}
+
+/// The kinds a body-less rule's own mint can produce, and therefore the ones a
+/// DECLARATION may find already sitting at its scope without having declared nothing:
+/// [`SymbolKind::Goal`] (its own), [`SymbolKind::EquationFunctor`] (a sibling equation
+/// about the same subject) and [`SymbolKind::Rule`] (a LABEL of that spelling, which
+/// `scan_rule` defines from the same pass). Anything else is another construct's
+/// declaration that pass 1's `define` merged into.
+const DECLARABLE_BY_A_RULE: &[SymbolKind] = &[
+    SymbolKind::Goal,
+    SymbolKind::EquationFunctor,
+    SymbolKind::Rule,
+];
+
+/// PROPOSAL 061 — HOW A RULE READS: **no body ⇒ DECLARES, a body ⇒ asserts.**
+///
+/// A rule with no body declares its head's predicate and asserts nothing; `fact` is how
+/// a body-less assertion is written, and it desugars to an explicit `:- true`. This
+/// removes `rule`'s exception — `operation f(…) -> R` declares and `= body` defines,
+/// `const N: T` declares and `= expr` defines, and `rule` was the sole construct whose
+/// body-less form ASSERTED, only because §6.1's desugaring had spent that form on
+/// `fact`.
+///
+/// THE SPLIT POINT ALREADY EXISTED and this does not newly overload it: the loader
+/// already reads a body-less rule head two ways, and `EQUATION_FUNCTORS` is where. So
+/// the reader here is the one the loader already runs — is this body-less head an
+/// equality-family connective, or anything else — via [`parse_connective_head`], which
+/// pairs the name with `SimpleTermStore::is_minted` because `unify` is also an ordinary
+/// identifier a user may call (WI-948: *a name, not a verdict*).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RuleReading {
+    /// A body-less plain head: it DECLARES its predicate and asserts nothing. The name
+    /// is minted in pass 1 by [`scan_rule`], like every other declared name (WI-321),
+    /// which is what makes a head's binding independent of the order the pass walks in.
+    ///
+    /// A SECOND DECLARATION OF ONE PREDICATE AT ONE SCOPE IS IDEMPOTENT, and admitted —
+    /// unlike 059 R1's duplicate type (WI-997) and WI-1049's duplicate operation, which
+    /// are refused. The difference is what a merge DISCARDS: those declarations carry
+    /// content (variants, a signature) and `SymbolTable::define`'s merge silently keeps
+    /// whichever came first. A predicate declaration carries nothing — no signature, no
+    /// arity claim (that is WI-20260821-6WVJB's question), no clause — so two of them
+    /// name the same symbol and lose nothing. 061's "written once, in one file" is
+    /// advice about where to put it; there is no second reading for a refusal to guard.
+    Declaration,
+    /// Anything with a body — and the shapes 061 leaves alone, which are the
+    /// equality-family connective heads: `<=>` DEFINES (its clauses index under the
+    /// connective, so its subject owns none and there is no predicate to declare —
+    /// WI-898), while `=` and `===` are refused at a body-less head where they cannot
+    /// define (WI-888 / WI-1090), and that refusal must keep firing rather than be
+    /// swallowed by a declaration reading.
+    Clause,
+    /// A body-less head that can declare NOTHING: a `⊥` denial (which names no
+    /// predicate), several heads at once (a declaration declares ONE name), or a head
+    /// whose functor introduces no name at all — a QUALIFIED head, which references
+    /// rather than introduces, or a desugared one (`?x.m(?y)` carries the converter's
+    /// `dot_apply`). Under 061 such a rule asserts nothing and declares nothing, so it
+    /// is refused rather than dropped in silence.
+    DeclaresNothing,
+}
+
+/// [`RuleReading`] for one rule — the single decider, asked by pass 1's mint
+/// ([`scan_rule`]) and by `Loader::load_rule`. Both must give the same answer: pass 1
+/// mints exactly the names the load then declines to assert.
+fn rule_reading(
+    r: &Rule,
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+) -> RuleReading {
+    if r.body.is_some() {
+        return RuleReading::Clause;
+    }
+    // The equality family, whole — NOT [`parse_equation_lhs`]'s defining subset. A
+    // body-less `===` / `=` head has its own refusal in `load_rule`, and reading it as a
+    // declaration here would return before that refusal ever ran.
+    if let [RuleHead::Term(tid)] = r.heads.as_slice() {
+        if parse_connective_head(parse_sym, parse_terms, *tid).is_some() {
+            return RuleReading::Clause;
+        }
+    }
+    match rule_introduced_functor_name(r, parse_sym, parse_terms) {
+        Some((_, RuleIntroduction::Predicate)) => RuleReading::Declaration,
+        // An EQUATION reaches here only through a head this function already sent to
+        // `Clause`; the arm is stated rather than fused so a future head shape cannot
+        // acquire a declaration reading by accident.
+        Some((_, RuleIntroduction::Equation)) => RuleReading::Clause,
+        None => RuleReading::DeclaresNothing,
+    }
+}
+
+/// Does this parse-layer head carry a `?x: T` ascription in its ARGUMENTS? The converter
+/// lowers one to a `typed_var` MARKER node (`convert.rs`, WI-582), so the question is
+/// asked of that functor rather than of a node kind.
+///
+/// THE HEAD'S OWN FUNCTOR IS NOT ASKED, and that is not tidiness: a `typed_var` marker
+/// is only ever an ARGUMENT, while `typed_var` is also an ordinary identifier a user may
+/// write. Measured before this narrowing (found by /code-review): `rule typed_var(?x)`
+/// was refused with a message about a typed column the author never wrote — WI-948's
+/// "a name, not a verdict" trap, which `parse_connective_head` pairs with
+/// `SimpleTermStore::is_minted` to avoid. That pairing is NOT available here: the
+/// converter's `typed_var_arg` arm does not `mark_minted` the node it builds, so the
+/// position is the only provenance there is.
+fn head_carries_typed_column(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    tid: TermId,
+) -> bool {
+    let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = parse_terms.get(tid)
+    else {
+        return false;
+    };
+    pos_args
+        .iter()
+        .chain(named_args.iter().map(|(_, v)| v))
+        .any(|&a| is_typed_column(parse_sym, parse_terms, a))
+}
+
+/// Is this ARGUMENT a `?x: T` marker, or does it contain one? Split from
+/// [`head_carries_typed_column`] so the head node itself can never be asked.
+fn is_typed_column(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    tid: TermId,
+) -> bool {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = parse_terms.get(tid)
+    else {
+        return false;
+    };
+    parse_sym.local_name(*functor) == "typed_var"
+        || pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, v)| v))
+            .any(|&a| is_typed_column(parse_sym, parse_terms, a))
+}
+
+/// WHY a [`RuleReading::DeclaresNothing`] rule declares nothing, in the author's terms.
+/// Asks the SAME shape questions [`rule_introduced_functor_name`] asks, in its order, so
+/// the message and the verdict cannot describe different rules.
+fn bodyless_declares_nothing_detail(
+    r: &Rule,
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+) -> String {
+    if r.heads.len() != 1 {
+        return format!(
+            "it writes {} heads at once, and a declaration declares ONE predicate",
+            r.heads.len()
+        );
+    }
+    let RuleHead::Term(tid) = &r.heads[0] else {
+        return "a `⊥` denial names no predicate, so there is nothing for it to declare"
+            .to_owned();
+    };
+    if parse_terms.is_minted(*tid) {
+        return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
+                `?a + ?b` carries `add`), not a name the rule introduces"
+            .to_owned();
+    }
+    let Term::Fn { functor, .. } = parse_terms.get(*tid) else {
+        return "its head is not a functor application, so it names no predicate".to_owned();
+    };
+    let name = parse_sym.local_name(*functor);
+    if name.contains('.') {
+        return format!(
+            "`{name}` is a QUALIFIED name, and a qualified name references an existing \
+             predicate — it never introduces one"
+        );
+    }
+    // UNREACHABLE, and said rather than left as a plausible-looking sentence: every
+    // shape [`rule_introduced_functor_name`] refuses has been named above, so reaching
+    // here means this walk and that one have diverged. A `debug_assert` rather than an
+    // `unreachable!` because this is a DIAGNOSTIC path — aborting the process while
+    // rendering an error would replace a message with a crash.
+    debug_assert!(
+        false,
+        "`{name}` reached the detail fallthrough: rule_reading said DeclaresNothing but \
+         rule_introduced_functor_name names it"
+    );
+    format!("the loader's two readings of `{name}` disagree — please report this")
+}
+
 /// WI-1090 / WI-888 — a head the desugar wrote with an equality-family connective that
 /// does NOT define, described well enough for the refusal to say what the author meant.
 /// `None` only for the ONE defining connective, `<=>`.
@@ -4819,9 +5293,12 @@ fn rule_introduced_functor_name<'a>(
     let RuleHead::Term(tid) = &r.heads[0] else {
         return None;
     };
-    let equation_lhs = r
-        .body
-        .is_none()
+    // §8.3: an equation is BODYLESS — asked through the one owner of that question
+    // ([`rule_body_is_empty_conjunction`]) rather than off `body.is_none()` directly, so
+    // that `rule f(?x) <=> ?x :- true` — the explicit spelling of the same empty body,
+    // which 061 makes `fact`'s desugaring — reads as the equation it is at THIS reader
+    // and at `load_rule`'s alike.
+    let equation_lhs = rule_body_is_empty_conjunction(r, parse_terms)
         .then(|| parse_equation_lhs(parse_sym, parse_terms, *tid))
         .flatten();
     // The SUBJECT of the head — the node whose functor the rule is about. For an
@@ -5687,6 +6164,10 @@ fn lookup_scope(
 struct DefinePass<'a> {
     kb: &'a mut KnowledgeBase,
     parse_sym: &'a crate::intern::SymbolTable,
+    /// 061 — the file's parse-layer terms, so [`scan_rule`] can ask whether a rule's
+    /// head DECLARES (a body-less plain head) or is a clause. A question about the head
+    /// term, which pass 1 had no reason to hold before.
+    parse_terms: &'a SimpleTermStore,
     file_idx: usize,
     /// WI-999 — this file's registered identity, so a recorded declaration site is a
     /// [`SourceSpan`] and the capture refusal (which runs long after `files` is out
@@ -5925,6 +6406,9 @@ impl ScopePass for DefinePass<'_> {
 
     fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
         let (kb, parse_sym, ledger) = (&mut *self.kb, self.parse_sym, &mut *self.ledger);
+        // 061 — pass 1 now mints a body-less rule's DECLARED predicate, and telling a
+        // declaration from a clause is a question about the head TERM.
+        let parse_terms = self.parse_terms;
         let file_idx = self.file_idx;
         let source_id = self.source_id;
         match item {
@@ -6164,11 +6648,11 @@ impl ScopePass for DefinePass<'_> {
                 }
             }
             Item::Rule(r) => {
-                scan_rule(kb, r, parse_sym, scope, prefix);
+                scan_rule(kb, r, parse_sym, parse_terms, scope, prefix);
             }
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    scan_rule(kb, rule, parse_sym, scope, prefix);
+                    scan_rule(kb, rule, parse_sym, parse_terms, scope, prefix);
                 }
             }
             Item::Constraint(c) => {
@@ -22514,6 +22998,58 @@ impl<'a> Loader<'a> {
         });
     }
 
+    /// WHAT A DECLARATION IS CARRYING THAT ONLY A CLAUSE CAN HOLD — `None` when it
+    /// carries nothing of the kind. Every one of these was SILENTLY DROPPED the moment a
+    /// body-less rule stopped asserting, so each is refused rather than ignored
+    /// (proposal 061, kernel-language.md §5.3).
+    ///
+    /// The two that are not merely bookkeeping:
+    ///
+    /// * a `[t]` TYPE-VARIABLE INTRODUCER can only ever be bounded by a BODY goal
+    ///   (`:- Spec[t]`, WI-582), and a declaration has no body — so an accepted one
+    ///   would be an introducer nothing can bound, which WI-582 already refuses for a
+    ///   clause and which this arm would otherwise swallow.
+    /// * a TYPED COLUMN `?x: T` has exactly ONE enforcer, the resolver's typed-pattern
+    ///   bound on a REWRITE (WI-903), which a predicate declaration is not. 061 §OQ1
+    ///   reads a body-less head's ascription as the column's TYPE — the form Soufflé and
+    ///   SQL both land on — but that is 060's work (WI-742) and is not delivered, so it
+    ///   is refused here rather than accepted and ignored.
+    ///
+    /// Asked of the PARSE layer, because the declaration path returns before any head
+    /// conversion: `rule_head_type_bounds`, the converter's answer to the second
+    /// question, is never filled for a rule that stores no clause.
+    fn declaration_clause_carrier(&mut self, r: &Rule) -> Option<&'static str> {
+        if r.label.is_some() {
+            return Some("A citation label on it has nothing to cite.");
+        }
+        // NO `descriptions` ARM, and its absence is a measurement rather than an
+        // omission (found by /code-review, which caught the arm being dead and its test
+        // row measuring the LABEL instead). A description block requires the label:
+        // unlabeled, the CONVERTER refuses it (WI-1072, "no stable target") so the file
+        // never parses; labeled, the arm above answers first. There is no third case,
+        // so a `descriptions` arm here could never render.
+        if r.meta.is_some() {
+            return Some("A `[…]` tag on it has no clause to govern.");
+        }
+        let RuleHead::Term(head) = r.heads.first()? else {
+            return None;
+        };
+        let head = *head;
+        let mut introducers = std::collections::HashSet::new();
+        self.collect_rule_tvar_names(head, &mut introducers);
+        if !introducers.is_empty() {
+            return Some(
+                "A `[t]` type-variable introducer can only be bounded by a body's \
+                 `:- Spec[t]` guard (WI-582), and this rule has no body.",
+            );
+        }
+        head_carries_typed_column(&self.parsed.symbols, &self.parsed.terms, head).then_some(
+            "A typed column `?x: T` has exactly one enforcer, a rewrite's typed-pattern \
+             bound (WI-903), which a predicate declaration is not; 060's declaration \
+             reading of the same syntax is WI-742 and undelivered.",
+        )
+    }
+
     fn load_rule(&mut self, r: &Rule, domain: Symbol) {
         let rule_sort = ClauseKind::Rule;
         // WI-1075: the same refusal the fact path makes, for the same reason — see
@@ -22525,6 +23061,121 @@ impl<'a> Loader<'a> {
                     let (functor, span) = (*functor, self.parsed.terms.span(*tid));
                     self.refuse_unresolvable_absolute_head(functor, span);
                 }
+            }
+        }
+
+        // PROPOSAL 061 — NO BODY ⇒ DECLARES. A body-less plain head brought its
+        // predicate into existence in pass 1 ([`scan_rule`]) and asserts NOTHING here;
+        // asserting it is what `fact` and the explicit `:- true` are for. The reading is
+        // taken from the ONE decider both passes share, so the name pass 1 minted and
+        // the clause this pass declines to store cannot disagree.
+        //
+        // AFTER the absolute-head refusal above, deliberately: `..a.b` is a QUALIFIED
+        // spelling, so it introduces nothing and reads as `DeclaresNothing` — the
+        // located WI-1075 refusal is the better message and must run first.
+        match rule_reading(r, &self.parsed.symbols, &self.parsed.terms) {
+            RuleReading::Clause => {}
+            RuleReading::Declaration => {
+                // A declaration stores no clause, so there is nothing for a citation
+                // handle, a description or a `[…]` tag to attach to. Refused rather
+                // than dropped: a label on a declaration defines a `Rule` symbol that
+                // `using` then finds nothing under, and both carriers were silently
+                // lost the moment this arm stopped asserting.
+                if let Some(carrier) = self.declaration_clause_carrier(r) {
+                    self.errors.push(LoadError::DeclarationCarriesClauseText {
+                        name: rule_introduced_functor_name(
+                            r,
+                            &self.parsed.symbols,
+                            &self.parsed.terms,
+                        )
+                        .map(|(n, _)| n.to_owned())
+                        .unwrap_or_default(),
+                        carrier,
+                        span: r.span,
+                    });
+                    return;
+                }
+                // WHAT PASS 1 ACTUALLY PUT AT THIS SCOPE — the scope's OWN locals, not
+                // the ladder. Two silent no-ops hide here, and only this question
+                // separates them from a working declaration.
+                //
+                // THE LADDER IS THE WRONG INSTRUMENT, and it was the first thing tried:
+                // `name_denotes_for_rule_head` answers YES for any name the scope can
+                // SEE, so `provides Widget language anthill { rule eq(?x) }` passed it
+                // (the prelude's `eq` denotes) and the declaration still introduced
+                // nothing — the very drop the check exists for, one name away from the
+                // fixture that caught it. Found by /code-review.
+                if let Some((name, _)) =
+                    rule_introduced_functor_name(r, &self.parsed.symbols, &self.parsed.terms)
+                {
+                    let local = self
+                        .kb
+                        .symbols
+                        .scope(self.current_scope)
+                        .and_then(|s| s.locals.get(name).copied());
+                    match local {
+                        // NOTHING WAS MINTED HERE. One shape reaches this: the interior
+                        // of a `provides … language … end` block, which no scan pass
+                        // descends into (WI-20260821-TTHRK, and WI-20260821-RDGQC's
+                        // enumeration of which head shapes introduce a name). Before 061
+                        // such a head asserted its clause on the WI-476 bare intern —
+                        // uncitable, but present; under the declaration reading it would
+                        // assert nothing AND declare nothing.
+                        None => self.errors.push(LoadError::BodylessRuleDeclaresNothing {
+                            detail: format!(
+                                "`{name}` was never brought into existence: the defining \
+                                 pass does not descend into this position (a `provides … \
+                                 language … end` block's interior is the one such place \
+                                 — WI-20260821-TTHRK), so the declaration would introduce \
+                                 nothing and assert nothing"
+                            ),
+                            span: r.span,
+                        }),
+                        // SOMETHING ELSE ALREADY DECLARED THE NAME HERE, and pass 1's
+                        // `define` MERGED a `Goal` kind onto it rather than minting
+                        // anything: measured, `operation has(x) -> Bool` beside
+                        // `rule has(?x)` loaded clean with a `Goal` kind added to the
+                        // operation's own symbol, as did `sort Foo` beside
+                        // `rule Foo(?x)`. The declaration then declares nothing new and
+                        // asserts nothing — a no-op line — which is what 059 R4 clause 3
+                        // refuses for every other pair of declarations at one address
+                        // (WI-997 for types, WI-1049 for operations). Refused here for
+                        // the same reason, and NOT at the mint: pass 1 defines names as
+                        // it walks, so a rule written above the operation would see a
+                        // half-built table — the order dependence 061 exists to remove.
+                        Some(sym) => {
+                            let def = self.kb.symbols.get(sym);
+                            if let Some(kind) = def
+                                .kinds()
+                                .iter()
+                                .find(|k| !DECLARABLE_BY_A_RULE.contains(k))
+                                .copied()
+                            {
+                                self.errors.push(LoadError::BodylessRuleDeclaresNothing {
+                                    detail: format!(
+                                        "`{name}` is already declared in this scope as a \
+                                         {kind:?}, so a body-less rule adds nothing to it \
+                                         — write `:- true` to make this a CLAUSE of it, \
+                                         or delete the line"
+                                    ),
+                                    span: r.span,
+                                });
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            RuleReading::DeclaresNothing => {
+                self.errors.push(LoadError::BodylessRuleDeclaresNothing {
+                    detail: bodyless_declares_nothing_detail(
+                        r,
+                        &self.parsed.symbols,
+                        &self.parsed.terms,
+                    ),
+                    span: r.span,
+                });
+                return;
             }
         }
 
@@ -22694,6 +23345,13 @@ impl<'a> Loader<'a> {
                 // WI-582: a folded `Spec[T]` guard — its content became the
                 // bound on the `?x: T` variable, so it is not a body goal.
                 if folded_guard_ids.contains(&tid.raw()) {
+                    continue;
+                }
+                // §6.1 (061) — `true` IS the empty conjunction, so it contributes no
+                // goal. This is what makes `rule H :- true` the exact spelling of
+                // `fact H`: the same clause, with the same empty body, reached by the
+                // two syntaxes §6.1 now says mean one thing.
+                if is_empty_conjunction_goal(&self.parsed.terms, tid) {
                     continue;
                 }
                 // WI-618: a keyword-less `pattern -> body` lambda typo in a

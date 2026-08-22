@@ -44,8 +44,8 @@ const SRC: &str = r#"
         entity red
         entity blue
         operation eq(a: Bag, b: Bag) -> Bool
-        rule eq(red(), red())
-        rule eq(blue(), blue())
+        rule eq(red(), red()) :- true
+        rule eq(blue(), blue()) :- true
       end
       rule my_law: foo(?a, ?b) <=> foo(?b, ?a)
       rule bodied_law: bar(?a) = bar(?a) :- Int64.gt(1, 0)

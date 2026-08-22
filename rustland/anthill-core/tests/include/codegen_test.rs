@@ -238,7 +238,7 @@ fn rules_to_test_stubs() {
     let out = gen(r#"sort Eq {
   sort T = ?
   operation eq(a: T, b: T) -> Bool
-  rule reflexive: eq(?a, ?a)
+  rule reflexive: eq(?a, ?a) :- true
 }
 "#);
     assert!(out.contains("#[cfg(test)]"), "output:\n{out}");

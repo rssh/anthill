@@ -9,7 +9,7 @@ namespace anthill.reflect.typing
   -- Helper: cons-list membership
   -- ================================================================
 
-  rule list_contains(?x, cons(head: ?x, tail: ?))
+  rule list_contains(?x, cons(head: ?x, tail: ?)) :- true
   rule list_contains(?x, cons(head: ?, tail: ?rest))
     :- list_contains(?x, ?rest)
 
@@ -176,7 +176,7 @@ namespace anthill.reflect.typing
   -- ================================================================
 
   -- Same type (via unification).
-  rule type_compatible(?A, ?A)
+  rule type_compatible(?A, ?A) :- true
 
   -- Entity subtyping: red where Color expected.
   rule type_compatible(?A, ?B) :- is_entity_of(?A, ?B)

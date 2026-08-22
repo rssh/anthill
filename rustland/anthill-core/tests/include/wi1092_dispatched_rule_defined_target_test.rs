@@ -78,7 +78,7 @@ fn drive(src: &str) -> Result<Value, EvalError> {
 #[test]
 fn a_rule_defined_eq_decides_the_dictionary_route_and_the_named_one() {
     // Every pair below is structurally UNEQUAL and `ceq`-EQUAL, or the reverse.
-    let inverted = "    rule ceq(red, blue)\n    rule ceq(blue, red)";
+    let inverted = "    rule ceq(red, blue) :- true\n    rule ceq(blue, red) :- true";
 
     let dispatched = drive(&program(inverted, "Holder.same(red(), blue())"));
     assert!(
@@ -138,9 +138,9 @@ namespace wi1092.spec87
     entity green
     entity blue
     operation ceq(a: Color, b: Color) -> Bool
-    rule ceq(red, red)
-    rule ceq(green, green)
-    rule ceq(blue, blue)
+    rule ceq(red, red) :- true
+    rule ceq(green, green) :- true
+    rule ceq(blue, blue) :- true
     provides PartialEq[T = Color, eq = ceq]
     provides Eq[T = Color]
   end

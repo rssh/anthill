@@ -74,13 +74,13 @@ namespace anthill.reflect.typing_pass
   end
 
   -- Most-recent binding wins; lookups skip the other kind of binding.
-  rule lookup_var(var_bind(name: ?n, type: ?T, rest: ?), ?n, ?T)
+  rule lookup_var(var_bind(name: ?n, type: ?T, rest: ?), ?n, ?T) :- true
   rule lookup_var(var_bind(name: ?m, type: ?, rest: ?G), ?n, ?T)
     :- neq(?n, ?m), lookup_var(?G, ?n, ?T)
   rule lookup_var(type_bind(param: ?, type: ?, rest: ?G), ?n, ?T)
     :- lookup_var(?G, ?n, ?T)
 
-  rule lookup_type(type_bind(param: ?p, type: ?T, rest: ?), ?p, ?T)
+  rule lookup_type(type_bind(param: ?p, type: ?T, rest: ?), ?p, ?T) :- true
   rule lookup_type(type_bind(param: ?q, type: ?, rest: ?G), ?p, ?T)
     :- neq(?p, ?q), lookup_type(?G, ?p, ?T)
   rule lookup_type(var_bind(name: ?, type: ?, rest: ?G), ?p, ?T)
@@ -109,21 +109,21 @@ namespace anthill.reflect.typing_pass
   rule wf_type(?G, arrow(param: ?P, result: ?R, effects: ?Es, arity: ?))
     :- wf_type(?G, ?P), wf_type(?G, ?R), wf_type_list(?G, ?Es)
   rule wf_type(?G, named_tuple(fields: ?Fs)) :- wf_type_fields(?G, ?Fs)
-  rule wf_type(?, type_var(name: ?))    -- inference variable
-  rule wf_type(?, nothing)              -- bottom type
+  rule wf_type(?, type_var(name: ?)) :- true  -- inference variable
+  rule wf_type(?, nothing) :- true  -- bottom type
 
   -- NB (variant a): there is deliberately NO wf_type rule for
   -- denoted(value: ...). An expression-denoted type in a type position is
   -- therefore not well-formed here — this is the seam where variant (b) would
   -- add one rule (and a synth obligation on the carried occurrence).
 
-  rule wf_bindings(?, nil)
+  rule wf_bindings(?, nil) :- true
   rule wf_bindings(?G, cons(head: TypeBinding(param: ?, value: ?V), tail: ?rest))
     :- wf_type(?G, ?V), wf_bindings(?G, ?rest)
-  rule wf_type_list(?, nil)
+  rule wf_type_list(?, nil) :- true
   rule wf_type_list(?G, cons(head: ?T, tail: ?rest))
     :- wf_type(?G, ?T), wf_type_list(?G, ?rest)
-  rule wf_type_fields(?, nil)
+  rule wf_type_fields(?, nil) :- true
   rule wf_type_fields(?G, cons(head: TypeField(name: ?, type: ?T), tail: ?rest))
     :- wf_type(?G, ?T), wf_type_fields(?G, ?rest)
 
@@ -235,7 +235,7 @@ namespace anthill.reflect.typing_pass
   -- Helper relations
   -- ----------------------------------------------------------------
   -- check_args: positional args ⇐ declared param types (FieldInfo).
-  rule check_args(?, nil, nil, nil)
+  rule check_args(?, nil, nil, nil) :- true
   rule check_args(?G, cons(head: ApplyArg(name: ?, value: ?a), tail: ?as),
                       cons(head: FieldInfo(name: ?, type_name: ?Pt), tail: ?ps), ?E)
     :- check(?G, ?a, ?Pt, ?Ea), check_args(?G, ?as, ?ps, ?Es),

@@ -39,7 +39,7 @@ sort anthill.prelude.BoundedLattice
     bottom_lub:  lub(?a, bottom) <=> ?a
     top_glb:     glb(?a, top) <=> ?a
     bottom_glb:  glb(?a, bottom) <=> bottom
-    less_bottom: less(bottom, ?a)
-    less_top:    less(?a, top)
+    less_bottom: less(bottom, ?a) :- true
+    less_top:    less(?a, top) :- true
   }
 end

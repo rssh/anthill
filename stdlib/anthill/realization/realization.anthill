@@ -452,7 +452,7 @@ namespace anthill.realization
   -- recursion rather than `List.member`: that one is a Bool-valued operation
   -- and decides ground membership, where this must ENUMERATE the entry
   -- matching `?effect` and hand back its receiver.
-  rule effect_map_entry(cons(head: EffectMapping(effect: ?e, receiver: ?r), tail: ?), ?e, ?r)
+  rule effect_map_entry(cons(head: EffectMapping(effect: ?e, receiver: ?r), tail: ?), ?e, ?r) :- true
   rule effect_map_entry(cons(head: ?, tail: ?t), ?e, ?r)
     :- effect_map_entry(?t, ?e, ?r)
 end

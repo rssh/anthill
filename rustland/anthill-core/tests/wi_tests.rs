@@ -1350,3 +1350,6 @@ mod wi980_rule_head_order_test;
 
 #[path = "include/wimh90f_kernel_not_test.rs"]
 mod wimh90f_kernel_not_test;
+
+#[path = "include/wi_fqc85_rule_declaration_test.rs"]
+mod wi_fqc85_rule_declaration_test;
