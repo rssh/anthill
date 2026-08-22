@@ -456,6 +456,45 @@ fn harness_rejects_the_exfiltrating_agent_with_a_repairable_diagnostic() {
 }
 
 #[test]
+fn a_wrong_sort_at_a_label_polymorphic_parameter_is_refused() {
+    // C7, AT THE VOCABULARY THAT FOUND IT (WI-RKMD4). Until it was fixed, an argument
+    // whose SORT disagreed with a parameter type CONTAINING A TYPE VARIABLE was accepted
+    // with no diagnostic and the variable was left UNBOUND — which is not a neutral
+    // outcome but the maximally permissive one, since the consumer then instantiates it
+    // to whatever it wants. Where the variable is a Trust label, that is laundering.
+    //
+    // ONE TOKEN FROM `agent/good.anthill`: `verdicts_of(msgs)` becomes
+    // `verdicts_of(bodies_of(msgs))`, so a `List[Text[?t]]` is handed to a parameter
+    // declaring `List[Message[?t]]`. It is here as well as in the typer's own unit test
+    // (`wi_rkmd4_type_var_param_slot_test`) because a synthetic reproduction cannot say
+    // the fix reaches the real declarations — and it was the real declarations, written
+    // out as a file for the first time, that surfaced the defect at all.
+    let candidate = r#"
+sort guardians.agent.MisprojectingTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of}
+  entity mk
+
+  operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error} =
+      let msgs = fetch_mail(box)
+      Report(items:   verdicts_of(bodies_of(msgs)),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = MisprojectingTriage]
+end
+"#;
+    let errs = check_candidate(candidate).expect_err("must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("verdicts_of.msgs") && e.contains("Text")),
+        "expected the sort mismatch at the label-polymorphic parameter; got: {errs:#?}"
+    );
+}
+
+#[test]
 fn a_model_cannot_mint_releasable_text() {
     // REGRESSION for a hole that was real and had a working exploit.
     //

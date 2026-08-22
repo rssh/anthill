@@ -86,4 +86,4 @@ agents in `agent/` are hand-written stands-in for what a model would emit. The
 `Checked` relation in `safety.anthill` is a fixture — the typer already decides
 it on every load and currently discards the positive verdict. `docs/design/measured.md`
 records what was measured, what is missing, and the two defects found while
-building this (C7, and C8 — which was fixed in `kb/typing.rs`).
+building this — C7 and C8, both since fixed in `kb/typing.rs`.

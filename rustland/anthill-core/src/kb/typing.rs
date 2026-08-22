@@ -34577,6 +34577,24 @@ fn validate_arg_against_param(
         {
             return ArgValidation::Fail(err);
         }
+        // WI-RKMD4: THE VARIABLE FREES ITS OWN SLOT, NOT THE HEAD ABOVE IT. Everything
+        // above this line treats "not ground" as "not mine to decide", and for the
+        // variable-occupied SLOTS that is right. It is not right for the constructor the
+        // slots hang off: `Message[Trust = Untrusted]` against `Text[Trust = ?t]` is a
+        // decided mismatch at `Message`/`Text` no matter what `?t` turns out to be, and
+        // returning `Ok` here is what let it through. See [`nominal_head_mismatch`] for
+        // why a silent pass is the WORST outcome available at this gate rather than a
+        // neutral one.
+        //
+        // The pair here is the WI-836 retry's — DEEP-walked, or the shallow one it kept for
+        // a callable. Either is admissible: a shallow read resolves strictly less, and
+        // less-resolved can only make this check DECLINE (a var and a sort-param are both
+        // "not a nominal head"), never claim a mismatch it would not claim deeply.
+        if nominal_head_mismatch(kb, subst, &actual_g, &declared_g, HeadPosition::Argument) {
+            return ArgValidation::Fail(conformance_error(
+                kb, declared_g, actual_g, span, context,
+            ));
+        }
         return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
@@ -34649,6 +34667,216 @@ fn validate_arg_against_param(
         }
     }
     ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context))
+}
+
+/// WI-RKMD4: does `actual` disagree with `declared` at a NOMINAL HEAD CONSTRUCTOR —
+/// the one verdict a pair the [`validate_arg_against_param`] groundness gate SKIPS can
+/// still reach?
+///
+/// WHY THE SKIP WAS NOT A NEUTRAL OUTCOME. `both_ground` is the WI-385 discipline: a
+/// position still carrying a variable is someone else's to settle, so leave it. That is
+/// right about the variable's own SLOT and wrong about the constructor the slot hangs
+/// off. `sum_flat(m: Text[Trust = ?t])` applied to a `Message[Trust = Untrusted]` is a
+/// mismatch at `Message`/`Text` under EVERY instantiation of `?t`, and nobody downstream
+/// re-asks it: the arg-unify loop's failure to bind `?t` is discarded, so `?t` stays free
+/// and the RESULT type `Text[Trust = ?t]` reaches the next call still open. A free
+/// variable is not a neutral leftover there — it is the MAXIMALLY PERMISSIVE value,
+/// because the consumer instantiates it to whatever it wants. Measured on
+/// `examples/guardians`, where `?t` is an information-flow label, the consumer was a
+/// `sink(body: Text[Trust = Public])` and the accepted program was an exfiltration: the
+/// silent pass LAUNDERED the label the signature exists to carry.
+///
+/// WHAT IT DECIDES, AND WHAT IT REFUSES TO DECIDE. Only the nominal spine — a bare sort
+/// or a sort application, on BOTH sides, and not a `Function` spec. Every other form
+/// answers "not mine": a variable (flex, rigid or a declared `type_var`), an arrow, a
+/// named tuple, an effects row, a neutral projection, `nothing`. Those are the forms
+/// whose conformance genuinely is deferred, and three of them (arrow, row, neutral) have
+/// owners that this gate is deliberately positioned AFTER — `validate_arrow_param_result`,
+/// `validate_callback_effect_row`, dispatch.
+///
+/// THE TWO CONVERSIONS ARE HEAD DISAGREEMENTS BY CONSTRUCTION, so neither may be read as
+/// one: a declared reflect `Term` takes a value of any sort, and a declared `Option[T]`
+/// takes a bare `T` through the WI-408 some-coercion. The ground path below the gate
+/// accepts both INSTEAD of comparing, and this predicate must not contradict it. They are
+/// withheld at DIFFERENT widths, which is the point of stating them separately: `Term`
+/// takes any value at all, so nothing about the pair is decidable; the some-coercion
+/// concerns only the OUTER head, so two `Option`s still descend and a wrong element sort
+/// is refused under an `Option` exactly as under any other container.
+///
+/// `symmetric` is the DIRECTION question, and it is only false at the top. There the pair
+/// is `actual <: declared` and the relation is the directed one. Below the top the
+/// parameter's declared VARIANCE decides which side is the subtype, and this predicate
+/// does not read variance — so it claims a mismatch only when NEITHER direction could
+/// hold, the verdict covariant, contravariant, invariant and bivariant all agree on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeadPosition {
+    /// The outer ARGUMENT (or entity-field) position. Directed — the pair is `actual <:
+    /// declared` — and the ONE place the two boundary conversions can apply.
+    Argument,
+    /// A nested binding, or a callback component. Neither conversion reaches here, and the
+    /// parameter's declared VARIANCE is not read, so only a verdict both directions agree
+    /// on may be claimed.
+    Nested,
+}
+
+fn nominal_head_mismatch(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    actual: &Value,
+    declared: &Value,
+    position: HeadPosition,
+) -> bool {
+    // WITHHELD AT A CALLABLE HEAD — per NODE, which is as wide as WI-836's measurement
+    // reaches and no wider. `types_compatible` decomposes a sort application down to
+    // `arrow_compatible_view`, so comparing a `Function[A, B, E]` against anything here
+    // would be a back door to the refusal WI-836 measured as WRONG: `take[X](l: List[T =
+    // Function[A = X, B = Int64]], w: X)` applied to `cons(sub2, nil())` reaches this
+    // descent as `Function[A = ?X, B = Int64]` against `Int64`, and that program loads and
+    // evaluates (`wi836…::a_callback_nested_in_a_sort_application_is_still_accepted`).
+    //
+    // NOT the whole-type [`type_contains_callable`], which is the withholding the WI-836
+    // retry itself uses and which would be an exclusion wider than its justification here:
+    // that ticket's evidence is about a callable being COMPARED, not about one being
+    // present somewhere in the type. A callable nested in a binding this walk never
+    // reaches — `Config[Fmt = Text[Trust = ?t], Hook = Function[…]]` — leaves the `Fmt`
+    // disagreement perfectly decidable, and the coarse test would have dropped it. An
+    // ARROW head needs no mention: it is not a nominal head, so it declines below anyway.
+    if type_head_is_callable(kb, actual) || type_head_is_callable(kb, declared) {
+        return false;
+    }
+    if position == HeadPosition::Argument && is_reflect_term_type(kb, declared) {
+        return false;
+    }
+    let (Some((a_base, a_bindings)), Some((d_base, d_bindings))) = (
+        nominal_head_parts(kb, actual),
+        nominal_head_parts(kb, declared),
+    ) else {
+        return false;
+    };
+    if !nominal_heads_compatible(kb, subst, a_base, d_base, position) {
+        // The WI-408 some-coercion is a head disagreement BY CONSTRUCTION — a bare `T`
+        // against a declared `Option[T]` — so at the ARGUMENT position this verdict is not
+        // this predicate's to reach. It withholds the HEAD verdict only, not the whole
+        // check: two `Option`s agree at their head and reach the descent below, where a
+        // wrong element sort is refused exactly as it is under any other container. (The
+        // ground path draws the same line — it re-checks against the ELEMENT, so
+        // `Option[Message[…]]` against `Option[Text[Trust = ?t]]` fails there too.)
+        //
+        // AT THE ARGUMENT POSITION ONLY, and the guard is the whole point of
+        // [`HeadPosition`] rather than a second bool. The coercion is inserted by
+        // `check_apply_iter` around the ARGUMENT OCCURRENCE — there is no such rewrite for
+        // a nested slot or a callback component — so honouring it deeper withholds a
+        // verdict nobody else reaches. MEASURED (found by `/code-review`): with this
+        // withheld at every depth, `take(xs: List[T = Option[T = Text[Trust = ?t]]])` given
+        // a `List[T = Message[…]]` loaded CLEAN and laundered `?t` to `Public` at the sink,
+        // while its ground twin was refused — the exact shape this ticket exists to close,
+        // one level down.
+        return position == HeadPosition::Nested || !is_option_type(kb, declared);
+    }
+    // DESCEND ONLY THROUGH ONE SORT'S OWN PARAMETERS. `nest3` is why there is a descent
+    // at all: `List[T = Message[…]]` against `List[T = Text[Trust = ?t]]` agrees at
+    // `List` and disagrees one level down, and a head-only test would have called that
+    // program clean. It stops at a CROSS-SORT accept (provider admissibility, an alias
+    // shape) because such an accept translates the parameter space, and this predicate
+    // does not own that translation — [`parameterized_compatible_view`] does, and it gets
+    // the pair once σ has determined it.
+    if !same_sort_canonical(kb, a_base, d_base) {
+        return false;
+    }
+    // `Label`, not [`BindingKeyMatch::for_bases`]: that predicate asks
+    // `same_sort_canonical` and the guard above has already answered it, so calling it
+    // here would read as if a cross-sort key spelling were handled and could only ever
+    // return this same value.
+    for (param, dv) in &d_bindings {
+        let Some(av) = binding_for_param(kb, &a_bindings, *param, BindingKeyMatch::Label).cloned()
+        else {
+            continue;
+        };
+        if nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The nominal spine of a type — `(head sort, its bindings)` for a bare sort `S` (no
+/// bindings) or an application `S[…]`; `None` for every other form. The reading
+/// [`nominal_head_mismatch`] is confined to, split out so the "which forms are nominal"
+/// question is answered in ONE place rather than at each of its two uses.
+///
+/// A HEAD THAT IS ITSELF A PARAMETER IS NOT A HEAD, and it is spelled as a `Symbol` like
+/// any other, which is what makes it worth stating. `sort Spec[F[T]]`'s marked carrier
+/// `F` reaches here as `Parameterized { base: F }` — a higher-kinded slot the unifier
+/// FILLS (`F[T = A] ≟ Option[T = X]` ⟹ `F := Option`, see [`parameterized_base_term`]),
+/// so reading `F` as a constructor and comparing it to `Option` calls a fillable variable
+/// a mismatch. MEASURED: without this, `wi453_hk_concrete_fill_test`'s two arg-carrier
+/// rows are refused. `walk_view` does not close the gap — it resolves the head var /
+/// alias chain and STOPS at a `Term::Fn`, so an application's FUNCTOR is never resolved
+/// (which is exactly why a bare `T` reaches here already resolved to its var, and a
+/// higher-kinded `F[…]` does not).
+fn nominal_head_parts(kb: &KnowledgeBase, ty: &Value) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+    let (base, bindings) = match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    if is_sort_param_symbol(kb, base)
+        || matches!(
+            resolve_sort_alias(kb, base).map(|t| kb.get_term(t)),
+            Some(Term::Var(_))
+        )
+    {
+        return None;
+    }
+    Some((base, bindings))
+}
+
+/// Are two nominal HEADS compatible — nominal identity, entity subtyping, `refines`,
+/// provider admissibility, alias shape?
+///
+/// Asked by handing the two bare sort references to [`types_compatible`], which is the
+/// same thing [`parameterized_compatible_view`] does with its two bases and for the same
+/// reason: the head question already has an owner, and a second spelling of it here
+/// would be a second opinion about when two sort identities are one — the drift WI-872
+/// found five call sites of.
+///
+/// ON THE `Value` CARRIER, and it took a fix to make that available. `Value::SymbolRef(S)`
+/// views as `ViewHead::Ref(S)` — exactly what [`type_head`] reads as a bare sort — but
+/// [`types_compatible_view_structural`] had NO `sort_ref`↔`sort_ref` arm, so two of them
+/// fell to its `_ => false` and reported every head as a mismatch, identical ones
+/// included. WI-RKMD4 wired that arm (see [`bare_sort_compatible`]) rather than routing
+/// around it through `kb.alloc(Term::Ref(…))`: interning a term to ask a question is the
+/// wrong shape for a TRANSIENT query — hash-consing is for persistent, heavily-shared
+/// structure — and routing around a silent wrong answer leaves it there for the next
+/// producer. So this call is now that arm's DRIVER: every head comparison the corpus makes
+/// goes through it.
+///
+/// Every probe substitution is DISCARDED, in both directions: this predicate is consulted
+/// at a gate that otherwise returns `Ok` unchanged, so it must add refusals and nothing
+/// else — no binding it makes may survive into the caller's σ.
+fn nominal_heads_compatible(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    actual: Symbol,
+    declared: Symbol,
+    position: HeadPosition,
+) -> bool {
+    if same_sort_canonical(kb, actual, declared) {
+        return true;
+    }
+    let a_ref = Value::SymbolRef(actual);
+    let d_ref = Value::SymbolRef(declared);
+    let mut probe = subst.clone();
+    if types_compatible(kb, &mut probe, &a_ref, &d_ref) {
+        return true;
+    }
+    if position == HeadPosition::Nested {
+        let mut probe = subst.clone();
+        if types_compatible(kb, &mut probe, &d_ref, &a_ref) {
+            return true;
+        }
+    }
+    false
 }
 
 /// WI-469: validate a callback argument's CONCRETE arrow param/result element
@@ -34838,6 +35066,26 @@ fn validate_arrow_param_result(
                 && resolved_type_is_ground(kb, &a_param_r)
                 && !arrow_params_compatible(kb, subst, &d_param_r, &a_param_r, arity)
             {
+                return Some(mismatch(kb, subst));
+            }
+            // WI-RKMD4 — THE SAME HOLE, ONE COORDINATE OVER. The groundness gate above is
+            // WI-385's, and it skips a callback parameter still carrying a variable for the
+            // same reason [`validate_arg_against_param`]'s did — right about the variable's
+            // SLOT, wrong about the constructor it hangs off. MEASURED, both directions:
+            // `run(f: (m: Message[Trust = Untrusted]) -> Int64)` given a `cb(t: Text[Trust =
+            // ?t])`, and the mirror with the variable on the DECLARED side, both loaded
+            // clean while the all-ground pair beside them was refused.
+            //
+            // SYMMETRIC, unlike the top-level call: the parameter position is
+            // CONTRAVARIANT, so `d_param` is the subtype here — and rather than rely on
+            // getting that flip right at a second site, the predicate is asked for the
+            // verdict BOTH variance readings agree on. At arity ≠ 1 the slot is a parameter
+            // LIST (WI-782), which is a `named_tuple` and therefore not a nominal head on
+            // either side, so this arm decides only the arity-1 pair — a lone parameter's
+            // own type. A callable component needs no guard at this call: the predicate
+            // withholds at a callable HEAD itself, which is where WI-836's evidence
+            // applies and is the same rule the top-level gate gets.
+            if nominal_head_mismatch(kb, subst, &d_param_r, &a_param_r, HeadPosition::Nested) {
                 return Some(mismatch(kb, subst));
             }
         }
@@ -35656,10 +35904,14 @@ fn reorder_named_args_in_apply(
 /// either would classify as a bare row WITHOUT ever passing through the row IR. Neither is
 /// reachable, for a producer reason rather than a structural one:
 ///
-///  * `Value::SymbolRef` has exactly three producers, enumerated at its minter
-///    (`symbol_value`, eval/builtins.rs): `Dictionary.impl`, `OpRef.op`, `OpRef.named`. Each
-///    hands back a sort or operation symbol the KB already holds; none can be an
-///    `EffectExpression` constructor;
+///  * `Value::SymbolRef` has exactly FOUR producers. Three are at its evaluator minter
+///    (`symbol_value`, eval/builtins.rs): `Dictionary.impl`, `OpRef.op`, `OpRef.named`.
+///    The fourth is in the TYPER — [`nominal_heads_compatible`] (WI-RKMD4), which mints a
+///    bare sort reference to ask the head question and discards it. Each hands back a sort
+///    or operation symbol the KB already holds; none can be an `EffectExpression`
+///    constructor. The count is stated rather than the reason alone because it is what
+///    licenses the panic arm below, and a census outside the evaluator is exactly the kind
+///    a later reader would not think to look for;
 ///  * a nullary `Value::Entity` over `empty_row` is what the EVALUATOR would mint for a
 ///    program writing `empty_row()`. That is a runtime value, and the typer's effect stream
 ///    is built by the loader and by the typer's own row extraction — never fed from the
@@ -45397,54 +45649,7 @@ fn types_compatible_term_dispatch(
 
     match (actual_functor, expected_functor) {
         (Some("sort_ref"), Some("sort_ref")) => {
-            // Nominal / entity-subtyping / refines, then WI-344 provider
-            // admissibility: a value of a bare carrier sort is usable
-            // where a bare spec it provides is expected. Confined to the
-            // bare↔bare arm so it never rides the `sort_ref ↔ parameterized`
-            // base check and drops a parameterized spec's bindings — see
-            // `sort_provides_admissibly`.
-            if sort_ref_compatible(kb, actual, expected) {
-                return true;
-            }
-            if let (Some(a), Some(e)) = (
-                extract_sort_ref_sym(kb, &TermIdView(actual)),
-                extract_sort_ref_sym(kb, &TermIdView(expected)),
-            ) {
-                if sort_provides_admissibly(kb, a, e) {
-                    return true;
-                }
-            }
-            // WI-405 FACET B: resolve a structured (ground) alias on EITHER side and
-            // re-dispatch — so two aliases of the same shape (`sort IntList = List[T =
-            // Int64]; sort IntList2 = List[T = Int64]`) compare by their underlying shapes,
-            // not by nominal NAME only. WI-381 wired alias resolution into the
-            // bare↔parameterized arms but NOT here; this applies it UNIFORMLY (the WI-405
-            // root cause). Reached only after the nominal + provider checks fail (a pure
-            // loosening). Each re-dispatch runs on a PROBE clone committed only on success,
-            // so a failed branch can never leak partial bindings into the next branch or the
-            // caller (mirrors `bare_provider_binding_precise`); the bare↔bare comparison is
-            // ground-vs-ground, so a success commits no new bindings anyway. Termination:
-            // `resolve_alias_shape` is `None` for a non-alias AND (WI-405) for a
-            // non-well-founded recursive alias, so the recursion bottoms out.
-            for (shape_side, other, shape_is_actual) in
-                [(actual, expected, true), (expected, actual, false)]
-            {
-                if let Some(shape) = extract_sort_ref_sym(kb, &TermIdView(shape_side))
-                    .and_then(|s| resolve_alias_shape(kb, s))
-                {
-                    let mut probe = subst.clone();
-                    let ok = if shape_is_actual {
-                        types_compatible(kb, &mut probe, &TermIdView(shape), &TermIdView(other))
-                    } else {
-                        types_compatible(kb, &mut probe, &TermIdView(other), &TermIdView(shape))
-                    };
-                    if ok {
-                        *subst = probe;
-                        return true;
-                    }
-                }
-            }
-            false
+            bare_sort_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
         (Some("parameterized"), Some("parameterized")) => {
             // WI-342 dispatch consolidation: route through the carrier-agnostic
@@ -45580,8 +45785,15 @@ fn types_compatible_term_dispatch(
 /// dispatches the forms `unify_types` already handles cross-carrier, keeping the
 /// two relations in lockstep: `denoted` (value-in-type subtyping IS equality →
 /// the same Ref-compare unify uses), `arrow` (contravariant param / covariant
-/// result / covariant effects), `effects_rows`, `parameterized`. Forms not yet
-/// wired (e.g. `parameterized`-vs-`sort_ref`, `named_tuple`) refuse — sound.
+/// result / covariant effects), `effects_rows`, `parameterized`.
+///
+/// EVERY non-`false` arm of the term dispatch now has a peer here — `named_tuple` and
+/// both `sort_ref`↔`parameterized` directions were wired after that sentence was
+/// written, and `sort_ref`↔`sort_ref` by WI-RKMD4, which was the last one missing and the
+/// only one whose absence was a WRONG answer rather than a conservative one (two
+/// identical bare sorts read as a mismatch). What reaches `_ => false` below is a FORM
+/// MISMATCH or a variable, for both of which `false` is the verdict rather than a
+/// deferral.
 fn types_compatible_view_structural<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -45637,6 +45849,15 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
         // `types_compatible_term_dispatch`). `sort_sym_compatible` takes
         // (sort_ref-side sym, parameterized-side base); `sort_functor_of_view`
         // surfaces the head sym for a `sort_ref` and the base for a `parameterized`.
+        // WI-RKMD4: the arm this dispatch was MISSING. Every other non-`false` arm of the
+        // term dispatch has a peer here; this one did not, so two bare refs on a `Value`
+        // carrier fell to the `_ => false` below and were reported as a mismatch even when
+        // they were the SAME sort. Unreachable only by accident of production — a bare ref
+        // is normally hash-consed, so the both-`Term` early return took it first — and a
+        // silent wrong answer as soon as a non-`Term` producer existed, which is what
+        // [`nominal_heads_compatible`] is. Through the SAME body the term arm runs, not a
+        // second spelling of it.
+        (Some("sort_ref"), Some("sort_ref")) => bare_sort_compatible(kb, subst, &a, &e),
         (Some("sort_ref"), Some("parameterized")) => {
             // WI-381: resolve a structured (ground) alias on the bare side and
             // re-dispatch — mirrors `types_compatible_term_dispatch` so the subtype
@@ -46820,19 +47041,70 @@ fn compute_branch_join_type(
     }
 }
 
-/// sort_ref(name: A) compatible with sort_ref(name: B)
-/// if A == B, or A is_entity_of B, or A refines B via requires.
-fn sort_ref_compatible(kb: &KnowledgeBase, actual: TermId, expected: TermId) -> bool {
-    let actual_sym = match extract_sort_ref_sym(kb, &TermIdView(actual)) {
-        Some(s) => s,
-        None => return false,
+/// WI-RKMD4: the bare↔bare subtype relation, carrier-agnostically — nominal identity /
+/// entity subtyping / `refines`, then WI-344 provider admissibility, then WI-405 FACET B's
+/// alias re-dispatch.
+///
+/// LIFTED OUT OF [`types_compatible_term_dispatch`] BECAUSE THE OTHER DISPATCH HAD NO ARM
+/// AT ALL. [`types_compatible_view_structural`] carries a peer for every other non-`false`
+/// arm — `sort_ref`↔`parameterized` in both directions included — and had none for
+/// `sort_ref`↔`sort_ref`, so a pair of bare refs on a `Value` carrier fell to its `_ =>
+/// false` and read as a MISMATCH, identical sorts included. It was unreachable only by
+/// accident of production (a bare ref is normally hash-consed, so the both-`Term` early
+/// return caught it first) — a silent wrong answer waiting for the first non-`Term`
+/// producer, which is what [`nominal_heads_compatible`] became. One shared body rather
+/// than a second spelling: the WI-342 discipline the parameterized arm already follows,
+/// and the only way the two carriers cannot drift on when two sort identities are one.
+///
+/// `None` from either side (not a bare sort) is `false`, as the deleted `sort_ref_-
+/// compatible` answered — the arm is reached only when both dispatch as `sort_ref`, so
+/// that case is unreachable rather than lenient.
+///
+/// The alias re-dispatch is reached only after the nominal and provider checks fail (a
+/// pure loosening), and each branch runs on a PROBE clone committed only on success, so a
+/// failed branch can never leak partial bindings into the next branch or the caller
+/// (mirrors [`bare_provider_binding_precise`]); the bare↔bare comparison is
+/// ground-vs-ground, so a success commits no new bindings anyway. Termination:
+/// [`resolve_alias_shape`] is `None` for a non-alias AND (WI-405) for a non-well-founded
+/// recursive alias, so the recursion bottoms out.
+fn bare_sort_compatible<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    expected: &B,
+) -> bool {
+    let (Some(a), Some(e)) = (
+        extract_sort_ref_sym(kb, actual),
+        extract_sort_ref_sym(kb, expected),
+    ) else {
+        return false;
     };
-    let expected_sym = match extract_sort_ref_sym(kb, &TermIdView(expected)) {
-        Some(s) => s,
-        None => return false,
-    };
-
-    sort_sym_compatible(kb, actual_sym, expected_sym)
+    // Provider admissibility is CONFINED to this arm so it never rides the `sort_ref ↔
+    // parameterized` base check and drops a parameterized spec's bindings — see
+    // [`sort_provides_admissibly`].
+    if sort_sym_compatible(kb, a, e) || sort_provides_admissibly(kb, a, e) {
+        return true;
+    }
+    // WI-405 FACET B: resolve a structured (ground) alias on EITHER side and re-dispatch,
+    // so two aliases of the same shape (`sort IntList = List[T = Int64]; sort IntList2 =
+    // List[T = Int64]`) compare by their underlying shapes and not by nominal NAME only.
+    // WI-381 wired alias resolution into the bare↔parameterized arms but NOT here.
+    for (shape_sym, shape_is_actual) in [(a, true), (e, false)] {
+        let Some(shape) = resolve_alias_shape(kb, shape_sym) else {
+            continue;
+        };
+        let mut probe = subst.clone();
+        let ok = if shape_is_actual {
+            types_compatible(kb, &mut probe, &TermIdView(shape), expected)
+        } else {
+            types_compatible(kb, &mut probe, actual, &TermIdView(shape))
+        };
+        if ok {
+            *subst = probe;
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if sort symbol A is compatible with sort symbol B:

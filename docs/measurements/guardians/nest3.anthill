@@ -1,3 +1,8 @@
+-- WI-RKMD4: REFUSED as of the fix — the CONTAINER case: the element sort disagrees one level beneath a `List`
+-- both sides agree on.
+-- Kept as the reproduction; measured.md C7 records the verdict, and
+-- rustland/anthill-core/tests/include/wi_rkmd4_type_var_param_slot_test.rs
+-- carries it with its controls.
 -- Is the leak caused by a MISMATCHED ELEMENT SORT passing silently?
 enum nest3.Trust
   entity Untrusted

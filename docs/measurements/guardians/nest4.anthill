@@ -1,3 +1,7 @@
+-- WI-RKMD4: REFUSED as of the fix — the FLAT case.
+-- Kept as the reproduction; measured.md C7 records the verdict, and
+-- rustland/anthill-core/tests/include/wi_rkmd4_type_var_param_slot_test.rs
+-- carries it with its controls.
 enum nest4.Trust
   entity Untrusted
   entity Public

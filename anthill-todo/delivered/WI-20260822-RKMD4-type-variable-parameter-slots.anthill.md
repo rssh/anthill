@@ -3,9 +3,9 @@
 - id: WI-20260822-RKMD4-type-variable-parameter-slots
 - created: 2026-08-22T09:29:00Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-22T09:29:00Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-22T16:15:37Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

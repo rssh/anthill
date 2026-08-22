@@ -329,7 +329,7 @@ signatures, so the label on a piece of data always comes from the tool that
 produced it and never from code that merely handles it. The design wanted that
 discipline; the language enforces it.
 
-## C7 · A sort mismatch against a variable-containing type passes silently · **defect**
+## C7 · A sort mismatch against a variable-containing type passed silently · **FIXED**
 
 **Scenario.** Not an attack that was designed — this one was found by writing
 the vocabulary out as a real file and watching the exfiltration *succeed*.
@@ -345,9 +345,9 @@ operation sink(body: Text[Trust = Public]) -> Unit
 operation leak() -> Unit = sink(sum_flat(fetch_one()))
 ```
 
-**Loads clean.** `docs/measurements/guardians/` reproduction in the `nest3`/`nest4` shape. `Message`
-where `Text` is expected raises nothing, `?t` is never bound, and it then binds
-to `Public` at the sink. The exfiltration goes through.
+**Loaded clean.** `docs/measurements/guardians/` reproduction in the `nest3`/`nest4`
+shape. `Message` where `Text` was expected raised nothing, `?t` was never bound, and it
+then bound to `Public` at the sink. The exfiltration went through.
 
 **Controls, and they are what make this precise.** Ground against ground *is*
 checked — `send_email(to: 42)` gives `expected Address, got Int64`, and A1/A2
@@ -370,13 +370,53 @@ spelling — loaded clean. The smoke tests had never caught it because they used
 one sort throughout. **A vocabulary of one sort cannot exercise a sort
 mismatch**, and every run in group A was written that way.
 
-**Mitigation until it is fixed.** Every label-polymorphic operation must be
-reachable only through arguments of exactly its declared sort. In the
-vocabulary that means an explicit `bodies_of(List[Message[?t]]) ->
-List[Text[?t]]` projection, and with it the attack is refused:
-`expected Text[Trust = Public], got Text[Trust = Untrusted]`. That is a
-discipline on the trusted declarations, not a fix — the typer should reject the
-mismatch.
+**Fixed in `kb/typing.rs` (WI-RKMD4).** `validate_arg_against_param` gates on
+groundness — a pair still carrying a variable is someone else's to settle, so it
+returned `Ok` unchecked. That is right about the variable's *slot* and wrong
+about the constructor the slot hangs off, and nothing downstream re-asked it:
+the argument-unify loop's failure to bind `?t` is discarded, so `?t` reached the
+sink still free. The gate now also asks whether the pair disagrees at a
+**nominal head constructor**, descending through the parameters two instances of
+one sort share, and refuses when it does:
+
+```
+type mismatch in sum_flat.m (op-arg): expected Text[Trust = ?t],
+                                      got Message[Trust = Untrusted]
+```
+
+Both shapes above are refused — the flat one at `sum_flat.m` and the container
+one at `sum_list.msgs`, one level beneath a `List` the two sides agree on. The
+two controls still hold: ground-against-ground is refused as before, and the
+matching-element container still **propagates** `Untrusted` and is refused at the
+*sink*, not at the polymorphic call.
+
+**The same hole was one coordinate over**, and was closed with it: a **callback
+parameter** carrying the variable — `run(f: (m: Text[Trust = ?t]) -> Int64)` given a
+`Message`-taking arrow, and the mirror with the variable on the slot's side — was skipped
+by the identical per-component groundness gate, while the all-ground pair beside it was
+refused. Both directions now refuse.
+
+**The carve-out the fix needed re-opened the defect once, one level down.** `Option` and
+reflect-`Term` must be withheld, because the ground path *accepts* them instead of
+comparing — but both are properties of the ARGUMENT position, and honouring them at every
+recursion depth left `take(xs: List[T = Option[T = Text[Trust = ?t]]])` accepting a
+`List[T = Message[…]]`, laundering exactly as before. A second instance sat at the callback
+site, where the pair is handed over slot-first. Found by `/code-review` after the workspace
+was green, and closed by making the position an enum rather than a flag.
+
+`wi_rkmd4_type_var_param_slot_test` carries seven refusals with nine controls, and
+`guardians_test::a_wrong_sort_at_a_label_polymorphic_parameter_is_refused` carries one row
+at **this** vocabulary — one token from `agent/good.anthill` — because a synthetic
+reproduction cannot say the fix reaches the real declarations, and it was the real
+declarations that surfaced the defect. Backing the predicate out fails exactly those eight
+rows and nothing else in the workspace.
+
+**The mitigation stands, and is no longer a mitigation.** `bodies_of(List[
+Message[?t]]) -> List[Text[?t]]` was written to keep every label-polymorphic
+operation reachable only through arguments of exactly its declared sort. It stays
+in the vocabulary because a message's body genuinely *is* a projection and the
+label genuinely does ride along it — but it is now ordinary API rather than the
+thing standing between the design and a laundered label.
 
 ## C8 · A spec operation with `ensures` had no possible provider · **FIXED**
 
@@ -439,7 +479,7 @@ instead, and this is recorded rather than diagnosed.
 | B3 | body may not exceed its declaration | ✅ fires |
 | B4 | reshaped member does not evade B2 | ✅ fires |
 | C1 | signature conformance | ❌ **gap** (WI-935) |
-| C7 | sort mismatch vs a variable-containing type | ❌ **defect** — launders the label |
+| C7 | sort mismatch vs a variable-containing type | ✅ **fixed** in `kb/typing.rs` |
 | C8 | a spec op with `ensures` had no provider | ✅ **fixed** in `kb/typing.rs` |
 | C9 | `Modify[p]` target vs the refinement check | ❌ not compared |
 | C2 | `requires` gating a call site | ❌ by design (§8.5) |
@@ -448,12 +488,13 @@ instead, and this is recorded rather than diagnosed.
 | C5 | computed region in `Modify[…]` | ❌ type position |
 | C6 | type argument on a constructor | ❌ and desirable |
 
-**C7 is the one that changes the picture.** A1–A3 and B1–B4 are real and hold,
-but A1–A3 were all written over a single sort, and C7 is invisible to any test
-built that way. The design still works — with an explicit projection at every
-sort boundary — but it works by *discipline in the trusted declarations* rather
-than by the typer, and that is a weaker claim than the one this record made
-before the vocabulary was written out. Fixing C7 is now ahead of C1.
+**C7 changed the picture, and then was fixed.** A1–A3 and B1–B4 are real and
+hold, but A1–A3 were all written over a single sort, and C7 was invisible to any
+test built that way — **a vocabulary of one sort cannot exercise a sort
+mismatch**. For as long as it stood, the design worked by *discipline in the
+trusted declarations* rather than by the typer, which is a weaker claim than the
+one this record made before the vocabulary was written out. The typer now makes
+the claim itself, so C1 is again the one item on the critical path.
 
 **C8 was found by writing the design's own obligation down and fixed in the
 kernel** — the postcondition it blocked, `ensures mentions_all(result)`, is the

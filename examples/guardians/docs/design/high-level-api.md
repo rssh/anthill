@@ -580,23 +580,24 @@ mismatch bites. (e) as the primary mechanism, because it reintroduces the
 bespoke abstract interpreter that §3 is trying to eliminate — though it stays
 available as a *secondary* check, which is what `derives_from/2` in §6.3 is.
 
-*What the choice costs, stated because it is not free.* Three of the closed
+*What the choice costs, stated because it is not free.* Two of the closed
 routes are consequences of picking (c): the label slot is invariant, so
 widening is not free by default, though variance is declarable and the
-original "does not scale" conclusion was retracted (C4); rule bodies cannot read
-labels, so policy *about*
-labels cannot be written as rules (C3); and a sort mismatch against a
-variable-containing type launders the label outright (C7). A runtime field
-would have none of these — it would simply be weaker on the four columns above.
+original "does not scale" conclusion was retracted (C4); and rule bodies cannot
+read labels, so policy *about* labels cannot be written as rules (C3). A runtime
+field would have neither of these — it would simply be weaker on the four
+columns above.
 
-*Which suggests keeping both.* Given C7, the cheap insurance is to carry the
-label **twice** — in the type for the static guarantee, and shadowed in a
-runtime field consulted at the sink. The forgeability objection to (a) does not
-apply when the field is redundant: the agent's vocabulary contains only the
-declared tools, never `Text`'s constructor, so it cannot mint a `Public` value
-either way. That turns C7 from a silent laundering into a runtime refusal while
-the typer gap is open, and it is defence in depth rather than a second
-mechanism to maintain.
+*A third cost was real and is now paid.* A sort mismatch against a
+variable-containing type laundered the label outright (C7), which was the
+strongest argument this section could have made for carrying the label **twice**
+— in the type for the static guarantee, and shadowed in a runtime field
+consulted at the sink. The typer now refuses that mismatch, so the insurance is
+no longer buying anything the static guarantee does not already provide, and the
+recommendation stands on (c) alone. The forgeability reasoning is worth keeping
+for its own sake: the agent's vocabulary contains only the declared tools, never
+`Text`'s constructor, so a generated agent cannot mint a `Public` value by any
+route.
 
 ### D3 — Where does the frame condition live?
 

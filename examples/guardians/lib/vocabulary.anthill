@@ -106,10 +106,14 @@ namespace guardians
     effects {External, Error}
 
   -- Projection: a message's body carries the message's label.
-  -- NB NOT optional sugar. Without it a generated agent writes
-  -- `summarize(fetch_mail(box))`, and a sort mismatch against a parameter
-  -- containing a type variable is currently accepted SILENTLY (measured:
-  -- C7), leaving the label variable free to bind `Public` at the sink.
+  -- Writing this operation out is what surfaced C7. It was introduced as a
+  -- DISCIPLINE — keeping every label-polymorphic operation reachable only
+  -- through arguments of exactly its declared sort — because until WI-RKMD4 a
+  -- sort mismatch against a parameter containing a type variable was accepted
+  -- SILENTLY, leaving the label variable free to bind `Public` at the sink.
+  -- The typer now refuses such a call (including a mis-projected
+  -- `List[Text[?t]]` handed to this signature), so this is ordinary API: a
+  -- message's body genuinely is a projection, and the label rides along it.
   operation bodies_of(msgs: List[T = Message[?t]])
       -> List[T = Text[?t]]
 
