@@ -102,9 +102,21 @@ fn every_implicit_target_is_declared_by_the_standard_load() {
     );
 }
 
-/// THE AMBIGUOUS RUNG, pinned because the guard now decides it explicitly. `Ambiguous`
-/// counts as DENOTING, so the head references it and the load is refused; minting
-/// instead would bury the conflict under a scope-local that outranks the candidates.
+/// THE AMBIGUOUS RUNG, pinned because the conflict must never be buried under a
+/// scope-local that outranks the candidates.
+///
+/// IT IS NOW REACHED BY TWO ROUTES, and both are driven below (WI-20260822-845G7). When
+/// the two wildcard-imported `amb900`s are DECLARED, the head DENOTES — ambiguously,
+/// which is still denoting — so it references them and the ambiguity is reported at the
+/// reference, §"the same ladder, to the rung" (WI-900). When they are only rule HEADS,
+/// nothing is minted yet, so the head denotes nothing and would introduce a scope-local:
+/// that is exactly the burial this row exists to prevent, and it is refused one step
+/// earlier by the visibility rule, which names all three scopes.
+///
+/// BEFORE 845G7 only the second program existed here, and it reached the AMBIGUITY
+/// message — through `Ownership`'s overlay, which made the head yield to one of the two
+/// candidates and left the finished table ambiguous. That route is gone with the
+/// fixpoint; the declared arm below is what keeps the ambiguity message measured.
 #[test]
 fn an_ambiguous_head_is_a_reference_so_the_load_is_refused() {
     const SRC: &str = r#"
@@ -125,10 +137,33 @@ end
 "#;
     let Err(errs) = crate::common::try_load_kb_with(SRC) else {
         panic!(
-            "two wildcard-imported `amb900`s must make the head AMBIGUOUS and refuse the \
-             load — if this now loads, the head was minted and the conflict was silently \
-             resolved in the author's favour",
+            "two wildcard-imported `amb900`s must refuse the load — if this now loads, \
+             the head was minted and the conflict was silently resolved in the author's \
+             favour",
         );
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("amb900")
+            && e.contains("introduces that name at 3 scopes, each of which reaches")),
+        "undeclared, the three scopes all introduce `amb900` and can see each other, so \
+         the visibility rule refuses before any of them can shadow the others; got \
+         {errs:?}",
+    );
+
+    // DECLARED — and now the head DENOTES, ambiguously, so it is a REFERENCE and the
+    // ambiguity is reported where §"the same ladder, to the rung" says it should be.
+    // This is the arm that keeps the ambiguity message itself measured.
+    let declared = SRC
+        .replace(
+            "namespace wi900.one\n  rule amb900",
+            "namespace wi900.one\n  rule amb900(?x)\n  rule amb900",
+        )
+        .replace(
+            "namespace wi900.two\n  rule amb900",
+            "namespace wi900.two\n  rule amb900(?x)\n  rule amb900",
+        );
+    let Err(errs) = crate::common::try_load_kb_with(&declared) else {
+        panic!("two declared `amb900`s wildcard-imported together must still be ambiguous")
     };
     assert!(
         errs.iter()

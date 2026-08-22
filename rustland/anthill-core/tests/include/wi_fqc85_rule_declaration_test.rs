@@ -206,17 +206,33 @@ fn a_declaration_gives_an_inner_scope_its_own_predicate() {
         assert_eq!(answers(&mut kb, &format!("{ns}.p(2)")), 0, "{ns}: and the outer cannot see it");
     }
 
-    // THE CONTROL — the identical program with the declaration deleted. This is WI-980's
-    // own row: with nothing declaring the name, the inner head is a CLAUSE of the
-    // enclosing predicate. Without it, "the declaration works" would be indistinguishable
-    // from "an inner head never joins".
-    let mut ctrl = crate::common::load_kb_with(
-        "namespace fqc85.nodecl\n  rule p(1) :- true\n  sort Rec\n    \
+    // THE CONTROL — the identical program with the declaration deleted. Under WI-980 it
+    // JOINED, silently, and that is what made the declaration's effect visible. Since
+    // WI-20260822-845G7 it is REFUSED instead, which is a stronger control and the same
+    // one: "the declaration works" is still distinguished from "an inner head never
+    // joins", because without any declaration the program does not load at all.
+    //
+    // The refusal names `fqc85.nodecl` as where a declaration belongs — the OTHER remedy
+    // the message offers, and the one that produces the join this row's DECLARED arm
+    // deliberately does not take.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(
+            "namespace fqc85.nodecl\n  rule p(1) :- true\n  sort Rec\n    \
+             entity rec(n: Int64)\n    rule p(2) :- true\n  end\nend\n",
+        ),
+        &["fqc85.nodecl, fqc85.nodecl.Rec"],
+    );
+    // AND THE OUTER DECLARATION IS THE JOIN. Same program, `rule p(?x)` at the namespace
+    // instead of in the sort: one predicate, both clauses — the mirror of the arms above,
+    // so the pair shows the declaration decides WHICH predicate rather than merely
+    // silencing the refusal.
+    let mut joined = crate::common::load_kb_with(
+        "namespace fqc85.outerdecl\n  rule p(?x)\n  rule p(1) :- true\n  sort Rec\n    \
          entity rec(n: Int64)\n    rule p(2) :- true\n  end\nend\n",
     );
-    assert_eq!(clauses(&ctrl, "fqc85.nodecl.p"), Some(2), "CONTROL: one predicate, both clauses");
-    assert_eq!(clauses(&ctrl, "fqc85.nodecl.Rec.p"), None, "CONTROL");
-    assert_eq!(answers(&mut ctrl, "fqc85.nodecl.p(2)"), 1, "CONTROL");
+    assert_eq!(clauses(&joined, "fqc85.outerdecl.p"), Some(2), "one predicate, both clauses");
+    assert_eq!(clauses(&joined, "fqc85.outerdecl.Rec.p"), None);
+    assert_eq!(answers(&mut joined, "fqc85.outerdecl.p(2)"), 1);
 }
 
 #[test]
@@ -461,14 +477,22 @@ end
 // rather than repetitions. Six rows in all, counting the equation row's own predicate
 // control and wi980's chain.
 
-/// The refusal's rendered messages, or a panic naming the fixture that loaded clean.
-fn expect_refused(files: &[(&str, &str)], name: &str, want_files: &[&str]) {
+/// The refusal's rendered message, or a panic naming the fixture that loaded clean.
+///
+/// TWO REFUSALS, ONE REPORT. An undeclared predicate is refused by whichever rule sees
+/// it — the FILE rule when its heads sit at one scope in two files (the message names the
+/// files), the VISIBILITY rule when two scopes that can see each other both introduce it
+/// (the message names the scopes; WI-20260822-845G7). Either way there must be exactly
+/// ONE report per predicate, not one per clause, and the caller says which message its
+/// shape takes by what it asks the message to contain — a row that expected the other one
+/// fails here rather than passing on "something was refused".
+fn expect_refused(files: &[(&str, &str)], name: &str, want: &[&str]) {
     let errs = crate::common::try_load_kb_with_named_files(files)
         .err()
-        .unwrap_or_else(|| panic!("`{name}` spans files and must be refused; it loaded clean"));
+        .unwrap_or_else(|| panic!("`{name}` is undeclared and must be refused; it loaded clean"));
     let spanning: Vec<&String> = errs
         .iter()
-        .filter(|e| e.contains("and no declaration"))
+        .filter(|e| e.contains("and no declaration") || e.contains("none of them declares it"))
         .collect();
     assert_eq!(
         spanning.len(),
@@ -477,8 +501,8 @@ fn expect_refused(files: &[(&str, &str)], name: &str, want_files: &[&str]) {
     );
     let msg = spanning[0];
     assert!(msg.contains(&format!("`{name}`")), "names the predicate: {msg}");
-    for f in want_files {
-        assert!(msg.contains(f), "names the file `{f}`: {msg}");
+    for w in want {
+        assert!(msg.contains(w), "the message must contain `{w}`: {msg}");
     }
 }
 
@@ -493,10 +517,22 @@ fn a_sibling_files_head_no_longer_moves_another_files_clause() {
     const SIBLING: &str = "namespace zdemoq\n  sort Rec\n    entity rec(n: Int64)\n    \
                            rule q(3) :- true\n  end\nend\n";
 
+    // SINCE 845G7 THE ABSORPTION IS IMPOSSIBLE RATHER THAN MERELY REFUSED: a head never
+    // moves, so `zdemoq` can no longer capture `zlibq`'s clause whatever the file order.
+    // What the program still lacks is a statement of which scope owns `q`, and the
+    // VISIBILITY rule is what says so — naming all three scopes, where the file rule used
+    // to name two files. The defect measured under WI-980 is reported either way; this
+    // says which message it is now.
+    // AND IT NAMES NO OWNER, deliberately: `zdemoq.Rec` reaches `zdemoq` through the
+    // enclosing chain but NOT `zlibq`, because the import that carries it is written in
+    // `zdemo.anthill` and imports are file-local (WI-995). So no single declaration
+    // collects all three, and the message must not promise one — measured, an earlier cut
+    // named `zlibq` (the sink of the direct reach graph) and following that advice left
+    // `zdemoq.Rec.q` a separate predicate with no error at all. Found by `/code-review`.
     expect_refused(
         &[("zlib.anthill", LIB), ("zdemo.anthill", IMPORTER), ("zrec.anthill", SIBLING)],
         "q",
-        &["zlib.anthill", "zdemo.anthill"],
+        &["zdemoq, zdemoq.Rec, zlibq", "No one of them is reachable from all the others"],
     );
 
     // DECLARED — the identical program with one line added, and the whole of WI-980's
@@ -539,7 +575,17 @@ fn a_cycle_can_no_longer_absorb_a_third_files_clause() {
         [("s.anthill", S), ("a.anthill", A), ("b.anthill", B)],
         [("s.anthill", S), ("b.anthill", B), ("a.anthill", A)],
     ] {
-        expect_refused(&order, "p", &["a.anthill", "s.anthill"]);
+        // NAMES THE SCOPES, NOT THE FILES (845G7): `fqcA`, `fqcA.sub` and `fqcB` all
+        // introduce `p` and all reach each other, and the cycle means nothing in the
+        // program names an owner — which the message has to say, and does.
+        // NAMES `fqcA`: `fqcB` reaches it through its import and `fqcA.sub` through the
+        // enclosing chain, so one declaration there really does collect all three — which
+        // is the test the message's promise has to pass.
+        expect_refused(
+            &order,
+            "p",
+            &["fqcA, fqcA.sub, fqcB", "`rule p(…)` in 'fqcA'"],
+        );
     }
 
     // DECLARED — and now every one of the six orders gives ONE program, which is the
@@ -579,7 +625,15 @@ fn one_address_split_across_two_files_no_longer_gives_two_programs() {
         [("outer.anthill", OUTER), ("inner.anthill", INNER)],
         [("inner.anthill", INNER), ("outer.anthill", OUTER)],
     ] {
-        expect_refused(&order, "p", &["outer.anthill", "inner.anthill"]);
+        // TWO SCOPES, so this is the VISIBILITY message even though the two files are
+        // what WI-980 measured — `fqc85.split.Rec` sees `fqc85.split` through the
+        // enclosing chain. `one_scope_reopened_in_two_files_must_declare_its_predicate`
+        // (wi980) is the same address with ONE scope, and takes the file message.
+        expect_refused(
+            &order,
+            "p",
+            &["fqc85.split, fqc85.split.Rec", "`rule p(…)` in 'fqc85.split'"],
+        );
     }
     for order in [
         [("outer.anthill", OUTER_DECLARED), ("inner.anthill", INNER)],
@@ -613,7 +667,7 @@ fn a_head_that_binds_through_its_own_files_import_is_still_a_second_file() {
     expect_refused(
         &[("lib.anthill", LIB), ("imp.anthill", IMPORTER), ("trail.anthill", TRAILING)],
         "q",
-        &["lib.anthill", "imp.anthill"],
+        &["fqc85.viaimport.b, fqc85_lib", "`rule q(…)` in 'fqc85_lib'"],
     );
 
     let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_named_files(&[
@@ -631,18 +685,27 @@ fn a_head_that_binds_through_its_own_files_import_is_still_a_second_file() {
 }
 
 #[test]
-fn a_single_file_predicate_is_auto_declared() {
-    // THE CONTROL FOR THE WHOLE SECTION, and it PASSES EITHER WAY BY DESIGN. The four
-    // shapes above are refused for spanning FILES, not for spanning scopes: the same
-    // clauses in one file are one predicate, decided by the ladder exactly as before.
-    // Without this row a rule that refused every cross-SCOPE join would look correct.
+fn a_single_scope_predicate_is_auto_declared() {
+    // THE CONTROL FOR THE WHOLE SECTION, and it PASSES EITHER WAY BY DESIGN. Without a
+    // row that LOADS, a rule refusing every rule head at all would look correct.
+    //
+    // ONE SCOPE, NOT MERELY ONE FILE, since WI-20260822-845G7. This row used to put the
+    // second clause inside a `sort Rec` and call the pair auto-declared, on 061's
+    // "a predicate whose heads are all written in one file". 845G7 narrows that to the
+    // SCOPE — the pair now needs `rule p(?x)` to say which predicate it means — and the
+    // narrowing is why this fixture moved rather than being deleted: the claim it
+    // controls is still "an undeclared predicate can load", which is exactly one scope's
+    // worth of clauses.
     let mut kb = crate::common::load_kb_with(
-        "namespace fqc85.one\n  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n    \
-         rule p(2) :- true\n  end\nend\n",
+        "namespace fqc85.one\n  rule p(1) :- true\n  rule p(2) :- true\n  \
+         sort Rec\n    entity rec(n: Int64)\n    rule other(3) :- true\n  end\nend\n",
     );
-    assert_eq!(clauses(&kb, "fqc85.one.p"), Some(2), "CONTROL: one file, one predicate");
-    assert_eq!(clauses(&kb, "fqc85.one.Rec.p"), None, "CONTROL");
+    assert_eq!(clauses(&kb, "fqc85.one.p"), Some(2), "CONTROL: one scope, one predicate");
     assert_eq!(answers(&mut kb, "fqc85.one.p(2)"), 1, "CONTROL");
+    // And an inner scope introducing a name NOBODY else writes is untouched by the
+    // visibility rule — the other half of the same control.
+    assert_eq!(clauses(&kb, "fqc85.one.Rec.other"), Some(1), "CONTROL: a fresh inner name");
+    assert_eq!(answers(&mut kb, "fqc85.one.Rec.other(3)"), 1, "CONTROL");
 }
 
 #[test]
@@ -652,7 +715,7 @@ fn an_operation_declaration_satisfies_the_file_rule() {
     // an `operation` (the only way to declare a predicate name before 061, and the one
     // §WI-896 pointed at) takes clauses from two files exactly as the new form does.
     //
-    // This is the `Owned::Yields(None)` arm of the grouping, and it has no other row: a
+    // This is the DENOTES arm of the grouping, and it has no other row: a
     // grouping that counted every non-denoting head would refuse this program, which is
     // the shape 059's own dispatch surface is built on.
     //

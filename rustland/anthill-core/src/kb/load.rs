@@ -1174,20 +1174,23 @@ pub enum LoadError {
     /// A BACKSTOP, NOT A VERDICT — it should be unreachable, and it exists so that if it
     /// ever is reached the load says so instead of succeeding.
     ///
-    /// The decision gives ownership to any scope with a file that reaches NOTHING (rule 1
-    /// on [`Ownership`]), so a yielding site always reaches something and this cannot
-    /// fire. What it guards is the gap between that argument and the loader's own ladder:
-    /// the two ask through different flags, and a head the decision believed was a clause
-    /// of something would otherwise fall to the WI-476 bare intern — a symbol nothing can
-    /// cite — while the load still reported success.
+    /// SINCE WI-20260822-845G7 IT IS UNREACHABLE BY A SHORTER ARGUMENT than the one it was
+    /// written against. A head either DENOTES — and is a clause of what it denotes — or it
+    /// declares at its own scope, and a scope always resolves its own name. What it still
+    /// guards is the gap between that argument and the loader's own ladder: the two ask
+    /// through different flags, and a head that ended up citing nothing would otherwise
+    /// fall to the WI-476 bare intern — a symbol nothing can cite — while the load still
+    /// reported success.
     ///
-    /// A CYCLE IS NO LONGER ONE OF ITS CAUSES, and the earlier wording here said it was.
-    /// Two scopes that can each see the other (mutual wildcard imports; also `requires`
-    /// between sorts declaring no entity variants, whose empty `exposed` set disables the
-    /// per-hop filter) used to leave each yielding to the other and produce one error per
-    /// member. They now each INTRODUCE their own — the only answer that does not depend
-    /// on file order — so that program loads. Nesting still breaks the tie in favour of
-    /// the enclosing scope.
+    /// A CYCLE IS NO LONGER ONE OF ITS CAUSES. Two scopes that can each see the other
+    /// (mutual wildcard imports; also `requires` between sorts declaring no entity
+    /// variants, whose empty `exposed` set disables the per-hop filter) used to leave
+    /// each yielding to the other and produce one error per member. Since
+    /// WI-20260822-845G7 every head declares at its own scope, and such a pair is
+    /// [`LoadError::NameIntroducedAtTwoVisibleScopes`] instead — a load error, not a
+    /// program that loads, and nesting is refused with the rest rather than breaking a
+    /// tie toward the enclosing scope. (Both of those were the FIXPOINT's answers and
+    /// stood here after it was deleted; `/code-review` caught them.)
     RuleHeadOwnedByNoScope {
         name: String,
         /// The scope the head is written in — the author needs the line AND the place.
@@ -1201,18 +1204,23 @@ pub enum LoadError {
     /// PROPOSAL 061 — A PREDICATE WHOSE HEADS ARE IN MORE THAN ONE FILE MUST BE
     /// DECLARED.
     ///
-    /// A predicate whose clauses are all in one file has one author, who can see all of
-    /// them, and is AUTO-DECLARED in the scope §WI-896's ladder already picks. The file
-    /// is the unit for 059 §Definitions' own reason — it is the smallest place where
-    /// "assembled by two parties that never agreed on it" is real, and it is the unit
-    /// `import` already uses, since an import resolves only in the file it is written
-    /// in (WI-995).
+    /// A predicate whose clauses are all at ONE SCOPE in one file has one author, who can
+    /// see all of them, and is AUTO-DECLARED there. The file is the unit for 059
+    /// §Definitions' own reason — it is the smallest place where "assembled by two
+    /// parties that never agreed on it" is real, and it is the unit `import` already
+    /// uses, since an import resolves only in the file it is written in (WI-995). The
+    /// SCOPE half is [`LoadError::NameIntroducedAtTwoVisibleScopes`]: this error is now
+    /// exactly the one-scope-many-files case, since WI-20260822-845G7 removed the ladder
+    /// that used to pick a scope for a head written elsewhere. (It said "AUTO-DECLARED in
+    /// the scope §WI-896's ladder already picks" after that ladder was deleted;
+    /// `/code-review` caught it.)
     ///
     /// WHAT IT REMOVES, all of it measured under WI-980 and all of it cross-FILE: a
     /// sibling file's head MOVING another file's clause; a mutual-import cycle picking
     /// its owner by file order; one pair at one address giving two different programs
-    /// depending on which file was read first. Each of those is an ABSORPTION across a
-    /// file boundary, and each is now this error instead.
+    /// depending on which file was read first. Under 845G7 none of those is even
+    /// representable — a head never moves — and what is left of them is this error and
+    /// the visibility one.
     ///
     /// CENSUS, over stdlib + `anthill-stl` + `examples/github-todo`: 102 predicates
     /// carry rule heads and every one has its heads in exactly one file. The rule
@@ -1235,59 +1243,57 @@ pub enum LoadError {
         /// The first head, so the error has a line.
         span: Span,
     },
-    /// PROPOSAL 061, REACHING THE ONE SHAPE ITS FILE RULE COULD NOT SEE
-    /// (WI-20260821-E85J5) — TWO MUTUALLY-VISIBLE SCOPES WRITING ONE PREDICATE NAME IN
-    /// DIFFERENT FILES, DECLARED IN NEITHER.
+    /// TWO SCOPES THAT CAN SEE EACH OTHER MAY NOT BOTH INTRODUCE ONE NAME
+    /// (WI-20260821-E85J5, generalized by WI-20260822-845G7).
     ///
-    /// [`LoadError::PredicateHeadsSpanFiles`] above refuses a predicate assembled from
-    /// more than one file. It is keyed on the PREDICATE, so it only ever sees heads the
-    /// decision put on ONE owner — and a mutual-import cycle is exactly where the
-    /// decision does not do that. WI-980's tie-break gives every member of the cycle its
-    /// OWN predicate ("two scopes that can each see the other each introduce their own"),
-    /// so the two files hold two single-file predicates, the file rule counts one file
-    /// each, and nothing is reported.
+    /// An undeclared rule head declares its predicate at the scope it is WRITTEN IN. That
+    /// is total and order-free, and it is the whole of what replaced WI-980's ownership
+    /// fixpoint — but it makes a second scope's same-named head a SHADOW rather than a
+    /// clause, and a shadow nobody wrote is a silent change of meaning.
     ///
-    /// WHAT THAT COSTS THE AUTHOR, measured with a paired control:
+    /// WHAT THE SILENCE COSTS, measured with a paired control:
     ///
     /// ```text
     ///   file A  namespace mA { import mB.*  rule p(1) :- true  rule usesp(?x) :- p(?x) }
     ///   file B  namespace mB { import mA.*  rule p(2) :- true }
-    ///     -> loads clean.  mA.usesp(1)=1,  mA.usesp(2)=0
+    ///     -> loaded clean.  mA.usesp(1)=1,  mA.usesp(2)=0
     ///   CONTROL, the same import with no `p` of mA's own
     ///     -> mA.usesp(1)=0,  mA.usesp(2)=1
     /// ```
     ///
-    /// so `mA`'s `import mB.*` is DEAD for `p` and nothing says so. `resolve_in_scope`
+    /// so `mA`'s `import mB.*` was DEAD for `p` and nothing said so. `resolve_in_scope`
     /// reads a scope's own `locals` and returns before consulting any import or parent,
-    /// and the symbol the tie-break minted at `mA` is a local — no ambiguity is raised
-    /// and none can be.
+    /// so a scope's own name short-circuits the ladder — no ambiguity is raised and none
+    /// can be.
     ///
     /// THE SHADOW ITSELF IS NOT THE DEFECT; INVENTING IT IS. A local beating an import is
-    /// what every other name in the language does, and an author who WRITES
-    /// `rule p(?x)` in `mA` gets exactly this and should. What the tie-break does is
-    /// make that choice on the author's behalf, out of two files neither of which shows
-    /// it. Refusing here says the same thing 061 says everywhere else: the program has
-    /// not stated who owns this predicate, so state it.
+    /// what every other name in the language does, and an author who WRITES `rule p(?x)`
+    /// in `mA` gets exactly this and should. What is refused is arriving at it by
+    /// accident, out of two texts neither of which mentions the other.
     ///
-    /// THE CONTROL FOR THE REFUSAL'S NARROWNESS is the NESTED cycle. A facade importing
-    /// its own submodule while the submodule imports it back is also a cycle across two
-    /// files, and it is NOT this error: the enclosing member owns (§"outermost"), the two
-    /// heads become one predicate, and `PredicateHeadsSpanFiles` reports it. Same two
-    /// files, same two heads, same name — only the nesting differs, and it decides which
-    /// message the author gets. Neither shape is silent afterwards.
+    /// STATED OVER VISIBILITY, NOT OVER FILES, and that is a deliberate departure from
+    /// 059 §Definitions' file unit (WI-20260822-845G7). The file boundary answers
+    /// "assembled by two parties that never agreed on it"; this is a different hazard,
+    /// and one author writing `demo { rule p(1) :- true; sort Rec { rule p(2) :- true } }`
+    /// in one file is not two parties — they are one party who used to get ONE predicate
+    /// and would otherwise silently get two. Corpus cost of the wider rule, measured:
+    /// zero, the same as the narrow one.
     ///
-    /// THE SINGLE-FILE CYCLE IS DELIBERATELY UNTOUCHED — 061's own file unit and its
-    /// open question 3. Both scopes are in front of the one author who wrote them, which
-    /// is 059 §Definitions' entire argument for the file boundary, so the tie-break is
-    /// allowed to auto-declare there and the shadow stays. It is pinned, not assumed.
-    PredicateSplitByImportCycle {
-        /// The predicate's local name.
+    /// `<global>` IS NOT A PARTY TO IT. It is the one scope every file shares and nobody
+    /// opts into, so a head written inside a namespace never collides with a top-level
+    /// one — see [`head_name_reach`], where the exclusion lives.
+    NameIntroducedAtTwoVisibleScopes {
+        /// The name introduced twice.
         name: String,
-        /// The mutually-visible scopes the tie-break gave separate predicates to, in
-        /// display order. Named because no single file shows the author the cycle.
+        /// Every scope introducing it, in display order. Named because no single scope
+        /// shows the author the collision.
         scopes: Vec<String>,
-        /// Every file holding one of their heads, in load order.
-        files: Vec<String>,
+        /// Where a declaration belongs, when one place collects every head: the member
+        /// that EVERY other member's every file reaches. In a mutual cycle each member
+        /// qualifies and the first in display order is named. `None` where no member
+        /// does — a chain, or two siblings a third scope imports — and the message then
+        /// prescribes a per-scope declaration instead.
+        owner: Option<String>,
         /// The first head, so the error has a line.
         span: Span,
     },
@@ -1610,6 +1616,14 @@ pub enum LoadError {
     },
 }
 
+/// NAMED, NOT LISTED, past a handful — how many scopes a
+/// [`LoadError::NameIntroducedAtTwoVisibleScopes`] message spells out. A transitive
+/// chain of wildcard imports is ONE group of however many links it has (measured, 261),
+/// and a message that prints 261 addresses is one nobody reads: the ends locate it and
+/// the count says how big it is. Read by BOTH renderings, which is the point of it being
+/// a constant — the `Display` arm printed all of them until `/code-review` caught it.
+const COLLISION_SCOPES_SHOWN: usize = 6;
+
 /// WI-839: where an unread call-site bracket was written. The refusal is one rule, but
 /// the two shapes need different advice — see [`LoadError::CallTypeArgsNotSupportedHere`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1924,7 +1938,7 @@ impl LoadError {
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
-            | LoadError::PredicateSplitByImportCycle { span, .. }
+            | LoadError::NameIntroducedAtTwoVisibleScopes { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -2395,32 +2409,57 @@ impl LoadError {
                     scope
                 )
             }
-            LoadError::PredicateSplitByImportCycle {
+            LoadError::NameIntroducedAtTwoVisibleScopes {
                 name,
                 scopes,
-                files,
+                owner,
                 span,
             } => {
+                let repair = match owner {
+                    Some(o) => format!(
+                        "Declare it (proposal 061): a body-less `rule {}(…)` in '{}' makes \
+                         every one of those heads a clause of it, or one in EACH scope \
+                         says they are separate predicates.",
+                        name, o
+                    ),
+                    // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces
+                    // and so does a chain, and so does a pair of siblings a third scope
+                    // imports. An earlier version of this text asserted "they reach each
+                    // other", which is FALSE for the last two: measured on `zzone` and
+                    // `zztwo`, which cannot see each other at all while `zzuser` reaches
+                    // both. Found by `/code-review`. It now says only what is true of
+                    // every shape that produces it.
+                    None => format!(
+                        "No one of them is reachable from all the others, so nothing in \
+                         the program says which should own it. Declare it (proposal 061): \
+                         a body-less `rule {}(…)` in each scope that should own one says \
+                         they are separate predicates, and one in a scope the others can \
+                         all reach makes their heads its clauses.",
+                        name
+                    ),
+                };
+                let named = if scopes.len() <= COLLISION_SCOPES_SHOWN {
+                    scopes.join(", ")
+                } else {
+                    format!(
+                        "{}, … and {} more",
+                        scopes[..COLLISION_SCOPES_SHOWN].join(", "),
+                        scopes.len() - COLLISION_SCOPES_SHOWN
+                    )
+                };
                 format!(
-                    "{}: the predicate `{}` is written in {} scopes that form an IMPORT \
-                     CYCLE — {} — across {} files — {} — and is declared in none of \
-                     them. Each scope reaches the others, so nothing in the program says \
-                     which one owns the name, and each would silently get its OWN `{}`: \
-                     a bare `{}` written in any of them then reaches only that one, and \
-                     the wildcard import that made the cycle is dead for this name with \
-                     no ambiguity reported. Declare it (proposal 061): one body-less \
-                     `rule {}(…)` in the scope that owns it makes the other scopes' \
-                     heads its clauses, or one in EACH scope says they are separate \
-                     predicates.",
+                    "{}: the rule head `{}` introduces that name at {} scopes, each of \
+                     which reaches or is reached by another of them — {} — and none of \
+                     them declares it. Each scope's own \
+                     name beats what it imports or inherits, so a bare `{}` written in any \
+                     of them would silently reach only that scope's half, with no \
+                     ambiguity reported. {}",
                     loc.format_start(*span),
                     name,
                     scopes.len(),
-                    scopes.join(", "),
-                    files.len(),
-                    files.join(", "),
+                    named,
                     name,
-                    name,
-                    name
+                    repair
                 )
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
@@ -3378,20 +3417,34 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
-            LoadError::PredicateSplitByImportCycle {
+            LoadError::NameIntroducedAtTwoVisibleScopes {
                 name,
                 scopes,
-                files,
+                owner,
                 span,
             } => {
+                // TRUNCATED LIKE `format_with_source`, and for its reason: a transitive
+                // import chain is one group of however many links it has (measured, 261)
+                // and this arm joined every one of them. Found by `/code-review`.
+                let named = if scopes.len() <= COLLISION_SCOPES_SHOWN {
+                    scopes.join(", ")
+                } else {
+                    format!(
+                        "{}, … and {} more",
+                        scopes[..COLLISION_SCOPES_SHOWN].join(", "),
+                        scopes.len() - COLLISION_SCOPES_SHOWN
+                    )
+                };
                 write!(
                     f,
-                    "the predicate '{}' is written in {} scopes forming an import cycle ({}) across {} files ({}) and declared in none (at {}..{})",
+                    "the name '{}' is introduced at {} linked scopes ({}), declared at none{} (at {}..{})",
                     name,
                     scopes.len(),
-                    scopes.join(", "),
-                    files.len(),
-                    files.join(", "),
+                    named,
+                    match owner {
+                        Some(o) => format!("; declare it in '{o}'"),
+                        None => String::new(),
+                    },
                     span.start,
                     span.end
                 )
@@ -4055,12 +4108,77 @@ pub fn scan_definitions_with_sources(
         })
         .collect();
     // Phase 3 — DECIDE every head, then mint. Deciding reads the table and minting
-    // writes it, so they cannot interleave: `Ownership::decide` takes the KB immutably
-    // for the whole decision, and no mint has happened when any of these answers is
-    // taken. It reports an owning scope with a per-scope SENTINEL symbol — what it knows
-    // is that a head introduces there, not which symbol results.
+    // writes it, so they cannot interleave: `head_name_collisions` takes the KB immutably
+    // and no mint has happened when any of its answers is taken. It sees a scope through
+    // a per-scope SENTINEL symbol — what it knows is that a head is written there, not
+    // which symbol results.
+    // WI-20260822-845G7 — AND THERE IS NO DECISION LEFT TO TAKE. A head that does not
+    // already DENOTE declares its predicate at the scope it is WRITTEN IN, full stop.
+    //
+    // WHAT USED TO BE HERE, and why it went. `Ownership` answered "which scope does this
+    // land in" with a non-monotone round-based fixpoint — an optimistic overlay, three
+    // settling rules, an SCC tie-break, a `(scope, name, FILE)` key, a `<global>`
+    // two-roles exception and a depth bound — because a rule head was the one name
+    // created during the pass that decides it. 061 removed that premise: a predicate is
+    // DECLARED, minted in pass 1 like every other name, and auto-declaration is the
+    // single-scope convenience below. Census over the whole suite (stdlib, `anthill-stl`,
+    // examples, `anthill-todo` and every fixture): **234,078** head decisions, of which
+    // **233,917** were "introduce here", **161** were "join another scope's head" — 130
+    // of those one fixture, and every one of the remaining 22 distinct triples in a
+    // fixture written to exercise the fixpoint itself. **Zero** from the shipped corpus.
+    // The machinery computed a constant for every real program.
+    //
+    // THE `denotes` LADDER STAYS, and it is what keeps the law layer working: a head
+    // whose name RESOLVES is a clause of what it resolves to, so
+    // `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is still a lemma about `PartialOrd.gte`.
+    // That is why refusing head/import coexistence here does not report the 99 stdlib
+    // errors across 43 names WI-980 measured: those heads never reach this point.
     let sentinels = mint_head_sentinels(kb, &heads);
-    let decision = Ownership::decide(kb, &heads, &denotes, source_ids, global, &sentinels);
+
+    // TWO SCOPES THAT CAN SEE EACH OTHER MAY NOT BOTH INTRODUCE ONE NAME (845G7).
+    //
+    // Removing the join replaces an ASSEMBLY hazard with a SHADOWING one, and they do not
+    // take the same boundary. 059 §Definitions' file unit answers "assembled by two
+    // parties that never agreed on it" — but one author writing
+    // `demo { rule p(1) :- true; sort Rec { rule p(2) :- true } }` is not two parties;
+    // they are one party who used to get ONE predicate and would now silently get two.
+    // A silent change of meaning is the thing this repo refuses, so the refusal is stated
+    // over VISIBILITY rather than over files, and a same-file pair is refused exactly as
+    // a cross-file one is. Corpus cost of that choice, measured: zero either way.
+    //
+    // ASKED THROUGH THE RESOLVER, ONCE PER (SCOPE, FILE) — not a fixpoint. What a head
+    // can see is a reference's reach by construction, imports are file-local (WI-995) so
+    // the question is per file, and every candidate is overlaid at once because the
+    // question is "does another scope introduce this name", not "did it win".
+    let collisions = head_name_collisions(kb, &heads, &denotes, source_ids, global, &sentinels);
+    let mut collided: HashSet<(ScopeId, &str)> = HashSet::new();
+    for c in &collisions {
+        for s in &c.scopes {
+            collided.insert((*s, c.name));
+        }
+        let first = c
+            .sites
+            .iter()
+            .copied()
+            .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
+            .expect("a collision has at least two sites");
+        let mut scope_names: Vec<String> = c
+            .scopes
+            .iter()
+            .map(|s| kb.scope_display_name(*s).to_owned())
+            .collect();
+        scope_names.sort();
+        errors.push(
+            LoadError::NameIntroducedAtTwoVisibleScopes {
+                name: c.name.to_owned(),
+                scopes: scope_names,
+                owner: c.owner.map(|o| kb.scope_display_name(o).to_owned()),
+                span: heads[first].span,
+            }
+            .located_in(files[heads[first].file_idx]),
+        );
+    }
+
     for (head, &denotes_already) in heads.iter().zip(&denotes) {
         // WI-995: imports are file-local, so the ladder must ask on behalf of the file
         // the HEAD is written in — this loop no longer sits inside the per-file one.
@@ -4068,53 +4186,29 @@ pub fn scan_definitions_with_sources(
         if denotes_already {
             continue;
         }
-        // PER SITE, on this head's OWN file's behalf — not the scope's verdict. Imports
-        // are file-local, so a sibling head at the same scope written in a file without
-        // that import gets a different answer.
-        if decision.verdict(head.scope, head.name, source_ids[head.file_idx]) != Owned::Here {
-            // YIELDED, not refused. Some scope this one can see introduces the name, so
-            // this head is a clause of THAT predicate — §WI-896's "resolved, not
-            // declared", with the resolution taken over the finished program.
-            //
-            // REFUSING THE PAIR INSTEAD WAS MEASURED AND IS NOT AVAILABLE. It is the
-            // principled shape — 059 R4 clause 3 refuses exactly this coexistence for
-            // every other kind of declaration (WI-999, settling WI-939 as its option
-            // (c)) — and both readings it would replace are silent and non-monotone:
-            // joining makes this clause EXTEND someone else's predicate, while
-            // introducing a shadowing local CAPTURES the name, so a body reading a bare
-            // `p` in that scope answered `[1]` before the line was added and `[2]`
-            // after. But the STDLIB IS BUILT ON THE JOIN: refusing it reports 99 errors
-            // across 43 names — `eq`, `gte`, `add`, `mul`, `union`, `subset`, `min` … —
-            // the whole law layer, of which `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)`
-            // is the shape §"A rule head functor is resolved, not declared" documents.
-            // 2154 tests fall with it. The refusal is affordable for declarations (3
-            // sites, amended in WI-999) and not for rule heads.
-            continue;
-        }
         scan_rule_goal(kb, head);
     }
 
     // PROPOSAL 061 — AUTO-DECLARATION STOPS AT THE FILE BOUNDARY.
     //
-    // A predicate whose heads are all in ONE file is auto-declared by them, in the scope
-    // the ladder above just picked. One with heads in MORE THAN ONE file is a predicate
-    // assembled by two parties that never agreed on it (059 §Definitions), and must be
-    // DECLARED — a body-less rule, minted in pass 1 — or the load is refused naming the
-    // files.
+    // A predicate whose heads are all in ONE file is auto-declared by them, at the scope
+    // they are written in. One with heads in MORE THAN ONE file is a predicate assembled
+    // by two parties that never agreed on it (059 §Definitions), and must be DECLARED —
+    // a body-less rule, minted in pass 1 — or the load is refused naming the files.
     //
-    // KEYED ON THE PREDICATE, NOT THE SCOPE THE HEAD IS WRITTEN IN. The whole class this
-    // removes is ABSORPTION across a file boundary — `zlib.q` 2→1 and `zdemo.q` 0→2 with
-    // the first file unedited, a mutual-import cycle picking its owner by file order, one
-    // pair at one address giving two different programs — and in every one of those the
-    // clause that moved was written at a DIFFERENT scope from the predicate it landed on.
-    // Grouping by `head.scope` would see one file each and refuse nothing.
+    // KEYED ON THE SCOPE, WHICH SINCE 845G7 IS THE SAME THING AS THE PREDICATE. It used
+    // to key on the decision's chosen owner, because a head could land somewhere other
+    // than where it was written; now it cannot, so the group is `(scope, name)` and the
+    // cross-scope half of what this error used to report is the visibility refusal above.
     //
     // A DECLARED predicate never reaches here: its heads all denote (pass 1 minted the
-    // name), so they are not candidates and hold no verdict — which is what makes
-    // "declare it" the remedy the message can name.
-    // Names this block reports, read by the cycle block below — one missing declaration
-    // must not be reported twice with two different prescribed owners.
-    let mut reported_span_files: HashSet<(ScopeId, &str)> = HashSet::new();
+    // name), so they are excluded — which is what makes "declare it" the remedy the
+    // message can name.
+    //
+    // "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as everything else in this pass is
+    // (`load_incremental` is an alias of `load_all`, so each batch runs its own
+    // `scan_definitions`). A predicate assembled across two BATCHES is therefore not
+    // caught: the earlier batch's heads are already minted, so the later batch's denote.
     {
         let mut by_predicate: HashMap<(ScopeId, &str), Vec<usize>> = HashMap::new();
         for (idx, (head, &denotes_already)) in heads.iter().zip(&denotes).enumerate() {
@@ -4127,15 +4221,10 @@ pub fn scan_definitions_with_sources(
             if head.introduced_by != RuleIntroduction::Predicate {
                 continue;
             }
-            let owner = match decision.verdict(head.scope, head.name, source_ids[head.file_idx])
-            {
-                Owned::Here => head.scope,
-                Owned::Yields(Some(s)) => s,
-                // Yields to an ordinary DECLARATION — an operation, an entity — which is
-                // already the "declared once, in one place" this rule asks for.
-                Owned::Yields(None) => continue,
-            };
-            by_predicate.entry((owner, head.name)).or_default().push(idx);
+            by_predicate
+                .entry((head.scope, head.name))
+                .or_default()
+                .push(idx);
         }
         // A DETERMINISTIC report order, so a program with two such predicates does not
         // print them in hash order.
@@ -4150,7 +4239,15 @@ pub fn scan_definitions_with_sources(
             if file_idxs.len() < 2 {
                 continue;
             }
-            reported_span_files.insert((owner, name));
+            // ONE MISSING DECLARATION IS ONE MESSAGE. A scope already named by the
+            // visibility refusal above is repaired by the declaration THAT message asks
+            // for — declare `p` where it belongs and this scope's heads resolve to it —
+            // so reporting both prints one fault twice and prescribes two owners for it.
+            // Measured before the suppression existed, on `wA`+`wB` in one file with `wA`
+            // reopened in a second: two errors naming two different scopes.
+            if collided.contains(&(owner, name)) {
+                continue;
+            }
             // ONE error per predicate, located at its FIRST head — not one per head. The
             // defect is the predicate, and a report per clause would print it N times.
             let first = sites
@@ -4177,94 +4274,6 @@ pub fn scan_definitions_with_sources(
                 .located_in(files[heads[first].file_idx]),
             );
         }
-    }
-
-    // WI-20260821-E85J5 — AND THE ONE ASSEMBLY THE BLOCK ABOVE CANNOT SEE.
-    //
-    // The file rule is keyed on the PREDICATE, so it counts the files of heads the
-    // decision put on ONE owner. A mutual-import cycle is where the decision refuses to
-    // do that: WI-980's tie-break gives every member its own predicate, so two files
-    // hold two single-file predicates and the block above reports nothing — while a
-    // bare use in either scope now reaches only that scope's half, the import that made
-    // the cycle silently dead for the name. Same question, same answer: the program has
-    // not said who owns this predicate, so it must.
-    //
-    // THE FILE IS STILL THE UNIT, and that is not an inherited default — 061's open
-    // question 3 names the single-file cycle as the residue, and 059 §Definitions'
-    // argument applies to it unchanged: both scopes are in front of the one author who
-    // wrote them. So a cycle inside one file keeps auto-declaring, shadow and all.
-    for (name, scopes) in decision.splits() {
-        let sites: Vec<usize> = heads
-            .iter()
-            .enumerate()
-            .filter(|(idx, head)| {
-                // An EQUATION subject is out of 061's scope (its clauses index under the
-                // connective, so there is no predicate to declare) and out of this
-                // error's too; `denotes` heads never reached the decision at all.
-                head.name == *name
-                    && scopes.contains(&head.scope)
-                    && !denotes[*idx]
-                    && head.introduced_by == RuleIntroduction::Predicate
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-        let mut file_idxs: Vec<usize> = sites.iter().map(|&i| heads[i].file_idx).collect();
-        file_idxs.sort_unstable();
-        file_idxs.dedup();
-        // ONE FILE ⇒ the residue above, deliberately allowed. FEWER THAN TWO SCOPES
-        // among the predicate heads ⇒ the split was decided for an equation subject and
-        // this name has no predicate to own.
-        let scopes_with_heads: HashSet<ScopeId> = sites.iter().map(|&i| heads[i].scope).collect();
-        if file_idxs.len() < 2 || scopes_with_heads.len() < 2 {
-            continue;
-        }
-        // AND ONE MISSING DECLARATION IS ONE MESSAGE. A split member whose OWN heads span
-        // files was already reported by the block above, which names a concrete owning
-        // scope and a repair that fixes this too — declare the name there and every
-        // member's head resolves to it through the import that made the cycle. Emitting
-        // both prints one fault twice and prescribes two different owners for it.
-        //
-        // IT IS ALSO WHAT MAKES THIS ERROR'S OWN JUSTIFICATION TRUE. The message says no
-        // single file shows the author the cycle; without this test that claim is false
-        // for a program whose members all sit in one file while one of them is REOPENED
-        // in a second (measured, `wA`+`wB` in file 1 and `wA` again in file 2: both
-        // errors fired and file 1 showed the whole cycle). With it, every surviving
-        // member is single-file, so two files means two members in two files and no file
-        // holds both. Found by `/code-review`.
-        if scopes_with_heads
-            .iter()
-            .any(|s| reported_span_files.contains(&(*s, *name)))
-        {
-            continue;
-        }
-        let first = sites
-            .iter()
-            .copied()
-            .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
-            .expect("a group with two files has at least one site");
-        let mut scope_names: Vec<String> = scopes_with_heads
-            .iter()
-            .map(|s| kb.scope_display_name(*s).to_owned())
-            .collect();
-        scope_names.sort();
-        errors.push(
-            LoadError::PredicateSplitByImportCycle {
-                name: (*name).to_owned(),
-                scopes: scope_names,
-                files: file_idxs
-                    .iter()
-                    .map(|&f| {
-                        files[f]
-                            .path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| format!("<file {f}>"))
-                    })
-                    .collect(),
-                span: heads[first].span,
-            }
-            .located_in(files[heads[first].file_idx]),
-        );
     }
 
     // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
@@ -4329,10 +4338,14 @@ pub fn scan_definitions_with_sources(
         ) {
             continue;
         }
-        // NOTHING — unreachable by construction (a scope with a file that reaches
-        // nothing is given ownership, so a yielding site always reaches something), and
-        // reported rather than trusted: without it the clause goes to the WI-476 bare
-        // intern, where nothing can cite it and the load still reports success.
+        // NOTHING — unreachable by construction, and by a shorter argument since
+        // WI-20260822-845G7: a head either DENOTES, and is a clause of what it denotes,
+        // or it declares at its own scope, and a scope always resolves its own name. (It
+        // used to cite `Ownership`'s rule 1 — "a scope with a file that reaches nothing
+        // is given ownership" — which is a rule a reader can no longer find. Found by
+        // `/code-review`.) Reported rather than trusted: without it the clause goes to
+        // the WI-476 bare intern, where nothing can cite it and the load still reports
+        // success.
         errors.push(
             LoadError::RuleHeadOwnedByNoScope {
                 name: head.name.to_owned(),
@@ -5013,11 +5026,11 @@ fn scan_rule(
 /// the split silently decides whether a rule EXTENDS someone else's predicate, which
 /// is non-monotone.
 ///
-/// [`Ownership`] is what closed it, by asking a question the pass cannot move:
-/// whether the name is WRITTEN as a head in a scope this one can see. The caller
-/// consults it first and reaches this function only for a head that introduces. A
-/// scope that wants its own name where an enclosing one resolves DECLARES it — the
-/// remedy §WI-896 prescribes.
+/// WI-20260822-845G7 closed it by removing the question: a head that does not DENOTE
+/// declares at the scope it is written in, so no order can enter, and two scopes that
+/// can see each other may not both do it ([`head_name_collisions`]). A scope that wants
+/// its own name where an enclosing one resolves DECLARES it — the remedy §WI-896
+/// prescribes, and now the one the refusal names.
 ///
 /// WI-894 — A RULE DOES NOT TRAVEL TO THE GLOBAL NAMESPACE FROM ITS PLACE. A
 /// name a rule introduces belongs to the scope the rule is WRITTEN IN: the sort
@@ -7854,7 +7867,7 @@ fn wire_provides_scope_parent(
 
 // ── Sub-pass 3: rule head functors ─────────────────────────────────────────
 
-/// WI-980 — the family of symbols [`Ownership`]'s overlay reports an owning scope with.
+/// WI-980 — the family of symbols [`head_name_reach`]'s overlay reports a scope with.
 ///
 /// ONE PER SCOPE, and that is not a detail. A single shared sentinel made every overlay
 /// hit report the SAME `Symbol`, so `resolve_in_scope_recursive_with_mode`'s
@@ -7862,7 +7875,8 @@ fn wire_provides_scope_parent(
 /// real symbols would have reported `Ambiguous` — and the parent loop does not stop at
 /// the first hit, so which owner was reported was last-writer-wins over parent order.
 /// Distinct symbols make the resolver's own ambiguity signal survive the overlay, which
-/// is what lets [`Ownership`] see that a scope reaches TWO owners rather than one.
+/// is what lets [`head_name_collisions`] see that a scope reaches TWO of them rather
+/// than one.
 ///
 /// NOT AN IDENTIFIER, deliberately: the angle brackets make it unspellable in source, so
 /// it can collide with no declared name and carry no other symbol's `internal` flag
@@ -7892,422 +7906,246 @@ struct RuleHeadSite<'f> {
     span: Span,
 }
 
-/// WHAT ONE RULE HEAD DOES — WI-980's verdict for one site.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Owned {
-    /// A head written at this scope introduces the name here.
-    Here,
-    /// This head is a CLAUSE of something else: `Some(s)` where `s`'s own rule head
-    /// introduces the name, `None` where it yields to an ordinary DECLARATION — which
-    /// §WI-896 admits equally, and which no scope in `heads` answers for.
-    Yields(Option<ScopeId>),
+/// ONE NAME INTRODUCED AT TWO SCOPES THAT CAN SEE EACH OTHER — the whole of what used to
+/// be `Ownership`'s decision (deleted by WI-20260822-845G7), now a report rather than
+/// a verdict.
+struct HeadNameCollision<'f> {
+    /// The introduced name.
+    name: &'f str,
+    /// Every scope introducing it, in no particular order — the caller sorts for display.
+    scopes: Vec<ScopeId>,
+    /// The scope a declaration belongs at, when one place collects every head: the member
+    /// that EVERY other member reaches FROM EVERY FILE it writes a head in. `None` where
+    /// no member does — a chain (a wildcard import is not re-exported) or two siblings a
+    /// third scope imports — and the message then prescribes a per-scope declaration
+    /// instead. An earlier cut said "the member that sees none of the others" and "`None`
+    /// for a cycle"; both are wrong, and each was caught by `/code-review` promising a
+    /// repair the program did not keep.
+    owner: Option<ScopeId>,
+    /// Indices into `heads` of every site in the collision, for locating the error.
+    sites: Vec<usize>,
 }
 
-/// WHAT A SCOPE CAN SEE for one name, under one overlay — the answer
-/// [`Ownership`] takes every decision from.
-enum Reach {
-    /// Nothing at all: a head written here must INTRODUCE.
-    Nothing,
-    /// One or more scopes whose rule heads introduce the name. More than one is a
-    /// genuine ambiguity the resolver reported and the overlay preserved.
-    Scopes(SmallVec<[ScopeId; 2]>),
-    /// An ordinary DECLARATION answered — not a rule head. The head is a clause of it.
-    Declaration,
-}
-
-impl Reach {
-    fn is_nothing(&self) -> bool {
-        matches!(self, Reach::Nothing)
+/// WHAT A HEAD NAMED `name`, WRITTEN AT `scope` IN `file`, CAN SEE among the scopes that
+/// introduce that name — with every candidate overlaid as though its head were already a
+/// symbol.
+///
+/// `<global>` DOES NOT APPEAR HERE, and that is deliberate rather than an omission:
+/// [`head_name_collisions`] leaves it out of the CANDIDATE SET, so `!candidates.contains`
+/// already answers for it. An earlier cut carried a second `s == global` test in this
+/// closure; once the candidate-set exclusion shipped that test could never fire, and its
+/// stated back-out failed nothing — `/code-review` measured it at zero rows. The
+/// exclusion's reason, and what it costs, are recorded where it now lives.
+fn head_name_reach(
+    kb: &KnowledgeBase,
+    name: &str,
+    scope: ScopeId,
+    file: SourceId,
+    candidates: &HashSet<ScopeId>,
+    sentinels: &HashMap<ScopeId, Symbol>,
+) -> SmallVec<[ScopeId; 2]> {
+    let previous = kb.symbols.set_asking_file(Some(file));
+    let overlay = |s: ScopeId| -> Option<Symbol> {
+        if s == scope || !candidates.contains(&s) {
+            return None;
+        }
+        sentinels.get(&s).copied()
+    };
+    let found = kb
+        .symbols
+        .resolve_captured_name_with_overlay(name, scope, &overlay);
+    kb.symbols.set_asking_file(previous);
+    let of_symbol = |sym: Symbol| -> Option<ScopeId> {
+        sentinels.iter().find(|(_, v)| **v == sym).map(|(k, _)| *k)
+    };
+    match found {
+        // NOTHING, or an ordinary DECLARATION. Neither is a collision: a name that
+        // resolves to a real declaration makes the head DENOTE, so it never became a
+        // candidate — measured, that arm fired zero times in 234,078 decisions.
+        ResolveResult::NotFound => SmallVec::new(),
+        ResolveResult::Found(sym) => of_symbol(sym).into_iter().collect(),
+        // AMBIGUOUS is still resolving (§"the same ladder, to the rung", WI-900): every
+        // candidate among the alternatives is a scope that introduces the name and is
+        // visible from here, so all of them collide.
+        ResolveResult::Ambiguous(cands) => cands.iter().filter_map(|s| of_symbol(*s)).collect(),
     }
 }
 
-/// WHICH SCOPE INTRODUCES A RULE-INTRODUCED NAME — WI-980's answer to "when is the
-/// ladder asked".
+/// Every name introduced at two or more mutually-reachable scopes (WI-20260822-845G7).
 ///
-/// THE QUESTION A MINT GUARD ACTUALLY WANTS. `name_denotes_for_rule_head` asks whether a
-/// SYMBOL exists, and during this pass that is a moving target: the pass mints, so the
-/// same head got one verdict written above a sort and the opposite written below it.
-/// What decides the binding is whether some scope this one can SEE already INTRODUCES
-/// the name — a property of the finished text, with the same answer in every order.
-///
-/// INTRODUCES, NOT "WRITES A HEAD", and the difference is a measured regression not a
-/// nicety. An outer head that BINDS through a FILE-LOCAL import (WI-995) leaves nothing
-/// for a sibling file to reach: `namespace zdemo { import zlib.*; rule q(2) }` beside a
-/// second file's `namespace zdemo { sort Rec { rule q(3) } }` loaded clean before this
-/// pass existed and was refused by the version that read the text.
-///
-/// A ROUND-BASED FIXPOINT, NOT A DEMAND-DRIVEN RECURSION, and the rewrite is the whole
-/// of this type's history. The first version answered `owns(scope, name)` by recursing
-/// through the resolver and breaking cycles with a `visiting` stack, memoising as it
-/// went. That is unsound for this question, because the relation is NOT monotone — the
-/// more scopes own a name, the more heads yield, and so the fewer scopes own it — and a
-/// verdict computed under a provisional cycle break was cached and then read by sites
-/// outside the cycle. Measured, six permutations of three files gave two different
-/// programs (`nA.p` = 3 clauses with `nB.p` absent, or 2 and 1), which is precisely the
-/// order dependence WI-980 exists to remove. It is replaced by three settled rules,
-/// each applied only where its premise is certain:
-///
-/// 1. **A scope that can see NOTHING even optimistically OWNS.** If, with every other
-///    candidate treated as an owner, some file's head at this scope still reaches
-///    nothing, then no smaller overlay can make it reach something.
-/// 2. **A scope that can see a SETTLED owner from every one of its files YIELDS.**
-/// 3. **Only when neither rule can move do we have a tie** — a cycle of mutual
-///    visibility — and it is broken inside one strongly-connected component at a time,
-///    never across the whole undecided set. A member ENCLOSED by another member yields
-///    (§"outermost-first"); with no enclosure among them, every member introduces its
-///    own, which is what two mutually-importing namespaces mean.
-///
-/// Nothing is memoised under a provisional assumption, so no order can leak in. It also
-/// removes the recursion, and with it the stack-overflow bound the recursive version
-/// needed: `owns` used to nest a whole resolver walk per link of the visible-scope
-/// chain, and 700 chained scopes sharing one head name ABORTED the process.
-struct Ownership<'f> {
-    /// FINAL verdict per site. Computed once, up front, with no interleaved minting.
-    ///
-    /// NOT KEYED BY THE HEAD'S KIND, and the attempt is recorded because it looks like
-    /// the fix for WI-20260821-D0EXD and is not. Splitting the decision so an EQUATION's
-    /// subject and a PREDICATE head form two populations does repair that ticket's
-    /// fixture — but the DECISION is kind-aware while PLACEMENT is not, and placement is
-    /// ordinary name resolution, which maps one name to one symbol per scope. Measured:
-    /// `namespace qlib { rule f(2); sort Rec { rule f() <=> 1; rule f(3) } }` then decides
-    /// `rule f(3)` a clause of `qlib.f` and PLACES it on `qlib.Rec.f`, because the
-    /// equation minted a local `f` there that shadows — so `qlib.f(3)` answers 0 and
-    /// `qlib.Rec.f(3)` answers 1, while renaming the equation to `other` gives 1 and 0.
-    /// One token, an unrelated clause moved. That is D0EXD one coordinate over, and it
-    /// shares a root with WI-20260820-JR7BB: the decision does not place the clause.
-    verdicts: HashMap<(ScopeId, &'f str, SourceId), Owned>,
-    /// EVERY TIE THE CYCLE RULE BROKE BY SPLITTING — one entry per (name, component)
-    /// where rule 3 found no enclosure among two or more members and gave each its own
-    /// predicate. This is the ONLY place in the loader where a head introduces a name
-    /// its scope can already SEE, so it is the only place [`LoadError::
-    /// PredicateSplitByImportCycle`] can arise, and recording it here is what lets the
-    /// caller ask the file question 061 asks of every other assembly. A component the
-    /// ENCLOSURE arm settled is not recorded: its members joined, so the ordinary
-    /// [`LoadError::PredicateHeadsSpanFiles`] sees them as one predicate and reports.
-    splits: Vec<(&'f str, Vec<ScopeId>)>,
-}
+/// ONE RESOLVER CALL PER `(candidate scope, file)`, and no iteration around it. The
+/// fixpoint this replaced existed to decide WHO WINS, which is a non-monotone question —
+/// the more scopes own a name the more heads yield, so the fewer own it — and had to be
+/// settled in rounds inside one strongly-connected component at a time. Nobody wins any
+/// more: each scope keeps its own, so the only question left is whether two of them can
+/// see each other, which each scope answers for itself and nothing can change.
+fn head_name_collisions<'f>(
+    kb: &KnowledgeBase,
+    heads: &[RuleHeadSite<'f>],
+    denotes: &[bool],
+    source_ids: &[SourceId],
+    global: ScopeId,
+    sentinels: &HashMap<ScopeId, Symbol>,
+) -> Vec<HeadNameCollision<'f>> {
+    // CANDIDATES PER NAME — EVERY head shape, INCLUDING AN EQUATION'S SUBJECT.
+    //
+    // 061 puts equations outside the DECLARATION rule (their clauses index under the
+    // connective, so the subject owns none), and an earlier cut of this function took
+    // that to mean they are outside this one too. Measured, that was a silent behaviour
+    // change: `zeq { rule f(true) <=> 1 [simp]; sort Rec { rule f(false) <=> 2 [simp] } }`
+    // minted no `zeq.Rec.f` before and does now, splitting one name into two symbols with
+    // nothing said — the exact hazard this refusal exists for, permitted for half the
+    // head shapes. Found by `/code-review`. Both remedies are driven and both load for an
+    // equation subject, so the message's prescription is good for it too.
+    //
+    // `<global>` IS NOT A PARTY IN EITHER DIRECTION, and it is excluded from the
+    // CANDIDATE SET rather than only from the overlay. Excluding it from the overlay
+    // alone stops a namespace head from seeing it, but the group is built on the
+    // UNDIRECTED closure of reach, so a namespace-less file that writes `import ns.*`
+    // and a head still pulls `ns` into a group with `<global>` — measured, and refused,
+    // while both this function's own doc and kernel-language.md say a head inside a
+    // namespace never collides with a top-level one. Worse, the repair that refusal
+    // names deletes the `<global>` head's predicate, which is the absorption the
+    // exclusion exists to forbid. Found by `/code-review`.
+    //
+    // THE COST IS A NAMED SILENCE: a namespace-less file importing a namespace and
+    // writing its head name shadows it, and nothing says so. That is the one scope where
+    // the language has always taken that trade — nobody opts into `<global>`, so it can
+    // neither absorb a namespace's name nor refuse one. It is still subject to the FILE
+    // rule, which groups by scope and so catches two namespace-less files.
+    let mut by_name: HashMap<&'f str, HashMap<ScopeId, Vec<usize>>> = HashMap::new();
+    for (idx, (head, &denoted)) in heads.iter().zip(denotes).enumerate() {
+        if denoted || head.scope == global {
+            continue;
+        }
+        by_name
+            .entry(head.name)
+            .or_default()
+            .entry(head.scope)
+            .or_default()
+            .push(idx);
+    }
 
-/// One name's candidate scopes and the files each writes a head in.
-type Candidates = Vec<(ScopeId, SmallVec<[SourceId; 2]>)>;
+    let mut out: Vec<HeadNameCollision<'f>> = Vec::new();
+    for (name, scopes) in &by_name {
+        if scopes.len() < 2 {
+            continue;
+        }
+        let candidates: HashSet<ScopeId> = scopes.keys().copied().collect();
+        // WHAT EACH CANDIDATE SEES, asked once per file it writes a head in — imports are
+        // file-local (WI-995), so a sibling head at the same scope in a file without the
+        // import gets a different answer, and seeing it from ANY of them is seeing it.
+        //
+        // KEPT PER FILE, not only unioned per scope. A scope reopened in two files sees
+        // different things from each, and the two readers below want different answers:
+        // the GROUP asks whether any file of a scope reaches another (seeing it once is
+        // enough to make them one group), while the named OWNER must be seen from EVERY
+        // file, because the message promises that declaring there collects every head.
+        // Measured with the union alone: `pwA` written in two files, only one carrying
+        // `import pwB.*`, named `pwB` as owner — and declaring there made the program
+        // LOAD CLEAN with `pwB.p` holding one clause and `pwA.p` holding two, the
+        // import-carrying head never joining. Found by `/code-review`, one coordinate
+        // over from the same defect across hops.
+        let mut per_file: HashMap<(ScopeId, SourceId), SmallVec<[ScopeId; 2]>> = HashMap::new();
+        let mut edges: HashMap<ScopeId, HashSet<ScopeId>> = HashMap::new();
+        for (&scope, sites) in scopes {
+            let mut seen: HashSet<ScopeId> = HashSet::new();
+            let mut asked: Vec<SourceId> = sites
+                .iter()
+                .map(|&i| source_ids[heads[i].file_idx])
+                .collect();
+            asked.sort_by_key(|f| f.index());
+            asked.dedup();
+            for file in asked {
+                let r = head_name_reach(kb, name, scope, file, &candidates, sentinels);
+                seen.extend(r.iter().copied());
+                per_file.insert((scope, file), r);
+            }
+            edges.insert(scope, seen);
+        }
 
-impl<'f> Ownership<'f> {
-    /// Decide every head, reading the pre-mint table only. `sentinels` is indexed by the
-    /// same order as `scopes_in_play`.
-    fn decide(
-        kb: &KnowledgeBase,
-        sites: &[RuleHeadSite<'f>],
-        denotes: &[bool],
-        source_ids: &[SourceId],
-        global: ScopeId,
-        sentinels: &HashMap<ScopeId, Symbol>,
-    ) -> Self {
-        // Candidate scopes PER NAME. A head whose name already denoted introduces
-        // nothing — it is a clause about that thing — so it is not a candidate and does
-        // not appear in any overlay.
-        let mut by_name: HashMap<&'f str, HashMap<ScopeId, SmallVec<[SourceId; 2]>>> =
-            HashMap::new();
-        for (site, &denoted) in sites.iter().zip(denotes) {
-            if denoted {
+        // THE GROUPS ARE THE WEAKLY-CONNECTED COMPONENTS of that relation. Two scopes
+        // neither of which can reach the other are two unrelated predicates that happen
+        // to share a short name — the overwhelmingly common case, and not a collision.
+        let mut undirected: HashMap<ScopeId, HashSet<ScopeId>> = HashMap::new();
+        for (&s, targets) in &edges {
+            for &t in targets {
+                undirected.entry(s).or_default().insert(t);
+                undirected.entry(t).or_default().insert(s);
+            }
+        }
+        let mut assigned: HashSet<ScopeId> = HashSet::new();
+        // A DETERMINISTIC group order and a deterministic seed, so nothing below depends
+        // on the hash map's iteration.
+        let mut ordered: Vec<ScopeId> = candidates.iter().copied().collect();
+        ordered.sort_by_key(|s| kb.scope_display_name(*s).to_owned());
+        for seed in ordered {
+            if assigned.contains(&seed) || !undirected.contains_key(&seed) {
                 continue;
             }
-            by_name
-                .entry(site.name)
-                .or_default()
-                .entry(site.scope)
-                .or_default()
-                .push(source_ids[site.file_idx]);
-        }
-
-        let mut verdicts = HashMap::new();
-        let mut splits: Vec<(&'f str, Vec<ScopeId>)> = Vec::new();
-        for (name, scopes) in &by_name {
-            let candidates: Candidates = {
-                // A DETERMINISTIC ORDER, so a tie broken by position cannot vary with
-                // the hash map's iteration. Nothing below should depend on it — this is
-                // the belt to the braces.
-                let mut v: Candidates = scopes.iter().map(|(s, f)| (*s, f.clone())).collect();
-                v.sort_by_key(|(s, _)| kb.scope_display_name(*s).to_owned());
-                v
-            };
-            let (owners, split_components) =
-                Self::owners_for(kb, name, &candidates, global, sentinels);
-            splits.extend(split_components.into_iter().map(|c| (*name, c)));
-            for (scope, files) in &candidates {
-                for file in files {
-                    let verdict = if owners.contains(scope) {
-                        Owned::Here
-                    } else {
-                        match Self::reach(kb, name, *scope, *file, &owners, global, sentinels) {
-                            // UNREACHABLE BY CONSTRUCTION, and stated rather than
-                            // silently folded: rule 1 gives ownership to any scope with
-                            // a file that reaches nothing, so a yielding site always
-                            // reaches something. If it ever did not, the clause would
-                            // land on the WI-476 bare intern — the hole the caller's
-                            // agreement check reports.
-                            Reach::Nothing => Owned::Yields(None),
-                            Reach::Declaration => Owned::Yields(None),
-                            Reach::Scopes(v) => Owned::Yields(v.first().copied()),
-                        }
-                    };
-                    verdicts.insert((*scope, *name, *file), verdict);
+            let mut group: Vec<ScopeId> = Vec::new();
+            let mut stack = vec![seed];
+            while let Some(n) = stack.pop() {
+                if !assigned.insert(n) {
+                    continue;
+                }
+                group.push(n);
+                for &t in undirected.get(&n).into_iter().flatten() {
+                    stack.push(t);
                 }
             }
-        }
-        // A DETERMINISTIC report order, so two split names do not print in hash order.
-        splits.sort_by_key(|(name, scopes)| {
-            (
-                name.to_string(),
-                scopes
-                    .iter()
-                    .map(|s| kb.scope_display_name(*s).to_owned())
-                    .collect::<Vec<_>>(),
-            )
-        });
-        Self { verdicts, splits }
-    }
-
-    /// The owner set for ONE name — the fixpoint described on the type.
-    ///
-    /// Returns the owner set and, beside it, every component rule 3 settled by SPLITTING
-    /// two or more members — see [`Ownership::splits`].
-    fn owners_for(
-        kb: &KnowledgeBase,
-        name: &str,
-        candidates: &Candidates,
-        global: ScopeId,
-        sentinels: &HashMap<ScopeId, Symbol>,
-    ) -> (HashSet<ScopeId>, Vec<Vec<ScopeId>>) {
-        let all: HashSet<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
-        let mut owners: HashSet<ScopeId> = HashSet::new();
-        let mut splits: Vec<Vec<ScopeId>> = Vec::new();
-        let mut undecided: Vec<ScopeId> = candidates.iter().map(|(s, _)| *s).collect();
-        let files_of = |scope: ScopeId| -> SmallVec<[SourceId; 2]> {
-            candidates
-                .iter()
-                .find(|(s, _)| *s == scope)
-                .map(|(_, f)| f.clone())
-                .unwrap_or_default()
-        };
-
-        // THE OPTIMISTIC REACH, COMPUTED ONCE. `reach(.., &all, ..)` does not depend on
-        // `owners`, so it is the same in every round — and it was being recomputed inside
-        // the loop, which put an extra factor of n on the whole decision (n reach calls
-        // per round, n rounds). Both readers below take it from here: rule 1 asks whether
-        // it is empty, and rule 3's edge set asks which scopes it names.
-        let optimistic: HashMap<ScopeId, Vec<Reach>> = candidates
-            .iter()
-            .map(|(s, files)| {
-                let per_file = files
-                    .iter()
-                    .map(|f| Self::reach(kb, name, *s, *f, &all, global, sentinels))
-                    .collect();
-                (*s, per_file)
-            })
-            .collect();
-
-        // RULE 1, once: a scope some of whose files reach nothing even with every other
-        // candidate treated as an owner can never be made to reach something.
-        undecided.retain(|&s| {
-            let blind = optimistic[&s].iter().any(Reach::is_nothing);
-            if blind {
-                owners.insert(s);
+            if group.len() < 2 {
+                continue;
             }
-            !blind
-        });
-
-        while !undecided.is_empty() {
-            // RULE 2: yields as soon as EVERY file sees a settled owner.
-            let before = undecided.len();
-            undecided.retain(|&s| {
-                !files_of(s).iter().all(|f| {
-                    !Self::reach(kb, name, s, *f, &owners, global, sentinels).is_nothing()
+            group.sort_by_key(|s| kb.scope_display_name(*s).to_owned());
+            // WHERE THE DECLARATION BELONGS — AND ONLY WHEN IT REALLY COLLECTS EVERY
+            // HEAD. The message that names a scope promises that declaring there makes
+            // every other member's head a clause of it, so the test is not "reaches
+            // nothing" but "IS REACHED BY EVERY OTHER MEMBER". The two differ exactly
+            // where reach is NOT transitive, which is the common case: a wildcard import
+            // is not re-exported, so in a chain `zzA -> zzB -> zzC` the sink is `zzC` and
+            // `zzA` cannot see it. Measured, the sink test named `zzC`, and declaring
+            // there left `zzA.cp` a separate predicate with NO error at all — a promise
+            // the repair did not keep. Found by `/code-review`.
+            //
+            // MORE THAN ONE MEMBER CAN QUALIFY, and naming the first is right rather than
+            // a coin toss: in a mutual cycle every member is reached by every other, so
+            // declaring at ANY of them collects the whole group (driven — `mA`/`mB`'s
+            // remedy 1 gives one predicate with both clauses). `group` is sorted by
+            // display name, so which one is named is deterministic.
+            let owner = group.iter().copied().find(|&cand| {
+                group.iter().all(|&other| {
+                    other == cand
+                        || scopes[&other].iter().all(|&i| {
+                            per_file[&(other, source_ids[heads[i].file_idx])].contains(&cand)
+                        })
                 })
             });
-            if undecided.len() < before {
-                continue;
-            }
-
-            // RULE 3: a tie. Break it inside ONE strongly-connected component — the
-            // members that can each still see each other — and never across the whole
-            // undecided set. Scanning wider was measured to let a scope in no cycle at
-            // all decide a cycle's winner and delete another scope's predicate.
-            let live: HashSet<ScopeId> = undecided.iter().copied().collect();
-            let edges: HashMap<ScopeId, HashSet<ScopeId>> = undecided
-                .iter()
-                .map(|&s| {
-                    let mut out: HashSet<ScopeId> = HashSet::new();
-                    for r in &optimistic[&s] {
-                        if let Reach::Scopes(v) = r {
-                            out.extend(v.iter().copied().filter(|t| live.contains(t)));
-                        }
-                    }
-                    (s, out)
-                })
-                .collect();
-            let component = Self::sink_component(&undecided, &edges);
-
-            // Inside the component, "outermost-first" is the only thing that names a
-            // winner — asked of the real enclosing edges, never of the printed address.
-            let enclosed: Vec<ScopeId> = component
-                .iter()
-                .copied()
-                .filter(|&inner| {
-                    component
-                        .iter()
-                        .any(|&outer| outer != inner && kb.symbols.encloses(outer, inner))
-                })
-                .collect();
-            let split: Vec<ScopeId> = component
-                .iter()
-                .copied()
-                .filter(|s| !enclosed.contains(s))
-                .collect();
-            for s in &split {
-                owners.insert(*s);
-            }
-            // TWO OR MORE, because one is not a split. A single-member component reaches
-            // rule 3 when it has no LIVE outgoing edge — every scope it reaches is
-            // already settled — and that member owning is the ordinary "the ladder found
-            // nothing" answer, not a tie broken on the author's behalf. (Not a self-edge:
-            // [`Ownership::reach`]'s overlay returns `None` for `s == scope`, so a
-            // candidate never appears in its own `Reach::Scopes` and no self-edge is
-            // representable. An earlier version of this comment said otherwise;
-            // `/code-review` caught it.)
-            if split.len() > 1 {
-                splits.push(split);
-            }
-            // An enclosed member is settled too: it yields to the enclosing member that
-            // just became an owner. Removing the whole component is what guarantees
-            // progress, so the loop cannot spin.
-            undecided.retain(|s| !component.contains(s));
-        }
-        (owners, splits)
-    }
-
-    /// A strongly-connected component of `edges` with no edge leaving it — the one whose
-    /// members' answers depend on nothing still undecided, so it can be settled now.
-    ///
-    /// Mutual reachability by transitive closure rather than Tarjan: the node set here is
-    /// the scopes writing ONE name, which the corpus census puts in single digits, and an
-    /// iterative closure has no recursion to overflow.
-    fn sink_component(
-        undecided: &[ScopeId],
-        edges: &HashMap<ScopeId, HashSet<ScopeId>>,
-    ) -> Vec<ScopeId> {
-        let reaches = |from: ScopeId| -> HashSet<ScopeId> {
-            let mut seen = HashSet::new();
-            let mut stack = vec![from];
-            while let Some(n) = stack.pop() {
-                for &t in edges.get(&n).into_iter().flatten() {
-                    if seen.insert(t) {
-                        stack.push(t);
-                    }
-                }
-            }
-            seen
-        };
-        let closure: HashMap<ScopeId, HashSet<ScopeId>> =
-            undecided.iter().map(|&s| (s, reaches(s))).collect();
-        let component_of = |s: ScopeId| -> Vec<ScopeId> {
-            let mut c: Vec<ScopeId> = undecided
-                .iter()
-                .copied()
-                .filter(|&t| {
-                    t == s
-                        || (closure[&s].contains(&t) && closure[&t].contains(&s))
-                })
-                .collect();
-            c.sort_by_key(|x| x.owner().index());
-            c
-        };
-        for &s in undecided {
-            let c = component_of(s);
-            let leaves = c
-                .iter()
-                .any(|m| edges[m].iter().any(|t| !c.contains(t)));
-            if !leaves {
-                return c;
-            }
-        }
-        // Every component has an outgoing edge, which for a finite graph means a cycle
-        // among components — impossible, since components are maximal. Kept as a defined
-        // answer rather than an `unreachable!`: settling the first node alone still makes
-        // progress, so the loop terminates either way.
-        vec![undecided[0]]
-    }
-
-    /// What a head named `name`, written at `scope` in `file`, can SEE — with `owners`
-    /// overlaid as though their rule heads were already symbols.
-    fn reach(
-        kb: &KnowledgeBase,
-        name: &str,
-        scope: ScopeId,
-        file: SourceId,
-        owners: &HashSet<ScopeId>,
-        global: ScopeId,
-        sentinels: &HashMap<ScopeId, Symbol>,
-    ) -> Reach {
-        let previous = kb.symbols.set_asking_file(Some(file));
-        let overlay = |s: ScopeId| -> Option<Symbol> {
-            // `<global>` IS NEVER YIELDED TO. It is the one scope every file shares and
-            // nobody opts into, so a name introduced there must not absorb a head
-            // written inside some namespace — measured, the stdlib's `modus_ponens`
-            // ceased to exist and its axiom became a clause of a one-line user file's
-            // predicate. It may still OWN what is written at it, which is why the
-            // exclusion lives here and not in the candidate set.
-            if s == global || s == scope || !owners.contains(&s) {
-                return None;
-            }
-            sentinels.get(&s).copied()
-        };
-        let found = kb
-            .symbols
-            .resolve_captured_name_with_overlay(name, scope, &overlay);
-        kb.symbols.set_asking_file(previous);
-        let of_symbol = |sym: Symbol| -> Option<ScopeId> {
-            sentinels
-                .iter()
-                .find(|(_, v)| **v == sym)
-                .map(|(k, _)| *k)
-        };
-        match found {
-            ResolveResult::NotFound => Reach::Nothing,
-            ResolveResult::Found(sym) => match of_symbol(sym) {
-                Some(s) => Reach::Scopes(SmallVec::from_elem(s, 1)),
-                None => Reach::Declaration,
-            },
-            ResolveResult::Ambiguous(cands) => {
-                let scopes: SmallVec<[ScopeId; 2]> =
-                    cands.iter().filter_map(|s| of_symbol(*s)).collect();
-                // A REAL symbol among the candidates means an ordinary declaration is
-                // one of the things the name reaches, so the head is a clause of it
-                // either way; the ambiguity itself is reported at the reference
-                // (§"the same ladder, to the rung", WI-900).
-                if scopes.len() < cands.len() && scopes.is_empty() {
-                    Reach::Declaration
-                } else {
-                    Reach::Scopes(scopes)
-                }
-            }
+            let mut sites: Vec<usize> = group.iter().flat_map(|s| scopes[s].clone()).collect();
+            sites.sort_unstable();
+            out.push(HeadNameCollision {
+                name,
+                scopes: group,
+                owner,
+                sites,
+            });
         }
     }
-
-    /// Every tie the cycle rule broke by SPLITTING — see [`Ownership::splits`].
-    fn splits(&self) -> &[(&'f str, Vec<ScopeId>)] {
-        &self.splits
-    }
-
-    fn verdict(&self, scope: ScopeId, name: &'f str, file: SourceId) -> Owned {
-        // A head whose name ALREADY denoted is not in the map: it introduces nothing.
-        self.verdicts
-            .get(&(scope, name, file))
-            .copied()
-            .unwrap_or(Owned::Yields(None))
-    }
+    // A DETERMINISTIC report order across names.
+    out.sort_by_key(|c| {
+        (
+            c.name.to_string(),
+            c.scopes
+                .iter()
+                .map(|s| kb.scope_display_name(*s).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    });
+    out
 }
 
-/// Mint one sentinel per scope that writes a rule head — before [`Ownership`] takes the
-/// KB immutably, since interning needs it mutably.
+/// Mint one sentinel per scope that writes a rule head — before [`head_name_collisions`]
+/// takes the KB immutably, since interning needs it mutably.
 fn mint_head_sentinels(
     kb: &mut KnowledgeBase,
     sites: &[RuleHeadSite<'_>],

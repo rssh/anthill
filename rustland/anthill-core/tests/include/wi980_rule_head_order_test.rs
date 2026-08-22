@@ -1,154 +1,142 @@
-//! WI-980 / proposal 059 R6 — A RULE HEAD'S BINDING DOES NOT DEPEND ON DECLARATION
-//! ORDER.
+//! WI-980 / 059 R6, AS 061 AND WI-20260822-845G7 LEFT IT — A RULE HEAD DECLARES ITS
+//! PREDICATE AT THE SCOPE IT IS WRITTEN IN, AND TWO SCOPES THAT CAN SEE EACH OTHER MAY
+//! NOT BOTH INTRODUCE ONE NAME.
 //!
-//! THE POLICY IS NOT IN QUESTION HERE. §"A rule head functor is resolved, not declared"
-//! (WI-896) already says it: the functor runs the ordinary ladder and the rule
-//! contributes a clause to whatever it lands on; only where the ladder finds NOTHING
-//! does the rule introduce the name, scoped where written. What was undefined is WHEN
-//! "the ladder finds nothing" is evaluated — and it was evaluated against a half-built
-//! name table, so textual order decided:
+//! ── WHAT THIS FILE USED TO MEASURE, AND WHY IT NO LONGER CAN ─────────────────
 //!
-//! ```text
-//!   namespace s2                      namespace s1
-//!     rule p(1)                         sort Rec
-//!     sort Rec                            entity rec(n: Int64)
-//!       entity rec(n: Int64)              rule p(2)
-//!       rule p(2)                       end
-//!     end                               rule p(1)
-//!   end                               end
+//! WI-980's subject was ORDER: `rule p(1)` beside `sort Rec { rule p(2) }` loaded as ONE
+//! predicate written one way round and TWO written the other, because the ladder that
+//! decides a head was asked against a half-built name table. It closed that by asking a
+//! question the pass cannot move — *does some scope this one can see already introduce
+//! the name* — resolved through an `Ownership` fixpoint: an optimistic overlay, three
+//! settling rules, an SCC tie-break, a `(scope, name, FILE)` key, a `<global>` two-roles
+//! exception and a depth bound.
 //!
-//!   s2.p(2)=1   s2.Rec.p=<no symbol>    s1.p(2)=0   s1.Rec.p(2)=1
-//! ```
+//! 061 then made a predicate DECLARED rather than discovered, and 845G7 measured what was
+//! left for the fixpoint to do. Instrumenting the verdict loop over the whole suite —
+//! stdlib, `anthill-stl`, examples, `anthill-todo` and every fixture — gave **234,078**
+//! head decisions:
 //!
-//! Same pair, opposite order, two different programs: ONE predicate with two clauses
-//! versus TWO predicates with one clause each. It silently decides whether a rule
-//! EXTENDS someone else's predicate, and extension is non-monotone — a true statement
-//! becomes false and the proofs discharged from it were verified against a knowledge
-//! base that no longer exists.
+//! | verdict | count |
+//! |---|---:|
+//! | introduce at this scope | **233,917** |
+//! | join ANOTHER scope's head | **161** |
+//! | yield to an ordinary declaration | **0** |
 //!
-//! Every row drives the GOAL. A rule head that binds nowhere still loads clean, so
-//! "it loads" would keep passing through exactly the regression this suite exists for.
+//! and 130 of the 161 were one fixture in this file, with every one of the remaining 22
+//! distinct triples in a fixture written to exercise the fixpoint itself. **Zero** from
+//! the shipped corpus. The machinery computed a constant for every real program, so it is
+//! gone and the rule is:
 //!
-//! ── WHAT PROPOSAL 061 CHANGED HERE, AND WHY THESE ROWS SURVIVE IT ────────────
+//! > An undeclared rule head declares its predicate at the scope it is WRITTEN IN. Two
+//! > scopes that can see each other may not both introduce one name — declare it.
 //!
-//! 061 (WI-20260821-FQC85) makes a body-less rule DECLARE its predicate and refuses a
-//! predicate whose heads span more than one FILE without a declaration. Two consequences
-//! run through this file:
+//! Order-freedom is now a property of the rule rather than a result: nothing is asked
+//! about any other head, so no order can enter. The rows below still run both orders,
+//! because a claim that holds in only one order measures nothing and because the REFUSAL
+//! must be order-free too.
 //!
-//! * every clause-bearing head here is now written `:- true` — the explicit spelling of
-//!   the empty body, which is what `fact` desugars to (§6.1). A bare `rule p(1)` would
-//!   declare and assert nothing, and every count below would read 0;
-//! * the CROSS-FILE rows carry a **declaration** of the predicate they assemble. Without
-//!   it those programs are refused, which is the point of 061 and is pinned — both arms,
-//!   refusal and declared — in `wi_fqc85_rule_declaration_test`. What WI-980 measures is
-//!   untouched by the added line: the orders must still AGREE, and the fixpoint still
-//!   decides every head the declaration does not cover.
+//! ── WHY THE SECOND HALF OF THE RULE IS A REFUSAL AND NOT A SPLIT ─────────────
 //!
-//! Two rows could not take a declaration without answering their own question, and each
-//! says so at its site. `a_cycle_does_not_reach_a_bystander` moved to ONE FILE — a
-//! declaration in `mA` would make `mB` join it and erase the split the row is about.
-//! `a_chain_deeper_than_any_recursion_is_decided` now asserts the REFUSAL COUNT — 130, one per
-//! owner but `deep0` — because that count IS the alternation it used to read off the
-//! clause tallies, and neither remedy was available: one file makes the wildcard chain
-//! transitive (measured: all 261 clauses collapse onto the far end) and declaring in
-//! every scope leaves the fixpoint with no candidates to decide.
+//! Removing the join replaces an ASSEMBLY hazard with a SHADOWING one, and they do not
+//! take the same boundary. 059 §Definitions' FILE unit answers "a predicate assembled by
+//! two parties that never agreed on it" — but one author writing
+//! `demo { rule p(1) :- true; sort Rec { rule p(2) :- true } }` is not two parties. They
+//! are one party who used to get ONE predicate and would otherwise silently get two,
+//! because a scope's own name beats what it imports or inherits (`resolve_in_scope` reads
+//! `locals` and returns before consulting any import or parent). A silent change of
+//! meaning is worse than either reading, so the refusal is stated over VISIBILITY, and a
+//! same-file pair is refused exactly as a cross-file one is. Corpus cost of the wider
+//! rule, measured: zero, the same as the narrow one.
 //!
-//! Collapsing is NOT a free move, and `nobody_yields_to_a_scope_that_mints_nothing`
-//! measures why: put its three files into one and `ext.p` gains a FOURTH clause, because
-//! `sib` then reaches `ext` through `fb`'s own import. The non-transitivity that row
-//! depends on IS file-locality (WI-995). It takes the declaration instead.
+//! THE SHADOW ITSELF IS NOT REFUSED. Every refusal row below carries a `declare in EACH
+//! scope` arm that reproduces it exactly — the point is that it is then written down.
 //!
-//! ── WHAT THE ROWS ARE, AND WHICH ONES MEASURE THE FIX ────────────────────────
+//! ── THE CHANNELS, AND WHY THERE ARE SIX ──────────────────────────────────────
 //!
-//! FOUR CHANNELS, each in BOTH orders — because a pair that agrees in only one order
-//! measures nothing:
+//! Visibility reaches a scope by more than one edge, and a guard keyed on any one of them
+//! answers the others by accident. Each channel is a different edge, and each runs its
+//! REFUSED arm and both DECLARED arms:
 //!
-//! | channel | rule-first | rule-second |
-//! |---|---|---|
-//! | a sort body | control | **measures the fix** |
-//! | a nested ordinary namespace | control | **measures the fix** |
-//! | two FILES at one address (061: declared) | control | **measures the fix** |
-//! | a `requires` parent | **measures the fix** | **measures the fix** |
+//! | channel | the edge |
+//! |---|---|
+//! | a sort body | the enclosing chain, into a sort |
+//! | a nested ordinary namespace | the enclosing chain, into a namespace |
+//! | a `requires` parent | a `requires` edge, which sits at no address |
+//! | a facade importing its own submodule | a downward wildcard import PLUS the enclosing edge |
+//! | a mutual-import cycle | two wildcard imports, and nothing names an owner |
+//! | a one-way wildcard import | one wildcard import, and the imported scope is the owner |
 //!
-//! THE BACK-OUTS, all run, all present-but-wrong rather than deleted so the rule-first
-//! rows cannot pass by accident. Each names the line, not the idea:
+//! THE FOURTH CHANNEL IS WHY THE REACH IS ASKED OF THE RESOLVER AND NOT OF AN ADDRESS. A
+//! `requires` parent sits at no particular address, so any key derived from the qualified
+//! NAME answers it by text order — measured under the fixpoint, an attempt keyed on
+//! address depth left [`requires_same_depth`] split in one order and joined in the other.
 //!
-//! ALL FOUR WERE RE-RUN AFTER 061 (WI-20260821-FQC85), because the declarations those
-//! rows now carry change what each back-out can reach: a declared name is minted in
-//! pass 1, so its heads DENOTE and never become candidates — the overlay never sees
-//! them. Three of the four counts moved, and the numbers below are the measured ones.
+//! ── THE CONTROLS, AND WHAT FAILS WITHOUT THEM ────────────────────────────────
 //!
-//! * THE OWNERSHIP GUARD — in sub-pass 3's decision loop, gate on
-//!   `name_denotes_for_rule_head(kb, head.name, head.scope)` instead of
-//!   `decision.verdict(…)`, which is the pre-WI-980 guard: a table read while the same
-//!   loop is filling it. VERIFIED, **7 rows fail** (was 11 before the declarations):
-//!   both `*_rule_written_second` rows, BOTH `requires` rows, `mutual_visibility_…`,
-//!   [`a_global_head_absorbs_nothing_beside_a_cycle_or_a_nesting`] and
-//!   [`a_cycle_does_not_reach_a_bystander`]. The `*_rule_written_first` CONTROLS still
-//!   pass, which is the point of having them.
-//!   (Taking `Owned::Here` unconditionally is a DIFFERENT back-out and a blunter one,
-//!   because it also stops heads joining where they should.)
-//! * `<global>`'s TWO ROLES — drop the `s == global` test from the overlay closure in
-//!   [`Ownership::reach`], fusing "may own a name written at it" with "may be yielded
-//!   to". VERIFIED, **exactly 1 row fails**:
-//!   [`a_global_head_absorbs_nothing_beside_a_cycle_or_a_nesting`]. It was 3, and the
-//!   two that dropped out say something worth keeping:
-//!   [`a_global_head_is_never_yielded_to`]'s stdlib axiom is now a 061 DECLARATION, so
-//!   it is minted in pass 1 and the overlay cannot absorb it whatever `<global>` does —
-//!   the declaration is a stronger guard than the rule this back-out removes — and
-//!   [`a_top_level_head_beside_an_import_reports_rather_than_aborting`] declares `nd.p`
-//!   for the same reason. Both rows still pin their behaviour; neither measures this
-//!   line any more.
+//! [`two_scopes_that_cannot_see_each_other_keep_their_own`] is the one that matters most:
+//! without it, a "refusal" that fired on any two scopes sharing a short name would look
+//! correct, and it would refuse most real programs. [`an_unmatched_inner_head_still_-
+//! introduces`] is its twin one level down — a genuinely new inner name must still be
+//! introduced. And [`the_captured_stdlib_predicate_survives`] holds the other end: a head
+//! whose name RESOLVES is a CLAUSE of what it resolves to and never reaches this rule at
+//! all, which is why refusing head/import coexistence here does not report the 99 stdlib
+//! errors across 43 names WI-980 measured for refusing it generally.
+//!
+//! ── THE BACK-OUTS, all run, each naming a line rather than an idea ───────────
+//!
+//! * THE COLLISION REFUSAL — `let collisions = Vec::new();` in place of the
+//!   `head_name_collisions(…)` call in sub-pass 3. VERIFIED, **14 rows fail**: every
+//!   `*_must_declare_*` row's REFUSED arm, this file's chain and reopened-member rows,
+//!   five in `wi_fqc85_rule_declaration_test` and `wi900`'s undeclared arm. The DECLARED
+//!   arms pass either way, by design — they are what shows the refusal is about the
+//!   silence and not about the shape.
 //! * THE ASKING FILE — `set_asking_file(None)` in place of `set_asking_file(Some(file))`
-//!   in [`Ownership::reach`]. VERIFIED, **4 rows fail**, and two of them are now in
-//!   `wi_fqc85_rule_declaration_test` (`a_sibling_files_head_no_longer_moves_another_-
-//!   files_clause` and `a_head_that_binds_through_its_own_files_import_is_still_a_-
-//!   second_file`, whose DECLARED arms still resolve through the head's own file's
-//!   import); here, [`a_cycle_does_not_reach_a_bystander`] and
-//!   [`a_chain_deeper_than_any_recursion_is_decided`].
-//! * THE SCC SCOPE — `let component = undecided.clone()` in place of
-//!   `Self::sink_component(…)`, breaking a tie across everything still undecided rather
-//!   than inside one strongly-connected component. VERIFIED, **exactly 2 rows fail**:
-//!   [`a_cycle_does_not_reach_a_bystander`] and
-//!   [`a_chain_deeper_than_any_recursion_is_decided`].
+//!   in [`head_name_reach`]. VERIFIED, **8 rows fail**, four here and three in
+//!   `wi_fqc85_rule_declaration_test`: with imports no longer file-local the reach is
+//!   transitive, so chains collapse and cycles gain members.
+//! * THE FILE RULE — `continue` unconditionally in the file block. VERIFIED, **exactly 2
+//!   rows fail**: [`one_scope_reopened_in_two_files_must_declare_its_predicate`] and
+//!   `wi_fqc85_rule_declaration_test::an_equation_subject_written_in_two_files_is_not_-
+//!   refused`, which is that rule's own exclusion.
+//! * THE SUPPRESSION — drop the `collided.contains(&(owner, name))` test in the file
+//!   block. VERIFIED, **exactly 1 row fails**:
+//!   [`a_cycle_member_reopened_in_a_second_file_is_reported_once`], with two reports for
+//!   one missing declaration.
+//! * THE NAMED OWNER — `.find(|&cand| edges[&cand].is_empty())`, the SINK of the direct
+//!   reach graph, in place of "reached by every other member". VERIFIED, **6 rows fail**:
+//!   [`a_named_owner_must_be_reachable_from_every_other_member`], the chain, the facade,
+//!   the cycle and two in `wi_fqc85_rule_declaration_test`. This is the one whose failure
+//!   is silent in the shipped program rather than loud — following the sink's advice made
+//!   a refused program LOAD with part of it still split.
+//! * EQUATION SUBJECTS — put `head.introduced_by != RuleIntroduction::Predicate` back in
+//!   the candidate filter of [`head_name_collisions`]. VERIFIED, **exactly 1 row fails**:
+//!   [`an_equation_subject_is_a_party_to_the_collision_too`].
+//! * `<global>` AS A CANDIDATE — drop `head.scope == global` from the same filter.
+//!   VERIFIED, **exactly 1 row fails**:
+//!   [`a_global_head_is_not_a_party_to_the_collision`], on its imported-namespace arm.
+//!   (A `<global>` row whose scopes are DECLARED cannot measure it at all — their heads
+//!   denote, so none becomes a candidate — and three of them did not, which is why that
+//!   row carries an undeclared arm.) This is the ONLY back-out for that exclusion: the group is the UNDIRECTED closure of
+//!   reach, so the overlay test [`head_name_reach`] used to carry could not hold in the
+//!   direction that matters, and once the candidate-set exclusion shipped it could not
+//!   fire at all — measured at ZERO rows and deleted. `/code-review` caught both the dead
+//!   code and this file's stale claim that it cost one row.
+//! * THE PER-FILE OWNER — `edges[&other].contains(&cand)`, the per-SCOPE union of reach,
+//!   in place of the per-file `all`. VERIFIED, **exactly 1 row fails**:
+//!   [`a_named_owner_must_be_reachable_from_every_other_member`], on its reopened-scope
+//!   arm.
 //!
-//! Two recipes here used to name code that does not exist (`owners.owns(…)`, an
-//! `Ownership::decide` overlay). This repo treats a stated back-out AS the measurement,
-//! so a recipe that cannot be followed leaves its row asserting only "it loads".
+//! ONE LINE HAS NO TARGETED BACK-OUT, and it is said rather than credited to a
+//! neighbour. Taking every candidate pair as an edge instead of asking
+//! [`head_name_reach`] — the crude way to remove the visibility test — fails **2204**
+//! rows, because the stdlib alone writes many head names at scopes that cannot see each
+//! other, and it stops loading. So no row *isolates* that line;
+//! [`two_scopes_that_cannot_see_each_other_keep_their_own`] is the cheapest single
+//! witness for what it is FOR, and the 2204 is the measurement of what it costs to lose.
 //!
-//! The three `*_rule_written_first` rows PASS EITHER WAY, by design — they are the
-//! control, and without them a "fix" that made every inner head bind would look
-//! correct. [`an_unmatched_inner_head_still_introduces`] is the other half of that
-//! control: the fix must not make a genuinely-new inner name join something.
-//!
-//! THE THIRD CHANNEL IS NOT DECORATION. The per-file walk is what made the binding
-//! order-dependent, so a fix that only reordered WITHIN a file would pass the first two
-//! channels and leave the defect intact across files.
-//!
-//! THE FOURTH CHANNEL IS WHY THE GUARD WALKS `parents` AND NOT AN ADDRESS. A `requires`
-//! parent sits at no particular address, so any key derived from the qualified NAME
-//! answers it by text order — measured, an earlier attempt keyed on address depth left
-//! [`requires_same_depth`] split in one order and joined in the other, and made
-//! [`requires_target_deeper`] WORSE than before it. Both rows fail under that key and
-//! pass under this one, which is what shows the guard asks about the same reach a
-//! reference gets.
-//!
-//! AND `<global>` PLAYS ONE ROLE OF THE TWO — [`a_global_head_is_never_yielded_to`],
-//! with [`the_documented_top_level_form_loads`] as the bound on it.
-//!
-//! ── WHY THE SECOND CHANNEL IS A NESTED NAMESPACE AND NOT A SECONDARY ENTRY ───
-//!
-//! WI-980 asks for the sort body and a proposal-059 SECONDARY ENTRY (`namespace Rec …
-//! end` at the address of a sort). That spelling no longer loads: WI-1000 shipped 059
-//! R3, which refuses every `rule` in a secondary entry outright.
-//! [`a_rule_in_a_secondary_entry_is_still_refused`] pins that refusal, so the
-//! substitution below is recorded rather than silent.
-//!
-//! The nested ORDINARY namespace is the right stand-in, and not a weaker one: R6 is a
-//! claim about the ENCLOSING CHAIN, not about sorts, and 059's Definitions make an
-//! ordinary namespace — an address with no main entry — the case "nothing in R3 or R4
-//! reaches". It is also the overwhelmingly common shape. Two channels that differ in
-//! what the inner scope IS, agreeing, is what shows the binding is keyed on the chain.
+//! Every row DRIVES its goal. A rule head that binds nowhere still loads clean, so "it
+//! loads" would keep passing through exactly the regression this suite exists for.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
@@ -171,35 +159,41 @@ fn clauses(kb: &KnowledgeBase, qn: &str) -> Option<usize> {
     Some(kb.rules_by_functor(sym).len())
 }
 
-/// The whole claim, for one loaded program: `p` is ONE predicate with TWO clauses at
-/// the namespace, the inner scope introduced NOTHING, and the goal the inner clause
-/// answers is reachable through the namespace predicate.
-///
-/// `inner_qn` is asserted ABSENT rather than merely unreached, because that is the
-/// difference between the two readings: the split program has a real `Rec.p` symbol
-/// carrying the clause the namespace predicate then never sees.
-fn assert_joined(kb: &mut KnowledgeBase, ns: &str, inner_qn: &str) {
+/// The REFUSED arm: `src` must fail with the collision naming exactly `scopes`.
+fn assert_collides(sources: &[&str], name: &str, scopes: &[&str]) {
+    let want = format!(
+        "the rule head `{name}` introduces that name at {} scopes, each of which \
+         reaches or is reached by another of them — {}",
+        scopes.len(),
+        scopes.join(", ")
+    );
+    crate::common::expect_load_errors(crate::common::try_load_kb_with_files(sources), &[&want]);
+}
+
+/// The SHARED arm: one declaration at `owner` collects every head, and the inner scope
+/// introduces nothing. `inner_qn` is asserted ABSENT rather than merely unreached — that
+/// is the difference between the two readings, since a split program has a real inner
+/// symbol carrying a clause the outer predicate never sees.
+fn assert_shared(kb: &mut KnowledgeBase, owner: &str, inner_qn: &str, total: usize) {
     assert_eq!(
-        clauses(kb, &format!("{ns}.p")),
-        Some(2),
-        "`{ns}.p` must be ONE predicate carrying BOTH clauses"
+        clauses(kb, &format!("{owner}.p")),
+        Some(total),
+        "`{owner}.p` must be ONE predicate carrying every clause"
     );
     assert_eq!(
         clauses(kb, inner_qn),
         None,
-        "`{inner_qn}` must not exist — in the finished program `p` resolves from \
-         inside the inner scope, so the inner head introduces nothing (059 R6)"
+        "`{inner_qn}` must not exist — the declaration is what the inner head resolves to"
     );
-    // The inner clause's own answer, reached through the NAMESPACE predicate. This is
-    // the row that reads 0 in the split program.
-    assert_eq!(answers(kb, &format!("{ns}.p(2)")), 1, "{ns}.p(2)");
-    assert_eq!(answers(kb, &format!("{ns}.p(1)")), 1, "{ns}.p(1)");
+    for n in 1..=total {
+        assert_eq!(answers(kb, &format!("{owner}.p({n})")), 1, "{owner}.p({n})");
+    }
 }
 
 // ── Channel 1: a sort body ──────────────────────────────────────────────────
 
-fn sort_body(ns: &str, rule_first: bool) -> String {
-    let outer = "  rule p(1) :- true\n";
+fn sort_body(ns: &str, rule_first: bool, decl: &str) -> String {
+    let outer = format!("{decl}  rule p(1) :- true\n");
     let inner = "  sort Rec\n    entity rec(n: Int64)\n    rule p(2) :- true\n  end\n";
     let body = if rule_first {
         format!("{outer}{inner}")
@@ -210,31 +204,41 @@ fn sort_body(ns: &str, rule_first: bool) -> String {
 }
 
 #[test]
-fn sort_body_rule_written_first() {
-    // CONTROL — PASSES EITHER WAY, BY DESIGN. The enclosing head is decided first
-    // whether the order comes from the text or from the depth sort, so this row cannot
-    // distinguish them. It is here so that the pair below means "the orders agree"
-    // rather than "the second order happens to answer 1".
-    let mut kb = crate::common::load_kb_with(&sort_body("wi980.body1", true));
-    assert_joined(&mut kb, "wi980.body1", "wi980.body1.Rec.p");
-}
-
-#[test]
-fn sort_body_rule_written_second() {
-    // MEASURES THE FIX. BACKED OUT: `wi980.body2.Rec.p` exists with one clause,
-    // `wi980.body2.p` has one, and `wi980.body2.p(2)` answers 0.
-    //
-    // This is also the ticket's "WATCH FOR" case — an inner and an outer head that
-    // would EACH introduce, with nothing else declaring the name. Outermost-first is
-    // what makes the inner one see the outer and join.
-    let mut kb = crate::common::load_kb_with(&sort_body("wi980.body2", false));
-    assert_joined(&mut kb, "wi980.body2", "wi980.body2.Rec.p");
+fn a_sort_body_and_its_namespace_must_declare_a_shared_name() {
+    // THE SHAPE WI-980 OPENED WITH, and the one 845G7 changes the answer to. The sort's
+    // head sees the namespace's through the ENCLOSING chain, so both introduce `p` and
+    // the program does not say which owns it. Refused in BOTH text orders — a refusal
+    // that fired in only one would be the order dependence WI-980 removed, wearing a
+    // different hat.
+    for (ns, first) in [("wi980.body1", true), ("wi980.body2", false)] {
+        assert_collides(
+            &[&sort_body(ns, first, "")],
+            "p",
+            &[ns, &format!("{ns}.Rec")],
+        );
+    }
+    // DECLARED AT THE NAMESPACE — one predicate, both clauses, the sort's clause reached
+    // THROUGH it. This is the reading the fixpoint used to reach by inference.
+    for (ns, first) in [("wi980.body3", true), ("wi980.body4", false)] {
+        let mut kb = crate::common::load_kb_with(&sort_body(ns, first, "  rule p(?x)\n"));
+        assert_shared(&mut kb, ns, &format!("{ns}.Rec.p"), 2);
+    }
+    // DECLARED IN THE SORT TOO — two predicates, one clause each, which is the SPLIT this
+    // rule refuses to invent. It is legal because it is written.
+    let mut kb = crate::common::load_kb_with(
+        "namespace wi980.body5\n  rule p(?x)\n  rule p(1) :- true\n  sort Rec\n    \
+         entity rec(n: Int64)\n    rule p(?x)\n    rule p(2) :- true\n  end\nend\n",
+    );
+    assert_eq!(clauses(&kb, "wi980.body5.p"), Some(1));
+    assert_eq!(clauses(&kb, "wi980.body5.Rec.p"), Some(1));
+    assert_eq!(answers(&mut kb, "wi980.body5.p(2)"), 0, "the sort's clause is its own");
+    assert_eq!(answers(&mut kb, "wi980.body5.Rec.p(2)"), 1);
 }
 
 // ── Channel 2: a nested ordinary namespace ──────────────────────────────────
 
-fn nested_ns(ns: &str, rule_first: bool) -> String {
-    let outer = "  rule p(1) :- true\n";
+fn nested_ns(ns: &str, rule_first: bool, decl: &str) -> String {
+    let outer = format!("{decl}  rule p(1) :- true\n");
     let inner = "  namespace inner\n    rule p(2) :- true\n  end\n";
     let body = if rule_first {
         format!("{outer}{inner}")
@@ -245,56 +249,642 @@ fn nested_ns(ns: &str, rule_first: bool) -> String {
 }
 
 #[test]
-fn nested_namespace_rule_written_first() {
-    // CONTROL — passes either way, by design (see above).
-    let mut kb = crate::common::load_kb_with(&nested_ns("wi980.nest1", true));
-    assert_joined(&mut kb, "wi980.nest1", "wi980.nest1.inner.p");
+fn a_nested_namespace_and_its_parent_must_declare_a_shared_name() {
+    // THE INNER SCOPE IS NOT A SORT HERE, which is the point: the rule is about the
+    // enclosing CHAIN, not about sort-ness, and a guard keyed on sorts would pass
+    // channel 1 and miss this.
+    for (ns, first) in [("wi980.nest1", true), ("wi980.nest2", false)] {
+        assert_collides(
+            &[&nested_ns(ns, first, "")],
+            "p",
+            &[ns, &format!("{ns}.inner")],
+        );
+    }
+    for (ns, first) in [("wi980.nest3", true), ("wi980.nest4", false)] {
+        let mut kb = crate::common::load_kb_with(&nested_ns(ns, first, "  rule p(?x)\n"));
+        assert_shared(&mut kb, ns, &format!("{ns}.inner.p"), 2);
+    }
+}
+
+// ── Channel 3: two FILES at one address, and the 061 file rule ──────────────
+
+#[test]
+fn one_scope_reopened_in_two_files_must_declare_its_predicate() {
+    // 061'S OWN RULE, and the half of it 845G7 leaves untouched: this is ONE scope, so
+    // there is no collision to report — what makes it a fault is that two FILES wrote it,
+    // and a predicate assembled by two parties must be declared (059 §Definitions).
+    //
+    // IT IS ALSO THE ROW THAT SEPARATES THE TWO REFUSALS. Same address, same name, one
+    // scope: the collision rule is silent and the file rule speaks. Channel 1's rows are
+    // the mirror — one file, two scopes — and the collision rule speaks there instead.
+    const A: &str = "namespace wi980.split\n  rule p(1) :- true\nend\n";
+    const B: &str = "namespace wi980.split\n  rule p(2) :- true\nend\n";
+    for files in [[A, B], [B, A]] {
+        crate::common::expect_load_errors(
+            crate::common::try_load_kb_with_files(&files),
+            &["has rule heads in 2 files"],
+        );
+    }
+    const A_DECL: &str = "namespace wi980.split\n  rule p(?x)\n  rule p(1) :- true\nend\n";
+    for files in [[A_DECL, B], [B, A_DECL]] {
+        let mut kb =
+            crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+        assert_eq!(
+            clauses(&kb, "wi980.split.p"),
+            Some(2),
+            "one predicate, one scope, both files"
+        );
+        assert_eq!(answers(&mut kb, "wi980.split.p(1)"), 1);
+        assert_eq!(answers(&mut kb, "wi980.split.p(2)"), 1);
+    }
+}
+
+// ── Channel 4: a `requires` parent ──────────────────────────────────────────
+
+/// `Spec` is a `requires` parent of `A`, so `A`'s head sees `Spec`'s along an edge that
+/// sits at no address — `deeper` puts `Spec` one level further down to show the guard is
+/// not reading depth. `decl` goes into `Spec`.
+fn requires_src(ns: &str, spec_first: bool, deeper: bool, decl: &str) -> String {
+    let (spec_open, spec_close, spec_path) = if deeper {
+        ("  namespace mid\n", "  end\n", format!("{ns}.mid.Spec"))
+    } else {
+        ("", "", format!("{ns}.Spec"))
+    };
+    // `Spec` CARRIES NO ENTITY, and that is not cosmetic: measured, adding one makes the
+    // `requires` edge stop carrying the name — `Spec.p` and `A.p` split and the program
+    // loads clean, under 845G7 and under the fixpoint alike. That is a pre-existing
+    // silence about `requires` on a data sort, unchanged here and filed rather than
+    // absorbed into this row (WI-20260822-845G7's own notes).
+    let spec =
+        format!("{spec_open}  sort Spec\n{decl}    rule p(1) :- true\n  end\n{spec_close}");
+    let a = format!(
+        "  sort A\n    requires {spec_path}\n    entity a(n: Int64)\n    rule p(2) :- true\n  end\n"
+    );
+    let body = if spec_first {
+        format!("{spec}{a}")
+    } else {
+        format!("{a}{spec}")
+    };
+    format!("namespace {ns}\n{body}end\n")
 }
 
 #[test]
-fn nested_namespace_rule_written_second() {
-    // MEASURES THE FIX. BACKED OUT: `wi980.nest2.inner.p` exists and
-    // `wi980.nest2.p(2)` answers 0. The inner scope is NOT a sort here, which is the
-    // point — the guard walks resolution parents, not sort-ness.
-    let mut kb = crate::common::load_kb_with(&nested_ns("wi980.nest2", false));
-    assert_joined(&mut kb, "wi980.nest2", "wi980.nest2.inner.p");
+fn a_requires_parent_and_its_user_must_declare_a_shared_name() {
+    // FOUR PROGRAMS, because the `requires` edge is the one a depth- or address-derived
+    // key gets backwards: measured under the fixpoint, such a key left the same-depth
+    // pair split in one order and joined in the other, and made the deeper pair WORSE
+    // than plain text order. Asking the resolver makes the direction of the `requires`
+    // edge the only thing that matters.
+    for (ns, spec_first, deeper) in [
+        ("wi980.rq1", true, false),
+        ("wi980.rq2", false, false),
+        ("wi980.rq3", true, true),
+        ("wi980.rq4", false, true),
+    ] {
+        let spec = if deeper {
+            format!("{ns}.mid.Spec")
+        } else {
+            format!("{ns}.Spec")
+        };
+        assert_collides(
+            &[&requires_src(ns, spec_first, deeper, "")],
+            "p",
+            &[&format!("{ns}.A"), &spec],
+        );
+    }
+    // DECLARED IN THE SPEC — `A`'s clause is reachable through the spec's predicate,
+    // which is what "shared" has to mean along a `requires` edge.
+    for (ns, spec_first, deeper) in [
+        ("wi980.rq5", true, false),
+        ("wi980.rq6", false, false),
+        ("wi980.rq7", true, true),
+        ("wi980.rq8", false, true),
+    ] {
+        let mut kb =
+            crate::common::load_kb_with(&requires_src(ns, spec_first, deeper, "    rule p(?x)\n"));
+        let spec = if deeper {
+            format!("{ns}.mid.Spec")
+        } else {
+            format!("{ns}.Spec")
+        };
+        assert_eq!(clauses(&kb, &format!("{spec}.p")), Some(2), "{spec}.p");
+        assert_eq!(clauses(&kb, &format!("{ns}.A.p")), None, "{ns}.A.p");
+        assert_eq!(answers(&mut kb, &format!("{spec}.p(2)")), 1, "{spec}.p(2)");
+    }
 }
 
-// ── Channel 3: two FILES at one address ─────────────────────────────────────
-
-// PROPOSAL 061 DECLARES `p`, and that one line is what keeps this channel alive. Two
-// files at one address are a predicate assembled by two parties, so without the
-// declaration the pair is now a located refusal naming both files — pinned, with the
-// order-freedom of the refusal itself, in
-// `wi_fqc85_rule_declaration_test::one_address_split_across_two_files_no_longer_gives_-
-// two_programs`. What WI-980 measures here is unchanged: the two orders must give ONE
-// program, and the declaration is what makes both of them legal to ask about.
-const OUTER_FILE: &str = "namespace wi980.split\n  rule p(?x)\n  rule p(1) :- true\nend\n";
-const INNER_FILE: &str =
-    "namespace wi980.split\n  sort Rec\n    entity rec(n: Int64)\n    rule p(2) :- true\n  end\nend\n";
+// ── Channel 5: a facade importing its own submodule ─────────────────────────
 
 #[test]
-fn cross_file_rule_written_first() {
-    // CONTROL — passes either way, by design.
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
-        OUTER_FILE, INNER_FILE,
+fn a_facade_and_its_submodule_must_declare_a_shared_name() {
+    // TWO EDGES AT ONCE: `fa` sees `inner` through the wildcard import and `inner` sees
+    // `fa` through the enclosing chain. Under the fixpoint §"outermost-first" named a
+    // winner between them and this idiom kept joining silently; now it says so.
+    //
+    // THE SUGGESTED OWNER IS STILL THE FACADE, and that is worth driving: the reach is
+    // mutual, so the sink test finds nothing and the message falls to the unique
+    // ENCLOSING member. A cycle between siblings gets no owner instead — see
+    // [`a_mutual_import_cycle_must_declare_a_shared_name`], whose message differs here.
+    const TWO: &str = "namespace fa1\n  import fa1.inner.*\n  rule p(1) :- true\n  \
+                       namespace inner\n    rule p(2) :- true\n  end\nend\n";
+    assert_collides(&[TWO], "p", &["fa1", "fa1.inner"]);
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[TWO]),
+        &["a body-less `rule p(…)` in 'fa1' makes every one of those heads a clause of it"],
+    );
+    // ONE LEVEL DEEPER — the control on the reach being the real one. Measured under an
+    // earlier tie-break that scanned scopes by ADDRESS PREFIX, the two-level shape worked
+    // and the three-level shape became a three-error refusal; a rule read off addresses
+    // would still pass the row above.
+    const THREE: &str = "namespace fa2\n  import fa2.inner.*\n  rule p(1) :- true\n  \
+                         namespace inner\n    rule p(2) :- true\n    namespace deep\n      \
+                         rule p(3) :- true\n    end\n  end\nend\n";
+    assert_collides(&[THREE], "p", &["fa2", "fa2.inner", "fa2.inner.deep"]);
+    // DECLARED AT THE FACADE — all three clauses, at any depth.
+    const THREE_DECL: &str = "namespace fa3\n  import fa3.inner.*\n  rule p(?x)\n  \
+                              rule p(1) :- true\n  namespace inner\n    rule p(2) :- true\n    \
+                              namespace deep\n      rule p(3) :- true\n    end\n  end\nend\n";
+    let mut kb = crate::common::load_kb_with(THREE_DECL);
+    assert_shared(&mut kb, "fa3", "fa3.inner.p", 3);
+    assert_eq!(clauses(&kb, "fa3.inner.deep.p"), None);
+}
+
+// ── Channel 6: wildcard imports between siblings ────────────────────────────
+
+#[test]
+fn a_mutual_import_cycle_must_declare_a_shared_name() {
+    // WI-20260821-E85J5's shape, now the general rule rather than a special case. Neither
+    // member encloses the other and each reaches the other, so NOTHING IN THE PROGRAM
+    // names an owner — which the message has to say, and does: it offers no scope.
+    //
+    // ONE FILE AND TWO, both refused. E85J5 shipped the two-file half alone, on 059's
+    // file unit; 845G7 widened it because the hazard here is shadowing rather than
+    // assembly and one author is still one author who gets a meaning they did not write.
+    const A: &str =
+        "namespace mA\n  import mB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    const B: &str = "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n";
+    for files in [[A, B], [B, A]] {
+        assert_collides(&files, "p", &["mA", "mB"]);
+    }
+    let one_file = format!("{A}{B}");
+    assert_collides(&[&one_file], "p", &["mA", "mB"]);
+    // AND AN OWNER *IS* NAMED, because in a mutual cycle EVERY member is reached by every
+    // other — so declaring at either collects the whole group, and remedy 1 below drives
+    // exactly that. The message names the first in display order, deterministically.
+    // An earlier version of this row asserted "nothing names an owner" here; that was
+    // true of the SINK test it was written against and false of the program.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[&one_file]),
+        &["a body-less `rule p(…)` in 'mA' makes every one of those heads a clause of it"],
+    );
+
+    // REMEDY 1 — DECLARE IT ONCE, in `mA`. `mB`'s head resolves through its own
+    // `import mA.*` and is a CLAUSE of `mA.p`, so the import that made the cycle is LIVE.
+    const A_DECL: &str = concat!(
+        "namespace mA\n  import mB.*\n  rule p(?x)\n  rule p(1) :- true\n",
+        "  rule usesp(?x) :- p(?x)\nend\n"
+    );
+    let mut shared =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B]));
+    assert_eq!(clauses(&shared, "mA.p"), Some(2), "one predicate, both clauses");
+    assert_eq!(clauses(&shared, "mB.p"), None, "`mB` introduced nothing");
+    assert_eq!(answers(&mut shared, "mA.usesp(1)"), 1);
+    assert_eq!(
+        answers(&mut shared, "mA.usesp(2)"),
+        1,
+        "the import is LIVE — this is the row that reads 0 under a silent split"
+    );
+
+    // REMEDY 2 — DECLARE IT IN EACH, which says they are separate predicates. THE SHADOW
+    // IS BACK, and that is the point: E85J5 measured `usesp(2)`=0 against a control of 1,
+    // and it is refused only when nobody wrote it. Here it is written.
+    const B_OWN: &str = "namespace mB\n  import mA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n";
+    let mut split =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B_OWN]));
+    assert_eq!(clauses(&split, "mA.p"), Some(1), "two predicates, one clause each");
+    assert_eq!(clauses(&split, "mB.p"), Some(1));
+    assert_eq!(answers(&mut split, "mA.usesp(1)"), 1, "its own clause is reached");
+    assert_eq!(
+        answers(&mut split, "mA.usesp(2)"),
+        0,
+        "and the imported one is NOT — the declared local shadows the import, as written"
+    );
+    // THE CONTROL for that 0: the same import with nothing local to shadow it.
+    const A_NO_OWN: &str = "namespace mA\n  import mB.*\n  rule usesp(?x) :- p(?x)\nend\n";
+    let mut ctrl =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_NO_OWN, B]));
+    assert_eq!(answers(&mut ctrl, "mA.usesp(2)"), 1, "CONTROL: the import works");
+    assert_eq!(answers(&mut ctrl, "mA.usesp(1)"), 0, "CONTROL: nothing local exists");
+}
+
+#[test]
+fn a_one_way_import_must_declare_a_shared_name_and_the_owner_is_named() {
+    // ONE EDGE, SO THE PROGRAM DOES NAME AN OWNER — `mD` is what `mC` imports and reaches
+    // nothing itself, so the message offers it. That is the difference from the cycle
+    // above, driven rather than described: same two scopes, same two heads, one import
+    // instead of two, and a different message.
+    const C: &str = "namespace mC\n  import mD.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    const D: &str = "namespace mD\n  rule p(2) :- true\nend\n";
+    for files in [[C, D], [D, C]] {
+        crate::common::expect_load_errors(
+            crate::common::try_load_kb_with_files(&files),
+            &["a body-less `rule p(…)` in 'mD' makes every one of those heads a clause of it"],
+        );
+    }
+    // AND THE OWNER IT NAMES IS THE ONE THAT WORKS.
+    const D_DECL: &str = "namespace mD\n  rule p(?x)\n  rule p(2) :- true\nend\n";
+    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[C, D_DECL]));
+    assert_eq!(clauses(&kb, "mD.p"), Some(2), "one predicate, both clauses");
+    assert_eq!(clauses(&kb, "mC.p"), None);
+    assert_eq!(answers(&mut kb, "mC.usesp(1)"), 1);
+    assert_eq!(answers(&mut kb, "mC.usesp(2)"), 1, "the import is live");
+}
+
+#[test]
+fn a_named_owner_must_be_reachable_from_every_other_member() {
+    // THE MESSAGE'S PROMISE IS PART OF THE MESSAGE. When it names a scope it says
+    // declaring there "makes every one of those heads a clause of it", so the test that
+    // picks the scope is "IS REACHED BY EVERY OTHER MEMBER" — not "reaches nothing".
+    // The two differ exactly where reach is NOT transitive, which a wildcard import
+    // always is not: it is never re-exported.
+    //
+    // THE CHAIN IS THE WITNESS. `zzA -> zzB -> zzC`: the sink is `zzC` and `zzA` cannot
+    // see it. MEASURED under the sink test, the message named `zzC`, and FOLLOWING IT
+    // made the program load clean with `zzA.cp` still a separate predicate and NO error
+    // at all — the split the refusal exists to prevent, reached by taking its own advice.
+    // Found by `/code-review`.
+    //
+    // BACKED OUT (`.find(|&cand| edges[&cand].is_empty())` in place of the all-reach
+    // test): this row fails on the first assertion — `zzC` is named.
+    const A: &str = "namespace zzA\n  import zzB.*\n  rule cp(1) :- true\nend\n";
+    const B: &str = "namespace zzB\n  import zzC.*\n  rule cp(2) :- true\nend\n";
+    const C: &str = "namespace zzC\n  rule cp(3) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[A, B, C]),
+        &["No one of them is reachable from all the others"],
+    );
+    // AND THE ADVICE THAT WOULD HAVE BEEN GIVEN IS SHOWN NOT TO WORK — the second half of
+    // the same measurement, so a future change that reinstates the sink test cannot look
+    // harmless. Declaring in `zzC` leaves `zzA` on its own, silently.
+    const C_DECL: &str = "namespace zzC\n  rule cp(?x)\n  rule cp(3) :- true\nend\n";
+    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A, B, C_DECL]));
+    assert_eq!(clauses(&kb, "zzC.cp"), Some(2), "the declaration collects only what sees it");
+    assert_eq!(
+        clauses(&kb, "zzA.cp"),
+        Some(1),
+        "and the far end is STILL split — which is why no owner may be named here"
+    );
+    // AND THE SAME PROMISE ACROSS FILES, not only across hops. `pwA` is reopened in two
+    // files and only ONE carries `import pwB.*`, so `pwB` is reached from one of `pwA`'s
+    // files and not the other. MEASURED with the reach UNIONED per scope, the message
+    // named `pwB` — and following it made the program LOAD CLEAN with `pwB.p` holding one
+    // clause and `pwA.p` holding two, the import-carrying head never joining and nothing
+    // reported. Found by `/code-review`, one coordinate over from the hop case above.
+    //
+    // BACKED OUT (`edges[&other].contains(&cand)` — the per-SCOPE union — in place of the
+    // per-file `all`): this arm fails, `pwB` being named again.
+    const A1: &str = "namespace pwA\n  import pwB.*\n  rule p(1) :- true\nend\n";
+    const A2: &str = "namespace pwA\n  rule p(9) :- true\nend\n";
+    const PWB: &str = "namespace pwB\n  rule p(2) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[A1, A2, PWB]),
+        &["No one of them is reachable from all the others"],
+    );
+    // ITS CONTROL — the same three files with the import in BOTH of `pwA`'s, so `pwB` is
+    // reached from every file and may be named. The declaration then collects all three
+    // clauses, which is the promise being kept.
+    const A2I: &str = "namespace pwA\n  import pwB.*\n  rule p(9) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[A1, A2I, PWB]),
+        &["a body-less `rule p(…)` in 'pwB' makes every one of those heads a clause of it"],
+    );
+    const PWB_DECL: &str = "namespace pwB\n  rule p(?x)\n  rule p(2) :- true\nend\n";
+    let all3 =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A1, A2I, PWB_DECL]));
+    assert_eq!(clauses(&all3, "pwB.p"), Some(3), "CONTROL: all three clauses");
+    assert_eq!(clauses(&all3, "pwA.p"), None, "CONTROL");
+
+    // THE CONTROL — the same three scopes where every one of them CAN see one place:
+    // `zzD` imports `zzF` directly rather than through `zzE`, so `zzF` is reachable from
+    // all and the message may name it. Without this row the assertion above would be
+    // satisfied by never naming an owner at all.
+    const D: &str = "namespace zzD\n  import zzF.*\n  rule cp(1) :- true\nend\n";
+    const E: &str = "namespace zzE\n  import zzF.*\n  rule cp(2) :- true\nend\n";
+    const F: &str = "namespace zzF\n  rule cp(3) :- true\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[D, E, F]),
+        &["a body-less `rule cp(…)` in 'zzF' makes every one of those heads a clause of it"],
+    );
+    const F_DECL: &str = "namespace zzF\n  rule cp(?x)\n  rule cp(3) :- true\nend\n";
+    let mut ok = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
+        D, E, F_DECL,
     ]));
-    assert_joined(&mut kb, "wi980.split", "wi980.split.Rec.p");
+    assert_eq!(clauses(&ok, "zzF.cp"), Some(3), "CONTROL: the promise is kept");
+    assert_eq!(clauses(&ok, "zzD.cp"), None, "CONTROL");
+    assert_eq!(clauses(&ok, "zzE.cp"), None, "CONTROL");
+    assert_eq!(answers(&mut ok, "zzF.cp(1)"), 1, "CONTROL");
 }
 
 #[test]
-fn cross_file_rule_written_second() {
-    // MEASURES THE FIX, and it is the row a within-file reordering would not reach:
-    // sub-pass 3 used to decide each file's heads before looking at the next, so the
-    // file the loader happens to read first decided the program. BACKED OUT:
-    // `wi980.split.Rec.p` exists and `wi980.split.p(2)` answers 0.
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
-        INNER_FILE, OUTER_FILE,
-    ]));
-    assert_joined(&mut kb, "wi980.split", "wi980.split.Rec.p");
+fn an_equation_subject_is_a_party_to_the_collision_too() {
+    // 061 PUTS EQUATIONS OUTSIDE THE *DECLARATION* RULE — their clauses index under the
+    // connective, so the subject owns none — and an earlier cut of this rule took that to
+    // mean they are outside the VISIBILITY rule too. MEASURED, that was a silent split:
+    // before 845G7 `zeq.Rec.f` did not exist (the inner subject joined the enclosing one)
+    // and with equations excluded it does, one name becoming two symbols with nothing
+    // said. That is the hazard this refusal exists for, permitted for half the head
+    // shapes. Found by `/code-review`.
+    //
+    // BACKED OUT (`head.introduced_by != RuleIntroduction::Predicate` back in the
+    // candidate filter of `head_name_collisions`): this row's first arm fails — the
+    // program loads and `zeq.Rec.f` exists.
+    const SPLIT: &str = "namespace zeq\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+                         entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n";
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(SPLIT),
+        &["the rule head `f` introduces that name at 2 scopes, each of which reaches or is reached by another of them — zeq, zeq.Rec"],
+    );
+    // AND BOTH PRESCRIBED REMEDIES LOAD for an equation subject, which is what makes the
+    // message good advice here and not just a refusal: one declaration at the outer
+    // scope, or one in each.
+    crate::common::load_kb_with(
+        "namespace zeq2\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+    );
+    crate::common::load_kb_with(
+        "namespace zeq3\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule f(?x)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+    );
+    // THE CONTROL — distinct subjects, nothing to collide. Passes either way, and without
+    // it "equations are refused" would be indistinguishable from "equations are refused
+    // whenever a sort has one".
+    let kb = crate::common::load_kb_with(
+        "namespace zeq4\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule g(false) <=> 2 [simp]\n  end\nend\n",
+    );
+    assert!(kb.try_resolve_symbol("zeq4.Rec.g").is_some(), "CONTROL: the fresh subject exists");
 }
 
-// ── What OWNERSHIP buys over "a head is written there" ──────────────────────
+// ── The controls ────────────────────────────────────────────────────────────
+
+#[test]
+fn two_scopes_that_cannot_see_each_other_keep_their_own() {
+    // THE CONTROL THE WHOLE RULE RESTS ON, and the one row whose absence would let a
+    // refusal keyed on "two scopes share a short name" look correct while refusing most
+    // real programs. `uA` and `uB` are siblings with no import, no `requires` and no
+    // enclosure between them: two unrelated predicates that happen to share a name.
+    //
+    // BOTH ORDERS AND BOTH SPELLINGS — one file and two — because the visibility question
+    // must not be answered by adjacency in the text or by which file arrived first.
+    //
+    // BACKED OUT (take every candidate pair as an edge in `head_name_collisions`): this
+    // row fails — and so do 2203 others, the stdlib included, which is why the header
+    // says no row ISOLATES that line. This is the cheapest witness for what it is for,
+    // not a measurement of it.
+    const A: &str = "namespace uA\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    const B: &str = "namespace uB\n  rule p(2) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
+    let one_file = format!("{A}{B}");
+    for sources in [vec![A, B], vec![B, A], vec![one_file.as_str()]] {
+        let mut kb =
+            crate::common::expect_loaded(crate::common::try_load_kb_with_files(&sources));
+        assert_eq!(clauses(&kb, "uA.p"), Some(1), "each scope keeps its own");
+        assert_eq!(clauses(&kb, "uB.p"), Some(1));
+        assert_eq!(answers(&mut kb, "uA.usesp(1)"), 1, "and each reaches only its own");
+        assert_eq!(answers(&mut kb, "uA.usesp(2)"), 0);
+        assert_eq!(answers(&mut kb, "uB.usesp(2)"), 1);
+        assert_eq!(answers(&mut kb, "uB.usesp(1)"), 0);
+    }
+}
+
+#[test]
+fn a_global_head_is_not_a_party_to_the_collision() {
+    // `<global>` IS THE ONE SCOPE NOBODY OPTS INTO — every file shares it, so a head
+    // written inside a namespace must not collide with a top-level one. Fusing the two
+    // questions fails either way round, both measured under the fixpoint: treat
+    // `<global>` as a party and the stdlib's `modus_ponens` ceases to exist beside a
+    // one-line user file; refuse the pair and the language's own documented first form
+    // stops loading ([`the_documented_top_level_form_loads`]).
+    //
+    // Two shapes reach it by another route and must not collide through it: a sibling
+    // cycle (which is refused on its own terms, so it is written DECLARED here) and an
+    // ordinary parent/child pair beside a top-level head of the same name.
+    // THE ROW THAT ACTUALLY EXERCISES THE EXCLUSION, and it must come first: an
+    // UNDECLARED namespace head beside an UNDECLARED top-level one. `nd` reaches
+    // `<global>` through the enclosing chain, so without the exclusion the two collide
+    // and this program is refused. FOUND BY MEASUREMENT — the arms below declare their
+    // names, so their heads DENOTE, never become candidates, and cannot reach the
+    // exclusion at all; backed out, they were all still green.
+    const G: &str = "rule p(0) :- true\n";
+    const ND: &str = "namespace nd\n  rule p(5) :- true\nend\n";
+    for files in [[G, ND], [ND, G]] {
+        let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+        assert_eq!(clauses(&kb, "p"), Some(1), "the top-level head keeps its own");
+        assert_eq!(clauses(&kb, "nd.p"), Some(1), "and the namespace head keeps its own");
+        assert_eq!(answers(&mut kb, "nd.p(5)"), 1);
+        assert_eq!(answers(&mut kb, "nd.p(0)"), 0, "two predicates, not one");
+        assert_eq!(answers(&mut kb, "p(0)"), 1);
+    }
+
+    // AND THE EXCLUSION HOLDS IN THE OTHER DIRECTION TOO — the one an overlay-only
+    // exclusion does NOT give you. The group is built on the UNDIRECTED closure of reach,
+    // so a namespace-less file that writes `import zzns.*` and a head of the same name
+    // pulled `zzns` into a group with `<global>` and the pair was REFUSED, contradicting
+    // this section's own rule; worse, the repair it named deleted the `<global>` head's
+    // predicate, which is the absorption the exclusion forbids. Found by `/code-review`,
+    // and fixed by dropping `<global>` from the CANDIDATE SET rather than only from the
+    // overlay.
+    //
+    // WHAT THAT COSTS IS A NAMED SILENCE, not a repair: the top-level head does shadow
+    // `zzns.gp` for its own file, and nothing says so. `<global>` is the one scope where
+    // the language has always taken that trade — nobody opts into it, so it can neither
+    // absorb a namespace's name nor refuse one — and the two clause counts below are what
+    // pin the trade rather than assume it.
+    const NS_IMPORTED: &str = "namespace zzns\n  rule gp(1) :- true\nend\n";
+    const G_IMPORTS: &str = "import zzns.*\nrule gp(2) :- true\n";
+    for files in [[NS_IMPORTED, G_IMPORTS], [G_IMPORTS, NS_IMPORTED]] {
+        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+        assert_eq!(clauses(&kb, "gp"), Some(1), "the top-level head keeps its own");
+        assert_eq!(clauses(&kb, "zzns.gp"), Some(1), "and so does the namespace it imports");
+    }
+
+    const CYCLE: &str = concat!(
+        "namespace mA\n  import mB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n",
+        "namespace mB\n  import mA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n"
+    );
+    for files in [[G, CYCLE], [CYCLE, G]] {
+        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+        assert_eq!(clauses(&kb, "p"), Some(1), "the global head keeps its own clause");
+        assert_eq!(clauses(&kb, "mA.p"), Some(1));
+        assert_eq!(clauses(&kb, "mB.p"), Some(1));
+    }
+    const N: &str = "namespace outer\n  rule p(?x)\n  rule p(1) :- true\n  sort Rec\n    \
+                     entity r(n: Int64)\n    rule p(2) :- true\n  end\nend\n";
+    for files in [[G, N], [N, G]] {
+        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
+        assert_eq!(clauses(&kb, "p"), Some(1));
+        assert_eq!(
+            clauses(&kb, "outer.p"),
+            Some(2),
+            "the declared join is unaffected by the top-level head"
+        );
+        assert_eq!(clauses(&kb, "outer.Rec.p"), None);
+    }
+}
+
+#[test]
+fn a_cycle_member_reopened_in_a_second_file_is_reported_once() {
+    // BOTH REFUSALS CAN SEE THIS PROGRAM: `wA` and `wB` collide, and `wA`'s own heads
+    // span two files. ONE MISSING DECLARATION IS ONE MESSAGE — the collision's repair
+    // fixes the file question too, so the file rule yields to it. Reporting both prints
+    // one fault twice and prescribes two different owners for it.
+    //
+    // FOUND BY `/code-review` under WI-20260821-E85J5, where the suppression ran the
+    // other way round; 845G7 reversed it, because the collision is now the message that
+    // names every scope involved while the file rule names only one.
+    //
+    // BACKED OUT (drop the `collided.contains(&(owner, name))` test in the file block):
+    // this row fails with TWO errors. [`a_mutual_import_cycle_must_declare_a_shared_name`]
+    // passes either way — no member there spans files — which is what shows the two
+    // blocks ask different questions rather than one guarding the other.
+    const F1: &str = concat!(
+        "namespace wA\n  import wB.*\n  rule p(1) :- true\nend\n",
+        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
+    );
+    const F2: &str = "namespace wA\n  import wB.*\n  rule p(9) :- true\nend\n";
+    assert_collides(&[F1, F2], "p", &["wA", "wB"]);
+    // THE REPAIR. One declaration in `wA` collects all three clauses — `wB`'s included —
+    // so the surviving message is not merely the shorter of two, it is one whose
+    // prescription works.
+    const F1_DECL: &str = concat!(
+        "namespace wA\n  import wB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n",
+        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
+    );
+    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[F1_DECL, F2]));
+    assert_eq!(clauses(&kb, "wA.p"), Some(3), "one predicate, all three clauses");
+    assert_eq!(clauses(&kb, "wB.p"), None, "`wB` introduced nothing");
+}
+
+#[test]
+fn a_declared_cycle_is_the_same_program_in_every_file_order() {
+    // ORDER-FREEDOM, over the shape that used to break it. Two mutually importing
+    // namespaces and a nested scope under one of them: MEASURED before WI-980, four of
+    // the six file orders gave `nA.p` = 3 clauses with `nB.p` ABSENT and the other two
+    // gave 2 and 1, because a verdict computed under a provisional cycle break was
+    // memoised and then read by a site outside the cycle.
+    //
+    // ALL SIX ORDERS, not two: the defect was invisible in four of them.
+    //
+    // IT IS NOW ORDER-FREE BY CONSTRUCTION rather than by a fixpoint — nothing is asked
+    // about any other head — and the row is kept because that is a claim about the
+    // finished program, not about the mechanism that used to produce it. The
+    // declarations are what make the program legal to ask about at all: without them
+    // `nA`, `nB` and `nA.sub` collide, in all six orders, which is itself order-free.
+    const A: &str = "namespace nA\n  import nB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n";
+    const B: &str = "namespace nB\n  import nA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n";
+    const S: &str = "namespace nA.sub\n  rule p(3) :- true\nend\n";
+    for order in [[A, B, S], [A, S, B], [B, A, S], [B, S, A], [S, A, B], [S, B, A]] {
+        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&order));
+        assert_eq!(clauses(&kb, "nA.p"), Some(2), "nA.p, order {order:?}");
+        assert_eq!(clauses(&kb, "nB.p"), Some(1), "nB.p, order {order:?}");
+        assert_eq!(clauses(&kb, "nA.sub.p"), None, "nA.sub.p, order {order:?}");
+    }
+    // CONTROL — the nested scope writing a DIFFERENT name. One clause each, every order,
+    // and it passes with or without the declarations: without it the rows above would be
+    // satisfied by any change that stopped the two members joining at all.
+    const S2: &str = "namespace nA.sub\n  rule qq(3) :- true\nend\n";
+    for order in [[A, B, S2], [S2, A, B]] {
+        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&order));
+        assert_eq!(clauses(&kb, "nA.p"), Some(1), "CONTROL nA.p");
+        assert_eq!(clauses(&kb, "nB.p"), Some(1), "CONTROL nB.p");
+    }
+}
+
+/// Far past any depth the RECURSIVE first version of this pass could reach — it nested a
+/// whole resolver walk per link, and MEASURED, 700 chained scopes sharing one head name
+/// ABORTED THE PROCESS (`thread … has overflowed its stack`, SIGABRT) while the same 700
+/// with DISTINCT head names loaded clean.
+const PAST_THE_OLD_LIMIT: usize = 260;
+
+#[test]
+fn a_chain_deeper_than_any_recursion_is_one_collision() {
+    // NO BOUND, BECAUSE NO RECURSION — and since 845G7, no rounds either. The recursive
+    // version needed an arbitrary `OWNERSHIP_MAX_DEPTH`, which bought a located error at
+    // the price of refusing chains that used to load; the round-based fixpoint that
+    // replaced it had no recursion but cost SUPER-QUADRATIC time (measured marginal
+    // ownership time, min of 3 in-process runs: n=200 -> 0.68s, n=300 -> 2.33s,
+    // n=400 -> 7.63s, an exponent of 4.1 over the last step). Neither exists now: each
+    // scope answers for itself, one resolver call per (scope, file), and the components
+    // are one iterative sweep.
+    //
+    // THE WHOLE CHAIN IS ONE COLLISION, and that is the right answer rather than a
+    // convenience: `deepI` imports `deepI+1`, so each link sees the next, and the
+    // transitive closure of that is a single group in which every member shadows the one
+    // it imports. ONE error, not 260 — the fault is the undeclared name, not each link.
+    //
+    // AND IT NAMES NO OWNER, which is the whole point of the test that picks one. A
+    // wildcard import is NOT re-exported, so `deep0` cannot see `deep260`: no scope in
+    // this group is reachable from all the others, and any single declaration would
+    // leave part of the chain split. An earlier cut named the far end — the SINK of the
+    // direct reach graph — and measured, following that advice made the program load
+    // clean with the near end still a separate predicate and no error at all. Found by
+    // `/code-review`; this row is what pins the repair.
+    //
+    // BACKED OUT (take every candidate pair as an edge in `head_name_collisions` instead
+    // of asking `head_name_reach`): this row still passes — the chain IS fully connected,
+    // so the two agree. It is named here because this row alone would let that
+    // distinction go unmeasured; the header records that no row isolates that line, and
+    // that the crude back-out costs 2204.
+    let n = PAST_THE_OLD_LIMIT;
+    let mut files: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                "namespace deep{i}\n  import deep{}.*\n  rule p({i}) :- true\nend\n",
+                i + 1
+            )
+        })
+        .collect();
+    files.push(format!("namespace deep{n}\n  rule p({n}) :- true\nend\n"));
+    let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
+    let errs = crate::common::try_load_kb_with_files(&refs)
+        .err()
+        .expect("every link introduces `p` and sees the next, so the chain must be refused");
+    assert_eq!(errs.len(), 1, "ONE collision, not one per link: {errs:#?}");
+    assert!(
+        errs[0].contains(&format!("at {} scopes, each of which reaches", n + 1)),
+        "every link is in the group: {:?}",
+        errs[0]
+    );
+    assert!(
+        errs[0].contains("No one of them is reachable from all the others"),
+        "no single declaration repairs a chain, and the message must not promise one: {:?}",
+        errs[0]
+    );
+    assert!(
+        !errs[0].contains("makes every one of those heads a clause of it"),
+        "in particular it must not name an owner: {:?}",
+        errs[0]
+    );
+    // TRUNCATED, not listed: 261 addresses is a message nobody reads.
+    assert!(errs[0].contains("… and 255 more"), "the list is capped: {:?}", errs[0]);
+}
+
+// ── Rows carried over: a head that RESOLVES never reaches this rule ─────────
+
+#[test]
+fn an_unmatched_inner_head_still_introduces() {
+    // PASSES EITHER WAY, BY DESIGN — and it is why the rows above are evidence of a
+    // BINDING rule rather than of a blanket one. Nothing named `q` encloses the sort,
+    // so the inner head still introduces, still scoped where written (WI-894), and its
+    // clause is still reachable there. A fix that made every inner head join an
+    // enclosing scope would break this row and leave all six above green.
+    let mut kb = crate::common::load_kb_with(
+        "namespace wi980.fresh\n  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n    \
+         rule q(2) :- true\n  end\nend\n",
+    );
+    assert_eq!(clauses(&kb, "wi980.fresh.Rec.q"), Some(1));
+    assert_eq!(clauses(&kb, "wi980.fresh.q"), None);
+    assert_eq!(answers(&mut kb, "wi980.fresh.Rec.q(2)"), 1);
+}
 
 #[test]
 fn a_head_that_binds_is_not_an_owner() {
@@ -339,442 +929,6 @@ fn a_head_that_binds_is_not_an_owner() {
     assert_eq!(answers(&mut kb, "zdemo.Rec.q(3)"), 1);
 }
 
-// ── The one shape ownership cannot decide ───────────────────────────────────
-
-#[test]
-fn a_multi_file_cycle_is_refused_and_both_declarations_repair_it() {
-    // TWO SCOPES THAT CAN EACH SEE THE OTHER, one head name between them, IN TWO FILES.
-    // Neither is outermost, so no fact in the program names an owner, and WI-980's
-    // tie-break gives each its OWN predicate. That is still the only order-free answer
-    // to "who owns it" — and WI-20260821-E85J5 measured what it costs a USE:
-    //
-    //     mA.usesp(1)=1  mA.usesp(2)=0        <- `mA`'s own clause reached, `mB`'s not
-    //     CONTROL, mA with no `p` of its own:
-    //     mA.usesp(1)=0  mA.usesp(2)=1        <- so the import DOES work; the local shadows it
-    //
-    // `resolve_in_scope` reads a scope's own `locals` and returns before consulting any
-    // import or parent, so the symbol the tie-break minted at `mA` short-circuits the
-    // `import mB.*` that made the cycle. No ambiguity is raised and none can be.
-    //
-    // WHAT E85J5 SETTLED: THE SHADOW IS NOT THE DEFECT, INVENTING IT IS. A local beating
-    // an import is what every other name does, and an author who WRITES `rule p(?x)` in
-    // `mA` gets exactly this and should. What was wrong was that two files neither of
-    // which shows the cycle silently decided it. So this shape is now REFUSED, which is
-    // what 061 already says about every other predicate assembled from two files — the
-    // file rule could not see this one only because the tie-break splits it into two
-    // single-file predicates before the file rule counts them.
-    //
-    // BACKED OUT (drop the `splits.push(split)` recording in `Ownership::owners_for`, so
-    // the cycle is decided exactly as before but never reported): this test's first two
-    // assertions fail — the load succeeds. The two DECLARED arms below pass either way,
-    // by design: they are the control that shows the refusal is about the SILENCE and not
-    // about the shape, since the same two files with a declaration load in both.
-    const A: &str =
-        "namespace mA\n  import mB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
-    const B: &str = "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n";
-    for files in [[A, B], [B, A]] {
-        crate::common::expect_load_errors(
-            crate::common::try_load_kb_with_files(&files),
-            &["is written in 2 scopes that form an IMPORT CYCLE — mA, mB"],
-        );
-    }
-
-    // REMEDY 1, the one the message names first — DECLARE IT ONCE, in `mA`. `mB`'s head
-    // then resolves through its own `import mA.*` and is a CLAUSE of `mA.p`, so the
-    // predicate is shared and BOTH clauses answer. This is the reading the pre-WI-980
-    // loader reached by file order; it is now reached by the text saying so.
-    const A_DECL: &str = concat!(
-        "namespace mA\n  import mB.*\n  rule p(?x)\n  rule p(1) :- true\n",
-        "  rule usesp(?x) :- p(?x)\nend\n"
-    );
-    let mut shared =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B]));
-    assert_eq!(clauses(&shared, "mA.p"), Some(2), "one predicate, both clauses");
-    assert_eq!(clauses(&shared, "mB.p"), None, "`mB` introduced nothing");
-    assert_eq!(answers(&mut shared, "mA.usesp(1)"), 1);
-    assert_eq!(
-        answers(&mut shared, "mA.usesp(2)"),
-        1,
-        "the import is LIVE — this is the row that reads 0 under the silent split"
-    );
-
-    // REMEDY 2 — DECLARE IT IN EACH, which says they are separate predicates. The shadow
-    // is back, and that is the point: it is now what the author wrote. This arm is what
-    // shows the refusal is not a ban on the behaviour, only on inventing it.
-    const A_OWN: &str = A_DECL;
-    const B_OWN: &str = "namespace mB\n  import mA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n";
-    let mut split =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_OWN, B_OWN]));
-    assert_eq!(clauses(&split, "mA.p"), Some(1), "two predicates, one clause each");
-    assert_eq!(clauses(&split, "mB.p"), Some(1));
-    assert_eq!(answers(&mut split, "mA.usesp(1)"), 1, "its own clause is reached");
-    assert_eq!(
-        answers(&mut split, "mA.usesp(2)"),
-        0,
-        "and the imported one is NOT — the declared local shadows the import, as written"
-    );
-}
-
-#[test]
-fn a_single_file_cycle_still_introduces_separately_in_either_order() {
-    // THE RESIDUE THE REFUSAL ABOVE DELIBERATELY DOES NOT REACH — 061's own open
-    // question 3. The file is the unit for 059 §Definitions' reason: both scopes are in
-    // front of the one author who wrote them, so there is no second party for the
-    // declaration to be an agreement WITH. The tie-break auto-declares, and the shadow
-    // stays.
-    //
-    // IT IS THE CONTROL FOR THE REFUSAL'S NARROWNESS, not an oversight: the same two
-    // namespaces, the same two heads, the same name — only the file count differs, and
-    // it decides refusal versus silence. If a later change makes the refusal fire on one
-    // file too, this row is what says so.
-    //
-    // ORDER-FREE IS THE OTHER CLAIM. MEASURED under the demand-driven recursion this
-    // replaced: `sA.p=2, sB.p=None` in one text order and the mirror in the other,
-    // because the provisional answer the cycle re-entry handed back was memoised into
-    // whichever arm was asked first.
-    //
-    // BACKED OUT (`let component = undecided.clone()` in place of `Self::sink_component`):
-    // this test still passes — the cycle IS the whole undecided set here, so the two
-    // agree. [`a_cycle_does_not_reach_a_bystander`] is the row that separates them, and
-    // it is named here because this row alone would let that distinction go unmeasured.
-    const A_BLOCK: &str =
-        "namespace sA\n  import sB.*\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
-    const B_BLOCK: &str = "namespace sB\n  import sA.*\n  rule p(2) :- true\nend\n";
-    for src in [
-        format!("{A_BLOCK}{B_BLOCK}"),
-        format!("{B_BLOCK}{A_BLOCK}"),
-    ] {
-        let mut kb =
-            crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[&src]));
-        assert_eq!(clauses(&kb, "sA.p"), Some(1), "each scope keeps its own clause");
-        assert_eq!(clauses(&kb, "sB.p"), Some(1));
-        // DRIVE THE USE. Clause counts alone cannot tell the shadow from the alternative.
-        assert_eq!(answers(&mut kb, "sA.usesp(1)"), 1, "its own clause is reached");
-        assert_eq!(
-            answers(&mut kb, "sA.usesp(2)"),
-            0,
-            "and the imported one is NOT — the local shadows the import that made the cycle"
-        );
-    }
-    // CONTROL — the same import, with nothing local to shadow it. This is what shows the
-    // 0 above is the shadow and not a broken import.
-    const A_NO_OWN: &str = "namespace sA\n  import sB.*\n  rule usesp(?x) :- p(?x)\nend\n";
-    let ctrl_src = format!("{A_NO_OWN}{B_BLOCK}");
-    let mut ctrl =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[&ctrl_src]));
-    assert_eq!(answers(&mut ctrl, "sA.usesp(2)"), 1, "CONTROL: the import works");
-    assert_eq!(answers(&mut ctrl, "sA.usesp(1)"), 0, "CONTROL: nothing local exists");
-}
-
-#[test]
-fn a_cycle_member_reopened_in_a_second_file_is_reported_once() {
-    // ONE MISSING DECLARATION IS ONE MESSAGE. Both refusals can see this program: `wA`'s
-    // own heads span two files (the ordinary 061 file rule), and `wA`/`wB` are a cycle
-    // (the E85J5 rule). Reporting both prints one fault twice and prescribes two
-    // different owners for it — and the cycle message's own justification, that no single
-    // file shows the author the cycle, is FALSE here, because file 1 shows all of it.
-    //
-    // So the cycle error yields to the file error, which names a concrete owner whose
-    // repair fixes both: declare `p` in `wA` and `wB`'s head resolves to it through the
-    // `import wA.*` that made the cycle. The repair is DRIVEN below, not asserted.
-    //
-    // FOUND BY `/code-review`, not by a fixture: the suite had every other combination.
-    //
-    // BACKED OUT (drop the `reported_span_files` test in the cycle block): this row fails
-    // with TWO errors. [`a_multi_file_cycle_is_refused_and_both_declarations_repair_it`]
-    // passes either way — no member there spans files — which is what shows the two
-    // blocks are asking different questions rather than one guarding the other.
-    const F1: &str = concat!(
-        "namespace wA\n  import wB.*\n  rule p(1) :- true\nend\n",
-        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
-    );
-    const F2: &str = "namespace wA\n  import wB.*\n  rule p(9) :- true\nend\n";
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with_files(&[F1, F2]),
-        &["has rule heads in 2 files"],
-    );
-    // THE REPAIR THE SURVIVING MESSAGE NAMES. One declaration in `wA` collects all three
-    // clauses — `wB`'s included — so the message is not merely the shorter of two, it is
-    // the one whose prescription works.
-    const F1_DECL: &str = concat!(
-        "namespace wA\n  import wB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n",
-        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
-    );
-    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[F1_DECL, F2]));
-    assert_eq!(clauses(&kb, "wA.p"), Some(3), "one predicate, all three clauses");
-    assert_eq!(clauses(&kb, "wB.p"), None, "`wB` introduced nothing");
-}
-
-#[test]
-fn a_nested_cycle_across_two_files_is_the_ordinary_file_error() {
-    // THE OTHER HALF OF THE REFUSAL'S NARROWNESS. A facade importing its own submodule
-    // while the submodule imports it back is also a two-file cycle — but its members are
-    // NESTED, so the enclosing one owns (§"outermost"), the two heads become ONE
-    // predicate, and 061's ordinary file rule reports it. Same two files, same two heads,
-    // same name; only the nesting differs, and it decides WHICH message the author gets.
-    //
-    // WHY IT IS HERE: it is what stops the new refusal from being stated over "a cycle".
-    // Neither shape is silent afterwards, and they are silent for different reasons, so
-    // both messages have to exist.
-    const A: &str =
-        "namespace nOuter\n  import nOuter.nInner.*\n  rule p(1) :- true\nend\n";
-    const B: &str = "namespace nOuter.nInner\n  import nOuter.*\n  rule p(2) :- true\nend\n";
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with_files(&[A, B]),
-        &["has rule heads in 2 files"],
-    );
-}
-
-#[test]
-fn a_global_head_absorbs_nothing_beside_a_cycle_or_a_nesting() {
-    // The `<global>` rule lives in `Ownership`'s overlay, which the DECISION consults.
-    // Two shapes reach `<global>` by another route and must not absorb through it: a
-    // mutual-import cycle (whose members introduce separately, so the trailing hole check
-    // re-asks the ordinary ladder — and that ladder has no `<global>` rule), and an
-    // ordinary enclosing join happening beside a top-level head of the same name.
-    //
-    // PASSES EITHER WAY TODAY, and is here because it did not always: the shape was
-    // reachable while a cycle produced a "nobody owns it" verdict, and the per-site split
-    // removed that verdict rather than the route. Nothing else pins the route.
-    // ONE FILE for the cycle, since WI-20260821-E85J5: the two-file spelling is now
-    // refused, and the route this row exists for — a cycle re-asking the ordinary ladder
-    // through the overlay — is the same at one file as at two. What the split into files
-    // would add here is the E85J5 error, not the `<global>` question.
-    const G: &str = "rule p(0) :- true\n";
-    const A: &str = concat!(
-        "namespace mA\n  import mB.*\n  rule p(1) :- true\nend\n",
-        "namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n"
-    );
-    for files in [vec![G, A], vec![A, G]] {
-        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
-        assert_eq!(
-            clauses(&kb, "p"),
-            Some(1),
-            "the global head keeps its own clause"
-        );
-        assert_eq!(clauses(&kb, "mA.p"), Some(1));
-        assert_eq!(clauses(&kb, "mB.p"), Some(1));
-    }
-    const N: &str =
-        "namespace outer\n  rule p(1) :- true\n  sort Rec\n    entity r(n: Int64)\n    rule p(2) :- true\n  end\nend\n";
-    for files in [[G, N], [N, G]] {
-        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&files));
-        assert_eq!(clauses(&kb, "p"), Some(1));
-        assert_eq!(
-            clauses(&kb, "outer.p"),
-            Some(2),
-            "the enclosing join is unaffected"
-        );
-        assert_eq!(clauses(&kb, "outer.Rec.p"), None);
-    }
-}
-
-#[test]
-fn a_cycle_does_not_reach_a_bystander() {
-    // A SCOPE THAT MERELY REACHES A CYCLE IS NOT IN IT. `mA` and `mB` import each other;
-    // `mC` imports `mA` and writes the same head name. The cycle is `mA`/`mB`'s business,
-    // and what `mC` does must be decided the way it would be with no cycle at all: `mC`
-    // imports a scope that OWNS `p`, so `mC`'s head is a CLAUSE of `mA.p`.
-    //
-    // THE CONTROL IS THE POINT, and this row did not have one. It used to assert
-    // `mA.p`=1/`mB.p`=1/`mC.p`=1 — three predicates — which is the bystander being SPLIT
-    // OFF by a cycle it is not in, pinned as if it were correct. The `NO_CYCLE` arm below
-    // is what shows the difference: without the cycle all three join, so a `mC` that
-    // stops joining the moment `mA` gains an import is the defect, not the requirement.
-    //
-    // BACKED OUT (break the tie across the whole undecided set instead of inside one
-    // strongly-connected component): this test FAILS — `mC` is swept into the tie-break
-    // with `mA`/`mB`, introduces its own `p`, and the two arms below disagree.
-    // ONE FILE, since 061. Both arms below put THREE clauses on `mA.p`, and a predicate
-    // assembled from more than one file must be declared — so the three-file spelling
-    // this row used to carry is now a refusal, and declaring `p` in `mA` would make `mB`
-    // join it and erase the very split the row is about. One file changes nothing it
-    // measures: an import belongs to the SCOPE that writes it, so `mC` still sees only
-    // `mA` and the cycle is still `mA`/`mB`'s alone.
-    const A: &str = "namespace mA\n  import mB.*\n  rule p(1) :- true\nend\n\
-                     namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n\
-                     namespace mC\n  import mA.*\n  rule p(3) :- true\nend\n";
-    const NO_CYCLE: &str = "namespace mA\n  rule p(1) :- true\nend\n\
-                            namespace mB\n  import mA.*\n  rule p(2) :- true\nend\n\
-                            namespace mC\n  import mA.*\n  rule p(3) :- true\nend\n";
-
-    // CONTROL — no cycle. Everything joins `mA`, which is what an import MEANS.
-    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[NO_CYCLE]));
-    assert_eq!(clauses(&kb, "mA.p"), Some(3), "CONTROL: all three join");
-    assert_eq!(clauses(&kb, "mB.p"), None, "CONTROL");
-    assert_eq!(clauses(&kb, "mC.p"), None, "CONTROL");
-
-    // THE ROW. `mA`/`mB` tie and each introduces its own; `mC` is untouched by that and
-    // still joins the scope it imports.
-    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A]));
-    assert_eq!(
-        clauses(&kb, "mA.p"),
-        Some(2),
-        "`mA` owns its own clause and the bystander's"
-    );
-    assert_eq!(clauses(&kb, "mB.p"), Some(1), "the other cycle member owns its own");
-    assert_eq!(
-        clauses(&kb, "mC.p"),
-        None,
-        "the bystander introduces NOTHING — it imports a scope that owns `p`"
-    );
-}
-
-#[test]
-fn a_facade_importing_its_own_submodule_still_joins() {
-    // ONE DOWNWARD WILDCARD IMPORT IS NOT A CYCLE, though the graph says otherwise: `fa`
-    // sees `inner` through the import and `inner` sees `fa` through the ENCLOSING edge.
-    // §"outermost-first" already names the winner between those two, so a facade
-    // re-exporting its own submodule — an ordinary idiom — must keep joining.
-    //
-    // MEASURED before the tie-break: this program was REFUSED with two
-    // `RuleHeadOwnedByNoScope` errors, while the identical program with distinct head
-    // names, and the identical program without the import, both loaded.
-    //
-    // BACKED OUT (drop `encloses_a_cycle_member`, so an enclosure-related cycle is
-    // treated as ambiguous): this test FAILS — `fa.p` and `fa.inner.p` split, one clause
-    // each, where the enclosing join is the whole of WI-980's core case.
-    let kb = crate::common::load_kb_with(
-        "namespace fa\n  import fa.inner.*\n  rule p(1) :- true\n  namespace inner\n    rule p(2) :- true\n  end\nend\n",
-    );
-    assert_eq!(
-        clauses(&kb, "fa.p"),
-        Some(2),
-        "the enclosing scope owns both clauses"
-    );
-    assert_eq!(clauses(&kb, "fa.inner.p"), None);
-}
-
-#[test]
-fn a_chain_deeper_than_any_recursion_is_decided() {
-    // NO BOUND, BECAUSE NO RECURSION. The first version of `Ownership` answered
-    // `owns(scope, name)` by recursing through the resolver, nesting a whole walk per
-    // link of the visible-scope chain — so its depth was proportional to that chain, and
-    // MEASURED, 700 chained scopes sharing one head name ABORTED THE PROCESS (`thread …
-    // has overflowed its stack`, SIGABRT) while the same 700 with DISTINCT head names
-    // loaded clean. That forced an arbitrary `OWNERSHIP_MAX_DEPTH`, which bought a
-    // located error at the price of refusing chains that used to load.
-    //
-    // The round-based fixpoint has no recursion to overflow: each round is a loop, and
-    // `sink_component` closes over the undecided set iteratively. So the honest test is
-    // no longer "the bound reports" but "the chain LOADS", and it drives the answer
-    // rather than the loading.
-    //
-    // BACKED OUT (`let component = undecided.clone()` in place of `Self::sink_component`):
-    // this test FAILS — settling every undecided scope at once collapses the chain
-    // instead of walking it link by link. VERIFIED at this depth, not inherited from the
-    // deeper version this row used to run at.
-    //
-    // WHAT THIS ROW DOES NOT MEASURE, said rather than implied. It does not reproduce the
-    // stack overflow that forced the old `OWNERSHIP_MAX_DEPTH`, and no back-out available
-    // in this tree can: that bound guarded a RECURSION which no longer exists, so there
-    // is nothing left to restore it against. Reproducing the overflow needed ~700 links,
-    // which is why the depth was cut. What is left is worth keeping on its own terms: a
-    // chain far past any depth the recursive version could reach is decided, and decided
-    // CORRECTLY, which is the claim a reader of this row needs.
-    //
-    // THE COST OF DECIDING A CHAIN IS SUPER-QUADRATIC — MEASURED, not reasoned. Marginal
-    // ownership time (a shared head name minus a distinct-name control, so parse and
-    // stdlib cost cancel), min of 3 in-process runs:
-    //
-    //     n = 200 -> 0.68s     n = 300 -> 2.33s     n = 400 -> 7.63s
-    //
-    // which is an exponent of 3.1 over 200->300 and 4.1 over 300->400. An earlier version
-    // of this comment asserted QUADRATIC from the resolver-walk count alone; that is the
-    // wrong term. One component settles per round, so there are O(n) rounds, and each
-    // round costs O(n) resolver walks (rule 2 re-asks every undecided scope) plus O(n²)
-    // for `sink_component`'s transitive closure. Anyone sizing a limit from the old
-    // "quadratic" would have been wrong at scale. The optimistic reach — which does not
-    // depend on `owners` — has since been hoisted out of the round loop, removing one
-    // factor of n from the walk count; the closure is still per-round and is where the
-    // remaining exponent lives.
-    //
-    // THE QUADRATIC COST IS TEMPORARY BY DESIGN. Every scope here is deciding something
-    // its author could simply have said, which is proposal 061's whole argument: under an
-    // explicit declaration this pass takes no decision, and both the machinery and this
-    // row go with it.
-    // SINCE 061 THE CHAIN IS REFUSED, AND THE REFUSAL COUNT IS THE ALTERNATION. Every
-    // owner in this chain holds a PAIR of clauses — its own and its importer's — written
-    // in two files, which is exactly what the file rule declines to infer. So the row
-    // now asserts what it always meant to: the chain is DECIDED, at a depth past any the
-    // recursive version could reach, and the decision is the right one — 130 predicates
-    // assembled from two files apiece, one per owner except `deep0`, which nothing
-    // imports and which therefore owns only its own clause.
-    //
-    // COLLAPSING THE CHAIN INTO ONE FILE WAS TRIED AND IS WRONG: measured, `deep260.p`
-    // then holds all 261 clauses. With every import in one file the wildcard chain is
-    // transitive, and the non-transitivity this row's alternation rests on is a
-    // consequence of file-locality (WI-995). Declaring `p` in every scope was the other
-    // candidate and measures nothing: with no candidate scopes the fixpoint never runs.
-    //
-    // BACKED OUT (`let component = undecided.clone()` in place of `Self::sink_component`):
-    // this row still FAILS — settling every undecided scope at once collapses the chain
-    // instead of walking it link by link, and the refusal count moves off 130.
-    let n = PAST_THE_OLD_LIMIT;
-    let mut files: Vec<String> = (0..n)
-        .map(|i| {
-            format!(
-                "namespace deep{i}\n  import deep{}.*\n  rule p({i}) :- true\nend\n",
-                i + 1
-            )
-        })
-        .collect();
-    files.push(format!("namespace deep{n}\n  rule p({n}) :- true\nend\n"));
-    let refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
-    let errs = crate::common::try_load_kb_with_files(&refs)
-        .err()
-        .expect("the chain assembles predicates from two files apiece and must be refused");
-    let spanning = errs
-        .iter()
-        .filter(|e| e.contains("and no declaration"))
-        .count();
-    assert_eq!(
-        spanning, 130,
-        "one refusal per OWNER but `deep0`, which nothing imports: {errs:#?}"
-    );
-    assert_eq!(errs.len(), 130, "and nothing else is reported: {errs:#?}");
-    // THE STRUCTURE, not only the count — the count alone would be equally true of 130
-    // refusals about the wrong links (found by /code-review, which noted the per-link
-    // tallies the refusal replaced). The chain ALTERNATES, so the scopes named are
-    // exactly the EVEN indices from 2 to n: `deep0` owns only its own clause and every
-    // odd link joined its importer's owner.
-    for i in (2..=n).step_by(2) {
-        assert!(
-            errs.iter().any(|e| e.contains(&format!("in 'deep{i}'"))),
-            "the owner at even index {i} must be the one refused: {errs:#?}"
-        );
-    }
-    for i in (1..n).step_by(2) {
-        assert!(
-            !errs.iter().any(|e| e.contains(&format!("in 'deep{i}'"))),
-            "an odd link owns nothing, so it cannot be refused: index {i}"
-        );
-    }
-}
-
-/// Past the old `OWNERSHIP_MAX_DEPTH` (200) — deep enough that the recursive version
-/// could not have decided this chain at all. EVEN, because the chain alternates
-/// owner/yielder and the assertions read fixed indices off both ends.
-const PAST_THE_OLD_LIMIT: usize = 260;
-
-// ── The controls that bound the fix ─────────────────────────────────────────
-
-#[test]
-fn an_unmatched_inner_head_still_introduces() {
-    // PASSES EITHER WAY, BY DESIGN — and it is why the rows above are evidence of a
-    // BINDING rule rather than of a blanket one. Nothing named `q` encloses the sort,
-    // so the inner head still introduces, still scoped where written (WI-894), and its
-    // clause is still reachable there. A fix that made every inner head join an
-    // enclosing scope would break this row and leave all six above green.
-    let mut kb = crate::common::load_kb_with(
-        "namespace wi980.fresh\n  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n    \
-         rule q(2) :- true\n  end\nend\n",
-    );
-    assert_eq!(clauses(&kb, "wi980.fresh.Rec.q"), Some(1));
-    assert_eq!(clauses(&kb, "wi980.fresh.q"), None);
-    assert_eq!(answers(&mut kb, "wi980.fresh.Rec.q(2)"), 1);
-}
-
 #[test]
 fn a_rule_in_a_secondary_entry_is_still_refused() {
     // WI-980 asks for the SECONDARY-ENTRY spelling as the second channel. It does not
@@ -784,11 +938,14 @@ fn a_rule_in_a_secondary_entry_is_still_refused() {
     // spelling the ticket actually named becomes available as a fourth channel.
     //
     // PASSES EITHER WAY, BY DESIGN: sub-pass 1b refuses before sub-pass 3 runs at all.
+    // THE TWO HEADS CARRY DIFFERENT NAMES, deliberately. R3 refuses the `rule` whatever
+    // it is called; spelling both `p` would ALSO collide them (845G7) and this row would
+    // pin two refusals while claiming to pin one.
     for order in [
         "  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n  end\n  \
-         namespace Rec\n    rule p(2) :- true\n  end\n",
+         namespace Rec\n    rule secondary(2) :- true\n  end\n",
         "  sort Rec\n    entity rec(n: Int64)\n  end\n  namespace Rec\n    \
-         rule p(2) :- true\n  end\n  rule p(1) :- true\n",
+         rule secondary(2) :- true\n  end\n  rule p(1) :- true\n",
     ] {
         crate::common::expect_load_errors(
             crate::common::try_load_kb_with(&format!("namespace wi980.sec\n{order}end\n")),
@@ -797,32 +954,6 @@ fn a_rule_in_a_secondary_entry_is_still_refused() {
     }
 }
 
-// ── The decision is taken ON BEHALF OF the file the head is written in ──────
-
-/// A head that binds through a WILDCARD IMPORT, written in a file that is not the last
-/// one scanned. Phase 2 runs outside the per-file loop, and an import resolves only in
-/// the file that lists it (WI-995) — so the decision has to re-declare which file is
-/// asking, or every head after the first file's is judged with some other file's
-/// imports in scope.
-///
-/// The importing scope is DEEPER than the imported one on purpose, and a third file is
-/// scanned LAST, so a stale asking-file is a DIFFERENT file's and the row cannot pass by
-/// the two coinciding.
-///
-/// BACKED OUT (`Ownership::reach` asks with no file rather than the head's —
-/// `set_asking_file(None)` in place of `set_asking_file(Some(file))`): this test FAILS,
-/// along with THREE others — [`a_chain_deeper_than_any_recursion_is_decided`] (701 clauses
-/// collapse to 1), [`a_cycle_does_not_reach_a_bystander`] and
-/// [`a_head_that_binds_is_not_an_owner`]. With no file asking, every wildcard import is
-/// filtered out, so `q` reaches nothing in `b` and the head mints
-/// `wi980.viaimport.b.q`, splitting the predicate exactly as the order defect did.
-///
-/// AN EARLIER VERSION OF THIS NOTE NAMED THE WRONG LINE — sub-pass 3's PHASE 2
-/// `set_asking_file` — and claimed this row was the only failure in the binary. Backing
-/// that line out changes nothing: `reach` re-declares the asking file per site, so the
-/// decision reaches the same verdict whatever phase 2 asked. The claim was never
-/// measured; it is here as a reminder that a stated back-out is only worth what running
-/// it is worth.
 #[test]
 fn a_head_binds_through_its_own_files_import() {
     // 061: two files, one predicate — DECLARED. The asking file still decides, one
@@ -848,65 +979,6 @@ fn a_head_binds_through_its_own_files_import() {
         "`q` denotes in `b` through `b`'s OWN import, so the head introduces nothing"
     );
     assert_eq!(answers(&mut kb, "wi980_lib.q(2)"), 1);
-}
-
-// ── The three regressions found by review, each pinned ──────────────────────
-
-#[test]
-fn a_top_level_head_beside_an_import_reports_rather_than_aborting() {
-    // A HEAD CAN REACH TWO OWNERS, and until this was fixed that ABORTED THE PROCESS.
-    // The decision asks the ladder through an overlay that EXCLUDES `<global>` (a head
-    // inside a namespace never yields to a name every file shares), while the loader's
-    // own resolver of course still sees it. So `nb`'s head was decided "a clause of
-    // `nd.p`" and then, once minted, found BOTH — a genuine ambiguity.
-    //
-    // MEASURED before the fix: `debug_assert_eq!` at kb/mod.rs — "head functor … is a
-    // non-canonical same-FQN copy of resolved symbol" — aborted the test binary in every
-    // file order, because `push_ambiguous_symbol` answered with `intern(name)` and for a
-    // TOP-LEVEL candidate the short name IS the qualified name. In release, where the
-    // assert is compiled out, the clause was stored under a divergent functor that (in
-    // that assert's own words) "silently no-matches in both rule-firing indexes".
-    //
-    // BACKED OUT (`push_ambiguous_symbol` returns `self.kb.symbols.intern(name)` again):
-    // this test does not fail — it ABORTS the whole test binary.
-    // 061 DECLARES `nd.p`, because `nb`'s clause joins it from a second file. Without
-    // the declaration the program collects that refusal TOO, and the row would be
-    // pinning two defects at once; the ambiguity is what it is about, and the
-    // declaration is what leaves it alone on the page.
-    const G: &str = "rule p(0) :- true\n";
-    const D: &str = "namespace nd\n  rule p(?x)\n  rule p(5) :- true\nend\n";
-    const B: &str = "namespace nb\n  import nd.*\n  rule p(93) :- true\nend\n";
-    for order in [[G, D, B], [D, B, G], [B, G, D]] {
-        crate::common::expect_load_errors(
-            crate::common::try_load_kb_with_files(&order),
-            &["ambiguous symbol 'p' in scope 'nb'"],
-        );
-    }
-}
-
-#[test]
-fn a_facade_still_joins_one_level_deeper() {
-    // THE SHIPPED FACADE ROW IS WRITTEN AT THE ONE DEPTH THAT USED TO WORK.
-    // [`a_facade_importing_its_own_submodule_still_joins`] nests twice; MEASURED, adding
-    // a THIRD level turned the same idiom into a three-error refusal, because the
-    // tie-break scanned every head-writing scope by ADDRESS PREFIX instead of the actual
-    // cycle's members. This row is that depth, and it is the control on the fix rather
-    // than a repetition: the two-level row passes either way.
-    //
-    // BACKED OUT (`encloses_a_cycle_member`'s `scope_display_name(..).strip_prefix(..)`
-    // scan over `self.heads.keys()` in place of `sink_component` + `SymbolTable::encloses`):
-    // this test FAILS with "no scope introduces the rule head `p`", three times.
-    let kb = crate::common::load_kb_with(
-        "namespace fa\n  import fa.inner.*\n  rule p(1) :- true\n  namespace inner\n    \
-         rule p(2) :- true\n    namespace deep\n      rule p(3) :- true\n    end\n  end\nend\n",
-    );
-    assert_eq!(
-        clauses(&kb, "fa.p"),
-        Some(3),
-        "the facade owns all three, at any nesting depth"
-    );
-    assert_eq!(clauses(&kb, "fa.inner.p"), None);
-    assert_eq!(clauses(&kb, "fa.inner.deep.p"), None);
 }
 
 #[test]
@@ -955,116 +1027,36 @@ fn nobody_yields_to_a_scope_that_mints_nothing() {
 }
 
 #[test]
-fn a_mutual_cycle_is_decided_the_same_in_every_file_order() {
-    // THE TICKET'S OWN INVARIANT, over a shape that used to break it. Two mutually
-    // importing namespaces and a nested scope under one of them: MEASURED before the
-    // fix, four of the six file orders gave `nA.p` = 3 clauses with `nB.p` ABSENT and
-    // the other two gave 2 and 1 — because a verdict computed under a provisional cycle
-    // break was memoised and then read by a site outside the cycle.
+fn a_top_level_head_beside_an_import_reports_rather_than_aborting() {
+    // A HEAD CAN REACH TWO OWNERS, and until this was fixed that ABORTED THE PROCESS.
+    // The decision asks the ladder through an overlay that EXCLUDES `<global>` (a head
+    // inside a namespace never yields to a name every file shares), while the loader's
+    // own resolver of course still sees it. So `nb`'s head was decided "a clause of
+    // `nd.p`" and then, once minted, found BOTH — a genuine ambiguity.
     //
-    // ALL SIX ORDERS, not two: the defect was invisible in four of them.
+    // MEASURED before the fix: `debug_assert_eq!` at kb/mod.rs — "head functor … is a
+    // non-canonical same-FQN copy of resolved symbol" — aborted the test binary in every
+    // file order, because `push_ambiguous_symbol` answered with `intern(name)` and for a
+    // TOP-LEVEL candidate the short name IS the qualified name. In release, where the
+    // assert is compiled out, the clause was stored under a divergent functor that (in
+    // that assert's own words) "silently no-matches in both rule-firing indexes".
     //
-    // BACKED OUT (memoise `reach` under the optimistic overlay and reuse it once owners
-    // are settled): this test FAILS — the orders disagree again.
-    // 061: `nA.p` holds `nA`'s clause and `nA.sub`'s, which are in two files, so it is
-    // DECLARED — in BOTH members, since each owns a predicate of that name and a
-    // declaration in one alone would make the other's head a clause of it. The
-    // un-declared program is refused in all six orders, which is itself order-free;
-    // `wi_fqc85_rule_declaration_test::a_cycle_can_no_longer_absorb_a_third_files_clause`
-    // runs both halves.
-    const A: &str = "namespace nA\n  import nB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n";
-    const B: &str = "namespace nB\n  import nA.*\n  rule p(?x)\n  rule p(2) :- true\nend\n";
-    const S: &str = "namespace nA.sub\n  rule p(3) :- true\nend\n";
-    for order in [[A, B, S], [A, S, B], [B, A, S], [B, S, A], [S, A, B], [S, B, A]] {
-        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&order));
-        assert_eq!(clauses(&kb, "nA.p"), Some(2), "nA.p, order {order:?}");
-        assert_eq!(clauses(&kb, "nB.p"), Some(1), "nB.p, order {order:?}");
-        assert_eq!(clauses(&kb, "nA.sub.p"), None, "nA.sub.p, order {order:?}");
-    }
-    // CONTROL — the nested scope writing a DIFFERENT name. One clause each, every order,
-    // and it passes with or without the fix: without it the rows above would be
-    // satisfied by any change that stopped the cycle members joining at all.
-    const S2: &str = "namespace nA.sub\n  rule qq(3) :- true\nend\n";
-    for order in [[A, B, S2], [S2, A, B]] {
-        let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&order));
-        assert_eq!(clauses(&kb, "nA.p"), Some(1), "CONTROL nA.p");
-        assert_eq!(clauses(&kb, "nB.p"), Some(1), "CONTROL nB.p");
+    // BACKED OUT (`push_ambiguous_symbol` returns `self.kb.symbols.intern(name)` again):
+    // this test does not fail — it ABORTS the whole test binary.
+    // 061 DECLARES `nd.p`, because `nb`'s clause joins it from a second file. Without
+    // the declaration the program collects that refusal TOO, and the row would be
+    // pinning two defects at once; the ambiguity is what it is about, and the
+    // declaration is what leaves it alone on the page.
+    const G: &str = "rule p(0) :- true\n";
+    const D: &str = "namespace nd\n  rule p(?x)\n  rule p(5) :- true\nend\n";
+    const B: &str = "namespace nb\n  import nd.*\n  rule p(93) :- true\nend\n";
+    for order in [[G, D, B], [D, B, G], [B, G, D]] {
+        crate::common::expect_load_errors(
+            crate::common::try_load_kb_with_files(&order),
+            &["ambiguous symbol 'p' in scope 'nb'"],
+        );
     }
 }
-
-// ── Channel 4: a `requires` parent ──────────────────────────────────────────
-//
-// NOT AN ENCLOSING SCOPE, and that is the whole reason these rows exist. `A requires
-// Spec` puts `Spec`'s scope on `A`'s `parents` list, so a name written as a head in
-// `Spec` is visible from `A` exactly as an enclosing scope's would be — but `Spec` sits
-// at whatever address its author gave it, which may be shallower than `A`, deeper, or
-// the same. Any guard keyed on the qualified NAME answers these by text order; only one
-// that walks `parents` answers them at all.
-
-/// `A requires Spec`, `p` written as a head in each. `nest_spec` puts `Spec` one
-/// namespace deeper than `A`; `spec_first` is the text order. Returns
-/// `(Spec.p clauses, A.p clauses)`.
-fn requires_pair(
-    ns: &str,
-    spec_first: bool,
-    nest_spec: bool,
-) -> (Option<usize>, Option<usize>, usize) {
-    let (spec, spec_qn) = if nest_spec {
-        (
-            "  namespace mid\n    sort Spec\n      rule p(2) :- true\n    end\n  end\n".to_owned(),
-            format!("{ns}.mid.Spec"),
-        )
-    } else {
-        (
-            "  sort Spec\n    rule p(2) :- true\n  end\n".to_owned(),
-            format!("{ns}.Spec"),
-        )
-    };
-    let a =
-        format!("  sort A\n    requires {spec_qn}\n    entity a(n: Int64)\n    rule p(1) :- true\n  end\n");
-    let body = if spec_first {
-        format!("{spec}{a}")
-    } else {
-        format!("{a}{spec}")
-    };
-    let mut kb = crate::common::load_kb_with(&format!("namespace {ns}\n{body}end\n"));
-    // THE GOAL IS DRIVEN, like every other channel. `A`'s clause reached through the
-    // SPEC's predicate is the whole claim; a clause indexed under `Spec.p` but
-    // unreachable by resolution would leave the counts alone and say nothing.
-    let reached = answers(&mut kb, &format!("{spec_qn}.p(1)"));
-    (
-        clauses(&kb, &format!("{spec_qn}.p")),
-        clauses(&kb, &format!("{ns}.A.p")),
-        reached,
-    )
-}
-
-#[test]
-fn requires_same_depth() {
-    // BOTH ORDERS MEASURE THE FIX, and they must AGREE. BACKED OUT, the
-    // requirer-written-first order splits into 1 + 1 while the other joins — the same
-    // silent flip the enclosing-chain rows show, on an edge address depth cannot see.
-    //
-    // The third element is `Spec.p(1)` DRIVEN: `A`'s clause is reachable through the
-    // spec's predicate, which is what "joined" has to mean.
-    assert_eq!(requires_pair("wi980.rq1", true, false), (Some(2), None, 1));
-    assert_eq!(requires_pair("wi980.rq2", false, false), (Some(2), None, 1));
-}
-
-#[test]
-fn requires_target_deeper() {
-    // THE REQUIRED SORT NESTED DEEPER THAN ITS REQUIRER, in BOTH text orders — the
-    // header's own rule, that a pair agreeing in only one order measures nothing.
-    //
-    // An address-derived key gets this exactly backwards: it decides the shallower `A`
-    // first, so `Spec` never sees it and the pair SPLITS where plain text order had
-    // joined them. Walking the resolution parents makes the direction of the `requires`
-    // edge the only thing that matters, and the two orders agree.
-    assert_eq!(requires_pair("wi980.rq3", true, true), (Some(2), None, 1));
-    assert_eq!(requires_pair("wi980.rq4", false, true), (Some(2), None, 1));
-}
-
-// ── `<global>`'s two roles ──────────────────────────────────────────────────
 
 #[test]
 fn a_global_head_is_never_yielded_to() {
@@ -1080,8 +1072,14 @@ fn a_global_head_is_never_yielded_to() {
     // Fused the other way, a top-level head introduced NOTHING and fell to the WI-476
     // bare intern, silently.
     //
-    // BACKED OUT (drop the `s != self.global` guard in `Ownership`'s overlay): the
-    // stdlib row FAILS — its axiom's predicate is emptied onto the user's.
+    // NO BACK-OUT REACHES THIS ROW ANY MORE, and that is said rather than credited to a
+    // line. The measured claim above is the fixpoint's; under 845G7 the stdlib axiom is a
+    // 061 DECLARATION, so the user's head DENOTES nothing at `<global>` and could not
+    // absorb it whatever the exclusion did. The exclusion that IS live is the candidate
+    // set's, and [`a_global_head_is_not_a_party_to_the_collision`] is what measures it.
+    // An earlier version of this comment named `head_name_reach`'s overlay test and
+    // claimed this row failed without it; that test was dead and this row does not.
+    // Found by `/code-review`.
     let mut kb = crate::common::load_kb_with("rule modus_ponens(7, 8) :- true\n");
     // `Some(0)`, not `Some(1)`, since 061: the stdlib's intuitionistic axioms are
     // DECLARATIONS — a rule with no body, which their own file has always described as
@@ -1139,7 +1137,7 @@ fn the_captured_stdlib_predicate_survives() {
     // that is refused rather than decided". There is no such refusal: WI-980 replaced it
     // with the two-roles rule, and BOTH rows in this section load through
     // `load_kb_with`, which panics on any load error. The guard that actually stands
-    // behind them is the `s == global` test in `Ownership::reach`'s overlay closure,
+    // behind them is the `head.scope == global` test in `head_name_collisions`'s
     // named here because the stale wording left it unattributed. The capture itself is
     // what [`a_global_head_is_never_yielded_to`] measures, from a KB that loads.
     let kb = crate::common::load_kb_with("namespace wi980.ok\n  rule modus_ponens(7, 8) :- true\nend\n");
