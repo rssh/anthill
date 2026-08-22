@@ -70,3 +70,50 @@ resolved, not declared", and whichever of the three options is taken implemented
 control. If ACCEPT is chosen, this ticket closes by writing the sentence — the test row
 already exists.
 
+## Changes
+
+### 2026-08-22T10:01:39Z — feedback — claude
+
+NOT OBSOLETE AFTER 061 — BUT THE FILED MEASUREMENT IS, AND THE TICKET NEEDS RE-BASING.
+Re-measured on the post-061 tree (2026-08-22), definite answers only.
+
+THE FIXTURE AS FILED NOW MEASURES NOTHING. It spells both heads body-less
+(`rule p(1)` / `rule p(2)`), and 061 reads a body-less rule as a DECLARATION that
+asserts nothing. So:
+    as filed:                mA.usesp(1)=0  mA.usesp(2)=0
+    its CONTROL (no own p):  mA.usesp(1)=0  mA.usesp(2)=0
+Both rows are 0 and the control no longer discriminates — the table in the description
+(`usesp(1) -> 1`, control `usesp(2) -> 1`) is stale, and a reader who re-ran it today
+would conclude the defect was gone. It is not.
+
+THE DEFECT REPRODUCES VERBATIM WITH BODIED CLAUSES, which 061 does not touch:
+    rule p(1) :- true  in mA, rule p(2) :- true in mB   ->  usesp(1)=1  usesp(2)=0
+    CONTROL, mA with the same import and no own p       ->  usesp(1)=0  usesp(2)=1
+Same shadow, same silence. So the ticket survives 061 with its fixture rewritten to the
+bodied spelling.
+
+A SHARPER WITNESS THAN THE ONE ON FILE — one file, one cycle, the two spellings side by
+side and DISAGREEING:
+  namespace mA6 { import mB6.*  fact p(1)  rule q(2) :- true
+                  rule usesp(?x) :- p(?x)  rule usesq(?x) :- q(?x) }
+  namespace mB6 { import mA6.*  fact p(9)  rule q(9) :- true }
+    usesp(1)=1  usesp(9)=1     <- the FACT head leaves the import LIVE
+    usesq(2)=1  usesq(9)=0     <- the RULE head kills it
+A rule head INTRODUCES a scope-local predicate and shadows the import; a fact head does
+not. That is worth carrying into this ticket because it is the same defect stated without
+any appeal to file order or to a control — and because `fact H` and `rule H :- true` are
+supposed to be ONE CLAUSE (§6.1, WI-20260821-FQC85, re-affirmed by WI-20260822-J38JE
+item 5, which is why the loader's `:- true` strip stays). Here they are not
+interchangeable, and the divergence is in WHICH PREDICATE each touches.
+
+061 ALSO STRENGTHENS THE TICKET'S OWN ARGUMENT rather than retiring it. The description
+says the capture is "reached by a construct [059 R4 clause 3] does not cover" — clause 3
+refuses a DECLARATION capturing a name it does not override. Under 061 a body-less rule
+head IS a declaration, so for that spelling the clause now covers it directly, and the
+open question narrows to: does the same refusal extend to a BODIED head, which introduces
+the same name by the same mechanism?
+
+WHAT TO CHANGE HERE: re-spell the measured table with bodied clauses, add the one-file
+fact-vs-rule witness above, and add the 059-R4-now-covers-the-body-less-case observation
+to the two bullets under WHY IT IS A QUESTION RATHER THAN A DEFECT.
+
