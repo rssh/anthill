@@ -2755,24 +2755,35 @@ namespace test.m5_counter
     entity counter
   end
 
-  operation write(n: Int64) -> Unit effects Modify[T = CounterState] = set(counter(), n)
-  operation read() -> Int64 = get(counter())
+  -- WI-20260823-39AD2: the resource is a PARAMETER, so `Modify[c]` names a place
+  -- and the call's `ModifyRuntime.set` row re-keys `Modify[target]` onto it. The
+  -- AMBIENT spelling this fixture used to have — `set(counter(), n)` under a
+  -- declared `Modify[T = CounterState]` — is not writable today: see
+  -- `m5_modify_an_ambient_resource_argument_does_not_rekey`.
+  operation the_counter() -> CounterState = counter()
+  operation write(c: CounterState, n: Int64) -> Unit effects Modify[c] = set(c, n)
+  operation read(c: CounterState) -> Int64 = get(c)
 end
 "#;
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
 
+    let counter = interp
+        .call("test.m5_counter.the_counter", &[])
+        .expect("construct the resource handle");
     interp
-        .call("test.m5_counter.write", &[Value::Int(42)])
+        .call("test.m5_counter.write", &[counter.clone(), Value::Int(42)])
         .expect("write");
-    let got = interp.call("test.m5_counter.read", &[]).expect("read");
+    let got = interp
+        .call("test.m5_counter.read", &[counter.clone()])
+        .expect("read");
     assert_eq!(got.as_int(), Some(42), "read returns last-set value");
 
     interp
-        .call("test.m5_counter.write", &[Value::Int(7)])
+        .call("test.m5_counter.write", &[counter.clone(), Value::Int(7)])
         .expect("overwrite");
     let got = interp
-        .call("test.m5_counter.read", &[])
+        .call("test.m5_counter.read", &[counter])
         .expect("read again");
     assert_eq!(got.as_int(), Some(7), "subsequent read sees the overwrite");
 }
@@ -2814,22 +2825,29 @@ namespace test.m5_independent
     entity b
   end
 
-  operation put_a(n: Int64) -> Unit effects Modify[T = Cells] = set(a(), n)
-  operation put_b(n: Int64) -> Unit effects Modify[T = Cells] = set(b(), n)
-  operation get_a() -> Int64 = get(a())
-  operation get_b() -> Int64 = get(b())
+  -- WI-20260823-39AD2: `Modify[r]` names the PARAMETER, and the two calls pass
+  -- DIFFERENT resource handles — which is the independence this test asserts,
+  -- stated in the effect rows too. The old spelling gave both ops the SAME label
+  -- (`Modify[T = Cells]`, over the shared sort), which is exactly the conflation
+  -- kernel-language.md §5.6 forbids: two places of one type are two resources.
+  operation the_a() -> Cells = a()
+  operation the_b() -> Cells = b()
+  operation put(r: Cells, n: Int64) -> Unit effects Modify[r] = set(r, n)
+  operation fetch(r: Cells) -> Int64 = get(r)
 end
 "#;
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
+    let ra = interp.call("test.m5_independent.the_a", &[]).unwrap();
+    let rb = interp.call("test.m5_independent.the_b", &[]).unwrap();
     interp
-        .call("test.m5_independent.put_a", &[Value::Int(1)])
+        .call("test.m5_independent.put", &[ra.clone(), Value::Int(1)])
         .unwrap();
     interp
-        .call("test.m5_independent.put_b", &[Value::Int(99)])
+        .call("test.m5_independent.put", &[rb.clone(), Value::Int(99)])
         .unwrap();
-    let a = interp.call("test.m5_independent.get_a", &[]).unwrap();
-    let b = interp.call("test.m5_independent.get_b", &[]).unwrap();
+    let a = interp.call("test.m5_independent.fetch", &[ra]).unwrap();
+    let b = interp.call("test.m5_independent.fetch", &[rb]).unwrap();
     assert_eq!(a.as_int(), Some(1));
     assert_eq!(b.as_int(), Some(99));
 }
@@ -2848,12 +2866,14 @@ namespace test.m5_cycle
     entity counter
   end
 
-  operation bad() -> Unit effects Modify[T = CycleState] = set(counter(), counter())
+  operation the_counter() -> CycleState = counter()
+  operation bad(c: CycleState) -> Unit effects Modify[c] = set(c, c)
 end
 "#;
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
-    let err = interp.call("test.m5_cycle.bad", &[]).unwrap_err();
+    let c = interp.call("test.m5_cycle.the_counter", &[]).unwrap();
+    let err = interp.call("test.m5_cycle.bad", &[c]).unwrap_err();
     assert!(
         matches!(err, EvalError::CyclicReference),
         "expected CyclicReference, got {err:?}",

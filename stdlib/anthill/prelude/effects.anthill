@@ -1,13 +1,22 @@
 -- Effects: effect declaration and well-known effect kinds
 --
 -- Each effect kind is a sort parameterized by what it ranges over:
---   sort Modify { sort T = ? }   — the effect MARKER, keyed by resource type T
+--   sort Modify { sort T = ? }   — the effect MARKER; its argument names the
+--                                  mutated RESOURCE, i.e. a PLACE, not a type.
 --
--- Type level:  Modify[T = store]   — sort instantiation, used in effects clauses
---              Modify[c]           — denoted by a value/place (e.g. Cell.set)
+-- A `Modify` target is a PLACE — a parameter (`Modify[c]`), the result binder
+-- (`Modify[result]`), or a field path off one (`Modify[c.contents]`). It is
+-- never a TYPE: kernel-language.md §5.6 reads `Env` as a partial map from
+-- resource NAMES to terms, so `Modify[X]` says the operation may update
+-- `Env(X)`, and a type in that slot names no slot at all. `Modify[T = c]` is
+-- the same thing spelled with the binding named. Enforced at load by
+-- `check_modify_targets` (kb/typing.rs); WI-20260823-39AD2 records why the
+-- refusal and not a comparison.
+--
 -- The Modify marker carries only WHICH resource is mutated. Its runtime
 -- operations live on a separate carrier sort `ModifyRuntime[T, V]` (below),
--- which adds the stored-VALUE type V — independent of the resource type T.
+-- which adds the stored-VALUE type V — independent of the resource TYPE T,
+-- which types the target place but is not itself the target.
 --
 -- Effect kinds are registered via `fact Effect[T = Kind[?]]`.
 -- The kernel checks effect declarations; interpretation is provided
@@ -37,12 +46,18 @@ namespace anthill.prelude
     sort T = ?
   }
 
-  -- Modifiable: marks a type as admitting `Modify[T]` in effect rows.
-  -- Per proposal 037 Rule 8 (bidirectional Modify[T]↔handler
-  -- correspondence): only types with a registered handler can be
-  -- modified. A `fact Modifiable[T = X]` is the typing-level token;
-  -- the runtime must back it with a registered handler before any
-  -- `Modify[X]` operation actually fires.
+  -- Modifiable: marks a type as admitting a `Modify` over a PLACE OF THAT TYPE in
+  -- effect rows — `fact Modifiable[T = Cell]` is what makes `Modify[c]` with
+  -- `c: Cell` admissible. (`Modifiable`'s parameter is a TYPE; a `Modify` target
+  -- never is — see the file header.)
+  -- Per proposal 037 Rule 8 (bidirectional Modify↔handler correspondence): only
+  -- types with a registered handler can be modified. A `fact Modifiable[T = X]` is
+  -- the typing-level token; the runtime must back it with a registered handler
+  -- before any `Modify` over a place of type X actually fires.
+  --
+  -- NOT YET ENFORCED — WI-20260823-39AD2 (second half): no site checks
+  -- `Modifiable[typeof(target)]`, so `Modify[pattern]` on a `pattern: String`
+  -- parameter loads clean.
   sort Modifiable {
     sort T = ?
   }
@@ -50,9 +65,11 @@ namespace anthill.prelude
   -- Well-known effect kinds.
   -- Each sort defines its operations — the "pseudo API" that the effect provides.
 
-  -- Modify[T]: the effect MARKER, keyed by the resource-identity type T.
-  -- This is what effect rows carry (`effects Modify[T = CounterState]`); it
-  -- says only WHICH resource is mutated, not what value it holds.
+  -- Modify[p]: the effect MARKER, keyed by the mutated resource — a PLACE.
+  -- This is what effect rows carry (`effects Modify[c]` / `effects Modify[s]`);
+  -- it says only WHICH resource is mutated, not what value it holds, and not
+  -- its type. A TYPE in the slot (`Modify[T]`) is a load error — see the file
+  -- header and kernel-language.md §5.6.
   sort Modify
     sort T = ?
   end
@@ -77,7 +94,7 @@ namespace anthill.prelude
     sort T = ?
     sort V = ?
     operation get(target: T) -> V
-    operation set(target: T, value: V) -> Unit effects Modify[T]
+    operation set(target: T, value: V) -> Unit effects Modify[target]
   end
 
   sort Error

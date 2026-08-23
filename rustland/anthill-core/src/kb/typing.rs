@@ -31555,17 +31555,24 @@ fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
 }
 
 /// WI-20260822-1TKN0 — does this effect label carry a DENOTED value-in-type
-/// (`Modify[c]`, whose target is a place rather than a type) anywhere?
+/// (`Modify[c]`, whose target is a PLACE) anywhere?
 ///
-/// The override-refinement effects leg compares labels with [`types_compatible`],
-/// and value-in-type subtyping IS EQUALITY there (`unify_denoted_view`) — so a
-/// denoted target only ever matches an identical denoted target. That is the
-/// right relation for types and the WRONG one for RESOURCES: `Modify[c]` with
-/// `c: Cell` refines `ModifyRuntime.set`'s `Modify[T = Cell]`, because the place
-/// `c` IS a resource of that type, and no relation on this pass says so. So a
-/// label bearing a denoted is not COMPARABLE here — see the effects leg in
-/// [`check_override_refinement`], which judges it on the one question that needs
-/// no such relation instead.
+/// ONE READER, and it asks about ALIGNMENT, not about comparability: a label with
+/// a denoted target NAMES a place, so it is the shape `align_effect_label` must
+/// rewrite into the spec's parameter vocabulary — which is why
+/// `wants_result_alignment` in [`check_override_refinement`] consults it. A
+/// `Modify[result]` names the result binder, so an override restating the spec's
+/// own row verbatim needs the binder aligned even with no contract clause between
+/// the two ops (`MutableStack.new` over `MutableCollection.new`).
+///
+/// IT NO LONGER MARKS ANYTHING UNDECIDABLE. Until WI-20260823-39AD2 this also
+/// gated a fail-open: a denoted target facing a spec `Modify` over a resource TYPE
+/// could not be compared, because `types_compatible` relates two denoteds by
+/// EQUALITY (`unify_denoted_view`) and a place is not equal to a type. That shape
+/// is now unreachable — a `Modify` target is a PLACE on both sides
+/// ([`check_modify_targets`] refuses a type target at its declaration), so equality
+/// after alignment is the EXACT relation, and the gate was deleted rather than
+/// replaced by the type-vs-place implication it seemed to want.
 ///
 /// Deliberately `Denoted` ONLY, not "any value-in-type": an `ExprCarried`
 /// projection (`s.E`) is a rigid type-level neutral that
@@ -32337,21 +32344,44 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             //     `Modify[T = Cell]` (`Cell.set` over `ModifyRuntime.set`, in the
             //     stdlib), and nothing on this pass relates a place to a type.
             //
-            // The missing relation is reachable in exactly one shape — a `Modify`
-            // over a place, facing a `Modify` over a type — so that, and not
-            // "bears a denoted", is what is undecidable. A denoted-bearing label
-            // that is NOT a `Modify` is still judged: no spec `Modify` could cover
-            // it under any relation, the functors differ.
-            let spec_modify_over_a_type = spec_effs
-                .iter()
-                .any(|se| effect_is_modify(kb, se, modify_sym) && !view_bears_denoted(kb, se));
-            let place_vs_resource_type = |kb: &KnowledgeBase, e: &Value| {
-                spec_modify_over_a_type
-                    && effect_is_modify(kb, e, modify_sym)
-                    && view_bears_denoted(kb, e)
-            };
-            let decidable = |kb: &KnowledgeBase, e: &Value| {
-                !view_contains_type_param(kb, e) && !place_vs_resource_type(kb, e)
+            // WI-20260823-39AD2 REMOVED THE SECOND ARM OF THIS GATE, and the removal
+            // is not "the relation was built" — the relation was found to be
+            // UNNECESSARY. A `Modify` over a place facing a `Modify` over a TYPE was
+            // undecidable here, and `Cell.set` over `ModifyRuntime.set` was the one
+            // shape in the tree that reached it. A `Modify` target is now a PLACE on
+            // BOTH sides ([`check_modify_targets`] refuses a type target at its
+            // declaration), so the two labels are place-vs-place — which
+            // `unify_denoted_view` already relates EXACTLY, after `align_effect_label`
+            // rewrites the override's own param name into the spec's vocabulary.
+            // MEASURED: `Cell.set` is now accepted BY COMPARISON, and spelling its
+            // effect `Modify[value]` (the wrong parameter, same arity, same carrier) is
+            // REFUSED — which under the old fail-open loaded clean.
+            //
+            // THE DELETION IS NOT SEPARATELY PINNABLE BY A FIXTURE, and saying so is the
+            // point rather than crediting a neighbour row: the gate needed a spec
+            // `Modify` over a TYPE to fire, and that shape no longer loads, so the arm is
+            // dead BY CONSTRUCTION. Measured both ways — restoring the two closures
+            // beside the refusal leaves `wi347_override_refinement_test` at 37/37 and the
+            // stdlib clean, unchanged. What IS pinned is the capability the arm was
+            // suppressing: `a_place_target_naming_the_wrong_parameter_is_refused`.
+            let decidable = |kb: &KnowledgeBase, e: &Value| !view_contains_type_param(kb, e);
+
+            // A MALFORMED `Modify` BELONGS TO ITS DECLARATION, NOT TO THIS LEG. A target
+            // that is not a place is refused by [`check_modify_targets`] where it is
+            // written; judging COVERAGE for it here would report a second error whose
+            // repair is not the line it names — a spec `Modify[T]` makes the override's
+            // honest `Modify[c]` read as a widening, so the author is sent to fix the
+            // override that is correct. MEASURED before this skip: the type-target
+            // fixture emitted the coverage refusal FIRST and the real error second.
+            //
+            // Skips the ATOM, not the row — an `Eff2` beside a malformed `Modify` is
+            // still judged, the same per-atom scoping WI-20260822-1TKN0 bought.
+            let target_keys = ModifyTargetKeys::new(kb);
+            let malformed_modify = |kb: &KnowledgeBase, e: &Value| {
+                matches!(
+                    classify_modify_target(kb, e, modify_sym, &target_keys),
+                    Some((_, ModifyTarget::Type)) | Some((_, ModifyTarget::Missing))
+                )
             };
 
             // THE PREMISE FOR REFUSING ANYTHING is that the SPEC row is fully known.
@@ -32366,18 +32396,26 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // WHOLE ROW: an `Eff2` this leg refuses on its own went unreported the
             // moment a `Modify[c]` sat beside it. The fail-open now scopes to the
             // ATOM that earns it, which is what it was always described as doing.
-            if spec_effs.iter().all(|e| !view_contains_type_param(kb, e)) {
-                // The one refusal a `Modify` earns without the place↔type relation:
-                // a spec row carrying NO `Modify` asserts `Env_after = Env_before`
-                // for EVERY resource (kernel-language.md §5.6), so no target could
-                // excuse the override's. Reachable for a `Modify` this pass cannot
-                // otherwise judge — a parametric `Modify[R]` over the carrier's own
-                // sort parameter; a denoted one is already `decidable` here, because
-                // an empty spec row has no `Modify` over a type either.
-                let spec_grants_modify = spec_effs
-                    .iter()
-                    .any(|se| effect_is_modify(kb, se, modify_sym));
+            let spec_row_is_well_formed = !spec_effs.iter().any(|e| malformed_modify(kb, e));
+            if spec_row_is_well_formed
+                && spec_effs.iter().all(|e| !view_contains_type_param(kb, e))
+            {
+                // WI-20260823-39AD2 DELETED A SECOND REFUSAL ARM FROM THIS LOOP, and
+                // for the reason its sibling deletion gives: it became unreachable, not
+                // satisfied. The arm carried a nicer message for a `Modify` this leg
+                // could not COMPARE against a spec row granting none — "the spec
+                // operation declares no `Modify` at all". Reaching it required an impl
+                // `Modify` that is not `decidable`, i.e. one whose target CONTAINS a type
+                // param — which is precisely a non-place target, refused now at its
+                // declaration by [`check_modify_targets`]. A lawful `Modify[place]` the
+                // spec never granted is `decidable`, so it was always refused by the
+                // generic arm below, and still is: `a_modify_target_the_spec_never_
+                // granted_is_refused` and `a_modify_on_a_resource_the_spec_did_not_name_
+                // is_refused` are that capability, unchanged.
                 for ie in &impl_info.effects {
+                    if malformed_modify(kb, ie) {
+                        continue;
+                    }
                     if decidable(kb, ie) {
                         // Compare ALIGNED (spec param vocabulary); DIAGNOSE with the
                         // author's own spelling — the message must quote a guard the
@@ -32400,41 +32438,31 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                                 ),
                             });
                         }
-                    } else if effect_is_modify(kb, ie, modify_sym) && !spec_grants_modify {
-                        errors.push(LoadError::IncompatibleOverride {
-                            carrier: kb.qualified_name_of(p.carrier).to_string(),
-                            spec: kb.qualified_name_of(p.spec).to_string(),
-                            op: sn.clone(),
-                            reason: format!(
-                                "the override declares effect `{}`, which is not covered by \
-                                 any effect the spec operation declares (effects must not widen) \
-                                 — the spec operation declares no `Modify` at all, so it \
-                                 asserts the implementation leaves every resource unchanged \
-                                 (kernel-language.md §5.6)",
-                                type_display_name_value(kb, ie)
-                            ),
-                        });
                     }
-                    // Otherwise FAIL OPEN, and this is the whole of what is left
-                    // undecided: an atom that is still PARAMETRIC beside a spec row
-                    // that grants some `Modify`, or a denoted place beside a spec
-                    // `Modify` over a resource TYPE. The second is `Cell.set` over
-                    // `ModifyRuntime.set`. Both arms are DRIVEN in
-                    // `wi347_override_refinement_test`, not merely described.
+                    // Otherwise FAIL OPEN, and after WI-20260823-39AD2 exactly ONE
+                    // shape is left undecided: an atom still PARAMETRIC — which is now
+                    // necessarily a NON-`Modify` label, since a parametric `Modify`
+                    // target is refused at its declaration. Driven by
+                    // `a_parametric_non_modify_atom_still_fails_open_beside_a_judged_
+                    // neighbour`, which had to be written with an `Eff1[T = R]` for
+                    // exactly that reason: the parametric `Modify[R]` this arm used to be
+                    // reached with no longer loads, so a fixture using one would measure
+                    // the declaration refusal and leave this unpinned.
                     //
-                    // THE SECOND IS NOT WAITING ON A MECHANISM — the target's
-                    // declared type is right here in `impl_info.params` /
-                    // `impl_info.return_type`, and the test would be one
-                    // `types_compatible`. It is waiting on a DECISION the docs do
-                    // not agree on: kernel-language.md §5.6 reads `Modify[X]` as a
-                    // resource NAME ("Env is a partial map from resource names
-                    // (symbols) …"), under which `Modify[c]` refines nothing and
-                    // `Cell.set` is a stdlib defect; `prelude/effects.anthill` reads
-                    // it as the resource-identity TYPE, under which it refines and
-                    // this is a missing implication. Encoding either here would
-                    // settle the language from a load pass. WI-20260823-39AD2 holds
-                    // the question, together with the `Modifiable[typeof(target)]`
-                    // check that exists at NO site and wants the same first step.
+                    // The place-vs-resource-TYPE arm that used to sit here is GONE,
+                    // and not because the missing relation was built: the language
+                    // question the two docs disagreed on was settled the other way.
+                    // A `Modify` target is a PLACE (kernel-language.md §5.6 — `Env`
+                    // maps resource NAMES), `ModifyRuntime.set`'s `effects Modify[T]`
+                    // was a stdlib defect rather than a lawful shape this pass could
+                    // not judge, and place-vs-place needs no relation beyond the
+                    // equality `unify_denoted_view` already gives. See
+                    // [`check_modify_targets`].
+                    //
+                    // STILL OPEN, and NOT this leg's question: nothing at any site
+                    // checks `Modifiable[typeof(target)]`, so `Modify[pattern]` on a
+                    // `pattern: String` parameter loads clean — the other half of
+                    // WI-20260823-39AD2.
                 }
             }
 
@@ -32521,6 +32549,205 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
         }
     }
     errors
+}
+
+/// WI-20260823-39AD2 — unwrap an effect-row element down to its LABEL.
+///
+/// An element of an operation's effect list is the bare label in the common case, but
+/// the row algebra also admits wrappers that carry their own functor: `guarded(label,
+/// guard)` for `{E :- g}` (WI-478 / proposal 048) and `absent(label)` for `-E` (WI-327).
+/// A predicate asked directly on the element therefore answers about the WRAPPER. Peels
+/// repeatedly, since nothing forbids nesting, and returns the element unchanged when it
+/// is already a label.
+fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> Value {
+    let mut cur = e.clone();
+    // Bounded by the row's own depth; the loop terminates because each step descends
+    // into a strictly smaller child.
+    loop {
+        let is_wrapper = matches!(
+            resolved_functor_name(kb, &cur),
+            Some("guarded") | Some("absent") | Some("present")
+        );
+        if !is_wrapper {
+            return cur;
+        }
+        match named_child_value(kb, &cur, label_key) {
+            Some(inner) => cur = inner,
+            // A wrapper with no `label` child is malformed; return it so the caller
+            // judges what it can see rather than silently dropping the atom.
+            None => return cur,
+        }
+    }
+}
+
+/// WI-20260823-39AD2 — A `Modify` TARGET IS A PLACE, NEVER A TYPE.
+///
+/// kernel-language.md §5.6 settles what `Modify[X]` denotes: `Env` is a partial map
+/// from resource NAMES to terms, and `Modify[X]` says the operation may inspect and
+/// update `Env(X)`. So `X` names a RESOURCE — a parameter, `result`, a field path off
+/// one — and a TYPE in that slot names no slot at all. `prelude/effects.anthill` used
+/// to read it the other way ("keyed by the resource-identity TYPE T") and wrote the only
+/// `Modify` over a type IN THE STDLIB, `ModifyRuntime.set`'s `effects Modify[T]`; that
+/// line was the defect, and this pass is what keeps it from coming back.
+///
+/// NOT the only one in the TREE — the test fixtures were part of the population too, and
+/// saying otherwise is the trap this project has recorded before. `wi329_handler_
+/// discharge_test` (`Modify[Res]`), `wi698_row_param_refinement_test` (`Modify[Reg]`) and
+/// three `eval_test` m5 rows all wrote one, and were repaired with the stdlib. One
+/// SURVIVES on purpose, in the position below this pass does not reach:
+/// `anthill-cpp-gen/tests/higher_kinded_arrow_test.rs` writes `@ {Modify[Calc]}` inside a
+/// parameter's arrow type.
+///
+/// WHY A REFUSAL AND NOT A COMPARISON. `Modify[<type>]` is unsatisfiable BY
+/// CONSTRUCTION, so there is nothing for a later pass to relate it to: σ binds a type
+/// parameter to a TYPE (`provides ModifyRuntime[T = Cell]` binds `T` to the sort),
+/// never to a place, so no instantiation of `Modify[T]` ever becomes a resource name.
+/// Left admissible it does not merely go unchecked — it DISABLES checking, in two
+/// different directions depending on whether the provision grounds it:
+///
+///   * σ-BOUND — `Modify[T]` grounds to `Modify[T = Cell]`, a ground TYPE target, and
+///     the override's honest `Modify[c]` is then compared against a type. That pairing
+///     was the `place_vs_resource_type` fail-open this ticket deletes from
+///     [`check_override_refinement`]; deleting it without this refusal does not fix the
+///     program, it refuses the CORRECT one with a message about coverage.
+///   * NOT σ-BOUND — `Modify[T]` stays a type-param var, and the effects-⊆ premise gate
+///     ("the SPEC row is fully known") fails open the WHOLE row, taking unrelated atoms
+///     with it.
+///
+/// So the fail-open does not disappear when the relation is dropped — it MOVES. This
+/// pass stops it at the declaration, where the author can read the message.
+///
+/// SCOPE, and both limits have a witness rather than a caution.
+///
+///   * THE TARGET SLOT ONLY, not what its type admits. A `Modify` over a place whose
+///     type is not `Modifiable` (`Modify[pattern]` on a `pattern: String`) is admitted
+///     here — the other half of WI-20260823-39AD2, not yet written.
+///   * AN OPERATION'S OWN ROW ONLY, not an effect row nested in a PARAMETER's arrow
+///     type (`handle(body: () -> Int64 @ {Modify[X], Sig})`). That position scopes
+///     differently — its lawful target is the arrow's OWN binder, the `CallbackParam`
+///     shape `unify_denoted_view` compares by position and `prelude/iterable.anthill`
+///     writes as `-Modify[x]` — so the same predicate cannot simply be pointed at it,
+///     and the absent (`-E`) atoms living there are not `Modify`-headed at all. The
+///     asymmetry is REAL and MEASURED, not assumed: the exact spelling refused on an
+///     operation's own row loads clean one level in, which
+///     `a_type_target_inside_a_parameters_arrow_row_is_not_checked` pins, and
+///     `anthill-cpp-gen/tests/higher_kinded_arrow_test.rs`'s `@ {Modify[Calc]}` is a live
+///     witness in the tree. Deciding the arrow position needs the callback-binder
+///     population measured first; WI-20260823-39AD2 records it.
+///
+/// Runs over every `OperationInfo` FACT's declared row — one per fact, so a spec op and
+/// its impl are each judged (WI-701) — after all operations load, like its neighbours
+/// `check_const_purity` / `check_macro_purity`. Reported once per (operation, label):
+/// `load_incremental` banks a second fact for a type-parameter-bearing operation
+/// (WI-1049), and one declaration must not read as two errors.
+pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    let Some(modify_sym) = kb.try_resolve_symbol("anthill.prelude.Modify") else {
+        // No prelude `Modify` — nothing in this KB can name the effect at all.
+        return Vec::new();
+    };
+    let keys = ModifyTargetKeys::new(kb);
+    let modify = Some(modify_sym);
+    let mut errors = Vec::new();
+    let mut reported: HashSet<(Symbol, String)> = HashSet::new();
+    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+        for e in &effects {
+            let (label_value, kind) = match classify_modify_target(kb, e, modify, &keys) {
+                Some(pair) => pair,
+                None => continue,
+            };
+            let detail = match kind {
+                ModifyTarget::Place => continue,
+                ModifyTarget::Type => "whose target is a TYPE",
+                // Distinguished because the repair differs: a bare `Modify` is not a
+                // mis-named place, it names nothing at all, so "name the parameter"
+                // reads as advice about a target the author never wrote.
+                ModifyTarget::Missing => "which names no target at all",
+            };
+            let label = type_display_name_value(kb, &label_value);
+            if !reported.insert((op_sym, label.clone())) {
+                continue;
+            }
+            errors.push(super::load::LoadError::Other {
+                message: format!(
+                    "operation `{}` declares effect `{}`, {} — a `Modify` target is a \
+                     PLACE: anything that DENOTES a value, i.e. a parameter, `result`, a \
+                     field path off one, or a value-producing zero-arg operation \
+                     (kernel-language.md §5.6 — `Env` maps resource NAMES). A type there \
+                     names no resource, and no instantiation can make it one: a provision \
+                     binds a type parameter to a TYPE, never to a place. Name the place \
+                     that is mutated (e.g. `Modify[target]`).",
+                    kb.qualified_name_of(op_sym),
+                    label,
+                    detail,
+                ),
+            });
+        }
+    }
+    errors
+}
+
+/// What stands in a `Modify`'s target slot. See [`classify_modify_target`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModifyTarget {
+    /// A DENOTED place occurrence — the lawful shape.
+    Place,
+    /// A sort ref, a type-param var, an `ExprCarried` type projection (`s.T`) — anything
+    /// that names a TYPE rather than a slot in `Env`.
+    Type,
+    /// No target binding at all — a bare `Modify`.
+    Missing,
+}
+
+/// The two interned keys [`classify_modify_target`] needs, hoisted so a caller in a loop
+/// interns once rather than per label (interning takes `&mut kb`, which the classifier
+/// deliberately does not).
+struct ModifyTargetKeys {
+    t: Symbol,
+    label: Symbol,
+}
+
+impl ModifyTargetKeys {
+    fn new(kb: &mut KnowledgeBase) -> Self {
+        Self {
+            t: kb.intern("T"),
+            label: kb.intern("label"),
+        }
+    }
+}
+
+/// WI-20260823-39AD2 — is this effect-row element a `Modify`, and if so what stands in
+/// its target slot? Returns the PEELED label beside the verdict; `None` when the element
+/// is not a `Modify` at all.
+///
+/// TWO CALLERS, ONE CLASSIFICATION, and they are two different questions asked of one
+/// fact — which is exactly why they must not each write their own predicate:
+///   * [`check_modify_targets`] REPORTS a non-place target, at the declaration.
+///   * [`check_override_refinement`]'s effects leg SKIPS an atom with one, on either
+///     side, because the refusal belongs to that declaration and reporting a coverage
+///     consequence here would send the author to a line whose repair would not load.
+///
+/// The atom wrappers are peeled first ([`peel_effect_atom`]): a row element is not always
+/// the bare label, and asking the question of the wrapper answers about the wrapper.
+fn classify_modify_target(
+    kb: &KnowledgeBase,
+    e: &Value,
+    modify: Option<Symbol>,
+    keys: &ModifyTargetKeys,
+) -> Option<(Value, ModifyTarget)> {
+    let label = peel_effect_atom(kb, e, keys.label);
+    if !effect_is_modify(kb, &label, modify) {
+        return None;
+    }
+    // The target rides the `T` binding — `Modify[c]` lowers positionally onto `Modify`'s
+    // declared `sort T = ?`. The positional slot is read too, so a shape that never
+    // reached the named form is JUDGED rather than skipped.
+    let target = label.named_arg(kb, keys.t).or_else(|| label.pos_arg(kb, 0));
+    let kind = match target {
+        None => ModifyTarget::Missing,
+        Some(t) if matches!(type_head(kb, &t), TypeHead::Denoted) => ModifyTarget::Place,
+        Some(_) => ModifyTarget::Type,
+    };
+    Some((label, kind))
 }
 
 /// WI-431 (B) — INSTANCE-FACT op-binding SIGNATURE validation. An instance fact

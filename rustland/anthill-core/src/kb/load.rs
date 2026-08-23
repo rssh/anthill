@@ -11070,6 +11070,13 @@ fn load_phase_inner(
     // dispatch to a wrongly-typed impl via WI-431 increments 2/4).
     all_errors.extend(super::typing::check_instance_fact_op_signatures(kb));
     mark!("check_instance_fact_op_signatures");
+    // WI-20260823-39AD2: a `Modify` target is a PLACE, never a type. Runs after all
+    // operations load, so every declared effect row is queryable — and BEFORE nothing
+    // in particular: it reads only declared rows. Load-blocking, because a type target
+    // is unsatisfiable by construction and its only other outcome is to fail open the
+    // override-refinement effects leg (see the pass doc).
+    all_errors.extend(super::typing::check_modify_targets(kb));
+    mark!("check_modify_targets");
     // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so

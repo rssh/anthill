@@ -14,6 +14,11 @@ sort anthill.prelude.MutableCollection
   effects E = ?                       -- read/access effect, via Iterable
 
   requires Iterable[C = C, Element = Element, E = E]   -- reads go through Iterable.iterator -> Stream
+  -- NOT YET ENFORCED — WI-20260823-39AD2 (second half). This states the intent that
+  -- `Modify[c]` below is admissible because `c: C` is Modifiable (proposal 037 Rule 8),
+  -- but no site checks `Modifiable[typeof(target)]` on an effect row, so a `Modify` over
+  -- a place of a NON-Modifiable type loads clean. `check_modify_targets` (kb/typing.rs)
+  -- checks only that the target IS a place, not what its type admits.
   requires Modifiable[T = C]                            -- admits Modify[c] in the mutating rows
 
   operation new() -> C                            effects Modify[result]

@@ -2265,6 +2265,31 @@ Each `Modify[target]` effect declares a **resource** — a named slot in the env
 - `Suspend` — the operation may return a suspension instead of a final result.
 - `Branch` — the operation may return multiple alternative results.
 
+**A `Modify` target is a PLACE, never a type.** `Env` maps resource *names*, so the
+argument of `Modify[…]` must **denote a value** — a parameter (`Modify[c]`), the result
+binder (`Modify[result]`, §5.5), a field path off one (`Modify[c.contents]`), or a
+value-producing zero-arg operation (`Modify[kb]`, the ambient-resource accessor). The rule
+is *denotation*, not a closed list of spellings. A **type** in that slot — a sort
+(`Modify[Cell]`), a sort parameter (`Modify[T]`), or a type projection (`Modify[s.T]`) —
+names no slot, and is a **load error**; so is a bare `Modify` with no target.
+
+The rule is not a restriction but a consequence: a type target is unsatisfiable by
+construction, because a provision binds a type parameter to a *type*
+(`provides ModifyRuntime[T = Cell]` binds `T` to the sort), never to a place — so no
+instantiation of `Modify[T]` ever becomes a resource name. Two places of the same type
+are two resources, which is why granting `Modify[a]` does not grant `Modify[b]`; a
+target naming the type they share would erase exactly that distinction.
+
+A place's *type* still matters, and separately: it is what a `Modifiable[T = …]`
+requirement is asked about, and what the ordinary parameter-conformance check (§8.7)
+compares against a provision's binding.
+
+Enforced by `check_modify_targets` (`kb/typing.rs`) on an operation's own effect row. A
+**computed** region — an application in the target slot, `Modify[glob(pattern)]` — is
+refused earlier still, by the type grammar. Inside a *parameter's* arrow type
+(`handle(body: () -> X @ {Modify[…], ρ})`) the target is the arrow's own binder, not the
+enclosing operation's parameter; that position is not yet checked.
+
 #### Effect-Env Condition
 
 An effectful operation **respects its effect-env condition** if it only modifies the resources declared in its `Modify` effects:

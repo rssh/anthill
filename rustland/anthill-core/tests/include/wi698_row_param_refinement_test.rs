@@ -33,7 +33,7 @@
 //!      param-to-param `Wrap2RW` (WRAP_SRC's idiom — typer-enforced both ways —
 //!      extended to two params): it threads its own `WR`/`WW` into
 //!      `Mir2[ER = WR, EW = WW]`, and a consumer instantiating
-//!      `Wrap2RW[WR = {External}, WW = {Modify[Reg]}]` refines ER and EW to
+//!      `Wrap2RW[WR = {External}, WW = {Reg}]` refines ER and EW to
 //!      DIFFERENT rows at the call site, each declared tightly — so a swap or a
 //!      dropped param fails to load (the `*_wrong` negatives). `StoreRW` pins
 //!      the UNION `{ER, EW}` at a NON-empty instantiation (a dropped component
@@ -174,7 +174,7 @@ end
 /// The GENUINE two-param pin is `Wrap2RW` — WRAP_SRC's param-to-param idiom
 /// (which the typer enforces both ways) extended to TWO params: it threads its
 /// own `WR`/`WW` into `Mir2[ER = WR, EW = WW]`, so a consumer instantiating
-/// `Wrap2RW[WR = {External}, WW = {Modify[Reg]}]` refines ER and EW to DIFFERENT
+/// `Wrap2RW[WR = {External}, WW = {Reg}]` refines ER and EW to DIFFERENT
 /// rows through call-site type-arg substitution into `peek`/`stir`. Because the
 /// two rows are DISTINCT and each consumer declares its row TIGHTLY, a swap or a
 /// dropped param under-declares and fails to load (pinned negatively by
@@ -190,13 +190,23 @@ end
 /// same type-arg substitution carries a second row param with no new typer work.
 const RW_SRC: &str = r#"
 namespace smoke.f_rw
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable, External}
+  import anthill.prelude.{Int64, Unit, Effect, External}
   import smoke.b_mech.{Mir}
 
+  -- WI-20260823-39AD2: a plain effect label standing in for "the write effect".
+  -- Spelled `Reg` before, which is a `Modify` over a SORT and now a load
+  -- error (a `Modify` target is a PLACE, kernel-language.md §5.6). This file is
+  -- about ROW-PARAM refinement, and it needs only a label distinguishable from
+  -- `External`; a bare one keeps every row GROUND, as the old spelling was.
   sort Reg
     entity mkReg
   end
-  fact Modifiable[T = Reg]
+  -- Registered as an effect. NOT load-bearing — measured: removing it leaves this file
+  -- at 38/38, the loader not requiring an effect-row label to be registered. Kept as the
+  -- correct declaration. (An earlier draft wrote this fact with `Effect` MISSING from the
+  -- namespace's import list, where it registered a different, unresolved functor and did
+  -- nothing at all — silently, which is how the review caught it and not the suite.)
+  fact Effect[T = Reg]
 
   sort Mir2
     sort C = ?
@@ -224,9 +234,9 @@ namespace smoke.f_rw
 
   sort FakeRW
     entity mkFakeRW
-    provides Mir2[C = FakeRW, ER = {}, EW = {Modify[Reg]}]
+    provides Mir2[C = FakeRW, ER = {}, EW = {Reg}]
     operation peek(m: FakeRW) -> Int64 effects {} = 2
-    operation stir(m: FakeRW, x: Int64) -> Unit effects {Modify[Reg]} = ()
+    operation stir(m: FakeRW, x: Int64) -> Unit effects {Reg} = ()
   end
 
   sort StoreRW
@@ -240,17 +250,17 @@ namespace smoke.f_rw
   -- GENUINE two-param substitution: ER and EW refined to DIFFERENT non-empty
   -- rows at the call site, each declared TIGHTLY — a swap/conflation of the two
   -- params under-declares one of these and fails to load.
-  operation wrap_read_ext(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Int64
+  operation wrap_read_ext(w: Wrap2RW[WR = {External}, WW = {Reg}]) -> Int64
     effects {External}
   = w.peek()
 
-  operation wrap_write_mod(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Unit
-    effects {Modify[Reg]}
+  operation wrap_write_mod(w: Wrap2RW[WR = {External}, WW = {Reg}]) -> Unit
+    effects {Reg}
   = w.stir(0)
 
   -- Union threads BOTH components at a NON-empty instantiation.
-  operation store_union(s: StoreRW[ER = {External}, EW = {Modify[Reg]}]) -> Int64
-    effects {External, Modify[Reg]}
+  operation store_union(s: StoreRW[ER = {External}, EW = {Reg}]) -> Int64
+    effects {External, Reg}
   = s.ping()
 
   -- Concrete-carrier consumers (§Faking shape): read pure / write tracked / real
@@ -260,7 +270,7 @@ namespace smoke.f_rw
   = f.peek()
 
   operation obs_fake_write(f: FakeRW) -> Unit
-    effects {Modify[Reg]}
+    effects {Reg}
   = f.stir(0)
 
   operation obs_gh_read(g: GhRW) -> Int64
@@ -270,7 +280,7 @@ end
 "#;
 
 /// Negative twin for the concrete write: the fake's WRITE refines to
-/// {Modify[Reg]}, so a consumer declaring `{}` for `f.stir(...)` must be rejected
+/// {Reg}, so a consumer declaring `{}` for `f.stir(...)` must be rejected
 /// — the tracked write escapes a pure row.
 const RW_NEG_SRC: &str = r#"
 namespace smoke.f_rw_neg
@@ -292,14 +302,14 @@ namespace smoke.f_rw_wrap_neg
   import anthill.prelude.{Int64, Modify, External}
   import smoke.f_rw.{Wrap2RW, Reg}
 
-  operation wrap_read_wrong(w: Wrap2RW[WR = {External}, WW = {Modify[Reg]}]) -> Int64
+  operation wrap_read_wrong(w: Wrap2RW[WR = {External}, WW = {Reg}]) -> Int64
     effects {}
   = w.peek()
 end
 "#;
 
 /// Negative twin for the store UNION: `s.ping()` threads `{ER, EW}`, so at
-/// ER = {External}, EW = {Modify[Reg]} a consumer declaring only `{External}`
+/// ER = {External}, EW = {Reg} a consumer declaring only `{External}`
 /// must be rejected — the write component escapes. Pins that the union carries
 /// BOTH components (not just one), the non-degenerate half of the union claim.
 const STORE_UNION_NEG_SRC: &str = r#"
@@ -307,7 +317,7 @@ namespace smoke.f_rw_store_neg
   import anthill.prelude.{Int64, Modify, External}
   import smoke.f_rw.{StoreRW, Reg}
 
-  operation store_union_drops(s: StoreRW[ER = {External}, EW = {Modify[Reg]}]) -> Int64
+  operation store_union_drops(s: StoreRW[ER = {External}, EW = {Reg}]) -> Int64
     effects {External}
   = s.ping()
 end
@@ -514,18 +524,18 @@ fn stdlib_iterable_list_instantiation_precedent() {
 fn rw_split_threads_two_decoupled_row_params() {
     expect_load(
         &[MECH_SRC, RW_SRC],
-        "read/write split: Wrap2RW refines WR={External}/WW={Modify[Reg]} independently + store union non-empty",
+        "read/write split: Wrap2RW refines WR={External}/WW={Reg} independently + store union non-empty",
     );
 }
 
 /// The write row's refinement is enforced independently of the read row: the
-/// fake's tracked {Modify[Reg]} write must not escape a pure `{}` consumer row.
+/// fake's tracked {Reg} write must not escape a pure `{}` consumer row.
 #[test]
 fn rw_split_write_refinement_is_enforced() {
     expect_reject(
         &[MECH_SRC, RW_SRC, RW_NEG_SRC],
-        &["obs_fake_write_wrong", "Modify"],
-        "the fake write's {Modify[Reg]} under a consumer row {}",
+        &["obs_fake_write_wrong", "Reg"],
+        "the fake write's {Reg} under a consumer row {}",
     );
 }
 
@@ -543,14 +553,14 @@ fn rw_split_read_row_substitution_is_enforced() {
 }
 
 /// The store threads the UNION of BOTH row params: at ER = {External},
-/// EW = {Modify[Reg]} a consumer declaring only `{External}` must be rejected —
+/// EW = {Reg} a consumer declaring only `{External}` must be rejected —
 /// the write component of the union escapes. Pins the union is non-degenerate.
 #[test]
 fn rw_split_store_union_threads_both_components() {
     expect_reject(
         &[MECH_SRC, RW_SRC, STORE_UNION_NEG_SRC],
-        &["store_union_drops", "Modify"],
-        "StoreRW union {External, Modify[Reg]} under a consumer row {External}",
+        &["store_union_drops", "Reg"],
+        "StoreRW union {External, Reg} under a consumer row {External}",
     );
 }
 

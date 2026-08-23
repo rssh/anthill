@@ -363,6 +363,16 @@ error: a single parenthesized type is not a type
 The region slot is a *type* position, so a parenthesized application is refused
 by the type grammar.
 
+**Settled, and the wording above was the misleading part** (WI-20260823-39AD2). The
+slot is a type *position* in the grammar's sense, but what may stand in it is a
+**place**, not a type: a parameter, `result`, or a field path off one. A type there
+(`Modify[Cell]`, `Modify[T]`) is now a load error in its own right — see
+kernel-language.md §5.6. So a computed region is refused for the same reason under
+both readings, and this entry stays ❌: `glob(pattern)` denotes no slot in `Env`. A
+frame condition over a computed set of files needs a *named* resource standing for
+the filesystem (`Modify[fs]`, control (a) in the smoke) plus a `requires` narrowing
+which part of it is touched — the smoke's (a) already works.
+
 **Control.** `Modify[no_such_thing_at_all]` is an unresolved-name error, so the
 slot is genuinely name-resolved and the forms that *do* pass — `Modify[fs]`,
 `Modify[pattern]` — are not passing vacuously.
@@ -560,14 +570,27 @@ the spec granted (refused — the frame condition is per resource, not per label
 `good.anthill`. `wide_row.anthill` stays, unchanged and still refused: the two
 travel different arms, and neither test catches the other's program.
 
-**What is still not compared, and it is C5's neighbour.** A denoted target facing
-a spec `Modify` over a resource TYPE — `Cell.set`'s `Modify[c]` refining
-`ModifyRuntime.set`'s `Modify[T = Cell]` — fails open, because the place `c` *is*
-a resource of that type and no relation on that pass says so. Making it comparable
-without that relation refuses the stdlib (measured). Nothing checks
-`Modifiable[typeof(target)]` either, at any site, which is why `Modify[pattern]`
-on a `pattern: String` parameter loads clean. Both want the same relation:
-**WI-20260823-39AD2**.
+**What was still not compared, and it was C5's neighbour — now closed.** A denoted
+target facing a spec `Modify` over a resource TYPE — `Cell.set`'s `Modify[c]` against
+`ModifyRuntime.set`'s `Modify[T = Cell]` — used to fail open, and the recorded gap
+asked for a relation saying that the place `c` *is* a resource of that type.
+
+**There is no such relation, because there was no such shape** (WI-20260823-39AD2).
+The two docs disagreed about what `Modify[X]` denotes, and the question was settled
+for the *place*: `Env` maps resource NAMES (kernel-language.md §5.6), so
+`ModifyRuntime.set`'s `effects Modify[T]` was a **stdlib defect** — the only `Modify` over
+a type in the *stdlib*, though not in the tree: five test fixtures wrote one too, and were
+repaired with it — and not a lawful shape the pass could not judge. It now
+reads `effects Modify[target]`, a type target is refused where it is written
+(`check_modify_targets`), and the fail-open was deleted rather than filled in:
+place-vs-place is related exactly by the equality the pass already had, once
+`align_effect_label` rewrites the override's parameter name into the spec's. Measured:
+`Cell.set` is accepted **by comparison**, and naming the wrong parameter
+(`Modify[value]`) is refused — which under the fail-open loaded clean.
+
+**Still open, and it is the other half of that ticket.** Nothing checks
+`Modifiable[typeof(target)]`, at any site, which is why `Modify[pattern]` on a
+`pattern: String` parameter loads clean.
 
 ## C10 · A label-preserving operation could not be written in terms of another · **FIXED**
 
@@ -649,7 +672,7 @@ the summarizer only ever sees Untrusted mailbox text.
 | C2 | `requires` gating a call site | ✅ **fixed** in `kb/typing.rs` (WI-9PGCM) — was mis-recorded as "by design" |
 | C3 | rule body reading a type argument | ❌ WI-742 |
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable via `Covariant` + a provides-chain |
-| C5 | computed region in `Modify[…]` | ❌ type position |
+| C5 | computed region in `Modify[…]` | ❌ the slot takes a PLACE, and `glob(p)` names none (§5.6) |
 | C6 | type argument on a constructor | ❌ and desirable |
 
 **C7 changed the picture, and then was fixed.** A1–A3 and B1–B4 are real and

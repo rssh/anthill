@@ -73,18 +73,42 @@
 /// and cannot take the per-case fixtures down with it.
 const DECLS: &str = r#"
 namespace wi329.decl
-  import anthill.prelude.{Int64, Error, Modify, Clock}
+  import anthill.prelude.{Int64, Error, Effect, Clock}
 
+  -- WI-20260823-39AD2: an ordinary effect label standing in for "some other effect
+  -- the handler does not discharge". This used to be spelled `Modify[Res]` — a
+  -- `Modify` over a SORT, which is now a load error (a `Modify` target is a PLACE,
+  -- kernel-language.md §5.6). Nothing here ever wanted `Modify` semantics: the row
+  -- arithmetic under test treats every present label alike, and a bare label keeps
+  -- these rows GROUND exactly as `Modify[Res]` was (a type target is hash-consed;
+  -- a place target would ride a `Value::Node`, which is a different carrier and
+  -- would be a change in what this file exercises).
   sort Res
   end
 
+  -- WI-20260823-39AD2 — DELIBERATELY NOT NAMED `Res`. The stand-in label and the
+  -- fixtures' PARAMETER TYPE are different things, and naming both `Res` made every
+  -- `expect_reject` control (`contains("Res")`) pass on any diagnostic that merely
+  -- mentioned `operation t(r: Res)`'s parameter type — so the controls stopped
+  -- separating "the label survived the discharge" from "some unrelated refusal". Caught
+  -- by review, not by the suite, which was green under the collision.
+  sort Beep
+  end
+  -- Registered as an effect, as `external.anthill` registers `External`. NOT
+  -- load-bearing today, and that is measured rather than assumed: removing this fact
+  -- leaves this file at 21/21 — the loader does not require a label in an effect row
+  -- to be registered (only 6 `fact Effect[…]` exist in the whole tree, while `Clock`
+  -- and the console effects are used unregistered). Written because it is the correct
+  -- declaration, not because anything checks it.
+  fact Effect[T = Beep]
+
   -- Bodies, by which labels they perform.
   operation may_fail(r: Res) -> Int64
-    effects {Error[Int64], Modify[Res]}
+    effects {Error[Int64], Beep}
   = 41
 
   operation both(r: Res) -> Int64
-    effects {Error[Int64], Modify[Res], Clock}
+    effects {Error[Int64], Beep, Clock}
   = 41
 
   operation only_fails() -> Int64
@@ -92,7 +116,7 @@ namespace wi329.decl
   = 41
 
   operation modifies_only(r: Res) -> Int64
-    effects {Modify[Res]}
+    effects {Beep}
   = 41
 
   operation pure_body() -> Int64
@@ -105,7 +129,7 @@ namespace wi329.decl
     effects {Rho}
   = 0
 
-  operation handle_Modify[Sig](body: () -> Int64 @ {Modify[Res], Sig}) -> Int64
+  operation handle_Beep[Sig](body: () -> Int64 @ {Beep, Sig}) -> Int64
     effects {Sig}
   = 0
 
@@ -135,7 +159,7 @@ fn consumer(tag: &str, body: &str) -> String {
     format!(
         "namespace wi329.c_{tag}\n  \
            import anthill.prelude.{{Int64, Error, Modify, Clock}}\n  \
-           import wi329.decl.{{Res, may_fail, both, only_fails, modifies_only, pure_body, handle_Error, handle_Modify, keep_Error, two, clocked}}\n\
+           import wi329.decl.{{Res, Beep, may_fail, both, only_fails, modifies_only, pure_body, handle_Error, handle_Beep, keep_Error, two, clocked}}\n\
          {body}\n\
          end\n"
     )
@@ -172,20 +196,20 @@ fn expect_reject(tag: &str, body: &str, wants: &[&str], what: &str) {
 // a shared-tail handler type. What makes them non-vacuous as a GROUP is that each accept
 // is paired with a reject that differs in exactly one thing.
 
-/// `e : {Error[Int64], Modify[Res]}` under `handle_Error` ⇒ the call's row is
-/// `{Modify[Res]}` — 045 §5.3/§5.6's worked example. The enclosing operation declares
+/// `e : {Error[Int64], Beep}` under `handle_Error` ⇒ the call's row is
+/// `{Beep}` — 045 §5.3/§5.6's worked example. The enclosing operation declares
 /// exactly the residual.
 #[test]
 fn discharge_drops_the_handled_label() {
     expect_load(
         "discharge",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res]}\n  = handle_Error(lambda () -> may_fail(r))",
-        "handle_Error over a {Error, Modify} body under a declared {Modify} row",
+        "  operation t(r: Res) -> Int64\n    effects {Beep}\n  = handle_Error(lambda () -> may_fail(r))",
+        "handle_Error over a {Error, Beep} body under a declared {Beep} row",
     );
 }
 
 /// The other half of the sandwich: the residual is not merely ADMITTED by the declared
-/// row, it is CARRIED. Declaring `{}` is refused because `Modify[Res]` survives the
+/// row, it is CARRIED. Declaring `{}` is refused because `Beep` survives the
 /// discharge — so `discharge_drops_the_handled_label` above is not passing on a row that
 /// was emptied wholesale.
 #[test]
@@ -193,8 +217,8 @@ fn discharge_keeps_every_unhandled_label() {
     expect_reject(
         "discharge_ctl",
         "  operation t(r: Res) -> Int64\n    effects {}\n  = handle_Error(lambda () -> may_fail(r))",
-        &["Modify"],
-        "a {} declaration under a call whose residual is {Modify[Res]}",
+        &["Beep"],
+        "a {} declaration under a call whose residual is {Beep}",
     );
 }
 
@@ -205,32 +229,32 @@ fn discharge_keeps_every_unhandled_label() {
 fn a_handler_that_keeps_the_label_in_its_result_does_not_discharge() {
     expect_reject(
         "keep",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res]}\n  = keep_Error(lambda () -> may_fail(r))",
+        "  operation t(r: Res) -> Int64\n    effects {Beep}\n  = keep_Error(lambda () -> may_fail(r))",
         &["Error"],
-        "keep_Error (Error retained in the result row) under a declared {Modify} row",
+        "keep_Error (Error retained in the result row) under a declared {Beep} row",
     );
 }
 
-/// A residual of more than one label: `{Error, Modify, Clock}` minus `Error` is BOTH
+/// A residual of more than one label: `{Error, Beep, Clock}` minus `Error` is BOTH
 /// remaining labels, not just the first. Paired with its own control below.
 #[test]
 fn discharge_leaves_a_multi_label_residual_intact() {
     expect_load(
         "multi",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res], Clock}\n  = handle_Error(lambda () -> both(r))",
+        "  operation t(r: Res) -> Int64\n    effects {Beep, Clock}\n  = handle_Error(lambda () -> both(r))",
         "handle_Error over a three-label body under its two-label residual",
     );
 }
 
 /// Control for the above: dropping either surviving label from the declaration is
-/// refused, so the residual is exactly `{Modify[Res], Clock}` — not a subset that
+/// refused, so the residual is exactly `{Beep, Clock}` — not a subset that
 /// happens to be admitted.
 #[test]
 fn a_multi_label_residual_is_not_partially_dropped() {
     expect_reject(
         "multi_ctl",
         "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Error(lambda () -> both(r))",
-        &["Modify"],
+        &["Beep"],
         "a {Clock}-only declaration under a {Modify, Clock} residual",
     );
 }
@@ -255,14 +279,14 @@ fn discharge_works_through_an_eta_lifted_operation_reference() {
 // with `expected callback effects admitted by parameter `body` … (a closed row), got …
 // declares `merge[left = present[…], …]`` — the malformed single-label row.
 
-/// `{Error, Modify, Clock}` −`Modify` −`Error` = `{Clock}`: the inner handler's residual
+/// `{Error, Beep, Clock}` −`Modify` −`Error` = `{Clock}`: the inner handler's residual
 /// is what the outer one discharges FROM.
 #[test]
 fn nested_handlers_drop_labels_successively() {
     expect_load(
         "nest",
-        "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Error(lambda () -> handle_Modify(lambda () -> both(r)))",
-        "handle_Error ∘ handle_Modify over a three-label body, residual {Clock}",
+        "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Error(lambda () -> handle_Beep(lambda () -> both(r)))",
+        "handle_Error ∘ handle_Beep over a three-label body, residual {Clock}",
     );
 }
 
@@ -272,8 +296,8 @@ fn nested_handlers_drop_labels_successively() {
 fn nested_handlers_discharge_in_either_order() {
     expect_load(
         "nest_rev",
-        "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Modify(lambda () -> handle_Error(lambda () -> both(r)))",
-        "handle_Modify ∘ handle_Error over a three-label body, residual {Clock}",
+        "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Beep(lambda () -> handle_Error(lambda () -> both(r)))",
+        "handle_Beep ∘ handle_Error over a three-label body, residual {Clock}",
     );
 }
 
@@ -287,7 +311,7 @@ fn nested_handlers_discharge_in_either_order() {
 fn nesting_does_not_discharge_an_unhandled_label() {
     expect_reject(
         "nest_ctl",
-        "  operation t(r: Res) -> Int64\n    effects {}\n  = handle_Error(lambda () -> handle_Modify(lambda () -> both(r)))",
+        "  operation t(r: Res) -> Int64\n    effects {}\n  = handle_Error(lambda () -> handle_Beep(lambda () -> both(r)))",
         &["Clock"],
         "a {} declaration under two nested handlers whose residual is {Clock}",
     );
@@ -309,14 +333,14 @@ fn a_body_that_does_not_perform_the_handled_label_is_admitted() {
 }
 
 /// The SOUNDNESS control for that arm, and the reason it binds `ρ` to the residual
-/// rather than defaulting it to `{}`: with `Error` absent but `Modify[Res]` performed,
-/// `ρ` must be `{Modify[Res]}`.
+/// rather than defaulting it to `{}`: with `Error` absent but `Beep` performed,
+/// `ρ` must be `{Beep}`.
 #[test]
 fn a_body_that_does_not_perform_the_handled_label_still_carries_the_rest() {
     expect_load(
         "absent_rest",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res]}\n  = handle_Error(lambda () -> modifies_only(r))",
-        "handle_Error over a Modify-only body, residual {Modify[Res]}",
+        "  operation t(r: Res) -> Int64\n    effects {Beep}\n  = handle_Error(lambda () -> modifies_only(r))",
+        "handle_Error over a Beep-only body, residual {Beep}",
     );
 }
 
@@ -330,8 +354,8 @@ fn an_undischarged_label_under_an_absent_handled_label_is_reported_as_an_effect(
     expect_reject(
         "absent_ctl",
         "  operation t(r: Res) -> Int64\n    effects {}\n  = handle_Error(lambda () -> modifies_only(r))",
-        &["undeclared effect", "Modify"],
-        "a {} declaration under handle_Error over a Modify-only body",
+        &["undeclared effect", "Beep"],
+        "a {} declaration under handle_Error over a Beep-only body",
     );
 }
 
@@ -343,8 +367,8 @@ fn an_undischarged_label_under_an_absent_handled_label_is_reported_as_an_effect(
 fn nested_same_handler_discharges_once_and_then_finds_nothing() {
     expect_load(
         "nest_same",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res]}\n  = handle_Error(lambda () -> handle_Error(lambda () -> may_fail(r)))",
-        "handle_Error nested over itself, residual {Modify[Res]}",
+        "  operation t(r: Res) -> Int64\n    effects {Beep}\n  = handle_Error(lambda () -> handle_Error(lambda () -> may_fail(r)))",
+        "handle_Error nested over itself, residual {Beep}",
     );
 }
 
@@ -354,7 +378,7 @@ fn nested_same_handler_does_not_empty_the_row() {
     expect_reject(
         "nest_same_ctl",
         "  operation t(r: Res) -> Int64\n    effects {}\n  = handle_Error(lambda () -> handle_Error(lambda () -> may_fail(r)))",
-        &["Modify"],
+        &["Beep"],
         "a {} declaration under handle_Error nested over itself",
     );
 }
@@ -388,7 +412,7 @@ fn a_tail_shared_by_two_parameters_takes_the_union_of_their_constraints() {
 
 // ── The explicit row instantiation agrees with the inferred one ───────────────────
 
-/// Writing the tail out by hand reaches the same row: `[Rho = {Modify[Res]}]` is what
+/// Writing the tail out by hand reaches the same row: `[Rho = {Beep}]` is what
 /// inference derives in `discharge_drops_the_handled_label`. PASSES EITHER WAY (the
 /// explicit shape never depended on the inference arm) — it is here because the
 /// DISAGREEMENT between the two spellings is what the inference fix removed, and a test
@@ -397,20 +421,20 @@ fn a_tail_shared_by_two_parameters_takes_the_union_of_their_constraints() {
 fn an_explicitly_written_residual_tail_is_the_one_inference_derives() {
     expect_load(
         "explicit",
-        "  operation t(r: Res) -> Int64\n    effects {Modify[Res]}\n  = handle_Error[Rho = {Modify[Res]}](lambda () -> may_fail(r))",
-        "handle_Error[Rho = {Modify[Res]}] over a {Error, Modify} body",
+        "  operation t(r: Res) -> Int64\n    effects {Beep}\n  = handle_Error[Rho = {Beep}](lambda () -> may_fail(r))",
+        "handle_Error[Rho = {Beep}] over a {Error, Beep} body",
     );
 }
 
 /// And a WRONG explicit tail is still refused — the callback row closes to
-/// `{Error[Int64], Clock}`, which does not admit the body's `Modify[Res]`.
+/// `{Error[Int64], Clock}`, which does not admit the body's `Beep`.
 #[test]
 fn a_wrong_explicit_residual_tail_is_refused() {
     expect_reject(
         "explicit_bad",
         "  operation t(r: Res) -> Int64\n    effects {Clock}\n  = handle_Error[Rho = {Clock}](lambda () -> may_fail(r))",
-        &["handle_Error", "Modify"],
-        "handle_Error[Rho = {Clock}] over a body performing Modify[Res]",
+        &["handle_Error", "Beep"],
+        "handle_Error[Rho = {Clock}] over a body performing Beep",
     );
 }
 
