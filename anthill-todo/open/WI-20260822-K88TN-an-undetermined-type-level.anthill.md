@@ -37,3 +37,80 @@ ACCEPTANCE IS `cargo-test` ONLY. The filed default carried `scaland-sbt-test` to
 
 RELATION TO 062. Same keyword, adjacent level: 062 proves a `requires` over a SORT's type parameters at load, and this proves an operation's over a variable its own signature binds, at the frame that binds it. Neither depends on the other; if both land the keyword means one thing wherever it is written.
 
+## Changes
+
+### 2026-08-23T06:44:08Z — feedback — claude
+
+MEASURED 2026-08-23 against the loader at 9cb362a2 (9PGCM + 59CDQ + 1MAGR). Two of this ticket's own claims move, and the regime question is answered by a distinction the codebase already draws. Nothing implemented yet — this is the state the next session should start from.
+
+USER'S READING, and it is the right one: if `relay` declares no `requires`, then `?m` is RIGID in `relay`'s body — it is the CALLER's choice, universally quantified — so the obligation at `send(t)` is `∀m. flows_to(m, Public)`, which is decided FALSE (only `Public` flows to `Public`). It should refuse, and the repair is to declare the clause. That is regime (a), and it follows from WI-1059 rather than from a preference: "GROUND MEANT TWO THINGS, and a skolem is the value that separates them — `rigid_ok = false` CONCRETE … `rigid_ok = true` DETERMINED: nothing is left for a later pass to decide, and a skolem is fully determined". A rigid `?m` is DETERMINED. The gate is asking the CONCRETE question where it should ask the DETERMINED one.
+
+THE GATE MAKES NO SUCH DISTINCTION TODAY. `value_carries_logical_var` (`typing.rs:44589`) bottoms out in `view_carries_logical_var`, whose head arm is `ViewHead::Var(_) => true` — ANY variable, skolem or unsolved inference var alike. That is the one line the regime turns on.
+
+CLAIM 1 OF THIS TICKET IS FALSE, MEASURED. The ticket states: "an operation's own `requires` is NOT in its body's Γ. `FlowEnv::empty()` is Γ₀, so even under (a) a DECLARED `requires flows_to(?m, Public)` cannot discharge the `send(t)` obligation — the check would refuse the very source it just demanded." IT DOES NOT REFUSE IT. Three shapes, run through `anthill load`:
+
+    relay WITH `requires flows_to(?m, Public)`, no caller          -> loads
+    … + `operation leak() -> Unit = relay(banner())`               -> loads
+    … + `operation leak() -> Unit = relay(fetch())`                -> REFUSED,
+        "type mismatch in k6.relay.requires: expected precondition
+         `flows_to(Untrusted, Public)` provable at the call site,
+         got unsatisfied precondition"
+
+So the DECLARED form already behaves exactly as regime (a) wants — the contract propagates and is checked at the call site. What is missing is only the refusal of the UNDECLARED wrapper. That is a much smaller change than the ticket describes.
+
+CLAIM 2, AND IT IS WHY CLAIM 1 IS NOT GOOD NEWS. The declared form loads for the WRONG REASON. `send(t)` is not proved from the declared `requires` — Γ₀ really is `FlowEnv::empty()` — it is SKIPPED, because the float's `continue` (`check_apply_iter`, `typing.rs:14757`) runs BEFORE `precondition_proved` on the line below it. So today the declared version passes by accident. This makes the ticket's own ORDERING TRAP paragraph the real prerequisite and the Γ₀ seed insufficient alone: if the undeclared wrapper is refused on RIGIDITY, the declared one must be accepted on PROOF, or the pass decides two neighbouring programs by two different criteria.
+
+THE JUSTIFICATION FOR FLOATING OVERSTATES ITS POPULATION. The site comment says deciding by absence "would refuse every label-polymorphic wrapper". Under the rigid reading it refuses only a label-polymorphic operation that CALLS A CONSTRAINED OPERATION WITHOUT DECLARING THE CONSTRAINT. One that calls nothing constrained is untouched, and for the rest the repair is one `requires` line that already works (above). The corpus count this ticket demands before choosing (a) is therefore still owed, but the predicted number should be much smaller than "every polymorphic declaration".
+
+SHAPE OF THE FIX, three coupled pieces — none of them alone is a fix:
+ 1. SPLIT THE GATE at `typing.rs:14757`: a clause carrying a FLEXIBLE var floats (unchanged); one carrying a RIGID var is DECIDED and must be discharged or refused. WI-1059's `rigid_ok` is the existing precedent and `type_value_is_ground_g` is the existing shape.
+ 2. SEED Γ₀ with the operation's own value preconditions (proposal 050's Hoare reading: a precondition is an ASSUMPTION inside the body).
+ 3. AT THE GATE, try Γ ALONE for a rigid clause — STRUCTURAL match against the assumed clause, never a resolver query. The ticket's ordering note gives the reason and it holds: a resolver query with a free variable is witnessed EXISTENTIALLY off any unrelated fact, which is the vacuity 9PGCM removed.
+
+THE REPRO, self-contained, so the next session need not rebuild it. Load each as one file with `anthill load`; the prelude is shared and the last operations are what varies.
+
+    enum k.Level
+      entity Untrusted
+      entity Public
+    end
+
+    enum k.Text
+      import anthill.prelude.{String}
+      sort L = ?
+      entity mk(raw: String)
+    end
+
+    namespace k
+      import anthill.prelude.{Unit, String}
+      import k.Level.{Untrusted, Public}
+      import k.Text
+      import k.Text.{mk}
+
+      -- the lattice. NOTE WHAT IS ABSENT: flows_to(Untrusted, Public).
+      fact flows_to(Public, Public)
+      fact flows_to(Untrusted, Untrusted)
+
+      operation fetch()  -> Text[L = Untrusted]
+      operation banner() -> Text[L = Public]
+
+      operation send(body: Text[L = ?l]) -> Unit
+        requires flows_to(?l, Public)
+
+      -- … one of the six tails below …
+    end
+
+    TAIL                                                     TODAY      WANTED
+    1  operation leak() = send(fetch())                       REFUSED    same
+    2  operation ok()   = send(banner())                      loads      same
+    3  operation relay(t: Text[L = ?m]) = send(t)             loads      REFUSED  <- (a)
+    4  3 + operation leak() = relay(fetch())                  loads      REFUSED  <- the leak
+    5  3 + operation ok()   = relay(banner())                 loads      same
+    6  relay WITH `requires flows_to(?m, Public)`, + 4's tail  REFUSED    same, but
+                                                                          PROVED not skipped
+
+Rows 3 and 6 are the pair that separates the regimes: under (a) row 3 flips and row 6 must keep its verdict for a NEW reason. Row 5 is the control that says the fix gates rather than refuses. Rows 1/2 are 9PGCM's and must not move.
+
+ACCEPTANCE UNCHANGED otherwise, with one correction: `wrapper_swallows_the_obligation_pending_propagation` (row 4) flips to `is_err` under BOTH regimes, so it does not distinguish them — row 3 is what does. And `undetermined_label_floats_rather_than_failing` IS row 3, so under (a) it is not merely "re-stated": it inverts, and the ticket should say so in those words.
+
+STILL OWED BEFORE LANDING (a): the corpus census the ticket asks for — how many existing declarations the new refusal hits. Not run in this session.
+
