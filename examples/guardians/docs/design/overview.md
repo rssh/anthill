@@ -12,7 +12,10 @@ Other implementations described:
     - Python + Dafny/Z3:
            implementation: https://github.com/metareflection/guardians
 
-    - ETAS: https://arxiv.org/abs/2607.17780
+    - ETAS: https://arxiv.org/html/2607.17780v1
+          local copy of pdf: docs/local/references/etas/2607.17780v1.pdf
+
+
         
 
 Use effects tracking for analyzing of generated API and design embedding of LLM-agent generation into logical part
