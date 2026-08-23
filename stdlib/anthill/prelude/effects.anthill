@@ -37,6 +37,20 @@
 --   handler but live in separate slots within it. To give a specific resource
 --   its own handler, replace the global Modify handler with a dispatcher that
 --   switches on the target symbol.
+--
+-- AMBIENT RESOURCES — the spelling the note above describes. A NULLARY
+-- CONSTRUCTOR is a constant of its sort, hence a value, hence a name for a slot:
+--
+--   sort CounterState
+--     entity counter
+--   end
+--   operation write(n: Int64) -> Unit effects Modify[counter] = set(counter(), n)
+--
+-- No handle threaded through the caller; `Env(counter)` is the slot, and two
+-- nullary constructors are two resources. A constructor that takes FIELDS is a
+-- function and names no slot until applied; an EPONYMOUS one is its own sort
+-- (§6.3) and stays a type. This is the one slot where a bare entity name is not a
+-- type — kernel-language.md §5.6, WI-20260823-4GBQV.
 
 namespace anthill.prelude
 

@@ -20323,6 +20323,80 @@ impl<'a> Loader<'a> {
             .is_some_and(|k| k.is_value_place())
     }
 
+    /// WI-20260823-4GBQV — lower a binding written in `Modify`'s OWN TARGET SLOT, where
+    /// a bare name that names a NULLARY CONSTRUCTOR is an AMBIENT RESOURCE (a PLACE)
+    /// rather than a type. Everything else delegates to [`Self::type_expr_to_child`]
+    /// unchanged.
+    ///
+    /// SCOPED TO THIS ONE SLOT, and the scope is the whole design rather than caution.
+    /// kernel-language.md §5.6 says `Modify[X]`'s argument is a RESOURCE NAME — `Env` is
+    /// a partial map from names to terms — so this slot is the one place in the language
+    /// where a type-parameter position does not hold a type; [`typing::check_modify_-
+    /// targets`] already refuses a type written here for exactly that reason. Every OTHER
+    /// type slot keeps WI-313's rule that an entity name is a TYPE, and that rule is load
+    /// bearing: `Level.Untrusted` standing in `Text[L = Untrusted]` is how the taint
+    /// vocabulary carries a label as a type parameter, and reading it as a place breaks
+    /// the obligation `flows_to(?l, Public)` outright. MEASURED, not foreseen — the first
+    /// cut widened the general single-segment arm and 9 tests across three files fell
+    /// (`wi9pgcm_type_level_precondition_test`, `wi1fkr2_op_type_var_threads_test`,
+    /// `wi_rkmd4_type_var_param_slot_test`), every one of them on that idiom.
+    ///
+    /// SINGLE-SEGMENT ONLY, matching the arm it extends. A dotted `Modify[a.b]` is
+    /// already classified by [`Self::try_denoted_value_path`] / [`Self::try_expr_carried_-
+    /// projection`], and a field path off an ambient resource is a separate question this
+    /// ticket does not open.
+    fn type_expr_to_child_modify_target(
+        &mut self,
+        te: &TypeExpr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        if let TypeExpr::Simple(name) = te {
+            if name.segments.len() == 1 {
+                let short = self.parsed.symbols.local_name(name.segments[0]).to_owned();
+                // NEVER AHEAD OF A BINDER THE DELEGATE OWNS. A callback arrow's own
+                // parameter (`f: (a: Cell) -> Unit @ Modify[a]`) lives in
+                // `arrow_binder_scope`, and a type parameter in the scope's type-param
+                // table; both are resolved INSIDE [`Self::type_expr_to_child`], after this
+                // helper would have run. Answering first therefore does not add a reading,
+                // it STEALS one: with an enclosing operation parameter — or any other
+                // name — spelled like the binder, `Modify[a]` silently re-points at the
+                // enclosing `a`, and the caller can then declare an effect that names a
+                // resource the callback never touches while the one it does touch goes
+                // undeclared. An unsound ACCEPT, caused by a name written elsewhere in the
+                // file. Found by `/code-review` on WI-341's own `each` fixture; pinned by
+                // `wi4gbqv…::an_arrow_binder_is_not_captured_by_an_enclosing_name`.
+                //
+                // So this helper adds the ambient reading ONLY where the delegate would
+                // otherwise have built a bare `make_sort_ref` — the type reading — which
+                // is exactly the case §5.6 says is wrong in this slot.
+                if !self.arrow_binder_scope.contains_key(short.as_str())
+                    && !self.kb.symbols.is_type_param(self.current_scope, &short)
+                {
+                    // `resolve_in_scope`, NOT `remap_name`: the latter REPORTS an
+                    // unresolved name, and this arm runs on labels whose binder it cannot
+                    // see. Before the guard above, `prelude/iterable.anthill`'s
+                    // `-Modify[x]` put four copies of "unresolved place `x`" on every
+                    // program that merely loads the prelude. Not-found delegates, silently.
+                    if let ResolveResult::Found(sym) =
+                        self.kb.symbols.resolve_in_scope(&short, self.current_scope)
+                    {
+                        // ONLY the ambient addition. The value-place and zero-arg-operation
+                        // members of §5.6's vocabulary are already read by the delegate,
+                        // in the right order relative to the binders above; re-deciding
+                        // them here would only reintroduce the theft this guard prevents.
+                        if self.kb.is_ambient_resource_name(sym) {
+                            return node_occurrence::TypeChild::Node(
+                                self.kb.make_denoted_occ_ref(sym, span, owner),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        self.type_expr_to_child(te, span, owner)
+    }
+
     /// WI-302 (proposal 027.1 per-projection): classify a MULTI-segment dotted name
     /// in a type-argument slot whose HEAD resolves (in scope) to a VALUE and whose
     /// last segment is a VALUE FIELD (lowercase) — `Modify[result.a]`,
@@ -20942,12 +21016,24 @@ impl<'a> Loader<'a> {
                 // Shared value-place set + a zero-arg `Operation` (the WI-313
                 // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
                 // the compound-path heads omit (a field off an op name is not a place).
+                // A NULLARY CONSTRUCTOR is deliberately NOT here — an entity name in a
+                // general type slot is a TYPE (WI-313, and `Level.Untrusted` standing in
+                // `Text[L = Untrusted]` is the live idiom that depends on it). The
+                // `Modify` TARGET slot alone reads it as an ambient PLACE; see
+                // [`Self::type_expr_to_child_modify_target`].
                 let is_value = self.symbol_is_value_place(sort_sym)
                     || self
                         .kb
                         .symbols
                         .get(sort_sym)
                         .has_kind(SymbolKind::Operation);
+                // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
+                // `check_modify_targets`' own message both contradict ("a value-producing
+                // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
+                // as it stands — it long predates WI-20260823-4GBQV, an operation's
+                // declared arity is not readable here (signatures load later), and
+                // narrowing it is a separate measurement. Recorded by `/code-review`
+                // rather than silently inherited.
                 if is_value {
                     node_occurrence::TypeChild::Node(
                         self.kb.make_denoted_occ_ref(sort_sym, span, owner),
@@ -20990,8 +21076,16 @@ impl<'a> Loader<'a> {
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
                 let mut positional_index: usize = 0;
                 let mut any_node = false;
+                // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
+                // the loop, since it is a property of the head, not of a binding.
+                let modify_target = self.kb.try_resolve_symbol("anthill.prelude.Modify")
+                    == Some(sort_sym);
                 for b in bindings {
-                    let bound_child = self.type_expr_to_child(&b.bound, span, owner);
+                    let bound_child = if modify_target {
+                        self.type_expr_to_child_modify_target(&b.bound, span, owner)
+                    } else {
+                        self.type_expr_to_child(&b.bound, span, owner)
+                    };
                     if matches!(bound_child, node_occurrence::TypeChild::Node(_)) {
                         any_node = true;
                     }

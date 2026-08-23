@@ -101,38 +101,40 @@ end
     );
 }
 
-/// WI-20260823-39AD2 — THE ARGUMENT SHAPES THAT RE-KEY, AND THE ONE THAT DOES NOT.
+/// WI-20260823-4GBQV — THE ARGUMENT SHAPES THAT NAME A PLACE, AND WHAT HAPPENS TO THE
+/// ONE THAT DOES NOT.
 ///
-/// `param_to_arg_sym` / `param_to_arg_head` populate from exactly two argument shapes:
-/// a bare VARIABLE reference (`Cell.set(k, 1)` → `Modify[c]` becomes `Modify[k]`) and a
-/// field PROJECTION (`Cell.set(c.rep, 1)` → the head `c`, the rest of this file). An
-/// argument that is neither — an APPLICATION, `Cell.set(mk(), 1)` — gets no entry, and
-/// the callee's own parameter name SURVIVES into the caller's row: the diagnostic reads
-/// `undeclared effect: Modify[T = c]`, naming `Cell.set`'s parameter, a symbol nowhere
-/// in the caller's text.
+/// `param_to_arg_sym` / `param_to_arg_head` populate from the shapes that DENOTE a place:
+/// a bare VARIABLE (`Cell.set(k, 1)` ⟹ `Modify[c]` becomes `Modify[k]`), a field
+/// PROJECTION off one (`Cell.set(c.rep, 1)` ⟹ the head `c`, the rest of this file), and —
+/// as of this ticket — a NULLARY CONSTRUCTOR naming an ambient resource
+/// (`set(counter(), n)`, driven end-to-end in
+/// `eval_test::m5_modify_an_ambient_resource_write_then_read`).
 ///
-/// PRE-EXISTING AND INDEPENDENT of the ticket that pinned it — measured on `Cell.set`,
-/// whose row has read `Modify[c]` since proposal 037, with the effects.anthill change
-/// backed out. WI-20260823-39AD2 only made it REACHABLE through a second op:
-/// `ModifyRuntime.set` now declares `Modify[target]` too, so the ambient-resource idiom
-/// `set(counter(), n)` (a nullary constructor naming a global slot — the shape
-/// `prelude/effects.anthill`'s runtime note describes, and the one `eval_test`'s m5
-/// fixtures were written in) is not writable today. Those fixtures now take the resource
-/// as a PARAMETER; this row is what says the ambient spelling is missing rather than
-/// letting it disappear from the record.
+/// AN APPLICATION IS NOT ONE, and stays refused. `Cell.set(mk(), 1)` passes a value that
+/// no name denotes: `Env` maps resource NAMES to terms (kernel-language.md §5.6), and
+/// `mk()`'s result is fresh per call, so there is no slot for `Modify[c]` to be re-keyed
+/// onto. WHAT CHANGED IS THE MESSAGE. Before WI-20260823-4GBQV the label survived
+/// un-re-keyed and surfaced far away as `undeclared effect: Modify[T = c]` — naming
+/// `Cell.set`'s parameter, a symbol nowhere in the caller's text. It now reports at the
+/// CALL, against the caller's own `mk(…)`, and prescribes the `let` binding that works.
 ///
-/// ASSERTS THE LEAK, NOT A WISH. It is loud, not silent, so the current behaviour is
-/// safe — but the message names a symbol the author cannot see. When the re-key learns
-/// this shape, this row flips to `Ok`.
+/// THREE ARMS, THREE DIFFERENT QUESTIONS, and the file's own controls:
+///   * `via_var` — a bare variable re-keys. Passes both before and after, by design: it
+///     is what stops the third arm reading as "Modify never re-keys".
+///   * `via_let` — the PRESCRIBED REPAIR, driven rather than described. A message naming
+///     a repair that does not load is the defect WI-K88TN's (D) axis records.
+///   * `via_app` — the refusal, asserted on the CALLER's token (`mk`) and on the ABSENCE
+///     of the callee's (`Modify[T = c]`), so a regression to the leak fails it in the
+///     direction it regressed.
 #[test]
-fn an_application_argument_does_not_rekey_and_leaks_the_callees_param_name() {
+fn an_application_argument_is_refused_naming_the_callers_own_expression() {
     let src = r#"
-namespace test.wi39ad2.app_arg
+namespace test.wi4gbqv.app_arg
   import anthill.prelude.{Unit, Int64, Cell, Modify}
 
-  -- CONTROL: a bare variable argument DOES re-key. This arm passes today and must
-  -- keep passing — it is what makes the arm below a gap rather than "Modify never
-  -- re-keys".
+  -- CONTROL: a bare variable argument DOES re-key. Passed before this ticket and must
+  -- keep passing.
   operation via_var(k: Cell[V = Int64]) -> Unit
     effects Modify[k]
   = Cell.set(k, 1)
@@ -143,25 +145,55 @@ end
         "a bare-variable argument must re-key the callee's Modify onto it"
     );
 
-    let src_app = r#"
-namespace test.wi39ad2.app_arg_gap
+    let src_let = r#"
+namespace test.wi4gbqv.let_repair
   import anthill.prelude.{Unit, Int64, Cell, Modify}
 
   operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
 
-  -- THE GAP: `mk()` is an application, so nothing maps `Cell.set`'s `c` onto it.
+  -- THE REPAIR the refusal below prescribes: bind the application to a name, then pass
+  -- the name. Driven, so the message cannot prescribe something that does not load.
+  -- The row is EMPTY and not `Modify[x]`: `x` is a body local, out of scope in the
+  -- signature (`unresolved name 'x'`), and a mutation of a value the operation itself
+  -- made and never lets escape is not an observable effect — so binding the argument
+  -- both names a place for the re-key AND elides the label. Measured, not assumed:
+  -- spelling `effects Modify[x]` here is two load errors.
+  operation via_let() -> Unit
+    effects {}
+  =
+    let x = mk()
+    Cell.set(x, 1)
+end
+"#;
+    assert!(
+        load_result(src_let).is_ok(),
+        "`let x = mk()` then `Cell.set(x, 1)` is the prescribed repair and must load"
+    );
+
+    let src_app = r#"
+namespace test.wi4gbqv.app_arg_refused
+  import anthill.prelude.{Unit, Int64, Cell, Modify}
+
+  operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
+
+  -- THE REFUSAL: `mk()` is an application, which names no slot in `Env`.
   operation via_app() -> Unit
     effects {}
   = Cell.set(mk(), 1)
 end
 "#;
-    let errs = load_result(src_app).expect_err("the un-re-keyed label must still be loud");
+    let errs = load_result(src_app).expect_err("an argument naming no place must be refused");
     assert!(
-        // ASSERT THE LEAKED SYMBOL, not merely "some Modify escaped": `mk()` declares
-        // `Modify[result]` two lines up in the same fixture, so a substring test on
-        // `Modify` alone would be satisfied by an escape this row is not about.
         errs.iter()
-            .any(|e| e.contains("undeclared effect") && e.contains("Modify[T = c]")),
-        "expected `Cell.set`'s own parameter `c` to surface un-re-keyed; got: {errs:#?}"
+            .any(|e| e.contains("names no resource") && e.contains("mk")),
+        "expected the refusal to name the CALLER's own `mk(…)`; got: {errs:#?}"
+    );
+    assert!(
+        // THE REGRESSION DIRECTION. The defect was the callee's parameter leaking into
+        // the caller's row; asserting its ABSENCE is what fails if the leak returns,
+        // which asserting the new message alone would not.
+        !errs.iter().any(|e| e.contains("Modify[T = c]")),
+        "`Cell.set`'s own parameter `c` must not surface in the caller's diagnostic; \
+         got: {errs:#?}"
     );
 }

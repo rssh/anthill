@@ -155,6 +155,9 @@ mod wi508_nullary_carrier_dispatch_test;
 #[path = "include/wi506_modify_field_coverage_test.rs"]
 mod wi506_modify_field_coverage_test;
 
+#[path = "include/wi4gbqv_ambient_resource_test.rs"]
+mod wi4gbqv_ambient_resource_test;
+
 #[path = "include/wi279_dot_dispatch_test.rs"]
 mod wi279_dot_dispatch_test;
 

@@ -2267,11 +2267,22 @@ Each `Modify[target]` effect declares a **resource** — a named slot in the env
 
 **A `Modify` target is a PLACE, never a type.** `Env` maps resource *names*, so the
 argument of `Modify[…]` must **denote a value** — a parameter (`Modify[c]`), the result
-binder (`Modify[result]`, §5.5), a field path off one (`Modify[c.contents]`), or a
-value-producing zero-arg operation (`Modify[kb]`, the ambient-resource accessor). The rule
-is *denotation*, not a closed list of spellings. A **type** in that slot — a sort
+binder (`Modify[result]`, §5.5), a field path off one (`Modify[c.contents]`), a
+value-producing zero-arg operation (`Modify[kb]`, the ambient-resource accessor), or a
+**nullary constructor** (`Modify[counter]`, the *ambient resource*). The rule is
+*denotation*, not a closed list of spellings. A **type** in that slot — a sort
 (`Modify[Cell]`), a sort parameter (`Modify[T]`), or a type projection (`Modify[s.T]`) —
 names no slot, and is a **load error**; so is a bare `Modify` with no target.
+
+The **ambient resource** is the nullary constructor read as what it is: a *constant* of
+its sort, hence a value, hence a name for the slot `Env(counter)`. A constructor that
+takes fields is a *function* and names no slot until applied, so `Modify[wrap]` is a type
+error like any other; and an **eponymous** constructor is its own sort (§6.3), so
+`Modify[Slot]` where `sort Slot { entity Slot }` cannot be read as the constructor without
+also reading it as the type, and stays refused. This is the one slot in the language where
+a bare entity name is *not* a type — every other type-argument position reads it as one
+(`Text[L = Untrusted]`, a label carried as a type parameter), which is exactly what §5.6's
+resource-name reading of this bracket says it should be.
 
 The rule is not a restriction but a consequence: a type target is unsatisfiable by
 construction, because a provision binds a type parameter to a *type*
@@ -2289,6 +2300,15 @@ Enforced by `check_modify_targets` (`kb/typing.rs`) on an operation's own effect
 refused earlier still, by the type grammar. Inside a *parameter's* arrow type
 (`handle(body: () -> X @ {Modify[…], ρ})`) the target is the arrow's own binder, not the
 enclosing operation's parameter; that position is not yet checked.
+
+**At a call, the target is re-keyed onto the argument** — `Cell.set` declares
+`effects Modify[c]`, so `Cell.set(k, 1)` incurs `Modify[k]`. The argument must therefore
+name a place by the same rule: a variable, a field path off one (which coarsens to its
+head — `Modify[c.rep]` is covered by `Modify[c]`), or a nullary constructor
+(`set(counter(), n)`, with or without the parentheses). An argument that names none — an
+application, whose result is a fresh value per call — is a **load error at the call**,
+naming the caller's own expression: there is no slot for the effect to be re-keyed onto,
+and the repair is to give the value a name (`let x = mk()`, then pass `x`).
 
 #### Effect-Env Condition
 

@@ -8489,6 +8489,77 @@ impl KnowledgeBase {
         self.constructor_symbols.contains(&functor)
     }
 
+    /// WI-20260823-4GBQV — does `sym` name an AMBIENT RESOURCE: a NULLARY
+    /// CONSTRUCTOR, which is a CONSTANT of its sort and therefore a value, and so a
+    /// PLACE the effect row can name (`Modify[counter]`, `Env(counter)`)?
+    ///
+    /// `prelude/effects.anthill`'s runtime note describes exactly this slot — "one arena
+    /// keyed by the target's FUNCTOR SYMBOL: `set(store, v)` and `set(counter, v)` share
+    /// the same handler but live in separate slots" — and until this predicate existed
+    /// the idiom was not writable: the name classified as a TYPE and
+    /// [`typing::check_modify_targets`] refused it.
+    ///
+    /// ONE PREDICATE, TWO SITES, and they must not each write their own: the loader's
+    /// single-segment value-in-type arm (`load::type_expr_to_child`) decides whether
+    /// `Modify[counter]` LOWERS to a denoted place, and the typer's argument re-key
+    /// (`typing::arg_place_head`) decides whether `set(counter(), n)` RE-KEYS the
+    /// callee's `Modify[<param>]` onto it. Either one alone repairs nothing — a label
+    /// that lowers but never re-keys is an undeclared effect at every call, and a
+    /// re-key onto a name the declaration cannot spell is a label no author can declare.
+    ///
+    /// NULLARY, because arity is what separates a value from a function: `entity counter`
+    /// IS a value of `CounterState` (and `counter()` allocs to the same bare `Ref` —
+    /// [`Self::alloc`]'s WI-511 canon), while `entity wrap(rep: …)` is a constructor
+    /// FUNCTION, naming no slot until applied.
+    ///
+    /// NOT EPONYMOUS, because an eponymous constructor IS its sort — WI-926: one symbol,
+    /// no nested `Slot.Slot` — so `Modify[Slot]` cannot be read as the constructor
+    /// WITHOUT also reading it as the sort, and admitting it would silently un-refuse the
+    /// type target WI-20260823-39AD2 exists to refuse. MEASURED rather than assumed: the
+    /// tree holds 200 eponymous constructor sites (3 of them in loadable `.anthill`
+    /// sources — `geometry.anthill`'s `Vec3` and two cli fixtures), of which exactly two
+    /// are NULLARY, both test fixtures (`parse_test.rs`'s `Error`,
+    /// `wi933_carrierless_provision_test.rs`'s `Wi933Unit`). So the exclusion costs
+    /// nothing in use and closes the whole population by construction.
+    ///
+    /// Reads the ENTITY registry keyed by the RESOLVED symbol. `register_entity_fields`
+    /// also writes a second entry under the bare interned short name, which an
+    /// UNRESOLVED symbol would answer from — the short-name identity WI-926 had to
+    /// remove from a widened predicate — so the `has_kind` gate is load-bearing, not
+    /// belt-and-braces.
+    pub fn is_ambient_resource_name(&self, sym: Symbol) -> bool {
+        let info = self.symbols.get(sym);
+        info.has_kind(crate::intern::SymbolKind::Entity)
+            && !info.has_kind(crate::intern::SymbolKind::Sort)
+            && matches!(self.entity_field_names(sym), Some([]))
+    }
+
+    /// WI-20260823-4GBQV — is `sym` a CONSTRUCTOR that a `Modify` TARGET REFUSES: a
+    /// field-bearing one (a function, naming no slot until applied) or an EPONYMOUS one
+    /// (its own sort, WI-926)?
+    ///
+    /// THE NEGATIVE OF [`Self::is_ambient_resource_name`] OVER CONSTRUCTORS, and it has to
+    /// be stated negatively rather than as "does this name a place". The typer asks this
+    /// of an ARGUMENT, whose symbol is very often a binder the symbol table carries no
+    /// declared kind for — a `match`-bound pattern variable, a lambda binder, a
+    /// `with_fresh_vars` rename. Asking those "are you a value place?" answers NO, so the
+    /// positive form refused 250 working tests, `wi506…::pattern_bound_form_still_works`
+    /// (`match c case wrap(r) -> Cell.set(r, …)`) among them. Asking instead "are you a
+    /// constructor this slot refuses?" answers NO for every binder, which is the safe
+    /// direction: an unknown name stays admitted and the ordinary undeclared-effect check
+    /// still has the last word.
+    ///
+    /// WHAT IT BUYS. The effect re-key must not mint a label the DECLARATION cannot spell:
+    /// `set(wrap, n)` and `set(Slot, n)` re-keyed `Modify[target]` onto a field-bearing and
+    /// an eponymous constructor, producing `Modify[T = wrap]` / `Modify[T = Slot]` — whose
+    /// only lawful declaration is a load error, so the program was unwritable and neither
+    /// message said so. Found by `/code-review` probing the loader's admission set against
+    /// the typer's; no fixture reached it.
+    pub fn is_unplaceable_constructor(&self, sym: Symbol) -> bool {
+        self.symbols.get(sym).has_kind(crate::intern::SymbolKind::Entity)
+            && !self.is_ambient_resource_name(sym)
+    }
+
     /// WI-720: mark a functor SYMBOL as a constructor, WITHOUT the parent-sort /
     /// field registration [`Self::register_entity_of`] additionally performs.
     /// `scan_definitions` pass 1 calls this for every sort-nested `entity`, so
