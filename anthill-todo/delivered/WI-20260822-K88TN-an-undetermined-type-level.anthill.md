@@ -3,9 +3,9 @@
 - id: WI-20260822-K88TN-an-undetermined-type-level
 - created: 2026-08-22T20:23:23Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-22T20:23:23Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-23T08:24:36Z
 
 - acceptance: cargo-test
 
