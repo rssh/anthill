@@ -649,9 +649,15 @@ pub enum TypeError {
         span: Option<Span>,
         op: Symbol,
         clause: Value,
+        /// WI-K88TN — which of the two ways the obligation went undischarged. They
+        /// want OPPOSITE repairs, so they are two messages and not one message with a
+        /// suffix (the WI-1049 shape the declared-effects error already uses).
+        kind: PreconditionFailure,
     },
     /// Catchall for auxiliary typing-pass checks (effect declarations,
     /// match exhaustiveness, HO pattern fragment, rule var consistency).
+    ///
+    /// (See [`PreconditionFailure`] below for the `requires` split.)
     /// Promote to a dedicated variant when a consumer discriminates on it.
     Other {
         span: Option<Span>,
@@ -835,6 +841,49 @@ impl TypeErrorContext {
             TypeErrorContext::BinderAnnotation { binder } => kb.local_name_of(*binder).to_string(),
         }
     }
+}
+
+/// WI-K88TN — WHY a `requires` goal went undischarged, which decides what the author
+/// is told to do about it.
+///
+/// The two are told apart by ONE question — does the judged clause still carry a
+/// `Var::Rigid`? — and that is the same question [`value_carries_undecided_var`] asks to
+/// let the clause through the gate at all, read at the other end.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreconditionFailure {
+    /// The call decided every variable in the clause and the resulting goal is not
+    /// provable from Γ + KB. The repair is at THIS call: establish the fact.
+    AtCallSite,
+    /// The clause is universally quantified over a type variable the ENCLOSING
+    /// operation's signature binds — `relay(t: Text[L = ?m]) = send(t)` raising
+    /// `∀m. flows_to(m, Public)` — and holds for no instantiation. Nothing at this call
+    /// can establish it, because the caller of the ENCLOSING operation is what picks
+    /// `?m`; the repair is to declare the clause on that operation, which propagates it
+    /// to those callers (and is then discharged here from Γ — [`op_requires_gamma`]).
+    /// `enclosing` is the operation that owes the declaration — NOT the callee the
+    /// obligation came from, which is what the error is otherwise attributed to.
+    UndeclaredInWrapper { enclosing: Symbol },
+    /// The clause carries a rigid variable NO signature in scope binds, so there is no
+    /// declaration that could name it and no call that could instantiate it.
+    ///
+    /// A `Var::Rigid` HAS TWO PRODUCERS WITH OPPOSITE QUANTIFIERS, and telling them
+    /// apart is what this third case is for. `rigidify_op_type_params` /
+    /// `rigidify_unwritten_sort_params` skolemize a signature's own parameters — ∀,
+    /// declarable, the case above. `open_existential_return` mints a FRESH ρ per use as
+    /// an ∃ WITNESS for a variable in a callee's return (`pick() -> Text[L = ?k]`), and
+    /// that one is bound by nothing: `f() = send(pick())` cannot be repaired by writing
+    /// `requires flows_to(?k, Public)` on `f`, because `?k` there is a new flex variable
+    /// of `f`'s own and never meets ρ. MEASURED — the prescribed repair returned the
+    /// BYTE-IDENTICAL error, which is a loop, not a diagnostic.
+    ///
+    /// The refusal itself is right either way (nothing may be assumed about an opaque
+    /// witness, which is what makes the opening sound); only the repair differs, so this
+    /// case says what is actually wrong instead of naming a line that will not help.
+    /// Membership in [`TypingEnv::param_rigids`] is the discriminator, and
+    /// [`constrained_param_receiver_type`] already states why that list is the precise
+    /// question: it holds "exactly the parameters in scope", and such a variable "IS a
+    /// parameter a `requires` clause can name and a call can instantiate".
+    UndischargeableWitness,
 }
 
 impl TypeError {
@@ -1208,9 +1257,49 @@ impl TypeError {
                 let parts: Vec<String> = errors.iter().map(|e| e.format(kb)).collect();
                 parts.join("; ")
             }
-            TypeError::UnsatisfiedPrecondition { op, clause, .. } => {
+            TypeError::UnsatisfiedPrecondition {
+                op,
+                clause,
+                kind: PreconditionFailure::AtCallSite,
+                ..
+            } => {
                 format!(
                     "unsatisfied precondition `{}` for call to `{}`: the `requires` goal could not be proved at the call site (establish it with an enclosing `if`/`match` guard, a prior `ensures`, or a KB fact)",
+                    format_precondition_clause(kb, clause),
+                    kb.qualified_name_of(*op),
+                )
+            }
+            TypeError::UnsatisfiedPrecondition {
+                op,
+                clause,
+                kind: PreconditionFailure::UndeclaredInWrapper { enclosing },
+                ..
+            } => {
+                // NOT the call-site advice: none of a guard / a prior `ensures` / a KB
+                // fact can establish a goal universally quantified over a variable the
+                // enclosing operation's own CALLER picks. The one repair is to declare
+                // it, so the message is the line to write and the operation to write it
+                // on — both named, since the obligation came from a THIRD operation.
+                let goal = format_precondition_clause(kb, clause);
+                format!(
+                    "undischarged precondition `{goal}` from the call to `{}`: it is universally quantified over a type variable `{}`'s signature binds, so it holds for every instantiation or for none — declare it on `{}` (`requires {goal}`) to pass the obligation to its callers",
+                    kb.qualified_name_of(*op),
+                    kb.qualified_name_of(*enclosing),
+                    kb.qualified_name_of(*enclosing),
+                )
+            }
+            TypeError::UnsatisfiedPrecondition {
+                op,
+                clause,
+                kind: PreconditionFailure::UndischargeableWitness,
+                ..
+            } => {
+                // NEITHER repair applies, and saying so is the whole point of this case
+                // (WI-K88TN): the variable is an opaque witness opened from a callee's
+                // return, so no `requires` can name it and no call can instantiate it.
+                // Prescribing a declaration here returned the byte-identical error.
+                format!(
+                    "undischargeable precondition `{}` from the call to `{}`: it names a type variable no signature in scope binds — an opaque witness from a callee's return type — so no `requires` clause can name it and no call can decide it. Give the value a type whose parameter is known here, or take it as a parameter so the caller's own decides it",
                     format_precondition_clause(kb, clause),
                     kb.qualified_name_of(*op),
                 )
@@ -1759,15 +1848,52 @@ impl TypeError {
                     }
                 }
             }
-            TypeError::UnsatisfiedPrecondition { op, clause, .. } => LoadError::TypeMismatch {
+            TypeError::UnsatisfiedPrecondition {
+                op, clause, kind, ..
+            } => LoadError::TypeMismatch {
                 origin: None,
-                entity_name: kb.qualified_name_of(*op).to_string(),
+                // WI-K88TN — THE DECLARATION THE AUTHOR MUST EDIT, which for the wrapper
+                // case is not the callee. `<entity>.<field>` heads the message, and
+                // naming `send.requires` there says "send's contract is wrong" when
+                // send's contract is fine and `relay`'s is missing; the span already
+                // points inside `relay`'s body, so the two now agree. The other two
+                // cases keep the callee: an unsatisfied obligation IS the callee's
+                // `requires`, and for an opaque witness there is no declaration to name.
+                entity_name: match kind {
+                    PreconditionFailure::UndeclaredInWrapper { enclosing } => {
+                        kb.qualified_name_of(*enclosing).to_string()
+                    }
+                    _ => kb.qualified_name_of(*op).to_string(),
+                },
                 field_name: "requires".to_string(),
-                expected_type: format!(
-                    "precondition `{}` provable at the call site",
-                    format_precondition_clause(kb, clause)
-                ),
-                actual_type: "unsatisfied precondition".to_string(),
+                expected_type: match kind {
+                    PreconditionFailure::AtCallSite => format!(
+                        "precondition `{}` provable at the call site",
+                        format_precondition_clause(kb, clause)
+                    ),
+                    // WI-K88TN: says what is WANTED, and the want is a declaration —
+                    // "provable at the call site" would send the author to a line whose
+                    // repair does not exist.
+                    PreconditionFailure::UndeclaredInWrapper { .. } => format!(
+                        "precondition `{}` declared here or provable for every instantiation",
+                        format_precondition_clause(kb, clause)
+                    ),
+                    PreconditionFailure::UndischargeableWitness => format!(
+                        "precondition `{}` over a type variable some signature in scope binds",
+                        format_precondition_clause(kb, clause)
+                    ),
+                },
+                actual_type: match kind {
+                    PreconditionFailure::AtCallSite => "unsatisfied precondition".to_string(),
+                    PreconditionFailure::UndeclaredInWrapper { .. } => {
+                        "undischarged precondition over a universally quantified type variable"
+                            .to_string()
+                    }
+                    PreconditionFailure::UndischargeableWitness => {
+                        "undischargeable precondition over an opaque witness from a callee's return"
+                            .to_string()
+                    }
+                },
                 span: self.span(kb),
             },
             TypeError::Other {
@@ -2368,11 +2494,20 @@ pub struct Env {
 }
 
 impl Env {
-    /// Seed at the typer boundary: a borrowed `TypingEnv` + the empty Γ₀.
-    fn new(types: &TypingEnv) -> Self {
+    /// Seed at the typer boundary: a borrowed `TypingEnv` + the Γ₀ its entry point
+    /// supplies.
+    ///
+    /// WI-K88TN made Γ₀ a PARAMETER rather than always [`FlowEnv::empty`]. Proposal 050
+    /// reads a precondition as a Hoare ASSUMPTION inside the body, so an operation's own
+    /// value `requires` is knowledge its body may use; [`op_requires_gamma`] builds that
+    /// seed and `check_operation_bodies` is its one supplier. Every other entry passes
+    /// the empty Γ₀ — a rule body and a nested type-check have no enclosing contract to
+    /// assume — and passes it EXPLICITLY, so a new entry point has to say which it means
+    /// instead of inheriting an invisible default.
+    fn with_gamma(types: &TypingEnv, flow: FlowEnv) -> Self {
         Env {
             types: Rc::new(types.clone()),
-            flow: FlowEnv::empty(),
+            flow,
         }
     }
 
@@ -6063,7 +6198,16 @@ fn type_check_node_at(
     } else {
         Vec::new()
     };
-    type_check_node_gated_at(kb, env, occ, expected, simp_enabled, &simp_rids, pos)
+    type_check_node_gated_at(
+        kb,
+        env,
+        occ,
+        expected,
+        simp_enabled,
+        &simp_rids,
+        pos,
+        FlowEnv::empty(),
+    )
 }
 
 /// WI-657(9): [`type_check_node`] with the `[simp]` gate (`simp_enabled` +
@@ -6094,6 +6238,38 @@ pub fn type_check_node_gated(
         simp_enabled,
         simp_rids,
         NodePos::Value,
+        FlowEnv::empty(),
+    )
+}
+
+/// WI-K88TN — [`type_check_node_gated`] with Γ SUPPLIED rather than empty.
+///
+/// Two callers, and they are the two places a check starts INSIDE a body that already
+/// has a Γ: the operation-body driver, which seeds the op's own value preconditions
+/// ([`op_requires_gamma`]), and the match-arm GUARD, whose Γ is the arm's. A guard is
+/// re-entrant rather than a work-stack `Visit`, so it is the one position where the
+/// walk's threaded Γ has to be handed over explicitly — and it must be, now that a
+/// rigid obligation is DECIDED there instead of floating: checking a guard under an
+/// empty Γ refuses a `requires` its enclosing operation declared. MEASURED — `case
+/// mk(r) | check(t)` was refused while the identical call in the arm BODY loaded.
+pub fn type_check_node_gated_in_gamma(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    expected: Option<Value>,
+    simp_enabled: bool,
+    simp_rids: &[RuleId],
+    gamma0: FlowEnv,
+) -> Result<TypeResult, TypeError> {
+    type_check_node_gated_at(
+        kb,
+        env,
+        occ,
+        expected,
+        simp_enabled,
+        simp_rids,
+        NodePos::Value,
+        gamma0,
     )
 }
 
@@ -6106,6 +6282,7 @@ fn type_check_node_gated_at(
     simp_enabled: bool,
     simp_rids: &[RuleId],
     pos: NodePos,
+    gamma0: FlowEnv,
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
@@ -6120,7 +6297,7 @@ fn type_check_node_gated_at(
     push_visit_at(
         &mut work,
         Rc::clone(occ),
-        Env::new(env),
+        Env::with_gamma(env, gamma0),
         expected,
         super::simp_rewrite::SIMP_FUEL,
         pos,
@@ -12156,13 +12333,19 @@ fn build_type(
                 if let Some(g) = &branch.guard {
                     if scr_ty.is_some() && guard_error.is_none() {
                         // WI-657(9): reuse the gate build_type already holds.
-                        match type_check_node_gated(
+                        // WI-K88TN: under `arm_flow`, NOT an empty Γ. The arm's Γ is
+                        // the outer one (which carries the enclosing operation's own
+                        // preconditions) plus this arm's pattern facts; the guard
+                        // predicate itself is assumed only AFTER this check, since a
+                        // guard may not discharge itself.
+                        match type_check_node_gated_in_gamma(
                             kb,
                             &branch_env,
                             g,
                             None,
                             simp_enabled,
                             simp_rids,
+                            arm_flow.clone(),
                         ) {
                             Ok(r) => {
                                 merge_effects_into(kb, &mut guard_effects, &r.effects);
@@ -14724,14 +14907,34 @@ fn check_apply_iter(
                 // call has decided, and this is their one substitution owner.
                 let clause = walk_type_deep_value(kb, &subst, clause);
                 // UNDETERMINED ⇒ FLOAT (WI-067 / WI-292: act on a DECIDED obligation,
-                // never on an undetermined one). A variable SURVIVING σ_type is one no
-                // caller has bound — the enclosing operation is polymorphic in it, and
-                // deciding it here by absence would refuse every label-polymorphic
-                // wrapper (`relay(t: Text[L = ?m]) = send(t)`). Such an obligation
-                // belongs on the ENCLOSING operation's contract; propagating it there
-                // needs an op's own `requires` in its body's Γ, which Γ₀ does not carry
-                // (`FlowEnv::empty`) — so the float is where this stops today, and
-                // WI-20260822-K88TN carries the decision (declare-or-refuse vs infer).
+                // never on an undetermined one). A FLEX variable surviving σ_type is one
+                // no caller has bound and no later pass has solved, and deciding it here
+                // by absence would be a verdict about the fact table rather than about
+                // this call.
+                //
+                // A RIGID ONE IS NOT UNDETERMINED — WI-K88TN, and it is the reversal of
+                // what this block first shipped. The comment here used to justify the
+                // float by "deciding it here by absence would refuse every label-
+                // polymorphic wrapper (`relay(t: Text[L = ?m]) = send(t)`)", and that
+                // OVERSTATED ITS POPULATION: under the rigid reading the refusal reaches
+                // only a polymorphic operation that calls a CONSTRAINED one without
+                // declaring the constraint. `?m` is universally quantified in this body
+                // (`rigidify_unwritten_sort_params`: "Inside the body it is therefore
+                // rigid; at a CALL it is flexible again"), so `flows_to(?m, Public)` here
+                // is `∀m. flows_to(m, Public)` — decided, and false — and the repair is
+                // the one `requires` line the declaration owes. That obligation still
+                // belongs on the ENCLOSING operation's contract; what changed is that the
+                // contract must be WRITTEN rather than silently dropped.
+                //
+                // Γ IS WHAT DISCHARGES THE WRITTEN ONE, and it is why the seed below the
+                // gate is not optional: `relay`'s own `requires flows_to(?m, Public)` is
+                // an ASSUMPTION inside its body (proposal 050's Hoare reading), assumed
+                // into Γ₀ by `op_requires_gamma` under the same `op.rigidify` this clause
+                // was walked through, so producer and consumer name the same skolem. The
+                // ordering trap the ticket named is real and is what this block's shape
+                // answers: the `continue` runs BEFORE `precondition_proved`, so a Γ₀ seed
+                // ALONE would change nothing — the rigid clause has to reach the prover,
+                // and splitting the gate is what lets it.
                 //
                 // ASKED BEFORE σ_value, DELIBERATELY: at this point the only variables
                 // present are the CALLEE's own, so a CALLER-introduced symbolic
@@ -14752,9 +14955,12 @@ fn check_apply_iter(
                 // about the fact table, not about this call. Floating it says the one
                 // true thing. What a decided-VIOLATED mixed conjunct would deserve is a
                 // constructive refutation under a free variable, which `refute_guard`
-                // does not do and which is WI-20260822-K88TN's territory, not a gap
-                // this gate opened.
-                if value_carries_logical_var(kb, &clause) {
+                // does not do and which WI-K88TN did NOT change: it split the gate on
+                // rigid-vs-flex, so a conjunct still carrying a FLEX var floats exactly
+                // as before. A mixed conjunct whose only variables are RIGID is now
+                // decided, which is the same rule as the unmixed case and needs no
+                // separate reading — `∀m` binds every occurrence of `?m` in the atom.
+                if value_carries_undecided_var(kb, &clause) {
                     continue;
                 }
                 if precondition_proved(kb, flow, &req_sigma, &clause) {
@@ -14773,11 +14979,35 @@ fn check_apply_iter(
                     // spelling, so it reads as the `c` its author wrote rather than as
                     // the loader's `var_ref` wrapper.
                     let judged = substitute_ref_terms(kb, &clause, &req_sigma);
+                    // WI-K88TN: a surviving RIGID is what says a DECLARATION is owed
+                    // rather than a fact at this call — the same question the gate above
+                    // asked, read at the other end. Asked on `judged` and not on the
+                    // pre-σ_value clause because σ_value cannot introduce or remove a
+                    // rigid (it maps value params to argument terms), so the two agree
+                    // and this is the one already in hand.
+                    //
+                    // WHICH rigid decides WHICH repair, and a missing enclosing operation
+                    // falls to the witness case rather than to a fallback: with no
+                    // signature in scope there is likewise nothing to declare it on, so
+                    // that message is the true one there too.
+                    let kind = match clause_rigid_kind(kb, env, &judged) {
+                        None => PreconditionFailure::AtCallSite,
+                        Some(ClauseRigids::HasWitness) => {
+                            PreconditionFailure::UndischargeableWitness
+                        }
+                        Some(ClauseRigids::AllParams) => match env.enclosing_op() {
+                            Some(enclosing) => {
+                                PreconditionFailure::UndeclaredInWrapper { enclosing }
+                            }
+                            None => PreconditionFailure::UndischargeableWitness,
+                        },
+                    };
                     let clause = goal_in_source_spelling(kb, &judged);
                     return Err(TypeError::UnsatisfiedPrecondition {
                         span,
                         op: fn_sym,
                         clause,
+                        kind,
                     });
                 }
             }
@@ -44556,19 +44786,52 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
     }
 }
 
-/// WI-9PGCM: is this `requires` goal UNDETERMINED after the call's type
-/// substitution — i.e. does it still carry a LOGICAL VARIABLE the call did not
-/// decide? The obligation's third state: not proved, not refuted, nothing yet to be
-/// right or wrong about (WI-067 / WI-292). Handing such a goal to
+/// WI-9PGCM / WI-K88TN: is this `requires` goal UNDETERMINED after the call's type
+/// substitution — i.e. does it still carry a logical variable NOBODY has decided and
+/// nobody yet can? The obligation's third state: not proved, not refuted, nothing yet
+/// to be right or wrong about (WI-067 / WI-292). Handing such a goal to
 /// [`prove_from_gamma`] is what made the obligation vacuous: the resolver witnesses
 /// a free variable EXISTENTIALLY and reports the clause proved off a fact about some
 /// OTHER label.
 ///
-/// EVERY variable kind counts, flex and skolem alike — the question is not "can the
-/// resolver act on this" (062's readiness, where a skolem IS concrete) but "did the
-/// CALLER decide it". A skolem here is the enclosing signature's own parameter,
-/// which the enclosing operation's caller chooses; from this call site it is
-/// undecided in exactly the sense that matters.
+/// A SKOLEM IS DECIDED, AND EVERY OTHER VAR KIND IS NOT (WI-K88TN, reversing what
+/// WI-9PGCM first shipped here). The question this asks is WI-1059's DETERMINED
+/// reading, not its CONCRETE one — "is anything left for a later pass to decide?",
+/// not "does this mention a type parameter" — and the two answer oppositely on a
+/// `Var::Rigid` (see [`type_value_is_ground_g`], where the same split is a
+/// parameter). A rigid is the enclosing signature's own parameter, universally
+/// quantified in this body by `rigidify_op_type_params` / `rigidify_unwritten_sort_
+/// params`, whose doc states the rule this arm implements: "an unwritten parameter is
+/// a NEW variable per instantiation, so the operation is universally quantified over
+/// it and its body may only do what holds for EVERY value of it. Inside the body it
+/// is therefore rigid; at a CALL it is flexible again and binds from the argument."
+/// So `flows_to(?m, Public)` inside `relay(t: Text[L = ?m])` is `∀m. flows_to(m,
+/// Public)` — a DECIDED proposition, and a false one — not an undetermined obligation
+/// awaiting a caller.
+///
+/// THE VACUITY THIS GATE EXISTS TO STOP IS A FLEX HAZARD SPECIFICALLY, which is why
+/// letting a rigid through to [`prove_from_gamma`] is sound rather than a reopening.
+/// The resolver witnesses a FREE variable existentially — `flows_to(?l, Public)`
+/// proves itself off `flows_to(Public, Public)` — but a skolem never binds
+/// (`unify_concrete`: "a skolem must never bind ... unifies only with another Rigid
+/// carrying the same id"), so `flows_to(Rigid(m), Public)` finds no such witness and
+/// is unproved, exactly as `∀m` requires. What it CAN still prove is a genuinely
+/// universal clause — a rule head's own flex var binds the skolem, which is ordinary
+/// universal instantiation — so a wrapper whose obligation holds for every label needs
+/// no `requires` line. That is why this falls through to the prover rather than to a
+/// Γ-membership test, which would refuse such a wrapper for no reason (WI-K88TN
+/// measured this departure from the ticket's prescribed "Γ ALONE, structural match").
+///
+/// REGIME (a), DECLARE-OR-REFUSE, is what that makes the pass do, and the alternative
+/// was weighed and rejected on the corpus rather than on taste: inferring the floated
+/// clause onto the enclosing signature (regime (b)) leaves the contract invisible at
+/// the declaration §5.4 objects to, needs a call-graph fixpoint to stay modular, and
+/// STILL needs this refusal for the residue — `f() = send(pick())` over a polymorphic
+/// `pick() -> Text[L = ?k]` floats a clause naming a variable no signature binds, so
+/// there is nowhere to infer it TO. The decisive precedent is that the other half of
+/// the same clause list already runs (a): a body incurring an effect its signature
+/// does not declare is refused `undeclared effect: …`, against `declared_canon` walked
+/// through the same `op.rigidify`. `requires` and `effects` now agree.
 ///
 /// A CARRIER THIS CANNOT FULLY READ WITHHOLDS, and that asymmetry is the whole
 /// reason the entry is carrier-typed rather than generic over [`TermView`]. The View
@@ -44586,29 +44849,109 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
 ///
 /// NOT [`view_references_any`]'s twin despite the shape: that one only DROPS an
 /// assumed fact, so its under-collection is safe in the direction this one's is not.
-fn value_carries_logical_var(kb: &KnowledgeBase, clause: &Value) -> bool {
+fn value_carries_undecided_var(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause {
-        Value::Term { .. } => view_carries_logical_var(kb, clause),
+        Value::Term { .. } => view_carries_undecided_var(kb, clause),
         _ => true,
     }
 }
 
-/// The structural scan behind [`value_carries_logical_var`], on the one carrier whose
+/// The structural scan behind [`value_carries_undecided_var`], on the one carrier whose
 /// children the View reports in full. A functor SYMBOL is not a variable; only the
 /// argument positions are walked.
-fn view_carries_logical_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool {
+///
+/// A `Var::Rigid` is NOT undecided, and that one arm is WI-K88TN's whole regime choice —
+/// see [`value_carries_undecided_var`]'s doc for why the skolem falls on this side. Every
+/// other var kind is: a flex `Global` is an inference variable a later pass may still
+/// solve, and a `DeBruijn` is a bound variable awaiting opening. Both keep the float.
+fn view_carries_undecided_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool {
     match view.head(kb) {
-        ViewHead::Var(_) => true,
+        ViewHead::Var(v) => !v.is_rigid(),
         ViewHead::Functor { pos_arity, .. } => {
             (0..pos_arity).any(|i| {
                 view.pos_arg(kb, i)
-                    .is_some_and(|c| view_carries_logical_var(kb, &c))
+                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
             }) || view.named_keys(kb).iter().any(|&k| {
                 view.named_arg(kb, k)
-                    .is_some_and(|c| view_carries_logical_var(kb, &c))
+                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
             })
         }
         _ => false,
+    }
+}
+
+/// WI-K88TN — WHICH RIGIDS a judged clause carries, read as the repair the author is
+/// owed. The complement of [`value_carries_undecided_var`] over the SAME structure, and
+/// deliberately not its negation: a clause with no variables at all is `None` here and
+/// `false` there, which is the ordinary ground call-site failure.
+///
+/// The three answers are [`PreconditionFailure`]'s three cases, and the split that
+/// matters is inside the rigids: one that a signature in scope BINDS is declarable, one
+/// that nothing binds is an existential witness and is not. See
+/// [`PreconditionFailure::UndischargeableWitness`] for why a `Var::Rigid` alone cannot
+/// answer this — two producers, opposite quantifiers.
+///
+/// A clause carrying BOTH kinds answers `Undischargeable`: a declaration could name the
+/// parameter half and still could not name the witness, so the declarable answer would
+/// prescribe a line that does not fix it.
+///
+/// An unreadable carrier answers `None` — the call-site message rather than a wrong
+/// verdict — and a `Value::Node` never reaches it, since the gate above floats that
+/// carrier whole.
+fn clause_rigid_kind(kb: &KnowledgeBase, env: &TypingEnv, clause: &Value) -> Option<ClauseRigids> {
+    let Value::Term { .. } = clause else {
+        return None;
+    };
+    let mut found = None;
+    view_scan_rigids(kb, env, clause, &mut found);
+    found
+}
+
+/// What [`clause_rigid_kind`] found, worst case winning.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClauseRigids {
+    /// Every rigid is a parameter of a signature in scope — declarable.
+    AllParams,
+    /// At least one rigid is bound by nothing in scope.
+    HasWitness,
+}
+
+/// The structural scan behind [`clause_rigid_kind`]; see [`view_carries_undecided_var`],
+/// whose walk this mirrors at the rigid test. `HasWitness` is absorbing, so the scan
+/// still visits every position rather than stopping at the first rigid.
+fn view_scan_rigids<V: TermView>(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    view: &V,
+    found: &mut Option<ClauseRigids>,
+) {
+    match view.head(kb) {
+        ViewHead::Var(v) => {
+            let Some(vid) = v.as_rigid() else { return };
+            let kind = if env.param_rigids().iter().any(|(g, rigid)| {
+                *g == vid || matches!(kb.get_term(*rigid), Term::Var(Var::Rigid(rv)) if *rv == vid)
+            }) {
+                ClauseRigids::AllParams
+            } else {
+                ClauseRigids::HasWitness
+            };
+            if kind == ClauseRigids::HasWitness || found.is_none() {
+                *found = Some(kind);
+            }
+        }
+        ViewHead::Functor { pos_arity, .. } => {
+            for i in 0..pos_arity {
+                if let Some(c) = view.pos_arg(kb, i) {
+                    view_scan_rigids(kb, env, &c, found);
+                }
+            }
+            for &k in view.named_keys(kb).iter() {
+                if let Some(c) = view.named_arg(kb, k) {
+                    view_scan_rigids(kb, env, &c, found);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -44644,7 +44987,31 @@ fn goal_in_source_spelling(kb: &mut KnowledgeBase, clause: &Value) -> Value {
     let Some(name_key) = kb.lookup_symbol("name") else {
         return clause.clone();
     };
-    Value::term(strip_var_ref_terms(kb, *id, var_ref_sym, name_key))
+    let stripped = strip_var_ref_terms(kb, *id, var_ref_sym, name_key);
+    Value::term(unrigidify_for_display(kb, stripped))
+}
+
+/// WI-K88TN — a `Var::Rigid` back to the `?m` its author wrote, for a diagnostic ONLY.
+///
+/// The term printer spells a rigid `!m` (`persistence/print.rs`), which is the right
+/// rendering wherever the skolem-vs-flex distinction is the subject — but here it is
+/// not. The `UndeclaredInWrapper` message's whole job is to quote the `requires` line
+/// the author must add, and `requires allowed(!m, n)` is not a line anthill parses: the
+/// source spelling of that variable is `?m`, and the skolemization is a fact about how
+/// this pass checks the body, not about the declaration being asked for. Same argument
+/// as [`goal_in_source_spelling`]'s own — the reader is matching this text against the
+/// line they wrote — which is why it is the same pass, at the same single construction
+/// site, and never on a term that is stored or compared.
+///
+/// A rigid and a flex carrying one name render alike afterwards, and in this diagnostic
+/// that is the point rather than a loss: the clause is being shown as SOURCE, where
+/// there is only one spelling.
+fn unrigidify_for_display(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    if let Term::Var(Var::Rigid(vid)) = kb.get_term(t) {
+        let vid = *vid;
+        return kb.alloc(Term::Var(Var::Global(vid)));
+    }
+    kb.map_fn_children(t, |kb, child| unrigidify_for_display(kb, child))
 }
 
 /// The term-world recursion behind [`goal_in_source_spelling`]. Share-preserving via
@@ -44710,6 +45077,60 @@ fn precondition_proved(
         }
     }
     true
+}
+
+/// WI-K88TN — Γ₀ for an operation body: the operation's OWN value preconditions,
+/// assumed.
+///
+/// Proposal 050 reads a `requires` as a Hoare precondition, and a precondition is an
+/// ASSUMPTION inside the body it guards — the caller was made to prove it, so the body
+/// may use it. Before this the body's Γ₀ was [`FlowEnv::empty`] and an operation could
+/// not use what its own signature demanded; with the WI-K88TN gate split that stopped
+/// being merely incomplete and became load-bearing, since a rigid obligation now has to
+/// be DISCHARGED and the declaration is the only place the discharge can come from.
+///
+/// WALKED THROUGH `rigidify`, WHICH IS THE WHOLE REASON THIS IS NOT A ONE-LINER. The
+/// body's obligation reaches the gate having been σ_type-walked into the body's
+/// vocabulary, where the enclosing signature's parameters are skolems; the stored
+/// `op.requires` still carries them as the flex vars the loader parsed. Assuming the
+/// clause un-walked would file `flows_to(?m_flex, Public)` against a query
+/// `flows_to(Rigid(m), Public)` — the Γ overlay is consulted STRUCTURALLY and keys a
+/// rigid as `DiscrimKey::RigidVar` (see [`prove_from_gamma`]: "A Γ fact `neq(b, 0)`
+/// over a rigid parameter `b` proves the query `neq(b, 0)` over the same `b`"), so the
+/// two would not meet and the declared wrapper would be refused for writing exactly the
+/// line the error told it to write. The declared-effects check walks both sides through
+/// this same substitution for the same reason.
+///
+/// VALUE PRECONDITIONS ONLY, split per CONJUNCT by [`clause_conjuncts`] before
+/// classifying (WI-862): a spec requirement (`requires Ord[T]`) is dispatched, never
+/// proved from Γ, and assuming one would put a type precondition in the value prover's
+/// reach — the precise confusion §5.4 calls "what a type precondition must never be".
+///
+/// A SECOND IMPLEMENTATION OF THIS IDEA EXISTS and the two should not drift:
+/// `proof_verify.rs`'s contract-proof seeding builds the same Γ from the same operation's
+/// value preconditions behind the same `is_value_precondition_clause` filter. It differs
+/// only in the substitution it walks through — σ_value skolemization there, `rigidify`
+/// here — because it is proving the contract from OUTSIDE while this assumes it from
+/// INSIDE. If either grows a rule about WHICH clauses are assumable, the other wants it.
+fn op_requires_gamma(
+    kb: &mut KnowledgeBase,
+    requires: &[Value],
+    rigidify: &Substitution,
+) -> FlowEnv {
+    let conjuncts: Vec<Value> = requires
+        .iter()
+        .flat_map(|c| clause_conjuncts(kb, c))
+        .collect();
+    let values: Vec<Value> = conjuncts
+        .into_iter()
+        .filter(|c| is_value_precondition_clause(kb, c))
+        .collect();
+    let mut flow = FlowEnv::empty();
+    for c in values {
+        let c = walk_type_deep_value(kb, rigidify, &c);
+        flow = flow.assume(kb, c);
+    }
+    flow
 }
 
 /// WI-602 — is this value precondition DEFINITELY VIOLATED (ground-refuted) under
@@ -55515,6 +55936,10 @@ fn check_operation_bodies(
         /// unequal (`?Eff` vs `?Eff`). Resolving incurred components through
         /// this subst maps that Global to the same Rigid.
         rigidify: Rc<Substitution>,
+        /// WI-K88TN — the op's own `requires` clauses, to seed its body's Γ₀
+        /// ([`op_requires_gamma`]). The stored, un-rigidified form; the seed builder
+        /// walks them, since it is the one place that knows which substitution to use.
+        requires: Vec<Value>,
         /// WI-657(10): the op's enclosing sort, resolved ONCE here via
         /// `impl_parent_of_op` (already computed for `parent_sort_params` below).
         /// The per-op body loop reuses it for `set_enclosing_sort` instead of
@@ -55739,6 +56164,7 @@ fn check_operation_bodies(
             param_rigids: Rc::new(param_rigids),
             rigidify: Rc::new(rigidify_subst),
             parent_sym: parent_of_op,
+            requires: rec.requires.clone(),
         });
     }
 
@@ -55982,13 +56408,20 @@ fn check_operation_bodies(
         // WI-341: `type_check_node`'s top-down hint is a ground `TermId`; pass it
         // for a ground return type, drop it (`None`) for a `Value::Node` (denoted-
         // bearing) return — never materialize the occurrence into the hint.
-        match type_check_node_gated(
+        // WI-K88TN: Γ₀ is the op's OWN value preconditions, not `FlowEnv::empty()` —
+        // proposal 050's Hoare reading, and what discharges the now-DECIDED rigid
+        // obligation a body raises against a constrained callee. Built here because this
+        // is the one place holding both the clauses and the `rigidify` that puts them in
+        // the body's vocabulary.
+        let gamma0 = op_requires_gamma(kb, &op.requires, &op.rigidify);
+        match type_check_node_gated_in_gamma(
             kb,
             &env,
             &op.body_node,
             Some(effective_return.clone()),
             simp_enabled,
             &simp_rids,
+            gamma0,
         ) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is

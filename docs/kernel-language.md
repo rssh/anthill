@@ -1935,14 +1935,60 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   obligation the call must discharge is `flows_to(Untrusted, Public)`. So the clause is
   walked through the call's type substitution before it is proved, exactly as the
   operation's declared effects are. The three-state rule above then applies unchanged,
-  and its middle state is what makes this sound: a variable that **survives** the walk —
-  no caller has bound it, because the enclosing operation is polymorphic in it — leaves
-  the obligation *undetermined*, and an undetermined obligation must not be handed to
-  the resolver at all. A free variable in a goal is witnessed **existentially**, so
+  and its middle state is what makes this sound: a variable that **survives** the walk
+  leaves the obligation *undetermined*, and an undetermined obligation must not be handed
+  to the resolver at all. A free variable in a goal is witnessed **existentially**, so
   `flows_to(?l, Public)` would prove itself off an unrelated fact about some other
-  label and the contract would gate nothing. An obligation that floats out of a
-  polymorphic wrapper is not re-asked at the wrapper's own call site; propagating it
-  onto the enclosing contract is not yet decided.
+  label and the contract would gate nothing.
+
+  **Surviving is not the same as being undetermined, and the difference is the
+  quantifier** (WI-K88TN). Read the surviving variable's *kind*. A **flexible** one — an
+  inference variable no caller has bound and no later pass has solved — is genuinely
+  undetermined and floats. A variable the enclosing operation's **own signature binds**
+  is not, and this section states no new rule about it — §"Expansion during unification"
+  already settles the quantifier: "Inside a body, then, an unwritten parameter is
+  **rigid** … At a *call* it is flexible again, and binds from the argument. Same
+  variable, two positions". A variable the author *writes* in a parameter type is that
+  same family, spelled out there under WI-1FKR2 (`via(b: Box[?t])`), so `?m` in
+  `relay(t: Text[L = ?m])` is rigid in the body exactly as `?t` is. What WI-K88TN
+  changed is only that the `requires` check now reads that kind instead of treating
+  every surviving variable alike. So in `relay(t: Text[L = ?m]) -> Unit = send(t)` the
+  obligation is `∀m. flows_to(m, Public)` — **decided**, and false, since only `Public`
+  flows to `Public`. It is refused, and the diagnostic names the clause and the repair.
+
+  **The repair is to declare it**, and a declared clause is then an *assumption* inside
+  the body it guards — proposal 050's Hoare reading, so an operation's own value
+  preconditions seed its body's Γ₀. `relay` writing `requires flows_to(?m, Public)`
+  discharges its `send(t)` obligation from Γ and propagates the contract to its own
+  callers, where `?m` is flexible again and each call decides it: `relay(banner())`
+  loads and `relay(fetch())` is refused naming `flows_to(Untrusted, Public)`. The
+  obligation is restated in the vocabulary of whichever signature owes it, so a wrapper
+  of a wrapper owes the same declaration — no pass reads a callee's body to discover
+  this, and each operation is checked against its signature alone.
+
+  This is **declare-or-refuse**, the same discipline `effects` obeys on the other half of
+  this clause list: a body incurring an effect its signature does not declare is a load
+  error, not an inferred addition to the signature. The alternative — inferring the
+  floated clause onto the enclosing contract — was weighed and rejected: it leaves a
+  contract no reader can see in the source (the objection this section makes to invisible
+  slots), it needs a call-graph fixpoint to stay modular, and it still cannot place a
+  clause naming a variable *no* signature binds, which `f() = send(pick())` over a
+  polymorphic `pick() -> Text[L = ?k]` produces and which is refused under either regime.
+  A wrapper whose obligation holds for **every** instantiation needs no declaration: the
+  clause is decided by proof and not by membership in the declared set, so a goal a rule
+  proves for all labels discharges it where a fact about one label does not.
+
+  **A variable no signature binds is a third case, and it has no repair.** The rule above
+  reads the surviving variable's kind, and a rigid one has two sources: a signature's own
+  parameter, universally quantified and *declarable* — and an **opaque witness** opened
+  from a callee's return, which §"In a RETURN the quantifier flips to ∃" mints fresh per
+  use. `f() = send(pick())` over `pick() -> Text[L = ?k]` raises an obligation about that
+  witness, and no `requires` on `f` can name it: a `?k` written there is `f`'s own new
+  variable and never meets the opened one. Such a call is refused and the diagnostic says
+  so rather than prescribing a declaration — the value's label is unknowable here, and the
+  program must give it a type whose parameter is known or take it as a parameter so a
+  caller's label flows in. Nothing may be assumed about an opaque witness; that is what
+  makes the opening sound in the first place.
 - A **type precondition** names a spec — `requires Ord[T]`, or the named form
   `requires lo: Ord[T]`. It is *never* proved from the caller's Γ. It declares a
   **requirement slot**, which the call fills with a dictionary: its rules are the
@@ -3280,7 +3326,7 @@ Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifi
 
 **A variable the author WRITES in a parameter type is the same rule, spelled out (WI-1FKR2).** `operation via(b: Box[?t]) -> Box[?t] = id(b)` names its quantified parameter instead of leaving the slot open, and §5.4's *"Which variables the ∀ quantifies"* is what says `?t` is quantified: a variable named in a parameter type binds, exactly as an omitted slot does. So it is rigid in the body and flexible at a call like every other family above — and the tie the author wrote is what carries the caller's variable through, so `via` returns *its own* `?t` rather than something derived from `b`. This is what lets a generic operation be implemented in terms of another one, which is otherwise impossible: every generic operation would have to be a primitive. While the body left such a variable flexible, the unwritten-slot filler (§"How the slot is named", just below) reached it — that filler reads *any* still-flexible variable as an omitted slot — and rewrote the parameter to `Box[T = b.T]` while the return still said `Box[T = ?t]`, so the two stopped naming one thing. The **anonymous** spelling `?` is not this case and keeps the filler: it names nothing and ties nothing, which is exactly what makes it the omitted slot rather than a variable.
 
-The same rigidity is what refuses a body that *pins* such a variable. `operation leaky(x: ?t) -> Int64 = sink(x)` with `sink(n: Int64)` is refused at `sink.n`, for the reason `feed` above is refused: `leaky` claims to accept every `?t` and then hands it to a slot that accepts one.
+The same rigidity is what refuses a body that *pins* such a variable. `operation leaky(x: ?t) -> Int64 = sink(x)` with `sink(n: Int64)` is refused at `sink.n`, for the reason `feed` above is refused: `leaky` claims to accept every `?t` and then hands it to a slot that accepts one. It refuses a body that pins it through a **`requires`** for the same reason and with the same words (WI-K88TN): `relay(t: Text[L = ?m]) = send(t)`, where `send` demands `flows_to(?l, Public)`, claims to accept every `?m` and then hands it to a sink that accepts one — decided by §5.4's value-precondition rule rather than by type unification, but the same quantifier deciding it. The repair there is to declare the clause, which passes the obligation to the callers who choose `?m`.
 
 **How the slot is named (WI-1059).** The skolem an unwritten slot takes is the *projection off the value that carries it* — `s: Stream[T = Int64]` is checked as `s: Stream[T = Int64, E = s.E]` — and not a fresh anonymous variable. `s.E` is already rigid by §"path-dependent types" (a neutral equals only an identical neutral, never a concrete type), and it is the name a signature can already write: `operation collect(s: Stream) -> List[T = s.T]` says `s.T` in its own return, and the body must resolve the parameter to the *same* thing that return does. A *self*-sort reference is the exception, and §3 of `docs/design/type-parameter-scoping.md` is what decides it: within a sort's own definition a bare self reference participates in the parametricity tie, so `append(xs: List, ys: List)` declared inside `sort List` ties both to *this* sort's `T` rather than giving each its own projection.
 

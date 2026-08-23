@@ -20,35 +20,84 @@
 //!   * DECIDED and unprovable — `send(fetch())` with `fetch() -> Text[L =
 //!     Untrusted]` ⇒ `flows_to(Untrusted, Public)`, deliberately absent from the
 //!     lattice. A loud `UnsatisfiedPrecondition` naming the binding.
-//!   * UNDETERMINED — a label-polymorphic wrapper whose own caller has not bound
-//!     the label. Floats, never decided by absence (WI-067 / WI-292).
+//!   * UNDETERMINED — a clause still carrying a FLEX variable, which no caller has
+//!     bound and no later pass has solved. Floats, never decided by absence
+//!     (WI-067 / WI-292).
+//!
+//! WI-K88TN REVISED THE THIRD STATE and this file is its home too, since the same
+//! six programs measure both. A label-polymorphic wrapper is NOT the undetermined
+//! case: `relay(t: Text[L = ?m]) = send(t)` has `?m` RIGID in its body — universally
+//! quantified, the caller's to choose (`rigidify_unwritten_sort_params`: "Inside the
+//! body it is therefore rigid; at a CALL it is flexible again") — so `flows_to(?m,
+//! Public)` there is `∀m. flows_to(m, Public)`, DECIDED and false. Regime (a),
+//! DECLARE-OR-REFUSE: the wrapper writes the clause or the body is a load error, and
+//! the declared clause is then an assumption in the body's Γ that discharges it.
+//!
+//! WHY (a) AND NOT (b) — inferring the clause onto the signature — is recorded on
+//! [`value_carries_undecided_var`]'s doc. Briefly: (b) leaves the contract invisible
+//! at the declaration, needs a call-graph fixpoint, and STILL needs (a)'s refusal for
+//! a clause naming a variable no signature binds
+//! (`an_obligation_no_signature_binds_is_refused`). The other half of the same clause
+//! list already runs (a) — a body incurring an undeclared effect is refused — so this
+//! makes `requires` and `effects` agree. Corpus cost measured before landing: ZERO
+//! new refusals across 212 `.anthill` files.
 //!
 //! WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT (repo rule "assert the CONTROL
-//! too"):
-//!   * `untrusted_label_into_public_only_sink_is_refused` — FAILS (loads clean
-//!     before the change: this is the whole defect).
-//!   * `refusal_names_the_binding_that_refuted_it` — FAILS (before the change
-//!     there is no refusal at all, and the diagnostic printed the goal's head
-//!     alone even when there was one).
-//!   * `existential_witness_does_not_discharge_the_obligation` — FAILS (before
-//!     the change the `Public` self-edge discharges a call about `Untrusted`; it
-//!     is the mechanism test, and it is the one that distinguishes "the label was
-//!     never read" from "the label was read and happened to pass").
-//!   * `public_label_into_public_only_sink_loads` — PASSES EITHER WAY by design.
-//!     It is the control that the fix did not simply start refusing every call.
-//!   * `undetermined_label_floats_rather_than_failing` — PASSES EITHER WAY by
-//!     design, but for DIFFERENT reasons on the two sides (existential witness
-//!     before, the undetermined-floats rule after). It is the control that pins
-//!     the WI-067 polarity, which a stricter fix would have broken.
-//!   * `wrapper_swallows_the_obligation_pending_propagation` — PASSES EITHER WAY
-//!     by design. It pins where the float stops, so the follow-up that propagates
-//!     an undetermined obligation onto the enclosing contract has a place to flip.
-//!   * `mixed_conjunct_decided_and_unprovable_is_refused` — FAILS when backed out.
-//!     The other two `mixed_conjunct_*` cases pass either way by design; see each.
+//! too"). WI-K88TN is FOUR independent axes and each needs its own back-out; every test
+//! below names the one it measures, and all four sets are MEASURED, not predicted:
+//!   * (A) THE GATE SPLIT (`view_carries_undecided_var`'s `ViewHead::Var(v) =>
+//!     !v.is_rigid()` reverted to `=> true`) — a rigid clause floats again, so 6 tests
+//!     load clean and FAIL: `rigid_label_obligation_is_decided_and_refused`,
+//!     `the_wrapper_no_longer_swallows_the_obligation`,
+//!     `the_obligation_propagates_through_two_wrappers`,
+//!     `an_obligation_no_signature_binds_is_refused`,
+//!     `mixed_conjunct_over_a_rigid_label_is_decided_whole`,
+//!     `a_guard_still_gates_an_undeclared_wrapper`.
+//!   * (B) THE Γ₀ SEED (`gamma0` reverted to `FlowEnv::empty()`) — a DECLARED contract
+//!     is no longer readable inside its own body, so 4 FAIL:
+//!     `declaring_the_clause_discharges_it_from_gamma`,
+//!     `a_declared_wrapper_gates_its_own_callers`,
+//!     `mixed_conjunct_declared_discharges_and_still_gates`,
+//!     `a_declared_clause_discharges_in_a_match_guard_too`. This back-out is what
+//!     separates PROVED from SKIPPED: those programs also loaded BEFORE WI-K88TN, but by
+//!     the float's `continue` running ahead of `precondition_proved` — the declaration
+//!     was never read. Backing it out refuses them at the CALLEE's `requires`, inside
+//!     the body, rather than at the wrapper's own — the wrong reason made visible.
+//!   * (C) THE GUARD Γ (the match-arm guard's `arm_flow` reverted to `FlowEnv::empty()`)
+//!     — 1 FAILS: `a_declared_clause_discharges_in_a_match_guard_too`. It is the only
+//!     test in two back-out sets, and correctly so: the guard needs both the seed to
+//!     exist and the threading to reach it.
+//!   * (D) THE WITNESS/PARAMETER SPLIT (`clause_rigid_kind`'s `HasWitness` arm answering
+//!     `AllParams`, i.e. every rigid read as declarable) — 1 FAILS:
+//!     `an_obligation_no_signature_binds_is_refused`. It changes no VERDICT, only which
+//!     repair is prescribed, which is why it needs its own axis and why that test drives
+//!     the prescribed repair rather than only asserting the message text.
+//!   * `a_universally_true_obligation_needs_no_declaration` passes under ALL FOUR by
+//!     design and measures a fifth thing: that a rigid clause reaches the PROVER rather
+//!     than a Γ-membership test. Its control is the rule-vs-fact swap in its own body.
 //!
-//! The `mixed_conjunct_*` trio covers the shape `clause_conjuncts` cannot split — a
-//! SINGLE goal naming both a type-level variable and a value parameter — where the
-//! undetermined state has to float the atom whole.
+//! (C) AND (D) WERE FOUND BY `/code-review`, NOT BY THIS FILE, and both are worth the
+//! note. (C) was a REGRESSION this ticket introduced — a position the Γ seed did not
+//! reach, invisible while the obligation floated and a false refusal once it was
+//! decided. (D) was a message that prescribed a repair which, applied, returned the
+//! byte-identical error. Neither was reachable from the six rows the ticket named.
+//!
+//! WI-9PGCM's own rows are unmoved by WI-K88TN and stay its controls:
+//!   * `untrusted_label_into_public_only_sink_is_refused` — FAILS when 9PGCM is
+//!     backed out (loads clean before it: that was the whole defect).
+//!   * `refusal_names_the_binding_that_refuted_it` — FAILS (before 9PGCM there is no
+//!     refusal at all, and the diagnostic printed the goal's head alone).
+//!   * `existential_witness_does_not_discharge_the_obligation` — FAILS. The mechanism
+//!     test: it distinguishes "the label was never read" from "the label was read and
+//!     happened to pass".
+//!   * `public_label_into_public_only_sink_loads` — PASSES EITHER WAY by design, the
+//!     control that neither fix simply started refusing every call.
+//!   * `mixed_conjunct_decided_and_unprovable_is_refused` — FAILS when 9PGCM is
+//!     backed out; `mixed_conjunct_both_halves_decided_loads` passes either way.
+//!
+//! The `mixed_conjunct_*` group covers the shape `clause_conjuncts` cannot split — a
+//! SINGLE goal naming both a type-level variable and a value parameter. Its verdict
+//! is decided by the LABEL in every state, which is why it needs no rule of its own.
 
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
@@ -217,54 +266,332 @@ fn existential_witness_does_not_discharge_the_obligation() {
 }
 
 #[test]
-fn undetermined_label_floats_rather_than_failing() {
-    // CONTROL (passes either way by design, for different reasons on each side).
-    // `relay` is polymorphic in its label: no caller has bound `?m`, so at
-    // `send(t)` the obligation is `flows_to(?m, Public)` with `?m` undecided.
-    // WI-067 / WI-292: act on a DECIDED obligation, never on an undetermined one
-    // — a version of this fix that refused an unbound label would refuse every
-    // label-polymorphic declaration.
+fn rigid_label_obligation_is_decided_and_refused() {
+    // INVERTED BY WI-K88TN, and this is the test that names the regime. It was
+    // `undetermined_label_floats_rather_than_failing`, asserting `is_ok` on the
+    // strength of "an undetermined label must suspend". `?m` is NOT undetermined: it
+    // is RIGID in `relay`'s body — universally quantified, the caller's to choose —
+    // so the obligation at `send(t)` is `∀m. flows_to(m, Public)`, which is DECIDED
+    // and false (only `Public` flows to `Public`). Regime (a): declare it or be
+    // refused. The float still covers a genuinely undetermined clause, which is a
+    // FLEX variable and not this.
+    //
+    // FAILS when the gate split is backed out (`ViewHead::Var(v) => !v.is_rigid()`
+    // back to `=> true`): the clause floats again and the source loads.
     let src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit =\n    send(t)\nend\n",
         taint_prelude("test.wi9pgcm.poly")
     );
+    let errs = load_result(&src).expect_err(
+        "`?m` is universally quantified in the body, so `flows_to(?m, Public)` holds \
+         for no instantiation; the wrapper must be refused rather than launder it",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("flows_to(?m, Public)")),
+        "the diagnostic must name the goal in the spelling the author wrote — `?m`, \
+         the source form, not the `!m` a rigid prints as; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("declared here")),
+        "and it must name the REPAIR, which is a declaration and not a call-site \
+         fact; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("poly.relay.requires")),
+        "and it is attributed to the operation that owes the declaration — `relay` — \
+         not to the callee `send`, whose own contract is fine; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn declaring_the_clause_discharges_it_from_gamma() {
+    // THE OTHER HALF OF REGIME (a), and the reason the fix is two pieces rather than
+    // one: the refusal above is only legitimate if the repair it demands WORKS. With
+    // `requires flows_to(?m, Public)` written on `relay`, the body's `send(t)`
+    // obligation is discharged from Γ — proposal 050's Hoare reading, `relay`'s own
+    // precondition assumed inside its body (`op_requires_gamma`).
+    //
+    // FAILS when the Γ₀ seed is backed out (`gamma0` → `FlowEnv::empty()`), and that
+    // is the control that separates PROVED from SKIPPED: before WI-K88TN this source
+    // also loaded, but by the float's `continue` running ahead of `precondition_
+    // proved` — the declaration was never read. Backing the seed out now refuses it
+    // at `send.requires`, which is that same "never read" made visible.
+    let src = format!(
+        "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
+         requires flows_to(?m, Public)\n    = send(t)\nend\n",
+        taint_prelude("test.wi9pgcm.declared")
+    );
     let res = load_result(&src);
     assert!(
         res.is_ok(),
-        "an undetermined label must suspend, not fail: the enclosing operation is \
-         polymorphic in it and its own caller decides it. got: {:#?}",
+        "a declared `requires` is an ASSUMPTION inside the body it guards; it must \
+         discharge the callee obligation it was written for. got: {:#?}",
         res.err()
     );
 }
 
 #[test]
-fn wrapper_swallows_the_obligation_pending_propagation() {
-    // WHERE THE FLOAT STOPS, pinned so a future fix has a place to flip. `relay`
-    // is polymorphic in its label and declares no contract of its own, so the
-    // obligation it floats above is never re-asked: at `relay(fetch())` the typer
-    // checks `relay`'s own `requires` (there is none) and the callee's `send`
-    // obligation is not among them. So the leak DOES get through the wrapper.
+fn a_universally_true_obligation_needs_no_declaration() {
+    // THE GATE GATES, IT DOES NOT BLANKET-REFUSE — and this is where the shipped fix
+    // departs from the ticket's prescribed "try Γ ALONE, structural match, never a
+    // resolver query". A rigid clause goes to the PROVER, not to a Γ-membership test,
+    // so a wrapper whose obligation holds for EVERY label needs no `requires` line:
+    // `anything(?x)` is proved by a rule with a free head variable, which binds the
+    // skolem by ordinary universal instantiation.
     //
-    // This is NOT the defect this ticket fixes and not a regression from it —
-    // before the change the direct call leaked too. Closing it means PROPAGATING
-    // an undetermined obligation onto the enclosing operation's contract (either
-    // demanding it be declared, or inferring it), which is a design decision this
-    // ticket's controls deliberately exclude ("must suspend rather than fail").
-    // Filed as WI-20260822-K88TN, which names this test as the one that must flip.
+    // Γ-membership alone would refuse this and demand a contract that says nothing.
+    // The existential vacuity WI-9PGCM removed is a FLEX hazard specifically — a
+    // skolem never binds (`unify_concrete`), so it cannot be witnessed off an
+    // unrelated fact the way a free variable was.
     //
-    // PASSES EITHER WAY by design: it asserts the boundary, not the fix.
+    // FAILS when the rule below is changed to a FACT about one label
+    // (`fact anything(Public)`), which is the discriminating control: that is
+    // provable existentially and not universally, and the wrapper must then be
+    // refused. PASSES either way on the gate split — it is about what reaches the
+    // prover, not about whether anything does.
+    let src = format!(
+        "{}\n  rule anything(?x)\n    :- true\n\
+         \n  operation strict(body: Text[L = ?l]) -> Unit\n    \
+         requires anything(?l)\n\
+         \n  operation wrap(t: Text[L = ?m]) -> Unit =\n    strict(t)\nend\n",
+        taint_prelude("test.wi9pgcm.univ")
+    );
+    let res = load_result(&src);
+    assert!(
+        res.is_ok(),
+        "`anything(?m)` is provable for EVERY label, so the wrapper owes no \
+         declaration; the gate must decide the clause, not refuse it unread. \
+         got: {:#?}",
+        res.err()
+    );
+}
+
+#[test]
+fn the_wrapper_no_longer_swallows_the_obligation() {
+    // WI-K88TN's headline: THE LEAK IS CLOSED. This was
+    // `wrapper_swallows_the_obligation_pending_propagation`, asserting `is_ok` and
+    // pinning where the float stopped so a follow-up had a place to flip. This is
+    // that flip. `relay` declares no contract, so it is refused at its own body —
+    // the leak never reaches `relay(fetch())`, because the laundering declaration
+    // does not load in the first place.
+    //
+    // THE REFUSAL LANDS ON `relay`, NOT ON `leak`, and that is regime (a) rather
+    // than (b): under (b) `relay` would load with an inferred contract and only
+    // `leak` would be refused. The reported op is the CALLEE whose obligation went
+    // undischarged (`send`), at the span inside `relay`'s body.
+    //
+    // FAILS when the gate split is backed out: both operations load and `fetch()`'s
+    // Untrusted payload reaches the Public-only sink.
     let src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit =\n    send(t)\n\
          \n  operation leak() -> Unit =\n    relay(fetch())\nend\n",
         taint_prelude("test.wi9pgcm.thru")
     );
-    let res = load_result(&src);
+    let errs = load_result(&src).expect_err(
+        "a contract-less polymorphic wrapper must not launder its callee's \
+         obligation; the wrapper itself is the load error",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("flows_to(?m, Public)")),
+        "the diagnostic names the obligation the wrapper dropped; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_declared_wrapper_gates_its_own_callers() {
+    // THE WHOLE POINT, END TO END: with the contract declared, `relay` propagates
+    // the obligation to ITS callers, and they are decided there. `relay(banner())`
+    // binds `?m := Public` ⇒ `flows_to(Public, Public)`, a fact — loads.
+    // `relay(fetch())` binds `?m := Untrusted` ⇒ `flows_to(Untrusted, Public)`,
+    // absent — refused, naming `relay`'s own `requires` rather than `send`'s.
+    //
+    // The two arms are in ONE test because their difference is the measurement: a
+    // fix that merely refuses everything passes the second arm and fails the first.
+    //
+    // FAILS when the Γ₀ seed is backed out — BOTH arms, and at the wrong site
+    // (`send.requires`, inside the body, rather than `relay.requires` at the call).
+    let ok_src = format!(
+        "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
+         requires flows_to(?m, Public)\n    = send(t)\n\
+         \n  operation ok() -> Unit =\n    relay(banner())\nend\n",
+        taint_prelude("test.wi9pgcm.gateok")
+    );
+    let res = load_result(&ok_src);
     assert!(
         res.is_ok(),
-        "a contract-less polymorphic wrapper swallows its callee's obligation \
-         today — the float is not re-asked at the wrapper's own call site. When \
-         obligation propagation lands, this test flips to `is_err`. got: {:#?}",
+        "the declared wrapper must still ACCEPT a call that satisfies it — \
+         otherwise the fix refuses rather than gates. got: {:#?}",
         res.err()
+    );
+
+    let bad_src = format!(
+        "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
+         requires flows_to(?m, Public)\n    = send(t)\n\
+         \n  operation leak() -> Unit =\n    relay(fetch())\nend\n",
+        taint_prelude("test.wi9pgcm.gatebad")
+    );
+    let errs =
+        load_result(&bad_src).expect_err("the declared contract must refuse an Untrusted argument");
+    assert!(
+        is_unsatisfied_precondition(&errs, "flows_to(Untrusted, Public)"),
+        "the obligation is now decided at the WRAPPER's call site, with both halves \
+         judged; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("gatebad.relay")),
+        "and it is reported against `relay`'s own `requires` — the contract that \
+         propagated it — not against `send`; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn the_obligation_propagates_through_two_wrappers() {
+    // TRANSITIVITY, which regime (a) gets for free and regime (b) would have needed
+    // a call-graph fixpoint for: each wrapper is checked against its OWN signature,
+    // so a wrapper of a wrapper owes the same declaration for the same reason. No
+    // pass walks a callee's body to discover this.
+    //
+    // FAILS when the gate split is backed out (both wrappers load).
+    let src = format!(
+        "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
+         requires flows_to(?m, Public)\n    = send(t)\n\
+         \n  operation relay2(t: Text[L = ?n]) -> Unit =\n    relay(t)\nend\n",
+        taint_prelude("test.wi9pgcm.twohop")
+    );
+    let errs = load_result(&src).expect_err(
+        "the second wrapper declares nothing, so `relay`'s propagated obligation \
+         stops there and must be refused",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("flows_to(?n, Public)")),
+        "named in the SECOND wrapper's own variable — the obligation is restated in \
+         the vocabulary of the signature that owes it; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn an_obligation_no_signature_binds_is_refused() {
+    // THE RESIDUE, and it is why regime (b) could not have replaced (a): here the
+    // floated clause names `?k`, a variable bound by NOTHING — not by `f`'s
+    // signature, not by any caller. There is no slot to infer a contract ONTO, so
+    // even the inferring regime would have to refuse it. Under (a) it is the
+    // ordinary case: `f`'s body raises an obligation it cannot discharge.
+    //
+    // FAILS when the gate split is backed out (loads clean — measured).
+    let src = format!(
+        "{}\n  operation pick() -> Text[L = ?k]\n\
+         \n  operation f() -> Unit =\n    send(pick())\nend\n",
+        taint_prelude("test.wi9pgcm.residue")
+    );
+    let errs = load_result(&src).expect_err(
+        "the obligation names a label no signature binds; nothing can discharge it \
+         and nothing can declare it, so the body is a load error",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("opaque witness")),
+        "it must be reported as the WITNESS case, not the declarable one; got: {errs:#?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("declared here")),
+        "and it must NOT prescribe a declaration. `?k` is an existential ρ opened from \
+         `pick()`'s return, so a `requires` on `f` mints an unrelated flex variable and \
+         changes nothing. That is why a `Var::Rigid` alone cannot classify this and \
+         `param_rigids` membership does; got: {errs:#?}"
+    );
+
+    // AND THE REPAIR THE OTHER MESSAGE WOULD HAVE PRESCRIBED IS DRIVEN, not merely
+    // asserted from the message text: writing it must leave the verdict unchanged. This
+    // is the test that would have caught the wrong message — the assertion above pins
+    // what is printed, this pins that the printed advice is not a lie. Found by
+    // /code-review: the first shipped message prescribed exactly this line, and applying
+    // it returned the BYTE-IDENTICAL error, which is a loop.
+    let repaired = format!(
+        "{}\n  operation pick() -> Text[L = ?k]\n\
+         \n  operation f() -> Unit\n    requires flows_to(?k, Public)\n    \
+         = send(pick())\nend\n",
+        taint_prelude("test.wi9pgcm.residue2")
+    );
+    let still = load_result(&repaired)
+        .expect_err("declaring the clause cannot help: `?k` there is a different variable");
+    assert!(
+        still.iter().any(|e| e.contains("opaque witness")),
+        "the declaration changes nothing, which is what the witness message says; \
+         got: {still:#?}"
+    );
+}
+
+#[test]
+fn a_declared_clause_discharges_in_a_match_guard_too() {
+    // FOUND BY /code-review, and it was a REGRESSION this ticket introduced rather than
+    // a gap it left. A match-arm guard is checked by a NESTED `type_check_node_gated`
+    // rather than by a work-stack `Visit`, and that entry hard-coded Γ₀ to
+    // `FlowEnv::empty()` — harmless while a rigid obligation FLOATED, and a false
+    // refusal the moment it became DECIDED. So a wrapper that correctly declared its
+    // contract was refused for calling the constrained operation in a guard.
+    //
+    // MEASURED both ways: on HEAD this source LOADED; with the gate split and the
+    // un-threaded guard Γ it was refused; with `arm_flow` threaded it loads again. The
+    // arm-BODY spelling below is the control that says the two positions must agree — it
+    // loaded throughout, which is what made the guard form's refusal an inconsistency
+    // rather than a policy.
+    //
+    // FAILS when the guard's Γ is reverted to `FlowEnv::empty()`.
+    let guard_src = format!(
+        "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
+         requires allowed(?l, n)\n\
+         \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
+         requires allowed(?m, n)\n    = match t\n        \
+         case mk(r) | checkg(t, n) -> 1\n        \
+         case _ -> 0\nend\n",
+        taint_prelude("test.wi9pgcm.guard")
+    );
+    let res = load_result(&guard_src);
+    assert!(
+        res.is_ok(),
+        "a declared `requires` is in Γ for the arm GUARD as much as for the arm body; \
+         a guard is a position in the body, not a fresh frame. got: {:#?}",
+        res.err()
+    );
+
+    let body_src = format!(
+        "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
+         requires allowed(?l, n)\n\
+         \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
+         requires allowed(?m, n)\n    = match t\n        \
+         case mk(r) -> if checkg(t, n) then 1 else 0\n        \
+         case _ -> 0\nend\n",
+        taint_prelude("test.wi9pgcm.guardbody")
+    );
+    assert!(
+        load_result(&body_src).is_ok(),
+        "CONTROL, and it passes either way by design: the same call in the arm BODY \
+         reaches Γ through the work-stack `Visit` and never lost it"
+    );
+}
+
+#[test]
+fn a_guard_still_gates_an_undeclared_wrapper() {
+    // The other half of the fix above: threading Γ into the guard must not turn the
+    // guard into a hole. An UNDECLARED wrapper calling the constrained operation in a
+    // guard is refused exactly as it is in a body — Γ carries what was declared, and
+    // nothing was.
+    //
+    // FAILS when the gate split is backed out. PASSES either way on the guard-Γ fix,
+    // which is why it is stated separately: it measures that the fix narrowed nothing.
+    let src = format!(
+        "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
+         requires allowed(?l, n)\n\
+         \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
+         = match t\n        \
+         case mk(r) | checkg(t, n) -> 1\n        \
+         case _ -> 0\nend\n",
+        taint_prelude("test.wi9pgcm.guardgate")
+    );
+    let errs =
+        load_result(&src).expect_err("an undeclared wrapper is refused in a guard as in a body");
+    assert!(
+        errs.iter().any(|e| e.contains("allowed(?m, n)")),
+        "got: {errs:#?}"
     );
 }
 
@@ -315,26 +642,69 @@ fn mixed_conjunct_decided_and_unprovable_is_refused() {
 }
 
 #[test]
-fn mixed_conjunct_undetermined_floats_whole() {
-    // THE CASE THE CODE COMMENT ARGUES. `relay2` is label-polymorphic, so at
-    // `gate(t, n)` the atom is `allowed(?m, n)` with `?m` undecided — and an atom
-    // with an undecided argument is undecided whatever its other argument is. It
-    // floats WHOLE; the `n` half is not judged separately, because there is no
-    // separate half.
+fn mixed_conjunct_over_a_rigid_label_is_decided_whole() {
+    // INVERTED BY WI-K88TN, from `mixed_conjunct_undetermined_floats_whole`. The old
+    // reading was "an atom naming an undecided label is undecided whatever its other
+    // argument is", and the premise is what changed: `?m` is RIGID in `relay2`'s
+    // body, so it is not undecided. The atom is decided WHOLE for the same reason it
+    // used to float whole — there is no half of an atom to judge separately — and
+    // `∀m. allowed(m, n)` holds for no `m`.
     //
-    // PASSES EITHER WAY by design, and for different reasons: before the change the
-    // free `?m` was witnessed existentially by `allowed(Public, 1)`. What would have
-    // differed is a corpus with no `allowed` fact at all — there the old code raised,
-    // on the strength of the fact table rather than of this call.
+    // THE MIXED SHAPE NEEDS NO SEPARATE RULE, which is the point worth pinning: the
+    // value operand `n` is a `var_ref` functor and not a variable (WI-552), so it
+    // never affected this gate's verdict in either direction. What decides the atom
+    // is its LABEL, before and after.
+    //
+    // FAILS when the gate split is backed out (floats again, loads clean).
     let src = format!(
         "{}\n  operation relay2(t: Text[L = ?m], n: Int64) -> Unit =\n    gate(t, n)\nend\n",
         taint_prelude("test.wi9pgcm.mixfloat")
     );
-    let res = load_result(&src);
+    let errs = load_result(&src).expect_err(
+        "the atom's label is universally quantified in this body, so the whole atom \
+         is decided and unprovable",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("allowed(?m, n)")),
+        "the diagnostic shows the atom with BOTH operands in source spelling — the \
+         rigid label as `?m` and the value parameter as `n`, which is exactly the \
+         `requires` line the repair must write; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn mixed_conjunct_declared_discharges_and_still_gates() {
+    // The mixed shape's repair, driven the same way the pure one is: declaring
+    // `requires allowed(?m, n)` on the wrapper discharges the body obligation from Γ
+    // AND propagates it, so a bad call is still refused with both operands judged.
+    // Γ must match a clause carrying a rigid label beside a `var_ref` value param —
+    // the case the pure rows never exercise.
+    //
+    // FAILS when the Γ₀ seed is backed out (the declared wrapper is refused).
+    let ok_src = format!(
+        "{}\n  operation relay2(t: Text[L = ?m], n: Int64) -> Unit\n    \
+         requires allowed(?m, n)\n    = gate(t, n)\n\
+         \n  operation ok3() -> Unit =\n    relay2(banner(), 1)\nend\n",
+        taint_prelude("test.wi9pgcm.mixdecl")
+    );
+    let res = load_result(&ok_src);
     assert!(
         res.is_ok(),
-        "an atom naming an undecided label is undecided whatever its value operand \
-         is; it must float rather than raise. got: {:#?}",
+        "a declared mixed clause must discharge the body obligation and admit a \
+         satisfying call. got: {:#?}",
         res.err()
+    );
+
+    let bad_src = format!(
+        "{}\n  operation relay2(t: Text[L = ?m], n: Int64) -> Unit\n    \
+         requires allowed(?m, n)\n    = gate(t, n)\n\
+         \n  operation leak3() -> Unit =\n    relay2(fetch(), 1)\nend\n",
+        taint_prelude("test.wi9pgcm.mixleak")
+    );
+    let errs = load_result(&bad_src)
+        .expect_err("the propagated mixed clause must refuse an Untrusted argument");
+    assert!(
+        is_unsatisfied_precondition(&errs, "allowed(Untrusted, 1)"),
+        "both operands judged at the wrapper's call site; got: {errs:#?}"
     );
 }

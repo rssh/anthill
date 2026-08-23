@@ -610,6 +610,13 @@ fn discharge_contract_proof(
 
     // Seed Γ with the predicate preconditions (assumed on body entry): an
     // `ensures` that follows from a `requires` reads its premise straight from Γ.
+    //
+    // WI-K88TN BUILT THE SAME SEED ON THE TYPER SIDE (`typing.rs`'s `op_requires_gamma`,
+    // which the operation-body check hands to the body's Γ₀) and the two should not
+    // drift: same source, same `is_value_precondition_clause` filter, same per-conjunct
+    // split. The substitution differs because the direction does — σ_value skolemization
+    // here, proving the contract from OUTSIDE, against `op.rigidify` there, assuming it
+    // from INSIDE. A new rule about WHICH clauses are assumable belongs to both.
     let mut flow = FlowEnv::empty();
     for c in &rec.requires {
         if !is_value_precondition_clause(kb, c) {
