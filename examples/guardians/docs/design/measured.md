@@ -3,6 +3,8 @@
 **Status:** Measurement record, 2026-08-22. Probes ran against
 `anthill load` at commit `3b980e5c`; sources in [`docs/measurements/guardians/`](../../../../docs/measurements/guardians/). Everything
 here was executed — unlike [`effects.md`](effects.md), which is argument.
+**C2 was re-measured and re-run after WI-9PGCM** and now fires; every other row
+stands as first recorded.
 
 Each entry is written the same way: **the scenario** (what an attacker or a bad
 generation is trying to do), **the flow**, **what fires**, **the control**, and
@@ -219,23 +221,47 @@ the workflow is that the checker tells the generator what to fix. Not a
 security hole — B4 showed the row chain is unaffected, and a member nothing can
 call correctly reaches no sink — but it puts WI-935 on the critical path.
 
-## C2 · An operation `requires` does not gate a call site
+## C2 · An operation `requires` gates a call site — after WI-9PGCM
 
 **Scenario.** Express the flow lattice as a contract —
 `send(body: Text[L = ?l]) requires flows_to(?l, Public)` — and let the KB hold
 the lattice as facts.
 
-**Loads clean, gates nothing** — `docs/measurements/guardians/d2c_callsite.anthill`. Passing
-`Text[L = Untrusted]` to that sink is accepted. §6.5 and §8.5 say why:
-`requires` generates proof obligations tied to an `Implementation` fact, not a
-static call-site check.
+**Fires** — `docs/measurements/guardians/d2c_callsite.anthill:33`, at the `leak()`
+body:
 
-**Control.** `flows_to(Untrusted, Public)` correctly has **no solutions** when
-queried, so the lattice facts are right and it is the *gating* that is absent,
-not the data.
+```
+type mismatch in smoke.c.send.requires:
+  expected precondition `flows_to(Untrusted, Public)` provable at the call site,
+  got unsatisfied precondition
+```
 
-**Consequence.** The lattice ordering cannot ride on the operation contract,
-which is one of the three closures that forced explicit coercion operations.
+The argument's declared type binds `?l := Untrusted`, so the obligation is
+grounded to the lattice edge that is deliberately absent, and the call is
+refused.
+
+**Control.** `ok()` in the same file — `Text[L = Public]` into the same sink —
+still loads: `flows_to(Public, Public)` is a fact. And `flows_to(Untrusted,
+Public)` correctly has **no solutions** when queried, so the lattice facts are
+right in both directions.
+
+**This row previously read `❌ by design (§8.5)`, and that was wrong twice
+over.** It loaded clean, which was measured correctly; the *citation* was not.
+§8.5 is about obligations on the **implementation**, discharged by agents against
+an `Implementation` fact; §5.4 documents WI-539's later split, under which a
+clause naming no spec is a **value precondition**, "proved, at the call site, from
+what the caller knows". `flows_to(?l, Public)` names no spec and was in fact
+routed to that check. It did not fail there by design — it *passed*, because `?l`
+was left free and a free variable in a goal is witnessed **existentially**: the
+clause proved itself off the unrelated `flows_to(Public, Public)` fact at every
+call. Deleting that one fact made the *control* call fail too, which is the
+measurement that shows the label was never being read at all.
+
+**Consequence.** The lattice ordering CAN ride on the operation contract for a
+call whose argument type decides the label. It still cannot for a
+label-polymorphic wrapper: an undetermined label floats (WI-067 — never decide an
+obligation by absence), and a wrapper that declares no contract of its own
+swallows its callee's obligation rather than propagating it.
 
 ## C3 · A rule body cannot destructure a type argument
 
@@ -542,7 +568,7 @@ the summarizer only ever sees Untrusted mailbox text.
 | C8 | a spec op with `ensures` had no provider | ✅ **fixed** in `kb/typing.rs` |
 | C9 | `Modify[p]` target vs the refinement check | ❌ not compared |
 | C10 | label-preserving operation in the MIDDLE of a pipeline | ✅ **fixed** in `kb/typing.rs` |
-| C2 | `requires` gating a call site | ❌ by design (§8.5) |
+| C2 | `requires` gating a call site | ✅ **fixed** in `kb/typing.rs` (WI-9PGCM) — was mis-recorded as "by design" |
 | C3 | rule body reading a type argument | ❌ WI-742 |
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable via `Covariant` + a provides-chain |
 | C5 | computed region in `Modify[…]` | ❌ type position |
@@ -565,4 +591,6 @@ was invisible to a suite where no spec operation carries `ensures`.
 **A1–A3 and B1–B4 together are the design.** Data confinement and capability
 confinement are checked by independent mechanisms, each with an unbroken chain,
 and both hold on the current loader with nothing built. C1 is the one item on
-the critical path; C2–C6 shaped the design rather than blocking it.
+the critical path; C3–C6 shaped the design rather than blocking it, and C2 —
+recorded here as a design decision, on a stale §8.5 citation — turned out to be a
+defect and was fixed.

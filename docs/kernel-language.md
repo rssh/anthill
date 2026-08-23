@@ -1925,6 +1925,24 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   precondition over a symbolic one is undecided rather than violated (WI-557/WI-602:
   act on a decided obligation, never on an undetermined one). It is also what §8.5
   turns into a proof obligation.
+
+  **What the caller knows includes the argument's TYPE** (WI-9PGCM). A value
+  precondition may name a variable bound in a *parameter type* rather than among the
+  value parameters — `send(body: Text[L = ?l]) requires flows_to(?l, Public)`, where
+  `?l` is a label the sort carries as a type parameter. Such a variable is decided by
+  the call's **type unification**, not by the substitution of arguments for parameters:
+  `send(fetch())` with `fetch() -> Text[L = Untrusted]` binds `?l := Untrusted`, and the
+  obligation the call must discharge is `flows_to(Untrusted, Public)`. So the clause is
+  walked through the call's type substitution before it is proved, exactly as the
+  operation's declared effects are. The three-state rule above then applies unchanged,
+  and its middle state is what makes this sound: a variable that **survives** the walk —
+  no caller has bound it, because the enclosing operation is polymorphic in it — leaves
+  the obligation *undetermined*, and an undetermined obligation must not be handed to
+  the resolver at all. A free variable in a goal is witnessed **existentially**, so
+  `flows_to(?l, Public)` would prove itself off an unrelated fact about some other
+  label and the contract would gate nothing. An obligation that floats out of a
+  polymorphic wrapper is not re-asked at the wrapper's own call site; propagating it
+  onto the enclosing contract is not yet decided.
 - A **type precondition** names a spec — `requires Ord[T]`, or the named form
   `requires lo: Ord[T]`. It is *never* proved from the caller's Γ. It declares a
   **requirement slot**, which the call fills with a dictionary: its rules are the
@@ -2832,6 +2850,8 @@ Since `meta: { ... }` has clear delimiters and `requires`/`ensures`/`effects` ar
 
 The `requires` and `ensures` clauses in operations are scoped constraints — they generate denials tied to the operation's input/output bindings. When an `Implementation` fact (from the `anthill.realization` standard namespace) pairs with an operation, the kernel generates corresponding obligation rules.
 
+This is the obligation-generation half only. **§5.4 is canonical for what a `requires` clause means and which machinery checks it** — the per-conjunct split into a call-site-proved value precondition and a dispatch-filled type precondition — and §8.5 for what an implementation must then discharge.
+
 ### 6.6 Infix and Prefix Operators
 
 Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat chains; a Pratt resolver in the converter applies precedence and associativity to produce nested `Fn` calls. Adding a new symbolic operator requires only a dictionary entry — no grammar change.
@@ -3420,6 +3440,15 @@ refused loudly instead of being accepted without enforcement. See §6.2 for the
 exact surface boundary; WI-882 tracks the misleading legacy plain-denial uses.
 
 ### 8.5 Operation Contracts and Obligations
+
+**This section is about the IMPLEMENTATION side of a contract, and it is not the
+whole story of `requires`.** §5.4 splits an operation's `requires` list per conjunct
+into a **value precondition** — proved at the *call site* from what the caller knows,
+an unproved one being a load error — and a **type precondition**, which names a spec
+and is never proved from the caller's Γ. Read §5.4 first for which clause is which
+and what checks it; what follows is what the kernel does with a contract once an
+implementation claims to satisfy it. (This section predates that split and used to be
+cited as though it covered the call site too.)
 
 When an operation has `requires`/`ensures` clauses and an `Implementation` fact links code to it:
 

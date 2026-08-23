@@ -400,6 +400,17 @@ operations in §6.2 instead. For a two-point lattice that is one `widen` and one
 token-guarded `declassify`, which is less machinery than the relation would
 have been; §7 D2 records what an n-point lattice would cost.
 
+**One half of that premise has since lifted** (WI-9PGCM, C2 in
+[`measured.md`](measured.md)): an operation's `requires` over a label variable
+now *does* gate a call whose argument type decides the label, so a `flows_to/2`
+relation would carry the ordering for the direct case. The design here is not
+re-decided on that alone — the invariant label slot stands, C3 (a rule body
+cannot read a label) stands, and an obligation still floats out of a
+label-polymorphic wrapper rather than propagating onto its contract, so a
+relation-carried ordering would hold only where every call's label is decided
+at the call. What changed is that the closure is no longer total, and D2's cost
+argument should be re-read before an n-point lattice is built.
+
 What remains in the policy file is the part that genuinely is a relation — the
 recipient rule, which depends on a runtime address and therefore cannot be
 typed away:
@@ -551,8 +562,9 @@ The measurement changed one half of the recommendation. `?t` propagates by
 routes to the ordering were probed and rejected:
 
 - An operation `requires flows_to(?t, Public)` **loads but does not gate**.
-  §6.5 and §8.5 say why: `requires` generates proof obligations tied to an
-  `Implementation` fact, not a static call-site check.
+  *(Measured at the time; the §8.5 citation was wrong and the behaviour was a
+  defect, not a design decision — fixed by WI-9PGCM. It now gates a call whose
+  argument type decides the label. See C2 in [`measured.md`](measured.md).)*
 - A rule body **cannot destructure a type argument** — `?x: Text[L = ?l]` is a
   syntax error, WI-742 being explicitly unimplemented in proposal 060. So
   policy rules cannot read labels at all; the label lives in the typer.
@@ -699,7 +711,7 @@ trying, what fires, the control, and what it would mean if it did not fire — i
 | B3 | the body may not exceed its own declaration | ✅ fires |
 | B4 | a reshaped member does not evade B2 | ✅ fires |
 | C1 | signature conformance | ❌ **gap** (WI-935) |
-| C2 | an operation `requires` gating a call site | ❌ by design (§8.5) |
+| C2 | an operation `requires` gating a call site | ✅ **fixed** (WI-9PGCM) — measured as a gap, mis-recorded as "by design" |
 | C3 | a rule body reading a type argument | ❌ WI-742 |
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable |
 | C5 | a computed region in `Modify[…]` | ❌ type position |
@@ -708,8 +720,9 @@ trying, what fires, the control, and what it would mean if it did not fire — i
 Two independent chains hold on the current loader with nothing built: **data
 confinement** (A1–A3, the `Text[Trust]` label) and **capability confinement**
 (B1–B4, the `provides` route). C1 is the only item on the critical path; C2–C6
-shaped the design rather than blocking it — C2 and C3 are closed
-routes that forced D2's explicit-coercion answer, and C5 is what defers D3.
+shaped the design rather than blocking it — C2 and C3 are the routes that forced
+D2's explicit-coercion answer, and C5 is what defers D3. C2 has since been
+*reopened by being fixed*: see §6.3 for what that does and does not change.
 
 ### 8.2 Existing and load-bearing
 

@@ -128,10 +128,16 @@ fn load_result(src: &str) -> Result<(), Vec<String>> {
 
 /// The one `UnsatisfiedPrecondition` diagnostic. Matched on BOTH fragments so an
 /// unrelated failure that merely mentions `precondition` cannot satisfy it.
+///
+/// WI-9PGCM: the report now renders the WHOLE goal (`neq(c, Red)`), not its head
+/// alone — the head is what a TYPE renderer printed of a GOAL, and it cannot say
+/// which operand failed. So this takes the goal's functor and asserts it is
+/// rendered APPLIED, which is strictly the stronger match: the old
+/// `` precondition `neq` `` no longer occurs at all.
 fn is_unsatisfied_precondition(errs: &[String], goal_functor: &str) -> bool {
     errs.iter().any(|e| {
         e.contains("unsatisfied precondition")
-            && e.contains(&format!("precondition `{goal_functor}`"))
+            && e.contains(&format!("precondition `{goal_functor}("))
     })
 }
 

@@ -3,9 +3,9 @@
 - id: WI-20260822-9PGCM-an-operation-s-requires-over-a
 - created: 2026-08-22T17:19:41Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-22T17:19:41Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-23T03:32:16Z
 
 - acceptance: cargo-test
 

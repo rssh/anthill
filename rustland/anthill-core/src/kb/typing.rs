@@ -1211,7 +1211,7 @@ impl TypeError {
             TypeError::UnsatisfiedPrecondition { op, clause, .. } => {
                 format!(
                     "unsatisfied precondition `{}` for call to `{}`: the `requires` goal could not be proved at the call site (establish it with an enclosing `if`/`match` guard, a prior `ensures`, or a KB fact)",
-                    type_display_name_value(kb, clause),
+                    format_precondition_clause(kb, clause),
                     kb.qualified_name_of(*op),
                 )
             }
@@ -1765,7 +1765,7 @@ impl TypeError {
                 field_name: "requires".to_string(),
                 expected_type: format!(
                     "precondition `{}` provable at the call site",
-                    type_display_name_value(kb, clause)
+                    format_precondition_clause(kb, clause)
                 ),
                 actual_type: "unsatisfied precondition".to_string(),
                 span: self.span(kb),
@@ -14697,16 +14697,87 @@ fn check_apply_iter(
             let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
             let in_rule_body = env.in_rule_body();
             for clause in &value_reqs {
-                if precondition_proved(kb, flow, &req_sigma, clause) {
+                // WI-9PGCM — σ_TYPE BEFORE Γ. A `requires` clause may name a variable
+                // bound in the callee's PARAMETER TYPE, not among its value parameters:
+                // `send(body: Text[L = ?l]) requires flows_to(?l, Public)`. The call
+                // decides that variable by TYPE UNIFICATION — `send(fetch())` with
+                // `fetch() -> Text[L = Untrusted]` binds `?l := Untrusted` in `subst`
+                // — and `req_sigma` cannot carry it: σ maps a param SYMBOL to an
+                // argument term, and `?l` is no parameter (1FKR2 subtracts the
+                // `requires` source from the bound-variable set for exactly that
+                // reason, so the clause's own variables are the empty set there — the
+                // binding lives in the argument's type and nowhere else).
+                //
+                // LEAVING IT UNBOUND DID NOT MERELY MISS THE LABEL — IT PROVED THE
+                // OBLIGATION. `prove_from_gamma` RESOLVES the goal, so a free `?l`
+                // is witnessed EXISTENTIALLY: `flows_to(?l, Public)` succeeds with
+                // `?l := Public` off the unrelated `flows_to(Public, Public)` fact,
+                // discharging the clause at EVERY call regardless of the argument.
+                // MEASURED at `e8efefa9` (`docs/measurements/guardians/d2c_callsite.
+                // anthill` loaded clean with `flows_to(Untrusted, Public)` absent, and
+                // DELETING `flows_to(Public, Public)` made the CONTROL call fail too —
+                // proof that the discharge never depended on the argument at all).
+                //
+                // The same `subst` walk the declared EFFECTS take a few lines below
+                // (`walk_type_deep_value` on each `pre_substituted` element): a
+                // `requires` goal is likewise a term whose type-level variables the
+                // call has decided, and this is their one substitution owner.
+                let clause = walk_type_deep_value(kb, &subst, clause);
+                // UNDETERMINED ⇒ FLOAT (WI-067 / WI-292: act on a DECIDED obligation,
+                // never on an undetermined one). A variable SURVIVING σ_type is one no
+                // caller has bound — the enclosing operation is polymorphic in it, and
+                // deciding it here by absence would refuse every label-polymorphic
+                // wrapper (`relay(t: Text[L = ?m]) = send(t)`). Such an obligation
+                // belongs on the ENCLOSING operation's contract; propagating it there
+                // needs an op's own `requires` in its body's Γ, which Γ₀ does not carry
+                // (`FlowEnv::empty`) — so the float is where this stops today, and
+                // WI-20260822-K88TN carries the decision (declare-or-refuse vs infer).
+                //
+                // ASKED BEFORE σ_value, DELIBERATELY: at this point the only variables
+                // present are the CALLEE's own, so a CALLER-introduced symbolic
+                // argument — WI-539's "flounders ⇒ unproved ⇒ error" case, and WI-602's
+                // rule-body float — is untouched by this gate and keeps its own rule
+                // below. A value parameter is `var_ref(name: Ref(p))` (WI-552), a
+                // functor and not a variable, so an ordinary `requires neq(b, 0)` never
+                // reaches this `continue`.
+                //
+                // A MIXED CONJUNCT FLOATS WHOLE, and that is the answer rather than an
+                // oversight. `clause_conjuncts` splits the comma list, but ONE goal may
+                // name both an undecided type variable and a value parameter —
+                // `requires in_range(?l, b)` — and there is no half of an atom to judge
+                // separately: with `?l` undecided the atom is undecided, whatever `b`
+                // is. Nor is a guarantee being given up. Before this change the same
+                // goal went to the resolver with `?l` free, so it PASSED whenever any
+                // label at all had a witness and raised only when none did — a verdict
+                // about the fact table, not about this call. Floating it says the one
+                // true thing. What a decided-VIOLATED mixed conjunct would deserve is a
+                // constructive refutation under a free variable, which `refute_guard`
+                // does not do and which is WI-20260822-K88TN's territory, not a gap
+                // this gate opened.
+                if value_carries_logical_var(kb, &clause) {
+                    continue;
+                }
+                if precondition_proved(kb, flow, &req_sigma, &clause) {
                     continue;
                 }
                 // Unproved. In an op body that alone is the WI-539 violation. In a
                 // rule body only a ground REFUTATION is (a float is skipped — WI-602).
-                if !in_rule_body || precondition_refuted(kb, flow, &req_sigma, clause) {
+                if !in_rule_body || precondition_refuted(kb, flow, &req_sigma, &clause) {
+                    // REPORT THE CLAUSE AS JUDGED — both substitutions, in the order
+                    // the check applied them — so the diagnostic names the bindings
+                    // that refuted it rather than the declaration's variables:
+                    // `flows_to(Untrusted, Public)`, not `flows_to(?l, Public)`, which
+                    // says only that some label failed. σ_value goes on top of the
+                    // σ_type walk already done above; a parameter with no clean
+                    // argument twin survives it and is then read back in SOURCE
+                    // spelling, so it reads as the `c` its author wrote rather than as
+                    // the loader's `var_ref` wrapper.
+                    let judged = substitute_ref_terms(kb, &clause, &req_sigma);
+                    let clause = goal_in_source_spelling(kb, &judged);
                     return Err(TypeError::UnsatisfiedPrecondition {
                         span,
                         op: fn_sym,
-                        clause: clause.clone(),
+                        clause,
                     });
                 }
             }
@@ -32230,6 +32301,25 @@ fn describe_resolution_failure(kb: &KnowledgeBase, result: &ResolutionResult) ->
     }
 }
 
+/// WI-9PGCM — an unsatisfied `requires` clause as diagnostic text.
+///
+/// NOT [`type_display_name_value`], which every `UnsatisfiedPrecondition` rendering
+/// used to call: that is a TYPE renderer and a precondition is a GOAL, so it printed
+/// the head alone — `flows_to`, where the clause is `flows_to(Untrusted, Public)` and
+/// the whole content of the report is WHICH label failed. [`TermPrinter`] is the
+/// general term printer, and its own doc names a diagnostic as one of the three
+/// readers of its canonical surface. (Same call, same reason, as the WI-849
+/// malformed-`type_params` report a few thousand lines below.)
+///
+/// A non-`Term` carrier — a denoted `Value::Node` precondition — has no `TermId` to
+/// print and keeps the type renderer, which reads it through the View layer.
+fn format_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> String {
+    match clause {
+        Value::Term { id, .. } => crate::persistence::print::TermPrinter::over(kb).print_term(*id),
+        other => type_display_name_value(kb, other),
+    }
+}
+
 /// Human-readable goal text for diagnostics ("Eq[T = Int]").
 fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
     let mut out = kb.qualified_name_of(goal.spec_sort).to_string();
@@ -43932,6 +44022,129 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
         }
         _ => false,
     }
+}
+
+/// WI-9PGCM: is this `requires` goal UNDETERMINED after the call's type
+/// substitution — i.e. does it still carry a LOGICAL VARIABLE the call did not
+/// decide? The obligation's third state: not proved, not refuted, nothing yet to be
+/// right or wrong about (WI-067 / WI-292). Handing such a goal to
+/// [`prove_from_gamma`] is what made the obligation vacuous: the resolver witnesses
+/// a free variable EXISTENTIALLY and reports the clause proved off a fact about some
+/// OTHER label.
+///
+/// EVERY variable kind counts, flex and skolem alike — the question is not "can the
+/// resolver act on this" (062's readiness, where a skolem IS concrete) but "did the
+/// CALLER decide it". A skolem here is the enclosing signature's own parameter,
+/// which the enclosing operation's caller chooses; from this call site it is
+/// undecided in exactly the sense that matters.
+///
+/// A CARRIER THIS CANNOT FULLY READ WITHHOLDS, and that asymmetry is the whole
+/// reason the entry is carrier-typed rather than generic over [`TermView`]. The View
+/// surfaces an occurrence's children only for the `Expr` shapes `occ_pos_child` /
+/// `occ_named_child` enumerate; a `NodeKind::Type` spine (an arrow's param / result /
+/// effects, which `rewrite_type_occ_deep` walks on its own) is NOT among them, so for
+/// a `Value::Node` "no children found" is not evidence of "no variable". The two
+/// errors are not symmetric: a wrong TRUE floats an obligation (conservative), a
+/// wrong FALSE hands a free-variable goal to the resolver and re-admits the exact
+/// vacuity this gate exists to stop. So the Node arm answers `true` outright — the
+/// same shape of argument [`type_contains_callable`] makes for its own unreadable
+/// carrier. (Reachability: a post-σ_type clause is `Value::Term` or `Value::Node` and
+/// nothing else — `op.requires` carries only those two, and `walk_type_deep_value`
+/// preserves the carrier — so the wildcard is the Node case plus an impossible one.)
+///
+/// NOT [`view_references_any`]'s twin despite the shape: that one only DROPS an
+/// assumed fact, so its under-collection is safe in the direction this one's is not.
+fn value_carries_logical_var(kb: &KnowledgeBase, clause: &Value) -> bool {
+    match clause {
+        Value::Term { .. } => view_carries_logical_var(kb, clause),
+        _ => true,
+    }
+}
+
+/// The structural scan behind [`value_carries_logical_var`], on the one carrier whose
+/// children the View reports in full. A functor SYMBOL is not a variable; only the
+/// argument positions are walked.
+fn view_carries_logical_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool {
+    match view.head(kb) {
+        ViewHead::Var(_) => true,
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity).any(|i| {
+                view.pos_arg(kb, i)
+                    .is_some_and(|c| view_carries_logical_var(kb, &c))
+            }) || view.named_keys(kb).iter().any(|&k| {
+                view.named_arg(kb, k)
+                    .is_some_and(|c| view_carries_logical_var(kb, &c))
+            })
+        }
+        _ => false,
+    }
+}
+
+/// WI-9PGCM — a goal in the spelling its SOURCE used, for a diagnostic: every
+/// `var_ref(name: c)` binder wrapper unwrapped back to the bare `c`.
+///
+/// The wrapper is the WI-552 lowering of a parameter reference and is invisible in
+/// source, so a message carrying it (`precondition \`neq(var_ref(name: c), Red)\``)
+/// leaks the loader's internals at exactly the moment a reader is trying to match
+/// the text against the line they wrote. Stripping it HERE, once, at the error's one
+/// construction site, is what lets the report keep using [`TermPrinter`] — the
+/// general `.anthill` term printer — for everything else rather than growing a
+/// second renderer that would have to re-decide how every literal and carrier
+/// prints.
+///
+/// A non-`Term` carrier passes through untouched: it has no `TermId` and
+/// [`format_precondition_clause`] renders it through the View layer instead.
+fn goal_in_source_spelling(kb: &mut KnowledgeBase, clause: &Value) -> Value {
+    let Value::Term { id, .. } = clause else {
+        return clause.clone();
+    };
+    // BOTH lookups are the NON-ASSERTING readers, and a renderer is exactly where
+    // that matters: this runs only while a diagnostic is being built, so a panic here
+    // would replace a load error with a crash. Absent either way means the KB never
+    // built a `var_ref`, so the goal is already in source spelling. The keys differ in
+    // kind — `var_ref` is a qualified name (`try_resolve_symbol`), while the wrapper's
+    // `name` is a bare named-arg label, which only the raw intern reader finds and
+    // which the asserting one panicked on (MEASURED — six `wi756` cases died there).
+    // `view_var_ref_name` reads the same pair on the checking side.
+    let Some(var_ref_sym) = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref") else {
+        return clause.clone();
+    };
+    let Some(name_key) = kb.lookup_symbol("name") else {
+        return clause.clone();
+    };
+    Value::term(strip_var_ref_terms(kb, *id, var_ref_sym, name_key))
+}
+
+/// The term-world recursion behind [`goal_in_source_spelling`]. Share-preserving via
+/// `map_fn_children` (an unchanged subtree keeps its `TermId`), so a goal with no
+/// wrapper — the WI-9PGCM type-level case, whose variables σ_type already replaced
+/// with concrete labels — costs a traversal and allocates nothing.
+fn strip_var_ref_terms(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    var_ref_sym: Symbol,
+    name_key: Symbol,
+) -> TermId {
+    let Term::Fn {
+        functor,
+        named_args,
+        ..
+    } = kb.get_term(t)
+    else {
+        return t;
+    };
+    if *functor == var_ref_sym {
+        // The `name` child is `Ref(sym)` by construction (WI-552). A wrapper without
+        // one is malformed; keep it whole rather than dropping the operand — this is
+        // a renderer, and losing a term here would silently shorten the report.
+        if let Some((_, name)) = named_args.iter().find(|(k, _)| *k == name_key) {
+            return *name;
+        }
+        return t;
+    }
+    kb.map_fn_children(t, |kb, child| {
+        strip_var_ref_terms(kb, child, var_ref_sym, name_key)
+    })
 }
 
 /// WI-539: does a callee's value precondition `clause` PROVE from Γ at the call,

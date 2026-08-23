@@ -1368,3 +1368,6 @@ mod wi_ak2aj_written_typed_var_test;
 
 #[path = "include/m460d_requires_reaches_spec_members_test.rs"]
 mod m460d_requires_reaches_spec_members_test;
+
+#[path = "include/wi9pgcm_type_level_precondition_test.rs"]
+mod wi9pgcm_type_level_precondition_test;
