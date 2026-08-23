@@ -8,10 +8,17 @@
 //! cover — is rejected, because a caller programming against the spec's
 //! contract has no handler for it.
 //!
-//! Enforced only for ground effect rows (fail-open on parametric `effects E` /
-//! denoted `Modify[c]`), so the stdlib's polymorphic-effect providers are
-//! unaffected — see the matching stdlib-stays-green assertions in the
-//! wi343/wi345 suites.
+//! Enforced PER ATOM, and fail-open on the atoms it cannot decide — a parametric
+//! `effects E`, or a denoted `Modify[c]` facing a spec `Modify` over a resource
+//! TYPE — so the stdlib's polymorphic-effect providers are unaffected; see the
+//! matching stdlib-stays-green assertions in the wi343/wi345 suites.
+//!
+//! WI-20260822-1TKN0 rewrote both halves of that sentence. It read "fail-open on
+//! parametric `effects E` / denoted `Modify[c]`", and BOTH clauses were wrong in
+//! the same direction: the fail-open was scoped to the ROW rather than the atom
+//! (so an ordinary widening beside a `Modify[c]` went unreported), and a denoted
+//! target was excluded by a `Value::Term` CARRIER test rather than by anything
+//! about `Modify` — see the block below the contract-refinement rows.
 
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
@@ -953,5 +960,346 @@ fn a_declared_contract_predicate_still_loads() {
     assert!(
         errs.is_empty(),
         "declared contract predicates must load clean; got: {errs:?}"
+    );
+}
+
+// ── a `Modify` TARGET IS A THING TO COMPARE (WI-20260822-1TKN0) ─────────
+//
+// The effects leg's decidability gate read `matches!(e, Value::Term { .. })` — a
+// CARRIER test standing in for an ABSTRACTNESS test. A denoted effect label
+// (`Modify[c]`) rides a `Value::Node` because it carries an occurrence, not
+// because it is parametric, so every `Modify`-over-a-place went unjudged — and,
+// because the gate was `all` over the WHOLE ROW, so did every ordinary effect
+// sitting beside one.
+//
+// MEASURED BACK-OUTS. Each is a mutation actually applied to
+// `check_override_refinement` and re-run, not a prediction:
+//
+//   A  restore the gate to `matches!(e, Value::Term { .. } && !contains_type_param)`
+//      over BOTH rows (the pre-fix `confident`) — all SIX refusal rows below load
+//      clean, exactly as the ticket measured them. The three accepted rows stay
+//      green, by the leg being skipped rather than by anything being compared.
+//   B  keep the per-atom gate but drop `align_effect_label`'s `Value::Node` arm
+//      (back to the bare `substitute_clause`) — 19 of the 34 rows fall, because
+//      THE STDLIB STOPS LOADING: `MutableStack` over `MutableCollection.{new,
+//      insert, clear}` is refused for restating `Modify[result]` / `Modify[s]`
+//      verbatim, the two operations' binders being distinct symbols.
+//   C  drop the `wants_result_alignment` disjunct that names the effects leg —
+//      the same 19, and for the `Modify[result]` half of the same reason.
+//   D  drop the `!spec_modify_over_a_type` guard from `decidable`, i.e. make a
+//      denoted target comparable unconditionally — `Cell.set` over
+//      `ModifyRuntime.set` is refused (`Modify[T = c]` vs `Modify[T = Cell]`), and
+//      only that one: `MutableStack.insert`/`clear` survive, their spec targets
+//      being places too.
+//
+// The `Modifiable`-target half the ticket also observed is NOT here: nothing
+// checks that a `Modify[p]` target is a modifiable resource at all, at any site.
+// It needs the same place↔resource-type relation the fail-open below is missing,
+// and both are WI-20260823-39AD2.
+
+/// The two-sort skeleton the rows below vary. `Sp.op` is the spec, `Carrier.op`
+/// the override; `Res` is a declared modifiable resource, `Eff1`/`Eff2` ordinary
+/// effect sorts.
+fn modify_row_src(ns: &str, spec_row: &str, impl_params: &str, impl_row: &str) -> String {
+    format!(
+        r#"
+        namespace wi1tkn0.{ns}
+          import anthill.prelude.{{Effect, Int64, Modify, Modifiable}}
+          sort Eff1 end
+          sort Eff2 end
+          fact Effect[T = Eff1]
+          fact Effect[T = Eff2]
+          sort Res
+            entity r(id: Int64)
+          end
+          fact Modifiable[T = Res]
+          sort Sp
+            sort T = ?
+            operation op(x: T, box: Res, box2: Res) -> T effects {spec_row}
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Sp[T = Carrier]
+            operation op({impl_params}) -> Carrier effects {impl_row} = x
+          end
+        end
+    "#
+    )
+}
+
+fn widening_refusals(errs: &[String]) -> Vec<String> {
+    errs.iter()
+        .filter(|e| e.contains("effects must not widen"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_modify_target_the_spec_never_granted_is_refused() {
+    // THE TICKET'S HEADLINE ROW. The spec grants no `Modify`; the override takes
+    // one on a parameter. §5.6: a row with no `Modify` asserts `Env_after =
+    // Env_before` for every resource, and this takes that back.
+    //
+    // BACK-OUT A loads it clean — measured, and it is what the ticket reported.
+    let errs = load_errors(&modify_row_src(
+        "target_never_granted",
+        "{Eff1}",
+        "x: Carrier, box: Res, box2: Res",
+        "{Eff1, Modify[box]}",
+    ));
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1 && w[0].contains("Modify[T = box]"),
+        "a Modify the spec never granted must be refused; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_modify_on_a_resource_the_spec_did_not_name_is_refused() {
+    // The frame condition is PER RESOURCE, so granting `Modify[box]` is not
+    // granting `Modify[box2]` — the two parameters have the same TYPE and are
+    // different places. This row is what makes the check about resources rather
+    // than about the `Modify` label: `a_modify_target_the_spec_never_granted_is_refused`
+    // above would still pass under a rule that only counted `Modify`s.
+    //
+    // BACK-OUT A loads it clean.
+    let errs = load_errors(&modify_row_src(
+        "wrong_resource",
+        "{Eff1, Modify[box]}",
+        "x: Carrier, box: Res, box2: Res",
+        "{Eff1, Modify[box2]}",
+    ));
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1 && w[0].contains("Modify[T = box2]"),
+        "a Modify on a resource the spec did not grant must be refused; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_modify_target_does_not_mask_a_named_effect_widening() {
+    // THE SHARPEST ROW, and the one the ticket did not know about: the fail-open
+    // was not scoped to the `Modify` atom, it was scoped to the ROW. `Eff2` alone
+    // IS refused (`a_named_effect_widening_is_refused_beside_a_lawful_modify`
+    // below is that same `Eff2` with the `Modify` removed) — and it went
+    // UNREPORTED here, because one undecidable atom made the leg skip everything.
+    //
+    // Asserts BOTH refusals: the `Modify` one alone would pass under a fix that
+    // judged the `Modify` and still skipped its neighbours.
+    //
+    // BACK-OUT A: zero errors — neither refusal.
+    let errs = load_errors(&modify_row_src(
+        "masked",
+        "{Eff1}",
+        "x: Carrier, box: Res, box2: Res",
+        "{Eff1, Eff2, Modify[box]}",
+    ));
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 2
+            && w.iter().any(|e| e.contains("effect `Eff2`"))
+            && w.iter().any(|e| e.contains("Modify[T = box]")),
+        "a Modify atom must not fail-open the whole row; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_named_effect_widening_is_refused_beside_a_lawful_modify() {
+    // CONTROL for the row above, isolating which half moved. Same `Eff2`, and the
+    // override's `Modify[box]` is one the spec grants — so the ONLY refusal must be
+    // `Eff2`. A fix that refused every `Modify` outright would report two here.
+    let errs = load_errors(&modify_row_src(
+        "lawful_modify_beside_widening",
+        "{Eff1, Modify[box]}",
+        "x: Carrier, box: Res, box2: Res",
+        "{Eff1, Eff2, Modify[box]}",
+    ));
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1 && w[0].contains("effect `Eff2`"),
+        "only the widened named effect may be refused here; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_parametric_modify_is_refused_where_the_spec_grants_no_modify() {
+    // The other arm: a `Modify[R]` over the carrier's own sort parameter cannot be
+    // COMPARED (nothing has instantiated `R`), and it does not need to be — no
+    // instantiation is covered by a spec row carrying no `Modify` at all. Without
+    // this arm the atom would fail open, since it never reaches the comparison.
+    //
+    // BACK-OUT: delete the `else if effect_is_modify(..) && !spec_grants_modify`
+    // arm — this is the only row of the file that flips.
+    let src = r#"
+        namespace wi1tkn0.parametric_modify
+          import anthill.prelude.{Effect, Int64, Modify}
+          sort Eff1 end
+          fact Effect[T = Eff1]
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> T effects {Eff1}
+          end
+          sort Carrier
+            sort R = ?
+            entity c(id: Int64)
+            fact Sp[T = Carrier]
+            operation op(x: Carrier) -> Carrier effects {Eff1, Modify[R]} = x
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1
+            && w[0].contains("Modify[T = R]")
+            && w[0].contains("declares no `Modify` at all"),
+        "a parametric Modify against a Modify-free spec row must be refused; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn an_override_restating_the_specs_own_modify_target_still_loads() {
+    // ACCEPTANCE CONTROL, and it is not free: the two operations' `box` parameters
+    // are DISTINCT SYMBOLS (`Sp.op.box` vs `Carrier.op.box`), so this loads only
+    // because the label is aligned into the spec's vocabulary first.
+    //
+    // BACK-OUT B (drop `align_effect_label`'s Node arm) refuses it — MEASURED. It
+    // passes under BACK-OUT A too, by the leg being skipped entirely; that is why
+    // the refusal rows above carry the weight and this one is the control.
+    let errs = load_errors(&modify_row_src(
+        "restated_target",
+        "{Eff1, Modify[box]}",
+        "x: Carrier, box: Res, box2: Res",
+        "{Eff1, Modify[box]}",
+    ));
+    assert!(
+        errs.is_empty(),
+        "an override restating the spec's own Modify target must load; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn an_override_renaming_the_specs_parameter_still_loads() {
+    // The same control with the parameter RENAMED, which is the case a symbol
+    // compare cannot fake: `Modify[b]` is the spec's `Modify[box]` only after the
+    // positional param alignment rewrites it.
+    //
+    // BACK-OUT B refuses it.
+    let errs = load_errors(&modify_row_src(
+        "renamed_target",
+        "{Eff1, Modify[box]}",
+        "x: Carrier, b: Res, b2: Res",
+        "{Eff1, Modify[b]}",
+    ));
+    assert!(
+        errs.is_empty(),
+        "an override renaming the spec's parameter must still load; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_result_region_restated_by_an_override_still_loads() {
+    // `Modify[result]` names the RESULT BINDER, which is `<op>.result` per
+    // operation — so the spec's and the override's are distinct symbols too, and it
+    // needs the same alignment. The entry was gated on a CONTRACT CLAUSE existing;
+    // this pair has none, which is how the stdlib's `MutableStack` over
+    // `MutableCollection.new` got refused mid-fix.
+    //
+    // BACK-OUT C (drop the effects-leg disjunct from `wants_result_alignment`)
+    // refuses it — MEASURED, and it takes the stdlib down with it: 19 of this
+    // file's 34 rows fall, every one of them on `MutableStack`.
+    let src = r#"
+        namespace wi1tkn0.result_region
+          import anthill.prelude.{Int64, Modify, Modifiable}
+          sort Sp
+            sort C = ?
+            requires Modifiable[T = C]
+            operation new() -> C effects Modify[result]
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Modifiable[T = Carrier]
+            fact Sp[C = Carrier]
+            operation new() -> Carrier effects Modify[result] = c(id: 0)
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.is_empty(),
+        "an override restating `Modify[result]` must load; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_denoted_target_against_a_resource_typed_spec_modify_fails_open() {
+    // THE RECORDED GAP, driven rather than described. This is `Cell.set` over
+    // `ModifyRuntime.set` in miniature: the spec's target is the resource TYPE
+    // (`Modify[T]`, σ-bound to the carrier), the override's is a PLACE of that type.
+    // The place DOES refine the type — and no relation on this pass says so, so the
+    // atom fails open rather than being refused.
+    //
+    // It is the control that kills the obvious wrong fix: BACK-OUT D above (make a
+    // denoted target decidable unconditionally) refuses this row, and refuses
+    // `Cell.set` over `ModifyRuntime.set` in the stdlib with it — measured.
+    //
+    // Owned by WI-20260823-39AD2, and what that ticket is waiting on is a
+    // DECISION rather than a mechanism: kernel-language.md §5.6 reads `Modify[X]`
+    // as a resource NAME (under which this program is a stdlib defect) and
+    // `prelude/effects.anthill` reads it as the resource-identity TYPE (under
+    // which it is lawful). When that is settled this row must flip to
+    // ACCEPTED-BY-COMPARISON or to REFUSED — either way not to accepted-by-
+    // fail-open — and the row below is what separates the readings.
+    let src = r#"
+        namespace wi1tkn0.place_vs_type
+          import anthill.prelude.{Unit, Int64, Modify, Modifiable}
+          sort Sp
+            sort T = ?
+            operation put(target: T) -> Unit effects Modify[T]
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Modifiable[T = Carrier]
+            fact Sp[T = Carrier]
+            operation put(target: Carrier) -> Unit effects Modify[target] = ()
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.is_empty(),
+        "a place-vs-resource-type Modify must fail open, not refuse; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_spec_modify_over_a_type_fails_open_its_row_but_not_its_neighbours() {
+    // What the recorded gap costs, stated exactly. The spec `Modify[T]` makes the
+    // override's DENOTED atom undecidable — but `Eff2` beside it is still judged,
+    // which is the per-atom scoping this ticket bought. Under the pre-fix `confident`
+    // gate this row reported nothing at all.
+    let src = r#"
+        namespace wi1tkn0.place_vs_type_neighbour
+          import anthill.prelude.{Effect, Unit, Int64, Modify, Modifiable}
+          sort Eff2 end
+          fact Effect[T = Eff2]
+          sort Sp
+            sort T = ?
+            operation put(target: T) -> Unit effects Modify[T]
+          end
+          sort Carrier
+            entity c(id: Int64)
+            fact Modifiable[T = Carrier]
+            fact Sp[T = Carrier]
+            operation put(target: Carrier) -> Unit
+              effects {Modify[target], Eff2} = ()
+          end
+        end
+    "#;
+    let errs = load_errors(src);
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1 && w[0].contains("effect `Eff2`"),
+        "the undecidable Modify must not carry its neighbour with it; got: {errs:#?}"
     );
 }

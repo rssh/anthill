@@ -284,6 +284,24 @@ fn capability_widening_is_refused_by_the_row() {
 }
 
 #[test]
+fn a_modify_target_the_spec_never_granted_is_refused_by_the_row() {
+    // THE FRAME CONDITION, and it is a different arm of the same check from the
+    // test above. `wide_row` raises `Filesystem`, an ordinary declared effect
+    // sort, compared as a TYPE; this one raises `Modify[box]`, whose target is a
+    // RESOURCE. kernel-language.md §5.6: a spec row carrying no `Modify` asserts
+    // `Env_after = Env_before` for every resource, so an override that acquires
+    // one has unenforced exactly the axis §5.6 is about — while restating every
+    // capability the spec did grant, which is what makes it invisible to the
+    // named-label arm.
+    //
+    // MEASURED (WI-20260822-1TKN0): this fixture LOADED CLEAN until the effects
+    // leg stopped reading a `Value::Term` carrier test as an abstractness test.
+    // `wide_row.anthill` is written with `Filesystem` precisely because of that —
+    // see measured.md C9.
+    assert_refused("wide_row_modify", "effects must not widen");
+}
+
+#[test]
 fn honest_checker_is_accepted() {
     // CONTROL for the next test. Same spec, same declared row including
     // `-Model`, and no route to a model — so `-Model` is satisfiable and does

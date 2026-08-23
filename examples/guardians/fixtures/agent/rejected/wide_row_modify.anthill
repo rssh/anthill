@@ -1,0 +1,32 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY THE DECLARED ROW,
+-- on the FRAME CONDITION rather than on a named capability.
+--
+-- Leaks nothing. Identical to ../good.anthill except for `Modify[box]` in the
+-- effect row — one token — so a refusal here measures the frame condition and
+-- nothing else.
+--
+-- WHY IT IS SEPARATE FROM wide_row.anthill. That one raises `Filesystem`, an
+-- ordinary declared effect sort, and it was written with `Filesystem`
+-- PRECISELY BECAUSE a `Modify` target did not bite (measured.md C9). The two
+-- widenings travel different arms of the same check: a named label is compared
+-- as a type, a `Modify` target is a RESOURCE, and §5.6 is the rule that makes
+-- the second one a security property — a spec granting no `Modify` asserts the
+-- implementation changes nothing, and this file takes that back while
+-- restating every capability the spec did grant.
+-- ================================================================
+sort guardians.agent.ModifyRowTriage
+  import anthill.prelude.{List, Error, External, Modify}
+  import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of}
+  entity mk
+
+  operation run(self: ModifyRowTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error, Modify[box]} =
+      let msgs = fetch_mail(box)
+      Report(items:   verdicts_of(msgs),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = ModifyRowTriage]
+end

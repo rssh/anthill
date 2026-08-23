@@ -517,16 +517,57 @@ that hole: nothing could be discharged, so nothing could be discharged wrongly.
 failure only appears once something *provides* that spec. The example's task
 specification is exactly that shape, which is how it surfaced.
 
-## C9 · A `Modify[p]` target is not compared by the refinement check
+## C9 · A `Modify[p]` target is not compared by the refinement check · **FIXED**
 
 **Scenario.** While building the row-widening fixture: an override declaring
 `{External, Model, Error, Modify[box]}` against a spec declaring
 `{External, Model, Error}`.
 
-**Loads clean.** A named effect (`Filesystem`) in the same position is refused
-loudly, so the widening check works — it just does not treat a `Modify` target
-as a widening. Not chased further; the example's fixture uses a plain label
-instead, and this is recorded rather than diagnosed.
+**Loaded clean.** A named effect (`Filesystem`) in the same position was refused
+loudly, so the widening check worked — it just did not treat a `Modify` target
+as a widening. `fixtures/agent/rejected/wide_row.anthill` is written with
+`Filesystem` for exactly that reason.
+
+**Why it mattered here.** `Modify[r]` is the frame condition (kernel-language.md
+§5.6: for every resource not in the `Modify` set, `Env_after = Env_before`). A
+spec granting no `Modify` is asserting the implementation changes nothing, and a
+provider that could add one silently left that assertion unenforced on precisely
+the axis §5.6 is about — while restating every named capability the spec did
+grant, which is what kept it invisible to the label arm this record already
+credited (B2).
+
+**Diagnosed, and neither hypothesis was right (WI-20260822-1TKN0).** The ticket
+guessed the `confident` gate or the parameter alignment. The cause was that the
+gate asked a CARRIER question where an ABSTRACTNESS question was meant: it read
+`matches!(e, Value::Term { .. })`, and a denoted `Modify[c]` rides a
+`Value::Node` because it carries an occurrence, not because it is parametric.
+
+**The measurement the ticket did not have: the fail-open was ROW-WIDE.** The
+gate was an `all` over the whole effect row, so one `Modify[c]` disabled the
+widening check for every effect beside it. An `Eff2` that is refused on its own
+went unreported the moment a `Modify[box]` sat next to it in the same row — so a
+provider could hide *any* capability widening behind one `Modify`. That is
+strictly worse than the ticket's headline, and it is what the fix scopes to the
+atom.
+
+**Fixed in `kb/typing.rs`.** The gate now asks the two questions apart —
+parametric, and denoted — and it runs per atom rather than per row. Two `Modify`
+comparisons are now decided that were not: a target the spec never granted
+(refused), and a target on a *different resource of the same type* than the one
+the spec granted (refused — the frame condition is per resource, not per label).
+
+**Fixture.** `fixtures/agent/rejected/wide_row_modify.anthill`, one token from
+`good.anthill`. `wide_row.anthill` stays, unchanged and still refused: the two
+travel different arms, and neither test catches the other's program.
+
+**What is still not compared, and it is C5's neighbour.** A denoted target facing
+a spec `Modify` over a resource TYPE — `Cell.set`'s `Modify[c]` refining
+`ModifyRuntime.set`'s `Modify[T = Cell]` — fails open, because the place `c` *is*
+a resource of that type and no relation on that pass says so. Making it comparable
+without that relation refuses the stdlib (measured). Nothing checks
+`Modifiable[typeof(target)]` either, at any site, which is why `Modify[pattern]`
+on a `pattern: String` parameter loads clean. Both want the same relation:
+**WI-20260823-39AD2**.
 
 ## C10 · A label-preserving operation could not be written in terms of another · **FIXED**
 
@@ -603,7 +644,7 @@ the summarizer only ever sees Untrusted mailbox text.
 | C1 | signature conformance | ❌ **gap** (WI-935) |
 | C7 | sort mismatch vs a variable-containing type | ✅ **fixed** in `kb/typing.rs` |
 | C8 | a spec op with `ensures` had no provider | ✅ **fixed** in `kb/typing.rs` |
-| C9 | `Modify[p]` target vs the refinement check | ❌ not compared |
+| C9 | `Modify[p]` target vs the refinement check | ✅ **fixed** in `kb/typing.rs` |
 | C10 | label-preserving operation in the MIDDLE of a pipeline | ✅ **fixed** in `kb/typing.rs` |
 | C2 | `requires` gating a call site | ✅ **fixed** in `kb/typing.rs` (WI-9PGCM) — was mis-recorded as "by design" |
 | C3 | rule body reading a type argument | ❌ WI-742 |

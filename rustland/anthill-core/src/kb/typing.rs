@@ -31508,6 +31508,100 @@ fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
     }
 }
 
+/// WI-20260822-1TKN0 — the carrier-neutral twin of [`contains_type_param`], for a
+/// reader that holds an effect label rather than a `TermId`.
+///
+/// NOT A CONVENIENCE WRAPPER. [`contains_type_param`] takes a `TermId`, so its
+/// callers reach it through `matches!(v, Value::Term { .. })` — a CARRIER test
+/// standing in for an ABSTRACTNESS test. The two questions are not the same one:
+/// a denoted effect label (`Modify[c]`) rides a `Value::Node` because it carries
+/// an occurrence, not because it is parametric, and the override-refinement
+/// effects leg read that carrier as "cannot decide" and fail-opened the WHOLE
+/// ROW — an `Eff2` the leg refuses on its own went unreported the moment a
+/// `Modify[c]` sat beside it in the same row (measured; see
+/// `a_modify_target_does_not_mask_a_named_effect_widening`).
+///
+/// Mirrors [`TermView::bears_opaque`]'s shape for the same reason it exists: a
+/// reader that asks the structure cannot drift when a carrier is added.
+/// On the `TermId` carrier this decides exactly what [`contains_type_param`]
+/// decides, arm for arm — `Var` ⇒ abstract, `Ref`/`Ident` ⇒
+/// [`is_sort_param_symbol`], a functor head that is itself a param ⇒ abstract
+/// (which subsumes the nullary-`Fn` name shape), else recurse.
+///
+/// An `Opaque` head answers ABSTRACT: it presents no structure, so nothing here
+/// can establish it is concrete, and "cannot decide" is the fail-open direction
+/// this leg takes everywhere else.
+fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(_) => true,
+        ViewHead::Ref(s) | ViewHead::Ident(s) => is_sort_param_symbol(kb, s),
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => {
+            if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
+                return true;
+            }
+            (0..pos_arity).any(|i| {
+                v.pos_arg(kb, i)
+                    .is_some_and(|a| view_contains_type_param(kb, &a))
+            }) || v.named_keys(kb).into_iter().any(|k| {
+                v.named_arg(kb, k)
+                    .is_some_and(|a| view_contains_type_param(kb, &a))
+            })
+        }
+        ViewHead::Opaque => true,
+        ViewHead::Const(_) | ViewHead::Bottom => false,
+    }
+}
+
+/// WI-20260822-1TKN0 — does this effect label carry a DENOTED value-in-type
+/// (`Modify[c]`, whose target is a place rather than a type) anywhere?
+///
+/// The override-refinement effects leg compares labels with [`types_compatible`],
+/// and value-in-type subtyping IS EQUALITY there (`unify_denoted_view`) — so a
+/// denoted target only ever matches an identical denoted target. That is the
+/// right relation for types and the WRONG one for RESOURCES: `Modify[c]` with
+/// `c: Cell` refines `ModifyRuntime.set`'s `Modify[T = Cell]`, because the place
+/// `c` IS a resource of that type, and no relation on this pass says so. So a
+/// label bearing a denoted is not COMPARABLE here — see the effects leg in
+/// [`check_override_refinement`], which judges it on the one question that needs
+/// no such relation instead.
+///
+/// Deliberately `Denoted` ONLY, not "any value-in-type": an `ExprCarried`
+/// projection (`s.E`) is a rigid type-level neutral that
+/// [`expr_carried_zeta`] already relates exactly, and the stdlib's
+/// `FiniteStream.splitFirst` override is compared through it today.
+fn view_bears_denoted<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    if matches!(type_head(kb, v), TypeHead::Denoted) {
+        return true;
+    }
+    match v.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|a| view_bears_denoted(kb, &a)))
+                || v.named_keys(kb).into_iter().any(|k| {
+                    v.named_arg(kb, k)
+                        .is_some_and(|a| view_bears_denoted(kb, &a))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// WI-20260822-1TKN0 — is this effect label a `Modify` (the frame-condition
+/// marker, kernel-language.md §5.6)? Keyed on the SYMBOL via
+/// [`ViewHead::functor_sym`], which reads the head off both the bare `Ref(Modify)`
+/// and the applied `Modify[T = …]` spellings, and cannot collide with a
+/// same-named user sort the way a qualified-name string match can.
+///
+/// `modify` is resolved ONCE by the caller and threaded in — this runs per effect,
+/// per operation, per provision, and the enclosing check already counts its
+/// qualified-name lookups (see `wants_result_alignment`'s cost note). `None` (no
+/// `Modify` declared at all — a KB loaded without the prelude) answers `false` for
+/// every label, the same verdict a per-call resolve would give.
+fn effect_is_modify<V: TermView>(kb: &KnowledgeBase, e: &V, modify: Option<Symbol>) -> bool {
+    modify.is_some() && e.head(kb).functor_sym() == modify
+}
+
 /// True iff `short` names a type-parameter (vs an op) of the spec at
 /// `spec_qn`. Determined by checking whether `<spec_qn>.<short>`
 /// resolves to a SortAlias-bearing symbol — only spec params do.
@@ -31887,6 +31981,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return Vec::new();
     };
+    // WI-20260822-1TKN0 — the frame-condition marker, resolved once for the whole
+    // walk rather than per effect label (see [`effect_is_modify`]).
+    let modify_sym = kb.try_resolve_symbol("anthill.prelude.Modify");
     // Own declared ops per sort — owned snapshot, no `kb` borrow held in the loop.
     let own: std::collections::HashMap<Symbol, Vec<Symbol>> =
         super::load::sorts_and_own_ops(kb).into_iter().collect();
@@ -32034,12 +32131,33 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // author wrote a contract. Reading it raw opened this gate on most of the
             // stdlib and made the cost sentence above false. Asked with `any` rather
             // than by building the filtered Vec, since only emptiness is wanted here.
+            //
+            // WI-20260822-1TKN0 — THE EFFECTS LEG IS A THIRD READER, and the
+            // sentence above ("an op pair with no contract clauses can never read
+            // this entry") was false the moment that leg started aligning a denoted
+            // label: `Modify[result]` NAMES the binder. `MutableStack.new` over
+            // `MutableCollection.new` is exactly that pair — two `Modify[result]`
+            // rows, not one contract clause between them — and it was refused for
+            // restating the spec's own effect verbatim.
+            //
+            // Its OWN driving condition, not a restatement of the contract legs':
+            // does the row this leg rewrites carry a target that is a PLACE? Only
+            // the IMPL row is ever aligned, so only it is asked. Structural, and it
+            // touches no symbol table, so the cost sentence above still holds.
             let wants_result_alignment = !spec_info.ensures.is_empty()
                 || impl_info
                     .requires
                     .iter()
-                    .any(|c| !is_effects_runtime_clause(kb, c));
+                    .any(|c| !is_effects_runtime_clause(kb, c))
+                || impl_info.effects.iter().any(|e| view_bears_denoted(kb, e));
+            // WI-20260822-1TKN0 — the spec-side SYMBOL rides beside its `Ref` term
+            // because the effects leg now aligns a `Value::Node` label too, and the
+            // occurrence rewrite is keyed `Symbol → Symbol` (it rebuilds
+            // `Expr::Ref` leaves, which hold a symbol, not a `TermId`). Read off
+            // the SAME `resolve_op_result_sym` pair that builds the term entry, so
+            // the two spellings of one alignment cannot drift apart.
             let mut result_binders: Option<(Symbol, TermId)> = None;
+            let mut result_binder_syms: Option<(Symbol, Symbol)> = None;
             if wants_result_alignment {
                 match (
                     super::region::resolve_op_result_sym(kb, spec_op),
@@ -32056,6 +32174,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                             kb.alloc(Term::Ref(sr))
                         };
                         result_binders = Some((ir, sr_ref));
+                        result_binder_syms = Some((ir, sr));
                     }
                     (Some(_), Some(_)) => {}
                     // NOT a silent skip. Every operation gets a `result` binder at
@@ -32083,12 +32202,19 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // spec's own guarded row verbatim — modulo its param name — read as
             // a widening and was refused (WI-818: `List.head` vs `Stream.head`,
             // the first carrier override to carry one).
+            //
+            // WI-20260822-1TKN0: built in TWO spellings from ONE walk — the
+            // `TermId`-valued map the hash-consed rewrite takes, and the
+            // `Symbol → Symbol` map the occurrence rewrite takes. Same pairs, same
+            // loop, so a param that aligns on one carrier aligns on the other.
+            let mut param_align_syms: HashMap<Symbol, Symbol> = HashMap::new();
             let param_align: Vec<(Symbol, TermId)> = {
                 let mut a = Vec::new();
                 for ((ip, _), (sp, _)) in impl_info.params.iter().zip(spec_info.params.iter()) {
                     if ip != sp {
                         let sp_ref = kb.alloc(Term::Ref(*sp));
                         a.push((*ip, sp_ref));
+                        param_align_syms.insert(*ip, *sp);
                     }
                 }
                 a
@@ -32099,6 +32225,13 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                     a.push(entry);
                 }
                 a
+            };
+            let full_align_syms: HashMap<Symbol, Symbol> = {
+                let mut m = param_align_syms.clone();
+                if let Some((ir, sr)) = result_binder_syms {
+                    m.insert(ir, sr);
+                }
+                m
             };
 
             // WI-20260822-59CDQ — THE RETURN TYPES MUST AGREE WHEREVER THE RESULT
@@ -32176,39 +32309,132 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             }
 
             let align = full_align;
+            let align_syms = full_align_syms;
 
-            // ── effects-⊆ (confident-ground only; fail-open otherwise) ──────
+            // ── effects-⊆ (per-atom; fail-open on what cannot be compared) ──
             let spec_effs: Vec<Value> = spec_info
                 .effects
                 .iter()
                 .map(|se| sigma_subst_effect(kb, se, &p.sigma))
                 .collect();
-            let ground = |kb: &KnowledgeBase, e: &Value| matches!(e, Value::Term { id: t, .. } if !contains_type_param(kb, *t));
-            let confident = impl_info.effects.iter().all(|e| ground(kb, e))
-                && spec_effs.iter().all(|e| ground(kb, e));
-            if confident {
+
+            // WI-20260822-1TKN0 — DECIDABLE, WHICH IS NOT "HASH-CONSED".
+            //
+            // This gate used to read `matches!(e, Value::Term { .. })` plus
+            // `!contains_type_param(..)` — a CARRIER test where an ABSTRACTNESS test
+            // was meant. A denoted effect label (`Modify[c]`) rides a `Value::Node`
+            // because it carries an occurrence, not because it is parametric, and
+            // reading the carrier conflated the two (the Representation note in
+            // CLAUDE.md: a non-hash-consed carrier matches identically). The two
+            // questions are now asked apart:
+            //
+            //   * PARAMETRIC — a row variable / sort parameter can still
+            //     instantiate to anything, so nothing about the atom is decided.
+            //   * DENOTED — a target that is a PLACE, not a type. `types_compatible`
+            //     relates two denoteds by EQUALITY (`unify_denoted_view`), which is
+            //     the exact relation for place-vs-place and the WRONG one for
+            //     place-vs-resource-TYPE: `Modify[c]` with `c: Cell` refines
+            //     `Modify[T = Cell]` (`Cell.set` over `ModifyRuntime.set`, in the
+            //     stdlib), and nothing on this pass relates a place to a type.
+            //
+            // The missing relation is reachable in exactly one shape — a `Modify`
+            // over a place, facing a `Modify` over a type — so that, and not
+            // "bears a denoted", is what is undecidable. A denoted-bearing label
+            // that is NOT a `Modify` is still judged: no spec `Modify` could cover
+            // it under any relation, the functors differ.
+            let spec_modify_over_a_type = spec_effs
+                .iter()
+                .any(|se| effect_is_modify(kb, se, modify_sym) && !view_bears_denoted(kb, se));
+            let place_vs_resource_type = |kb: &KnowledgeBase, e: &Value| {
+                spec_modify_over_a_type
+                    && effect_is_modify(kb, e, modify_sym)
+                    && view_bears_denoted(kb, e)
+            };
+            let decidable = |kb: &KnowledgeBase, e: &Value| {
+                !view_contains_type_param(kb, e) && !place_vs_resource_type(kb, e)
+            };
+
+            // THE PREMISE FOR REFUSING ANYTHING is that the SPEC row is fully known.
+            // A spec effect still carrying a parameter could σ-instantiate to cover
+            // an impl effect, so a refusal read off a partly-unknown spec row would
+            // refuse a provider this pass cannot judge. A spec atom that is DENOTED
+            // is known — it just names a place — so it does not put this gate up.
+            //
+            // WHAT CHANGED (WI-20260822-1TKN0): the IMPL row is no longer part of
+            // that premise. It used to be — the old `confident` demanded EVERY impl
+            // effect be ground too — which made one undecidable atom fail-open the
+            // WHOLE ROW: an `Eff2` this leg refuses on its own went unreported the
+            // moment a `Modify[c]` sat beside it. The fail-open now scopes to the
+            // ATOM that earns it, which is what it was always described as doing.
+            if spec_effs.iter().all(|e| !view_contains_type_param(kb, e)) {
+                // The one refusal a `Modify` earns without the place↔type relation:
+                // a spec row carrying NO `Modify` asserts `Env_after = Env_before`
+                // for EVERY resource (kernel-language.md §5.6), so no target could
+                // excuse the override's. Reachable for a `Modify` this pass cannot
+                // otherwise judge — a parametric `Modify[R]` over the carrier's own
+                // sort parameter; a denoted one is already `decidable` here, because
+                // an empty spec row has no `Modify` over a type either.
+                let spec_grants_modify = spec_effs
+                    .iter()
+                    .any(|se| effect_is_modify(kb, se, modify_sym));
                 for ie in &impl_info.effects {
-                    // Compare ALIGNED (spec param vocabulary); DIAGNOSE with the
-                    // author's own spelling — the message must quote a guard the
-                    // override actually wrote, not one rewritten to the spec's
-                    // param names (WI-818 review).
-                    let ie_aligned = substitute_clause(kb, ie, &align);
-                    let covered = spec_effs.iter().any(|se| {
-                        let mut subst = Substitution::new();
-                        types_compatible(kb, &mut subst, &ie_aligned, se)
-                    });
-                    if !covered {
+                    if decidable(kb, ie) {
+                        // Compare ALIGNED (spec param vocabulary); DIAGNOSE with the
+                        // author's own spelling — the message must quote a guard the
+                        // override actually wrote, not one rewritten to the spec's
+                        // param names (WI-818 review).
+                        let ie_aligned = align_effect_label(kb, ie, &align, &align_syms);
+                        let covered = spec_effs.iter().any(|se| {
+                            let mut subst = Substitution::new();
+                            types_compatible(kb, &mut subst, &ie_aligned, se)
+                        });
+                        if !covered {
+                            errors.push(LoadError::IncompatibleOverride {
+                                carrier: kb.qualified_name_of(p.carrier).to_string(),
+                                spec: kb.qualified_name_of(p.spec).to_string(),
+                                op: sn.clone(),
+                                reason: format!(
+                                    "the override declares effect `{}`, which is not covered by \
+                                     any effect the spec operation declares (effects must not widen)",
+                                    type_display_name_value(kb, ie)
+                                ),
+                            });
+                        }
+                    } else if effect_is_modify(kb, ie, modify_sym) && !spec_grants_modify {
                         errors.push(LoadError::IncompatibleOverride {
                             carrier: kb.qualified_name_of(p.carrier).to_string(),
                             spec: kb.qualified_name_of(p.spec).to_string(),
                             op: sn.clone(),
                             reason: format!(
                                 "the override declares effect `{}`, which is not covered by \
-                                 any effect the spec operation declares (effects must not widen)",
+                                 any effect the spec operation declares (effects must not widen) \
+                                 — the spec operation declares no `Modify` at all, so it \
+                                 asserts the implementation leaves every resource unchanged \
+                                 (kernel-language.md §5.6)",
                                 type_display_name_value(kb, ie)
                             ),
                         });
                     }
+                    // Otherwise FAIL OPEN, and this is the whole of what is left
+                    // undecided: an atom that is still PARAMETRIC beside a spec row
+                    // that grants some `Modify`, or a denoted place beside a spec
+                    // `Modify` over a resource TYPE. The second is `Cell.set` over
+                    // `ModifyRuntime.set`. Both arms are DRIVEN in
+                    // `wi347_override_refinement_test`, not merely described.
+                    //
+                    // THE SECOND IS NOT WAITING ON A MECHANISM — the target's
+                    // declared type is right here in `impl_info.params` /
+                    // `impl_info.return_type`, and the test would be one
+                    // `types_compatible`. It is waiting on a DECISION the docs do
+                    // not agree on: kernel-language.md §5.6 reads `Modify[X]` as a
+                    // resource NAME ("Env is a partial map from resource names
+                    // (symbols) …"), under which `Modify[c]` refines nothing and
+                    // `Cell.set` is a stdlib defect; `prelude/effects.anthill` reads
+                    // it as the resource-identity TYPE, under which it refines and
+                    // this is a missing implication. Encoding either here would
+                    // settle the language from a load pass. WI-20260823-39AD2 holds
+                    // the question, together with the `Modifiable[typeof(target)]`
+                    // check that exists at NO site and wants the same first step.
                 }
             }
 
@@ -32804,6 +33030,39 @@ fn substitute_clause(kb: &mut KnowledgeBase, clause: &Value, subst: &[(Symbol, T
             Value::term(substitute_impl_params_alloc(kb, *t, subst))
         }
         other => other.clone(),
+    }
+}
+
+/// WI-20260822-1TKN0 — align ONE effect label into the spec operation's parameter
+/// vocabulary, on EITHER carrier.
+///
+/// The alignment is what lets an honest override restate the spec's own row: the
+/// two operations' parameters are distinct symbols even when they are spelled the
+/// same (`Stream.splitFirst.s` vs `FiniteStream.splitFirst.s`), so without it every
+/// place-denoting effect label would read as naming a different place.
+///
+/// A hash-consed label goes through [`substitute_clause`] exactly as before. A
+/// `Value::Node` label — the carrier a denoted `Modify[c]` rides — goes through
+/// [`substitute_ref_syms_value`], which is the occurrence-level `Ref` rewrite that
+/// EXISTS FOR THIS REWRITE: its own doc describes it as re-keying "a callee's
+/// `Modify[c]` to the caller's `Modify[s]`". `substitute_clause`'s `other =>
+/// other.clone()` arm silently no-opped on that carrier, so a `Modify[c]` override
+/// compared against the spec's `Modify[c]` under two different symbols.
+///
+/// DELIBERATELY NOT FOLDED INTO [`substitute_clause`]. That function is shared with
+/// the contract legs and with [`result_binder_discharges`], whose verdict GATES the
+/// WI-20260822-59CDQ return-type refusal; teaching it a second carrier there is a
+/// different question with its own measurement, and this ticket measured the
+/// effects leg.
+fn align_effect_label(
+    kb: &mut KnowledgeBase,
+    e: &Value,
+    align: &[(Symbol, TermId)],
+    align_syms: &HashMap<Symbol, Symbol>,
+) -> Value {
+    match e {
+        Value::Node(_) if !align_syms.is_empty() => substitute_ref_syms_value(kb, e, align_syms),
+        other => substitute_clause(kb, other, align),
     }
 }
 

@@ -85,9 +85,12 @@ end
 sort guardians.Model
 end
 
--- A second project effect: touching the filesystem. Present so the row
--- checks have a label to widen BY that is not `Modify` — a `Modify[p]`
--- target is not compared by the refinement check (measured: C9).
+-- A second project effect: touching the filesystem. Present so the row checks
+-- have a label to widen BY that is not `Modify`, and it stays after C9 was
+-- fixed: the two widenings travel DIFFERENT ARMS of one check — a named label
+-- is compared as a TYPE, a `Modify` target as a RESOURCE (§5.6's frame
+-- condition) — so `rejected/wide_row.anthill` and
+-- `rejected/wide_row_modify.anthill` each catch a program the other does not.
 sort guardians.Filesystem
 end
 
