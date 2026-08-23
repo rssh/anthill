@@ -44,19 +44,31 @@ pub struct SimpleTermStore {
     /// * the converter's SURFACE-FORM MARKERS — a node standing for syntax that is
     ///   not a call at all. `?x: T` → `typed_var(?x, type: T)` is one
     ///   (WI-20260822-AK2AJ, whose two readers in `kb/load.rs` pair the name with
-    ///   [`Self::is_minted`]); the binder forms `lambda_expr` / `let_expr` /
-    ///   `match_branch` are others.
+    ///   [`Self::is_minted`]); WI-20260822-AKKWF put the rest of the family here —
+    ///   `if_expr`, `match_expr`, `match_branch`, `let_expr`, `lambda_expr`,
+    ///   `proof_stmt` and the five `pattern_*` forms — because `kb/load.rs`'s
+    ///   `visit_load` reads them back by NAME and then indexes their arguments by
+    ///   POSITION, so a user-written call of the same name did not misreport, it
+    ///   PANICKED THE LOADER. They are built through `convert::alloc_marker_term`,
+    ///   which fuses the mint to the allocation and carries that change's census.
     ///
     /// A READER MUST NOT ASSUME A CATEGORY FROM THE FLAG. `is_minted` answers "the
     /// pipeline built this", nothing finer, and each reader pairs it with its own
-    /// NAME or POSITION test to say WHICH mint it will act on. Where a message
-    /// describes the flag it must describe the reachable population and not the
-    /// producer set — `load::bodyless_declares_nothing_detail` says "its head
-    /// functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, `?a + ?b`
+    /// NAME or POSITION test to say WHICH mint it will act on. The flag is also not
+    /// the only gate available: `dot_apply` is minted AND is a spelling the author
+    /// may write (the dot-rule surface), so its two readers gate on SHAPE instead —
+    /// a mint gate there would delete the spelling, measured.
+    ///
+    /// Where a message describes the flag it must describe the reachable population
+    /// and not the producer set — `load::bodyless_declares_nothing_detail` says "its
+    /// head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, `?a + ?b`
     /// carries `add`)", which stays true only because a marker can never BE a head
-    /// (`rule_heads` is `commaSep1($._goal)`; `typed_var_arg` sits only in
-    /// `_positional_fn_arg`). A future marker reachable in head position must move
-    /// that sentence.
+    /// (`rule_heads` is `commaSep1($._goal)` → `_term`, which reaches neither
+    /// `visit_pattern`'s productions nor the expression forms; `typed_var_arg` sits
+    /// only in `_positional_fn_arg`). A future marker reachable in head position must
+    /// move that sentence. AKKWF's producer set kept it true and MEASURED that it
+    /// did: 2 586 767 marker mints over the workspace corpus, 115 574 minted heads
+    /// seen by the two head readers, no marker name among them.
     ///
     /// Provenance is the exact discriminator consumers need — e.g. the
     /// loader's bare-arrow lambda-typo diagnostics tell the infix `->` from a

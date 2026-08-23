@@ -450,6 +450,134 @@ impl<'a> Converter<'a> {
         )
     }
 
+    /// A SURFACE-FORM MARKER term: [`Self::alloc_fn_term`] plus the
+    /// [`SimpleTermStore::mark_minted`] every marker must carry.
+    ///
+    /// WI-20260822-AKKWF — THE MINT IS FUSED TO THE ALLOCATION so a marker cannot be
+    /// built without it. `kb/load.rs`'s `visit_load` reads these nodes back by NAME and
+    /// then indexes their arguments by POSITION, and every one of those names
+    /// (`if_expr`, `match_expr`, `pattern_var`, …) is an ordinary identifier a user may
+    /// write; the name alone is WI-948's "a name, not a verdict" trap, and there the
+    /// trap ABORTS THE PROCESS rather than misreporting. `visit_load` has TWELVE
+    /// provenance-gated arms and exactly ONE of them — WI-618's arrow — had provenance
+    /// to pair with, because the other eleven builds did not mint. A future marker gets
+    /// the flag by using this factory; the mint is not a step to remember.
+    ///
+    /// A marker with NAMED args takes [`Self::alloc_marker_term_with_named`], which is
+    /// the same factory with the extra slot — not a hand-written `mark_minted`. The
+    /// ACCESSOR mints (`field_access`, `dot_apply`, the distributive projection) are a
+    /// different category by this doc's own split — a name the loader is MEANT to
+    /// resolve, not a form with no lowering — and stay where they are.
+    ///
+    /// # THE CENSUS THIS NEW PRODUCER OWES (AK2AJ's, re-run for this producer set)
+    ///
+    /// `is_minted` has ELEVEN readers, all in `kb/load.rs` — TEN of them pre-existing,
+    /// the eleventh being `visit_load`'s new gate itself — and "was this written as a
+    /// call" is not the same question at each, so the census is per READER. Its answer
+    /// is that NO EXISTING READER'S VERDICT MOVES:
+    ///
+    /// * EIGHT of the ten pair the mint with a NAME (or a name-derived layout) that no
+    ///   marker in this set answers to: `parse_connective_head` and
+    ///   `minted_connective_symbol` require `is_equality_family_functor`;
+    ///   `is_typed_column` and `convert_term`'s strip require `typed_var`;
+    ///   `check_bare_arrow_typo` (twice) and `first_unresolvable_arrow_leaf` require
+    ///   `is_arrow_functor` or `binder_form_layout` (`lambda_expr` | `let_expr` |
+    ///   `match_branch` — all three ALREADY minted, so this producer set adds none of
+    ///   them); the arrow-leaf name-slot skip requires `field_access` | `dot_apply`
+    ///   (both already minted).
+    /// * TWO ask the flag of a RULE HEAD with no name pairing at all —
+    ///   `rule_introduced_functor_name` (of the head, or an equation's LHS subject) and
+    ///   `bodyless_declares_nothing_detail` (of the head) — and those are the two the
+    ///   mint could move. It does not: a marker is built only from a PATTERN position
+    ///   (`visit_pattern`) or an EXPRESSION build frame, and a rule head is
+    ///   `rule_heads: commaSep1($._goal)` → `_term`, which reaches neither grammar
+    ///   production.
+    ///
+    /// THAT LAST POINT IS MEASURED, NOT ARGUED, and measured so the negative means
+    /// something. Both head readers were instrumented to record the functor whenever
+    /// `is_minted` answered TRUE, and this factory to record every marker it built;
+    /// one `cargo test --workspace --no-fail-fast` run, with the change in:
+    ///
+    /// * **2 586 767 marker mints**, every one of the thirteen build shapes that this
+    ///   ticket mints or re-routes among them, including the rare ones —
+    ///   `pattern_constructor` 576 445, `match_branch` 556 179, `pattern_var` 538 013,
+    ///   `match_expr` 315 562, `pattern_wildcard` 302 753, `let_expr` 154 755,
+    ///   `if_expr` 124 039, `lambda_expr` 14 626, `pattern_tuple` 4 213,
+    ///   `pattern_constructor`-with-named-args 91, `pattern_var`-typed 63, `proof_stmt`
+    ///   16, `pattern_literal` 12. So the corpus really does exercise the producers; a
+    ///   clean head reading is not vacuous. (`typed_var`, the fourteenth site, joined
+    ///   these factories afterwards for uniformity; its mint is WI-AK2AJ's, unchanged,
+    ///   and carries its own census at its call site.)
+    /// * **115 574 minted heads** at `rule_introduced_functor_name`, of which `eq`
+    ///   86 628, `not` 28 870, `add` 33, `mul` 26, `unify` 8, `struct_eq` 6,
+    ///   `dot_apply` 3 — the desugar's operators and accessors, and NO MARKER NAME.
+    /// * **0** at `bodyless_declares_nothing_detail`: the corpus never renders that
+    ///   diagnostic for a minted head at all. Said rather than counted as agreement —
+    ///   its evidence is the shared one (it reads the same `r.heads[0]` node the row
+    ///   above sampled 115 574 times), not a measurement of its own.
+    ///
+    /// `SimpleTermStore::minted`'s own doc carries the standing form of that second
+    /// point ("a future marker reachable in head position must move that sentence");
+    /// this producer set keeps it true rather than moving it.
+    ///
+    /// AND ONE NAME IS DELIBERATELY NOT IN THIS SET: `dot_apply` is minted (WI-618)
+    /// but is ALSO a spelling the author may write — the surface of a sort-scoped dot
+    /// rule, kernel-language.md §"a `[simp]` **dot rule**". Its two readers are gated
+    /// on SHAPE, not provenance, and both say so at their site (`kb/load.rs`:
+    /// `visit_load`'s `dot_apply` arm and `convert_term`'s re-encode).
+    ///
+    /// SCALAND DREW THE SAME LINE FIRST, AND IN A DIFFERENT PLACE — worth knowing
+    /// before anyone "unifies" the two. `scaland/…/parse/ExprMarker.scala` (WI-1009)
+    /// enumerates ten markers in a set of their OWN, separate from that tree's
+    /// `minted`, and excludes `field_access` / `dot_apply` / `ho_apply` / `unify` /
+    /// the collection literals for the reason measured here independently: those are
+    /// names the loader is MEANT to resolve. It can afford a second set because it
+    /// has a second QUESTION — its `Loader.reallocTerm` resolves every functor by
+    /// name and needs "is this a form with NO lowering", which is not "did the
+    /// desugar write this". Rustland HAS the lowering, so the marker arms ask only
+    /// the second question and `minted` answers it; the census above is what says so
+    /// rather than assuming it. Scaland's own copy of `convert_expr_term` was deleted
+    /// unused (WI-1007), so this ticket has nothing to port there.
+    fn alloc_marker_term(
+        &mut self,
+        functor_name: &str,
+        pos_args: SmallVec<[TermId; 4]>,
+        span: Span,
+    ) -> TermId {
+        self.alloc_marker_term_with_named(functor_name, pos_args, SmallVec::new(), span)
+    }
+
+    /// [`Self::alloc_marker_term`] for the marker shapes that carry a NAMED arg —
+    /// `let_expr`'s `type_name`, `proof_stmt`'s `proof_meta`, a `typed_binder`'s
+    /// `pattern_var` `type`, `pattern_constructor` with named sub-patterns, and
+    /// WI-AK2AJ's `typed_var`.
+    ///
+    /// It exists so those five do NOT have to `mark_minted` by hand. They allocated
+    /// directly before, and a marker whose mint is a separate line a future edit can
+    /// omit is the exact defect WI-20260822-AKKWF closes — three of these five were
+    /// un-minted, and the loader panicked on a user call for each. Every marker in the
+    /// tree now goes through one of these two factories, so "did the builder remember"
+    /// is not a question anyone has to ask.
+    fn alloc_marker_term_with_named(
+        &mut self,
+        functor_name: &str,
+        pos_args: SmallVec<[TermId; 4]>,
+        named_args: SmallVec<[(Symbol, TermId); 2]>,
+        span: Span,
+    ) -> TermId {
+        let functor = self.intern(functor_name);
+        let tid = self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            },
+            span,
+        );
+        self.terms.mark_minted(tid);
+        tid
+    }
+
     /// Bottom-term factory for error/unwrap_or_else paths.
     fn alloc_bottom(&mut self, span: Span) -> TermId {
         self.terms.alloc(Term::Bottom, span)
@@ -950,16 +1078,7 @@ impl<'a> Converter<'a> {
                         self.alloc_bottom(span)
                     }
                 };
-                let functor = self.intern("typed_var");
                 let type_key = self.intern("type");
-                let tid = self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_elem(var_tid, 1),
-                        named_args: SmallVec::from_slice(&[(type_key, type_tid)]),
-                    },
-                    span,
-                );
                 // WI-AK2AJ: `typed_var` is ALSO an ordinary identifier a user may write,
                 // so the marker's two readers in `kb/load.rs` cannot recognise it by
                 // NAME alone -- WI-948's "a name, not a verdict" trap. MEASURED before
@@ -987,7 +1106,16 @@ impl<'a> Converter<'a> {
                 //    `is_arrow_functor`, `binder_form_layout` (`lambda_expr` /
                 //    `match_branch` / `let_expr`), or `field_access` | `dot_apply`.
                 // `typed_var` is none of those names, so the mint is inert at all nine.
-                self.terms.mark_minted(tid);
+                //
+                // WI-AKKWF re-ran that census for the nine SIBLING markers it minted and
+                // reached the same answer by measurement; the mint itself now rides on
+                // the shared factory rather than a line of its own.
+                let tid = self.alloc_marker_term_with_named(
+                    "typed_var",
+                    SmallVec::from_elem(var_tid, 1),
+                    SmallVec::from_slice(&[(type_key, type_tid)]),
+                    span,
+                );
                 results.push(tid);
             }
             "fn_term" => self.push_fn_term(node, work),
@@ -1794,14 +1922,15 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         match node.kind() {
             "pattern_wildcard" => {
-                let tid = self.alloc_fn_term("pattern_wildcard", SmallVec::new(), span);
+                let tid = self.alloc_marker_term("pattern_wildcard", SmallVec::new(), span);
                 results.push(tid);
             }
             "pattern_var" | "identifier" => {
                 let id_node = self.child_by_kind(node, "identifier").unwrap_or(node);
                 let sym = self.intern(self.text(id_node));
                 let name_tid = self.terms.alloc(Term::Ident(sym), self.span(id_node));
-                let tid = self.alloc_fn_term("pattern_var", SmallVec::from_elem(name_tid, 1), span);
+                let tid =
+                    self.alloc_marker_term("pattern_var", SmallVec::from_elem(name_tid, 1), span);
                 results.push(tid);
             }
             // WI-517: the parenthesized single typed binder `(x: T)` wraps a
@@ -1851,14 +1980,11 @@ impl<'a> Converter<'a> {
                         self.alloc_bottom(span)
                     }
                 };
-                let functor = self.intern("pattern_var");
                 let type_key = self.intern("type");
-                let tid = self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_elem(name_tid, 1),
-                        named_args: SmallVec::from_slice(&[(type_key, type_tid)]),
-                    },
+                let tid = self.alloc_marker_term_with_named(
+                    "pattern_var",
+                    SmallVec::from_elem(name_tid, 1),
+                    SmallVec::from_slice(&[(type_key, type_tid)]),
                     span,
                 );
                 results.push(tid);
@@ -2281,7 +2407,7 @@ impl<'a> Converter<'a> {
                 pos_args.push(scrutinee);
                 pos_args.extend(results[drain_start + 1..].iter().copied());
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term("match_expr", pos_args, span));
+                results.push(self.alloc_marker_term("match_expr", pos_args, span));
             }
             BuildFrame::MatchBranch { node, has_guard } => {
                 let span = self.span(node);
@@ -2295,11 +2421,11 @@ impl<'a> Converter<'a> {
                     args.push(results[drain_start + 2]);
                 }
                 results.truncate(drain_start);
-                let tid = self.alloc_fn_term("match_branch", args, span);
                 // WI-618: binder-form provenance — consumers scoping this
                 // form's pattern binders must tell it from a user call that
-                // happens to be named `match_branch`.
-                self.terms.mark_minted(tid);
+                // happens to be named `match_branch`. WI-AKKWF folded the mark into
+                // [`Self::alloc_marker_term`]; it is the same flag, not a second one.
+                let tid = self.alloc_marker_term("match_branch", args, span);
                 results.push(tid);
             }
             BuildFrame::IfExpr { node } => {
@@ -2309,7 +2435,7 @@ impl<'a> Converter<'a> {
                 let then_branch = results[drain_start + 1];
                 let else_branch = results[drain_start + 2];
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term(
+                results.push(self.alloc_marker_term(
                     "if_expr",
                     SmallVec::from_slice(&[condition, then_branch, else_branch]),
                     span,
@@ -2334,17 +2460,14 @@ impl<'a> Converter<'a> {
                     let type_name_key = self.intern("type_name");
                     named.push((type_name_key, aux_tid));
                 }
-                let functor = self.intern("let_expr");
-                let let_id = self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::from_slice(&[pattern, value, body]),
-                        named_args: named,
-                    },
+                // WI-618: binder-form provenance, as for MatchBranch — carried by the
+                // factory (WI-AKKWF), not by a separate line.
+                let let_id = self.alloc_marker_term_with_named(
+                    "let_expr",
+                    SmallVec::from_slice(&[pattern, value, body]),
+                    named,
                     span,
                 );
-                // WI-618: binder-form provenance, as for MatchBranch.
-                self.terms.mark_minted(let_id);
                 results.push(let_id);
             }
             BuildFrame::LambdaExpr { node } => {
@@ -2353,10 +2476,12 @@ impl<'a> Converter<'a> {
                 let param = results[drain_start];
                 let body = results[drain_start + 1];
                 results.truncate(drain_start);
-                let tid =
-                    self.alloc_fn_term("lambda_expr", SmallVec::from_slice(&[param, body]), span);
                 // WI-618: binder-form provenance, as for MatchBranch.
-                self.terms.mark_minted(tid);
+                let tid = self.alloc_marker_term(
+                    "lambda_expr",
+                    SmallVec::from_slice(&[param, body]),
+                    span,
+                );
                 results.push(tid);
             }
             BuildFrame::ProofStmt {
@@ -2393,20 +2518,18 @@ impl<'a> Converter<'a> {
                     pos_args.push(c);
                 }
                 let meta_key = self.intern("proof_meta");
-                let functor = self.intern("proof_stmt");
-                results.push(self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args,
-                        named_args: SmallVec::from_slice(&[(meta_key, meta_tid)]),
-                    },
+                let tid = self.alloc_marker_term_with_named(
+                    "proof_stmt",
+                    pos_args,
+                    SmallVec::from_slice(&[(meta_key, meta_tid)]),
                     span,
-                ));
+                );
+                results.push(tid);
             }
             BuildFrame::PatternLiteral { node } => {
                 let span = self.span(node);
                 let value = results.pop().expect("pattern_literal: missing value");
-                results.push(self.alloc_fn_term(
+                results.push(self.alloc_marker_term(
                     "pattern_literal",
                     SmallVec::from_elem(value, 1),
                     span,
@@ -2431,17 +2554,15 @@ impl<'a> Converter<'a> {
                 }
                 results.truncate(drain_start);
                 if named_args.is_empty() {
-                    results.push(self.alloc_fn_term("pattern_constructor", pos_args, span));
+                    results.push(self.alloc_marker_term("pattern_constructor", pos_args, span));
                 } else {
-                    let functor = self.intern("pattern_constructor");
-                    results.push(self.terms.alloc(
-                        Term::Fn {
-                            functor,
-                            pos_args,
-                            named_args,
-                        },
+                    let tid = self.alloc_marker_term_with_named(
+                        "pattern_constructor",
+                        pos_args,
+                        named_args,
                         span,
-                    ));
+                    );
+                    results.push(tid);
                 }
             }
             BuildFrame::PatternTuple { node, count } => {
@@ -2450,7 +2571,7 @@ impl<'a> Converter<'a> {
                 let pos_args: SmallVec<[TermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term("pattern_tuple", pos_args, span));
+                results.push(self.alloc_marker_term("pattern_tuple", pos_args, span));
             }
         }
     }

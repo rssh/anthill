@@ -5515,10 +5515,23 @@ fn bodyless_declares_nothing_detail(
     };
     // THE SENTENCE DESCRIBES THE REACHABLE POPULATION, NOT THE PRODUCER SET, and the two
     // stopped coinciding when WI-20260822-AK2AJ made `typed_var` a third mint category
-    // (`SimpleTermStore::minted`). It stays true only because a MARKER can never be a
-    // head — `rule_heads` is `commaSep1($._goal)` and `typed_var_arg` sits only in
-    // `_positional_fn_arg` — so every minted head really is an operator or an accessor.
-    // A future marker reachable in head position must move this text with it.
+    // (`SimpleTermStore::minted`); WI-20260822-AKKWF then added ELEVEN more — `if_expr`,
+    // `match_expr`, `match_branch`, `let_expr`, `lambda_expr`, `proof_stmt` and the five
+    // `pattern_*` forms, all built by `convert::alloc_marker_term`. It stays true only
+    // because a MARKER can never be a head, and that now rests on TWO grammar facts, not
+    // one:
+    //   * `typed_var_arg` sits only in `_positional_fn_arg`, so it is an ARGUMENT
+    //     (AK2AJ's);
+    //   * `rule_heads` is `commaSep1($._goal)` → `_term`, whose `_non_name_atom_term`
+    //     alternatives contain no expression form and no pattern production, so nothing
+    //     `visit_pattern` or an expression `BuildFrame` builds can occupy a head
+    //     (AKKWF's — MEASURED: 2 586 767 marker mints over the workspace corpus and
+    //     115 574 minted heads seen here and at `rule_introduced_functor_name`, with no
+    //     marker name among them).
+    // So every minted head really is an operator or an accessor. A FUTURE MARKER
+    // REACHABLE IN HEAD POSITION MUST MOVE THIS TEXT WITH IT — and a marker added in a
+    // production reachable from `_term` is exactly that case, which the first bullet
+    // alone would not catch.
     if parse_terms.is_minted(*tid) {
         return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
                 `?a + ?b` carries `add`), not a name the rule introduces"
@@ -5676,6 +5689,13 @@ fn rule_introduced_functor_name<'a>(
     // than re-derived from a blocklist. MEASURED on the predicate path too, where
     // the guard was missing: `rule ?x.m(?y) :- p(?x)` minted `<ns>.dot_apply`,
     // shadowing reserved kernel vocab for that whole scope.
+    //
+    // THIS IS ONE OF THE TWO `is_minted` READERS WITH NO NAME PAIRING, so it is the
+    // one a new mint can move — see the twin note at `bodyless_declares_nothing_detail`
+    // for why the twelve SURFACE-FORM MARKERS (WI-20260822-AK2AJ / AKKWF) cannot reach
+    // this position, and for the measurement that says so. A marker added in a grammar
+    // production reachable from `_term` WOULD reach it, and would silently make its
+    // rule introduce nothing.
     if parse_terms.is_minted(subject) {
         return None;
     }
@@ -17017,6 +17037,21 @@ impl<'a> Loader<'a> {
                 // `entity dot_apply` (named-arg construction) falls through to
                 // generic conversion — and MUST, else `pos_args[1]` would panic
                 // on < 2 positional args.
+                //
+                // WI-20260822-AKKWF — AND THE NAME IS DELIBERATELY *NOT* PAIRED WITH
+                // `is_minted` HERE, which is where this reader parts company with
+                // `visit_load`'s marker gate and with `typed_var`'s strip below. In a
+                // TERM position `dot_apply(?receiver, member, ?x)` is a SPELLED KERNEL
+                // FORM, not a converter marker: it is the surface the spec gives for a
+                // sort-scoped dot rule (§"a `[simp]` **dot rule** … `rule dr:
+                // dot_apply(?receiver, member, ?x) = … [simp]`"), and the whole point
+                // of writing it is that it re-encodes to the same canonical shape the
+                // desugared `?b.special(7)` does, so the two MATCH. MEASURED by adding
+                // the pairing anyway: 8 tests fell — `wi279_dot_dispatch`,
+                // `wi538_local_proof`, four `wi902_dot_rule_macro`, `wi903` — every one
+                // reporting "expected operation declared on the receiver's sort" for
+                // the method the dot rule was there to supply. The arity + `Ident`
+                // guard above is the WHOLE guard, and it is a SHAPE guard on purpose.
                 if self.parsed.symbols.local_name(functor) == "dot_apply"
                     && pos_args.len() >= 2
                     && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_))
@@ -17638,8 +17673,36 @@ impl<'a> Loader<'a> {
                 named_args,
             } => {
                 let name = self.parsed.symbols.local_name(functor).to_owned();
-                match name.as_str() {
-                    "match_expr" => {
+                // WI-20260822-AKKWF — EVERY MARKER ARM BELOW IS GATED ON PROVENANCE, BY
+                // MATCHING ON THIS BINDING RATHER THAN ON THE NAME. The arms recognise
+                // the converter's SURFACE-FORM MARKERS (`convert.rs`'s
+                // `alloc_marker_term`) and then index `pos_args` by POSITION — a layout
+                // only the desugar produces. Every one of those names is also an
+                // ordinary identifier a user may write, and dispatching on the name
+                // alone is WI-948's "a name, not a verdict" trap in its LOUDEST form:
+                // MEASURED before this gate, `operation f() -> Int64 = if_expr(1)` did
+                // not misreport, it PANICKED THE LOADER ("index out of bounds"), and a
+                // panic is not a diagnostic — the process aborts, so no other error in
+                // the file is reported either. Fourteen written calls crashed the load;
+                // TWELVE of them are these arms, and `pattern_wildcard()` — nullary, so
+                // nothing indexed out of range — was silently read as a `Pattern`
+                // instead. (The other two are `dot_apply`'s, whose arm is NOT
+                // provenance-gated and says why at its own site.)
+                //
+                // The gate is ONE binding rather than an `&& is_minted(parse_id)` on
+                // each arm so a NEW marker arm cannot be added without it: `Some(_)`
+                // here means "the converter built this node", full stop. An un-minted
+                // call falls to `_`, which is ordinary conversion — where a name that
+                // denotes nothing gets its own accurate "unknown functor" diagnostic.
+                // `name` itself stays in scope for the `_` arm's `field_access` /
+                // dotted-call re-routes, which ask a different question.
+                //
+                // WI-618's arrow arm was the ONE arm that already paired the two; it
+                // now reads the shared binding, so the pairing has a single spelling.
+                let marker: Option<&str> =
+                    self.parsed.terms.is_minted(parse_id).then(|| name.as_str());
+                match marker {
+                    Some("match_expr") => {
                         let branch_count = pos_args.len() - 1;
                         work.push(LoadWorkOp::Build(LoadBuildFrame::MatchExpr {
                             outer_parse_id: parse_id,
@@ -17649,7 +17712,7 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::Visit(child));
                         }
                     }
-                    "match_branch" => {
+                    Some("match_branch") => {
                         // Pattern names are bound for the branch body (and guard).
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
                         // WI-537: a 3rd positional arg is the optional arm guard.
@@ -17677,7 +17740,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
-                    "if_expr" => {
+                    Some("if_expr") => {
                         work.push(LoadWorkOp::Build(LoadBuildFrame::IfExpr {
                             outer_parse_id: parse_id,
                         }));
@@ -17685,7 +17748,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[1]));
                         work.push(LoadWorkOp::Visit(pos_args[0]));
                     }
-                    "let_expr" => {
+                    Some("let_expr") => {
                         // The let-pattern's bound names are in scope for
                         // the body but not for the value, so push the
                         // scope frame between value and body. Pop order
@@ -17711,7 +17774,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
-                    "lambda_expr" => {
+                    Some("lambda_expr") => {
                         // Lambda param is in scope for the body.
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::Lambda {
@@ -17747,7 +17810,7 @@ impl<'a> Loader<'a> {
                     // typer never sees the Bottom (its loud `BottomExpr`
                     // post-elaboration invariant would otherwise add a second,
                     // internal-jargon error at the same site).
-                    n if pratt::is_arrow_functor(n) && self.parsed.terms.is_minted(parse_id) => {
+                    Some(n) if pratt::is_arrow_functor(n) => {
                         self.errors.push(LoadError::ArrowTermInExprPosition {
                             span: self.parsed.terms.span(parse_id),
                         });
@@ -17756,7 +17819,7 @@ impl<'a> Loader<'a> {
                         results.push(kb_id);
                         self.push_leaf_occ(parse_id, kb_id);
                     }
-                    "proof_stmt" => {
+                    Some("proof_stmt") => {
                         // WI-538: pos_args are [body, conclude?]. The
                         // proof binds no value names, so the body sees
                         // the same scope (no scope frame). Visit body
@@ -17771,25 +17834,25 @@ impl<'a> Loader<'a> {
                         }
                         work.push(LoadWorkOp::Visit(pos_args[0])); // body
                     }
-                    "pattern_var" => {
+                    Some("pattern_var") => {
                         let kb_id = self.load_pattern_var(parse_id, &pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
                         self.push_leaf_occ(parse_id, kb_id);
                     }
-                    "pattern_wildcard" => {
+                    Some("pattern_wildcard") => {
                         let kb_id = self.load_pattern_wildcard();
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
                         self.push_leaf_occ(parse_id, kb_id);
                     }
-                    "pattern_literal" => {
+                    Some("pattern_literal") => {
                         let kb_id = self.load_pattern_literal(&pos_args);
                         self.create_occurrence(parse_id, kb_id);
                         results.push(kb_id);
                         self.push_leaf_occ(parse_id, kb_id);
                     }
-                    "pattern_constructor" => {
+                    Some("pattern_constructor") => {
                         // The constructor name (pos_args[0]) is a leaf Ident — pre-resolve
                         // it now so the Build frame can drain only the sub-pattern children.
                         let name_term = self.parsed.terms.get(pos_args[0]).clone();
@@ -17829,7 +17892,49 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::Visit(child));
                         }
                     }
-                    "dot_apply" => {
+                    Some("pattern_tuple") => {
+                        let element_count = pos_args.len();
+                        work.push(LoadWorkOp::Build(LoadBuildFrame::PatternTuple {
+                            outer_parse_id: parse_id,
+                            element_count,
+                        }));
+                        for &child in pos_args.iter().rev() {
+                            work.push(LoadWorkOp::Visit(child));
+                        }
+                    }
+                    // PLACED LAST AMONG THE MARKER ARMS ON PURPOSE: it is a GUARDED
+                    // WILDCARD (`_ if …`), so anywhere above it would leave every
+                    // `Some(…)` arm below reachable only because the guard can fail —
+                    // and a later edit that widened or dropped that guard would make
+                    // those arms silently dead, which rustc reports as a WARNING
+                    // (`unreachable_patterns`), not an error. Last, it can shadow
+                    // nothing.
+                    //
+                    // WI-20260822-AKKWF — THE ONE ARM THAT IS *NOT* PROVENANCE-GATED,
+                    // because `dot_apply` is not a converter-only marker: in a term
+                    // position it is a SPELLED KERNEL FORM the spec gives the author,
+                    // the surface of a sort-scoped dot rule (§"a `[simp]` **dot rule**
+                    // … `rule dr: dot_apply(?receiver, member, ?x) = … [simp]`"), and
+                    // the applicative spelling works in an operation BODY as well as in
+                    // the rule head. MEASURED both ways with this arm's guard mutated:
+                    // under `Some("dot_apply")` the body `dot_apply(?b, special, 7)`
+                    // (wi279's dot-rule fixture, written applicatively) is refused with
+                    // "special.name: expected resolved name, got unresolved" while the
+                    // `?b.special(7)` surface in a sibling fixture keeps loading; under
+                    // the shape guard below both load. A mint gate here would not fix a
+                    // trap, it would DELETE the spelling.
+                    //
+                    // So this arm takes `convert_term`'s guard instead — the sibling
+                    // reader of the same form, whose comment states the same rule: the
+                    // ARITY plus an `Ident` at the name slot is what separates the dot
+                    // form from a call that merely shares the name, and it is also what
+                    // keeps `pos_args[1]` in range. `dot_apply()` / `dot_apply(1, 2)`
+                    // fall to `_` and get an ordinary constructor diagnostic instead of
+                    // the panic they used to raise.
+                    _ if name == "dot_apply"
+                        && pos_args.len() >= 2
+                        && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_)) =>
+                    {
                         // Parse shape: pos_args = [receiver, Ident(name),
                         // ...positional]; named_args = named call args. The
                         // name is metadata (pre-resolve, don't Visit); the
@@ -17860,16 +17965,6 @@ impl<'a> Loader<'a> {
                             work.push(LoadWorkOp::Visit(tid));
                         }
                         work.push(LoadWorkOp::Visit(pos_args[0]));
-                    }
-                    "pattern_tuple" => {
-                        let element_count = pos_args.len();
-                        work.push(LoadWorkOp::Build(LoadBuildFrame::PatternTuple {
-                            outer_parse_id: parse_id,
-                            element_count,
-                        }));
-                        for &child in pos_args.iter().rev() {
-                            work.push(LoadWorkOp::Visit(child));
-                        }
                     }
                     _ => {
                         // WI-271: filter out parse-only auxiliary
