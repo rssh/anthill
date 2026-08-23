@@ -30959,6 +30959,15 @@ fn eq_override_backed(
 /// `spec_op`) is backed for carrier `X`. See [`check_provider_operations`] for
 /// the backing kinds. Conservative: any one source suffices.
 ///
+/// MATCHED BY SHORT NAME, and that is still all this function asks. Whether the
+/// member so matched actually FITS the spec operation — arity, parameter types and
+/// order, return type — is [`check_member_signature`]'s question (WI-20260822-1MAGR),
+/// asked in [`check_override_refinement`] and asked exactly where this function's
+/// spec-op candidate contributes nothing, i.e. where the member is the only backing
+/// there is. The two are not a drift: this one asks "can the evaluator run something
+/// under this name for this carrier", and that one asks "is what it would run the
+/// operation the provision claims".
+///
 /// WI-818 — "backed" means **EXECUTABLE**: a runnable body, or a builtin. A RULE
 /// does not count, and that is the whole point of the ticket.
 ///
@@ -31310,6 +31319,339 @@ fn type_param_sym_of_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -
 /// still catching a ground effect-widening (the doc's `Network`-vs-`Error`
 /// case). Contract (`requires`/`ensures`) refinement is added on this same
 /// pass next.
+/// WI-20260822-1MAGR — DOES THE CARRIER'S OWN MEMBER FIT THE SPEC OPERATION IT
+/// CLAIMS TO IMPLEMENT? Arity, parameter types (and so their ORDER), and the
+/// return type, with the provision's σ applied to the spec's declaration.
+///
+/// Until this check, a provision certified that a member of that NAME exists and
+/// nothing more (kernel-language.md §8.7, WI-935, measured): `fact
+/// VectorSpace[Vec3, Float]` loaded clean with `vec_add` at one argument, with
+/// `vec_sub` returning `Float`, or with `vec_scale`'s two parameters swapped, and
+/// each then mis-dispatched or died at the call. WI-20260822-59CDQ compared the
+/// return type in ONE place — where a contract clause's `result` binder is what
+/// discharges it — and deliberately stopped there; this is the general question it
+/// handed on.
+///
+/// # The gate: the member must be the SOLE BACKING
+///
+/// The comparison runs only where the spec operation has no implementation of its own
+/// that would back this carrier — a default body or a resolver builtin, which is
+/// [`op_backed`]'s own spec-op predicate and NOT the wider [`op_is_executable`] (see
+/// the gate's comment for why the host-mapping leg is excluded). That is not a cost
+/// dodge — it is the line between two different programs, and the whole corpus
+/// separates on it:
+///
+///   * The spec supplies NOTHING. The member is the only thing that can back the
+///     operation; there is no other implementation for it to be distinct FROM, and
+///     if it does not fit, the provision's claim is simply false. Nothing else in
+///     the loader would ever say so.
+///   * The spec supplies its own implementation. A same-named member of a
+///     different signature is then a DISTINCT operation, and the default is what
+///     backs the provision — the reading §8.7 already gives the `requires`
+///     direction (WI-1048: "different arity, a different parameter type, a
+///     different return type ⇒ distinct operations by construction"), and a call
+///     that expected the spec's shape is already a loud type error naming both
+///     types. Refusing here would instead overturn two decided rules: WI-1125's
+///     `operation neq() -> Bool` beside `provides PartialEq[T = Color]` ("a 0-ary
+///     member is not `PartialEq.neq` under any reading, so it supplies nothing and
+///     the program is fine") and its witness twin `neq(a: Int64, b: Int64)`, both
+///     of which sit beside the `PartialEq.neq` BUILTIN.
+///
+/// MEASURED, report-only over the whole corpus + fixture suite — 1152 distinct
+/// (carrier, spec, op) pairs across 999 carriers. The comparison flagged 67 of them
+/// and every one was a legitimate program; the two decidability gates below account
+/// for 56 (42 self-receiver parameters, 14 projection-carrying return types), leaving
+/// 11. The SOLE-BACKING gate splits those 11 exactly, with no crossings:
+///   * the 3 beside an executable spec operation are precisely the programs the
+///     language had already decided must load — `wi1125.nullary`,
+///     `wi1125.witnessunrelated`, `wi1042.nonparametric`;
+///   * the 8 beside a body-less one are all deliberate mismatch fixtures: six in
+///     `wi347_override_refinement_test`, and `p3_spec_wrong_sig.anthill` /
+///     `p7_sig_and_row.anthill` in `docs/measurements/guardians/`, the two probes
+///     that RECORDED this gap as C1 of that example's `measured.md`.
+///
+/// # What is not compared, and why each is undecidable rather than excused
+///
+///   * THE SELF-RECEIVER PARAMETER. A spec that types a parameter as ITSELF
+///     (`splitFirst(s: Stream)`) is naming the dispatch receiver, and an override
+///     narrows it to the carrier (`splitFirst(xs: List)`). Contravariance would
+///     refuse every one of them; dispatch is what makes the narrowing sound, since
+///     the receiver is the carrier by construction. Recognised structurally — the
+///     spec side's sort functor IS the spec, the member side's IS the carrier —
+///     never by position: `test.wi596.Bag.holds(x: T, b: Bag)` puts it second.
+///   * A TYPE CARRYING AN EXPRESSION PROJECTION (`s.T`, WI-376). σ binds the
+///     spec's TYPE PARAMETERS; it cannot ground a projection off the operation's
+///     own parameter, and the two operations' receivers are different parameters,
+///     so `Stream.splitFirst`'s `s.T` and `List.splitFirst`'s `xs.T` are two
+///     distinct neutrals that [`types_compatible`] refuses (`expr_carried_zeta`:
+///     "a neutral projection is equal only to an identical neutral"). Deciding
+///     these needs the receiver-relative alignment WI-461/WI-474 do at a CALL, not
+///     a σ over type parameters.
+///   * A NON-GROUND PAIR — the fail-open [`instance_binding_type_ok`] already
+///     applies, so a higher-kinded or unbound parameter is not judged.
+///
+/// PARAMETER ORDER IS A PARTIAL CHECK AND SAYS SO. It is decidable only where the
+/// types differ: `f(a: Int64, b: Int64)` written in either order is the same
+/// signature, so a swap there is invisible and no message claims otherwise. Where
+/// the types do differ, a permutation that WOULD fit is reported as an order
+/// mistake rather than as N unrelated parameter mismatches, because that is the
+/// repair.
+///
+/// THE POPULATION is [`check_override_refinement`]'s own: the provision's declaring
+/// sort's OWN declared member of the spec operation's short name. That includes a
+/// WITNESS sort's members (the declaring sort is the witness, and σ still binds the
+/// spec's parameter to the carrier the provision names), and it excludes two things
+/// that have their own owners — an instance fact's op-valued BINDING, which
+/// [`check_instance_fact_op_signatures`] compares, and a member [`op_backed`] reaches
+/// only by qualified name rather than through the sort's own-op list.
+///
+/// ONE REFUSAL PER MEMBER, and the legs are checked in shape order — arity, then
+/// parameters, then the return. Arity short-circuits because a per-position
+/// comparison across two different arities pairs unrelated parameters and reports
+/// noise; the parameter leg short-circuits the return because every message here
+/// prints BOTH signatures in full, so a second refusal would repeat what the first
+/// already showed. (That is the opposite trade from the contract legs beside it,
+/// whose messages name a CLAUSE each and so are worth reporting together — see
+/// WI-20260822-59CDQ's `a_return_type_refusal_does_not_hide_an_independent_contract_
+/// defect`. The contract legs still run and still report, so a member that both
+/// mis-fits and weakens a postcondition says both.)
+#[allow(clippy::too_many_arguments)]
+fn check_member_signature(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    op_short: &str,
+    spec_info: &super::op_info::OpInfoRecord,
+    impl_info: &super::op_info::OpInfoRecord,
+    sigma: &[(Symbol, TermId)],
+    errors: &mut Vec<super::load::LoadError>,
+) -> MemberSignature {
+    use super::load::LoadError;
+    // THE GATE (see the doc above), asked with [`op_backed`]'s OWN spec-op predicate
+    // and not with the general [`op_is_executable`].
+    //
+    // THE DIFFERENCE IS THE HOST-MAPPING LEG, and it is load-bearing rather than
+    // incidental. `op_is_executable` counts an `operation_map` entry, and
+    // [`KnowledgeBase::is_host_mapped_op`] is a FLAT SET with no carrier dimension — so
+    // a host mapping naming the SPEC's own member says an implementation exists
+    // somewhere, never that THIS carrier is realized. That is WI-876's defect A, which
+    // is exactly why `op_backed` drops the leg for its spec-op candidate. Asking the
+    // wider predicate here would gate the comparison off in the one case where the
+    // member really is the only backing: `op_backed` would refuse to count the host
+    // mapping for the carrier, and this pass would have skipped the member on the
+    // strength of it.
+    if kb.is_builtin(spec_op) || op_has_runnable_body(kb, spec_op) {
+        return MemberSignature::Alignable;
+    }
+    // The carrier / spec names are read ONLY on a refusal. This function runs for every
+    // (spec op, member) pair of every provision on every load — the stdlib alone carries
+    // ~146 provisions — and the overwhelmingly common outcome is that the signatures fit,
+    // so nothing above the failure branches allocates.
+    let refuse = |kb: &KnowledgeBase, errors: &mut Vec<LoadError>, reason: String| {
+        errors.push(LoadError::IncompatibleMemberSignature {
+            carrier: kb.qualified_name_of(carrier).to_string(),
+            spec: kb.qualified_name_of(spec).to_string(),
+            op: op_short.to_string(),
+            reason,
+        });
+    };
+
+    // ── arity ───────────────────────────────────────────────────────────────
+    if spec_info.params.len() != impl_info.params.len() {
+        let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
+        let impl_sig = render_op_signature(kb, op_short, impl_info, &[]);
+        let spec_qn = kb.qualified_name_of(spec).to_string();
+        let reason = format!(
+            "the spec declares `{spec_sig}` ({} parameter(s)) and the member is `{impl_sig}` ({}), \
+             and `{spec_qn}.{op_short}` has no default body and no builtin, so this member \
+             is the only thing that could back it for this carrier (a host `operation_map` \
+             on the spec's own member does not: it names no carrier)",
+            spec_info.params.len(),
+            impl_info.params.len()
+        );
+        refuse(kb, errors, reason);
+        return MemberSignature::ArityDiffers;
+    }
+
+    // ── parameter types (contravariant: σ(spec) <: member) ──────────────────
+    let n = spec_info.params.len();
+    let mut bad: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let (_, spec_pty) = &spec_info.params[i];
+        let (_, impl_pty) = &impl_info.params[i];
+        if instance_binding_type_ok(kb, spec_pty, impl_pty, sigma, false) != Some(false) {
+            continue;
+        }
+        // THE SELF-RECEIVER, and the projection gate — see the doc above. Both are
+        // reached only by a position that has ALREADY compared as incompatible, which
+        // is why the canonicalizations sit here rather than above the loop.
+        let is_receiver = sort_functor_of_view(kb, spec_pty)
+            .is_some_and(|b| kb.canonical_sort_sym(b) == kb.canonical_sort_sym(spec))
+            && sort_functor_of_view(kb, impl_pty)
+                .is_some_and(|b| kb.canonical_sort_sym(b) == kb.canonical_sort_sym(carrier));
+        let carries_projection =
+            value_contains_projection(kb, spec_pty) || value_contains_projection(kb, impl_pty);
+        if !is_receiver && !carries_projection {
+            bad.push(i);
+        }
+    }
+    if !bad.is_empty() {
+        // ORDER vs TYPE. A permutation of the member's parameters that WOULD fit
+        // says the author wrote them in the wrong order, which is a different
+        // repair from "this parameter has the wrong type". Bounded because the
+        // search is factorial and a signature past this width is not a swap.
+        let permuted = bad.len() >= 2
+            && bad.len() <= MEMBER_SIGNATURE_PERMUTATION_LIMIT
+            && member_params_are_a_permutation(kb, spec_info, impl_info, sigma, &bad);
+        let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
+        let impl_sig = render_op_signature(kb, op_short, impl_info, &[]);
+        let reason = if permuted {
+            format!(
+                "the member's parameters are the spec's in a different ORDER — the spec \
+                 declares `{spec_sig}` (at this provision's bindings) and the member is \
+                 `{impl_sig}`. (Only decidable where the types differ: two parameters of \
+                 the same type in either order are the same signature and are not \
+                 reported.)"
+            )
+        } else {
+            let mut ps: Vec<String> = Vec::new();
+            for &i in &bad {
+                let sub = sigma_subst_effect(kb, &spec_info.params[i].1, sigma);
+                let want = type_display_name_value(kb, &sub);
+                let got = type_display_name_value(kb, &impl_info.params[i].1);
+                ps.push(format!("parameter {} is `{got}` where the spec's is `{want}`", i + 1));
+            }
+            format!(
+                "{} — the spec declares `{spec_sig}` (at this provision's bindings) and the \
+                 member is `{impl_sig}`",
+                ps.join("; ")
+            )
+        };
+        refuse(kb, errors, reason);
+        return MemberSignature::Alignable;
+    }
+
+    // ── return type (covariant: member <: σ(spec)) ──────────────────────────
+    if instance_binding_type_ok(
+        kb,
+        &spec_info.return_type,
+        &impl_info.return_type,
+        sigma,
+        true,
+    ) == Some(false)
+        && !value_contains_projection(kb, &spec_info.return_type)
+        && !value_contains_projection(kb, &impl_info.return_type)
+    {
+        let sub = sigma_subst_effect(kb, &spec_info.return_type, sigma);
+        let want = type_display_name_value(kb, &sub);
+        let got = type_display_name_value(kb, &impl_info.return_type);
+        let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
+        let impl_sig = render_op_signature(kb, op_short, impl_info, &[]);
+        let reason = format!(
+            "the member returns `{got}`, which is not a subtype of the spec's `{want}` — the \
+             spec declares `{spec_sig}` (at this provision's bindings) and the member is \
+             `{impl_sig}`"
+        );
+        refuse(kb, errors, reason);
+    }
+    MemberSignature::Alignable
+}
+
+/// WI-20260822-1MAGR — can the legs AFTER [`check_member_signature`] still align the
+/// member's parameters to the spec's? They all compare in the spec's vocabulary
+/// through a positional `zip`, so the answer is "yes iff the arities agree" — a
+/// judgement about the ALIGNMENT and not about whether the signature was refused.
+/// `Alignable` is therefore also what a gated-off pair and a same-arity refusal both
+/// return.
+#[derive(PartialEq, Eq)]
+enum MemberSignature {
+    Alignable,
+    ArityDiffers,
+}
+
+/// WI-20260822-1MAGR — the widest signature the order leg searches. The search is
+/// factorial in the parameter count, and a swap is a two- or three-parameter
+/// mistake; past this the message falls back to naming the mismatched positions,
+/// which is still the repair.
+const MEMBER_SIGNATURE_PERMUTATION_LIMIT: usize = 6;
+
+/// WI-20260822-1MAGR — are the member's MISMATCHED parameters the spec's, REORDERED?
+/// True when some non-identity permutation of `bad` makes every one of those
+/// positions fit. Used only to choose the diagnostic; the refusal itself is already
+/// decided by the positional pass.
+///
+/// OVER `bad`, NOT OVER ALL n. The positions the positional pass EXEMPTED — the
+/// self-receiver, a projection-carrying type — never fit positionally, so a search
+/// over the whole list would answer `false` for any signature that has one and report
+/// a genuine swap of two later parameters as two unrelated type mismatches. Searching
+/// the mismatched positions alone asks the question the message wants: are these the
+/// same types, in the wrong places?
+fn member_params_are_a_permutation(
+    kb: &mut KnowledgeBase,
+    spec_info: &super::op_info::OpInfoRecord,
+    impl_info: &super::op_info::OpInfoRecord,
+    sigma: &[(Symbol, TermId)],
+    bad: &[usize],
+) -> bool {
+    let mut idx: Vec<usize> = (0..bad.len()).collect();
+    permutations_any(&mut idx, 0, &mut |perm: &[usize]| {
+        if perm.iter().enumerate().all(|(i, &j)| i == j) {
+            return false;
+        }
+        (0..bad.len()).all(|i| {
+            instance_binding_type_ok(
+                kb,
+                &spec_info.params[bad[i]].1,
+                &impl_info.params[bad[perm[i]]].1,
+                sigma,
+                false,
+            ) != Some(false)
+        })
+    })
+}
+
+/// Depth-first permutation search: calls `f` on each permutation of `idx` and stops
+/// at the first `true`. Sole consumer [`member_params_are_a_permutation`].
+fn permutations_any(idx: &mut Vec<usize>, k: usize, f: &mut dyn FnMut(&[usize]) -> bool) -> bool {
+    if k == idx.len() {
+        return f(idx);
+    }
+    for i in k..idx.len() {
+        idx.swap(k, i);
+        if permutations_any(idx, k + 1, f) {
+            idx.swap(k, i);
+            return true;
+        }
+        idx.swap(k, i);
+    }
+    false
+}
+
+/// WI-20260822-1MAGR — render one operation's declared signature for a diagnostic:
+/// `vec_scale(c: Float, v: Vec3) -> Vec3`. `sigma` is the provision's type-parameter
+/// binding, so the SPEC side is printed as the author of the provision would have to
+/// write it (`-> Vec3`, not `-> V`); pass an empty σ for the member's own side.
+fn render_op_signature(
+    kb: &mut KnowledgeBase,
+    short: &str,
+    info: &super::op_info::OpInfoRecord,
+    sigma: &[(Symbol, TermId)],
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(info.params.len());
+    for (name, ty) in &info.params {
+        let sub = sigma_subst_effect(kb, ty, sigma);
+        let n = kb.local_name_of(*name).to_string();
+        parts.push(format!("{n}: {}", type_display_name_value(kb, &sub)));
+    }
+    let ret = sigma_subst_effect(kb, &info.return_type, sigma);
+    format!(
+        "{short}({}) -> {}",
+        parts.join(", "),
+        type_display_name_value(kb, &ret)
+    )
+}
+
 pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -31403,6 +31745,36 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             let Some(impl_info) = super::op_info::lookup_operation_info(kb, impl_op) else {
                 continue;
             };
+
+            // WI-20260822-1MAGR — THE MEMBER'S SIGNATURE, before the legs below.
+            //
+            // AND AN ARITY MISMATCH ENDS THE PAIR, which is not tidiness. Every leg
+            // below compares in the SPEC'S PARAM VOCABULARY via `param_align`, and that
+            // alignment is a positional `zip` of the two parameter lists — across two
+            // different arities it pairs unrelated parameters and leaves the impl's
+            // surplus ones unaligned, so a clause the override restates VERBATIM stops
+            // matching. MEASURED (/code-review): spec `describe(a: T, b: Int64) requires
+            // posi(b)` against member `describe(b: Int64) requires posi(b)` reported the
+            // signature AND "it strengthens the precondition — the override `requires` a
+            // condition the spec operation does not", which is false; the override
+            // strengthens nothing. At EQUAL arity the alignment is sound whatever the
+            // types are, so a parameter-type or return-type refusal does NOT end the
+            // pair — the contract legs still run and still report beside it, which is
+            // WI-20260822-59CDQ's "report beside, not instead".
+            if check_member_signature(
+                kb,
+                p.carrier,
+                p.spec,
+                spec_op,
+                &sn,
+                &spec_info,
+                &impl_info,
+                &p.sigma,
+                &mut errors,
+            ) == MemberSignature::ArityDiffers
+            {
+                continue;
+            }
 
             // ── the result binder, and the return type it commits to ───────
             //
@@ -31707,9 +32079,16 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 /// when the σ-substituted spec type and the bound type are both ground
 /// `Value::Term` — so a higher-kinded binding whose param stays parametric
 /// (`pure : F[T = A]`) fails open, deferred to WI-383. Arity is always checked.
-/// A dedicated pass (not folded into [`check_override_refinement`]) so the
-/// carrier-own override path is untouched; instance facts have no stdlib presence
-/// yet, so this can be strict without regressing existing providers.
+/// A dedicated pass (not folded into [`check_override_refinement`]) because the two
+/// compare DIFFERENT things: this one an op-valued BINDING (`combine = wrongOp`),
+/// which names a free operation the author wrote out, and the other a carrier's own
+/// MEMBER. WI-20260822-1MAGR gave the member half its own comparison
+/// ([`check_member_signature`]) after measuring what the carrier-own population
+/// needs and this one does not — the SELF-RECEIVER exemption, the expression-
+/// projection gate, and the sole-backing gate, none of which a bound free operation
+/// can want. (When this pass was written the reason given here was instead that
+/// instance facts had no stdlib presence, so it could be strict without measuring;
+/// that was true and is no longer the distinction.)
 pub fn check_instance_fact_op_signatures(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {

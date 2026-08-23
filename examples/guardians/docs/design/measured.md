@@ -3,8 +3,12 @@
 **Status:** Measurement record, 2026-08-22. Probes ran against
 `anthill load` at commit `3b980e5c`; sources in [`docs/measurements/guardians/`](../../../../docs/measurements/guardians/). Everything
 here was executed — unlike [`effects.md`](effects.md), which is argument.
-**C2 was re-measured and re-run after WI-9PGCM** and now fires; every other row
-stands as first recorded.
+
+**Two rows have been re-run since, and only two.** **C2**, after WI-9PGCM: it now
+fires. **C1**, after WI-20260822-1MAGR (2026-08-23): `p3_spec_wrong_sig` and
+`p7_sig_and_row` are both refused, and `p1_spec_good` — B2's control, and C1's by
+reuse — still loads clean. Every other verdict below is the 2026-08-22 reading
+against `3b980e5c` and was not re-run.
 
 Each entry is written the same way: **the scenario** (what an attacker or a bad
 generation is trying to do), **the flow**, **what fires**, **the control**, and
@@ -13,7 +17,10 @@ nothing, so the controls are not optional reading.
 
 The eleven runs fall into three groups. Group A is data confinement — the
 `Text[Trust]` label. Group B is capability confinement — the `provides` chain.
-Group C is what does *not* work, which is as load-bearing as the rest.
+Group C is what did *not* work, which is as load-bearing as the rest. Two of its
+rows have since been closed — C1 by WI-20260822-1MAGR and C2 by WI-9PGCM — and both
+are kept here with their original verdict beside the new one, because a measurement
+record that quietly drops what it measured is not one.
 
 ---
 
@@ -196,7 +203,9 @@ with the spec's declaration.
 `External` in its row.
 
 **Fires** — `docs/measurements/guardians/p7_sig_and_row.anthill`: refused by B2's rule, unchanged.
-Name-only matching is enough for the effect check.
+Name-only matching is enough for the effect check. (Since WI-20260822-1MAGR it is
+refused twice — the wrong arity is now its own refusal, C1 — but B2's verdict here
+never depended on that.)
 
 **If it did not fire,** WI-935 would be a security gap rather than a
 correctness one, and the chain B1→B2→B3 would have a hole at the bottom.
@@ -205,21 +214,41 @@ correctness one, and the chain B1→B2→B3 would have a hole at the bottom.
 
 # Group C — what does not work
 
-## C1 · Signature conformance is not checked · **the gap**
+## C1 · Signature conformance · **closed by WI-20260822-1MAGR**
 
 **Scenario.** The generated implementation claims to provide a two-argument,
 `Report`-returning spec with a one-argument, `Int64`-returning member.
 
-**Loads clean** — `docs/measurements/guardians/p3_spec_wrong_sig.anthill`. The spec says so
-outright: *"treat a provision as certifying that a member of that name exists,
-not that it fits"* (WI-935).
+**Loaded clean at `3b980e5c`** — `docs/measurements/guardians/p3_spec_wrong_sig.anthill`.
+The spec said so outright: *"treat a provision as certifying that a member of
+that name exists, not that it fits"* (WI-935).
 
-**Why it matters here more than usual.** For hand-written code this is a latent
-mis-dispatch. For **generated** code it is backwards: a bad generation is
-accepted at check time and fails at the first call, when the entire premise of
-the workflow is that the checker tells the generator what to fix. Not a
-security hole — B4 showed the row chain is unaffected, and a member nothing can
-call correctly reaches no sink — but it puts WI-935 on the critical path.
+**Fires now.** WI-20260822-1MAGR compares arity, parameter types and order, and
+the return type wherever the spec operation has no implementation of its own that
+would back the carrier — no default body and no resolver builtin — which is
+exactly the shape of a spec an agent is asked to implement, since a spec
+operation that already carries one is not something the generator has to supply.
+(A host `operation_map` on the spec's own member is deliberately not counted: it
+names no carrier, so it never backs one — WI-876.) `smoke.p3.Agent.run` is body-less, so `WrongSigAgent.run` is the only
+thing that could back it, and the load is refused naming both shapes. The same
+rule adds a second refusal to `p7_sig_and_row.anthill` (B4), which was already
+refused by B2's row rule alone.
+
+**Why it mattered here more than usual, and what changed.** For hand-written
+code the gap was a latent mis-dispatch. For **generated** code it was backwards:
+a bad generation was accepted at check time and failed at the first call, when
+the entire premise of the workflow is that the checker tells the generator what
+to fix. It was never a security hole — B4 showed the row chain was unaffected,
+and a member nothing can call correctly reaches no sink — but it was on the
+critical path, and it is off it. (It was recorded as *the* only such item; C2
+turned out to be a second, and WI-9PGCM closed that one.)
+
+**What is still not compared,** and stated because a generator will meet it: a
+member whose spec operation *does* carry a default body (a same-named member of a
+different signature is then a distinct operation, and the default is what backs
+the provision), a parameter the spec types as itself (the dispatch receiver,
+which an override narrows to the carrier by design), and a swap of two parameters
+of the *same* type, which no comparison of types can see.
 
 ## C2 · An operation `requires` gates a call site — after WI-9PGCM
 

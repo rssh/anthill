@@ -38,6 +38,29 @@ fn load_errors(extra: &str) -> Vec<String> {
     }
 }
 
+/// WI-20260822-1MAGR — the three rows below need to tell this pass's TWO return-type
+/// rules apart, so each is matched on a phrase only its own message carries.
+///
+/// The DISCHARGE rule (WI-20260822-59CDQ) refuses a return-type difference the
+/// `result`-binder alignment is what discharges a clause across; the SIGNATURE rule
+/// (WI-20260822-1MAGR) refuses a member that does not fit the spec operation it is the
+/// only backing for. A program can trip either alone, and one of them below trips
+/// neither. Matching on `returns \`Bool\`` alone would not separate them — both
+/// messages contain it.
+fn discharge_refusals(errs: &[String]) -> Vec<String> {
+    errs.iter()
+        .filter(|e| e.contains("the contract clause it restates from the spec"))
+        .cloned()
+        .collect()
+}
+
+fn signature_refusals(errs: &[String]) -> Vec<String> {
+    errs.iter()
+        .filter(|e| e.contains("does not fit"))
+        .cloned()
+        .collect()
+}
+
 // ── widening the effect row is rejected ─────────────────────────────────
 
 #[test]
@@ -625,16 +648,27 @@ fn a_covariant_return_type_still_discharges_the_result_clause() {
 }
 
 #[test]
-fn a_mismatched_return_type_no_clause_reads_is_not_this_passs_business() {
-    // SCOPE CONTROL. The return types differ, but neither contract clause mentions
-    // `result` — so the alignment reaches nothing and no comparison here depends on
-    // the return types. Refusing it would be the general signature-conformance check
-    // this pass deliberately does not do (kernel-language.md §8.7 / WI-935; enforcing it is WI-20260822-1MAGR), and
-    // silently widening into that scope is what this test exists to catch.
+fn a_mismatched_return_type_no_clause_reads_is_not_the_discharge_rules_business() {
+    // SCOPE CONTROL, AND ITS BOUNDARY MOVED — deliberately, by WI-20260822-1MAGR.
+    // (Renamed from `…_is_not_this_passs_business`: the PASS does refuse this now,
+    // by its other return-type rule. The DISCHARGE rule is what must not.)
     //
-    // BACK-OUT C₂ takes it — a guard that fires when the alignment rewrites ANY
-    // symbol rather than the result binder specifically, which the parameter zip
-    // makes true of `gt(x, 0)` on every override. C alone does not.
+    // The return types differ, but neither contract clause mentions `result`, so the
+    // alignment reaches nothing and no comparison the DISCHARGE rule makes depends on
+    // the return types. That is still the claim, and it is still what this row pins:
+    // the discharge rule must not widen into the general signature question, and
+    // silently doing so is what this test exists to catch.
+    //
+    // What changed is that the general question is now ASKED, by a different rule with
+    // a different condition — `Sp.op` is body-less, so this member is the only thing
+    // that could back it and it must fit. So the program is refused, and the assertion
+    // is on WHICH rule refuses it. Before 1MAGR this row asserted a clean load; that
+    // was the same claim under a loader where nothing else looked.
+    //
+    // BACK-OUT C₂ takes the `discharge_refusals` half — a guard that fires when the
+    // alignment rewrites ANY symbol rather than the result binder specifically, which
+    // the parameter zip makes true of `gt(x, 0)` on every override. C alone does not.
+    // Backing out `check_member_signature` takes the other half.
     let src = r#"
         namespace wi347.ret_mismatch_no_result
           import anthill.prelude.{Int64, Bool}
@@ -652,8 +686,14 @@ fn a_mismatched_return_type_no_clause_reads_is_not_this_passs_business() {
     "#;
     let errs = load_errors(src);
     assert!(
-        errs.is_empty(),
-        "a return-type mismatch no contract clause reads is not this check's scope; got: {errs:?}"
+        discharge_refusals(&errs).is_empty(),
+        "a return-type mismatch no contract clause reads is not the DISCHARGE rule's \
+         scope; got: {errs:?}"
+    );
+    assert_eq!(
+        signature_refusals(&errs).len(),
+        1,
+        "it is the SIGNATURE rule's, once, since `Sp.op` is body-less; got: {errs:?}"
     );
 }
 
@@ -667,6 +707,13 @@ fn a_weakening_is_reported_as_one_even_when_the_return_types_also_differ() {
     // them would send the author to a line whose repair would not make this load.
     //
     // BACK-OUT C takes it, and only it.
+    //
+    // WI-20260822-1MAGR — the second assertion is now on the DISCHARGE message rather
+    // than on the string ``returns `Bool` ``. The signature rule also refuses this
+    // program (`Sp.op` is body-less, so this member is its only backing), and both
+    // messages name `Bool`, so the old spelling would have passed for the wrong
+    // reason. The claim is unchanged: the return types decide nothing about the
+    // POSTCONDITION here, and the discharge rule must not say they do.
     let src = r#"
         namespace wi347.weaken_and_ret
           import anthill.prelude.{Int64, Bool}
@@ -688,19 +735,27 @@ fn a_weakening_is_reported_as_one_even_when_the_return_types_also_differ() {
         "the defect here is the weakening, and that is what must be named; got: {errs:?}"
     );
     assert!(
-        !errs.iter().any(|e| e.contains("returns `Bool`")),
-        "the return types decide nothing here and must not be reported; got: {errs:?}"
+        discharge_refusals(&errs).is_empty(),
+        "the return types discharge nothing here, so the DISCHARGE rule must not \
+         report; got: {errs:?}"
     );
 }
 
 #[test]
-fn an_impl_only_ensures_over_result_is_not_this_passs_business() {
-    // SECOND SCOPE CONTROL, and the one that caught a real over-refusal in the
-    // first cut of this guard. The spec declares NO postcondition, so the
+fn an_impl_only_ensures_over_result_is_not_the_discharge_rules_business() {
+    // SECOND SCOPE CONTROL (renamed from `…_is_not_this_passs_business`, for the reason
+    // the first row gives), and the one that caught a real over-refusal in the first cut
+    // of this guard. The spec declares NO postcondition, so the
     // postcondition leg never runs and nothing is discharged — the override is
     // simply promising more than it was asked to, which is a refinement. What it
-    // returns is then the general signature question (§8.7 / WI-935, owned by WI-20260822-1MAGR), not this
-    // pass's, even though its `ensures` does mention `result`.
+    // returns is then the general signature question — WI-20260822-1MAGR's, not the
+    // discharge rule's, even though its `ensures` does mention `result`.
+    //
+    // WI-20260822-1MAGR MOVED THE VERDICT AND NOT THE CLAIM. That general question is
+    // now asked here too, by the signature rule, because `Sp.op` is body-less and this
+    // member is the only thing that could back it — so the program is refused, and
+    // this row asserts WHICH rule refuses it. Before 1MAGR it asserted a clean load,
+    // which was the same claim under a loader where nothing else looked.
     //
     // MEASURED, AND THE ONE CASE THAT NEEDS TWO BACK-OUTS: neither C nor D moves it
     // alone — the discharge test finds no spec clause to match against, and that
@@ -724,8 +779,14 @@ fn an_impl_only_ensures_over_result_is_not_this_passs_business() {
     "#;
     let errs = load_errors(src);
     assert!(
-        errs.is_empty(),
-        "an override adding its own `result` postcondition discharges nothing; got: {errs:?}"
+        discharge_refusals(&errs).is_empty(),
+        "an override adding its own `result` postcondition discharges nothing, so the \
+         DISCHARGE rule must not report; got: {errs:?}"
+    );
+    assert_eq!(
+        signature_refusals(&errs).len(),
+        1,
+        "the SIGNATURE rule does, once, since `Sp.op` is body-less; got: {errs:?}"
     );
 }
 

@@ -893,6 +893,22 @@ pub enum LoadError {
         op: String,
         reason: String,
     },
+    /// WI-20260822-1MAGR: a provision's own MEMBER does not fit the spec
+    /// operation it is the only backing for — a different arity, parameter types
+    /// in a different order, an unrelated parameter type, or a return type that
+    /// is not a subtype of the spec's. Distinct from
+    /// [`LoadError::IncompatibleOverride`], which is about the override's
+    /// CONTRACT (effects / `requires` / `ensures`) at a signature that already
+    /// fits; this one says the signatures themselves disagree, so the member
+    /// cannot be the implementation the provision claims. Load-blocking: the
+    /// call mis-dispatches or dies with `UnknownOperation` / a type error at the
+    /// call site instead. Raised by `typing::check_override_refinement`.
+    IncompatibleMemberSignature {
+        carrier: String,
+        spec: String,
+        op: String,
+        reason: String,
+    },
     /// WI-431 (B): an INSTANCE FACT binds a spec operation to an op whose
     /// SIGNATURE does not match the spec operation's, with the carrier substituted
     /// for the spec's type parameter — e.g. `fact Combiner[T = Tag, combine =
@@ -2384,6 +2400,15 @@ impl LoadError {
                 format!("'{}' overrides '{}.{}' (it provides '{}') but the override does not refine it: {}",
                     carrier, spec, op, spec, reason)
             }
+            LoadError::IncompatibleMemberSignature {
+                carrier,
+                spec,
+                op,
+                reason,
+            } => {
+                format!("'{}' provides '{}' but its own member '{}' does not fit '{}.{}': {}",
+                    carrier, spec, op, spec, op, reason)
+            }
             LoadError::IncompatibleInstanceBinding {
                 carrier,
                 spec,
@@ -3427,6 +3452,18 @@ impl std::fmt::Display for LoadError {
                     f,
                     "'{}' overrides '{}.{}' but does not refine it: {}",
                     carrier, spec, op, reason
+                )
+            }
+            LoadError::IncompatibleMemberSignature {
+                carrier,
+                spec,
+                op,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "'{}' provides '{}' but its own member '{}' does not fit '{}.{}': {}",
+                    carrier, spec, op, spec, op, reason
                 )
             }
             LoadError::IncompatibleInstanceBinding {

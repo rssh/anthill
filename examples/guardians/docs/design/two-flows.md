@@ -431,7 +431,8 @@ error: type mismatch in run.effects (op-effects):
 **A wrong signature does not smuggle a row past the check.** `op_backed`
 matches by short name, so it was worth checking whether a differently-shaped
 `run` slips through; it does not — a wrong-arity, wrong-return member carrying
-`External` is still refused by the widening rule.
+`External` is still refused by the widening rule. (Since WI-20260822-1MAGR it is
+refused twice; the widening rule's verdict here never depended on the shape.)
 
 Together: **capability confinement holds end to end today.** The spec's row
 bounds the provider's declaration, the declaration bounds the body, and neither
@@ -441,22 +442,37 @@ to be built.
 The taint refusal of §2.4 is independent of all four and composes with them —
 it fires inside the body, on the argument types, whatever the row says.
 
-### The one gap: signature conformance
+### The one gap: signature conformance — **closed**
 
-Backing is checked **by name only** (WI-935, and the spec says so outright:
-*"treat a provision as certifying that a member of that name exists, not that
-it fits"*). A provider whose `run` takes one argument and returns `Int64` loads
-clean while claiming to provide a two-argument, `Report`-returning spec.
+Backing used to be checked **by name only** (WI-935, and the spec said so
+outright: *"treat a provision as certifying that a member of that name exists,
+not that it fits"*). A provider whose `run` took one argument and returned
+`Int64` loaded clean while claiming to provide a two-argument,
+`Report`-returning spec.
 
-For hand-written code that is a latent mis-dispatch. For **generated** code it
-is worse in a specific way: a bad generation is *accepted at check time* and
-fails at the first call, which is exactly backwards for a workflow whose whole
-premise is that the checker tells the generator what to fix. It is not a
+For hand-written code that was a latent mis-dispatch. For **generated** code it
+was worse in a specific way: a bad generation was *accepted at check time* and
+failed at the first call, which is exactly backwards for a workflow whose whole
+premise is that the checker tells the generator what to fix. It was never a
 security hole — the row chain above is unaffected, as the wrong-signature test
 showed, and a member nothing can call correctly reaches no sink. But a
-generate-and-check loop wants this closed, so WI-935 moves from "latent
-correctness gap" to "on the critical path", and that is a finding worth
-recording against it.
+generate-and-check loop wanted it closed, which is what put it on the critical
+path.
+
+**WI-20260822-1MAGR closed it.** A provision's member is now compared against
+the spec's declaration — arity, parameter types and their order, and the return
+type, with the provision's bindings substituted in — wherever the spec
+operation has no implementation of its own that would back the carrier (no
+default body, no resolver builtin; a host `operation_map` on the spec's own
+member names no carrier and so does not count). That last condition is the whole
+scope question, and it lands where this workflow needs it: an operation a
+generator is asked to supply is by definition one the spec does not supply, so
+the one-argument `Int64` `run` above is refused at check time, naming both
+shapes. What is still uncompared is a member whose spec operation *does* carry
+a default body (the default is then what backs the provision, and the member is
+a distinct operation), and a swap of two parameters of the same type, which no
+comparison of types can see. See kernel-language.md §8.7, *Backing
+conformance*.
 
 ## 2.4 Why a label on the data at all, given the row
 

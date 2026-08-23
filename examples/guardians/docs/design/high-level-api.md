@@ -710,7 +710,7 @@ trying, what fires, the control, and what it would mean if it did not fire — i
 | B2 | the provider's declared row may not widen the spec's | ✅ fires |
 | B3 | the body may not exceed its own declaration | ✅ fires |
 | B4 | a reshaped member does not evade B2 | ✅ fires |
-| C1 | signature conformance | ❌ **gap** (WI-935) |
+| C1 | signature conformance | ✅ fires — **closed** (WI-20260822-1MAGR; ❌ gap at `3b980e5c`) |
 | C2 | an operation `requires` gating a call site | ✅ **fixed** (WI-9PGCM) — measured as a gap, mis-recorded as "by design" |
 | C3 | a rule body reading a type argument | ❌ WI-742 |
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable |
@@ -719,10 +719,18 @@ trying, what fires, the control, and what it would mean if it did not fire — i
 
 Two independent chains hold on the current loader with nothing built: **data
 confinement** (A1–A3, the `Text[Trust]` label) and **capability confinement**
-(B1–B4, the `provides` route). C1 is the only item on the critical path; C2–C6
-shaped the design rather than blocking it — C2 and C3 are the routes that forced
-D2's explicit-coercion answer, and C5 is what defers D3. C2 has since been
-*reopened by being fixed*: see §6.3 for what that does and does not change.
+(B1–B4, the `provides` route). C1 was the only item on the critical path and is
+now off it — WI-20260822-1MAGR compares a provision member's arity, parameter
+types and order, and return type wherever the spec operation has no
+implementation of its own that would back the carrier, which is every operation a
+generator is asked to supply. C2–C6 shaped the design rather than blocking it —
+C2 and C3 are the routes that forced D2's explicit-coercion answer, and C5 is
+what defers D3. C2 has since been *reopened by being fixed*: see §6.3 for what
+that does and does not change.
+
+Both items that were on the critical path are therefore off it, and by different
+tickets landing within a day of each other — C1 by WI-20260822-1MAGR and C2 by
+WI-9PGCM. Nothing in the C-group now blocks the design; C3–C6 shape it.
 
 ### 8.2 Existing and load-bearing
 
