@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20260823-53W12-proposal-055-umbrella-b
+
 ## Description
 
 A SORT'S TYPE PARAMETER CANNOT BE RESTRICTED TO A SET OF ADMISSIBLE TYPES, so every `S[T]` accepts every `T` and a parameter's declared name is documentation rather than a constraint.

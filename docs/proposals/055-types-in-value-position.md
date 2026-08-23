@@ -1,9 +1,14 @@
 # Proposal 055: Types in value position — denotation, phases, and profiles
 
-**Status:** Draft (2026-07-13; outcome of the WI-709 follow-up brainstorm)
+**Status:** Draft (2026-07-13; revised 2026-08-23 after the proposals 060/062 compatibility review)
 **Depends on:** WI-311 (grammar `application` merge — the parser does not distinguish type from term application; the loader does), WI-361 (`Type` = opaque, term-backed handle; structure reified on demand by `extract`), WI-206 / WI-707 (sort names and parameterized types as value arguments, accepted where the position expects `Type`), WI-709 / WI-710 (`check_sort_type_args` on all four lowering paths; the depth + bracket-surface instance-claim gates), [022-typing-as-facts](022-typing-as-facts.md) (`TypeOf` judgments as KB facts), proposal 037 (the `Modifiable` marker the first consumer, `is_modifiable`, reads)
-**Related:** [052-rules-as-stream-valued-operations](052-rules-as-stream-valued-operations.md) (`Relation[T]` — what makes type-indexed facts first-class composable queries), [053-fact-mutability](053-fact-mutability.md) (`constant` loader-emitted reflection facts), [049-equality-and-unification](049-equality-and-unification.md), WI-302 (`denoted` — the mirror crossing, value into type position), WI-708 (the dead body-side type-arg frame channel — prerequisite for `type_value[T]` in generic bodies), WI-010 (self-hosted type resolver — the largest planned consumer of types-as-values), proposal 029 + WI-089 (profile-keyed codegen mapping facts — the substrate of §5), proposal 039 (`const` — the future compile-time-folding channel of §5.3)
-**Affects:** stdlib (move the `Type` cluster `anthill.prelude` → `anthill.reflect`), loader + typer (type-checking reaching lowering paths 3 and 4; qualified-name updates), cpp-gen / rust-gen (the profile fence), `docs/kernel-language.md` (new §4 subsection; §5 fact note), reflect interface (consolidation pass). **Grammar: no changes required** — WI-311 already merged the productions; the parse IR records the `[…]`-vs-`(…)` surface (WI-710); an empirical recheck (end of §2) confirmed every §2 value position parses and documents two pre-existing edges.
+**Related:** [052-rules-as-stream-valued-operations](052-rules-as-stream-valued-operations.md) (`Relation[T]` — what makes type-indexed facts first-class composable queries), [053-fact-mutability](053-fact-mutability.md) (`constant` loader-emitted reflection facts), [049-equality-and-unification](049-equality-and-unification.md), [060-clause-level-requirements-and-typed-heads](060-clause-level-requirements-and-typed-heads.md) (typed declarations compile to ordinary goals; brackets retain type-parameter/requirement meaning), [062-bounded-sort-parameters](062-bounded-sort-parameters.md) (`is_entity_of(Trust, TrustLevel)` passes types as ordinary goal arguments), WI-302 (`denoted` — the mirror crossing, value into type position), WI-708 (the dead body-side type-arg frame channel — prerequisite for `type_value[T]` in generic bodies), WI-010 (self-hosted type resolver — the largest planned consumer of types-as-values), proposal 029 + WI-089 (profile-keyed codegen mapping facts — the substrate of §5), proposal 039 (`const` — the future compile-time-folding channel of §5.3)
+**Affects:** stdlib (move the `Type` cluster `anthill.prelude` → `anthill.reflect`), loader + typer (type-checking reaching lowering paths 3 and 4; qualified-name updates), cpp-gen / rust-gen (the profile fence), `docs/kernel-language.md` (new §4 subsection; §5 fact note), reflect interface (consolidation pass). **Grammar: no changes required for nominal types** — WI-311 already merged the productions; the parse IR records the `[…]`-vs-`(…)` surface (WI-710); an empirical recheck (end of §2) confirmed every §2 nominal value occurrence parses and documents two pre-existing edges. Structural tuple/arrow types use `type_value[…]()`.
+
+**Implementation design:** [`../design/055-implementation.md`](../design/055-implementation.md)
+owns the resolved-IR shape, complete value-expression occurrence audit,
+lowering-path coverage, diagnostics, controls and delivery order. This proposal
+owns only the language rule and its phase/profile fences.
 
 ## Problem
 
@@ -17,7 +22,7 @@ facts_of(kb(), WorkItem)           -- a bare sort reference as a call argument
 
 This was never decided as a language rule — it *emerged*, and the immediate
 question was whether to bless it or to forbid it and require an explicit
-reification marker (`is_modifiable(type_value[Cell[V = Int64]])`), with the
+reification marker (`is_modifiable(type_value[Cell[V = Int64]]())`), with the
 `fact Modifiable[T = Cell]` clause form re-examined alongside.
 
 The finding, on inspection, is not a grammar leak. It is the planned
@@ -36,14 +41,18 @@ convergence of three separately-made decisions:
    expression in a value position is accepted exactly where that position
    expects `Type` (the `type_slot_arg_hint` chain, gated on
    `kind_of(sym) == Sort`); anywhere else a stray sort name stays a loud
-   `UnresolvedName`.
+   `UnresolvedName`. That describes the shipped mechanism, not the decision:
+   expectation-directed classification is the source of the phase fragility
+   this proposal removes.
 
 WI-709/WI-710 then closed the checking gaps (undeclared or over-applied type
 arguments are now loud on all four lowering paths). What remains is to state
 the semantics as a rule of the language rather than an archaeology of commits,
 and to answer the two design worries that motivated the "forbid" pole:
 *types should be compile-time*, and *some compilation profiles (embedded C)
-have no reflect interface at all*.
+have no reflect interface at all*. The proposals 060/062 review added a third:
+parsing, raw rule lowering and typing must not each guess independently whether
+the same neutral `name` / `application` node denotes a type.
 
 Runtime type reflection on reflect-capable hosts is a *goal* of this
 design, not a leak to plug — so "types should be compile-time" cannot mean
@@ -53,17 +62,20 @@ sort `Type`, so a non-`Type` position rejects it as an ordinary sort
 mismatch (§2); a `Type` *value* never re-enters the typer as a type — the
 one restriction with real teeth (§4); and in profiles without reflect
 interfaces, `Type` exists only at compile time (§5). The forbid-and-mark
-alternative (`is_modifiable(type_value[Cell[V = Int64]])`) is weighed — and
-declined — in §"Alternatives considered".
+alternative (`is_modifiable(type_value[Cell[V = Int64]]())`) is weighed in
+§"Alternatives considered". It is declined for nominal types, whose intent is
+decidable after head resolution, but retained for structural type surfaces
+that overlap value syntax (§2).
 
 ## Decision (summary)
 
-1. **Types in value position are legal, by one uniform rule.** A type
-   expression — applied (`Cell[V = Int64]`) or bare (`Cell`) — denotes a
-   `Type` value wherever it stands, and ordinary type-checking does the
-   rest: a generic `T` instantiates to `Type` exactly as it would to
-   `Int64`; a `String`-expecting position fails loudly. There is no
-   type-specific placement restriction. (§2)
+1. **Nominal types in value-expression position are legal, by one uniform
+   rule.** A bare sort/type-parameter reference (`Cell`, `T`) or sort-headed
+   bracket application (`Cell[V = Int64]`) denotes a `Type` value in every
+   true value-expression position. Classification follows name resolution,
+   is independent of the expected sort, and is recorded once in resolved IR;
+   ordinary type-checking then accepts or rejects it. Tuple and arrow type
+   surfaces overlap value grammar and use `type_value[…]()` explicitly. (§2)
 2. **`Type` moves from `anthill.prelude` to `anthill.reflect`.**
    Types-as-values is reflection; the sort lives with its peers `Term` and
    `Symbol`, and importing it names the dependency. (§3)
@@ -79,7 +91,8 @@ declined — in §"Alternatives considered".
    `ExprCarried` (a value receiver whose statically *synthesized type* is
    projected, the value itself eliminated), `RigidTypeProjection` (a
    type-world subject) — all resolve from static information; none
-   evaluates a value. This proposal adds no form; in particular a
+   evaluates a value. `type_value[T]()` is a static type→value reifier, not
+   a value→type dereference; in particular a
    `Type`-sorted *value* never dereferences into the type it names. (§4)
 5. **Instance claims stay facts.** `fact Modifiable[T = Cell]` is a top-level
    instance claim under the WI-710 depth gate — a declaration form, not a
@@ -98,12 +111,27 @@ conversions and stay so: `sort_as_term(s: Type) -> Term`,
 value position types as `Type`, not `Term`, and does not leak into
 `Term`-expecting slots without the explicit crossing.
 
-### §2 The denotation rule, at all four altitudes
+### §2 The denotation rule
 
-A type expression in value position — applied (`List[T = Int64]`) or bare
-(`List`, the same type with its parameter left unbound) — **denotes a `Type`
-value**, and ordinary type-checking takes over from there. There is one rule
-and no special cases; nothing is decided by markers written at the use site:
+A **nominal** type expression in a value-expression position — a sort/type
+parameter reference (`List`, `T`) or a sort-headed bracket application
+(`List[T = Int64]`) — **denotes a `Type` value**, and ordinary type-checking
+takes over from there. There is one recursive rule: every grammatical/IR child
+whose role is `ValueExpression` admits that value. The rule does not apply to a
+head, callee, binder, pattern, label, member name, metadata key, or a child
+whose role is already `TypeExpr`.
+
+Tuple and arrow type surfaces are the deliberate exception. They overlap tuple
+value and expression/operator syntax, so they are reified explicitly:
+
+```anthill
+type_value[(left: Int64, right: String)]()
+type_value[(Int64) -> String]()
+```
+
+The complete occurrence audit and resolved-IR invariant are implementation
+facts, not further language exceptions; they live in
+[`../design/055-implementation.md`](../design/055-implementation.md) §§1–5.
 
 > Against `is_modifiable(t: Type)` the expression fits the declared
 > parameter; against a generic `idT[T](x: T)` it infers `T = Type` exactly
@@ -112,17 +140,22 @@ and no special cases; nothing is decided by markers written at the use site:
 > `idT(List)` are three instances of the same mechanism — the argument
 > determines `T` (`Int64`, `Type`, `Type`).
 
-How does the loader know that an expression in a value position is a type
-expression at all? There is no marker; the grammar has one application node
-(WI-311: don't distinguish in the grammar, distinguish in the loader), and
-the loader classifies an expression by **resolving its head name**
-(SymbolKind — the WI-313 principle):
+How does the implementation know that an expression in a value position is a
+type expression at all? There is no marker for nominal types; the grammar has
+one application node (WI-311: don't distinguish in the grammar, distinguish
+after resolution). The resolved-expression pass classifies it once by
+**resolving its head name** (SymbolKind — the WI-313 principle), records an
+explicit `TypeValue`, and every later lowering path consumes that decision:
 
 - the name resolves to a **sort** → a type expression: bare `List` is a
   type reference, `List[T = Int64]` a type application. A standalone entity
   counts as its sort here (kernel §6.3: a standalone `entity` is a
   single-constructor sort) — these are the same names
   `facts_of(kb(), WorkItem)` accepts today;
+- the name resolves to an in-scope **type parameter** → a type value carrying
+  that parameter; proposal 062's `is_entity_of(Trust, TrustLevel)` therefore
+  passes two ordinary goal arguments, both denoting types, and does not give
+  `is_entity_of` type parameters of its own;
 - the name resolves to a **parameter, field, or local** → the expression
   denotes that binding's value, as ever;
 - the name resolves to an **operation** → a call; `op[A = Int64](…)` is a
@@ -130,6 +163,12 @@ the loader classifies an expression by **resolving its head name**
   the same written shape as `List[T = Int64]` — the identical-shape pair
   that shows resolution, not shape, is the decider;
 - the name resolves to **nothing** → a loud `UnresolvedName`.
+
+Classification is independent of the expected sort. The expected sort may
+then accept `Type`, infer a generic parameter as `Type`, or reject it with an
+ordinary mismatch; it may not decide whether the expression was a type. Raw
+rule data without a declared column type still preserves the same denotation,
+even though that site has no validation judgment to run.
 
 Recorded surface decides exactly one remaining pair: for a *sort-headed*
 head, `Leaf[…]` (brackets) is a type application while `Leaf(name: "tip")`
@@ -164,42 +203,25 @@ analogue — a `Function` value only under a function-expecting position, the
 `hof_arg_hint` — is deliberately left untouched; unifying that too is a
 separate decision, out of scope here.)
 
-Note what this section does **not** contain: any type-specific placement
-restriction. Every rejection above is an ordinary sort mismatch, identical
-in kind to `length(5)`. The restrictions this proposal does impose live
-elsewhere, each with a concrete necessity: §4 — a `Type` value cannot be
+Note what this section does **not** contain: any placement restriction for a
+nominal type once the surrounding grammar role is a value expression. Every
+rejection above is an ordinary sort mismatch, identical in kind to
+`length(5)`. Structural tuple/arrow surfaces use the explicit reifier because
+their syntax is not unambiguously a type in that role. The other restrictions
+this proposal imposes live elsewhere, each with a concrete necessity: §4 — a `Type` value cannot be
 used *as a type*, because otherwise typing a program would require running
 it; §5 — a compiled operation in a reflect-less profile cannot carry a
 `Type` at runtime, because the target has no representation for it; §1 —
 `Type` and `Term` stay nominally distinct, because otherwise nothing could
 dispatch on type-ness.
 
-A written parameterized type has four lowering paths (the WI-709/WI-710
-inventory), and the rule must hold at each:
-
-| # | path | position | placement rule today | type-arg check today |
-|---|------|----------|-----------------|----------------------|
-| 1 | loader `type_expr_to_child` | type annotations | trivially a type position | ✅ WI-709 |
-| 2 | typer sort-application arm | operation-body value position | ✅ `Type`-slot hint (WI-206/707) | ✅ WI-709 |
-| 3 | `convert_term` | fact / constraint terms | ⚠️ none — smoke-confirmed silent | ✅ WI-710 |
-| 4 | `build_body_atom_occurrence` | rule-body atoms (WI-246 occurrences) | ⚠️ none — smoke-confirmed silent | ✅ WI-710 |
-
-The ⚠️ gap is real, not hypothetical (smoke-tested 2026-07-13): given
-`entity Person(name: String, age: Int64)`, both
-`fact Person(name: Cell[V = Int64], age: 42)` and the same atom in a rule
-body load without complaint — a well-formed type term sits in a
-`String`-declared field and will simply never match. Closing the cells is
-work item (c): on paths 3 and 4 the nested type term is a `Type` value
-(§2), and where the enclosing functor has declared field sorts the value
-must type-check against them — `Type` fits; a declared `Term` field accepts
-it too (facts are the raw-term substrate: the §1 nominal fence governs the
-expression world, and the loader's own reflection facts store type terms in
-`Term` fields like `SortProvidesInfo.spec`); any other declared sort is
-loud. Where the functor is an undeclared rule-head or derived predicate,
-the term flows into WI-603 rule-atom inference as a `Type`-typed value like
-any other. Top-level clauses are exempt via the instance-claim depth gate
-(§6). The check must stay value-blind (`List[T = ?x]` loads — the WI-710
-precedent).
+The four lowering paths and their currently measured gaps are implementation
+coverage, specified in
+[`../design/055-implementation.md`](../design/055-implementation.md) §7. The
+language consequence is only this: a raw fact/rule carrier and a typed
+operation expression preserve the same denotation. Where a declared column
+sort exists it validates `Type` normally; where none exists, absence of a
+validation judgment must not change or silently drop the denotation.
 
 Two shipped classification rules are restated here as spec, not left in
 commit messages:
@@ -213,23 +235,15 @@ commit messages:
   call (`sort Leaf { entity Leaf(…) }`) from a type application — only the
   recorded parse surface can, and the parse IR records it.
 
-**Grammar recheck (empirical, 2026-07-14).** Every value position this
-section blesses already parses — checked by loading a battery of smoke
-files: call arguments (positional, named, nested
-`Map[K = String, V = Cell[V = Int64]]`), bare sort names, fact fields,
-rule-body operands of `eq`/`=`/`<=>`, bracket arguments carrying variables
-(`List[T = ?x]`, `List[T = ?]`), dot receivers (`Cell[V = Int64].name`),
-list-literal elements, row-valued arguments (`Stream[E = {Error}]`), `let`
-right-hand sides, `if` conditions, and operation bodies. No grammar change
-is needed. The same sweep measured how much narrower the shipped `Type`
-hint is than "argument slots": these parse but fail with the
-unresolved-classification diagnostic today — an operation body in return
-position **even when the operation declares `-> Type`**, an unannotated
-`let` right-hand side (annotated `let t: Type = …` works), dot receivers,
-list-literal elements even under a `List[T = Type]` return type, and
-row-valued arguments (which also lose their span — the error points at
-`0..0`). All are one family with the generic-slot case and are work item
-(c)'s checklist.
+**Grammar recheck (empirical, 2026-07-14; audited 2026-08-23).** Bare and
+applied nominal types already parse at every current value-expression
+occurrence; no grammar widening is required. The audit includes application
+arguments, operation results, `let`, conditionals, matching, lambda bodies,
+collection/set/tuple elements, expression operands, projections, bounded
+quantification, raw rule/fact data, proofs and metadata values. Its exact
+matrix, adjacent non-value controls and shipped expectation-hint gaps live in
+the implementation design §3. Structural tuple/arrow types are not part of
+this no-change claim and use `type_value[…]()`.
 
 Two pre-existing grammar edges, documented rather than changed here:
 
@@ -497,16 +511,13 @@ records the fact, declares universe stratification out of scope, and moves on.
   per-profile error; supersedes the incidental missing-`TypeMapping` failure
   for this class.
 - **(c)** Denotation completion (§2): bare and applied type expressions
-  denote outside `Type`-expecting positions too (error→accepted; the
-  `expected resolved name, got unresolved` diagnostic replaced by ordinary
-  sort mismatches that name the denoted sort). The smoke-found unhinted
-  positions are the checklist: unconstrained generic slots, operation
-  bodies under a declared `-> Type`, unannotated `let`, dot receivers,
-  list-literal elements, row-valued arguments (restoring their lost span);
-  declared-field
-  type-check for landed `Type` values on paths 3 and 4 (`Type` fits, `Term`
-  tolerated as the raw-term substrate, anything else loud); WI-603 inference
-  for undeclared heads; instance claims exempt by the depth gate.
+  denote outside `Type`-expecting positions too. Introduce and preserve the
+  resolved `TypeValue` distinction before widening acceptance; make every
+  value-expression occurrence consume it; carry it through raw rule/fact
+  lowering; validate declared columns; decide the companion-versus-`Type`
+  dot receiver split; then remove expected-`Type` hints as classifiers. The
+  complete ordered delivery and both-side controls are in the implementation
+  design §§7–10.
 - **(d)** Reflect interface consolidation (§8 + the consolidation list),
   including `type_value[T]` gated on WI-708.
 - **(e)** Kernel spec (`docs/kernel-language.md`): new §4 "Type expressions
@@ -521,8 +532,8 @@ records the fact, declares universe stratification out of scope, and moves on.
 
 ## Alternatives considered
 
-- **Forbid + reification marker**
-  (`is_modifiable(type_value[Cell[V = Int64]])`; Mercury `type_desc` style):
+- **Require a reification marker for every nominal type**
+  (`is_modifiable(type_value[Cell[V = Int64]]())`; Mercury `type_desc` style):
   runtime type reflection on supported hosts is a goal of this design, so
   the marker was never going to remove runtime type values — the only
   question it decides is whether the *written* crossing is spelled out.
@@ -537,7 +548,9 @@ records the fact, declares universe stratification out of scope, and moves on.
   bindings are most of reflection's crossings. What "Type is compile-time"
   legitimately wants is delivered tax-free by §4 and §5. The marker's one
   good part — explicitly reifying a generic body's own type parameter —
-  survives as §8's `type_value[T]`.
+  survives as §8's `type_value[T]()` and is required for structural tuple and
+  arrow types, whose surfaces genuinely overlap value syntax. The rejection is
+  therefore of a universal nominal-type tax, not of explicit reification.
 - **Expectation-gated bare names** (an intermediate draft of this §2:
   applied forms denote anywhere, bare sort names only where the position
   expects `Type`): dropped for uniformity — `List` is the same type
