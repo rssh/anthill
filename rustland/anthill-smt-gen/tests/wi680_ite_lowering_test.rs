@@ -98,8 +98,8 @@ fn emit(rule: &str) -> String {
 ///
 /// WI-1056 — `SRC` NOW CARRIES THE IMPORT, and this test no longer derives a second
 /// source from it. It used to contrast the imported spelling against `SRC`'s BARE,
-/// UN-IMPORTED `ite`, which interned bare and rode `is_ite_op`'s short-name arm. That
-/// program is not legal and now says so: `ite` is a member of sort `Bool`, and a rule
+/// UN-IMPORTED `ite`, which interned bare and rode the old `is_ite_op`'s short-name arm
+/// (deleted by WI-897 — see `SMT_BUILTINS`). That program is not legal and now says so: `ite` is a member of sort `Bool`, and a rule
 /// body naming it bare is refused with WI-565's repair ("call it qualified as
 /// `Bool.ite(…)`"). Nothing reported it while rule bodies went unchecked — the `ite`
 /// sits inside `?r = ite(…)`, an `=` goal, which is exactly the shape WI-1043 made a
@@ -107,11 +107,16 @@ fn emit(rule: &str) -> String {
 /// file because it cannot be written, not because it stopped mattering; this file's
 /// doc had already recorded that it "is no longer representative".
 ///
-/// LOADED STRICTLY, which is what keeps the claim falsifiable: `is_ite_op` still matches
-/// a bare short name, so a silently-unresolving import would leave the SMT containing
-/// `(ite ...)` and this test green on the wrong path. The qualified-symbol assertion
-/// below plus a loader that swallows no `Err` is what rules that out. WI-887 recorded
-/// this harness hiding a live load error in this very file.
+/// LOADED STRICTLY, which is what USED TO keep the claim falsifiable: while `is_ite_op`
+/// still matched a bare short name, a silently-unresolving import would have left the
+/// SMT containing `(ite ...)` and this test green on the wrong path, and only the
+/// qualified-symbol assertion below plus a loader that swallows no `Err` ruled that
+/// out. WI-887 recorded this harness hiding a live load error in this very file.
+///
+/// WI-897 CLOSED THAT ROUTE AT THE SOURCE: `ite` is now recognised by SYMBOL, so an
+/// `ite` that resolved to anything but `anthill.prelude.Bool.ite` — or to nothing —
+/// does not lower at all. The assertion below is kept anyway: it says WHICH symbol,
+/// and it is what turns a silent regression into a named one.
 ///
 /// WI-966: `load_kb_with` is now that strict loader for the whole crate (the discarding
 /// twin this doc used to warn about is gone), so what makes the claim falsifiable is the

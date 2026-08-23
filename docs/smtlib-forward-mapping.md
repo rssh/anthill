@@ -161,26 +161,46 @@ rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 ### 3.3 Arithmetic and Comparison Builtins
 
 Prelude operations on primitives map to SMT-LIB built-ins (plus `ite`, which is a
-rule-level functor rather than an operation — WI-887):
+rule-level functor rather than an operation — WI-887).
 
-| Anthill | SMT-LIB |
+**The mapping is by SYMBOL IDENTITY, not by name** (WI-897). The table below is keyed
+by qualified name, resolved against the KB once (`SMT_BUILTINS` / `SmtBuiltinTable` in
+`anthill-smt-gen/src/lib.rs`), and every later question is a `Symbol` compare. A
+user's own operation that happens to be spelled `add` — even one whose qualified name
+is `Numeric.add`, which a top-level `sort Numeric` mints exactly — is a different
+symbol and is **not** lowered; smt-gen refuses it by name rather than guessing it meant
+the prelude's. Before WI-897 each row was a string compare carrying a
+fully-qualified / sort-qualified / bare triple, and the loose arms silently
+reinterpreted such an operation (the hazard WI-680 recorded).
+
+| Anthill operation | SMT-LIB |
 |---|---|
-| `add(a, b)` | `(+ a b)` |
-| `sub(a, b)` | `(- a b)` |
-| `mul(a, b)` | `(* a b)` |
-| `div(a, b)` | `(div a b)` / `(/ a b)` |
-| `mod(a, b)` | `(mod a b)` |
-| `neg(a)` | `(- a)` |
-| `eq(a, b)` | `(= a b)` |
-| `neq(a, b)` | `(not (= a b))` |
-| `gt(a, b)` | `(> a b)` |
-| `lt(a, b)` | `(< a b)` |
-| `gte(a, b)` | `(>= a b)` |
-| `lte(a, b)` | `(<= a b)` |
-| `not(a)` | `(not a)` |
-| `and(a, b)` | `(and a b)` |
-| `or(a, b)` | `(or a b)` |
-| `ite(c, t, e)` | `(ite c t e)` |
+| `anthill.prelude.Numeric.add(a, b)` | `(+ a b)` |
+| `anthill.prelude.Numeric.sub(a, b)` | `(- a b)` |
+| `anthill.prelude.Numeric.mul(a, b)` | `(* a b)` |
+| `anthill.prelude.Int64.div(a, b)` | `(div a b)` |
+| `anthill.prelude.Float.div(a, b)` | `(/ a b)` |
+| `anthill.prelude.Float.neg(a)` / `anthill.prelude.Int64.neg(a)` | `(- a)` |
+| `anthill.prelude.Float.abs(a)` / `anthill.prelude.Int64.abs(a)` | `(anthill_abs a)` |
+| `anthill.prelude.Float.cos(a)` / `.sin(a)` | `(anthill_cos a)` / `(anthill_sin a)` |
+| `anthill.prelude.PartialEq.eq(a, b)` | `(= a b)` |
+| `anthill.prelude.PartialOrd.gt(a, b)` | `(> a b)` |
+| `anthill.prelude.PartialOrd.lt(a, b)` | `(< a b)` |
+| `anthill.prelude.PartialOrd.gte(a, b)` | `(>= a b)` |
+| `anthill.prelude.PartialOrd.lte(a, b)` | `(<= a b)` |
+| `anthill.prelude.Bool.not(a)` | `(not a)` |
+| `anthill.prelude.Bool.and(a, b)` | `(and a b)` |
+| `anthill.prelude.Bool.or(a, b)` | `(or a b)` |
+| `anthill.prelude.Bool.ite(c, t, e)` | `(ite c t e)` |
+
+`abs`, `cos` and `sin` have no SMT-LIB Real form and ride as uninterpreted functions —
+`anthill_abs` gets a synthesised `(define-fun …)` prelude, `anthill_cos`/`anthill_sin`
+get the Pythagorean identity per argument and nothing more (WI-681).
+
+The comparisons live on `PartialOrd` and equality on `PartialEq` (WI-644 /
+proposal 004, WI-1109): `Ord` declares neither, so `import anthill.prelude.Ord.{gte}`
+resolves *through* the tower to `anthill.prelude.PartialOrd.gte` and lands on the row
+above.
 
 These apply when arguments are primitive types. For user-defined sorts, operations remain as uninterpreted functions with their axioms.
 

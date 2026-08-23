@@ -20,7 +20,7 @@ pub mod outcome;
 pub mod policy;
 pub mod tactic_emit;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use anthill_core::eval::Value;
@@ -367,6 +367,10 @@ struct Emitter<'kb> {
     /// SMT. Used by `lift_rule_to_implication_clause` (always) and
     /// by structured-proof parent discharges (via ProofConfig).
     abstract_mode: bool,
+    /// [`SMT_BUILTINS`] resolved against `kb` (WI-897). WHICH OPERATION MEANS
+    /// WHICH SMT FORM, decided by symbol identity — see the table's own doc for
+    /// why this is not a name compare.
+    builtins: SmtBuiltinTable,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -385,6 +389,7 @@ impl<'kb> Emitter<'kb> {
             uses_abs: false,
             trig_args: BTreeSet::new(),
             abstract_mode: false,
+            builtins: SmtBuiltinTable::resolve(kb),
         }
     }
 
@@ -555,7 +560,7 @@ impl<'kb> Emitter<'kb> {
         // ?var to the SMT translation of <expr>. Variable references
         // elsewhere in the body get substituted inline at translate
         // time.
-        if is_eq_functor(self.kb, functor) {
+        if self.is_eq_functor(functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "= goal: expected 2 pos_args, got {}",
@@ -606,7 +611,7 @@ impl<'kb> Emitter<'kb> {
         // assertions on the constraint set. The rule body's joint
         // satisfiability is exactly the conjunction of these
         // inequalities + the equation-derived bindings.
-        if let Some(smt_op) = map_inequality_op(qn) {
+        if let Some(smt_op) = self.builtins.inequality(functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "{qn}: expected 2 pos_args, got {}",
@@ -644,7 +649,19 @@ impl<'kb> Emitter<'kb> {
         // nonlinearity (e.g. `position_distance_sq`'s `var*var`)
         // polluting the consumer's preamble. The call's vars stay
         // free; ambient cited-rule lifts constrain them.
-        if self.abstract_mode {
+        //
+        // A RULE CALL IS THE ONLY THING THIS MAY SKIP, and `program_clauses_by_functor`
+        // is what says so. Until WI-897 the branch skipped whatever reached it, which is
+        // a different act entirely: an unrecognised PREMISE was dropped, and since a
+        // lift renders the body as an implication's antecedent, dropping one WEAKENS the
+        // antecedent — the lemma spliced into the consumer is then stronger than
+        // anything that was proved. MEASURED (`wi897_symbol_identity_test`): a
+        // `String.lte(?name, "z")` premise vanished and the clause came back
+        // `(=> (<= var_1 5.0) (<= var_1 100.0))`, its first premise simply gone. A rule
+        // call is safe to skip for the opposite reason — it CONSTRAINS nothing here, its
+        // vars stay free, and an ambient lift is what re-states it. Everything else falls
+        // through to the loud `unhandled body goal functor` below.
+        if self.abstract_mode && !self.kb.program_clauses_by_functor(functor).is_empty() {
             self.visited_rules.insert(qn.to_string());
             return Ok(());
         }
@@ -1270,7 +1287,7 @@ impl<'kb> Emitter<'kb> {
                 // `<=>` twins — `sign`/`max`/`min` — also spell it `ite`, but are
                 // stored as EQUATIONS, not reached by this op-call inline path; a
                 // separate `<=>`-twin lowering, out of WI-680's scope.)
-                if is_ite_op(op) {
+                if self.builtins.is_ite(functor) {
                     if pos_args.len() != 3 {
                         return Err(SmtGenError::new(format!(
                             "ite: expected 3 pos_args, got {}",
@@ -1287,7 +1304,7 @@ impl<'kb> Emitter<'kb> {
                 // `anthill_cos`/`anthill_sin`. The render adds the Pythagorean
                 // identity `cos(θ)²+sin(θ)²=1` for each θ seen — the one
                 // nonlinear fact norm-preservation of a 2-D rotation needs.
-                if let Some(trig) = map_trig_op(op) {
+                if let Some(trig) = self.builtins.trig(functor) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
                             "{op}: expected 1 pos_arg, got {}",
@@ -1298,7 +1315,7 @@ impl<'kb> Emitter<'kb> {
                     self.trig_args.insert(a.clone());
                     return Ok(format!("({trig} {a})"));
                 }
-                if let Some(smt_op) = map_unary_op(op) {
+                if let Some(smt_op) = self.builtins.unary(functor) {
                     if pos_args.len() != 1 {
                         return Err(SmtGenError::new(format!(
                             "{op}: expected 1 pos_arg, got {}",
@@ -1311,7 +1328,7 @@ impl<'kb> Emitter<'kb> {
                     }
                     return Ok(format!("({smt_op} {a})"));
                 }
-                let smt_op = match map_arith_op(op) {
+                let smt_op = match self.builtins.arith(functor) {
                     Some(o) => o,
                     None => {
                         return Err(SmtGenError::new(format!(
@@ -1360,7 +1377,7 @@ impl<'kb> Emitter<'kb> {
         };
         let qn = self.kb.qualified_name_of(functor);
         // Relational comparison → SMT-LIB predicate over Real operands.
-        if let Some(smt_op) = map_inequality_op(&qn) {
+        if let Some(smt_op) = self.builtins.inequality(functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "{qn}: expected 2 pos_args in condition, got {}",
@@ -1372,7 +1389,7 @@ impl<'kb> Emitter<'kb> {
             return Ok(format!("({smt_op} {a} {b})"));
         }
         // Equality → `(= a b)` over Real operands.
-        if is_eq_functor(self.kb, functor) {
+        if self.is_eq_functor(functor) {
             if pos_args.len() != 2 {
                 return Err(SmtGenError::new(format!(
                     "=: expected 2 pos_args in condition, got {}",
@@ -1384,7 +1401,7 @@ impl<'kb> Emitter<'kb> {
             return Ok(format!("(= {a} {b})"));
         }
         // Bool connective → recurse into sub-conditions.
-        if let Some(conn) = map_bool_connective(&qn) {
+        if let Some(conn) = self.builtins.bool_connective(functor) {
             let arity = if conn == "not" { 1 } else { 2 };
             if pos_args.len() != arity {
                 return Err(SmtGenError::new(format!(
@@ -1659,6 +1676,23 @@ impl<'kb> Emitter<'kb> {
         }
     }
 
+    /// True if `sym` is the equation predicate. The loader desugars a goal-position
+    /// `=` to `anthill.prelude.PartialEq.eq` (WI-644 put `eq` on the `PartialEq` base
+    /// for the same reason the comparisons sit on `PartialOrd`), which is the
+    /// [`SmtBuiltin::Eq`] row; a `Term::Fn` may still carry the bare OPERATOR
+    /// spelling `=`, which no declaration can mint and so nothing can collide with.
+    ///
+    /// WI-897 — THE SHORT NAME `eq` NO LONGER COUNTS. Matching it turned a user's own
+    /// `Widget.eq` into SMT equality over Reals: WI-680's hazard, in the one table
+    /// that was already shaped to take a `Symbol`. The `anthill.prelude.Eq.eq` arm
+    /// went with it — MEASURED against a stdlib KB, that name resolves to nothing.
+    fn is_eq_functor(&self, sym: anthill_core::intern::Symbol) -> bool {
+        if self.builtins.is_eq(sym) {
+            return true;
+        }
+        self.kb.qualified_name_of(sym) == "=" || self.kb.local_name_of(sym) == "="
+    }
+
     /// True if the symbol resolves to an entity declaration.
     fn is_known_entity(&self, sym: anthill_core::intern::Symbol) -> bool {
         self.kb.entity_field_types(sym).is_some()
@@ -1684,8 +1718,8 @@ impl<'kb> Emitter<'kb> {
             }
         };
         let qn = self.kb.qualified_name_of(functor);
-        if is_eq_functor(self.kb, functor)
-            || map_inequality_op(&qn).is_some()
+        if self.is_eq_functor(functor)
+            || self.builtins.inequality(functor).is_some()
             || self.is_known_entity(functor)
         {
             return HeadShape::Predicate;
@@ -2107,144 +2141,248 @@ fn scalar_param_occ(
     NodeOccurrence::new_expr(Expr::Const(Literal::String(smt.to_string())), span, owner)
 }
 
-/// Map anthill arithmetic functor qualified names to SMT-LIB ops.
-/// Linear-arithmetic only (`/` against a Real constant is still
-/// linear in QF_LRA).
-fn map_arith_op(qn: &str) -> Option<&'static str> {
-    match qn {
-        "anthill.prelude.Numeric.add" | "Numeric.add" | "add" => Some("+"),
-        "anthill.prelude.Numeric.sub" | "Numeric.sub" | "sub" => Some("-"),
-        "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*"),
-        "anthill.prelude.Float.div" | "Float.div" | "div" => Some("/"),
-        "anthill.prelude.Int64.div" | "Int64.div" => Some("div"),
-        _ => None,
-    }
-}
-
-/// Map the trigonometric ops `cos`/`sin` to their uninterpreted-function
-/// spelling (WI-681). SMT-LIB's Real logics have no transcendental cos/sin,
-/// so they ride as uninterpreted `anthill_cos`/`anthill_sin` reals; the ONLY
-/// fact the emitter injects about them is the Pythagorean identity
-/// `cos(θ)²+sin(θ)²=1` per argument (see `emit_trig_prelude`) — sufficient
-/// for the norm-preservation of a 2-D rotation, and nothing more is claimed.
-fn map_trig_op(qn: &str) -> Option<&'static str> {
-    match qn {
-        "anthill.prelude.Float.cos" | "Float.cos" | "cos" => Some("anthill_cos"),
-        "anthill.prelude.Float.sin" | "Float.sin" | "sin" => Some("anthill_sin"),
-        _ => None,
-    }
-}
-
-/// Map unary anthill ops (abs, neg) to SMT-LIB.
-/// `abs` is emitted as `anthill_abs` — a (define-fun anthill_abs
-/// ((x Real)) Real (ite (< x 0) (- x) x)) prelude is added to the
-/// final SMT script when any call site renders `anthill_abs`.
-/// SMT-LIB has no built-in `abs` for Real in the LRA/NRA logics
-/// most discharges run under, so we synthesise it.
-fn map_unary_op(qn: &str) -> Option<&'static str> {
-    match qn {
-        "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs"),
-        "anthill.prelude.Int64.abs" => Some("anthill_abs"),
-        "anthill.prelude.Float.neg" | "Float.neg" => Some("-"),
-        "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-"),
-        _ => None,
-    }
-}
-
-/// True if `qn` names the `ite` (if-then-else) functor (WI-680). The refolded
-/// defining-equation body uses the `Expr::If` occurrence directly; this covers the
-/// hand-written / stdlib `ite(...)` spelling of the same conditional.
+/// WHICH ANTHILL OPERATION MEANS WHICH SMT-LIB FORM (WI-897) — one row per
+/// operation, keyed by QUALIFIED NAME and matched by SYMBOL IDENTITY.
 ///
-/// BOTH SPELLINGS ARE LIVE, and which one arrives depends on whether the use site
-/// named `ite`. WI-887 made `ite` a rule-level functor rather than an operation, and
-/// deleted the qualified arms as unreachable — correctly at the time, because a
-/// rule-introduced functor had no qualified identity at all and `qualified_name_of`
-/// always handed back the bare short name. WI-894 SCOPES such a functor to its
-/// declaring sort, so `anthill.prelude.Bool.ite` now exists and an `import
-/// anthill.prelude.Bool.{ite}` (the naming path WI-894 added — and the one
-/// `ordered.anthill` / `int64.anthill` now use) resolves to it. MEASURED: without the
-/// qualified arm an imported `ite` in a rule body dies `unhandled arithmetic op
-/// 'anthill.prelude.Bool.ite'`.
+/// Every one of these decisions used to be a string compare against
+/// `qualified_name_of(functor)`, and each table spelled a fully-qualified /
+/// sort-qualified / bare TRIPLE (`"anthill.prelude.Numeric.add" | "Numeric.add" |
+/// "add"`). WI-680 recorded what the bare arm costs: a user's own `add` is
+/// indistinguishable from the prelude's and is silently reinterpreted as SMT `+`.
+/// WI-894 made the principled form reachable by giving a rule-introduced functor
+/// (`ite`) a qualified identity of its own; this table is the form.
 ///
-/// The bare arm stays for the UN-imported use, which still interns bare in a rule body
-/// (`wi680_ite_lowering_test`'s own fixture writes it that way). That arm keeps WI-680's
-/// recorded hazard — a user's own unresolved 3-ary `ite` is indistinguishable from the
-/// prelude's — but WI-894 makes the hazard AVOIDABLE again rather than unavoidable:
-/// importing `ite` gives the qualified name, which cannot collide with a user's.
+/// THE OTHER TWO SPELLINGS ARE GONE, AND NEITHER MEANT WHAT THE OLD TABLES TOOK IT
+/// TO MEAN.
 ///
-/// Only TWO arms, though the neighbouring tables carry a sort-qualified third (`Bool.and`,
-/// `Int64.neg`). WI-887 deleted the `Bool.ite` arm as unreachable and nothing since made
-/// it reachable, so it stays deleted rather than restored for symmetry with no
-/// measurement behind it. NOT because such a program cannot get here: a `Bool.ite`
-/// spelling with `Bool` out of scope is a load ERROR, but a load error does not stop
-/// smt-gen — the CLI's run path mutes load errors. (WI-966 closed the other half of that
-/// route: this crate's test harness used to do `let _ = load_all(..)` and no longer
-/// does.) The arm is absent because it is unmeasured, and if a real program is ever found
-/// reaching it the fix is a test plus the arm, not a symmetry argument.
+/// The SORT-QUALIFIED one (`Numeric.add`) could be resolved — just never to the
+/// prelude. A TOP-LEVEL `sort Numeric` is legal, and the stdlib writes its own the
+/// same way, only dotted (`sort anthill.prelude.Numeric`); an undotted one
+/// qualifies its members as `Numeric.add` verbatim. That is WI-680's hazard with a
+/// real program behind it, and it is what `wi897_symbol_identity_test` drives.
 ///
-/// WI-894 also UNBLOCKS the principled form this table has never had: `functor: Symbol`
-/// and `self.kb` are both in hand at the call site, so `by_qualified_name["anthill.
-/// prelude.Bool.ite"] == functor` would be a symbol-identity compare immune to a user's
-/// same-named op. Table-wide (every `map_*_op` here matches by name), so it is WI-897 —
-/// recorded because WI-887's comment on this function stated the opposite.
-fn is_ite_op(qn: &str) -> bool {
-    qn == "ite" || qn == "anthill.prelude.Bool.ite"
+/// The BARE one (`add`) could only come from a `SymbolDef::Unresolved` functor —
+/// `by_qualified_name` holds fully qualified names only — i.e. a name the loader
+/// never resolved. That is not hypothetical either: it was LIVE in this repo's own
+/// lf1 example. `safety_common.anthill` wrote `abs(?d_next - ?d_prev)` without
+/// importing it, and since `abs` is a member of BOTH `Float` and `Int64` the bare
+/// name resolves to neither; nothing reported it (its two uses sit in a `-:` clause
+/// and a proof step, not the call sites WI-1056 checks), and this table lowered it
+/// anyway off the short-name arm. Deleting the arm surfaced it as `unhandled
+/// arithmetic op 'abs'` in `prove_tactic_test::legacy_lf1_proofs_unchanged`, and
+/// the fix was to make the name real — the spec now imports
+/// `anthill.prelude.Float.{abs}`, as its `safety_gps.anthill` sibling already did.
+/// A loud refusal is the whole point: the emitter cannot know which carrier's `abs`
+/// an unresolved name meant, and a proof obligation is the last place to guess.
+///
+/// MEASURED, not assumed, for the rows that are ABSENT here: `anthill.prelude.Ord.
+/// {gt,lt,gte,lte}` and `anthill.prelude.Eq.eq` — all five carried by the old
+/// tables — resolve to NOTHING against a stdlib KB. WI-644/WI-1109 moved the four
+/// comparisons onto `PartialOrd` and `eq` onto `PartialEq`, and left no aliases
+/// behind: `import anthill.prelude.Ord.{gte}` resolves THROUGH the tower to
+/// `anthill.prelude.PartialOrd.gte`, which is the row below. A dead row would be
+/// indistinguishable from a live one here (`resolve` just skips what it cannot
+/// find), so they are omitted rather than carried on trust.
+const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
+    // Arithmetic. Linear-arithmetic only (`/` against a Real constant is still
+    // linear in QF_LRA). `Int64`/`Float` do not declare their own `add`/`sub`/`mul`
+    // — they provide `Numeric`, so those three resolve to the SPEC op's symbol for
+    // every carrier; only `div` is declared per carrier and needs two rows.
+    ("anthill.prelude.Numeric.add", SmtBuiltin::Arith("+")),
+    ("anthill.prelude.Numeric.sub", SmtBuiltin::Arith("-")),
+    ("anthill.prelude.Numeric.mul", SmtBuiltin::Arith("*")),
+    ("anthill.prelude.Float.div", SmtBuiltin::Arith("/")),
+    ("anthill.prelude.Int64.div", SmtBuiltin::Arith("div")),
+    // Trigonometry (WI-681). SMT-LIB's Real logics have no transcendental cos/sin,
+    // so they ride as uninterpreted `anthill_cos`/`anthill_sin` reals; the ONLY
+    // fact the emitter injects about them is the Pythagorean identity
+    // `cos(θ)²+sin(θ)²=1` per argument (see `emit_trig_prelude`) — sufficient for
+    // the norm-preservation of a 2-D rotation, and nothing more is claimed.
+    ("anthill.prelude.Float.cos", SmtBuiltin::Trig("anthill_cos")),
+    ("anthill.prelude.Float.sin", SmtBuiltin::Trig("anthill_sin")),
+    // Unary. `abs` is emitted as `anthill_abs` — a `(define-fun anthill_abs
+    // ((x Real)) Real (ite (< x 0) (- x) x))` prelude is added to the final SMT
+    // script when any call site renders it, because SMT-LIB has no built-in `abs`
+    // for Real in the LRA/NRA logics most discharges run under.
+    (
+        "anthill.prelude.Float.abs",
+        SmtBuiltin::Unary("anthill_abs"),
+    ),
+    (
+        "anthill.prelude.Int64.abs",
+        SmtBuiltin::Unary("anthill_abs"),
+    ),
+    ("anthill.prelude.Numeric.neg", SmtBuiltin::Unary("-")),
+    ("anthill.prelude.Float.neg", SmtBuiltin::Unary("-")),
+    ("anthill.prelude.Int64.neg", SmtBuiltin::Unary("-")),
+    // `ite` (WI-680). The refolded defining-equation body uses the `Expr::If`
+    // occurrence directly; this covers the hand-written / stdlib `ite(...)`
+    // spelling of the same conditional. BOTH SPELLINGS ARE LIVE. `ite` is a
+    // RULE-INTRODUCED functor rather than an operation (WI-887) — it cannot be an
+    // operation at its signature, since a call would evaluate both branches — and
+    // WI-894 is what scopes it to `Bool` and so lets it be named here at all.
+    ("anthill.prelude.Bool.ite", SmtBuiltin::Ite),
+    // Bool connectives for the condition slot of an `ite`/`if` (WI-680).
+    // `and`/`or` are binary, `not` unary — the caller checks arity.
+    ("anthill.prelude.Bool.and", SmtBuiltin::BoolConn("and")),
+    ("anthill.prelude.Bool.or", SmtBuiltin::BoolConn("or")),
+    ("anthill.prelude.Bool.not", SmtBuiltin::BoolConn("not")),
+    // Comparisons, THREE ROWS DEEP PER OPERATOR because three different sorts
+    // declare them and a call resolves to whichever one it named.
+    //
+    // WI-644 / proposal 004 put gt/lt/gte/lte on the `PartialOrd` base, because IEEE
+    // `Float` is comparable but not totally ordered — that is the row a generic or
+    // `import anthill.prelude.Ord.{...}` call lands on. But `Float` and `Int64` also
+    // DECLARE ALL FOUR themselves (`float.anthill`, `int64.anthill`: host-backed, so a
+    // scalar comparison is one host call and `PartialOrd`'s `compare`-based default
+    // body has a floor to bottom out on — it reads `Int64.gt` on `compare`'s result).
+    // Those are distinct symbols, so `Float.lte(a, b)` — the spelling WI-565's
+    // diagnostic tells a user to write — reaches none of the `PartialOrd` rows.
+    ("anthill.prelude.PartialOrd.lte", SmtBuiltin::Ineq("<=")),
+    ("anthill.prelude.PartialOrd.lt", SmtBuiltin::Ineq("<")),
+    ("anthill.prelude.PartialOrd.gte", SmtBuiltin::Ineq(">=")),
+    ("anthill.prelude.PartialOrd.gt", SmtBuiltin::Ineq(">")),
+    ("anthill.prelude.Float.lte", SmtBuiltin::Ineq("<=")),
+    ("anthill.prelude.Float.lt", SmtBuiltin::Ineq("<")),
+    ("anthill.prelude.Float.gte", SmtBuiltin::Ineq(">=")),
+    ("anthill.prelude.Float.gt", SmtBuiltin::Ineq(">")),
+    ("anthill.prelude.Int64.lte", SmtBuiltin::Ineq("<=")),
+    ("anthill.prelude.Int64.lt", SmtBuiltin::Ineq("<")),
+    ("anthill.prelude.Int64.gte", SmtBuiltin::Ineq(">=")),
+    ("anthill.prelude.Int64.gt", SmtBuiltin::Ineq(">")),
+    // NOT `String` and NOT `BigInt`, which declare the same four (MEASURED: the
+    // prelude's `gt`/`gte`/`lt`/`lte` declarations live in `ordered`, `float`,
+    // `int64`, `string`, `bigint`). This emitter models EVERY operand as SMT `Real`,
+    // so `<=` is the right lowering exactly where the carrier is a Real-modelled
+    // scalar. A lexicographic `String.lte` is not that, and lowering it to `(<= …)`
+    // would be a false claim rather than an unsupported one. Nor the abstract
+    // algebraic specs over an arbitrary `T` — `Ring.add`/`Field.div` are a carrier's
+    // operation only once the carrier is known, and this table cannot know it.
+    // Both refuse loudly at the call site, which is the correct answer for them.
+    // Equality. WI-644 put `eq` on the `PartialEq` base for the same reason the
+    // comparisons sit on `PartialOrd`; the loader desugars a goal-position `=` to
+    // exactly this operation. See [`Emitter::is_eq_functor`] for the one spelling
+    // that is NOT a symbol — the bare operator `=` a `Term::Fn` may still carry.
+    ("anthill.prelude.PartialEq.eq", SmtBuiltin::Eq),
+];
+
+/// The SMT-LIB meaning one anthill operation carries. The payload is the emitted
+/// SMT operator; `Ite` has none because its rendering is a three-slot form, not an
+/// operator applied to translated arguments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SmtBuiltin {
+    /// Binary arithmetic over Real: `(+ a b)`.
+    Arith(&'static str),
+    /// Uninterpreted trigonometric function: `(anthill_cos θ)`.
+    Trig(&'static str),
+    /// Unary arithmetic: `(anthill_abs a)`, `(- a)`.
+    Unary(&'static str),
+    /// Bool connective in CONDITION position: `(and c d)`.
+    BoolConn(&'static str),
+    /// Relational predicate over Real operands: `(<= a b)`.
+    Ineq(&'static str),
+    /// `(ite c t e)`.
+    Ite,
+    /// `(= a b)` over Real operands.
+    Eq,
 }
 
-/// Map the Bool connectives to their SMT-LIB spelling (WI-680), for the
-/// condition slot of an `ite`/`if`. `and`/`or` are binary, `not` unary — the
-/// caller checks arity. Matched by qualified or short name, mirroring
-/// `map_inequality_op`.
-fn map_bool_connective(qn: &str) -> Option<&'static str> {
-    match qn {
-        "anthill.prelude.Bool.and" | "Bool.and" | "and" => Some("and"),
-        "anthill.prelude.Bool.or" | "Bool.or" | "or" => Some("or"),
-        "anthill.prelude.Bool.not" | "Bool.not" | "not" => Some("not"),
-        _ => None,
-    }
+/// [`SMT_BUILTINS`] resolved against one KB — the only thing that decides what an
+/// operation MEANS to this emitter. Built once per [`Emitter`]; a lookup is a
+/// `Symbol` hash, and a user's own `add` (a different `Symbol`, whatever it is
+/// spelled) is simply absent from it.
+#[derive(Debug)]
+struct SmtBuiltinTable {
+    by_symbol: HashMap<Symbol, SmtBuiltin>,
 }
 
-/// Map anthill comparison ops to SMT-LIB. Used as body-goal
-/// assertions (not embedded in arithmetic expressions, since
-/// SMT-LIB segregates Bool from Real cleanly).
-fn map_inequality_op(qn: &str) -> Option<&'static str> {
-    // WI-644 / proposal 004: gt/lt/gte/lte moved from `Ord` onto the `PartialOrd`
-    // base (Ord kept as `Ord.*` aliases for any legacy QN).
-    match qn {
-        "anthill.prelude.PartialOrd.lte"
-        | "PartialOrd.lte"
-        | "anthill.prelude.Ord.lte"
-        | "Ord.lte"
-        | "lte" => Some("<="),
-        "anthill.prelude.PartialOrd.lt"
-        | "PartialOrd.lt"
-        | "anthill.prelude.Ord.lt"
-        | "Ord.lt"
-        | "lt" => Some("<"),
-        "anthill.prelude.PartialOrd.gte"
-        | "PartialOrd.gte"
-        | "anthill.prelude.Ord.gte"
-        | "Ord.gte"
-        | "gte" => Some(">="),
-        "anthill.prelude.PartialOrd.gt"
-        | "PartialOrd.gt"
-        | "anthill.prelude.Ord.gt"
-        | "Ord.gt"
-        | "gt" => Some(">"),
-        _ => None,
+impl SmtBuiltinTable {
+    /// Resolve every row against `kb` — ALL OF THEM OR NONE OF THEM.
+    ///
+    /// None is a legitimate KB: one that never loaded the prelude has no builtins,
+    /// and every call site's own "unhandled ..." error then says so. A PARTIAL
+    /// resolution is not legitimate — it means the prelude IS loaded and the stdlib
+    /// moved an operation out from under a row, silently disabling that builtin. The
+    /// symptom would surface far away (an `unhandled arithmetic op` on a program that
+    /// used to lower, or a premise quietly dropped from an abstract lift), so it is
+    /// caught HERE, where the cause is. This is exactly the drift WI-644/WI-1109
+    /// already caused once: they moved the four comparisons onto `PartialOrd` and
+    /// `eq` onto `PartialEq`, leaving five rows in the old tables that matched
+    /// nothing, and nothing noticed because a dead row is silent.
+    fn resolve(kb: &KnowledgeBase) -> Self {
+        let mut by_symbol = HashMap::with_capacity(SMT_BUILTINS.len());
+        let mut missing: Vec<&str> = Vec::new();
+        for (qn, builtin) in SMT_BUILTINS {
+            let Some(sym) = kb.try_resolve_symbol(qn) else {
+                missing.push(qn);
+                continue;
+            };
+            // Two rows collapsing onto one symbol would make this table's meaning
+            // depend on row order. It cannot happen with the rows above (each names
+            // a distinct declaration), so it is a TABLE bug, not a KB one — loud.
+            if let Some(prev) = by_symbol.insert(sym, *builtin) {
+                assert_eq!(
+                    prev, *builtin,
+                    "WI-897: SMT_BUILTINS rows disagree on one symbol ({qn})"
+                );
+            }
+        }
+        assert!(
+            by_symbol.is_empty() || missing.is_empty(),
+            "WI-897: the prelude is loaded but {} SMT_BUILTINS row(s) resolve to \
+             nothing — {missing:?}. An operation moved and its row is now dead; \
+             point the row at the new declaration.",
+            missing.len()
+        );
+        Self { by_symbol }
     }
-}
 
-/// True if `sym` names the equation predicate. Loader desugars `=`
-/// to `anthill.prelude.PartialEq.eq` (WI-644: the `eq` op lives on the PartialEq
-/// base) in goal position; `Term::Fn` may also carry the unqualified short form.
-fn is_eq_functor(kb: &KnowledgeBase, sym: anthill_core::intern::Symbol) -> bool {
-    let qn = kb.qualified_name_of(sym);
-    if qn == "=" || qn == "anthill.prelude.PartialEq.eq" || qn == "anthill.prelude.Eq.eq" {
-        return true;
+    fn get(&self, sym: Symbol) -> Option<SmtBuiltin> {
+        self.by_symbol.get(&sym).copied()
     }
-    let short = kb.local_name_of(sym);
-    short == "=" || short == "eq"
+
+    fn arith(&self, sym: Symbol) -> Option<&'static str> {
+        match self.get(sym) {
+            Some(SmtBuiltin::Arith(op)) => Some(op),
+            _ => None,
+        }
+    }
+
+    fn trig(&self, sym: Symbol) -> Option<&'static str> {
+        match self.get(sym) {
+            Some(SmtBuiltin::Trig(op)) => Some(op),
+            _ => None,
+        }
+    }
+
+    fn unary(&self, sym: Symbol) -> Option<&'static str> {
+        match self.get(sym) {
+            Some(SmtBuiltin::Unary(op)) => Some(op),
+            _ => None,
+        }
+    }
+
+    fn bool_connective(&self, sym: Symbol) -> Option<&'static str> {
+        match self.get(sym) {
+            Some(SmtBuiltin::BoolConn(op)) => Some(op),
+            _ => None,
+        }
+    }
+
+    fn inequality(&self, sym: Symbol) -> Option<&'static str> {
+        match self.get(sym) {
+            Some(SmtBuiltin::Ineq(op)) => Some(op),
+            _ => None,
+        }
+    }
+
+    fn is_ite(&self, sym: Symbol) -> bool {
+        self.get(sym) == Some(SmtBuiltin::Ite)
+    }
+
+    fn is_eq(&self, sym: Symbol) -> bool {
+        self.get(sym) == Some(SmtBuiltin::Eq)
+    }
 }
 
 /// Read a `Term::Const(Literal::{Float,Int})` as an f64. Anything

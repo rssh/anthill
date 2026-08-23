@@ -48,7 +48,14 @@
 namespace anthill.examples.lf1.safety.common
   import anthill.prelude.{Float, Int64, Bool}
   import anthill.prelude.Numeric.{add, sub, mul}
-  import anthill.prelude.Ord.{gte}
+  import anthill.prelude.Ord.{gte, lte}
+  -- WI-897: `abs` is a member of BOTH `Float` and `Int64`, so a bare `abs(...)`
+  -- resolves to neither and stays an unresolved name. Nothing reported it — the
+  -- two uses (`step_distance_lemma`'s `-:` clause and the `h_geometric` step of
+  -- its proof) are not the checked call sites WI-1056 covers — and smt-gen used
+  -- to lower it anyway off a short-name arm. That arm is gone, so the name has to
+  -- be real: these distances are `Float`, exactly as `safety_gps.anthill` imports it.
+  import anthill.prelude.Float.{abs}
   import anthill.geometry.{Vec3}
   import anthill.examples.lf1.leader.{Pose}
 

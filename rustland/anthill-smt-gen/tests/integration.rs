@@ -18,3 +18,4 @@ mod wi681_desired_position_test;
 mod wi686_scalar_param_in_constructor_test;
 mod wi687_match_headed_test;
 mod wi772_bodied_entity_fact_test;
+mod wi897_symbol_identity_test;
