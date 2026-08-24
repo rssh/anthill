@@ -299,7 +299,7 @@ fn a_declaration_the_defining_pass_never_reached_is_refused() {
     // but present. Under the declaration reading it would introduce nothing AND assert
     // nothing, so the load says so.
     //
-    // BACKED OUT (delete the `name_denotes_for_rule_head` guard in the Declaration arm):
+    // BACKED OUT (delete the `rule_head_ladder_answer` guard in the Declaration arm):
     // this row FAILS — the fixture loads clean and `pvb.Widget.pvbdecl` resolves to
     // nothing, which is the silent drop the guard exists for.
     const SRC: &str = "namespace fqc85pvb\n  sort Widget\n                           import anthill.prelude.{Int64}\n                           operation w(x: Int64) -> Int64\n  end\n                         provides Widget language anthill\n    rule pvbdecl(?x)\n  end\nend\n";

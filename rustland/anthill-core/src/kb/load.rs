@@ -1287,6 +1287,89 @@ pub enum LoadError {
         /// The first head, so the error has a line.
         span: Span,
     },
+    /// AN EQUATION'S SUBJECT MAY NOT NAME ANOTHER SCOPE'S PREDICATE
+    /// (WI-20260821-D0EXD).
+    ///
+    /// §"A rule head functor is resolved, not declared" reaches every head shape, an
+    /// equation's subject included: a head whose functor RESOLVES is a clause of what it
+    /// resolves to. For an equation that reading is only coherent when what it lands on
+    /// is a thing equations DEFINE — an `operation`, or another equation's subject.
+    /// A rule-introduced PREDICATE is not one: an equation's clauses index under the
+    /// `eq`/`unify` CONNECTIVE and never under the subject (WI-898), so the equation
+    /// does not become a clause of the predicate — the subject merely points at it, and
+    /// the equation-defined operation the writing scope meant to name CEASES TO EXIST.
+    ///
+    /// MEASURED, two arms one token apart, the sort body identical in both:
+    ///
+    /// ```text
+    ///   namespace qlib
+    ///     rule f(2)                       -- 061: a body-less rule DECLARES a predicate
+    ///     sort Rec { entity r(n: Int64)   rule f() <=> 1 [simp] }
+    ///   end
+    ///     -> qlib.Rec.f ABSENT.  `Rec.f()` = "unknown functor"; `f()` under
+    ///        `import qlib.*` = Int(1) -- the sort's operation MOVED to the namespace.
+    ///   the same file with the declaration renamed `rule other(2)`
+    ///     -> the exact mirror: qlib.Rec.f present, `Rec.f()` = Int(1).
+    /// ```
+    ///
+    /// Both loaded, and nothing was reported.
+    ///
+    /// REFUSED RATHER THAN SPLIT, and the language's own answer for the SAME PAIR is why.
+    /// Where neither side is minted before phase 2 the two are already refused: measured,
+    /// `zi { rule f(true) <=> 7 [simp] }` beside `zj { import zi.*  rule f(1) :- true }`
+    /// is [`NameIntroducedAtTwoVisibleScopes`], because both heads introduce and phase 2
+    /// reads a pre-mint table. A 061 DECLARATION is minted in pass 1, so it is the one
+    /// shape that reaches phase 2 already denoting — a HOLE in that refusal rather than a
+    /// different question, and letting it split silently would leave a predicate and an
+    /// equation subject sharing a short name across visible scopes, which is exactly the
+    /// shadowing hazard that refusal exists for.
+    ///
+    /// SCOPED TO ANOTHER SCOPE'S PREDICATE, on 845G7's own principle: the shadow itself
+    /// is not the defect, INVENTING it is. `sort Rec { rule f(?y)  rule f() <=> 1 [simp] }`
+    /// is one author writing both in one place, the name carries both roles, and it
+    /// WORKS — driven, `Rec.f(false)` = Int(2). Nothing was captured, so nothing is
+    /// refused.
+    ///
+    /// CENSUS over the whole suite — stdlib, `anthill-stl`, `examples`, `anthill-todo`
+    /// and every fixture — instrumenting phase 2 with the resolved symbol's kinds:
+    /// **643,866** heads that denote, of which **516,224** are an equation subject on an
+    /// `operation`, **63,915** a predicate head on a predicate, **63,654** a predicate
+    /// head on an operation (the law layer), **12** an equation subject on another
+    /// equation subject (`Bool.ite`, `Float.nonEqRefl`) — and **4** an equation subject
+    /// on a predicate, every one of them in `wi980_rule_head_order_test`'s own remedy
+    /// arms. Zero in the shipped corpus.
+    ///
+    /// THE REMAINING **57** ARE NAMED rather than left as a gap in the arithmetic (found
+    /// by `/code-review`, which added the four figures up): 30 a predicate head on a
+    /// nested sort's constructor, 16 an equation subject on an ENTITY, 6 a predicate head
+    /// on an entity, 2 on a name that is both a predicate and a sort, 2 on one that is
+    /// both a predicate and an operation, 1 on a namespace. The 16 are the class this
+    /// rule admits in silence: whether an equation may define an entity constructor is a
+    /// different question from whether it may define a relation, and nothing here answers
+    /// it.
+    EquationSubjectNamesAPredicate {
+        /// The subject's short name, as written.
+        name: String,
+        /// The scope the equation is WRITTEN in — the one losing the operation.
+        head_scope: String,
+        /// Every scope declaring a predicate the subject reached, in display order.
+        /// A LIST because `Ambiguous` counts as denoting: naming whichever candidate the
+        /// resolver happened to sort first would send the author to fix one and meet the
+        /// identical error pointing at the next (found by `/code-review`).
+        predicate_scopes: Vec<String>,
+        /// Did the subject resolve AMBIGUOUSLY? Carried rather than inferred from
+        /// `predicate_scopes.len() > 1`, which is not the same question: the group is
+        /// keyed on `(scope, name)` while the ladder is asked per head with that head's
+        /// own asking-file, so one scope reopened in two files with different imports
+        /// gives two UNAMBIGUOUS answers naming two scopes (found by `/code-review`,
+        /// which drove it — the message then pointed at "the other error", and there was
+        /// no other error). It decides only the prescription: where the name is genuinely
+        /// ambiguous, settling the ambiguity settles nothing, because every candidate is
+        /// a relation whichever way it goes.
+        ambiguous: bool,
+        /// The equation's head, so the error has a line.
+        span: Span,
+    },
     /// TWO SCOPES THAT CAN SEE EACH OTHER MAY NOT BOTH INTRODUCE ONE NAME
     /// (WI-20260821-E85J5, generalized by WI-20260822-845G7).
     ///
@@ -1338,6 +1421,15 @@ pub enum LoadError {
         /// does — a chain, or two siblings a third scope imports — and the message then
         /// prescribes a per-scope declaration instead.
         owner: Option<String>,
+        /// WI-20260821-D0EXD — is one of the colliding heads an EQUATION SUBJECT written
+        /// somewhere the named owner is not? Then the body-less `rule` this message used
+        /// to prescribe is NOT a working owner for it: a subject that lands on another
+        /// scope's predicate is refused ([`LoadError::EquationSubjectNamesAPredicate`]),
+        /// so taking the advice would trade this error for that one. Measured on `zeq`,
+        /// whose advice was TAKEN and refused. What collects an equation subject across
+        /// scopes is an `operation` — the declaration of what equations define — driven
+        /// to Int(2) through the sort's own citation.
+        equation_elsewhere: bool,
         /// The first head, so the error has a line.
         span: Span,
     },
@@ -1984,6 +2076,7 @@ impl LoadError {
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
             | LoadError::NameIntroducedAtTwoVisibleScopes { span, .. }
+            | LoadError::EquationSubjectNamesAPredicate { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -2479,9 +2572,23 @@ impl LoadError {
                 name,
                 scopes,
                 owner,
+                equation_elsewhere,
                 span,
             } => {
                 let repair = match owner {
+                    // WI-20260821-D0EXD — an EQUATION SUBJECT is not collected by a
+                    // body-less `rule`, so where one of the heads is a subject written
+                    // outside the named owner the prescription changes to the declaration
+                    // that DOES collect it. Both were driven before being prescribed.
+                    Some(o) if *equation_elsewhere => format!(
+                        "One of those heads is an EQUATION's subject, which a body-less \
+                         `rule` does not collect — an equation is not a clause of a \
+                         predicate (WI-898). Declare what the equations define: an \
+                         `operation {}(…) -> R` in '{}' makes every one of those heads \
+                         its own, or a body-less `rule {}(…)` in EACH scope says they \
+                         are separate.",
+                        name, o, name
+                    ),
                     Some(o) => format!(
                         "Declare it (proposal 061): a body-less `rule {}(…)` in '{}' makes \
                          every one of those heads a clause of it, or one in EACH scope \
@@ -2500,8 +2607,14 @@ impl LoadError {
                          the program says which should own it. Declare it (proposal 061): \
                          a body-less `rule {}(…)` in each scope that should own one says \
                          they are separate predicates, and one in a scope the others can \
-                         all reach makes their heads its clauses.",
-                        name
+                         all reach makes their heads its clauses{}.",
+                        name,
+                        if *equation_elsewhere {
+                            " — except an EQUATION's subject, which a body-less `rule` \
+                             does not collect (WI-898); an `operation` there does"
+                        } else {
+                            ""
+                        }
                     ),
                 };
                 let named = if scopes.len() <= COLLISION_SCOPES_SHOWN {
@@ -2528,6 +2641,48 @@ impl LoadError {
                     repair
                 )
             }
+            LoadError::EquationSubjectNamesAPredicate {
+                name,
+                head_scope,
+                predicate_scopes,
+                ambiguous,
+                span,
+            } => format!(
+                "{}: the equation subject `{}` names the RELATION `{}` declared in {} — \
+                 a predicate, or a labelled rule, which a rule head names and equations \
+                 do not define. An equation's clauses index under the `<=>` connective \
+                 and never under its subject (WI-898), so this equation would define that \
+                 relation and `{}.{}` would not exist. {}",
+                loc.format_start(*span),
+                name,
+                name,
+                quoted_scope_list(predicate_scopes),
+                head_scope,
+                name,
+                if *ambiguous {
+                    // EVERY CANDIDATE IS A RELATION, so settling the ambiguity the other
+                    // error reports does not settle this — whichever way it goes, the
+                    // equation lands on one. Only the head-scope declaration is a repair
+                    // that stands on its own here, and it is the one that is driven; the
+                    // `operation` half is stated as what it is, a second edit.
+                    format!(
+                        "Declare a body-less `rule {name}(…)` in '{head_scope}' to keep \
+                         this equation here — every candidate above is a relation, so \
+                         settling the ambiguity that the other error names would not \
+                         settle this one."
+                    )
+                } else {
+                    format!(
+                        "Declare what the equation defines: make `{name}` in {} an \
+                         `operation {name}(…) -> R` INSTEAD of a relation — one name \
+                         cannot be both, so this replaces the declaration rather than \
+                         joining it — or a body-less `rule {name}(…)` in '{head_scope}' \
+                         says the relation and this equation are separate things that \
+                         share a spelling.",
+                        quoted_scope_list(predicate_scopes)
+                    )
+                }
+            ),
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 format!(
                     "{}: a rule with no body DECLARES a predicate (proposal 061), and \
@@ -3514,6 +3669,7 @@ impl std::fmt::Display for LoadError {
                 name,
                 scopes,
                 owner,
+                equation_elsewhere,
                 span,
             } => {
                 // TRUNCATED LIKE `format_with_source`, and for its reason: a transitive
@@ -3535,9 +3691,35 @@ impl std::fmt::Display for LoadError {
                     scopes.len(),
                     named,
                     match owner {
+                        // WI-20260821-D0EXD — the terse form carries the same
+                        // correction as `format_with_source`'s: a body-less `rule` in
+                        // the owner does not collect an equation subject written
+                        // elsewhere, so this one-liner must not say "declare it" flat.
+                        Some(o) if *equation_elsewhere =>
+                            format!("; declare it in '{o}' as an `operation`"),
                         Some(o) => format!("; declare it in '{o}'"),
                         None => String::new(),
                     },
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::EquationSubjectNamesAPredicate {
+                name,
+                head_scope,
+                predicate_scopes,
+                ambiguous,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the equation subject `{}` in '{}' names the relation `{}` declared \
+                     in {}{} (at {}..{})",
+                    name,
+                    head_scope,
+                    name,
+                    quoted_scope_list(predicate_scopes),
+                    if *ambiguous { " (ambiguously)" } else { "" },
                     span.start,
                     span.end
                 )
@@ -4156,7 +4338,7 @@ pub fn scan_definitions_with_sources(
     // same table — declarations, imports and `requires`-inherited names, all of which
     // pass 1 and pass 2 finished. Phase 3 mints.
     //
-    // The DECISION is what changed, not a schedule. `name_denotes_for_rule_head` alone
+    // The DECISION is what changed, not a schedule. `rule_head_ladder_answer` alone
     // cannot answer this question: it asks "has a symbol been minted", which is true or
     // false depending on how much of the pass has run. What decides it is whether the
     // name is WRITTEN as a head in a scope this one can see — a syntactic property of
@@ -4193,13 +4375,89 @@ pub fn scan_definitions_with_sources(
     }
     // Phase 2 — every ladder answer read off the pre-mint table. Collected in full
     // before phase 3 starts, which is what makes them order-free.
-    let denotes: Vec<bool> = heads
+    // THE ANSWER IS KEPT, not just its verdict. The refusal below needs the SYMBOL the
+    // head landed on, and re-asking the ladder for it would resolve every equation
+    // subject twice on every load — per this change's own census, 516,236 of 643,866
+    // denoting head sites (found by `/code-review`). `denotes()` is still the only thing
+    // the mint and the collision check read, so nothing else gains a second question.
+    let resolved: Vec<ResolveResult> = heads
         .iter()
         .map(|h| {
             kb.symbols.set_asking_file(Some(source_ids[h.file_idx]));
-            name_denotes_for_rule_head(kb, h.name, h.scope)
+            rule_head_ladder_answer(kb, h.name, h.scope)
         })
         .collect();
+    let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
+    // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
+    //
+    // The ladder above answers one question — does the name resolve — for every head
+    // shape. That is right for a predicate head, and right for an equation subject too
+    // wherever what it lands on is a thing equations DEFINE. It is wrong for exactly one
+    // target: a rule-introduced PREDICATE, which owns clauses an equation never
+    // contributes to (WI-898), so the equation's own operation silently ceases to exist
+    // at the scope that wrote it. Asked HERE rather than inside the ladder because the
+    // ladder is the one definition of what a name denotes and must stay one — this is a
+    // refusal layered on its answer, not a second ladder.
+    // ONE SUBJECT IS ONE MESSAGE, however many equations are written about it — the rule
+    // is about the NAME, and every clause about it has the same cause and the same
+    // repair. Reporting per clause printed one fault twice for
+    // `sort Rec { rule f(true) <=> 1 [simp]  rule f(false) <=> 2 [simp] }` (found by
+    // `/code-review`), which is what this pass's sibling refusal already avoids
+    // ("ONE MISSING DECLARATION IS ONE MESSAGE"). Reported at the FIRST clause, by file
+    // and offset, so the group's line does not depend on the walk order.
+    let mut absorbed: HashMap<(ScopeId, &str), (usize, Vec<ScopeId>, bool)> = HashMap::new();
+    for ((idx, (head, &denotes_already)), answer) in
+        heads.iter().zip(&denotes).enumerate().zip(&resolved)
+    {
+        if !denotes_already || head.introduced_by != RuleIntroduction::Equation {
+            continue;
+        }
+        let owners = equation_subject_lands_on_predicate(kb, head, answer, global);
+        if owners.is_empty() {
+            continue;
+        }
+        let ambiguous = matches!(answer, ResolveResult::Ambiguous(_));
+        match absorbed.entry((head.scope, head.name)) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((idx, owners, ambiguous));
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let (first, seen, was_ambiguous) = e.get_mut();
+                if (heads[idx].file_idx, heads[idx].span.start)
+                    < (heads[*first].file_idx, heads[*first].span.start)
+                {
+                    *first = idx;
+                }
+                *was_ambiguous |= ambiguous;
+                for o in owners {
+                    if !seen.contains(&o) {
+                        seen.push(o);
+                    }
+                }
+            }
+        }
+    }
+    // A DETERMINISTIC REPORT ORDER, so two absorbed subjects do not print in hash order.
+    let mut groups: Vec<(usize, Vec<ScopeId>, bool)> = absorbed.into_values().collect();
+    groups.sort_by_key(|(first, _, _)| (heads[*first].file_idx, heads[*first].span.start));
+    for (first, owners, ambiguous) in groups {
+        let head = &heads[first];
+        let mut scopes: Vec<String> = owners
+            .iter()
+            .map(|o| kb.scope_display_name(*o).to_owned())
+            .collect();
+        scopes.sort();
+        errors.push(
+            LoadError::EquationSubjectNamesAPredicate {
+                name: head.name.to_owned(),
+                head_scope: kb.scope_display_name(head.scope).to_owned(),
+                predicate_scopes: scopes,
+                ambiguous,
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
+    }
     // Phase 3 — DECIDE every head, then mint. Deciding reads the table and minting
     // writes it, so they cannot interleave: `head_name_collisions` takes the KB immutably
     // and no mint has happened when any of its answers is taken. It sees a scope through
@@ -4261,11 +4519,21 @@ pub fn scan_definitions_with_sources(
             .map(|s| kb.scope_display_name(*s).to_owned())
             .collect();
         scope_names.sort();
+        // WI-20260821-D0EXD — does the prescription have to change? A body-less `rule`
+        // in the named owner collects a PREDICATE head; it does not collect an EQUATION
+        // SUBJECT written anywhere else, because such a subject landing on another
+        // scope's predicate is itself refused. Asked per SITE, not per group: where every
+        // subject in the group sits AT the owner, the ordinary text is still true.
+        let equation_elsewhere = c.sites.iter().any(|&i| {
+            heads[i].introduced_by == RuleIntroduction::Equation
+                && c.owner != Some(heads[i].scope)
+        });
         errors.push(
             LoadError::NameIntroducedAtTwoVisibleScopes {
                 name: c.name.to_owned(),
                 scopes: scope_names,
                 owner: c.owner.map(|o| kb.scope_display_name(o).to_owned()),
+                equation_elsewhere,
                 span: heads[first].span,
             }
             .located_in(files[heads[first].file_idx]),
@@ -4416,7 +4684,7 @@ pub fn scan_definitions_with_sources(
     // message tells the author to reach for. Measured: adding `import ext.{p}` did not
     // save a program the check had already refused.
     //
-    // IT ASKS THE LOADER'S OWN LADDER (`name_denotes_for_rule_head`), not the overlay
+    // IT ASKS THE LOADER'S OWN LADDER (`rule_head_ladder_answer`), not the overlay
     // walk — that is the point. The two asking different questions is exactly the class
     // of defect this catches, so the check must speak the consumer's language.
     for head in &heads {
@@ -5152,7 +5420,7 @@ fn scan_rule(
 /// declared operation, or an IMPORT of another scope's rule functor — the rule
 /// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
 /// Only a genuinely-new name gets a fresh Goal, and WHICH names those are is
-/// [`name_denotes_for_rule_head`]'s question — the ladder, read-only.
+/// [`rule_head_ladder_answer`]'s question — the ladder, read-only.
 ///
 /// WI-898 — WHICH KIND that fresh symbol gets is [`RuleIntroduction`]'s question,
 /// answered by the SAME head walk that picked the name. A predicate head keeps
@@ -5168,7 +5436,7 @@ fn scan_rule(
 /// scope that writes one name in both shapes would otherwise be classified by
 /// whichever of its two rules this pass reached first.
 fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>) {
-    // NO RE-CHECK HERE. It asked `name_denotes_for_rule_head` once more — a question the
+    // NO RE-CHECK HERE. It asked `rule_head_ladder_answer` once more — a question the
     // decision phase already froze — against the table THIS LOOP IS FILLING, which is the
     // very defect WI-980 removes, one layer down. Measured: three files, `rule zq(0)` with
     // no namespace beside `namespace zq1 { rule zq(1) }` and `namespace zq2 { rule zq(2) }`,
@@ -5286,7 +5554,7 @@ fn parse_connective_head<'a>(
 /// The mint damage this can still do is only ever to the ARGUMENT: every connective
 /// spelling is implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
 /// [`kernel_vocab_qualified`]), so a head can never introduce one of them whatever
-/// this answers — [`name_denotes_for_rule_head`] refuses it (WI-530), measured
+/// this answers — [`rule_head_ladder_answer`] refuses it (WI-530), measured
 /// identical with the `is_minted` guard and without it.
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
@@ -5627,7 +5895,7 @@ fn non_defining_connective_head(
 /// and introduces NOTHING, because that head is minted, so the `is_minted(subject)`
 /// guard below returns first. WI-530's outcome, reached without WI-530's special case.
 /// (This doc used to say the CALLER's mint guard refuses it via
-/// [`name_denotes_for_rule_head`]; that rung is never consulted for this shape, and a
+/// [`rule_head_ladder_answer`]; that rung is never consulted for this shape, and a
 /// reader backing out either guard would have predicted the wrong control. Corrected
 /// under WI-948, which measured the path.)
 ///
@@ -5642,7 +5910,7 @@ fn non_defining_connective_head(
 /// cell, wrong for the other three.
 ///
 /// WHAT THIS FUNCTION DOES NOT DECIDE (WI-900): whether that name is FREE. Every "does
-/// it already mean something here?" rung belongs to [`name_denotes_for_rule_head`], so
+/// it already mean something here?" rung belongs to [`rule_head_ladder_answer`], so
 /// the guard and `remap_name_str_inner` cannot answer differently. What stays HERE is
 /// only what the SOURCE SHAPE decides.
 ///
@@ -14997,6 +15265,153 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         })
 }
 
+/// WI-20260821-D0EXD — the equation subject's half of the head ladder: what this
+/// subject lands on, when that is a rule-introduced RELATION declared in ANOTHER scope.
+/// The scopes declaring it, in resolution order — EMPTY when the subject landed on
+/// something an equation may legitimately define, or on nothing. More than one only where
+/// the name resolved AMBIGUOUSLY, which is why the message carries that fact separately
+/// rather than reading it off this length.
+///
+/// THE THREE THINGS AN EQUATION SUBJECT MAY NAME, and the census that says so (see
+/// [`LoadError::EquationSubjectNamesAPredicate`]): an `operation` — the declaration of
+/// what equations define, 516,224 sites; another equation's SUBJECT — several laws about
+/// one name, 12 sites; or nothing, in which case it mints its own. A `Goal` is none of
+/// them, and one in the subject's OWN scope is not refused because one author wrote both
+/// there and the name simply carries both roles — driven on
+/// `sort Rec { rule f(?x)  rule f(false) <=> 2 [simp] }`, whose citation answers Int(2).
+///
+/// THE KIND IS ASKED AS A SET, never as `kind_of`. A name that plays BOTH `Goal` and
+/// `Operation` — a rule head merged onto an operation's own symbol, which 061 §"a
+/// body-less rule that can declare nothing" measured and permits — is a legitimate
+/// target through its operation half, and reading only the primary kind would refuse it
+/// or admit it according to which keyword the declaration happened to open with.
+///
+/// `Ambiguous` is refused only when EVERY candidate is such a predicate: one candidate
+/// an equation may define is a reading under which the program is meant, and the
+/// ambiguity itself is reported at the reference.
+fn equation_subject_lands_on_predicate(
+    kb: &KnowledgeBase,
+    head: &RuleHeadSite<'_>,
+    resolved: &ResolveResult,
+    global: ScopeId,
+) -> Vec<ScopeId> {
+    // `<global>` IS NOT A PARTY AS A TARGET, and only as a target. The exclusion
+    // [`head_name_reach`] takes for the visibility refusal rests on nobody OPTING INTO
+    // `<global>`: it is the scope every file shares, so a namespace's head must not be
+    // answerable for what a namespace-less file happens to spell. That argument is
+    // DIRECTIONAL and the first cut of this guard took it both ways, which left the very
+    // defect it closes live in the half where the opting-in did happen — driven by
+    // `/code-review`: a namespace-less file writing `import pgz.*` and
+    // `rule f(true) <=> 7 [simp]` loaded clean with `<global>.f` ABSENT, the equation
+    // defining `pgz`'s predicate, and a THIRD namespace that never saw that file reading
+    // `Int(7)` out of it. A `<global>` head reaches a namespace's name only through an
+    // import it wrote, so it opted in exactly as any namespace does.
+    //
+    // WHAT THE TARGET-SIDE EXCLUSION COSTS is the silence that scope has always taken
+    // (§8.6): a `<global>` predicate does absorb a namespace's equation subject, and
+    // nothing says so. Measured, and recorded in the spec rather than discovered.
+    // INLINE FOR THE SINGLE-SYMBOL CASE, which is all but a handful of the 516,224
+    // equation subjects a full load resolves: a `Vec` here allocated once per subject on
+    // the very path phase 2 keeps its answer to protect (found by `/code-review`).
+    let syms: SmallVec<[Symbol; 1]> = match resolved {
+        ResolveResult::Found(s) => smallvec::smallvec![*s],
+        ResolveResult::Ambiguous(v) => v.iter().copied().collect(),
+        ResolveResult::NotFound => return Vec::new(),
+    };
+    let mut owners: Vec<ScopeId> = Vec::new();
+    for sym in syms {
+        // `Goal` ALONE ANSWERS IT, and the two exemptions this test used to carry —
+        // `Operation` and `EquationFunctor` — were REMOVED rather than kept unmeasured:
+        // backing each out failed ZERO rows across the whole suite, because neither
+        // combination is reachable in a program that loads. An operation's symbol never
+        // gains `Goal`: the body-less rule that would merge them is refused in both
+        // orders (061, `a_declaration_of_a_name_another_construct_owns_is_refused`), and
+        // a BODIED head on an operation's name is a clause of it and adds no kind
+        // (measured: `operation f(b: Bool) -> Int64` beside `rule f(true) :- true` leaves
+        // `f` a bare `Operation` carrying one clause). A subject landing on a bare
+        // `EquationFunctor` — the 12 `Bool.ite` / `Float.nonEqRefl` sites — has no `Goal`
+        // to trip this test at all. Asked as a SET nonetheless, never `kind_of`: the
+        // question is "does this name play the predicate role", which is order-free,
+        // where the primary kind reports whichever keyword the declaration opened with.
+        if !subject_may_not_name(kb, sym) {
+            return Vec::new();
+        }
+        match kb.symbols.declaring_scope(sym) {
+            Some(s) if s != head.scope && s != global => {
+                if !owners.contains(&s) {
+                    owners.push(s);
+                }
+            }
+            _ => return Vec::new(),
+        }
+    }
+    owners
+}
+
+/// Is `sym` a name an equation may NOT define — a RULE-INTRODUCED RELATION playing no
+/// role that equations do define?
+///
+/// STATED AS THE QUESTION, not as a list of exemptions, because the list is what went
+/// wrong once already. `Operation` is the role that matters and it is DRIVEN
+/// ([`wi_d0exd_equation_subject_owner_test::a_name_that_is_also_an_operation_is_not_this_-
+/// refusal`]): a scope holding BOTH `rule f(2)` and `operation f() -> Int64` carries one
+/// symbol with both kinds, and without this test the refusal fired there and told the
+/// author to declare the `operation` that was already on the next line — on a program
+/// 061 refuses anyway, so it printed one fault as two and one of them was false. An
+/// earlier cut deleted the exemption because backing it out failed zero rows; the shape
+/// existed and no row reached it (found by `/code-review`).
+///
+/// `EquationFunctor` is DRIVEN too, and in both directions: a BARE subject is a join
+/// target and is exempt (the 12 `Bool.ite` / `Float.nonEqRefl` sites), while a name
+/// carrying it BESIDE `Goal` is still a relation and is refused
+/// ([`wi_d0exd_equation_subject_owner_test::a_relation_that_also_carries_equations_is_-
+/// still_a_relation`]). The distinction is not decorative: exempting the pair let a
+/// later batch's equation be absorbed in silence.
+///
+/// ASKED AS A SET, never `kind_of`: the question is which roles the name plays, which is
+/// order-free, where the primary kind reports whichever keyword the declaration opened
+/// with.
+fn subject_may_not_name(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    let def = kb.symbols.get(sym);
+    // AN `operation` IS WHAT EQUATIONS DEFINE, and that is a role the name PLAYS however
+    // many others it plays beside — so it is the one unconditional exemption.
+    if def.has_kind(SymbolKind::Operation) {
+        return false;
+    }
+    // `EquationFunctor` IS FILTERED HERE, NOT EXEMPTED ABOVE, and the difference is a
+    // measured defect. An earlier cut exempted any symbol CARRYING it, on the claim that
+    // `Goal` + `EquationFunctor` could not be constructed. It can: the visibility refusal
+    // needs TWO scopes, so two heads minting one name at ONE scope is ordinary
+    // auto-declaration — driven, `namespace pza9 { rule f(1) :- true  rule f(true) <=> 7
+    // [simp] }` loads clean carrying both roles, and a later BATCH's equation about it
+    // was then absorbed in silence while the `Goal`-only control was refused. Found by
+    // `/code-review`. A name that is a relation is a relation however many equations
+    // already live on it; only a BARE subject is a join target, and the filter says
+    // exactly that.
+    //
+    // KEYED ON [`DECLARABLE_BY_A_RULE`], not on a list written out here. That constant is
+    // the loader's own answer to "what can a rule's mint produce", and asking it directly
+    // is what stops this guard drifting behind it — which it already had: the first cut
+    // named `Goal` alone and missed `Rule`, a labelled rule's own name, which reproduces
+    // this defect verbatim (driven by `/code-review`:
+    // `lc1 { rule f: p(?x) :- q(?x) … }` beside `lc2 { import lc1.*  rule f(true) <=> 7
+    // [simp] }` loaded clean with `lc2.f` ABSENT and `lc2.g()` = `Int(7)`). A rule's
+    // operation name is its LABEL else its head functor ([052] §"Naming the relation"),
+    // so both spellings name a relation and neither is a thing equations define.
+    DECLARABLE_BY_A_RULE
+        .iter()
+        .any(|k| *k != SymbolKind::EquationFunctor && def.has_kind(*k))
+}
+
+/// `'a'`, or `'a', 'b'` — the declaring scopes as the message names them.
+fn quoted_scope_list(scopes: &[String]) -> String {
+    scopes
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// WI-900: does `name` ALREADY DENOTE something at `scope` — the question the MINT
 /// GUARD ([`scan_rule_goal`]) asks before letting a rule head introduce a name? A head
 /// that names something introduces nothing; it is a CLAUSE ABOUT that thing.
@@ -15017,8 +15432,14 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
 /// ambiguous candidates, so the conflict the author has to see would be silently decided
 /// in their favour. Pinned by
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
-fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> bool {
-    resolve_name_in_kb(kb, name, scope).denotes()
+///
+/// RETURNS THE ANSWER, NOT THE VERDICT — renamed from `name_denotes_for_rule_head` by
+/// WI-20260821-D0EXD, which needs the SYMBOL a subject landed on and not merely whether
+/// it landed. `.denotes()` is what phase 2 reads for the mint and the collision check, so
+/// nothing else gained a question; keeping the answer is what stops the ladder being
+/// walked twice for every equation subject on every load.
+fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
+    resolve_name_in_kb(kb, name, scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -23729,7 +24150,7 @@ impl<'a> Loader<'a> {
                 // separates them from a working declaration.
                 //
                 // THE LADDER IS THE WRONG INSTRUMENT, and it was the first thing tried:
-                // `name_denotes_for_rule_head` answers YES for any name the scope can
+                // `rule_head_ladder_answer` answers YES for any name the scope can
                 // SEE, so `provides Widget language anthill { rule eq(?x) }` passed it
                 // (the prelude's `eq` denotes) and the declaration still introduced
                 // nothing — the very drop the check exists for, one name away from the

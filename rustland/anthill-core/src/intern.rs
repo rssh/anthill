@@ -417,8 +417,10 @@ impl ResolveResult {
     /// lower rung (kernel-language.md §8.6, WI-907).
     ///
     /// Asked directly by the positions that need the verdict and not the symbol — the
-    /// rule-head mint guard (`load::name_denotes_for_rule_head`) and the dot-call
-    /// re-route gate (`Loader::qualified_name_resolves`).
+    /// rule-head mint guard, which reads it off `load::rule_head_ladder_answer`'s answer
+    /// rather than re-asking (WI-20260821-D0EXD keeps that answer, because the refusal
+    /// beside it needs the SYMBOL), and the dot-call re-route gate
+    /// (`Loader::qualified_name_resolves`).
     pub fn denotes(&self) -> bool {
         !matches!(self, ResolveResult::NotFound)
     }

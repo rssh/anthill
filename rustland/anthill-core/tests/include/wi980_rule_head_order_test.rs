@@ -159,6 +159,15 @@ fn clauses(kb: &KnowledgeBase, qn: &str) -> Option<usize> {
     Some(kb.rules_by_functor(sym).len())
 }
 
+/// The `Int` a driven citation answered with. `eval::Value` carries no `PartialEq`, so
+/// every row that drives an operation has to name the variant it expects.
+fn int_value(v: anthill_core::eval::Value) -> i64 {
+    match v {
+        anthill_core::eval::Value::Int(i) => i,
+        other => panic!("expected an Int, got {other:?}"),
+    }
+}
+
 /// The REFUSED arm: `src` must fail with the collision naming exactly `scopes`.
 fn assert_collides(sources: &[&str], name: &str, scopes: &[&str]) {
     let want = format!(
@@ -604,16 +613,49 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
         crate::common::try_load_kb_with(SPLIT),
         &["the rule head `f` introduces that name at 2 scopes, each of which reaches or is reached by another of them — zeq, zeq.Rec"],
     );
-    // AND BOTH PRESCRIBED REMEDIES LOAD for an equation subject, which is what makes the
-    // message good advice here and not just a refusal: one declaration at the outer
-    // scope, or one in each.
-    crate::common::load_kb_with(
-        "namespace zeq2\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-         entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+    // AND THE PRESCRIPTION IS THE ONE THAT WORKS, which is a different sentence than it
+    // was: WI-20260821-D0EXD measured that the body-less `rule` owner this message used
+    // to name DOES NOT COLLECT an equation subject written in another scope — taking the
+    // advice traded this error for `EquationSubjectNamesAPredicate`, and before that
+    // refusal existed it produced a program where the sort's operation had silently moved
+    // to the namespace. So the owner half now names an `operation`, which is what
+    // equations define.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(SPLIT),
+        &["an `operation f(…) -> R` in 'zeq' makes every one of those heads its own"],
     );
-    crate::common::load_kb_with(
-        "namespace zeq3\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-         entity r(n: Int64)\n    rule f(?x)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+    // BOTH PRESCRIBED REMEDIES DRIVEN, not merely loaded — an arm that only asserts a
+    // load is what let the broken owner stand here for a day. `zeq5` is the owner half,
+    // `zeq6` the per-scope half; each must ANSWER through the citation the split arm
+    // could not reach.
+    let mut owned = crate::common::interp_for(
+        "namespace zeq5\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 [simp]\n  \
+         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n\
+         namespace zeq5c\n  import zeq5.{f}\n  operation g() -> Int64 = f(false)\nend\n",
+    );
+    assert_eq!(
+        int_value(owned.call("zeq5c.g", &[]).expect("the operation owner answers")),
+        2,
+        "the `operation` owner collects the SORT's equation"
+    );
+    let mut split = crate::common::interp_for(
+        "namespace zeq6\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule f(?y)\n    rule f(false) <=> 2 [simp]\n  end\nend\n\
+         namespace zeq6c\n  import zeq6.{Rec}\n  operation g() -> Int64 = Rec.f(false)\nend\n",
+    );
+    assert_eq!(
+        int_value(split.call("zeq6c.g", &[]).expect("the per-scope declaration answers")),
+        2,
+        "a declaration in EACH scope keeps the sort's equation AT the sort"
+    );
+    // AND THE OWNER THE MESSAGE NO LONGER NAMES IS REFUSED — the row that pins why the
+    // sentence changed. Without it the two arms above would pass with the old text.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(
+            "namespace zeq2\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
+             entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+        ),
+        &["the equation subject `f` names the RELATION `f` declared in 'zeq2'"],
     );
     // THE CONTROL — distinct subjects, nothing to collide. Passes either way, and without
     // it "equations are refused" would be indistinguishable from "equations are refused
@@ -958,7 +1000,7 @@ fn a_rule_in_a_secondary_entry_is_still_refused() {
 fn a_head_binds_through_its_own_files_import() {
     // 061: two files, one predicate — DECLARED. The asking file still decides, one
     // phase earlier: whether `b`'s head sees the declaration at all is
-    // `name_denotes_for_rule_head` asked on `b`'s behalf, through `b`'s OWN import.
+    // `rule_head_ladder_answer` asked on `b`'s behalf, through `b`'s OWN import.
     const LIB: &str = "namespace wi980_lib\n  rule q(?x)\n  rule q(1) :- true\nend\n";
     const IMPORTER: &str = "namespace wi980.viaimport.b\n  import wi980_lib.*\n  rule q(2) :- true\nend\n";
     // A third file, scanned LAST, so a stale asking-file is a DIFFERENT file's and the
