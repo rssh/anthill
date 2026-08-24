@@ -32,6 +32,9 @@ mod wi710_rule_body_type_arg_test;
 #[path = "include/wi708_body_type_arg_read_test.rs"]
 mod wi708_body_type_arg_read_test;
 
+#[path = "include/wi_wahb6_type_value_classification_test.rs"]
+mod wi_wahb6_type_value_classification_test;
+
 #[path = "include/wi716_optional_fact_none_fill_test.rs"]
 mod wi716_optional_fact_none_fill_test;
 

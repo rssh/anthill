@@ -281,6 +281,13 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             pos_args,
             named_args,
             ..
+        }
+        // Proposal 055: a type value's type ARGUMENTS are ordinary child
+        // occurrences, so they drain like any other argument list.
+        | Expr::TypeValue {
+            pos_args,
+            named_args,
+            ..
         } => {
             for c in std::mem::take(pos_args) {
                 stack.push(c);
@@ -1192,6 +1199,45 @@ pub enum Expr {
         /// (a `Value::Node` type carries no vars, so it passes through).
         type_args: Vec<(Option<Symbol>, Value)>,
     },
+    /// Proposal 055 §2 / `docs/design/055-implementation.md` §1 — a NOMINAL TYPE
+    /// EXPRESSION standing in a VALUE position: a bare sort / standalone-entity
+    /// reference (`Cell`, `WorkItem`) or a sort-headed BRACKET application
+    /// (`Cell[V = Int64]`). It denotes a value of the reflect `Type` sort.
+    ///
+    /// MINTED BY THE LOADER, ONCE, FROM THE RESOLVED HEAD, and never re-derived.
+    /// §1 separates two questions — DENOTATION ("does this denote a `Type` here?")
+    /// and VALIDATION ("does the enclosing expression accept one?") — and this
+    /// variant IS the recorded answer to the first. No consumer may ask it again
+    /// from the expected sort, from `kind_of(head)`, or from the term carrier.
+    ///
+    /// A VARIANT RATHER THAN A FLAG ON [`Expr::Apply`] / [`Expr::VarRef`],
+    /// deliberately. Those two shapes are what a type value used to arrive as, and
+    /// every reader that had to recognise one asked the symbol table itself
+    /// (`kind_of(..) == Sort`) at four separate sites: the typer's bare-reference
+    /// and sort-application arms, and eval's twins of both. Four readers agreeing
+    /// about a shape is not one decision, it is four that can drift; a distinct
+    /// variant makes `Apply { functor: <a sort> }` an ILLEGAL STATE instead.
+    ///
+    /// `pos_args` / `named_args` are the type arguments AS WRITTEN and are EMPTY for
+    /// the bare form. The two faces are deliberately not normalized into one: a bare
+    /// `Cell` backs onto `Ref(Cell)` and an applied `Cell[V = ?]` onto `Fn{Cell, …}`,
+    /// which do NOT unify (proposal 055 §7 — the WI-206 lesson), so their difference
+    /// is carried by the argument list rather than erased here and re-invented later.
+    ///
+    /// NOT carried through `materialize_from_handle` (term → occurrence): the term
+    /// encoding is unchanged by this variant, so a round-trip returns the old
+    /// `apply(…)` / `var_ref(…)` shape. That is structural rather than a gap, and it
+    /// is the same argument [`Expr::Constructor::from_projection`] makes at its own
+    /// site: operation bodies are STORED as occurrences (`op_body_node`), so a typed
+    /// body never round-trips through a `Term` and back.
+    TypeValue {
+        /// The resolved sort / standalone-entity symbol the head named.
+        head: Symbol,
+        /// Type arguments written positionally — `Cell[Int64]`.
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        /// Type arguments written by parameter name — `Cell[V = Int64]`.
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    },
     /// Higher-order application — `predicate(args...)` where predicate is
     /// an expression rather than a known operation symbol.
     HoApply {
@@ -1724,6 +1770,14 @@ pub fn child_labels(kb: &KnowledgeBase, expr: &Expr, child_count: usize) -> Vec<
             pos_args,
             named_args,
             ..
+        }
+        // Proposal 055: a type value HAS a named channel (`Cell[V = Int64]`), so it
+        // needs its own arm rather than the `_` tail — the tail labels every child
+        // positionally, which would hand a type PARAMETER's name away as `_2`.
+        | Expr::TypeValue {
+            pos_args,
+            named_args,
+            ..
         } => (pos_args.len(), named_args),
         Expr::ApplyWithin {
             args, named_args, ..
@@ -1777,6 +1831,15 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
             ..
         }
         | Expr::Instantiation {
+            pos_args,
+            named_args,
+            ..
+        }
+        // Proposal 055: the type arguments of `Cell[V = Int64]` in value position.
+        // Yielded here — and labelled by [`child_labels`]'s matching arm — because
+        // they ARE occurrences a walker must reach; what they are NOT is a value
+        // expression, which is the enclosing node's business, not this walk's.
+        | Expr::TypeValue {
             pos_args,
             named_args,
             ..
@@ -3391,6 +3454,38 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             type_args,
         }) => {
             return occ_build_apply(kb, *functor, pos_args, named_args, type_args);
+        }
+        // Proposal 055 — a classified nominal type value's term twin. The APPLIED face
+        // is the `apply(fn: Ref(S), args: […])` its `Expr::Apply` built (no `type_args`
+        // channel — a type application's bracket IS its argument list). The BARE face is
+        // `Ref(S)`, which is the WI-592 rule one arm down applied to the case that arm
+        // could not name: a `var_ref` whose name is a CONSTRUCTOR lowers to a bare `Ref`
+        // because a constructor is a closed datum the resolver must be able to DECIDE
+        // rather than flounder on, and a SORT is a closed datum by the identical
+        // argument. The classification is what makes that safe to say here — the arm
+        // below has to ask `is_constructor_symbol`; this one is already told.
+        //
+        // IT IS ALSO THE ONLY SHAPE THAT AGREES WITH THE OTHER TWO PRODUCERS of this
+        // node's term. Eval's `Expr::TypeValue` arm delivers `Term::Ref(head)` and
+        // `resolve::anf_flatten`'s bare arm emits `Expr::Ref(head)`; an unconditional
+        // `make_var_ref_term` here would disagree with both. MEASURED (found by
+        // /code-review): a bare name reaches the classification down TWO routes — as an
+        // `Expr::Ident`/`VarRef` (whose old twin was `var_ref(name: Ref(S))`) and, for a
+        // bracket ARGUMENT, as an `Expr::Ref` (whose old twin was `Ref(S)`) — so no
+        // single unconditional answer preserves both, and `Cell[V = Int64]` was lowering
+        // to `Cell(V: var_ref(name: Ref(Int64)))` where it used to lower to
+        // `Cell(V: Ref(Int64))`. `Ref` is the face proposal 055 §7 names, the face eval
+        // produces, and the one that does not make a decidable argument flounder.
+        Some(Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        }) => {
+            if pos_args.is_empty() && named_args.is_empty() {
+                kb.alloc(Term::Ref(*head))
+            } else {
+                return occ_build_fn(kb, *head, pos_args, named_args);
+            }
         }
         Some(Expr::Constructor {
             name,
@@ -5388,6 +5483,16 @@ pub(crate) enum BuildFrame {
         /// (which can read the parse store's provenance) ever sets this true.
         from_projection: bool,
     },
+    /// Proposal 055 — an APPLIED nominal type value (`Cell[V = Int64]`) in value
+    /// position. Only the loader builds it, because only the loader can read the
+    /// parse store's bracket-surface provenance; the bare form needs no frame (it
+    /// has no children) and is built directly at its leaf site.
+    TypeValue {
+        span: SourceSpan,
+        head: Symbol,
+        pos_count: usize,
+        named_keys: Vec<Symbol>,
+    },
     /// `dot_apply(receiver, name, args)` — the receiver is the single child
     /// visited after the args, so it pops last (see `build_frame`).
     DotApply {
@@ -6103,6 +6208,20 @@ pub(crate) fn build_frame(
                 pos_args,
                 named_args,
                 type_args,
+            };
+            results.push(NodeOccurrence::new_expr(expr, span, None));
+        }
+        BuildFrame::TypeValue {
+            span,
+            head,
+            pos_count,
+            named_keys,
+        } => {
+            let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
+            let expr = Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
             };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }

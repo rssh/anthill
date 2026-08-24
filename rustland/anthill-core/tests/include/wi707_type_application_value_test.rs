@@ -194,8 +194,15 @@ end
     });
 }
 
-/// The reading stays confined to slots that ASK for a `Type`: a sort application in
-/// an ordinary value slot is still a loud error, not a silently-built type value.
+/// A sort application in an ordinary value slot does not load. THE INVARIANT IS
+/// UNCHANGED; what the rejection is MADE OF changed under proposal 055 §2
+/// (WI-20260824-WAHB6) — see the peer row in `wi206_is_modifiable_test`.
+///
+/// The old wording is worth recording, because it is what the proposal cites as the
+/// symptom: outside a `Type` slot no argument got the `Type` hint, so the INNER
+/// argument `Int64` failed first as an unresolved name and the application itself was
+/// never judged. The arguments are now classified rather than hinted, so the error
+/// lands where the mistake is — at the destination.
 #[test]
 fn a_sort_application_in_a_non_type_slot_is_still_an_error() {
     let src = r#"
@@ -209,13 +216,13 @@ end
         Err(errs) => errs,
         Ok(_) => panic!("a type application in an Int64 slot must not load"),
     };
-    // The diagnostic names the inner type ARGUMENT (`Int64`), not the applied sort:
-    // outside a `Type` slot the arguments get no `Type` hint, so each is typed as an
-    // ordinary value expression and the first one fails before the application itself
-    // is judged. Loud either way, which is the invariant under test — the wording is
-    // the loader's existing bare-name diagnostic, not something this WI shapes.
+    // BACK-OUT: without the classification this still fails, as an unresolved name on
+    // the inner `Int64`, so `contains("got Type")` is the half that inverts and
+    // `Err(..)` is the half that holds either way.
     assert!(
-        errs.iter().any(|e| e.contains("unresolved")),
-        "expected a loud unresolved-name diagnostic, got {errs:?}"
+        errs.iter()
+            .any(|e| e.contains("expected Int64") && e.contains("got Type")),
+        "expected the ordinary destination mismatch proposal 055 §2 specifies \
+         (`expected Int64, got Type`), got {errs:?}"
     );
 }

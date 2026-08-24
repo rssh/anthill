@@ -19105,7 +19105,44 @@ impl<'a> Loader<'a> {
     fn push_leaf_occ(&mut self, parse_id: TermId, kb_id: TermId) {
         if self.occ_suppress == 0 {
             let span = self.source_span_of(parse_id);
-            let occ = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
+            let leaf = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
+            // Proposal 055 §2 — the BARE half of the classification, made by the same
+            // rule as the applied half in `build_load`: by the RESOLVED HEAD, never by
+            // what the enclosing position expects.
+            //
+            // HERE, AND NOT IN THE `Term::Ident` ARM, because a bare name reaches the
+            // occurrence stream by more than one route and only this builder is on all of
+            // them. MEASURED: classifying at `Term::Ident` alone left the ARGUMENTS of a
+            // type application unclassified — a bracket argument is a parse-side
+            // `Term::Ref` (the converter lowered it as a type), not an `Ident`, so
+            // `is_modifiable(Cell[V = Int64])` reported `Int64` as an unresolved name the
+            // moment the enclosing hint stopped rescuing it. Five rows of
+            // `wi707_type_application_value_test` said so.
+            //
+            // The TERM this leaf was built FROM is untouched — it is the OCCURRENCE that
+            // now says which of the things a bare name can be this one is. What the
+            // occurrence lowers BACK to is a separate question, and the answer moved:
+            // `try_occurrence_to_term` gives a bare type value `Ref(S)` on both routes,
+            // rather than the route-dependent `var_ref(name: Ref(S))` / `Ref(S)` the two
+            // leaf shapes used to give. See that arm for why.
+            let head = match leaf.as_expr() {
+                Some(Expr::Ref(s)) | Some(Expr::Ident(s)) | Some(Expr::VarRef { name: s }) => {
+                    Some(*s)
+                }
+                _ => None,
+            };
+            let occ = match head.filter(|s| self.bare_name_denotes_type(*s)) {
+                Some(head) => node_occurrence::NodeOccurrence::new_expr(
+                    Expr::TypeValue {
+                        head,
+                        pos_args: Vec::new(),
+                        named_args: Vec::new(),
+                    },
+                    span,
+                    None,
+                ),
+                None => leaf,
+            };
             self.expr_occ_results.push(occ);
         }
     }
@@ -19497,6 +19534,25 @@ impl<'a> Loader<'a> {
                 let is_entity = !self.parsed.terms.is_type_application(outer_parse_id)
                     && (self.kb.symbols.get(kb_functor).has_kind(SymbolKind::Entity)
                         || self.kb.is_entity_constructor(kb_functor));
+                // Proposal 055 §2 / design §1 — CLASSIFY ONCE, HERE. WI-927 already
+                // asked this exact question one line up, to keep a bracketed
+                // application from being read as a construction, and then discarded the
+                // answer: the occurrence it built was an `Expr::Apply` whose functor
+                // happened to name a sort, which is the same shape a paren call
+                // produces. Four readers downstream re-derived the distinction from
+                // `kind_of` (the typer's apply arm and bare-ref arm, and eval's twins of
+                // both). Recording it is what lets those readers stop asking.
+                //
+                // A NON-SORT BRACKETED HEAD IS DELIBERATELY NOT CLASSIFIED: an
+                // `Entity`-headed or unresolved bracketed application keeps the
+                // `Expr::Apply` reading it has today and fails where it fails today.
+                // Widening that is not this increment's business.
+                //
+                // `kind_of`, not `has_kind` — see [`Self::bare_name_denotes_type`], which
+                // asks the same question about the bare face and carries the reason.
+                let is_type_value = !is_entity
+                    && self.parsed.terms.is_type_application(outer_parse_id)
+                    && self.kb.kind_of(kb_functor) == Some(SymbolKind::Sort);
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -19524,7 +19580,7 @@ impl<'a> Loader<'a> {
                 // the Vec on that arm is exactly the silent drop this ticket closes
                 // (measured: it loaded clean). Left unread, the bracket stays
                 // unconsumed and the end-of-file sweep reports it.
-                let type_args = if is_entity {
+                let type_args = if is_entity || is_type_value {
                     Vec::new()
                 } else {
                     self.build_call_type_args(outer_parse_id)
@@ -19565,7 +19621,21 @@ impl<'a> Loader<'a> {
                     // the occurrence's named args line up with the term.
                     let occ_named_keys: Vec<Symbol> =
                         named_keys.iter().map(|s| self.reintern(*s)).collect();
-                    let frame = if is_entity {
+                    let frame = if is_type_value {
+                        // Proposal 055 — the type ARGUMENTS ride as this node's children,
+                        // exactly as the `Apply` reading carried them; what changes is
+                        // that the node now says what it is. The call-type-args channel
+                        // is left UNREAD above (WI-839's rule): a type application's
+                        // bracket IS this node, so a second bracket on it would be a
+                        // surface nothing produces — left unconsumed, the end-of-file
+                        // sweep reports it rather than this arm dropping it silently.
+                        node_occurrence::BuildFrame::TypeValue {
+                            span,
+                            head: kb_functor,
+                            pos_count,
+                            named_keys: occ_named_keys,
+                        }
+                    } else if is_entity {
                         node_occurrence::BuildFrame::Constructor {
                             span,
                             name: kb_functor,
@@ -20340,6 +20410,47 @@ impl<'a> Loader<'a> {
             let name_ref = self.convert_term(parse_id);
             self.mk_var_ref_from_term(name_ref)
         }
+    }
+
+    /// Proposal 055 §2 — does a BARE reference to `sym` denote a `Type` value?
+    ///
+    /// SORTS ONLY, and the two exclusions are measured rather than cautious:
+    ///
+    /// * an EPONYMOUS sort (`sort E { entity E(…) }`) is ONE symbol carrying the
+    ///   `Sort` kind (WI-926), and a bare reference to it means CONSTRUCTION today —
+    ///   `check_bare_ref` reaches its `is_constructor_symbol` arm before any type
+    ///   reading. Classifying it here would answer first and steal that reading, which
+    ///   is a behavior change this increment has no business making. `is_entity_constructor`
+    ///   is the same predicate the sibling `ApplyOrConstructor` gate asks, and it reads
+    ///   the declared field schema by NAMES — registered in `scan_definitions` pass 1,
+    ///   so it is answerable here.
+    /// * a standalone ENTITY does already denote its `Type` unconditionally (in
+    ///   `check_bare_ref` and its eval twin), so it belongs in this record too — but
+    ///   [`KnowledgeBase::is_free_standing_entity`] is `entity_field_types(..).is_some()
+    ///   && !is_constructor_symbol(..)`, and the constructor registry is populated
+    ///   DURING the load (eval's `reduce_var` says as much at its own nullary-constructor
+    ///   arm: "fully populated by eval time, unlike mid-load"). Asked here it can answer
+    ///   `true` for a sort-nested constructor whose registration has not happened yet,
+    ///   which would silently re-read `none` as a type value. Left on its existing arms
+    ///   until it can be asked at a point that can answer it.
+    /// THE PRIMARY KIND, not the set, and deliberately — this is the one predicate in
+    /// this neighbourhood that asks `kind_of` where its sibling `is_entity` asks
+    /// `has_kind`, so the reason belongs here rather than in a reader's head.
+    ///
+    /// Symbol categories ARE a set, and a name can carry `Sort` alongside another kind
+    /// (D0EXD's census counted two that are both a predicate and a sort). Widening to
+    /// `has_kind(Sort)` would classify every bare reference to such a name as a type
+    /// value — and this classification runs BEFORE the typer, so it would answer first
+    /// and take the reading `check_bare_ref`'s relation arm gives it today. A missed
+    /// classification leaves today's behavior in place; an extra one silently replaces
+    /// it, so narrow is the safe direction for an increment whose fence is "the decision
+    /// moves, the answers do not".
+    ///
+    /// MEASURED: the corpus does not separate the two — the whole suite passes either
+    /// way — so this is a policy, not a measurement, and it is the widening ticket
+    /// (WI-20260824-Q0093) that should revisit it with a row that DOES separate them.
+    fn bare_name_denotes_type(&self, sym: Symbol) -> bool {
+        self.kb.kind_of(sym) == Some(SymbolKind::Sort) && !self.kb.is_entity_constructor(sym)
     }
 
     /// WI-487: convert an op-body logical variable (`Expr::Var(Global)`). A

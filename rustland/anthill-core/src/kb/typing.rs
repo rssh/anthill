@@ -5834,6 +5834,18 @@ enum TypeBuildFrame {
     /// non-recursive subst / dispatch / classify logic. `expected`
     /// (WI-270) is unified with the op's return type before the
     /// unconstrained-param check so caller context flows into the seed.
+    /// Proposal 055 — the drain frame for [`Expr::TypeValue`]. Carries no
+    /// `expected`: a classified type value's DENOTATION is settled (the loader
+    /// settled it), so this frame's only job is to check the type arguments and
+    /// answer `Type`. Whether the enclosing position ACCEPTS a `Type` is the
+    /// caller's ordinary unification, exactly as for any other result sort.
+    TypeValue {
+        occ: Rc<NodeOccurrence>,
+        head: Symbol,
+        pos_args: Vec<Rc<NodeOccurrence>>,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        env: Env,
+    },
     Apply {
         occ: Rc<NodeOccurrence>,
         fn_sym: Symbol,
@@ -10497,6 +10509,37 @@ fn visit_type(
             results.push(r);
         }
 
+        // Proposal 055 §2 — a nominal type expression in value position, classified
+        // by the LOADER. The typer's job here is what §1 calls VALIDATION, and it
+        // starts at the arguments; the denotation is not re-decided.
+        //
+        // NOTHING PUSHES A `Type` HINT DOWN, and that absence is the point of the
+        // increment: the WI-707 arm hinted every argument of a sort application with
+        // `Type` so a bare sort name inside would read as one. It no longer needs to —
+        // a nested nominal type is itself minted as an `Expr::TypeValue` by the same
+        // loader rule that minted this node, so the reading is carried, not hinted.
+        Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        } => {
+            let head = *head;
+            let occ_clone = Rc::clone(&occ);
+            work.push(TypeWorkOp::Build(TypeBuildFrame::TypeValue {
+                occ: occ_clone,
+                head,
+                pos_args: pos_args.clone(),
+                named_args: named_args.clone(),
+                env: env.clone(),
+            }));
+            for (_, arg) in named_args.iter().rev() {
+                push_visit(work, Rc::clone(arg), env.clone(), None, fuel);
+            }
+            for arg in pos_args.iter().rev() {
+                push_visit(work, Rc::clone(arg), env.clone(), None, fuel);
+            }
+        }
+
         // ── Iterative Apply / Constructor ───────────────────────
         // Push child Visits for every arg in reverse so they pop in
         // forward order, then a Build frame that drains the
@@ -11332,6 +11375,51 @@ fn build_type(
                 // not re-grounded). `min_sort` widens it via `sort_functor_of_view`.
                 r.node.set_inferred_type(r.ty.clone());
             }
+        }
+        // Proposal 055 §2 — drain a classified nominal type value. Reproduces exactly
+        // what the WI-707 arm of `TypeBuildFrame::Apply` did for a sort-headed
+        // application, MINUS its `expects_reflect_type` firing condition: the node is
+        // already known to be a type value, so there is nothing left to decide here.
+        TypeBuildFrame::TypeValue {
+            occ,
+            head,
+            pos_args,
+            named_args,
+            env,
+        } => {
+            let total = pos_args.len() + named_args.len();
+            let drain_start = results.len() - total;
+            let arg_results: Vec<Result<TypeResult, TypeError>> =
+                results.split_off(drain_start);
+            // An ill-typed type argument is surfaced before the WI-709 fit check, the
+            // same order the `Apply` arm uses: `Cell[V = <ill-typed>]` should report the
+            // argument's own error, not "the arguments do not fit".
+            if let Err(e) = collect_arg_errors(arg_results.iter()) {
+                results.push(Err(e));
+                return;
+            }
+            // WI-709: the type ARGUMENTS must fit the head's declared params, by the same
+            // rule the loader applies to the type written in TYPE position — so
+            // `Cell[W = Int64]` (undeclared `W`) and `Cell[Int64, String]` (over-applied)
+            // are rejected here rather than building a type term carrying a parameter the
+            // sort never declared. Eval's `finish_sort_type` keeps its own guard as the
+            // backstop for occurrences that never reach the typer (a rule body).
+            let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+            let declared = kb.type_params_of_sort(head);
+            if let Err(problem) =
+                kb.check_sort_type_args(head, &declared, &named_keys, pos_args.len())
+            {
+                results.push(Err(TypeError::InvalidTypeArgument {
+                    span: Some(occ.span.span),
+                    sort: head,
+                    problem,
+                }));
+                return;
+            }
+            let child_refs: Vec<&Result<TypeResult, TypeError>> = arg_results.iter().collect();
+            let node = reassemble_children(&occ, &child_refs);
+            let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+            results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), node)));
         }
         // WI-793: the staged projection-receiver arguments have been typed. Complete the
         // param→argument-type map with their types, build the hints for EVERY argument now
