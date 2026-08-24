@@ -95,14 +95,14 @@ end
 /// the report is a typer diagnostic rather than the panic WI-849 originally specified:
 /// a panic here would be a panic on user input.
 ///
-/// WI-851 has since CLOSED the source path. `type_params` is not a declared field of
-/// the stdlib `OperationInfo` entity (`stdlib/anthill/reflect/reflect.anthill` declares
-/// name/params/return_type/effects/requires/ensures/meta — the loader appends
-/// `type_params` itself via `kb.alloc`, bypassing term conversion), and an undeclared
-/// label on a constructor is now refused at load. So this program is refused TWICE and
-/// the assertions pin BOTH: the WI-851 refusal that makes it unwritable, and the WI-849
-/// report that stays as defence in depth for a future producer which does not go
-/// through term conversion.
+/// WI-851 BRIEFLY CLOSED THE SOURCE PATH, and it was closing it for the wrong reason.
+/// `type_params` was not a declared field of the stdlib `OperationInfo` entity while the
+/// loader emitted it anyway, so an undeclared-label refusal fired here and this program
+/// was refused TWICE. That was not defence in depth — it was
+/// WI-20260823-GMG6N's schema drift, and the same gap made every `OperationInfo` fact
+/// unreachable from anthill. `type_params` is declared now, so the label refusal
+/// correctly does NOT fire and the WI-849 report is the whole diagnosis, which is what
+/// this report exists for: a value in the slot that is not a variable.
 ///
 /// `name: Driver` deliberately targets a symbol the loader emits NO `OperationInfo`
 /// fact for. Naming a real operation would put this fact SECOND for that name, and
@@ -143,10 +143,20 @@ end
         report.contains("(42)"),
         "the offending entry must render as source text, not internal ids: {report:?}",
     );
+    // WI-20260823-GMG6N: `type_params` IS a declared field now, so WI-851's
+    // unknown-label refusal correctly no longer fires and this report stands alone.
+    //
+    // That is the improvement, not a loss. The label was undeclared by MISTAKE — the
+    // loader emitted an eighth slot against a seven-field declaration, which made every
+    // `OperationInfo` fact unreachable from anthill and made a hand-written one refused
+    // for the wrong reason (a spelling complaint) instead of the right one (the entry is
+    // not a variable). The assertion this replaces pinned that accident.
     assert!(
-        errs.iter()
+        !errs
+            .iter()
             .any(|e| e.contains("'OperationInfo' has no field 'type_params'")),
-        "WI-851 must also refuse the undeclared label that made this writable; got: {errs:?}",
+        "`type_params` is declared, so the unknown-label refusal must NOT fire — the \
+         WI-849 report is the whole diagnosis; got: {errs:?}",
     );
 }
 
@@ -181,10 +191,17 @@ end
     );
 }
 
-/// The CONTROL for the above: a hand-written `OperationInfo` fact using ONLY declared
-/// fields still loads. Without this, the test above would pass on an implementation
-/// that rejected hand-written `OperationInfo` facts wholesale — a different behaviour
-/// that happens to produce an error too.
+/// The CONTROL for the above: a hand-written `OperationInfo` fact still loads. Without
+/// this, the test above would pass on an implementation that rejected hand-written
+/// `OperationInfo` facts wholesale — a different behaviour that happens to produce an
+/// error too.
+///
+/// It OMITS `type_params`, which since WI-20260823-GMG6N is a declared REQUIRED field —
+/// so the loader's named-arg completion fills it with a fresh variable rather than
+/// leaving it absent, and this control is also what pins
+/// `op_info::type_param_entries`' reading of a variable in that slot as "unspecified"
+/// rather than as a malformed entry. Back that reading out and this fails with
+/// `type parameter that is not a variable (?type_params)`.
 #[test]
 fn a_hand_written_operation_info_with_only_declared_fields_still_loads() {
     try_load_kb_with(

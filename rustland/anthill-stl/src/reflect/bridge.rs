@@ -754,6 +754,7 @@ impl KB for KbBridge {
                     .into_iter()
                     .map(ReflectNodeOccurrence::new)
                     .collect(),
+                type_params: rec.type_params.into_iter().map(term).collect(),
                 meta: term(rec.meta),
             })
             .collect()

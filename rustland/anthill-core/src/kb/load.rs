@@ -26616,7 +26616,16 @@ impl<'a> Loader<'a> {
         let description_arg = self.kb.intern("description");
         let carrier_arg = self.kb.intern("carrier");
         let nm_field = self.kb.intern("namespace_map");
+        let binding_arg = self.kb.intern("binding");
 
+        // EVERY declared field, `none()` included. A `provides … language rust` block
+        // has no surface for WI-089(a)'s `binding` overlay key, so `none()` is what it
+        // means — but omitting the slot is not the same thing: a head short of a
+        // declared slot is unreachable from anthill, because every goal is completed to
+        // the DECLARED slots (`convert_term_inner`'s named-arg expansion). It was
+        // omitted, so a `fact Implementation(…)` written in source (the webots example
+        // writes nine) and one emitted from a `provides` block had DIFFERENT shapes and
+        // no query could see both. `check_metadata_slots` now refuses the divergence.
         let impl_term = self.kb.alloc(Term::Fn {
             functor: impl_sym,
             pos_args: SmallVec::new(),
@@ -26628,6 +26637,7 @@ impl<'a> Loader<'a> {
                 (description_arg, none_term),
                 (carrier_arg, carrier_list),
                 (nm_field, nm_list),
+                (binding_arg, none_term),
             ]),
         });
         let impl_kind = ClauseKind::Fact;

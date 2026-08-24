@@ -1380,3 +1380,6 @@ mod wi9pgcm_type_level_precondition_test;
 
 #[path = "include/wi_akkwf_written_marker_call_test.rs"]
 mod wi_akkwf_written_marker_call_test;
+
+#[path = "include/wi_gmg6n_metadata_slot_drift_test.rs"]
+mod wi_gmg6n_metadata_slot_drift_test;

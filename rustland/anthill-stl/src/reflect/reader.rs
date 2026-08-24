@@ -272,6 +272,9 @@ pub(crate) struct OperationRecord {
     pub effects: Vec<Value>,
     pub requires: Vec<Value>,
     pub ensures: Vec<Value>,
+    /// The operation's own type parameters, as the logical variables the loader
+    /// minted. Ground `TermId`s (each a `Term::Var`), so they need no `Value`.
+    pub type_params: Vec<TermId>,
     pub meta: TermId,
 }
 
@@ -304,6 +307,9 @@ pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<O
         let effects = op_info::effects_of_head(kb, &head);
         let requires = op_info::clause_list_field(kb, &head, "requires");
         let ensures = op_info::clause_list_field(kb, &head, "ensures");
+        let type_params = op_info::head_field_term(kb, &head, "type_params")
+            .map(|t| collect_list_terms(kb, t))
+            .unwrap_or_default();
         // `meta` defaults to a bare `meta` ref when the fact omits it (the loader
         // always emits `meta(...)`, so the default is a parity-only fallback).
         let meta = op_info::head_field_term(kb, &head, "meta")
@@ -315,6 +321,7 @@ pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<O
             effects,
             requires,
             ensures,
+            type_params,
             meta,
         });
     }

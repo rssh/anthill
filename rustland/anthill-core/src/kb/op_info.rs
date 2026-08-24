@@ -718,6 +718,29 @@ fn type_param_entries(kb: &KnowledgeBase, head: &Value) -> Vec<Result<(Symbol, V
         ViewItem::Owned(v) => v,
         ViewItem::Node(occ) => Value::Node(occ),
     };
+    // AN OMITTED `type_params` IS A FRESH VARIABLE, not a malformed entry.
+    //
+    // `convert_term_inner`'s named-arg completion fills an absent REQUIRED field with a
+    // fresh var (only an `Option` field fills with `none()`), so a hand-written
+    // `fact OperationInfo(name: …, return_type: …, …)` that leaves `type_params` out
+    // arrives here as `?type_params`. A variable in the slot means UNSPECIFIED — zero
+    // type parameters — which is what the author wrote.
+    //
+    // Reachable only from source: every loader-emitted head carries a real list, `nil()`
+    // when the operation declares none. Before WI-20260823-GMG6N declared `type_params`,
+    // an omitted field was simply ABSENT and the `head_field` guard above returned early;
+    // declaring the field moved that case down here, where `list_items_strict` reads a
+    // `Term::Var` as "not a list" and reported it. A non-list that is NOT a variable
+    // (`type_params: 42`) still reports — see
+    // `wi849_type_param_var_test::a_type_params_field_that_is_not_a_list_is_reported`.
+    let unspecified = match &field {
+        Value::Var(_) => true,
+        Value::Term { id, .. } => matches!(kb.get_term(*id), Term::Var(_)),
+        _ => false,
+    };
+    if unspecified {
+        return Vec::new();
+    }
     let Some(items) = list_items_strict(kb, &field) else {
         return vec![Err(field)];
     };
