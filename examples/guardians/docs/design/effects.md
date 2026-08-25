@@ -161,7 +161,16 @@ a join while its neighbours carry set union is a special case; asking each
 **family** to declare its algebra is a structure, and the mode split falls out
 of it rather than being bolted on.
 
-## Families: a row per family, and one family for user labels
+## Families: a row per family — and the label that came out of it
+
+> **Reconciliation with proposal 064 (2026-08-25).** `Permission[X]` was found
+> here, while asking what a `User` family would have to hold, and is now filed as
+> [064](../../../../docs/proposals/064-permission-effect.md) — **without**
+> families. It is an ordinary row member there: set-inclusion subsumption, both
+> legs of the existing not-widen check, no family-indexed algebra. So this
+> section is the note's exploration and the record of where the label came from;
+> 064 is its specification, and the two must not be read as one proposal.
+> Families remain unfiled, and nothing in 064 waits on them.
 
 The six rejections above were all of the form "this is authority, not
 semantics, so it does not belong in the row". That verdict is right about the
@@ -194,14 +203,27 @@ vocabulary that the kernel threads without interpreting.
 ### What a family owns
 
 A family is worth having only if it owns things that currently force every rule
-to case-split on the label. Four qualify:
+to case-split on the label. Five qualify:
 
-| | State | Control | World | User |
-|---|---|---|---|---|
-| members | `Modify[r]` | `Error[E]`, `Suspension`, `Branch` | `External[mode]` | project labels |
-| algebra | set union over distinct resources | set union over distinct payloads | **join** over a rank | set union |
-| scope obligation | yes — 046's region elimination | none | none | none |
-| interpretation | `StateT` | `ExceptT` / `ContT` / `LogicT` | host binding | none |
+| | State | Control | World | Permission | User |
+|---|---|---|---|---|---|
+| members | `Modify[r]` | `Error[E]`, `Suspension`, `Branch` | `External[mode]` | `Permission[X]` | project labels |
+| algebra | set union over distinct resources | set union over distinct payloads | **join** over a rank | set union over distinct capabilities | set union |
+| scope obligation | yes — 046's region elimination | none | none | none | none |
+| **droppable when unused** | yes, for a fresh non-escaping region | n/a | `Read` yes; `Write`/`Commit` no | **no** | per label |
+| interpretation | `StateT` | `ExceptT` / `ContT` / `LogicT` | host binding | ambient grant, may refuse | none |
+
+`Permission`'s column is here because it is what forced the droppability row.
+064 claims no family; the row below is this note's finding about the TABLE, not
+a dependency of the proposal.
+
+**The droppability row is new, and `Permission` is why it has to be there.** The
+opening table of this note — replay, reorder, dedup, drop-when-unused — is
+written only for `External`'s three modes, and the family table records
+algebra, scope and interpretation but not droppability. Those two tables never
+meet, and they have to, because droppability is what decides whether a label
+can share another family's rules. `Permission[X]` is the case that forces it: see
+below.
 
 The evidence that this cut is real is proposal 046. That document exists
 because `effect_derive` has to be correct for both region-keyed and
@@ -224,6 +246,88 @@ External` prohibition is a Control × World incompatibility, and 047 §8's
 monad-transformer rank ordering is a total order on families. Both are
 currently statements about label pairs.
 
+### `Permission[X]`: the effect is the CHECK, at the point of acquisition
+
+> Stated in final form — with subsumption, contravariance and the
+> provider-cannot-self-grant rule — in **064**. What follows is why the label was
+> reached; the rules are not restated here, and where the two differ 064 wins.
+
+The six rejections above were each of the form *"this is authority, not
+semantics"*. That is the right verdict about a **static** capability label —
+`Model` as a standing attribute of an operation says nothing about what the
+runtime may do with a call. It is the wrong verdict about the **act of
+acquiring** one, and the difference is the whole of this family.
+
+Write the check where a capability object is minted, and let holding the object
+be the authority thereafter:
+
+```anthill
+sort FsRoot
+  internal entity fs_root
+  operation open() -> FsRoot
+    effects {Permission[FileSystem]}
+end
+```
+
+`write_file(root: FsRoot, …)` then carries `External[Write]` and no `Permission` at
+all. `Permission[X]` gates **acquisition**, once; everything downstream is
+ordinary. Two consequences make the family pay for itself.
+
+**It passes 054's own test, which the six rejections failed.** A check consults
+ambient state, so it is not constant-foldable; it can refuse, so its failure is
+the result; reordering it across the operation it guards changes meaning; and
+it is **not droppable when its value is unused**, because dropping it drops the
+refusal. That is a distinct licence profile from `External[Read]`, which *is*
+droppable, and from `Modify[r]` on a fresh region, which is memory and has
+nothing to refuse.
+
+**The minting site is few, so "one effect, not one per capability" survives.**
+The previous section kept 054 literally true for `External` by making the
+argument a *mode*. This keeps it true from the other end: the argument is a
+capability, but the label appears only where capabilities are introduced, and a
+program introduces far fewer than it uses.
+
+The constructor escape is closed structurally rather than checked. §8.6 makes
+`internal` the only hide gate, hiding a name from cross-scope resolution and
+from field projection alike — *"a top-level operation reading `b.v`, where `v`
+belongs to an `internal` constructor of another sort, is the same
+forbidden-internal access as naming that constructor directly"* — and top-level
+code is outside every declaring scope. So `fs_root()` from outside is a load
+error, and the `Permission`-carrying operation is the only introduction.
+
+That also shrinks the honesty problem stated below. A user label is only as
+good as its leaf declarations, and under flat labels that audit is *every
+leaf*. Here it is *every minting operation*, because a host-bound operation
+still has to name `FsRoot` in its signature to touch one.
+
+### `Permission` and `External` are orthogonal, and the test double proves it
+
+The tempting cheap answer is to make authority a fourth `External` mode. A
+fake carrier refutes it: it is `Permission[X]` with **no** `External` whatever —
+same authority path exercised, nothing leaving the process — which is exactly
+what a test wants. All four quadrants are populated:
+
+| | `External` | no `External` |
+|---|---|---|
+| `Permission[FileSystem]` | the real filesystem root | an in-memory root, still gated |
+| — | reading through a handle you were passed | pure |
+
+They ask different questions about one call: `Permission` asks *may I*, `External`
+asks *what licence does the runtime have here*. 054's "one effect, not one per
+capability" is an argument about the externality axis and never spoke to
+authority.
+
+**The example already gets this wrong, which is the evidence.**
+`guardians.FakeLlm.complete` declares `effects {External, Model, Error}` —
+identical to `LiveLlm` — while touching nothing outside the process. Under the
+split it narrows to `{Permission[Model], Error}`: a legal override narrowing, and
+honest. A test can then assert the fake is not external, which today it cannot.
+
+It also simplifies the sandbox story. The conditional-effect spelling above
+makes the *mode* conditional; with the axes separated, a sandbox refutes
+`External` and leaves `Permission` standing — you still need the grant, you just do
+not reach the world.
+
 ### Spelling: no surface change
 
 Effects are registered today as facts:
@@ -244,6 +348,9 @@ defaulting silently:
   fact Effect[T = Error[?],    Family = Control]
   fact Effect[T = External[?], Family = World]
 
+  fact Effect[T = Permission[?],   Family = Permission]   -- IF families land;
+                                                          -- 064 registers it plain
+
   -- a project's own, in its own namespace
   fact Effect[T = Model,       Family = User]
 ```
@@ -260,12 +367,17 @@ no source might.
 "one effect, not one per capability" fails one level up, which is the exact
 mistake 054 was written to prevent. Kernel families stay a closed set; projects
 declare *labels* within `User`, and those labels combine by set union and carry
-no interpretation.
+no interpretation. `Permission[X]` needs none of this: 064 gives it no family
+at all, and its capability argument follows the same discipline `Modify[r]`
+already does.
 
 **A user label is only as honest as its leaf declarations.** `-Model` is
 enforced through anthill-typed code; a host-bound operation that secretly calls
 a model defeats it. That is precisely the trust boundary `Modify` and `External`
-already live on, and it should be written down rather than discovered.
+already live on, and it should be written down rather than discovered. Routing
+a capability through an object narrows this from every leaf to every minting
+operation, but it does not remove it: a host op declared to return an `FsRoot`
+without the `Permission` effect defeats the scheme exactly as before.
 
 **Discharge comes free, and that is worth checking rather than assuming.** 045
 §5.5 makes handler discharge purely type-level — a shared row tail with the
@@ -289,15 +401,25 @@ is wrong and the table cost nothing.
 ## Recommendation
 
 Do not add capability effects to the **kernel** for the agent domain; the six
-rejections are the finding, and they are worth recording as evidence for 054
-whether or not anything else happens. Do give the useful subset a home in a
-`User` family, because `-Model` on a generated agent is a claim the design
-needs and no carrier can make.
+rejections stand as written, and are worth recording as evidence for 054
+whether or not anything else happens. They are rejections of a **static**
+capability label. Do add `Permission[X]` on **acquisition**, because the act of
+checking a grant is an effect on 054's own test while the standing attribute is
+not — and because `-Model` on a generated agent is a claim the design needs and
+no carrier can make.
 
-Verify two things before writing any of it as a proposal: whether 045's row
-algebra can carry a label whose arguments **join** alongside labels whose
-arguments stay distinct, and whether the family table's four columns actually
-match the case-splits already present in the typer.
+**The `Permission[X]` half is now proposal 064**, which carries the argument in
+specification form together with the names and placements this note refuted
+along the way. What remains open here is the FAMILY question, and it is
+separable: whether 045's row algebra can carry a label whose arguments **join**
+alongside labels whose arguments stay distinct, and whether the family table's
+columns actually match the case-splits already present in the typer.
+
+One prerequisite is not optional. WI-20260823-VM3YB measured that `fact
+Effect[T = X]` is documented as the registration and checked at **no site**, so
+a misspelled label is a silent new effect. The family plan above hangs a
+required `Family` parameter off that same fact; adding a required parameter to
+a registration nothing validates buys nothing. VM3YB comes first.
 
 Treat the `External` mode split as the **first consumer of families**, not as
 a standalone refinement of 054 — the rank algebra it needs is the thing
@@ -308,3 +430,10 @@ compensable `create_issue` next to an incompensable `send_email`, a fetch whose
 result goes unused, a plan that fails at step three — that a proposal would
 need as motivation. Filing it before those cases exist would be filing an
 argument in search of evidence.
+
+That caution applied to the mode split and to families, and it does NOT apply
+to `Permission[X]`, which is why 064 was filed and these were not: its
+motivating case already exists in shipped source. `-Model` on a generated
+checker is a claim the design makes today and obtains only by withholding a
+carrier, and `FakeLlm` declares an `External` it does not have. Evidence first,
+then the proposal — the same test, passed rather than failed.
