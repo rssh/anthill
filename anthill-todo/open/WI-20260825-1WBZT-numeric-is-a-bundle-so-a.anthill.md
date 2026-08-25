@@ -82,3 +82,15 @@ WHAT THIS DOES TO WI-20260825-KD9SW. Each operator would mint its own category's
 
 CONTROL, unchanged in shape from the body's: a `Money` declaring ONLY `add` / `neg` / `zero` and asserting `fact Additive[T = Money]` — no `mul`, no comparison surface, no `fact Numeric` — loads clean and answers `Money(700) + Money(25) = Money(725)` through a minted `+`. Add a second row for the rule: `Int64` keeps its single `provides Numeric[T = Int64]` and `1 + 2`, `7 / 2`, `7 % 2`, `1 < 2` all still answer, which is what proves the bundle still bundles.
 
+### 2026-08-25T18:48:34Z — feedback — claude
+
+THE DIAMOND THIS CREATES IS THE BENIGN ONE, MEASURED — and the check that keeps it benign does not exist. Filed as WI-20260825-EBMG8.
+
+The syntax-category rule makes `Numeric` and `Ring` both provide `Additive`, and `anthill-stl/anthill/float.anthill` already writes both `provides Numeric[T = Float]` and `provides Ring[Float]` — so `Float` reaches `Additive` by TWO paths. Driven on user sorts: that shape (base declares the operation ONCE, both branches only provide) LOADS CLEAN and is benign, because implementation is CARRIER-directed — both routes resolve to the carrier's own member by the short-name join, so there is no 'which parent's method' question to answer.
+
+IT REMOVES A LIVE DUPLICATION RATHER THAN ADDING ONE, which is the half worth stating first: today `Numeric.add` and `Ring.add` are two DIFFERENT operations under one spelling, and a bare `add` seeing both is ambiguous — driven under VT8CF's census as "`add` is a member of sorts Numeric, Ring, not in scope as a bare name here" — resolved only because the implicit tier deterministically answers `Numeric.add`. One `Additive.add` declaration is the fix.
+
+WHAT EBMG8 OWNS: the rule `ordered.anthill` states in prose ("declaring them a second time gives a carrier two `sort_ops` entries for one short name, and which one wins is HashMap-iteration order — a coin flip, not a rule") and 058 §3.8 restates ("the derivation adds a provision ROW, never a second op declaration") is enforced NOWHERE. Driven: a spec redeclaring a provided base's operation loads clean; and with two such specs over one carrier the answer follows SOURCE ORDER — 22 with `sort L` first, 33 with `sort R` moved above it, stable across runs either way.
+
+NOT A BLOCKER for this ticket — the categories land in the benign shape — but this ticket's safety rests ENTIRELY on a discipline nothing checks, so EBMG8 should land near it. Source order is worse than a coin flip for exactly the reason it looks safe: stable in tests, stable across machines, and it flips when someone reorders two declarations or renames a file.
+
