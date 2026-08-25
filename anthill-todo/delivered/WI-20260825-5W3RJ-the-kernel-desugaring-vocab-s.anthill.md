@@ -3,9 +3,9 @@
 - id: WI-20260825-5W3RJ-the-kernel-desugaring-vocab-s
 - created: 2026-08-25T09:06:17Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-25T09:06:17Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-25T11:34:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
