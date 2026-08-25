@@ -25,6 +25,7 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
 }
 
 use super::error::ParseError;
+use super::desugar_target as dt;
 use super::ir::*;
 
 /// The `why` clause [`Converter::check_label_unique`] reports for a repeated TUPLE
@@ -1205,7 +1206,7 @@ impl<'a> Converter<'a> {
                 let segs = nm.segments;
                 let mut acc = self.terms.alloc(Term::Ident(segs[0]), span);
                 if segs.len() > 1 {
-                    let field_access_sym = self.intern("field_access");
+                    let field_access_sym = self.intern(dt::FIELD_ACCESS);
                     for seg in &segs[1..] {
                         let field_tid = self.terms.alloc(Term::Ident(*seg), span);
                         acc = self.terms.alloc(
@@ -1247,7 +1248,7 @@ impl<'a> Converter<'a> {
         }
         let is_ho = name_node.kind() == "variable";
         let functor = if is_ho {
-            self.intern("ho_apply")
+            self.intern(dt::HO_APPLY)
         } else {
             let name = self.convert_name(name_node);
             self.intern_name(&name)
@@ -2210,7 +2211,7 @@ impl<'a> Converter<'a> {
                 let span = self.span(node);
                 let object = results.pop().expect("field_access: missing object");
                 let field_tid = self.terms.alloc(Term::Ident(field_sym), field_span);
-                let functor = self.intern("field_access");
+                let functor = self.intern(dt::FIELD_ACCESS);
                 let tid = self.terms.alloc(
                     Term::Fn {
                         functor,
@@ -2250,7 +2251,7 @@ impl<'a> Converter<'a> {
                     }
                 }
                 results.truncate(drain_start);
-                let functor = self.intern("dot_apply");
+                let functor = self.intern(dt::DOT_APPLY);
                 let tid = self.terms.alloc(
                     Term::Fn {
                         functor,
@@ -2269,7 +2270,7 @@ impl<'a> Converter<'a> {
                 let elements: SmallVec<[TermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
-                results.push(self.alloc_fn_term("SetLiteral", elements, span));
+                results.push(self.alloc_fn_term(dt::SET_LITERAL, elements, span));
             }
             BuildFrame::CollectionLiteral { node, elem_count } => {
                 let span = self.span(node);
@@ -2277,7 +2278,7 @@ impl<'a> Converter<'a> {
                 let elements: SmallVec<[TermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
-                let id = self.alloc_fn_term("ListLiteral", elements, span);
+                let id = self.alloc_fn_term(dt::LIST_LITERAL, elements, span);
                 // WI-1099: the bracket SURFACE, which is what the loader lowers to the
                 // `cons`/`nil` spine. A written `ListLiteral(a, b)` builds the identical
                 // term and is the reflect ENTITY, so the mark is the only thing that
@@ -2312,7 +2313,7 @@ impl<'a> Converter<'a> {
                         named.push((label, tid));
                     }
                 }
-                let functor = self.intern("TupleLiteral");
+                let functor = self.intern(dt::TUPLE_LITERAL);
                 results.push(self.terms.alloc(
                     Term::Fn {
                         functor,
@@ -2341,9 +2342,9 @@ impl<'a> Converter<'a> {
                     .pop()
                     .expect("distributive_projection: missing object");
                 let functor = self.intern(if is_value_recv {
-                    "dot_apply"
+                    dt::DOT_APPLY
                 } else {
-                    "field_access"
+                    dt::FIELD_ACCESS
                 });
                 let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 for entry in &entries {
@@ -2380,7 +2381,7 @@ impl<'a> Converter<'a> {
                 // relation was the alternative, and it was declined: it makes
                 // `r.(f)` and `t.(f)` mean different things at the same surface,
                 // and §6.8 requires both halves to move together.
-                let tuple_functor = self.intern("TupleLiteral");
+                let tuple_functor = self.intern(dt::TUPLE_LITERAL);
                 let tid = self.terms.alloc(
                     Term::Fn {
                         functor: tuple_functor,
@@ -2407,7 +2408,7 @@ impl<'a> Converter<'a> {
                 pos_args.push(scrutinee);
                 pos_args.extend(results[drain_start + 1..].iter().copied());
                 results.truncate(drain_start);
-                results.push(self.alloc_marker_term("match_expr", pos_args, span));
+                results.push(self.alloc_marker_term(dt::MATCH_EXPR, pos_args, span));
             }
             BuildFrame::MatchBranch { node, has_guard } => {
                 let span = self.span(node);
@@ -2436,7 +2437,7 @@ impl<'a> Converter<'a> {
                 let else_branch = results[drain_start + 2];
                 results.truncate(drain_start);
                 results.push(self.alloc_marker_term(
-                    "if_expr",
+                    dt::IF_EXPR,
                     SmallVec::from_slice(&[condition, then_branch, else_branch]),
                     span,
                 ));
@@ -2463,7 +2464,7 @@ impl<'a> Converter<'a> {
                 // WI-618: binder-form provenance, as for MatchBranch — carried by the
                 // factory (WI-AKKWF), not by a separate line.
                 let let_id = self.alloc_marker_term_with_named(
-                    "let_expr",
+                    dt::LET_EXPR,
                     SmallVec::from_slice(&[pattern, value, body]),
                     named,
                     span,
@@ -2478,7 +2479,7 @@ impl<'a> Converter<'a> {
                 results.truncate(drain_start);
                 // WI-618: binder-form provenance, as for MatchBranch.
                 let tid = self.alloc_marker_term(
-                    "lambda_expr",
+                    dt::LAMBDA_EXPR,
                     SmallVec::from_slice(&[param, body]),
                     span,
                 );

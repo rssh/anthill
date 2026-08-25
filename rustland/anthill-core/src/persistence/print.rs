@@ -3,6 +3,7 @@
 /// Generic over `TermSource` so it works against either a `KnowledgeBase`
 /// (hash-consed) or a `ParsedFile` (parse-IR). The canonical printed form
 /// is the same in both cases — used by persistence-side retract matching.
+use crate::parse::desugar_target as dt;
 use std::rc::Rc;
 
 use crate::eval::value::Value;
@@ -959,7 +960,17 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 // ListLiteral` prints as `[…]` here though the loader would not
                 // lower it. Closing that needs qualified names on the parse view,
                 // not a test swap.
-                if fname == "ListLiteral" && named_args.is_empty() && !self.reload_faithful {
+                // WI-20260825-5W3RJ — `dt::is`, not `==`. This printer runs over BOTH a
+                // KB view (whose `sym_name` is the short local name) and a `ParsedFile`
+                // (whose `sym_name` is the interned functor VERBATIM) — and a `[…]` the
+                // converter desugared now carries `anthill.reflect.ListLiteral` there,
+                // because the desugar names its target rather than minting a bare name.
+                // MEASURED with `==`: the parse-side print of `[1, 2]` stopped rendering
+                // as a bracket, so the content-addressed retract key no longer matched
+                // the KB-side print and `a_persisted_literal_is_still_retractable` left
+                // the fact on disk — silently, which is the failure that row exists for.
+                if dt::is(fname, dt::LIST_LITERAL) && named_args.is_empty() && !self.reload_faithful
+                {
                     buf.push('[');
                     self.write_comma_sep(pos_args, buf);
                     buf.push(']');
@@ -970,7 +981,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 // keep its parentheses here or it reloads as a bare name rather than
                 // a nullary application. The generic tail below omits them for an
                 // argument-less term, so this mode writes them.
-                if fname == "ListLiteral"
+                if dt::is(fname, dt::LIST_LITERAL)
                     && self.reload_faithful
                     && pos_args.is_empty()
                     && named_args.is_empty()

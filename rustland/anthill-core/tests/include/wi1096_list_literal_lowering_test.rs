@@ -391,18 +391,27 @@ end
 /// the WI-927 `Box[T = Int64]` vs `Box(value: 1)` model).
 ///
 /// This was NOT a theoretical distinction. The first version of the query-side fix
-/// lowered both, and `wi040_reserved_vocab_test::query_pattern_bare_list_literal_
-/// resolves_qualified` — which pins `ListLiteral(?x)` resolving to
-/// `anthill.reflect.ListLiteral` — went red, because the pattern had become a `cons`
+/// lowered both, and `wi040_reserved_vocab_test`'s list-literal row — which pins what
+/// `ListLiteral(?x)` resolves to — went red, because the pattern had become a `cons`
 /// spine. That test is the sibling driver on the QUERY side; this row is the loader
 /// side, and the `[…]` half beside it is what says the mark did not simply disable
 /// the lowering.
+///
+/// WI-20260825-5W3RJ made the written half need an IMPORT, which sharpens the row
+/// rather than weakening it: the two spellings are now visibly different KINDS of
+/// reference — one a desugar that names its own target, one an ordinary name subject
+/// to the ordinary ladder — instead of two spellings the resolver happened to treat
+/// alike.
 #[test]
 fn only_the_bracket_surface_is_the_list_literal() {
     let src = r#"
 namespace wi1096.surface
   import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{cons, nil}
+  -- WI-20260825-5W3RJ: a WRITTEN `ListLiteral(…)` is an ordinary reference to the
+  -- reflect entity, so this file imports it like any other name. Only the `[…]`
+  -- SURFACE is desugared, and the desugar names its target itself.
+  import anthill.reflect.{ListLiteral}
   fact mark(1)
   fact bracket([1, 2])
   fact by_name(ListLiteral(1, 2))

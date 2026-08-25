@@ -90,6 +90,12 @@ fn a_loaded_implicit_target_is_referenced_not_introduced() {
 /// `load::implicit_target_orphans` for what an orphan costs. It is also the measurement
 /// behind "the fix changes nothing in a stdlib-full KB": the static and the loaded
 /// reading of the tier differ on exactly the absent targets, and there are none.
+///
+/// COVERS THE PRELUDE ALONE since WI-20260825-5W3RJ, and the other half did not weaken
+/// — it stopped existing. The kernel desugaring vocab used to be 28 more addresses in
+/// this same table; the converter now names each target outright
+/// (`parse::desugar_target`), so there is no second list to fall out of agreement with
+/// the declarations. `wi040_reserved_vocab_test` is where that half is measured now.
 #[test]
 fn every_implicit_target_is_declared_by_the_standard_load() {
     let kb = crate::common::load_kb_with("namespace wi900.empty\n  fact anchor900(1)\nend\n");

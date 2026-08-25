@@ -107,8 +107,19 @@ fn errs(src: &str) -> Vec<String> {
 /// position is what routes through `convert_expr_term`, the walker that owns the
 /// marker arms.
 fn op_body(expr: &str) -> String {
+    // WI-20260825-5W3RJ — the reflect `Expr` constructors are IMPORTED here, and the
+    // import is load-bearing for this file's SECOND class of row. A marker name used to
+    // resolve bare from any namespace through the desugaring vocab's reserved-name rung;
+    // that rung is gone (the converter names its target itself), so without this line
+    // `match_expr(1)` would report "unknown functor" like the first class and the file
+    // would stop distinguishing the two readings it exists to distinguish.
+    //
+    // The first class is deliberately NOT imported: `match_branch`, `proof_stmt` and the
+    // `pattern_*` forms are parse-level markers with no reflect declaration to import,
+    // so they still denote nothing — which is the reading those rows assert.
     format!(
         "namespace akkwf.written\n  import anthill.prelude.{{Int64}}\n  \
+         import anthill.reflect.Expr.{{match_expr, if_expr, let_expr, lambda_expr, dot_apply}}\n  \
          operation f() -> Int64 = {expr}\nend\n"
     )
 }

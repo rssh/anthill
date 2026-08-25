@@ -26,7 +26,8 @@
 //!
 //! A written connective-named head still does not RUN, and this file must not read as
 //! a promise that it does. Every connective spelling is reserved vocabulary
-//! (`kernel_vocab_qualified` / `PRELUDE_QUALIFIED`), so such a head RESOLVES rather
+//! (`PRELUDE_QUALIFIED` — all three connective spellings live there), so such a head
+//! RESOLVES rather
 //! than declares (WI-896) — to `anthill.prelude.PartialEq.eq` or
 //! `anthill.kernel.unify` — and its clause joins that builtin-backed name, where
 //! WI-139 unindexes it (`is_equational_head`) or the builtin decides the goal before

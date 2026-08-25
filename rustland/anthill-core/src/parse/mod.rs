@@ -1,4 +1,5 @@
 mod convert;
+pub mod desugar_target;
 pub mod error;
 /// Parser — tree-sitter CST → typed parse IR.
 ///

@@ -682,9 +682,11 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
 /// payload-free: it does not lose precision, it makes two structurally DIFFERENT
 /// `if`s compare EQUAL and share a `GoalKey`, turning "reflect isn't loaded" into
 /// wrong answers rather than an error. A structural view should not be contingent
-/// on a symbol lookup at all — these are `KERNEL_VOCAB_QUALIFIED` reserved names
-/// that `wi900_implicit_tier_agreement_test` already asserts resolve after a
-/// standard load.
+/// on a symbol lookup at all — these are `parse::desugar_target` addresses, which the
+/// converter writes into the node itself and `register_stdlib_scopes` defines before any
+/// source is read. (This pointed at `wi900_implicit_tier_agreement_test` until
+/// WI-20260825-5W3RJ, whose orphan check now covers the PRELUDE half alone — this vocab
+/// has no separate list left to disagree with.)
 fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     let (qname, keys) = expr_wrapped_shape(expr)?;
     // WI-1014 Part C — LOUD, not fail-soft. This resolved with `try_resolve_symbol(qname)?`

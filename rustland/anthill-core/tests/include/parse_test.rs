@@ -1,9 +1,31 @@
+// # WI-20260825-5W3RJ — THE DESUGARED FUNCTOR NAMES ARE ADDRESSES NOW
+//
+// Twenty-five expectations in this file changed spelling in one commit, from
+// `dot_apply(?x, y)` to `..anthill.reflect.Expr.dot_apply(?x, y)` and likewise for
+// `field_access`, `ListLiteral` / `SetLiteral` / `TupleLiteral` and the four `Expr`
+// binder forms. That is the CHANGE ITSELF, not test maintenance: the converter used to
+// mint a bare name and leave the loader to find it in a 28-entry table of stdlib
+// addresses; it now names the reflect declaration outright, so the parse IR carries the
+// address and there is no table. The leading `..` is the absolute-path marker — without
+// it the head segment `anthill` would be resolved IN SCOPE and a namespace of that name
+// would capture every desugaring. See `crate::parse::desugar_target`.
+//
+// WHAT THESE ROWS STILL MEASURE is unchanged and is why they were rewritten rather than
+// relaxed: each pins the SHAPE the desugar produces — which functor, with which
+// arguments in which positions. A row asserting the short name would now pass against a
+// converter that had stopped addressing its target, which is the regression the header
+// of `wi040_reserved_vocab_test` describes.
+//
+// A HAND-WRITTEN call keeps the author's spelling and is not affected — see
+// `wi040_reserved_vocab_test::a_written_field_access_keeps_the_short_spelling`.
+
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::{KnowledgeBase, SortKind};
 /// Integration tests: parse .anthill source → verify IR structure → load into KB → query.
 use anthill_core::parse;
 use anthill_core::parse::ir::*;
+
 
 use crate::common::{collect_anthill_files, stdlib_dir};
 use anthill_core::kb::ClauseKind;
@@ -3333,14 +3355,14 @@ fn parse_existing_infix_unchanged() {
 fn parse_empty_set_literal() {
     // {} → SetLiteral()
     let (terms, symbols, term) = parse_term_ir("{}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral()");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.SetLiteral()");
 }
 
 #[test]
 fn parse_single_element_set_literal() {
     // {?x} → SetLiteral(?x)
     let (terms, symbols, term) = parse_term_ir("{?x}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(?x)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.SetLiteral(?x)");
 }
 
 #[test]
@@ -3349,7 +3371,7 @@ fn parse_multi_element_set_literal() {
     let (terms, symbols, term) = parse_term_ir("{?a, ?b, ?c}");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "SetLiteral(?a, ?b, ?c)"
+        "..anthill.reflect.SetLiteral(?a, ?b, ?c)"
     );
 }
 
@@ -3357,7 +3379,7 @@ fn parse_multi_element_set_literal() {
 fn parse_set_literal_with_integers() {
     // {1, 2, 3} → SetLiteral(1, 2, 3)
     let (terms, symbols, term) = parse_term_ir("{1, 2, 3}");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "SetLiteral(1, 2, 3)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.SetLiteral(1, 2, 3)");
 }
 
 // ── Tuple tests (Proposal 004) ─────────────────────────────────
@@ -3366,7 +3388,7 @@ fn parse_set_literal_with_integers() {
 fn parse_unit_tuple() {
     // () → TupleLiteral()
     let (terms, symbols, term) = parse_term_ir("()");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "TupleLiteral()");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.TupleLiteral()");
 }
 
 #[test]
@@ -3375,7 +3397,7 @@ fn parse_positional_tuple() {
     let (terms, symbols, term) = parse_term_ir("(1, 2)");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "TupleLiteral(_1: 1, _2: 2)"
+        "..anthill.reflect.TupleLiteral(_1: 1, _2: 2)"
     );
 }
 
@@ -3385,7 +3407,7 @@ fn parse_named_tuple() {
     let (terms, symbols, term) = parse_term_ir("(x: 1, y: 2)");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "TupleLiteral(x: 1, y: 2)"
+        "..anthill.reflect.TupleLiteral(x: 1, y: 2)"
     );
 }
 
@@ -3395,7 +3417,7 @@ fn parse_tuple_variables() {
     let (terms, symbols, term) = parse_term_ir("(?a, ?b)");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "TupleLiteral(_1: ?a, _2: ?b)"
+        "..anthill.reflect.TupleLiteral(_1: ?a, _2: ?b)"
     );
 }
 
@@ -3448,13 +3470,13 @@ fn parse_named_tuple_type_in_operation() {
 #[test]
 fn parse_empty_collection_literal() {
     let (terms, symbols, term) = parse_term_ir("[]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral()");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.ListLiteral()");
 }
 
 #[test]
 fn parse_single_element_collection_literal() {
     let (terms, symbols, term) = parse_term_ir("[?x]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(?x)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.ListLiteral(?x)");
 }
 
 #[test]
@@ -3462,14 +3484,14 @@ fn parse_multi_element_collection_literal() {
     let (terms, symbols, term) = parse_term_ir("[?a, ?b, ?c]");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "ListLiteral(?a, ?b, ?c)"
+        "..anthill.reflect.ListLiteral(?a, ?b, ?c)"
     );
 }
 
 #[test]
 fn parse_collection_literal_with_integers() {
     let (terms, symbols, term) = parse_term_ir("[1, 2, 3]");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "ListLiteral(1, 2, 3)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.ListLiteral(1, 2, 3)");
 }
 
 #[test]
@@ -3482,12 +3504,12 @@ fn head_tail_literal_surface_removed() {
     let (terms, symbols, term) = parse_term_ir("[?h | ?t]");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "ListLiteral(or(?h, ?t))"
+        "..anthill.reflect.ListLiteral(or(?h, ?t))"
     );
     let (terms, symbols, term) = parse_term_ir("[?a, ?b | ?t]");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "ListLiteral(?a, or(?b, ?t))"
+        "..anthill.reflect.ListLiteral(?a, or(?b, ?t))"
     );
 }
 
@@ -3498,7 +3520,7 @@ fn parse_field_access_variable() {
     // WI-278: a value (variable) receiver routes to dot_apply, not the
     // field_access builtin. ?x.y → dot_apply(?x, y)
     let (terms, symbols, term) = parse_term_ir("?x.y");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(?x, y)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.Expr.dot_apply(?x, y)");
 }
 
 #[test]
@@ -3507,7 +3529,7 @@ fn parse_field_access_chained() {
     let (terms, symbols, term) = parse_term_ir("?x.y.z");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "dot_apply(dot_apply(?x, y), z)"
+        "..anthill.reflect.Expr.dot_apply(..anthill.reflect.Expr.dot_apply(?x, y), z)"
     );
 }
 
@@ -3517,7 +3539,7 @@ fn parse_field_access_in_fn_arg() {
     let (terms, symbols, term) = parse_term_ir("f(?a.b, ?c)");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "f(dot_apply(?a, b), ?c)"
+        "f(..anthill.reflect.Expr.dot_apply(?a, b), ?c)"
     );
 }
 
@@ -3527,7 +3549,7 @@ fn parse_field_access_in_infix() {
     let (terms, symbols, term) = parse_term_ir("?x.y = ?z");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "eq(dot_apply(?x, y), ?z)"
+        "eq(..anthill.reflect.Expr.dot_apply(?x, y), ?z)"
     );
 }
 
@@ -3537,7 +3559,7 @@ fn parse_dot_method_call_preserves_receiver() {
     // dropped by collect_field_access_segments) is the first arg of
     // dot_apply, then the name, then the call args.
     let (terms, symbols, term) = parse_term_ir("?x.m(?a)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "dot_apply(?x, m, ?a)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.reflect.Expr.dot_apply(?x, m, ?a)");
 }
 
 #[test]
@@ -3546,7 +3568,7 @@ fn parse_dot_method_call_chained() {
     let (terms, symbols, term) = parse_term_ir("?xs.map(?f).filter(?p)");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "dot_apply(dot_apply(?xs, map, ?f), filter, ?p)",
+        "..anthill.reflect.Expr.dot_apply(..anthill.reflect.Expr.dot_apply(?xs, map, ?f), filter, ?p)",
     );
 }
 
@@ -3587,7 +3609,7 @@ fn parse_field_access_in_operation_body() {
     let body = op.body.expect("operation should have a body");
     assert_eq!(
         fmt_ir_term(&parsed.terms, &parsed.symbols, body),
-        "field_access(p, fst)",
+        "..anthill.reflect.field_access(p, fst)",
     );
 }
 
@@ -4492,7 +4514,10 @@ fn parse_operation_with_match_body() {
                 Term::Fn {
                     functor, pos_args, ..
                 } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "match_expr");
+                    assert_eq!(
+                        parsed.symbols.local_name(*functor),
+                        "..anthill.reflect.Expr.match_expr"
+                    );
                     // pos_args[0] = scrutinee, pos_args[1..] = branches
                     assert_eq!(pos_args.len(), 3, "1 scrutinee + 2 branches");
 
@@ -4622,7 +4647,7 @@ fn parse_let_bound_inner_match_ok() {
             Term::Fn {
                 functor, pos_args, ..
             } => {
-                assert_eq!(parsed.symbols.local_name(*functor), "match_expr");
+                assert_eq!(parsed.symbols.local_name(*functor), "..anthill.reflect.Expr.match_expr");
                 assert_eq!(pos_args.len(), 3, "outer match: 1 scrutinee + 2 branches");
             }
             other => panic!("expected match_expr, got {other:?}"),
@@ -4665,7 +4690,7 @@ fn parse_operation_with_if_body() {
                 Term::Fn {
                     functor, pos_args, ..
                 } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "if_expr");
+                    assert_eq!(parsed.symbols.local_name(*functor), "..anthill.reflect.Expr.if_expr");
                     assert_eq!(pos_args.len(), 3); // condition, then, else
                 }
                 other => panic!("expected if_expr, got {:?}", other),
@@ -4695,7 +4720,10 @@ fn parse_operation_with_let_body() {
                 Term::Fn {
                     functor, pos_args, ..
                 } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "let_expr");
+                    assert_eq!(
+                        parsed.symbols.local_name(*functor),
+                        "..anthill.reflect.Expr.let_expr"
+                    );
                     assert_eq!(pos_args.len(), 3); // pattern, value, body
                                                    // Inner body should be another let_chain
                     match parsed.terms.get(pos_args[2]) {
@@ -4704,7 +4732,10 @@ fn parse_operation_with_let_body() {
                             pos_args: inner_args,
                             ..
                         } => {
-                            assert_eq!(parsed.symbols.local_name(*inner_f), "let_expr");
+                            assert_eq!(
+                                parsed.symbols.local_name(*inner_f),
+                                "..anthill.reflect.Expr.let_expr"
+                            );
                             assert_eq!(inner_args.len(), 3);
                         }
                         other => panic!("expected inner let_expr, got {:?}", other),
@@ -4732,7 +4763,10 @@ fn parse_operation_with_lambda_body() {
                 Term::Fn {
                     functor, pos_args, ..
                 } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "lambda_expr");
+                    assert_eq!(
+                        parsed.symbols.local_name(*functor),
+                        "..anthill.reflect.Expr.lambda_expr"
+                    );
                     assert_eq!(pos_args.len(), 2); // param pattern, body
                                                    // Param should be pattern_var(y)
                     match parsed.terms.get(pos_args[0]) {
@@ -5273,7 +5307,7 @@ fn parse_tuple_literal_with_lambda_element() {
             named_args,
             ..
         } => {
-            assert_eq!(parsed.symbols.local_name(*functor), "TupleLiteral");
+            assert_eq!(parsed.symbols.local_name(*functor), "..anthill.reflect.TupleLiteral");
             named_args.clone()
         }
         other => panic!("expected TupleLiteral, got {:?}", other),
@@ -5282,7 +5316,9 @@ fn parse_tuple_literal_with_lambda_element() {
     let has_lambda = named.iter().any(|(_, v)| {
         matches!(
             parsed.terms.get(*v),
-            Term::Fn { functor, .. } if parsed.symbols.local_name(*functor) == "lambda_expr"
+            Term::Fn { functor, .. }
+                if parsed.symbols.local_name(*functor)
+                    == "..anthill.reflect.Expr.lambda_expr"
         )
     });
     assert!(

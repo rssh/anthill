@@ -1313,7 +1313,7 @@ point". The carrier an operation belongs to is the author's to name.
 
 **The question is what the name denotes, not which table it is in.** The declared name
 runs the ordinary ladder at its own address (§8.6) — enclosing scopes and imports first,
-the implicit prelude / reserved kernel vocab last — and the refusal fires when what
+the implicit prelude last — and the refusal fires when what
 comes back is a spec operation other than the declaration itself. Three consequences,
 each of which a membership test would get wrong:
 
@@ -1850,7 +1850,7 @@ rule lower_bound: gte(?d, ?d_min)
 
 **What an introduced name denotes (WI-898).** The two head shapes introduce two different *kinds* of name, and only one of them is a relation. A **predicate** head's functor owns its clauses — they are indexed under it — so the name denotes a relation, and the citation forms run it. An **equation**'s subject owns none: the stored clause is headed by the `eq`/`unify` *connective*, so the name denotes a function *defined by rewriting*, with neither a relational nor a value reading of its own. A citation of it is answered by a `[simp]` clause firing before dispatch (§5.3) or it is **refused** — and the refusal names which failure it was, because they call for different repairs: defining equations that carry no `[simp]` tag and so can never fire, tagged clauses none of whose left-hand patterns matched the citation, or no live clause at all. Before WI-898 the two shapes shared one kind, so the relation reader answered for both: it found zero clauses under an equation functor and reported a name that resolved perfectly well as *unresolved*. Whether a name denotes a relation is decided by the **clause index**, not by the head shape alone — so a name a scope writes in **both** shapes is a relation whichever rule comes first: a predicate clause is indexed under it, and which rule sits higher in the file does not enter into it.
 
-**A rule head functor is resolved, not declared (WI-896).** Whether a head *defines* a new predicate or *concludes about* an existing one is decided by **name resolution**, exactly as in any other position: the functor runs the ordinary ladder — enclosing scope, imports, then the implicit prelude / reserved kernel vocab — and the rule contributes a clause to whatever it lands on. Only when the ladder finds **nothing** does the rule introduce the name, scoped where it is written (above). So `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about `PartialOrd.gte` because `gte` *resolves*, and its unlabeled twin is the same lemma for the same reason. To introduce a name that already resolves, **declare** it — a local `operation gte(…)` is found before the fallback tier, and the rule then binds to that declaration. **Except where that declaration is itself refused** (§5.1 *One spec operation, one symbol*): a **free-standing** `operation` may not take the name of a **spec operation**, so this route is open inside a **type** — which is where a carrier's own `gte` belongs anyway — and closed at namespace level for that one class of name. Every other tier name (`cons`, `div`, `mod`, `not`, a namespace-level primitive) still takes it.
+**A rule head functor is resolved, not declared (WI-896).** Whether a head *defines* a new predicate or *concludes about* an existing one is decided by **name resolution**, exactly as in any other position: the functor runs the ordinary ladder — enclosing scope, imports, then the implicit prelude — and the rule contributes a clause to whatever it lands on. Only when the ladder finds **nothing** does the rule introduce the name, scoped where it is written (above). So `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about `PartialOrd.gte` because `gte` *resolves*, and its unlabeled twin is the same lemma for the same reason. To introduce a name that already resolves, **declare** it — a local `operation gte(…)` is found before the fallback tier, and the rule then binds to that declaration. **Except where that declaration is itself refused** (§5.1 *One spec operation, one symbol*): a **free-standing** `operation` may not take the name of a **spec operation**, so this route is open inside a **type** — which is where a carrier's own `gte` belongs anyway — and closed at namespace level for that one class of name. Every other tier name (`cons`, `div`, `mod`, `not`, a namespace-level primitive) still takes it.
 
 **An unguarded predicate head may not join through a whole-scope non-enclosing edge (C666A).** Resolution still decides which predicate a head denotes, but reaching a declared `Goal` *only* through `requires`, a conversion-style `provides`, or a wildcard import does not opt this clause into that predicate: the loader refuses the head and names both its writing scope and the qualified target. A local declaration, a predicate imported **by name** (`import lib.{p}` / its plain-name equivalent), or the lexical enclosing chain is an explicit owner and remains admissible. An ordinary source body is not the missing guard. The admissible non-enclosing form is proposal 060's generated, carrier-selecting `domain(?x, T)` guard; until WI-742 installs that guard on plain relational heads, every such join is refused. WI-742 must admit its guarded form at this boundary without removing the unguarded refusal.
 
@@ -3846,8 +3846,54 @@ head, which owns every path beneath it: an `internal` member there is a member
 the citing scope is forbidden, reported as such, not a licence to bind a
 same-spelled top-level path instead.
 
+**The lowest rung is the implicit prelude, and only that.** It is the user-facing
+vocabulary available in every namespace with no `import` line: the fundamental
+constructors (`cons`, `nil`, `some`, `none`), the operator targets (`add`, `eq`, `gt`,
+`div`, …), the logic and resolver primitives (`not`, `or`, `unify`, `cut`, …) and the
+reflection result sorts. It sits at the **bottom** of the ladder, which is what lets a
+user name shadow one without conflict: a local declaration or an explicit import is
+found first, so a user's own `add` wins and can never go *ambiguous* against it.
+
+**Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
+`if`, `let`, `\`, member access and the `[…]` / `{…}` / `(…)` literals are *desugared*:
+the converter builds a term whose functor is the reflect declaration's **absolute path**
+— `..anthill.reflect.Expr.if_expr`, `..anthill.reflect.field_access`,
+`..anthill.reflect.ListLiteral` — so it is resolved by qualified name, with no scope walk
+at all. Three consequences follow, and each of them used to be a rule of its own:
+
+- **A user's same-spelled name cannot capture a desugaring.** `entity wildcard(…)` or
+  `operation field_access(…)` in scope is simply a different name. **The `..` marker is
+  what buys this, and an unmarked path would not**: an ordinary `a.b.c` takes the
+  relative, head-qualified reading, so its *head* segment runs `resolve_in_scope` and a
+  namespace or sort named `anthill` is exactly the rung at which the desugaring would be
+  shadowed. The marker is unspellable by any identifier, so a marked head can collide
+  with no declaration. Under the older *reserved short name* scheme (WI-040) the
+  desugaring sat **below** scope resolution and a same-spelled declaration won outright.
+- **A missing target fails where it is used**, rather than falling quietly to an
+  unresolved bare name that a later pass misreports.
+- **No name is reserved.** There is no list of spellings the resolver treats specially,
+  so a program may declare and call any of these names without touching the desugaring.
+  (The addresses themselves must still name declarations that exist — that is an
+  ordinary dependency, not a second encoding of which form is which.)
+
+The short spellings remain ordinary identifiers a program may declare and call —
+`field_access(?o, ?f)` written by hand is a call to whatever `field_access` denotes at
+that scope, which is nothing unless the file imports it. What it is *not* is the
+desugaring: provenance, not spelling, decides that. **Reflection code imports what it
+names**, exactly as every other file does: a meta-rule matching an occurrence writes
+`import anthill.reflect.{occurrence_term}` and `import anthill.reflect.Expr.{int_lit}`
+before it can use them. There is no vocabulary that resolves from anywhere.
+
+This reaches **persisted facts** too, and the obligation is the reader's. A store writes
+bare `fact …` lines with no header of its own — no `namespace`, no `import` — so a fact
+whose term carries reflection vocabulary reloads correctly only into a scope that
+imports it. (The persisted text keeps the *short* spelling deliberately: the
+content-addressed retract key compares a parse-side print against a KB-side print, and
+qualifying one side alone stops the two matching, which leaves the retracted fact on
+disk silently.)
+
 **An ambiguity ends the ladder.** The rungs below `resolve_in_scope` — the dotted
-readings, then the implicit prelude / reserved kernel vocab — are for a name that
+readings, then the implicit prelude — are for a name that
 means *nothing* at this scope. A name that means *several* things has an answer
 already, so no lower rung may be consulted: descending past a conflict picks a
 symbol that is not even among the candidates, and picking one candidate decides

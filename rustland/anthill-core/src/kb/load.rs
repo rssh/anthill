@@ -27,6 +27,7 @@ use crate::intern::{
     ScopeId, ScopeInclusion, Symbol, SymbolDef, SymbolKind,
 };
 use crate::parse::ir::*;
+use crate::parse::desugar_target as dt;
 use crate::parse::pratt;
 use crate::span::{LineIndex, SourceId, SourceSpan, Span};
 
@@ -3124,10 +3125,24 @@ fn bare_arrow_logic_msg(position: &str, unresolved: &str) -> String {
 /// `let_expr(pat, value, body)` scopes only the body — the value sees the
 /// OUTER scope.
 fn binder_form_layout(name: &str) -> Option<(usize, usize)> {
-    match name {
-        "lambda_expr" | "match_branch" => Some((0, 1)),
-        "let_expr" => Some((0, 2)),
-        _ => None,
+    // WI-20260825-5W3RJ — `dt::is`, not `==`: the converter's own `lambda_expr` /
+    // `let_expr` nodes now carry their reflect ADDRESS, while a user writing one by hand
+    // still carries the short spelling.
+    //
+    // THE SHORT ARM IS INERT HERE, stated because an earlier draft of this comment
+    // justified it with "the callers are not all provenance-gated" and that is FALSE:
+    // both (`check_bare_arrow_typo`, `first_unresolvable_arrow_leaf`) filter the result
+    // on `is_minted`, so a short spelling can only ever reach a node the filter drops.
+    // `dt::is` is kept anyway — it is the one idiom every reader of a desugar target
+    // uses, and a reader that has to know its own gating to pick between `==` and `is`
+    // is how the two spellings drift apart. `match_branch` is a parse-level marker with
+    // no reflect declaration of its own, so it keeps its bare spelling.
+    if dt::is(name, dt::LAMBDA_EXPR) || name == "match_branch" {
+        Some((0, 1))
+    } else if dt::is(name, dt::LET_EXPR) {
+        Some((0, 2))
+    } else {
+        None
     }
 }
 
@@ -4882,67 +4897,17 @@ pub fn scan_definitions_with_sources(
         );
     }
 
-    // WI-040: the kernel DESUGARING VOCAB (reflect `Expr` / `Pattern`
-    // constructors, `field_access`, literal carriers, reflection primitives) is
-    // NOT global-imported. It resolves directly to its reserved qualified home
-    // via `kernel_vocab_qualified` in `remap_name_str`, so it never enters the
-    // user name namespace — dissolving the collision blocklist WI-476 needed.
+    // WI-040 / WI-20260825-5W3RJ: the kernel DESUGARING VOCAB (`match_expr`,
+    // `field_access`, the literal carriers, …) is NOT global-imported and never was.
+    // WI-040 kept it out of the user namespace with a reserved short-name fallback;
+    // the converter now names each target outright (`crate::parse::desugar_target`),
+    // so there is no reserved name at all — dissolving both that rung and the
+    // collision blocklist WI-476 needed.
     // WI-995 — the scan is over; nothing after it asks on one file's behalf until
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
     errors
 }
-
-/// WI-040: fully-qualified KERNEL DESUGARING NAMES that the converter / loader
-/// SYNTHESIZE into bodies (for `match` / `if` / `let` / `lambda`, member access,
-/// literals, patterns) but a user never writes. These are RESERVED: a bare
-/// reference resolves directly to the qualified target here (see
-/// `kernel_vocab_qualified`), NOT through a `<global>` import — so they never sit
-/// in the user name namespace and need no collision blocklist. Resolution is a
-/// fallback (reached only when the name is unresolvable in scope), so a
-/// user-written same-spelling name still wins. Reflect-API names that ARE
-/// plausible user definitions (`kind`, `fields`, `rules`, `kb`, `constructor`,
-/// `not`) are deliberately NOT in this list — they are not converter-synthesized
-/// and resolve via explicit import.
-const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
-    // reflect.Expr constructors (synthetic `match` / `if` / `let` / `lambda`
-    // and higher-order / dotted application + literals)
-    "anthill.reflect.Expr.match_expr",
-    "anthill.reflect.Expr.if_expr",
-    "anthill.reflect.Expr.let_expr",
-    "anthill.reflect.Expr.lambda_expr",
-    "anthill.reflect.Expr.ho_apply",
-    "anthill.reflect.Expr.dot_apply",
-    "anthill.reflect.Expr.var_ref",
-    "anthill.reflect.Expr.int_lit",
-    "anthill.reflect.Expr.bigint_lit",
-    "anthill.reflect.Expr.float_lit",
-    "anthill.reflect.Expr.string_lit",
-    "anthill.reflect.Expr.bool_lit",
-    // reflect.Pattern constructors (synthetic match/let/lambda patterns)
-    "anthill.reflect.Pattern.var_pattern",
-    "anthill.reflect.Pattern.tuple_pattern",
-    "anthill.reflect.Pattern.named_tuple_pattern",
-    "anthill.reflect.Pattern.constructor_pattern",
-    "anthill.reflect.Pattern.literal_pattern",
-    "anthill.reflect.Pattern.wildcard",
-    // Literal carriers — `[…]` / `{…}` / `(…)` lower to these (WI-007 / WI-285).
-    // `convert_term_with_expected` keys its context-aware desugaring on the
-    // resolved qualified name (`anthill.reflect.ListLiteral`), so the carrier
-    // MUST resolve here, not bare-intern.
-    "anthill.reflect.ListLiteral",
-    "anthill.reflect.SetLiteral",
-    "anthill.reflect.TupleLiteral",
-    // Reflection PRIMITIVES — `field_access` (`x.field`) is emitted for every
-    // member access; the rest are reflect-specific introspection helpers.
-    "anthill.reflect.field_access",
-    "anthill.reflect.as_term",
-    "anthill.reflect.SourceSpan.source_span",
-    "anthill.reflect.occurrence_owner",
-    "anthill.reflect.occurrence_span",
-    "anthill.reflect.occurrence_term",
-    "anthill.reflect.sub_occurrences",
-];
 
 /// WI-1129 (proposal 056 §2.3): the constructor a rule-head VARIADIC CAPTURE builds
 /// its record with — the same one the operation face uses
@@ -4956,20 +4921,11 @@ const KERNEL_VOCAB_QUALIFIED: &[&str] = &[
 /// outright resolve total is that the name is DEFINED by [`register_prelude`]
 /// (through `register_stdlib_scopes`, beside `SetLiteral` / `ListLiteral`), which
 /// every load path runs before any rule loads — so it is present with no stdlib at
-/// all. NOT its membership in [`KERNEL_VOCAB_QUALIFIED`] above: that list is a
-/// short-name RESOLUTION fallback and defines nothing. MEASURED both ways by
+/// all. NOT [`crate::parse::desugar_target::TUPLE_LITERAL`], which is the address the
+/// converter WRITES and defines nothing. MEASURED both ways by
 /// `wi1129_rule_head_capture_test::the_capture_record_constructor_is_bootstrapped` —
 /// absent on a `KnowledgeBase::new()`, present after a bare `load_all`.
 pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLiteral";
-
-/// WI-040: short name → qualified target for the reserved kernel desugaring vocab,
-/// or `None` if `name` is not reserved. Resolved directly (no `<global>` import).
-fn kernel_vocab_qualified(name: &str) -> Option<&'static str> {
-    KERNEL_VOCAB_QUALIFIED
-        .iter()
-        .copied()
-        .find(|qn| qn.rsplit('.').next() == Some(name))
-}
 
 /// WI-521: the implicit PRELUDE — user-facing names auto-available in every
 /// namespace without an `import` line: the fundamental constructors, the
@@ -5081,17 +5037,25 @@ fn prelude_qualified(name: &str) -> Option<&'static str> {
         .find(|qn| qn.rsplit('.').next() == Some(name))
 }
 
-/// WI-040 / WI-521: short name → qualified target for ALL implicitly-available
-/// names — the reserved kernel desugaring vocab and the implicit prelude — or
-/// `None`. Private: a NAME here is a candidate, and turning a candidate into an answer
-/// is [`resolve_implicit`]'s job, which is what every consumer must call.
+/// WI-521: short name → qualified target for the implicitly-available names, or `None`.
+/// Private: a NAME here is a candidate, and turning a candidate into an answer is
+/// [`resolve_implicit`]'s job, which is what every consumer must call.
+///
+/// ONE POPULATION SINCE WI-20260825-5W3RJ. It used to be two — this, and a
+/// `KERNEL_VOCAB_QUALIFIED` table of 28 reflect addresses for the forms the CONVERTER
+/// synthesizes (`match_expr`, `field_access`, `ListLiteral`, …). That half is gone, not
+/// re-sourced: the converter names its target outright
+/// ([`crate::parse::desugar_target`]), so a synthesized node resolves through the
+/// ordinary ABSOLUTE rung and needs no fallback, no table and nothing to keep in step
+/// with the mint sites. What remains here is the USER-facing prelude, which is a
+/// genuinely different question — names a person writes bare on purpose.
 fn implicit_qualified(name: &str) -> Option<&'static str> {
-    kernel_vocab_qualified(name).or_else(|| prelude_qualified(name))
+    prelude_qualified(name)
 }
 
 /// THE IMPLICIT TIER of the name ladder: the symbol a bare `name` denotes through the
-/// reserved kernel vocab / implicit prelude, or `None`. The LOWEST-PRECEDENCE rung —
-/// consulted only after scope resolution fails, so a user name in scope always wins.
+/// implicit prelude, or `None`. The LOWEST-PRECEDENCE rung — consulted only after scope
+/// resolution fails, so a user name in scope always wins.
 ///
 /// THE `by_qualified_name` GATE IS PART OF THE RUNG, not a caller's option: a target
 /// that is not loaded denotes nothing, and the name must go on falling through to the
@@ -5109,22 +5073,31 @@ fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
 /// The tier resolves a bare name only when its target is loaded, so an orphaned entry (a
 /// stdlib rename, a moved operation) does not fail loudly: the name silently stops
 /// resolving, and a rule head spelled that way starts INTRODUCING it instead of
-/// referencing it. Lives beside the tables so a future edit to them sees the invariant;
+/// referencing it. Lives beside the table so a future edit to it sees the invariant;
 /// asserted by
 /// `wi900_implicit_tier_agreement_test::every_implicit_target_is_declared_by_the_standard_load`.
+///
+/// COVERS THE PRELUDE ALONE since WI-20260825-5W3RJ, because that is all the tier is
+/// now. The kernel desugaring vocab is no longer a set of names to be kept in agreement
+/// with a set of declarations — the converter names each target outright, so a missing
+/// one fails where it is USED rather than falling quietly to a bare intern.
 pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
-    KERNEL_VOCAB_QUALIFIED
+    PRELUDE_QUALIFIED
         .iter()
-        .chain(PRELUDE_QUALIFIED.iter())
         .copied()
         .filter(|qn| !kb.symbols.by_qualified_name.contains_key(*qn))
         .collect()
 }
 
 /// WI-20260824-BFB9A: the SHORT NAMES the implicit tier answers — every name a program
-/// can write bare, with no import, and have resolve. Read off the two tables, beside
-/// them, for the reason [`implicit_target_orphans`] states: a test that needs this
-/// population must not go and get it somewhere else.
+/// can write bare, with no import, and have resolve. Read off the table, beside it, for
+/// the reason [`implicit_target_orphans`] states: a test that needs this population must
+/// not go and get it somewhere else.
+///
+/// THE PRELUDE ALONE since WI-20260825-5W3RJ (see [`implicit_qualified`]), which SHRANK
+/// this population from 62 to 34. Nothing that read it wanted the desugaring vocab: its
+/// one reader asks which tier names denote a spec operation, and no synthesized form
+/// ever did.
 ///
 /// `wi_bfb9a_rival_spec_operation_test::the_refusal_population_is_the_ten_spec_operations`
 /// is the reader, and its previous version SCRAPED THIS FILE'S SOURCE for the table
@@ -5132,9 +5105,8 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
 /// `"` inside a table comment silently unbalances, dropping names while every assertion
 /// still passed. Found by `/code-review`.
 pub fn implicit_tier_short_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = KERNEL_VOCAB_QUALIFIED
+    let mut names: Vec<&'static str> = PRELUDE_QUALIFIED
         .iter()
-        .chain(PRELUDE_QUALIFIED.iter())
         .filter_map(|qn| qn.rsplit('.').next())
         .collect();
     names.sort_unstable();
@@ -5737,8 +5709,9 @@ fn parse_connective_head<'a>(
 /// ([`LoadError::NonDefiningConnectiveHead`]) rather than stamped.
 ///
 /// The mint damage this can still do is only ever to the ARGUMENT: every connective
-/// spelling is implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
-/// [`kernel_vocab_qualified`]), so a head can never introduce one of them whatever
+/// spelling is implicit-tier reserved vocabulary — all three are [`PRELUDE_QUALIFIED`]
+/// entries (`anthill.kernel.unify` / `.struct_eq`, `anthill.prelude.PartialEq.eq`), not
+/// desugar targets — so a head can never introduce one of them whatever
 /// this answers — [`rule_head_ladder_answer`] refuses it (WI-530), measured
 /// identical with the `is_minted` guard and without it.
 fn parse_equation_lhs(
@@ -10154,8 +10127,10 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             .define(variant, &qualified, SymbolKind::Entity, member_kind_scope);
     }
     // WI-040: the literal carriers are DEFINED here (registers them in
-    // `by_qualified_name`) but NOT `<global>`-imported — they resolve directly via
-    // `kernel_vocab_qualified`. So the returned symbols are intentionally unused.
+    // `by_qualified_name`) but NOT `<global>`-imported. Since WI-20260825-5W3RJ that
+    // registration is the WHOLE mechanism: the converter writes
+    // `anthill.reflect.ListLiteral`, and this is what the absolute rung finds when no
+    // stdlib has been read. So the returned symbols are intentionally unused.
     kb.symbols.define(
         "SetLiteral",
         "anthill.reflect.SetLiteral",
@@ -15789,7 +15764,9 @@ fn convert_query_term_expecting(
 /// no canonical equality connective has no equality connective, so there is no primitive
 /// for the operator to mean and the ordinary ladder is the only answer left. It is
 /// unreachable in any KB the loader runs on: `resolve_implicit` gates on
-/// `by_qualified_name`, both targets are `KERNEL_VOCAB_QUALIFIED` entries, and
+/// `by_qualified_name`, both targets (`anthill.kernel.unify` / `.struct_eq`) are
+/// [`PRELUDE_QUALIFIED`] entries — NOT desugar targets, which this doc claimed until
+/// WI-20260825-5W3RJ deleted that half and made the confusion visible — and
 /// `implicit_target_orphans` is pinned empty for the standard load by
 /// `wi900_implicit_tier_agreement_test::every_implicit_target_is_declared_by_the_standard_load`.
 fn minted_connective_symbol(
@@ -15850,16 +15827,20 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         // WI-917: the dotted rung answers in this same vocabulary, so `or_else` carries
         // the stop to it too — a contested HEAD SEGMENT is returned rather than folded
         // into "unresolved". Not for the tier's sake, which is keyed on a name's LAST
-        // SEGMENT (`kernel_vocab_qualified`) and can never answer a dotted one, but
+        // SEGMENT (`prelude_qualified`) and can never answer a dotted one, but
         // because `NotFound` is what sends every caller to its ABSENCE handling: the
         // false "no rule, fact, or declaration is in scope for it".
         .or_else(|| resolve_dotted_in_kb(kb, name, scope, DottedVisibility::VisibleOnly))
-        // WI-040 / WI-521: reserved kernel desugaring vocab AND the implicit prelude
-        // resolve directly to their qualified home in query patterns too — parity with
-        // `remap_name_str`, so a reflection query naming `field_access` / `ListLiteral`
-        // or a prelude name like `eq` / `cons` bare still matches after the `<global>`
-        // imports were removed. Fallback only: scope resolution already failed, so a
-        // user-defined same-spelling name has won. (Distinct from WI-476's deliberate
+        // WI-521: the implicit PRELUDE resolves directly to its qualified home in query
+        // patterns too — parity with `remap_name_str`, so a bare `eq` / `cons` still
+        // matches after the `<global>` imports were removed. Fallback only: scope
+        // resolution already failed, so a user-defined same-spelling name has won.
+        //
+        // WI-20260825-5W3RJ — NO LONGER THE DESUGARING VOCAB. `field_access` /
+        // `ListLiteral` and the rest left this rung entirely: the converter marks its
+        // target absolute (`crate::parse::desugar_target`), so a synthesized node never
+        // reaches a fallback, and a reflection query naming one BARE is now an ordinary
+        // unimported name. (Distinct from WI-476's deliberate
         // no-rescue for arbitrary user short-names — these are RESERVED / PRELUDE names
         // that always denote their target.)
         .or_else(|| {
@@ -17126,7 +17107,10 @@ impl<'a> Loader<'a> {
                     }
                     return None;
                 }
-                let skip_name_slot = matches!(name, "field_access" | "dot_apply")
+                // WI-20260825-5W3RJ — the constants, not the short spellings: the
+                // `is_minted` conjunct has already excluded anything a user wrote, so
+                // only the converter's addressed nodes can reach here.
+                let skip_name_slot = matches!(name, dt::FIELD_ACCESS | dt::DOT_APPLY)
                     && self.parsed.terms.is_minted(parse_id);
                 for (i, &child) in pos_args.iter().enumerate() {
                     if skip_name_slot && i == 1 {
@@ -17528,13 +17512,18 @@ impl<'a> Loader<'a> {
                 if let Some(q_sym) = self.resolve_dotted_reported(name, span) {
                     return q_sym;
                 }
-                // WI-040 / WI-521: reserved kernel desugaring vocab (synthesized
-                // `match_expr` / `field_access` / `ListLiteral` / …) and the
-                // implicit PRELUDE (`cons` / `some` / `eq` / `add` / `not` / …)
-                // resolve directly to their qualified home, replacing the old
-                // `<global>` imports. This is a FALLBACK (we are already past scope
-                // resolution), so a user-written same-spelling name has won
+                // WI-521: the implicit PRELUDE (`cons` / `some` / `eq` / `add` /
+                // `not` / …) resolves directly to its qualified home, replacing the
+                // old `<global>` imports. This is a FALLBACK (we are already past
+                // scope resolution), so a user-written same-spelling name has won
                 // already; these names only catch a reference no scope defines.
+                //
+                // WI-20260825-5W3RJ — THE DESUGARING VOCAB IS NOT HERE ANY MORE, and
+                // this is the site a reader consults to learn what the rung covers.
+                // `match_expr` / `field_access` / `ListLiteral` and the rest are minted
+                // with their ABSOLUTE address by `crate::parse::desugar_target`, so a
+                // synthesized node is resolved by the dotted ladder above and never
+                // falls this far.
                 if let Some(sym) = resolve_implicit(self.kb, name) {
                     return sym;
                 }
@@ -18115,7 +18104,7 @@ impl<'a> Loader<'a> {
                 // reporting "expected operation declared on the receiver's sort" for
                 // the method the dot rule was there to supply. The arity + `Ident`
                 // guard above is the WHOLE guard, and it is a SHAPE guard on purpose.
-                if self.parsed.symbols.local_name(functor) == "dot_apply"
+                if dt::is(self.parsed.symbols.local_name(functor), dt::DOT_APPLY)
                     && pos_args.len() >= 2
                     && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_))
                 {
@@ -18765,7 +18754,7 @@ impl<'a> Loader<'a> {
                 let marker: Option<&str> =
                     self.parsed.terms.is_minted(parse_id).then(|| name.as_str());
                 match marker {
-                    Some("match_expr") => {
+                    Some(dt::MATCH_EXPR) => {
                         let branch_count = pos_args.len() - 1;
                         work.push(LoadWorkOp::Build(LoadBuildFrame::MatchExpr {
                             outer_parse_id: parse_id,
@@ -18803,7 +18792,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
-                    Some("if_expr") => {
+                    Some(dt::IF_EXPR) => {
                         work.push(LoadWorkOp::Build(LoadBuildFrame::IfExpr {
                             outer_parse_id: parse_id,
                         }));
@@ -18811,7 +18800,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[1]));
                         work.push(LoadWorkOp::Visit(pos_args[0]));
                     }
-                    Some("let_expr") => {
+                    Some(dt::LET_EXPR) => {
                         // The let-pattern's bound names are in scope for
                         // the body but not for the value, so push the
                         // scope frame between value and body. Pop order
@@ -18837,7 +18826,7 @@ impl<'a> Loader<'a> {
                         work.push(LoadWorkOp::Visit(pos_args[0])); // pattern
                         work.push(LoadWorkOp::PushOccSuppress);
                     }
-                    Some("lambda_expr") => {
+                    Some(dt::LAMBDA_EXPR) => {
                         // Lambda param is in scope for the body.
                         let frame = self.build_pattern_scope_frame(pos_args[0]);
                         work.push(LoadWorkOp::Build(LoadBuildFrame::Lambda {
@@ -18994,7 +18983,7 @@ impl<'a> Loader<'a> {
                     // keeps `pos_args[1]` in range. `dot_apply()` / `dot_apply(1, 2)`
                     // fall to `_` and get an ordinary constructor diagnostic instead of
                     // the panic they used to raise.
-                    _ if name == "dot_apply"
+                    _ if dt::is(&name, dt::DOT_APPLY)
                         && pos_args.len() >= 2
                         && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_)) =>
                     {
@@ -19105,7 +19094,7 @@ impl<'a> Loader<'a> {
                         // the same call for the same reason.) A dot CALL's named args
                         // are unaffected — `p.m(a: 1)` is a call, not a field access,
                         // and that path threads them into the `DotApply` frame.
-                        if name == "field_access" && named_args.is_empty() {
+                        if dt::is(&name, dt::FIELD_ACCESS) && named_args.is_empty() {
                             if self.try_identifier_dot_field(
                                 parse_id,
                                 &pos_args,
@@ -19547,7 +19536,7 @@ impl<'a> Loader<'a> {
                 }
                 Term::Fn {
                     functor, pos_args, ..
-                } if self.parsed.symbols.local_name(*functor) == "field_access"
+                } if dt::is(self.parsed.symbols.local_name(*functor), dt::FIELD_ACCESS)
                     && !pos_args.is_empty() =>
                 {
                     cur = pos_args[0];
@@ -19664,7 +19653,7 @@ impl<'a> Loader<'a> {
                     functor,
                     pos_args,
                     named_args,
-                } if self.parsed.symbols.local_name(*functor) == "field_access"
+                } if dt::is(self.parsed.symbols.local_name(*functor), dt::FIELD_ACCESS)
                     && pos_args.len() == 2
                     && named_args.is_empty() =>
                 {

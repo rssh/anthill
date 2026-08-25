@@ -138,7 +138,8 @@ fn any(kb: &mut KnowledgeBase, name: &str) -> usize {
 /// attributable to the SURFACE and not to the elements.
 const TWIN_SRC: &str = r#"
 namespace wi1099.twin
-  import anthill.reflect.{Expr}
+  import anthill.reflect.{Expr, ListLiteral, occurrence_term}
+  import anthill.reflect.Expr.{int_lit, if_expr}
   import anthill.prelude.{Int64}
   import anthill.prelude.List.{cons, nil}
 
@@ -179,7 +180,7 @@ end
 /// by name or the body-term check refuses them outright.
 const VOCAB_SRC: &str = r#"
 namespace wi1099.vocab
-  import anthill.reflect.{Expr}
+  import anthill.reflect.{Expr, occurrence_term}
   import anthill.reflect.Expr.{apply, constructor}
   import anthill.prelude.{Int64}
   operation foo(x: Int64) -> Int64 = x
@@ -383,6 +384,11 @@ fn the_goal_form_matches_the_twin_not_the_reflect_data_vocabulary() {
 const RT_SRC: &str = r#"
 namespace wi1099.rt
   import anthill.prelude.{Int64}
+  -- WI-20260825-5W3RJ: a WRITTEN `ListLiteral(…)` is an ordinary reference to the
+  -- reflect entity and is imported like any other name. The RELOAD half below
+  -- deliberately does NOT import it — the persisted text has to carry its own address,
+  -- which is what `reload_faithful` now prints.
+  import anthill.reflect.{ListLiteral}
   fact stored(ListLiteral(1, 2))
   fact spine([1, 2])
   fact empty_stored(ListLiteral())
@@ -451,8 +457,17 @@ fn a_flat_list_literal_survives_persist_and_reload() {
          the premise of the whole half",
     );
 
+    // WI-20260825-5W3RJ — THE RELOAD SCOPE MUST IMPORT WHAT THE PERSISTED TEXT NAMES.
+    // A store writes bare `fact …` lines with no header of its own (no `namespace`, no
+    // `import` — checked across `FileStore` / `IndexedFileStore` / `ItemPerFileStore`),
+    // so the scope it is loaded back into supplies them. Before this ticket the reflect
+    // vocabulary resolved from anywhere through the desugaring vocab's reserved-name
+    // rung, and this line was not needed; now it is the same obligation every other
+    // name carries. Drop the reflect import and `stored` comes back as an ordinary
+    // unresolved `ListLiteral` — a different symbol under the same spelling.
     let mut kb2 = crate::common::load_kb_with(&format!(
-        "namespace wi1099.rt2\n  import anthill.prelude.{{Int64}}\n{written}end\n"
+        "namespace wi1099.rt2\n  import anthill.prelude.{{Int64}}\n  \
+         import anthill.reflect.{{ListLiteral}}\n{written}end\n"
     ));
     crate::common::supply_invocation_imports(&mut kb2, &["wi1099.rt2.*"]);
     let after: Vec<String> = ["stored(?x)", "spine(?x)", "empty_stored(?x)"]
@@ -557,6 +572,11 @@ fn a_persisted_literal_is_still_retractable() {
     store.flush(&kb).unwrap();
     let path = dir.path().join("facts.anthill");
     let after_persist = std::fs::read_to_string(&path).unwrap();
+    // THE SHORT SPELLING IS LOAD-BEARING, measured under WI-20260825-5W3RJ. Making
+    // reload-faithful mode print `anthill.reflect.ListLiteral(1, 2)` — so a persisted
+    // fact carries its own address and needs no import to reload — fails the "must be
+    // dropped" assertion below and leaves the fact on disk silently, exactly as this
+    // row's doc predicts. The persist print and the content key are one decision.
     assert!(after_persist.contains("held_flat(ListLiteral(1, 2))"));
     assert!(after_persist.contains("held_spine([1, 2])"));
 

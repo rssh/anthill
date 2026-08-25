@@ -1735,6 +1735,11 @@ fn wi297_occurrence_term_literal_synth_resolves() {
     // through the reflect lens and matches `int_lit(value: ?)`.
     let source = concat!(
         "namespace wi297.t\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. Before this
+        // ticket the desugaring vocab resolved bare from any namespace through a
+        // reserved-name rung; that rung is gone, and these are ordinary names.
+        "  import anthill.reflect.{occurrence_term}\n",
+        "  import anthill.reflect.Expr.{int_lit}\n",
         "  import anthill.reflect.{Expr}\n",
         "  import anthill.prelude.TypeExtractor.{SortRef}\n",
         "  import anthill.prelude.{Int64}\n",
@@ -1793,6 +1798,11 @@ fn wi297_occurrence_term_discriminates_literal_kind() {
     // the occurrence's term, not a vacuous match.
     let source = concat!(
         "namespace wi297.b\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. Before this
+        // ticket the desugaring vocab resolved bare from any namespace through a
+        // reserved-name rung; that rung is gone, and these are ordinary names.
+        "  import anthill.reflect.{occurrence_term}\n",
+        "  import anthill.reflect.Expr.{int_lit, string_lit}\n",
         "  import anthill.reflect.{Expr}\n",
         "  import anthill.prelude.TypeExtractor.{SortRef}\n",
         "  import anthill.prelude.{Int64, String}\n",
@@ -1856,6 +1866,10 @@ fn wi297_occurrence_span_builds_source_span() {
     // the occurrence's Rust span. The result is a term, so it propagates up.
     let source = concat!(
         "namespace wi297.sp\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. Before this
+        // ticket the desugaring vocab resolved bare from any namespace through a
+        // reserved-name rung; that rung is gone, and these are ordinary names.
+        "  import anthill.reflect.{occurrence_span}\n",
         "  rule span_of(?e, ?s) :- occurrence_span(?e, ?s)\n",
         "  rule probe(?s) :- span_of(42, ?s)\n",
         "end\n",
@@ -1896,6 +1910,10 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
     // list is matched intra-frame; an int marker propagates the outcome.
     let source = concat!(
         "namespace wi297.su\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. Before this
+        // ticket the desugaring vocab resolved bare from any namespace through a
+        // reserved-name rung; that rung is gone, and these are ordinary names.
+        "  import anthill.reflect.{sub_occurrences}\n",
         "  import anthill.prelude.{List}\n",
         "  rule kind(?e, 0) :- sub_occurrences(?e, nil)\n",
         "  rule kind(?e, 1) :- sub_occurrences(?e, cons(head: ?, tail: ?))\n",
@@ -1939,6 +1957,11 @@ fn wi682_node_pattern_binds_reflectable_child() {
     // child), `?h` could not re-reflect and the chain would fail.
     let source = concat!(
         "namespace wi682.chain\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. Before this
+        // ticket the desugaring vocab resolved bare from any namespace through a
+        // reserved-name rung; that rung is gone, and these are ordinary names.
+        "  import anthill.reflect.{occurrence_term, sub_occurrences}\n",
+        "  import anthill.reflect.Expr.{int_lit}\n",
         "  import anthill.prelude.{List}\n",
         "  import anthill.reflect.{Expr}\n",
         // head child is an int literal → succeed with marker 1.
@@ -1999,7 +2022,11 @@ fn wi297_occurrence_span_structured_pattern_matches() {
     // silently miss otherwise).
     let source = concat!(
         "namespace wi297.sps\n",
-        "  import anthill.reflect.{SourceSpan}\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. These rules read
+        // an occurrence through `anthill.reflect`; before this ticket the desugaring
+        // vocab resolved bare from anywhere, and now it does not.
+        "  import anthill.reflect.{SourceSpan, occurrence_span}\n",
+        "  import anthill.reflect.SourceSpan.{source_span}\n",
         "  rule field(?e, ?s) :- occurrence_span(?e, source_span(file: ?, start_byte: ?s, end_byte: ?))\n",
         "  rule probe(?s) :- field(42, ?s)\n",
         "end\n",
@@ -2029,7 +2056,11 @@ fn wi297_occurrence_term_compound_pattern_fails_not_panics() {
     // the guard.
     let source = concat!(
         "namespace wi297.if\n",
-        "  import anthill.reflect.{Expr}\n",
+        // WI-20260825-5W3RJ: reflection code imports what it names. These rules read
+        // an occurrence through `anthill.reflect`; before this ticket the desugaring
+        // vocab resolved bare from anywhere, and now it does not.
+        "  import anthill.reflect.{Expr, occurrence_term}\n",
+        "  import anthill.reflect.Expr.{if_expr}\n",
         "  rule synth_if(?e, 1) :- occurrence_term(?e, if_expr(cond: ?c, then_branch: ?t, else_branch: ?el))\n",
         "  rule probe(?k) :- synth_if(42, ?k)\n",
         "end\n",

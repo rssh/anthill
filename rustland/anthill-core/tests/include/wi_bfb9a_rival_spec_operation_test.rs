@@ -374,7 +374,7 @@ end
 /// disagree with it. What the literal catches is a change of MEANING — a tier entry that
 /// starts or stops being a spec operation.
 ///
-/// THE NAMES COME FROM `load::implicit_tier_short_names`, which reads the two tables.
+/// THE NAMES COME FROM `load::implicit_tier_short_names`, which reads the tier's table.
 /// The previous version SCRAPED THIS CRATE'S SOURCE (`read_to_string("src/kb/load.rs")`
 /// then `split('"').step_by(2)`), where one `"` inside a table comment silently
 /// unbalances the parity and drops names while every assertion still passes — found by
@@ -390,9 +390,15 @@ end
 #[test]
 fn the_refusal_population_is_the_ten_spec_operations() {
     let names = load::implicit_tier_short_names();
+    // WI-20260825-5W3RJ SHRANK THIS FROM 62 TO 34, and the floor moved with it. The
+    // tier used to carry a second table — the 28 addresses of the forms the CONVERTER
+    // synthesizes — which is now gone: a desugared node names its reflect declaration
+    // outright, so it never was a bare name to be resolved. Nothing this row asks about
+    // left with it; no synthesized form was ever a spec operation, and the refused set
+    // below is unchanged.
     assert!(
-        names.len() > 50,
-        "sanity: the tier's tables should carry dozens of names, got {}",
+        names.len() > 30,
+        "sanity: the implicit prelude should carry dozens of names, got {}",
         names.len()
     );
     let mut src = String::new();

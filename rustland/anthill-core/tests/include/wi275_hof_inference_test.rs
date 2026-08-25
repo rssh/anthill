@@ -138,7 +138,7 @@ fn body_less_builtin_in_function_slot_is_rejected_not_crashed() {
     let src = r#"
 namespace test.wi275.builtin
   import anthill.prelude.{List, Int64, Function}
-  import anthill.reflect.{Term}
+  import anthill.reflect.{Term, as_term}
 
   operation my_map(xs: List[T = Int64], f: Function[Int64, Term]) -> List[T = Term] =
     match xs
