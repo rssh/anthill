@@ -3,9 +3,9 @@
 - id: WI-20260821-C666A-an-unguarded-rule-head-may-not
 - created: 2026-08-21T13:15:32Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T13:15:32Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-25T05:34:14Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -65,4 +65,14 @@ head and the joining one. The rename control still loads with a predicate per im
 The enclosing-chain join still loads (control -- this rule does not reach it). Say at the
 site which rows fail when the refusal is backed out. cargo-test green via
 rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-08-24T19:26:37Z — feedback — user
+
+PROPOSAL 061 PREMISE CORRECTION (2026-08-24). The original no-declaration program is no longer the live defect: WI-20260822-845G7 makes each undeclared head auto-declare where written and the existing NameIntroducedAtTwoVisibleScopes check refuses the visible pair. The live C666A shape explicitly declares p in Spec with a body-less rule, after which clauses in A and B DENOTE Spec.p through requires and still load clean into one predicate. Rebased acceptance: that declared-predicate requires shape and its wildcard-import twin are located errors naming the joining scope and the qualified target predicate; renaming the Spec declaration keeps independent A.p and B.p predicates; an enclosing scope may contribute to its declared predicate; a selective import naming p is an explicit opt-in and may contribute. The implementation must distinguish resolution available through locals, named imports, or the enclosing chain from resolution available only through whole-scope non-enclosing parents. WI-742 later admits the generated carrier-selecting domain guard at this check without removing the unguarded refusal.
+
+### 2026-08-25T05:34:07Z — feedback — claude
+
+IMPLEMENTED (2026-08-25), rebased onto Proposal 061 ownership. Rust now compares ordinary rule-head resolution with the same ladder restricted to locals, named imports, and lexical enclosing parents. A declared Goal reached only through requires, conversion-style provides, wildcard import, or another non-enclosing whole-scope edge raises a located UnguardedNonEnclosingPredicateJoin error naming the writing scope and qualified target. Named imports, enclosing contributions, and independently renamed predicates remain legal. WI-742 is documented as the future narrow bypass for its generated carrier-selecting domain guard; the unguarded refusal remains. Driven coverage includes requires with two implementors, wildcard import, parameterized provides, rename, enclosing, and selective-import controls, plus updated Proposal 061 ownership/order fixtures. Verification: focused C666A 6 passed; anthill-core wi_tests 3423 passed and 3 existing ignored; full rustland scripts/test.sh passed all workspace, CLI, generator, solver, and doc suites with zero failures; scaland sbt test passed module totals 1, 23, and 514 with zero failures; git diff --check passed. Manual diff review found no issue.
 

@@ -1354,6 +1354,9 @@ mod wi_ffpgd_answer_dedup_test;
 #[path = "include/wi980_rule_head_order_test.rs"]
 mod wi980_rule_head_order_test;
 
+#[path = "include/wi_c666a_unguarded_non_enclosing_join_test.rs"]
+mod wi_c666a_unguarded_non_enclosing_join_test;
+
 #[path = "include/wimh90f_kernel_not_test.rs"]
 mod wimh90f_kernel_not_test;
 

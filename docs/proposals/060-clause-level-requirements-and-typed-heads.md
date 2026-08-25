@@ -74,6 +74,13 @@ coverage, not semantics. Lifted by this rule: on a relational head the annotatio
 compiles to a prepended `domain(?x, T)` goal — the head itself stays structurally
 bare, so the discrimination tree indexes it identically.
 
+**Admission dependency (C666A, delivered 2026-08-24).** An unguarded predicate head
+is now refused when it reaches a declared predicate only through a whole-scope
+non-enclosing edge (`requires`, conversion-style `provides`, or wildcard import).
+That is the unsafe half of this proposal's typeclass-method shape. WI-742 must recognize
+the generated `domain(?x, T)` guard tied to the contributing carrier and admit that
+guarded join at C666A's check; the unguarded refusal remains.
+
 Mode-directed, three-valued, never NAF-decided (WI-067):
 
 | `?x` at the read | outcome |

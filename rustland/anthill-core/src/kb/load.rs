@@ -1341,6 +1341,29 @@ pub enum LoadError {
         /// The first head, so the error has a line.
         span: Span,
     },
+    /// C666A — an unguarded clause may not join a predicate it reaches only through a
+    /// whole-scope, non-enclosing edge (`requires`, `provides`, or wildcard import).
+    ///
+    /// Proposal 061 already refuses the undeclared version: each head auto-declares at
+    /// its written scope and [`Self::NameIntroducedAtTwoVisibleScopes`] reports the
+    /// collision.  The remaining unsafe shape has an EXPLICIT declaration at the
+    /// target, so the joining head denotes it and silently enters its clause set.
+    ///
+    /// A named import is deliberately outside this variant: it is a local alias, not a
+    /// parent edge, and explicitly opts into this predicate.  An enclosing declaration
+    /// is outside it too.  WI-742 will add the third admitted case at the producer: a
+    /// relational typed head whose generated `domain` goal selects its carrier.  The
+    /// unguarded refusal remains.
+    UnguardedNonEnclosingPredicateJoin {
+        /// The short functor written at the joining head.
+        name: String,
+        /// The scope containing the joining clause.
+        scope: String,
+        /// The qualified predicate the head would extend.
+        predicate: String,
+        /// The joining head, so each independent contributor has its own location.
+        span: Span,
+    },
     /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
     /// `⊥` denial names no predicate, a multi-head rule names several, and a QUALIFIED
     /// or desugared head introduces no name at all. Under 061 such a rule asserts
@@ -1984,6 +2007,7 @@ impl LoadError {
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
             | LoadError::NameIntroducedAtTwoVisibleScopes { span, .. }
+            | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -2483,9 +2507,11 @@ impl LoadError {
             } => {
                 let repair = match owner {
                     Some(o) => format!(
-                        "Declare it (proposal 061): a body-less `rule {}(…)` in '{}' makes \
-                         every one of those heads a clause of it, or one in EACH scope \
-                         says they are separate predicates.",
+                        "Declare it (proposal 061): a body-less `rule {}(…)` in '{}', \
+                         with a named import of that predicate in each non-enclosing \
+                         contributor, makes every one of those heads a clause of it. \
+                         Alternatively, one declaration in EACH scope says they are \
+                         separate predicates.",
                         name, o
                     ),
                     // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces
@@ -2500,7 +2526,8 @@ impl LoadError {
                          the program says which should own it. Declare it (proposal 061): \
                          a body-less `rule {}(…)` in each scope that should own one says \
                          they are separate predicates, and one in a scope the others can \
-                         all reach makes their heads its clauses.",
+                         all reach, with named imports in its non-enclosing contributors, \
+                         makes their heads its clauses.",
                         name
                     ),
                 };
@@ -2526,6 +2553,27 @@ impl LoadError {
                     named,
                     name,
                     repair
+                )
+            }
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name,
+                scope,
+                predicate,
+                span,
+            } => {
+                format!(
+                    "{}: the unguarded rule head `{}` in '{}' joins predicate '{}' \
+                     through a non-enclosing scope edge. `requires`, `provides`, and a \
+                     wildcard import expose a whole scope; they do not opt this clause \
+                     into another predicate. Declare `{}` in '{}' to keep a separate \
+                     predicate, or import '{}' by name to extend it explicitly.",
+                    loc.format_start(*span),
+                    name,
+                    scope,
+                    predicate,
+                    name,
+                    scope,
+                    predicate
                 )
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
@@ -3542,6 +3590,18 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name,
+                scope,
+                predicate,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the unguarded rule head '{}' in '{}' joins predicate '{}' through a non-enclosing scope edge (at {}..{})",
+                    name, scope, predicate, span.start, span.end
+                )
+            }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 write!(
                     f,
@@ -4391,6 +4451,36 @@ pub fn scan_definitions_with_sources(
                 .located_in(files[p.file_idx]),
             ),
         }
+    }
+
+    // C666A — AN UNGUARDED CLAUSE MAY NOT JOIN A DECLARED PREDICATE THROUGH AN
+    // IMPLICIT WHOLE-SCOPE EDGE.
+    //
+    // AFTER SUB-PASS 4, for the same reason the agreement check below waits: a
+    // selective predicate import is the explicit opt-in that makes this join legal,
+    // and deferred predicate imports must be visible before the verdict.  One error per
+    // joining head, not per target predicate — two independent implementors are two
+    // authors and each needs its own location.
+    //
+    // Proposal 061's undeclared case does NOT reach this check.  Phase 3 minted each
+    // auto-declaration at its written scope and `NameIntroducedAtTwoVisibleScopes`
+    // already refused the collision.  This loop covers the complementary case where a
+    // body-less declaration made the target real in pass 1, so every foreign head
+    // denotes it and the 061 collision candidate set deliberately excludes it.
+    for head in &heads {
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        let Some(target) = unguarded_non_enclosing_predicate_join_target(kb, head) else {
+            continue;
+        };
+        errors.push(
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name: head.name.to_owned(),
+                scope: kb.scope_display_name(head.scope).to_owned(),
+                predicate: kb.qualified_name_of(target).to_owned(),
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
     }
 
     // WI-980 — THE AGREEMENT CHECK: every head must now resolve to EXACTLY ONE thing.
@@ -15019,6 +15109,46 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
 fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> bool {
     resolve_name_in_kb(kb, name, scope).denotes()
+}
+
+/// C666A — the predicate an UNGUARDED relational head would join solely because a
+/// whole-scope, non-enclosing parent exposed it.
+///
+/// Proposal 061 makes the target explicit: an undeclared predicate is handled by the
+/// auto-declaration collision check before this point, while a declared predicate has a
+/// real [`SymbolKind::Goal`] for the head to denote.  Compare the symbol table's full
+/// scope resolution with the SAME ladder restricted to locals, named imports, and the
+/// enclosing chain.  `NotFound` on the restricted reading means `requires`, `provides`,
+/// or a wildcard import was load-bearing for the join.
+///
+/// Predicate heads only.  An equation subject and an operation law index elsewhere and
+/// are not clauses of a `Goal`.  Ambiguity is likewise left to the ordinary head
+/// resolver, which reports its candidate set at this same site.
+///
+/// WI-742 extends the admission at THIS boundary: once a relational typed head has a
+/// generated `domain` guard proven to select the contributing carrier, it bypasses this
+/// unguarded check.  Do not delete the path classification when adding that case.
+fn unguarded_non_enclosing_predicate_join_target(
+    kb: &KnowledgeBase,
+    head: &RuleHeadSite<'_>,
+) -> Option<Symbol> {
+    if head.introduced_by != RuleIntroduction::Predicate {
+        return None;
+    }
+    let ResolveResult::Found(target) = kb.symbols.resolve_in_scope(head.name, head.scope) else {
+        return None;
+    };
+    if !kb.has_kind(target, SymbolKind::Goal) {
+        return None;
+    }
+    if !matches!(
+        kb.symbols
+            .resolve_without_non_enclosing_parents(head.name, head.scope),
+        ResolveResult::NotFound
+    ) {
+        return None;
+    }
+    Some(target)
 }
 
 // ---------------------------------------------------------------------------
