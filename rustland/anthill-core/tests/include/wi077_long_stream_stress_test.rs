@@ -100,7 +100,7 @@ fn wi077_resolver_long_stream_surfaces_all_n_solutions() {
     let mut interp = item_interp(1);
 
     let search = group_query(&mut interp, 0);
-    let handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
+    let handle = interp.alloc_stream(StreamSource::Resolver { search: Some(search), layer: None });
     assert_eq!(interp.stream_arena_live_count(), 1, "one resolver slot");
     assert_eq!(interp.subst_arena_live_count(), 0, "no substitutions yet");
 
@@ -156,9 +156,9 @@ fn wi077_mplus_over_long_branches_surfaces_all_solutions() {
     let mut interp = item_interp(2);
 
     let left_search = group_query(&mut interp, 0);
-    let left = interp.alloc_stream(StreamSource::Resolver(Some(left_search)));
+    let left = interp.alloc_stream(StreamSource::Resolver { search: Some(left_search), layer: None });
     let right_search = group_query(&mut interp, 1);
-    let right = interp.alloc_stream(StreamSource::Resolver(Some(right_search)));
+    let right = interp.alloc_stream(StreamSource::Resolver { search: Some(right_search), layer: None });
     let mut stream = interp.alloc_stream(StreamSource::MPlus { left, right });
     assert_eq!(interp.stream_arena_live_count(), 3, "mplus + two branches");
 

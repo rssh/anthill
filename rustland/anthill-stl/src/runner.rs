@@ -13,6 +13,8 @@
 use anthill_core::eval::{builtins, render_raised_payload, EvalError, Interpreter, Value};
 use anthill_core::kb::KnowledgeBase;
 
+use crate::reflect;
+
 /// Compilation failure — parse, load, or typecheck error, or no entry found.
 pub const EXIT_COMPILE: i32 = 2;
 
@@ -42,6 +44,24 @@ pub fn register_runtime(interp: &mut Interpreter) -> Result<(), i32> {
     }
     builtins::register_standard_builtins(interp).map_err(|e| {
         eprintln!("error: registering builtins: {e}");
+        EXIT_RUNTIME
+    })?;
+    // WI-SPGBP — the reflect introspection surface, which until this ticket had ZERO
+    // callers outside its own tests: `KB.sorts` / `operations` / `constructors` /
+    // `fields` / `rules` / `descriptions` / `sort_template` / `reify` / `reflect`, the
+    // `Substitution` operations, and the namespace-level `qualified_name` / `short_name`
+    // / `lookup_symbol` / `kind` / `scope` all resolved to nothing in the CLI, in
+    // `anthill run`, and in every embedder built on this function. An anthill program
+    // could not introspect the KB it runs in — the floor under every anthill-side
+    // checker, linter and migration.
+    //
+    // AFTER the standard set, deliberately: `register_builtin` is LAST WINS, so ORDER
+    // decides a collision. The two sets are disjoint today and
+    // `reflect::builtins`'s `the_two_builtin_registries_are_disjoint` keeps them that
+    // way, so nothing is shadowed — but if one is ever reintroduced, this order is the
+    // one the WI-759 comment in `reflect/builtins.rs` describes.
+    reflect::builtins::register_reflect_builtins(interp).map_err(|e| {
+        eprintln!("error: registering reflect builtins: {e}");
         EXIT_RUNTIME
     })?;
     interp.register_standard_effect_handlers().map_err(|e| {

@@ -291,6 +291,10 @@ pub struct TermStore {
     hash_index: HashMap<Term, TermId>,
     refcounts: Vec<u32>,
     free_list: Vec<TermId>,
+    /// WI-SPGBP — how many scoped-KB layers are currently applied. Non-zero suspends
+    /// freeing entirely; see [`Self::release`] for why that is a soundness requirement.
+    /// A COUNT, so nested layers lift the suspension only when the outermost goes.
+    pinned: u32,
 }
 
 impl TermStore {
@@ -300,7 +304,23 @@ impl TermStore {
             hash_index: HashMap::new(),
             refcounts: Vec::new(),
             free_list: Vec::new(),
+            pinned: 0,
         }
+    }
+
+    /// WI-SPGBP — suspend freeing for the lifetime of one scoped-KB layer. Paired with
+    /// [`Self::unpin`] by `KnowledgeBase::snapshot_scoped` / `restore_scoped`, which are
+    /// the only callers and are themselves always paired (the failure path in
+    /// `KB.loaded` restores before it raises).
+    pub(crate) fn pin(&mut self) {
+        self.pinned += 1;
+    }
+
+    /// The other half of [`Self::pin`]. Saturating rather than asserting: an unmatched
+    /// unpin would mean a snapshot was restored twice, which `restore_scoped`'s own
+    /// `defs` length assertion already catches with a message that names the cause.
+    pub(crate) fn unpin(&mut self) {
+        self.pinned = self.pinned.saturating_sub(1);
     }
 
     /// Allocate a term, deduplicating via hash-consing.
@@ -349,7 +369,26 @@ impl TermStore {
     }
 
     /// Decrement refcount. If zero, free the slot and cascade to subterms.
+    ///
+    /// WI-SPGBP — A NO-OP WHILE THE STORE IS PINNED, and that is a soundness rule, not
+    /// a tuning knob. A scoped-KB LAYER rolls `rules` back on discard but never rolls
+    /// the term store back; the asymmetry is deliberate ([`crate::kb::layer`]). It holds
+    /// only in one direction, though: ids that ESCAPE the layer stay valid because the
+    /// store is monotone. An id can also RE-ENTER — a base fact retracted while the
+    /// layer is live drops its head to refcount 0, the slot is freed and reissued to one
+    /// of the layer's own terms, and the discard then reinstates that base row
+    /// (`retracted: false`) pointing at a slot that now holds something else. Silently a
+    /// different fact, or a panic in [`Self::get`] on a freed slot.
+    ///
+    /// So while a layer is applied nothing is freed at all — not even the refcount is
+    /// decremented, because a slot left sitting at zero would be freed by the NEXT
+    /// release after the pin lifts, resurrecting the same defect one step later. The
+    /// cost is a leak bounded by what a layer's lifetime happened to release, which is
+    /// the same currency [`crate::kb::layer`] already pays for the layer's own terms.
     pub fn release(&mut self, id: TermId) {
+        if self.pinned > 0 {
+            return;
+        }
         let rc = &mut self.refcounts[id.index()];
         *rc = rc.saturating_sub(1);
         if *rc == 0 {

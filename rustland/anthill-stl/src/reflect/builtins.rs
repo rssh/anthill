@@ -151,6 +151,20 @@ impl ReflectSyms {
 pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
     // If reflect symbols aren't present at all, skip registration silently —
     // matches `register_if_present` policy for partial-stdlib harnesses.
+    //
+    // WI-SPGBP — WHY ONE SYMBOL IS A SOUND GATE FOR THE ~17 `ReflectSyms::resolve` GOES
+    // ON TO REQUIRE, now that `runner::register_runtime` calls this on every CLI run and
+    // a resolve failure is `EXIT_RUNTIME` rather than a test-only panic. MEASURED over
+    // the required set: 14 of the 17 are declared in `reflect/reflect.anthill`, the same
+    // file as `SortInfo` — so if `SortInfo` resolved, that file loaded and they all
+    // resolve with it. The other three are `List.cons` / `List.nil` / `Pair.pair`, which
+    // `reflect.anthill` IMPORTS at its namespace head and therefore cannot load without.
+    //
+    // So the "partial stdlib" that would slip past this gate and then fail the resolve is
+    // one that cannot load in the first place. If some future arrangement makes it
+    // reachable, the resolve's `EvalError::Internal` NAMES the missing symbol — which is
+    // the right outcome anyway: half the reflect surface silently unbound is the
+    // pre-WI-SPGBP state this ticket exists to end.
     if interp
         .kb()
         .try_resolve_symbol("anthill.reflect.SortInfo")
@@ -1722,6 +1736,84 @@ end
             ),
             "a fully-qualified `anthill.reflect.ground(42)` in an operation body must answer true",
         );
+    }
+
+    /// WI-SPGBP — the two builtin registries must stay DISJOINT.
+    ///
+    /// `register_reflect_builtins` had ZERO callers outside this module's own tests until
+    /// WI-SPGBP wired it into `runner::register_runtime`, which is what makes an overlap
+    /// matter now. [`Interpreter::register_builtin`] is a plain map insert — LAST WINS —
+    /// and this module registers AFTER the standard set, so any qualified name bound by
+    /// both would have `anthill-core`'s production implementation silently replaced by
+    /// this module's. WI-759 found exactly that for `anthill.reflect.field_access` and
+    /// removed it from here; the comment at that removal says the arrangement "was
+    /// harmless only because nothing but this file's own tests ever called
+    /// `register_reflect_builtins`" — the condition this ticket ends.
+    ///
+    /// So the property is MEASURED rather than asserted: each registry is installed on
+    /// its own interpreter and the two key sets are intersected. A newly added builtin
+    /// that collides fails here by NAME, before it can shadow anything.
+    ///
+    /// WHAT FAILS WHEN BACKED OUT: re-add `field_access` to
+    /// [`register_reflect_builtins`] and this test names it.
+    #[test]
+    fn the_two_builtin_registries_are_disjoint() {
+        use std::collections::HashSet;
+
+        // Compared by QUALIFIED NAME, not by `Symbol`, and that is what makes two
+        // separately-built KBs safe here. A `Symbol` is an index into ONE table, so
+        // intersecting symbols minted by two `KnowledgeBase::new()`s would answer from
+        // whatever the indices happened to collide on — empty or not, for a reason that
+        // has nothing to do with the question. The name is the identity both registries
+        // actually key on (`register_if_present` takes a `&str`), so it is the identity
+        // the disjointness is stated in.
+        let core_only = {
+            let mut i = load_stdlib_bare();
+            eval::builtins::register_standard_builtins(&mut i).expect("core builtins");
+            i.registered_builtin_symbols()
+                .into_iter()
+                .map(|s| i.kb().qualified_name_of(s).to_string())
+                .collect::<HashSet<_>>()
+        };
+        let reflect_only = {
+            let mut i = load_stdlib_bare();
+            register_reflect_builtins(&mut i).expect("reflect builtins");
+            i.registered_builtin_symbols()
+                .into_iter()
+                .map(|s| i.kb().qualified_name_of(s).to_string())
+                .collect::<HashSet<_>>()
+        };
+
+        assert!(
+            !core_only.is_empty() && !reflect_only.is_empty(),
+            "both registries must actually register something, or the intersection is \
+             empty for the wrong reason (core {}, reflect {})",
+            core_only.len(),
+            reflect_only.len()
+        );
+
+        let mut overlap: Vec<&String> = core_only.intersection(&reflect_only).collect();
+        overlap.sort();
+        assert!(
+            overlap.is_empty(),
+            "these qualified names are bound by BOTH registries, and `register_runtime` \
+             installs the reflect set second, so each would silently replace \
+             anthill-core's implementation: {overlap:?}"
+        );
+    }
+
+    /// The stdlib on a fresh interpreter with NO builtins registered — the starting
+    /// point for measuring one registry in isolation.
+    fn load_stdlib_bare() -> Interpreter {
+        let refs: Vec<_> = STDLIB_PARSED.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+            for e in load::LoadError::render_all(&errs) {
+                eprintln!("{e}");
+            }
+            panic!("load failed");
+        });
+        Interpreter::new(kb)
     }
 
     /// WI-759 — this module must NOT re-register `anthill.reflect.field_access`.

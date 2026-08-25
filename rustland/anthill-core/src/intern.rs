@@ -440,7 +440,7 @@ impl ResolveResult {
 // ── Scope ───────────────────────────────────────────────────────
 
 /// All per-scope data consolidated into one struct.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Scope {
     /// Definitions in this scope: local_name → Symbol
     pub locals: HashMap<String, Symbol>,
@@ -674,6 +674,116 @@ pub struct ImportAudit {
     pub uses: HashMap<(String, ScopeId, Option<SourceId>), CrossFileImportUse>,
     /// Total `resolve_in_scope` calls audited, as the denominator.
     pub resolutions: u64,
+}
+
+// ── Scoped definitions (WI-SPGBP) ───────────────────────────────
+
+/// WI-SPGBP — the half of a [`SymbolTable`] a discardable KB LAYER must restore.
+///
+/// A scoped load (`execute(loaded(sources), q)`) must be discardable, and the ticket's
+/// rule for what "discardable" means is exact: dropping the layer has to make a name the
+/// load introduced UNRESOLVABLE again, not merely clause-less. Resolvability is a
+/// property of THIS table, so this type is the definition half of that guarantee.
+///
+/// WHAT IS DELIBERATELY ABSENT, and why each absence is the sound choice rather than an
+/// oversight — see [`SymbolTable::snapshot_scoped`], which lists every field explicitly:
+///
+/// * [`SymbolTable::defs`] is restored only over its SNAPSHOT-LENGTH PREFIX. Entries the
+///   layer appended stay. A `Symbol` minted inside the layer can ride out on a
+///   `Solution`, and it must still NAME something afterwards — truncating would leave a
+///   live value indexing past the end of the table. The prefix IS restored, because a
+///   layer that mutates a pre-existing def (a kind added by [`SymbolTable::add_kind`], an
+///   `arg_places` write) is changing a definition the base owns.
+/// * [`SymbolTable::intern_map`] is MONOTONE and never restored. It is the name→`Symbol`
+///   dedup: roll it back and the next intern of a string the layer already interned mints
+///   a SECOND symbol for that one name, so two symbols would denote it and structurally
+///   identical terms would stop unifying. Growing it is harmless — an unresolved symbol
+///   names nothing by itself.
+#[derive(Debug)]
+pub(crate) struct SymbolScopeSnapshot {
+    /// The `defs` prefix as it stood, restored element-wise; `defs.len()` at snapshot
+    /// time is this vector's length.
+    defs_prefix: Vec<SymbolDef>,
+    by_qualified_name: HashMap<String, Symbol>,
+    scopes: HashMap<ScopeId, Scope>,
+    internal_syms: HashSet<u32>,
+    import_origin: HashMap<ScopeId, HashMap<String, SmallVec<[(ImportOrigin, Symbol); 2]>>>,
+    import_parent_origin: HashMap<(ScopeId, ScopeId), SmallVec<[ImportOrigin; 2]>>,
+    asking_file_plus_one: u32,
+}
+
+impl SymbolTable {
+    /// WI-SPGBP — capture the scoped definition state (see [`SymbolScopeSnapshot`]).
+    ///
+    /// WRITTEN AS AN EXHAUSTIVE DESTRUCTURING ON PURPOSE. There is no `..` rest-pattern,
+    /// so a field added to [`SymbolTable`] fails to compile here until its author has
+    /// said which half it belongs to — scoped, or monotone with a reason. The ticket
+    /// names the definition side as "the part that can be silently wrong"; this is the
+    /// structural answer to that, in place of a comment asking the next author to
+    /// remember.
+    pub(crate) fn snapshot_scoped(&self) -> SymbolScopeSnapshot {
+        let SymbolTable {
+            defs,
+            // MONOTONE — see [`SymbolScopeSnapshot`]: rolling back the intern dedup would
+            // let one name acquire a second symbol.
+            intern_map: _,
+            by_qualified_name,
+            scopes,
+            internal_syms,
+            import_origin,
+            import_parent_origin,
+            asking_file_plus_one,
+            // MONOTONE — the WI-995 counterfactual audit is a diagnostic recorder, never
+            // on in a production load, and it is not a definition: a resolution the layer
+            // performed is legitimately part of what the audit observed.
+            auditing: _,
+            import_audit: _,
+        } = self;
+        SymbolScopeSnapshot {
+            defs_prefix: defs.clone(),
+            by_qualified_name: by_qualified_name.clone(),
+            scopes: scopes.clone(),
+            internal_syms: internal_syms.clone(),
+            import_origin: import_origin.clone(),
+            import_parent_origin: import_parent_origin.clone(),
+            asking_file_plus_one: asking_file_plus_one.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// WI-SPGBP — discard everything the layer defined, restoring `snap`.
+    ///
+    /// Exhaustively destructured for the same reason as [`Self::snapshot_scoped`].
+    pub(crate) fn restore_scoped(&mut self, snap: SymbolScopeSnapshot) {
+        let SymbolScopeSnapshot {
+            defs_prefix,
+            by_qualified_name,
+            scopes,
+            internal_syms,
+            import_origin,
+            import_parent_origin,
+            asking_file_plus_one,
+        } = snap;
+
+        // A restore may only SHORTEN nothing and may never find the table shorter than
+        // its own snapshot: `defs` is append-only, so a shorter table means the snapshot
+        // came from a different table (or a restore ran twice out of order). LOUD, not a
+        // clamp — a silently truncated prefix restores the wrong definitions.
+        assert!(
+            self.defs.len() >= defs_prefix.len(),
+            "WI-SPGBP: defs shrank under a layer ({} < {}) — a snapshot was restored out \
+             of order, or against the wrong SymbolTable",
+            self.defs.len(),
+            defs_prefix.len()
+        );
+        self.defs[..defs_prefix.len()].clone_from_slice(&defs_prefix);
+        self.by_qualified_name = by_qualified_name;
+        self.scopes = scopes;
+        self.internal_syms = internal_syms;
+        self.import_origin = import_origin;
+        self.import_parent_origin = import_parent_origin;
+        self.asking_file_plus_one
+            .store(asking_file_plus_one, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl SymbolTable {

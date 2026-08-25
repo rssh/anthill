@@ -2213,7 +2213,7 @@ end
         .kb_mut()
         .execute_logical_query(&query)
         .expect("execute lowered");
-    let stream_handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
+    let stream_handle = interp.alloc_stream(StreamSource::Resolver { search: Some(search), layer: None });
     let stream_val = Value::Stream(stream_handle);
 
     let count = interp
@@ -2293,7 +2293,7 @@ end
         .kb_mut()
         .execute_logical_query(&query)
         .expect("execute lowered");
-    let stream_handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
+    let stream_handle = interp.alloc_stream(StreamSource::Resolver { search: Some(search), layer: None });
     let stream_val = Value::Stream(stream_handle);
 
     let count = interp

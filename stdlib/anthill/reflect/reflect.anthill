@@ -379,6 +379,27 @@ namespace anthill.reflect
   -- as the first parameter, which becomes &self via the self-arg heuristic.
   -- Implementations (e.g. KnowledgeBase) impl this trait.
 
+  -- Payload for a SCOPED LOAD that did not happen (WI-SPGBP). Carried by `Error` on
+  -- `KB.loaded` below, whose sources are candidate program TEXT: a candidate that does
+  -- not parse, or does not load, is the ordinary answer a checker is asking for rather
+  -- than a runtime fault, so it rides the channel that signature declares.
+  --
+  -- HERE AND NOT IN `anthill.prelude.effects`, where the other `Error` payloads live,
+  -- because the rule those follow is that a payload lives WITH THE THING THAT RAISES IT
+  -- — `DivisionByZero` with prelude arithmetic, `EmptyStream` with prelude `Stream`,
+  -- `RelationFloundered` with the prelude `Relation` face. Nothing outside reflect can
+  -- raise this one.
+  --
+  -- `diagnostics` is a LIST because a load reports every error it found, and prose
+  -- because that is what a repair loop feeds back to a generator (the guardians example's
+  -- `Rejected(diagnostics: List[T = String])` takes exactly this shape). Each entry is
+  -- already located — `line:col: message` — by the loader's own renderer, so a handler
+  -- can print one verbatim.
+  sort LoadFailed
+    import anthill.prelude.{List, String}
+    entity load_failed(diagnostics: List[T = String])
+  end
+
   sort KB
     -- Ambient-knowledge-base accessor — anthill code writes `kb()` to obtain
     -- the KB value passed to KB.execute / etc. It is a zero-argument OPERATION
@@ -388,6 +409,32 @@ namespace anthill.reflect
     -- type checker accepts `KB.execute(kb(), q)` without surfacing an abstract
     -- sort.
     operation kb() -> KB
+
+    -- WI-SPGBP — a SCOPED LOAD. Each element of `sources` is anthill source text;
+    -- the result is a KB value that is a LAYER over the ambient one.
+    --
+    --   execute(loaded(sources), pattern_query(...))
+    --
+    -- WHY A LAYER AND NOT A SECOND KB. The goal handed to `execute` is an arbitrary
+    -- logical TERM, and its symbols are the CALLER's. A separate knowledge base with
+    -- its own tables would make that term meaningless on the far side and force the
+    -- goal to be a NAME resolved there — the short-name identity matching WI-672 /
+    -- WI-897 removed. The layer shares the caller's term store and symbol table, so a
+    -- goal written at the call site is legal in it.
+    --
+    -- DISCARD IS DROPPING THE VALUE. There is no enter/pop pair to get wrong. A lazy
+    -- `Stream[Solution]` from `execute` holds the KB it was made from, so a search
+    -- cannot outlive its scope.
+    --
+    -- WHAT IT DOES NOT BUY. A layer stops a candidate RETARGETING a trusted symbol: a
+    -- goal in trusted code still resolves to the symbol it always did. It does NOT
+    -- stop a candidate adding a CLAUSE under that trusted symbol. A gate over DECLARED
+    -- names is a separate mechanism.
+    --
+    -- A source that does not parse, or does not load, RAISES: the diagnostics are the
+    -- answer a checker is asking for, and the KB is left exactly as it was.
+    operation loaded(sources: List[T = String]) -> KB
+      effects Error
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.

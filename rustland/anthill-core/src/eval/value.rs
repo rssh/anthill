@@ -15,6 +15,7 @@ use crate::kb::term::{TermId, Var, VarId};
 pub use super::cell_arena::CellHandle;
 pub use super::closure::ClosureHandle;
 pub use super::dictionary::{BoxedDictionary, Dictionary};
+pub use super::layer_arena::KbHandle;
 pub use super::map_arena::MapHandle;
 pub use super::stream::StreamHandle;
 pub use super::subst_arena::SubstHandle;
@@ -205,6 +206,20 @@ pub enum Value {
     /// transitively contains Cell, so the runtime never has to detect
     /// cycles. See proposal 037 §`Cell[V]` + `docs/design/cell-runtime.md`.
     Cell(CellHandle),
+    /// WI-SPGBP — a first-class `anthill.reflect.KB` value: an owning reference to one
+    /// DISCARDABLE LAYER over the interpreter's knowledge base, minted by
+    /// `KB.loaded(sources)` and consumed by `KB.execute`.
+    ///
+    /// It is a HANDLE and not a knowledge base, because the layer is applied to the
+    /// interpreter's own KB in place — see `crate::kb::layer` for the measurement that
+    /// settled that, and `crate::eval::layer_arena` for why the last drop only RETIRES
+    /// the layer rather than discarding it on the spot. What the value owns is the right
+    /// to keep the layer applied: a lazy `Stream[Solution]` from `execute` holds one, so
+    /// the layer cannot be discarded out from under a search that has not finished.
+    ///
+    /// The AMBIENT KB is not this — `kb()` still answers a zero-field entity, and
+    /// `execute(kb(), q)` means "the KB as it stands", layers and all.
+    Kb(KbHandle),
     /// WI-780 / proposal 057 — an opaque, KB-session-scoped locator for one
     /// stored row. Unlike the former literal handle it never exposes a
     /// resident `RuleId`: its private payload selects either the resident
@@ -553,6 +568,7 @@ impl Value {
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
+            Value::Kb(_) => "KB",
             Value::FactRef(_) => "FactRef",
             Value::Term { .. } => "Term",
             Value::Node(_) => "Node",

@@ -676,6 +676,32 @@ impl KB for KbBridge {
         panic!("KB.kb(): no ambient host KB — construct a KbBridge from a KnowledgeBase instead")
     }
 
+    /// WI-SPGBP — the scoped load is refused here, for the same reason as [`Self::kb`]
+    /// one method up and then some.
+    ///
+    /// `loaded` is STATIC (no receiver), so like `kb()` it has no KB to layer over: a
+    /// `KbBridge` is built explicitly from a `KnowledgeBase`, and there is no ambient
+    /// instance for a static method to find. Beyond that, a layer's LIFETIME is owned by
+    /// the interpreter's `layer_arena` — the value is discarded when its last holder
+    /// drops, and only `Interpreter::sweep_layers` can do the restoring, because that is
+    /// the one place holding `&mut KnowledgeBase`. A `Box<dyn KB>` handed out from here
+    /// would have no such owner, so the layer would stay applied for the KB's whole
+    /// remaining life: a scoped load that never unscopes, which is worse than not
+    /// offering one.
+    ///
+    /// An `Err` rather than the `panic!` above because this signature has a `Result` to
+    /// say it with — the same choice `Stream::find` makes a few lines up. A host that
+    /// wants a scoped load drives it through an `Interpreter`, where `KB.loaded` is a
+    /// registered builtin.
+    fn loaded(_sources: Vec<String>) -> Result<Box<dyn KB>, Error> {
+        Err(Error(
+            "KB.loaded: no scoped load on the host bridge — a layer's lifetime is owned \
+             by an Interpreter's layer arena, which is what discards it; drive the load \
+             through an Interpreter instead"
+                .into(),
+        ))
+    }
+
     fn reify(&self, t: Term) -> TermRepr {
         self.reify_view(t.value())
     }
