@@ -56,7 +56,19 @@ pub enum StreamSource {
     /// Wraps a KB resolver search. The `SearchStream` option is `take()`n
     /// on each pump and replaced with the continuation, so the arena slot
     /// is always valid but holds `None` transiently during a pump.
-    Resolver(Option<SearchStream>),
+    Resolver {
+        search: Option<SearchStream>,
+        /// WI-SPGBP — the scoped-KB LAYER this search runs against, when it was made
+        /// from one (`execute(loaded(sources), q)`); `None` for the ambient KB.
+        ///
+        /// THE STREAM OWNS IT, and that is the whole reason the ticket made the `kb`
+        /// argument a VALUE rather than adding a bracket operation. This search is
+        /// pumped later, by `splitFirst` — a scope popped at a bracket's exit would
+        /// leave it resolving against a base that is gone. Holding the handle here
+        /// keeps the layer applied for exactly as long as there is a search that
+        /// might read it.
+        layer: Option<crate::eval::layer_arena::KbHandle>,
+    },
     /// WI-714 (proposal 052): a resolver search whose yielded `Solution`s are
     /// MATERIALIZED onto a relation's free variables — the runtime backing of a
     /// `Relation[T]` consumed as a stream. Like `Resolver`, but each pull projects

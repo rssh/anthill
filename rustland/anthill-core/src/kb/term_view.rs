@@ -2627,6 +2627,7 @@ impl TermView for Value {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
+            | Value::Kb(_)
             | Value::FactRef(_)
             | Value::Relation { .. } => ViewHead::Opaque,
         }

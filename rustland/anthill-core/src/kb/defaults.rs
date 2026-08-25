@@ -240,7 +240,7 @@ pub struct DefaultRow {
 /// which also asserts it AGREES with the anthill relation answer for answer. That
 /// agreement is the guard against the one failure this arrangement invites: two
 /// derivations of one relation drifting apart.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct DefaultProviderIndex {
     by_carrier_base: HashMap<Symbol, Vec<DefaultRow>>,
 }

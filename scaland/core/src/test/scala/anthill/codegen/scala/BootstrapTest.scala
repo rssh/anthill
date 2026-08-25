@@ -2946,7 +2946,27 @@ class BootstrapTest extends munit.FunSuite:
     // they compile. The file is not opaque to Bootstrap; its abstract sorts are.
     assert(own.files.length >= 6,
       s"reflect.anthill's concrete declarations must still emit: ${own.files.map(_.relPath)}")
-    ScalaCompile.assertCompiles("reflect.anthill's own concrete emission", own.files)
+    // COMPILED WITH THE PRELUDE EMISSION, not alone — WI-SPGBP. Until that ticket every
+    // reflect declaration that emitted was a self-contained enum, so compiling reflect's
+    // files by themselves happened to work; it was never the property this control is
+    // about. `anthill.reflect.LoadFailed` is the first emitting reflect declaration to
+    // name a prelude type (`List[T = String]`, the diagnostics a failed scoped load
+    // carries), and it emits the qualified `_root_.anthill.prelude.List[...]` a use site
+    // must — correct Scala, and unresolvable only because a reflect-only compile unit has
+    // no `anthill.prelude` package in it.
+    //
+    // Isolation was the accident, not the invariant: `anthill.prelude` and
+    // `anthill.reflect` are emitted into ONE project (the whole-prelude closure compile
+    // one test up builds the same 60 files), so this is the compile unit a use site
+    // actually gets. The control's claim is unchanged and still load-bearing —
+    // reflect.anthill is not opaque to Bootstrap, its concrete declarations emit, and
+    // what they emit type-checks.
+    val preludeEmission = StdlibFixture.preludeByName.flatMap { case (_, pf) =>
+      Bootstrap.generate(pf, wide).files
+    }
+    ScalaCompile.assertCompiles(
+      "reflect.anthill's own concrete emission, against the prelude it names",
+      preludeEmission ++ own.files)
 
     // FAILS WHEN BACKED OUT: there is no code change to back out — this test records a
     // measurement, and it fails the day either reason stops holding. Teach

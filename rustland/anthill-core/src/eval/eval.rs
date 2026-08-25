@@ -87,6 +87,8 @@ impl Interpreter {
                 }
             }
             self.step_count = self.step_count.saturating_add(1);
+            // WI-SPGBP — discard any scoped-KB layer whose last holder has gone.
+            self.sweep_layers();
             let outcome = match pending.take() {
                 Some(v) => self.deliver(v)?,
                 None => {
@@ -3897,6 +3899,8 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         | Value::Substitution(_)
         | Value::Map(_)
         | Value::Cell(_)
+        // WI-SPGBP — a scoped-KB layer handle. Opaque, like its arena siblings.
+        | Value::Kb(_)
         | Value::FactRef(_)
         | Value::Var(_)
         | Value::Relation { .. } => None,
@@ -4075,6 +4079,9 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         Value::Stream(_) => Some("anthill.prelude.LogicalStream"),
         Value::Map(_) => Some("anthill.prelude.Map"),
         Value::Cell(_) => Some("anthill.prelude.Cell"),
+        // WI-SPGBP — a `KB.loaded` layer value IS an `anthill.reflect.KB`, which is what
+        // lets `execute(loaded(sources), q)` typecheck against the declared signature.
+        Value::Kb(_) => Some("anthill.reflect.KB"),
         Value::FactRef(_) => Some("anthill.reflect.FactRef"),
         Value::Closure(_) | Value::OpRef { .. } => Some("anthill.prelude.Function"),
         Value::Int(_) => Some("anthill.prelude.Int64"),

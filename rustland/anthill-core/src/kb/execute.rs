@@ -318,6 +318,7 @@ impl Value {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
+            | Value::Kb(_)
             | Value::FactRef(_)
             | Value::Node(_)
             | Value::Relation { .. } => false,
@@ -427,6 +428,7 @@ impl KnowledgeBase {
             Value::Substitution(_) => Err(LowerError::UnsupportedVariant("Substitution")),
             Value::Map(_) => Err(LowerError::UnsupportedVariant("Map")),
             Value::Cell(_) => Err(LowerError::UnsupportedVariant("Cell")),
+            Value::Kb(_) => Err(LowerError::UnsupportedVariant("KB")),
             Value::FactRef(_) => Err(LowerError::UnsupportedVariant("FactRef")),
             Value::Node(_) => Err(LowerError::UnsupportedVariant("Node")),
             // WI-714: a `Relation` is an intensional query value — it is RUN
@@ -1210,6 +1212,7 @@ mod tests {
             Value::Substitution(_) => "Substitution",
             Value::Map(_) => "Map",
             Value::Cell(_) => "Cell",
+            Value::Kb(_) => "KB",
             Value::FactRef(_) => "FactRef",
             Value::Term { .. } => "Term",
             Value::Var(_) => "Var",

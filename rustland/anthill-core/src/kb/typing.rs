@@ -18981,6 +18981,7 @@ fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
 /// and only the body answers the second. MEASURED here too, on the corpus:
 /// `test.wi508g.useNew` calls `FiniteCollection.size` with `Element` unpinned and
 /// answers 1, because `size`'s body reads no `__req_*` at all.
+#[derive(Clone)]
 pub(crate) struct UnsuppliableRequirement {
     /// The call, for the diagnostic's location. `source` rides beside `span` because
     /// this error is emitted outside the per-op loop that stamps `sources`.
@@ -26102,7 +26103,7 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
 /// record) and WI-659 [`SortAliasIndex`] (maps to `TermId` targets under string /
 /// parent-sort keys) deliberately do NOT fold in — neither is a `Symbol → Vec<RuleId>`
 /// bucket.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct SymbolKeyedFactIndex {
     buckets: HashMap<Symbol, Vec<crate::kb::RuleId>>,
 }
@@ -26184,7 +26185,7 @@ impl SymbolKeyedFactIndex {
 ///   symbol, never by last segment (spec §8.6). `build_provides_index` `debug_assert`s
 ///   that no carrier is an UNRESOLVED bare reference — the one shape canonical keying
 ///   could not bridge to a qualified form.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ProvidesIndex {
     /// Providers keyed by canonical spec base (`canonical_sort_sym(spec_base)`).
     by_spec_base: SymbolKeyedFactIndex,
@@ -37492,6 +37493,7 @@ fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value) -> Value {
         | Value::Substitution(_)
         | Value::Map(_)
         | Value::Cell(_)
+        | Value::Kb(_)
         | Value::FactRef(_)
         | Value::Var(_)
         | Value::SymbolRef(_)
@@ -44577,7 +44579,7 @@ pub(crate) fn scan_sort_aliases(
 /// so [`resolve_sort_alias`] is O(1) instead of a linear scan of every SortAlias fact
 /// per call — the #1 `type_check_sorts` hotspot after WI-656. (It was a DOUBLE scan
 /// until WI-956 deleted the by-name pass.)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct SortAliasIndex {
     /// Source functor Symbol → alias target. Exact identity, and since WI-956 the only
     /// keying: a companion `by_name` map keyed on the source's LOCAL name was deleted
@@ -46359,7 +46361,12 @@ fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
 
 /// A view's named child as an owned [`Value`] (frees the `kb` borrow). `key`
 /// must already be interned (the caller interns the well-known field names).
-fn named_child_value(kb: &KnowledgeBase, v: &impl TermView, key: Symbol) -> Option<Value> {
+///
+/// `pub(crate)` since WI-SPGBP: `eval::builtins`' strict `List[String]` read walks a
+/// cons spine carrier-agnostically and needs exactly this projection. Duplicating the
+/// `ViewItem` → `Value` conversion there would have made a second place that decides
+/// what a named child IS.
+pub(crate) fn named_child_value(kb: &KnowledgeBase, v: &impl TermView, key: Symbol) -> Option<Value> {
     v.named_arg(kb, key).map(|it| view_item_value(&it))
 }
 

@@ -644,6 +644,58 @@ pub(crate) struct ExtentRegistry {
     mirror_monotonicity: HashMap<Symbol, (String, Monotonicity)>,
 }
 
+/// WI-SPGBP — the scoped half of an [`ExtentRegistry`].
+///
+/// The registry splits exactly as [`crate::intern::SymbolTable`] does, and for the same
+/// reason. `sources` and `mirrors` hold LIVE HOST BACKENDS registered through a Rust API
+/// (`Box<dyn ExtentSource>` / `Box<dyn Store>`), in a slab whose indices "stay valid for
+/// the KB's lifetime" — an interner by another name, and not clonable in any case. The
+/// tables that say WHICH FUNCTOR a backend currently owns are ordinary registrations, and
+/// those a discard must undo: otherwise a functor mounted inside a layer keeps being
+/// served by that layer's source after the layer is gone.
+pub(crate) struct ExtentScopeSnapshot {
+    mounts: HashMap<Symbol, SourceId>,
+    profiles: HashMap<Symbol, ExtentProfile>,
+    mirror_of: HashMap<Symbol, String>,
+    mirror_monotonicity: HashMap<Symbol, (String, Monotonicity)>,
+}
+
+impl ExtentRegistry {
+    /// WI-SPGBP — capture the scoped mount tables. Exhaustively destructured, so a field
+    /// added to the registry fails to compile until it is classified.
+    pub(crate) fn snapshot_scoped(&self) -> ExtentScopeSnapshot {
+        let ExtentRegistry {
+            // MONOTONE — live host backends in a never-shrinking slab (see the type doc).
+            sources: _,
+            mirrors: _,
+            mounts,
+            profiles,
+            mirror_of,
+            mirror_monotonicity,
+        } = self;
+        ExtentScopeSnapshot {
+            mounts: mounts.clone(),
+            profiles: profiles.clone(),
+            mirror_of: mirror_of.clone(),
+            mirror_monotonicity: mirror_monotonicity.clone(),
+        }
+    }
+
+    /// WI-SPGBP — un-mount everything the layer mounted.
+    pub(crate) fn restore_scoped(&mut self, snap: ExtentScopeSnapshot) {
+        let ExtentScopeSnapshot {
+            mounts,
+            profiles,
+            mirror_of,
+            mirror_monotonicity,
+        } = snap;
+        self.mounts = mounts;
+        self.profiles = profiles;
+        self.mirror_of = mirror_of;
+        self.mirror_monotonicity = mirror_monotonicity;
+    }
+}
+
 impl ExtentRegistry {
     pub(crate) fn new() -> Self {
         Self::default()

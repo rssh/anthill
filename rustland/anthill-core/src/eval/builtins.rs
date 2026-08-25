@@ -190,6 +190,7 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.rename", relation_rename)?;
 
     register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
+    register_if_present(interp, "anthill.reflect.KB.loaded", kb_loaded)?;
     register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
     register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
     register_if_present(
@@ -3422,6 +3423,166 @@ fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     })
 }
 
+/// WI-SPGBP — `KB.loaded(sources: List[String]) -> KB`, the scoped load.
+///
+/// Loads each source text as a DISCARDABLE LAYER over the interpreter's own KB and
+/// returns the layer as a first-class `KB` value. The ticket's form, unchanged:
+/// `execute(loaded(sources), q)` — no bracket, no second KB, no goal-as-a-name.
+///
+/// WHY A LAYER AND NOT A SEPARATE KB. The goal handed to `execute` is an arbitrary
+/// LOGICAL TERM, and its symbols are the CALLER's. A separate KB with its own tables
+/// would make that term meaningless on the far side and force the goal to be a NAME
+/// resolved there — the short-name identity matching WI-672 / WI-897 removed. Sharing
+/// the caller's term store and symbol table is what keeps a goal written at the call site
+/// legal in the result.
+///
+/// FAILURE IS THE ANSWER, NOT AN INTERNAL ERROR. A candidate program that does not parse
+/// or does not load is exactly what a checker is asking about, so both are `raise`d as an
+/// `Error` payload carrying the diagnostics — and the layer is unwound first, so a failed
+/// `loaded` leaves the KB exactly as it found it. That unwind is why the snapshot is
+/// taken here and handed to the arena only on success (see
+/// [`crate::eval::layer_arena::LayerArenaRef::push`]).
+fn kb_loaded(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [sources_arg] = expect_args::<1>("KB.loaded", args)?;
+    let texts = expect_string_list(interp, &sources_arg)?;
+
+    // Parse BEFORE snapshotting: a parse fault touches no KB state, so there is nothing
+    // to unwind and the diagnostic is not entangled with a restore.
+    let mut parsed = Vec::with_capacity(texts.len());
+    for (i, text) in texts.iter().enumerate() {
+        match crate::parse::parse(text) {
+            Ok(file) => parsed.push(file),
+            Err(errors) => {
+                // Located `line:col: message`, built off ONE `LineIndex` for the whole
+                // batch — `ParseError` has no `Display` precisely so a caller cannot
+                // re-index the source per error (see `ParseError::all_located`). There
+                // is no path to render: a scoped source is a String the caller supplied.
+                let loc = crate::span::LineIndex::new(text);
+                let detail: Vec<String> = errors
+                    .iter()
+                    .map(|e| format!("source {i}: {}", e.format_at(&loc)))
+                    .collect();
+                return Err(interp.raise_load_failed(detail));
+            }
+        }
+    }
+
+    let snapshot = interp.kb.snapshot_scoped();
+    let refs: Vec<&crate::parse::ir::ParsedFile> = parsed.iter().collect();
+    match crate::kb::load::load_incremental(&mut interp.kb, &refs, &crate::kb::load::NullResolver) {
+        Ok(_) => {
+            // The layer can OVERRIDE what the base declared, so the interpreter's memos
+            // have to go on the way IN as well as on the way out (`sweep_layers` clears
+            // them again on the discard). `op_body_cache` and `const_cache` are keyed by
+            // `Symbol` and are not touched by `load_incremental` — a base operation whose
+            // body was cached before the layer would otherwise keep running the base's
+            // version of a definition the layer just replaced.
+            //
+            // The KB's OWN caches are the loader's business, not this function's: a layer
+            // load IS `load_incremental`, which every embedder already runs against a
+            // live KB, so whatever invalidation it does is the established contract here
+            // too. These two are the pair no loader ever sees.
+            interp.op_body_cache.clear();
+            // Same rule as the discard side (`Interpreter::sweep_layers`): an in-flight
+            // `Forcing` sentinel is control state, not a memo, and dropping it disables
+            // const-cycle detection for a const whose body is being evaluated right now.
+            interp
+                .const_cache
+                .retain(|_, entry| matches!(entry, crate::eval::ConstCacheEntry::Forcing));
+            let handle = interp.layers.push(snapshot);
+            Ok(Value::Kb(handle))
+        }
+        Err(errors) => {
+            // Unwind FIRST. A caller that catches this must see the KB it had, not a
+            // half-loaded one — a partially applied layer is the state the ticket calls
+            // worse than none.
+            interp.kb.restore_scoped(snapshot);
+            // Rendered through the loader's OWN batch renderer, not a `to_string()` loop:
+            // it locates each error against a per-file `LineIndex` built once, which is
+            // the whole reason `render_all` exists (WI-745 / WI-852). These diagnostics
+            // are the answer a checker reports, so they should read the way the CLI's do.
+            let detail: Vec<String> = crate::kb::load::LoadError::render_all(&errors).collect();
+            Err(interp.raise_load_failed(detail))
+        }
+    }
+}
+
+/// Read a `List[String]` argument STRICTLY.
+///
+/// [`crate::kb::typing::value_list_elements`] is deliberately tolerant — a malformed
+/// spine reads as the empty list — which is right for a typer walk and wrong here: an
+/// empty scoped load that silently succeeded would report a candidate program as clean
+/// because nothing was loaded at all. So an empty result is accepted only when the
+/// argument really is `nil`, and every element must be a `Str`.
+fn expect_string_list(interp: &Interpreter, arg: &Value) -> Result<Vec<String>, EvalError> {
+    // Walk the spine HERE rather than through `typing::value_list_elements`, which stops
+    // at the first non-`cons` cell and returns the prefix with no signal. That tolerance
+    // is right for a typer walk and wrong here: a malformed or partial spine
+    // (`["a", "b" | ?rest]`) would load a SUBSET of the requested sources and report the
+    // candidate clean on the strength of text that never reached the KB — the exact
+    // silent-skip this function's strictness exists to prevent.
+    let mut out = Vec::new();
+    let mut cell = arg.clone();
+    loop {
+        match list_cell_kind(interp, &cell) {
+            ListCell::Nil => return Ok(out),
+            ListCell::Cons => {}
+            ListCell::Neither => return Err(type_mismatch("List[String]", arg, None)),
+        }
+        let head = named_child(interp, &cell, "head")
+            .ok_or_else(|| type_mismatch("List[String]", arg, None))?;
+        match head {
+            Value::Str(s) => out.push(s),
+            other => return Err(type_mismatch("String", &other, None)),
+        }
+        cell = named_child(interp, &cell, "tail")
+            .ok_or_else(|| type_mismatch("List[String]", arg, None))?;
+    }
+}
+
+/// Which end of a `List` spine `v` is — or neither.
+enum ListCell {
+    Cons,
+    Nil,
+    Neither,
+}
+
+/// Classify a list cell CARRIER-AGNOSTICALLY, by its head functor.
+///
+/// Two spellings have to be read here, and missing either one breaks a real case:
+///
+/// * The CARRIER. A `cons` cell reaches this through `TermView` whatever holds it, so a
+///   list read out of the KB (a `Value::Term`, a `Solution` binding, a reified term)
+///   walks fine — but matching `Value::Entity` structurally would not have recognised
+///   that list's `nil`, and an EMPTY such list would be refused as "not a list".
+///   `loaded(sources_from_a_query(...))` returning no rows is exactly that case.
+/// * The WI-511 / WI-436 CANON, via [`ViewHead::functor_sym`] rather than a `Functor`
+///   match. `nil` is a NULLARY constructor, and `functor_view_head` canonicalizes a
+///   0-ary application of a registered constructor to the bare [`ViewHead::Ref`]. So
+///   `cons` (two named args) heads as `Functor` while `nil` heads as `Ref`, and a
+///   `Functor`-only match sees every list as unterminated. `functor_sym` is the reader
+///   that spans both, which is why it exists.
+fn list_cell_kind(interp: &Interpreter, v: &Value) -> ListCell {
+    use crate::kb::term_view::TermView;
+    match v.head(&interp.kb).functor_sym() {
+        Some(f) => match interp.kb.qualified_name_of(f) {
+            "anthill.prelude.List.cons" => ListCell::Cons,
+            "anthill.prelude.List.nil" => ListCell::Nil,
+            _ => ListCell::Neither,
+        },
+        None => ListCell::Neither,
+    }
+}
+
+/// One named child of a value, through the SAME projection the typer uses
+/// ([`crate::kb::typing::named_child_value`]) so the two cannot disagree about what a
+/// named child is. `None` when the name was never interned — which, for `head`/`tail`,
+/// means no list was ever built in this KB.
+fn named_child(interp: &Interpreter, v: &Value, name: &str) -> Option<Value> {
+    let key = interp.kb.lookup_symbol(name)?;
+    crate::kb::typing::named_child_value(&interp.kb, v, key)
+}
+
 /// `KB.execute(kb: KB, q: LogicalQuery) -> Stream[Solution]` (WI-531; each
 /// element is `definite(subst)` or `undecided(subst, residual)`, materialized
 /// lazily by `Interpreter::stream_split_first`). The KB argument is a
@@ -3431,11 +3592,38 @@ fn kb_ambient(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// 026.1 Q3) and wrapped in `StreamSource::Resolver`.
 fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, query] = expect_args::<2>("KB.execute", args)?;
+    // WI-SPGBP — the KB argument is REAL now, and this is what it buys: the search this
+    // builds is RETAINED against the scope it was built in. `execute` returns a
+    // `StreamSource::Resolver` that `splitFirst` pumps LATER, so a layer whose last
+    // holder went away between the two would be discarded out from under a search still
+    // running against it — exactly the bug a bracket form would have had, and the reason
+    // the ticket settled on a KB VALUE.
+    //
+    // WHAT IS PINNED IS THE INNERMOST LIVE LAYER, NOT THE ARGUMENT, and the difference
+    // is load-bearing. The search reads the KB AS IT STANDS — every layer applied, not
+    // just the one named here — so pinning the argument would leave `execute(kb(), q)`
+    // under a live layer holding nothing at all, and `execute(A, q)` with a `B` on top
+    // holding only `A` while reading `A + B`. One innermost handle pins the whole stack,
+    // because layers unwind innermost-first. See `LayerArenaRef::retain_innermost`.
+    //
+    // SO WHAT IS THE ARGUMENT FOR, given this reads `_kb_arg`? Not what it was before
+    // WI-SPGBP, when it meant nothing anywhere: `kb()` answered a zero-field entity and
+    // every `kb`-taking builtin ignored it. It is real now because `loaded(sources)`
+    // genuinely APPLIES a layer, and because holding the value it returns is what keeps
+    // that layer applied across statements — `execute(loaded(s), q)` works precisely
+    // because the value exists and is owned. What the argument is not is the mechanism
+    // that keeps THIS stream sound; that has to be the innermost layer, for the reason
+    // above. Retaining the argument as well would be redundant, since the innermost
+    // handle already pins everything below it.
+    let layer = interp.layers.retain_innermost();
     let search = interp
         .kb
         .execute_logical_query(&query)
         .map_err(|e| EvalError::Internal(format!("execute_logical_query: {}", e)))?;
-    let handle = interp.alloc_stream(StreamSource::Resolver(Some(search)));
+    let handle = interp.alloc_stream(StreamSource::Resolver {
+        search: Some(search),
+        layer,
+    });
     Ok(Value::Stream(handle))
 }
 

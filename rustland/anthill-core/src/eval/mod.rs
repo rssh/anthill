@@ -12,6 +12,7 @@ pub mod effects;
 pub mod error;
 pub mod eval;
 pub mod frame;
+pub mod layer_arena;
 pub mod map_arena;
 pub mod pattern;
 pub mod stream;
@@ -314,6 +315,8 @@ pub struct Interpreter {
     pub(crate) streams: StreamArenaRef,
     pub(crate) substs: subst_arena::SubstArenaRef,
     pub(crate) maps: MapArenaRef,
+    /// WI-SPGBP — live scoped-KB layers (`KB.loaded`). See `eval::layer_arena`.
+    pub(crate) layers: layer_arena::LayerArenaRef,
     pub(crate) cells: CellArenaRef,
     pub(crate) effect_handlers: EffectRegistry,
     /// Memoized operation-body lookups. `lookup_operation_body` linear-scans
@@ -394,6 +397,7 @@ impl Interpreter {
             streams: StreamArenaRef::new(),
             substs: subst_arena::SubstArenaRef::new(),
             maps: MapArenaRef::new(),
+            layers: layer_arena::LayerArenaRef::new(),
             cells: CellArenaRef::new(),
             effect_handlers: EffectRegistry::new(),
             op_body_cache: HashMap::new(),
@@ -544,6 +548,8 @@ impl Interpreter {
             | Value::Substitution(_)
             | Value::Map(_)
             | Value::Cell(_)
+            // WI-SPGBP — a layer handle is session-scoped; it has no durable key.
+            | Value::Kb(_)
             | Value::FactRef(_)
             | Value::Node(_)
             // WI-714: a `Relation` is a query value, never persisted store data.
@@ -1580,6 +1586,76 @@ impl Interpreter {
     /// `.apply`); the floundered `undecided` case additionally carries the
     /// undischarged goals as a `List[Term]`, so the residual is no longer
     /// silently dropped here.
+    /// The symbols currently bound to a host builtin.
+    ///
+    /// Exposed so a driver that installs TWO registries can assert they are DISJOINT.
+    /// [`Self::register_builtin`] is a plain map insert — LAST WINS — so an overlap
+    /// silently replaces one implementation with the other. That is not hypothetical:
+    /// WI-759 found `anthill.reflect.field_access` bound in both `anthill-core`'s
+    /// standard set (the production implementation every desugared `x.f` runs through)
+    /// and `anthill-stl`'s reflect set (a declared-but-never-live shape that would reject
+    /// every projection the typer synthesizes). It was harmless only because nothing but
+    /// its own tests ever called `register_reflect_builtins` — the condition WI-SPGBP
+    /// ends. So the disjointness is CHECKED rather than assumed.
+    pub fn registered_builtin_symbols(&self) -> Vec<Symbol> {
+        self.builtins.keys().copied().collect()
+    }
+
+    /// WI-SPGBP — discard every scoped-KB layer (`KB.loaded`) whose last holder has
+    /// gone, innermost first.
+    ///
+    /// Called once per iteration of [`Self::run`]'s trampoline, so an anthill program
+    /// that lets a layer value go out of scope has it discarded promptly. It costs one
+    /// `Cell` read when there are no layers, which is every run that never called
+    /// `KB.loaded`.
+    ///
+    /// IT IS NOT `KbHandle::drop`, and cannot be: restoring a layer needs
+    /// `&mut KnowledgeBase`, which a `Drop` impl has no way to reach. A release only
+    /// RETIRES the slot; this is the nearest point that holds the KB. A HOST driving
+    /// `call` directly (rather than through `run`) therefore has to call this itself —
+    /// which is also what makes the discard observable from a test.
+    pub fn sweep_layers(&mut self) {
+        // The gate FIRST, before any borrow or refcount traffic: one `Cell` read, which
+        // is the whole cost for a program that never called `KB.loaded`.
+        if !self.layers.has_retired() {
+            return;
+        }
+        // Past the gate a layer is genuinely being discarded, so the `Rc` bump that lets
+        // the arena be read while `self.kb` is borrowed mutably is free in context.
+        let layers = self.layers.clone();
+        if layers.sweep(&mut self.kb) == 0 {
+            return;
+        }
+        // A discard also has to take the INTERPRETER-side memos with it. Both were
+        // populated while the layer was applied, and both are keyed by a `Symbol` that
+        // outlives the layer (symbols are monotone — see `crate::kb::layer`), so neither
+        // goes stale on its own:
+        //
+        //   * `op_body_cache` holds bodies read from the scoped `op_records`, including
+        //     any a layer's `[simp]` write-back rewrote — so a BASE operation could keep
+        //     running the layer's version of its own body.
+        //   * `const_cache` holds const values forced under the layer's declarations.
+        //
+        // Cleared wholesale rather than per-symbol: a layer discard is rare (it costs a
+        // load), and knowing which entries a layer influenced would mean tracking a
+        // dependency edge at every memo write on the hot path.
+        self.op_body_cache.clear();
+        // NOT a `clear()`: an in-flight `Forcing` sentinel must survive. `force_const`
+        // inserts one and then evaluates the const's body through `eval_node_isolated`,
+        // which runs a NESTED `run()` — and `run` sweeps every iteration. So any layer
+        // discarded while a const is being forced would drop that const's own marker, and
+        // a self-referential const would then recurse to `StepsExhausted` instead of the
+        // loud `ConstCycle` the sentinel exists to report. Only computed VALUES can go
+        // stale under a layer; a marker is control state, not a memo.
+        self.const_cache
+            .retain(|_, entry| matches!(entry, ConstCacheEntry::Forcing));
+    }
+
+    /// WI-SPGBP — how many scoped-KB layers are currently applied.
+    pub fn layer_depth(&self) -> usize {
+        self.layers.depth()
+    }
+
     pub fn stream_split_first(
         &mut self,
         handle: &value::StreamHandle,
@@ -1604,9 +1680,29 @@ impl Interpreter {
         let arena = self.streams.clone();
         let action = arena.with_source_mut(handle, |src| match src {
             StreamSource::Empty => (StreamSource::Empty, Action::Done),
-            StreamSource::Resolver(None) => (StreamSource::Resolver(None), Action::Done),
-            StreamSource::Resolver(Some(stream)) => {
-                (StreamSource::Resolver(None), Action::PumpResolver(stream))
+            StreamSource::Resolver {
+                search: None,
+                layer,
+            } => (
+                StreamSource::Resolver {
+                    search: None,
+                    layer,
+                },
+                Action::Done,
+            ),
+            StreamSource::Resolver {
+                search: Some(stream),
+                layer,
+            } => {
+                // The layer stays in the slot across the pump: `search` is taken and put
+                // back as the continuation, and the layer must outlive both halves.
+                (
+                    StreamSource::Resolver {
+                        search: None,
+                        layer,
+                    },
+                    Action::PumpResolver(stream),
+                )
             }
             // WI-714: a materializing resolver — same pump lifecycle as `Resolver`
             // (take the `SearchStream`, leave `None` transiently), but its yielded
@@ -1664,7 +1760,23 @@ impl Interpreter {
                 match result {
                     Some((sol, rest)) => {
                         stream_arena
-                            .with_source_mut(handle, |_| (StreamSource::Resolver(Some(rest)), ()));
+                            .with_source_mut(handle, |prev| {
+                                // Carry the layer forward onto the continuation — the
+                                // rest of the search reads the same scoped KB.
+                                let layer = match prev {
+                                    StreamSource::Resolver { layer, .. } => layer,
+                                    _ => unreachable!(
+                                        "WI-SPGBP: a pumped resolver slot holds a Resolver"
+                                    ),
+                                };
+                                (
+                                    StreamSource::Resolver {
+                                        search: Some(rest),
+                                        layer,
+                                    },
+                                    (),
+                                )
+                            });
                         let solution = self.make_solution_value(sol)?;
                         Ok(Some((solution, handle.clone())))
                     }

@@ -727,6 +727,32 @@ impl Interpreter {
         )
     }
 
+    /// WI-SPGBP — raise a failed SCOPED LOAD as an anthill `Error[LoadFailed]` effect:
+    /// payload `load_failed(diagnostics)`, the located messages the parse or the load
+    /// produced.
+    ///
+    /// `anthill.reflect.KB.loaded` declares `effects Error`, and this is what makes that
+    /// declaration true. Routed through [`Self::raise_error`] so an installed `Error`
+    /// handler actually catches it — a checker's whole job is to CATCH this and report
+    /// the diagnostics, so building an `EvalError::Raised` directly would have been a
+    /// bespoke error the declared effect could never handle. That is the WI-467 /
+    /// WI-610 defect exactly, and this is the seam those tickets built to avoid it.
+    ///
+    /// An ENTITY rather than a bare string, for the same reason: a handler that fires
+    /// must be able to destructure the payload, which `Value::Str` gives it no way to do.
+    pub fn raise_load_failed(&mut self, diagnostics: Vec<String>) -> EvalError {
+        let entries: Vec<Value> = diagnostics.into_iter().map(Value::Str).collect();
+        let list = match self.build_list_value(entries, &[]) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        self.raise_error_payload(
+            "anthill.reflect.LoadFailed.load_failed",
+            "load_failed",
+            vec![("diagnostics", list)],
+        )
+    }
+
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers) and

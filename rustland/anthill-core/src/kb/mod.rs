@@ -7,6 +7,7 @@ pub mod execute;
 pub mod extent;
 pub(crate) mod flow_derive;
 pub mod host_fns;
+pub(crate) mod layer;
 pub mod load;
 pub mod node_occurrence;
 pub mod occurrence;
@@ -107,6 +108,7 @@ enum GuardKind {
 }
 
 /// A registered integrity guard.
+#[derive(Clone)]
 struct Guard {
     #[allow(dead_code)]
     id: ConstraintId,
@@ -268,6 +270,7 @@ impl std::fmt::Display for ClauseKind {
 
 // ── Rule entry ──────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct RuleEntry {
     /// The fact/rule head, carrier-agnostic (WI-348 Phase B): `Value::Term`
     /// for the universal hash-consed case, a `Value::Node` for a value fact
@@ -530,7 +533,7 @@ pub enum SortKind {
 /// `format!("{impl_qn}.{op}").or_else(spec_qn)` string-concatenation
 /// fallback. See `docs/design/operation-call-model.md` §"Putting it
 /// together: dispatch end-to-end".
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct SortOpsTable {
     /// impl sort symbol → (op short-name symbol → target op symbol).
     by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
