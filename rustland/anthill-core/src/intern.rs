@@ -1569,6 +1569,45 @@ impl SymbolTable {
         self.filter_internal_visibility(raw, scope)
     }
 
+    /// WI-20260824-BFB9A — WHAT `name` WOULD DENOTE AT `scope` IF THIS SCOPE DECLARED
+    /// NOTHING: the ORDINARY ladder ([`Self::resolve_in_scope`]) with this scope's own
+    /// `locals` held back, and nothing else changed.
+    ///
+    /// IT IS NOT [`Self::resolve_captured_name`], AND THE ONE SWITCH BETWEEN THEM IS THE
+    /// WHOLE DIFFERENCE. That one skips [`ExposureLinks`] as well, because 059's amended
+    /// clause 3 says members and constructors are named PER TYPE — a sibling sort's
+    /// exposed constructor is not "the name in use at this address" for the CAPTURE
+    /// question, and following the link there refuses the stdlib itself (see that
+    /// method). `load::check_rival_spec_operations` asks a different question — what a
+    /// reference written here actually resolves to — and for that the link is followed,
+    /// because a reference written here DOES reach it.
+    ///
+    /// DRIVEN, and it was `/code-review` that found the two answers had been fused:
+    /// `namespace p3 { sort S { entity eq(v: Int64) }  namespace inner { operation
+    /// useit(a: Int64) -> p3.S = eq(a) } }` loads clean and the bare `eq` in `inner`
+    /// reaches `S.eq` — while `resolve_captured_name` reports `NotFound` for it, which
+    /// sent the rival check on to the implicit tier and made it refuse a declaration
+    /// naming a symbol the address does not denote.
+    ///
+    /// THE INTERNAL FILTER STAYS, and matches the reader rather than the resolver: a
+    /// hidden `internal` hit becomes `NotFound` here, and `Loader::remap_name_str_inner`
+    /// consults the implicit tier BEFORE `forbid_if_internal` — so the tier really is
+    /// what such a name denotes, and a caller falling through to it is right.
+    pub fn resolve_ignoring_own_locals(&self, name: &str, scope: ScopeId) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Skipped,
+            ExposureLinks::Followed,
+            EnclosingLinks::Followed,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
     /// WI-980 — the same question [`Self::resolve_captured_name`] answers, with names
     /// the caller supplies for scopes that do not carry them as symbols yet.
     ///

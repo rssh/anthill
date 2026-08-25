@@ -576,6 +576,9 @@ mod wi040_reserved_vocab_test;
 #[path = "include/wi521_prelude_test.rs"]
 mod wi521_prelude_test;
 
+#[path = "include/wi_bfb9a_rival_spec_operation_test.rs"]
+mod wi_bfb9a_rival_spec_operation_test;
+
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
 

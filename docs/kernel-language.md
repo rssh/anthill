@@ -1287,6 +1287,115 @@ constructor-less sort cannot be constructed, *every* `fact` that survives this
 rule is a provision claim, and one whose carrier cannot be read is malformed
 rather than ambiguous.
 
+**One spec operation, one symbol** (WI-20260824-BFB9A;
+`check_rival_spec_operations`, `kb/load.rs`). A **free-standing** `operation` — one
+declared in a namespace or at the top level, not inside a type — may not take a name
+that, at the address it is written, already denotes a **spec operation** (a member of
+a parametric sort, §8.7). Writing `operation eq(a: Int64, b: Int64) -> Bool` beside
+`anthill.prelude.PartialEq.eq` would mint a *second* symbol spelled `eq`, and the way
+a carrier gives that operation its own meaning is a **provision** — `provides
+PartialEq[T = MySort]` on the carrier, which attaches an implementation to the one
+symbol and selects it by carrier at the call site (§8.7). The load is refused, naming
+the spec operation and the spec that owns it.
+
+It is **refused rather than absorbed**: a free-standing operation has no carrier and
+dispatch keys on the carrier, so there is nothing for the spec operation to select —
+the declaration cannot be reinterpreted as an implementation, only rejected. It is
+**not arity-sensitive**: the harm is that one spelling denotes two symbols, and a bare
+name shadows whatever it denoted regardless of how many parameters either side takes.
+And the refusal **prescribes no step-by-step repair**, which is deliberate: two earlier
+wordings each prescribed one that does not load — `provides` has no body to put an
+operation in, and "declare it as a member alongside a `provides`" succeeds for only five
+of the ten names the tier reaches. Driven over all ten: `eq` / `gt` / `lt` / `gte` /
+`lte` load, while `add` / `sub` / `mul` / `neg` are refused because `Numeric` further
+*requires* `PartialOrd`, and `neq` is refused by a separate check as "not an override
+point". The carrier an operation belongs to is the author's to name.
+
+**The question is what the name denotes, not which table it is in.** The declared name
+runs the ordinary ladder at its own address (§8.6) — enclosing scopes and imports first,
+the implicit prelude / reserved kernel vocab last — and the refusal fires when what
+comes back is a spec operation other than the declaration itself. Three consequences,
+each of which a membership test would get wrong:
+
+- **The tier's own target is not a rival of itself.** `anthill.kernel.not` *is* what a
+  bare `not` resolves to, so a namespace declaring `not` is refused only if `not`
+  denoted something else there.
+- **Anything the ladder answers stands the rule down**, because the tier is its last
+  rung and never runs. With `import mylib.Fixed.{add}` in scope — `Fixed` a
+  *non-parametric* sort, so its `add` is not a spec operation — a bare `add` never
+  denoted `Numeric.add`, so declaring one does not rival the tier. It *captures*
+  `mylib.Fixed.add`, which is the rule below's question rather than this one's. (The
+  import has to name a **member**: a free-standing `operation add` in `mylib` would be
+  refused by this very rule.) The same holds for every other rung, and two are easy to
+  miss because they answer with something that is not an operation at all: a sibling
+  **`namespace add`**, and a sibling sort's **exposed constructor** (§8.6 leaks an
+  enum's / sort's constructors to the enclosing namespace, so `sort S { entity eq(…) }`
+  makes a bare `eq` in that namespace *construct an `S`*). Both end the ladder, so
+  neither address denotes the spec operation and neither declaration is refused.
+- **An import of the spec operation does not excuse it.** `import
+  anthill.prelude.PartialEq.{eq}` beside `operation eq(…)` is refused, and so is an
+  import of the declaration's *own* symbol (`import n.{eq}` written inside `n`) — the
+  latter is not an answer to "what did this name mean here" at all. Standing down on
+  either would let the one line that makes the collision real defeat the rule.
+
+A **hidden `internal`** name is the one rung that does *not* stand it down, and that is
+the ladder's own order rather than an exception: a reference whose only match is an
+`internal` name it cannot see consults the implicit tier **before** the forbidden-access
+diagnostic (§8.6), so the tier is genuinely what such a name denotes.
+
+**Read per file, refused for any reader.** An import resolves only in the file that
+wrote it (§8.6), so two files writing text at one address can read one name
+differently; the declaration is refused if *any* of them reads it as the spec
+operation, and where that reader is not the declaration's own file the message names
+it. A declaration whose own file imports some other `add` still repoints a sibling
+file's bare `add`, and the sibling has no repair to make.
+
+**The rule is about a spelling.** It reaches a declaration whose name is a spec
+operation's *own* name; nothing else can make one spelling denote two symbols. (A
+renaming import would be the exception, and there is none to reach — proposal 063 is
+design-only. When it lands, a spec operation reached under a chosen second spelling is
+a captured file-local alias, the rule below's question.)
+
+Four things are outside it, each for its own reason.
+
+- A **type member** is not a rival — `Set.eq` lives in its carrier's scope and is
+  reached by dispatch or qualification, never by the bare-name ladder, which is
+  precisely the shape the error tells an author to write. A `namespace X` at a sort's
+  address is a **secondary entry** to that sort's scope (§5.2, proposal 059 R2/R3), so an
+  operation written there is a member too.
+- The rival must be a **spec** operation — a member of a *parametric* type, the only
+  kind a `provides` clause can name. A tier entry on a **non-parametric** carrier
+  (`Int64.div`, `Int64.mod`, `Bool.and`, `BigInt.to_bigint`, `BigInt.to_int`) or a
+  namespace-level **primitive** (`anthill.kernel.unify`, `.cut`, `.not`, `.or`) has no
+  provision to write, so there would be no repair to name, and a free-standing
+  declaration of one is left alone. What that costs is recorded at
+  **WI-20260824-VT8CF**: a namespace-level `mod` *does* capture a minted `%`, silently.
+  `anthill.reflect` declaring its own `unify` is the same exemption and is **settled
+  rather than tolerated**: a `<=>` written there still means the kernel primitive
+  (§8.3), and only a *written* `unify(a, b, kb)` call reaches the local declaration.
+- **Constructors** are outside it, though `cons` / `nil` / `some` / `none` do sit on
+  parametric sorts: they are not operations, and a sort with constructors is a data
+  sort, which cannot be the subject of a `provides` clause at all.
+- Nothing here reaches a **sort**, an **entity** or a **`const`** — the rule is gated on
+  the declaration category, and only `operation` is in it. A user's own `sort List` is a
+  genuinely different type from `anthill.prelude.List` and must keep shadowing it — that
+  is the whole reason the implicit tier sits below scope resolution. A `const` taking a
+  spec-operation name is the same *shape* as this rule; widening to it needs its own
+  census, which is what would decide it.
+
+**A namespace-less file is not exempt.** A declaration written with no `namespace` lands
+in `<global>`, which is a scope like any other here — not a type — so it is free-standing
+and refused on the same terms. That address is also the one where such a declaration goes
+*ambiguous* as well: `<global>` is a non-enclosing parent of every scope (§8.6), so the
+name is reachable from inside the stdlib's own namespaces, where it ties with the
+prelude's.
+
+**Why the language wants this.** The implicit tier is the lowest-precedence rung
+specifically so that a user's own `eq` can shadow the prelude's without the two going
+ambiguous — the footgun a flat `<global>` injection had (§8.6). That requirement exists
+only because the rival is permitted, so refusing the rival is what lets the tier stop
+being load-bearing for spec-operation names.
+
 **A declaration may not capture a name it does not override** (proposal 059 R4
 clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something
 in a sort's scope without being a member of it, and a declaration taking that
@@ -1741,7 +1850,7 @@ rule lower_bound: gte(?d, ?d_min)
 
 **What an introduced name denotes (WI-898).** The two head shapes introduce two different *kinds* of name, and only one of them is a relation. A **predicate** head's functor owns its clauses — they are indexed under it — so the name denotes a relation, and the citation forms run it. An **equation**'s subject owns none: the stored clause is headed by the `eq`/`unify` *connective*, so the name denotes a function *defined by rewriting*, with neither a relational nor a value reading of its own. A citation of it is answered by a `[simp]` clause firing before dispatch (§5.3) or it is **refused** — and the refusal names which failure it was, because they call for different repairs: defining equations that carry no `[simp]` tag and so can never fire, tagged clauses none of whose left-hand patterns matched the citation, or no live clause at all. Before WI-898 the two shapes shared one kind, so the relation reader answered for both: it found zero clauses under an equation functor and reported a name that resolved perfectly well as *unresolved*. Whether a name denotes a relation is decided by the **clause index**, not by the head shape alone — so a name a scope writes in **both** shapes is a relation whichever rule comes first: a predicate clause is indexed under it, and which rule sits higher in the file does not enter into it.
 
-**A rule head functor is resolved, not declared (WI-896).** Whether a head *defines* a new predicate or *concludes about* an existing one is decided by **name resolution**, exactly as in any other position: the functor runs the ordinary ladder — enclosing scope, imports, then the implicit prelude / reserved kernel vocab — and the rule contributes a clause to whatever it lands on. Only when the ladder finds **nothing** does the rule introduce the name, scoped where it is written (above). So `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about `PartialOrd.gte` because `gte` *resolves*, and its unlabeled twin is the same lemma for the same reason. To introduce a name that already resolves, **declare** it — a local `operation gte(…)` is found before the fallback tier, and the rule then binds to that declaration.
+**A rule head functor is resolved, not declared (WI-896).** Whether a head *defines* a new predicate or *concludes about* an existing one is decided by **name resolution**, exactly as in any other position: the functor runs the ordinary ladder — enclosing scope, imports, then the implicit prelude / reserved kernel vocab — and the rule contributes a clause to whatever it lands on. Only when the ladder finds **nothing** does the rule introduce the name, scoped where it is written (above). So `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about `PartialOrd.gte` because `gte` *resolves*, and its unlabeled twin is the same lemma for the same reason. To introduce a name that already resolves, **declare** it — a local `operation gte(…)` is found before the fallback tier, and the rule then binds to that declaration. **Except where that declaration is itself refused** (§5.1 *One spec operation, one symbol*): a **free-standing** `operation` may not take the name of a **spec operation**, so this route is open inside a **type** — which is where a carrier's own `gte` belongs anyway — and closed at namespace level for that one class of name. Every other tier name (`cons`, `div`, `mod`, `not`, a namespace-level primitive) still takes it.
 
 **And an undeclared head declares AT THE SCOPE IT IS WRITTEN IN (WI-20260822-845G7).** "Only when the ladder finds nothing" once needed a *when*, because this was the one position whose own answers changed the table it reads: every other name is defined before any name is resolved (the WI-321 cross-file invariant), while a rule head was *introduced* during the same pass that decided it. Asked against the scanned prefix, textual order decided the program — measured, `rule p(1)` beside `sort Rec { rule p(2) }` loaded as **one** predicate with two clauses when the namespace-level rule was written first and as **two** predicates when it was written second, and the same pair across two files split on whichever file the loader reached first. WI-980 closed that by asking whether some scope this one can *see* already introduces the name, resolved through a non-monotone fixpoint over the finished program. 061 then made a predicate **declared** rather than discovered, and 845G7 measured what was left for the fixpoint to do: over the whole corpus and every test fixture, **234,078** head decisions, of which **233,917** were "introduce here", **161** were "join another scope's head" — every one of those in a fixture written to exercise the fixpoint — and **zero** in the shipped corpus. It computed a constant, so it is gone, and the *when* dissolves with it:
 
@@ -3505,7 +3614,7 @@ The other face is the **relation** (proposal 052): `Relation[T]` is an unordered
 
 - **`=` — the semantic equality *test*** (`PartialEq.eq`, a dispatched operation returning `Bool`). It reduces both operands and compares them **through the carrier's `PartialEq` instance** (WI-616): structurally identical operands are equal by reflexivity, and structurally distinct operands dispatch to the carrier sort's own `eq` override when it declares one — `Set` and `Map` are the first non-structural instances (`eq({1,2}, {2,1})` holds: membership equality, resolved against the carrier's rules by ordinary SLD). A carrier with no override keeps the structural compare — structural equality *is* its instance (`Int` stays a machine compare). **Partial vs. total (proposal library/004, WI-644):** `eq`/`neq` live on the base **`PartialEq`** spec — a plain `Bool` test with *no* reflexivity law. **`Eq`** `provides PartialEq[T = T]` — a conversion, so it is a chain entry AND a derivation (WI-1110: it was `requires PartialEq` until the two clauses were told apart, and a carrier writing `provides Eq[X]` now gets `provides PartialEq[X]` derived rather than writing it) — and adds the checked law `eq_refl: eq(?a,?a) <=> true`; requiring `Eq[T]` (what `Set`/`Map` keys, dedup and sort demand) means "a *lawful*, reflexive equality." IEEE **`Float` provides only `PartialEq`** (plus the witnessed `NonEq`) — `eq(nan, nan)` is *false* (IEEE), and `Float` cannot discharge `eq_refl`; the wrapper `TotalFloat` provides the lawful `Eq` (it is **not** `Ord` — a functional total float order needs host support). So the interpreter, resolver, and C++ codegen all agree on `Float` (IEEE), while `nan === nan` (`struct_eq`) stays structurally true. **That requirement is enforced where a container type is written** (WI-644/WI-835): instantiating a sort that `requires Eq` at a parameter with a carrier that provides `NonEq` is a **load error** — `Map[K = Float]` / `Set[T = Float]` are refused *wherever the type is written* (an entity field, an operation parameter or return type, a `const`'s type, a sort alias, a body `let` annotation, a typed lambda binder, a binding value inside a `requires`/`provides` clause, and nested inside any of those), naming the sort, the parameter, the carrier and the required spec; `Map[K = TotalFloat]` / `Map[K = Int64]` load. The refusal is negative — it fires on a *witnessed* `NonEq` carrier, not on the absence of an `Eq` provision, so an abstract type-parameter binding stays accepted. It reads the key's *own* provisions, so a key whose unlawfulness is in its **argument** (`Map[K = List[T = Float]]`, `Map[K = (a: Float)]`) is a known remaining gap, not a guarantee. **A composite DERIVES its classification, both ways** (WI-664 / WI-1098): an entity or named tuple whose fields are all lawful is a `Total` composite and the loader asserts `provides PartialEq` + `provides Eq` for it, so `List.contains(colours, red)` discharges its `requires Eq[T]` with no provision line written — before this, such a program loaded clean and died inside the evaluator at the first requirement it reached. One whose field reaches an IEEE `Float` is `Partial` and gets `provides PartialEq` + `provides NonEq` instead, which is what makes a user `provides Eq[Point]` over a `Float` composite a load error (`Eq` ⊥ `NonEq`). The two are one fixpoint over the field-reference graph, so a *recursive* composite (`node(l: Tree, r: Tree)`) is classified too, and a lawful-`Eq` **boundary** — a carrier whose `eq` is dispatched, `TotalFloat` being the shipped one — is neither classified nor overwritten: its `eq` is the author's. Nothing is derived for a **parametric** sort or for a composite with a parametric field (`hold(p: Pair[A, B])`): their lawful equality is *conditional* on their arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`), and an unconditional claim would make `List[Float]` lawful. Writing the provision by hand stays legal and is not duplicated — the derivation skips a carrier that already provides. `=` **never binds** a logical variable: `eq(7, ?p.x)` succeeds once `?p.x` reduces, but `eq(?v, ?p.x)` does **not** bind `?v` (a flex `=` that is never discharged is carried as an undischarged residual, not counted as a solution — WI-519). Use `=` for body-goal tests, operation contracts (`ensures eq(balance(result), …)`), and constraints — a postcondition must *test*, never bind. `neq` (`!=`) pairs with it: `neq(a,b) <=> not(eq(a,b))`, the negation of the *dispatched* equality. (Ordering mirrors this, and since **WI-1109** it has THREE floors rather than two — `gt`/`lt`/`gte`/`lte` are the base **`PartialOrd`** surface, IEEE-partial for `Float`; `compare` and the order laws live on **`WeakOrd`**, which `requires Eq, PartialOrd` and is TOTAL but whose kernel may be strictly *coarser* than `Eq`, so it partitions a carrier into equivalence classes; and **`Ord`** adds only the converse law — `compare(a,b) = 0` implies `eq(a,b)` — making the kernel exactly `Eq`. `Ord provides WeakOrd`, so a carrier writes one provision and the loader derives the floor below; since **WI-1110** that clause is `Ord`'s *whole* content — a spec's `provides` is a chain entry as well as a derivation, so `WeakOrd`'s `requires Eq, PartialOrd` reach the carrier through it and `Ord` restates neither (§5.1). The practical consequence is stated at `sortedset.anthill`: a `SortedSet` keyed by a `WeakOrd` that is not an `Ord` stores CLASSES — it collapses members that compare equal, and its `union` keeps the left operand's representative, so it is not commutative. Requiring `Ord` is what buys a set of elements.)
 - **`===` — the structural identity *test*** (`anthill.kernel.struct_eq`, a resolver builtin; WI-615). Total, carrier-agnostic, **never dispatches**, and needs **no `Eq` instance**: it answers "are these two values literally the same structure" for every value (opaque handles compare by identity). Two membership-equal sets in different spellings are `=` but not `===`. Use it for term/symbol/reflected-structure identity — comparisons that must not suddenly depend on a carrier's custom equality. Being a *test*, it is **not a defining connective**, and a **`lhs === rhs` rule with no body goals is refused at load** (WI-1090) naming `<=>` as the substitute — a `fact lhs === rhs` too, a fact being a bodyless rule (§6.1), and a rule whose only goal was a folded `Spec[T]` bound, that guard being a bound rather than a goal: the builtin answers every `===` goal itself, so no clause of it is ever consulted, `[simp]` never fires it (the normalizer reads the `<=>` equations), and its subject would be left naming no callable. A rule with a real **body goal** is untouched — that is not an equation (§8.3) but an ordinary law about the operator, and `totalfloat.anthill` writes one (`rule eq(?a, ?b) :- ?a === ?b`). Being carrier-agnostic, `===` is also **not shadowable**, on the same rule and for the same reason as `<=>` below: a namespace declaring its own `struct_eq` does not capture the operator, and only a *written* `struct_eq(a, b)` call reaches such a declaration. **`=` is held to the defining rule too** (WI-888): it is the other half of the test column, so a bodyless `=` head is refused too, and for the same reason rather than a second one. The two refusals *replace* different things and their messages differ accordingly — a `===` head was silently useless, an `=` head fired — so the `=` message names the substitute spelling and withholds the "give it a body goal" remedy, a guarded `=` equation being read by no firing site.
-- **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads — the **only** one, §5.3 — and the substrate of `let`. Because it never dispatches, it is also **not shadowable**: a namespace that declares its own `unify` does not capture the operator, so a `<=>` written there still means this primitive (WI-888; `anthill.reflect` declares one, for the term-level face below). Only a *written* `unify(a, b, kb)` call reaches such a declaration. `=` is deliberately the opposite — a carrier's own `eq` **is** meant to override it.
+- **`<=>` — structural *unification*** (`anthill.kernel.unify`, a resolver primitive). It binds via a substitution effect on the resolver frame: `?v <=> ?p.x` binds `?v` to the projected value; `some(?x) <=> some(3)` binds `?x ↦ 3`. It is **occurs-checked** (`?v <=> f(?v)` is a loud failure, never a cyclic term), **symmetric** (either side may be the variable side), and **structural-only — it never dispatches**. It is the connective of equational rule heads — the **only** one, §5.3 — and the substrate of `let`. Because it never dispatches, it is also **not shadowable**: a namespace that declares its own `unify` does not capture the operator, so a `<=>` written there still means this primitive (WI-888; `anthill.reflect` declares one, for the term-level face below). Only a *written* `unify(a, b, kb)` call reaches such a declaration. `=` is deliberately the opposite — a carrier's own `eq` **is** meant to override it. That override is a **member** under a provision; a *free-standing* `operation eq(…)` is not one and is refused at load (§5.1 *One spec operation, one symbol*).
 
 **Declaring a non-structural `Eq` instance.** A carrier declares the instance with `provides Eq[T = <Carrier>]` and supplies its own operation short-named `eq` (the same short-name override convention as every spec-op dispatch), backed by relational rules — see `Set.eq` / `Map.eq` in the prelude. Dispatch reads the operand's head at resolution and proves the carrier's `eq` in a closed sub-proof, three-way honest:
 

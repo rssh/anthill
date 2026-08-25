@@ -414,7 +414,7 @@ end
 /// open schema and reported "free column(s): " with an empty list.
 ///
 /// BACK-OUT: FAILS. With `named_tuple_value` restored, `both` reports
-/// `expected List[T = Unit], got List[T = ()]` and `neg` reports the empty free-column list.
+/// `expected List[T = Unit], got List[T = ()]` and `negated` reports the empty free-column list.
 #[test]
 fn yqb1y_merging_two_membership_relations_is_unit() {
     let errs = load_errs(
@@ -434,7 +434,9 @@ namespace test.yqb1ymem
     anyone.join(anyone, lambda (c, q) -> eq(1, 1)).takeN(5)
 
   -- and `Membership` accepts it, which it cannot do for an empty NAMED TUPLE
-  operation neg() -> Bool effects Error =
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- may not be re-declared free-standing. The name here was only ever a label.
+  operation negated() -> Bool effects Error =
     negate(anyone.join(anyone, lambda (c, q) -> eq(1, 1))).isEmpty
 end
 "#,
