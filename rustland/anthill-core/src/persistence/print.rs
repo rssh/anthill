@@ -529,6 +529,40 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             } => {
                 self.write_occ_fn(self.view.sym_name(*functor), args, named_args, buf);
             }
+            // Proposal 055 — a nominal type value round-trips to its own SURFACE, and
+            // it needs its own writer twice over. `write_occ_fn` would print
+            // `Cell(V: Int64)`: PARENTHESES, which the WI-710 surface gate re-reads as a
+            // construction, and `k: v`, which is argument syntax rather than the
+            // `V = Int64` a type binding is written with. Either alone makes a printed
+            // body fail to load back as what it was.
+            Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            } => {
+                buf.push_str(self.view.sym_name(*head));
+                if !pos_args.is_empty() || !named_args.is_empty() {
+                    buf.push('[');
+                    let mut first = true;
+                    for c in pos_args.iter() {
+                        if !first {
+                            buf.push_str(", ");
+                        }
+                        first = false;
+                        self.write_occurrence(c, buf);
+                    }
+                    for (sym, c) in named_args.iter() {
+                        if !first {
+                            buf.push_str(", ");
+                        }
+                        first = false;
+                        buf.push_str(self.view.sym_name(*sym));
+                        buf.push_str(" = ");
+                        self.write_occurrence(c, buf);
+                    }
+                    buf.push(']');
+                }
+            }
             Expr::Constructor {
                 name,
                 pos_args,

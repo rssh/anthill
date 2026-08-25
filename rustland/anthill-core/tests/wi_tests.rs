@@ -32,6 +32,9 @@ mod wi710_rule_body_type_arg_test;
 #[path = "include/wi708_body_type_arg_read_test.rs"]
 mod wi708_body_type_arg_read_test;
 
+#[path = "include/wi_wahb6_type_value_classification_test.rs"]
+mod wi_wahb6_type_value_classification_test;
+
 #[path = "include/wi716_optional_fact_none_fill_test.rs"]
 mod wi716_optional_fact_none_fill_test;
 
@@ -572,6 +575,9 @@ mod wi040_reserved_vocab_test;
 
 #[path = "include/wi521_prelude_test.rs"]
 mod wi521_prelude_test;
+
+#[path = "include/wi_bfb9a_rival_spec_operation_test.rs"]
+mod wi_bfb9a_rival_spec_operation_test;
 
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
@@ -1354,8 +1360,14 @@ mod wi_ffpgd_answer_dedup_test;
 #[path = "include/wi980_rule_head_order_test.rs"]
 mod wi980_rule_head_order_test;
 
+#[path = "include/wi_c666a_unguarded_non_enclosing_join_test.rs"]
+mod wi_c666a_unguarded_non_enclosing_join_test;
+
 #[path = "include/wimh90f_kernel_not_test.rs"]
 mod wimh90f_kernel_not_test;
+
+#[path = "include/wi_d0exd_equation_subject_owner_test.rs"]
+mod wi_d0exd_equation_subject_owner_test;
 
 #[path = "include/wi_fqc85_rule_declaration_test.rs"]
 mod wi_fqc85_rule_declaration_test;

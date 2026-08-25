@@ -160,6 +160,52 @@ impl Interpreter {
             Expr::Spliced(v) => Ok(StepOutcome::Deliver(v.clone())),
             Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
             Expr::VarRef { name } => self.reduce_var(*name, occ),
+            // Proposal 055 §2 — a nominal type expression in value position, ALREADY
+            // CLASSIFIED by the loader. This arm neither re-asks `kind_of` nor consults
+            // the expected sort; it only assembles the value the recorded denotation
+            // names. It is what the two `kind_of(..) == Sort` arms below
+            // (`Expr::Apply`'s and `reduce_var`'s) become once every producer mints
+            // this form — see their sites for which producers still do not.
+            //
+            // THE TWO FACES ARE ASSEMBLED BY THE TWO BUILDERS THEY BACK ONTO, and that
+            // is proposal 055 §7 rather than an optimization: a bare reference is
+            // `Ref(S)`, and routing it through the argument pump instead would finish
+            // in `make_parameterized_type(S, [])` — an `Fn` head, which does NOT unify
+            // with the `Ref(Cell)` a `fact Modifiable[T = Cell]` carries (the WI-206
+            // lesson). An applied one runs the pump, which evaluates each type argument
+            // and finishes through that same canonical builder.
+            Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            } => {
+                if pos_args.is_empty() && named_args.is_empty() {
+                    // WI-708 — a bare head that names the enclosing operation's TYPE
+                    // PARAMETER reads its CALL-SITE BINDING off the frame's type-arg
+                    // channel (WI-272). A type parameter denotes a type value like any
+                    // other nominal head (proposal 055 §2), but the type it denotes is
+                    // the caller's, so the frame is asked before the head is taken at
+                    // face value. MEASURED: without this, `operation ty[T]() -> Type =
+                    // Cell[V = T]` evaluated to a dangling `Cell[V = Ref(T)]` — the exact
+                    // regression `wi708_body_type_arg_read_test` pins, and the reason a
+                    // type parameter cannot simply be `Ref(sym)` here.
+                    //
+                    // The lookup is by SYMBOL, so it can only ever hit a declared type
+                    // parameter of the frame being evaluated; a genuine sort head is
+                    // never a key in that channel and falls straight through.
+                    if let Some(bound) = self
+                        .stack
+                        .top()
+                        .and_then(|f| find_type_arg(&f.type_args, *head))
+                    {
+                        return Ok(StepOutcome::Deliver(Value::term(bound)));
+                    }
+                    let tid = self.kb.alloc(crate::kb::term::Term::Ref(*head));
+                    Ok(StepOutcome::Deliver(Value::term(tid)))
+                } else {
+                    self.start_sort_type(*head, pos_args, named_args)
+                }
+            }
             Expr::If {
                 condition,
                 then_branch,

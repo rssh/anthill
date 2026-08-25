@@ -299,7 +299,7 @@ fn a_declaration_the_defining_pass_never_reached_is_refused() {
     // but present. Under the declaration reading it would introduce nothing AND assert
     // nothing, so the load says so.
     //
-    // BACKED OUT (delete the `name_denotes_for_rule_head` guard in the Declaration arm):
+    // BACKED OUT (delete the `rule_head_ladder_answer` guard in the Declaration arm):
     // this row FAILS — the fixture loads clean and `pvb.Widget.pvbdecl` resolves to
     // nothing, which is the silent drop the guard exists for.
     const SRC: &str = "namespace fqc85pvb\n  sort Widget\n                           import anthill.prelude.{Int64}\n                           operation w(x: Int64) -> Int64\n  end\n                         provides Widget language anthill\n    rule pvbdecl(?x)\n  end\nend\n";
@@ -514,6 +514,8 @@ fn a_sibling_files_head_no_longer_moves_another_files_clause() {
     const LIB: &str = "namespace zlibq\n  rule q(1) :- true\nend\n";
     const LIB_DECLARED: &str = "namespace zlibq\n  rule q(?x)\n  rule q(1) :- true\nend\n";
     const IMPORTER: &str = "namespace zdemoq\n  import zlibq.*\n  rule q(2) :- true\nend\n";
+    const IMPORTER_SELECTED: &str =
+        "namespace zdemoq\n  import zlibq.{q}\n  rule q(2) :- true\nend\n";
     const SIBLING: &str = "namespace zdemoq\n  sort Rec\n    entity rec(n: Int64)\n    \
                            rule q(3) :- true\n  end\nend\n";
 
@@ -535,12 +537,12 @@ fn a_sibling_files_head_no_longer_moves_another_files_clause() {
         &["zdemoq, zdemoq.Rec, zlibq", "No one of them is reachable from all the others"],
     );
 
-    // DECLARED — the identical program with one line added, and the whole of WI-980's
-    // reading back: the importing file's head is a clause of the imported predicate, and
-    // the sibling file (which has no import) introduces its own.
+    // DECLARED AND IMPORTED BY NAME — C666A makes the selection explicit: the importing
+    // file's head is a clause of the imported predicate, while the sibling file (which
+    // has no import) introduces its own.
     let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_named_files(&[
         ("zlib.anthill", LIB_DECLARED),
-        ("zdemo.anthill", IMPORTER),
+        ("zdemo.anthill", IMPORTER_SELECTED),
         ("zrec.anthill", SIBLING),
     ]));
     assert_eq!(clauses(&kb, "zlibq.q"), Some(2), "the declared predicate holds both clauses");
@@ -565,6 +567,7 @@ fn a_cycle_can_no_longer_absorb_a_third_files_clause() {
     const A_DECLARED: &str =
         "namespace fqcA\n  import fqcB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n";
     const B: &str = "namespace fqcB\n  import fqcA.*\n  rule p(2) :- true\nend\n";
+    const B_SELECTED: &str = "namespace fqcB\n  import fqcA.{p}\n  rule p(2) :- true\nend\n";
     const S: &str = "namespace fqcA.sub\n  rule p(3) :- true\nend\n";
 
     for order in [
@@ -588,16 +591,16 @@ fn a_cycle_can_no_longer_absorb_a_third_files_clause() {
         );
     }
 
-    // DECLARED — and now every one of the six orders gives ONE program, which is the
-    // guarantee a declaration buys: the name exists before anything resolves, so no
-    // cycle has to be broken to find it.
+    // DECLARED AND SELECTED — now every one of the six orders gives ONE program. The
+    // declaration establishes the owner and `B`'s named import is C666A's explicit
+    // non-enclosing opt-in; `fqcA.sub` reaches the owner lexically.
     for order in [
-        [("a.anthill", A_DECLARED), ("b.anthill", B), ("s.anthill", S)],
-        [("a.anthill", A_DECLARED), ("s.anthill", S), ("b.anthill", B)],
-        [("b.anthill", B), ("a.anthill", A_DECLARED), ("s.anthill", S)],
-        [("b.anthill", B), ("s.anthill", S), ("a.anthill", A_DECLARED)],
-        [("s.anthill", S), ("a.anthill", A_DECLARED), ("b.anthill", B)],
-        [("s.anthill", S), ("b.anthill", B), ("a.anthill", A_DECLARED)],
+        [("a.anthill", A_DECLARED), ("b.anthill", B_SELECTED), ("s.anthill", S)],
+        [("a.anthill", A_DECLARED), ("s.anthill", S), ("b.anthill", B_SELECTED)],
+        [("b.anthill", B_SELECTED), ("a.anthill", A_DECLARED), ("s.anthill", S)],
+        [("b.anthill", B_SELECTED), ("s.anthill", S), ("a.anthill", A_DECLARED)],
+        [("s.anthill", S), ("a.anthill", A_DECLARED), ("b.anthill", B_SELECTED)],
+        [("s.anthill", S), ("b.anthill", B_SELECTED), ("a.anthill", A_DECLARED)],
     ] {
         let mut kb =
             crate::common::expect_loaded(crate::common::try_load_kb_with_named_files(&order));
@@ -660,6 +663,8 @@ fn a_head_that_binds_through_its_own_files_import_is_still_a_second_file() {
     const LIB_DECLARED: &str = "namespace fqc85_lib\n  rule q(?x)\n  rule q(1) :- true\nend\n";
     const IMPORTER: &str =
         "namespace fqc85.viaimport.b\n  import fqc85_lib.*\n  rule q(2) :- true\nend\n";
+    const IMPORTER_SELECTED: &str =
+        "namespace fqc85.viaimport.b\n  import fqc85_lib.{q}\n  rule q(2) :- true\nend\n";
     // A third file scanned LAST, so a stale asking-file is a DIFFERENT file's and the row
     // cannot pass by the two coinciding.
     const TRAILING: &str = "namespace fqc85.viaimport.z\n  rule unrelated(3) :- true\nend\n";
@@ -672,7 +677,7 @@ fn a_head_that_binds_through_its_own_files_import_is_still_a_second_file() {
 
     let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_named_files(&[
         ("lib.anthill", LIB_DECLARED),
-        ("imp.anthill", IMPORTER),
+        ("imp.anthill", IMPORTER_SELECTED),
         ("trail.anthill", TRAILING),
     ]));
     assert_eq!(

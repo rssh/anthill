@@ -184,12 +184,14 @@ fn label_rejected_when_arrow_records_no_parameter_names() {
             r#"
 namespace test.wi783noname{label}
   import anthill.prelude.{{Int64}}
-  operation neg(v: Int64) -> Int64
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- may not be re-declared free-standing. The name here was only ever a label.
+  operation negate1(v: Int64) -> Int64
     = 0 - v
   operation apply1(f: (v: Int64) -> Int64) -> Int64
     = f({label}: 7)
   operation drive() -> Int64
-    = apply1(neg)
+    = apply1(negate1)
 end
 "#
         )

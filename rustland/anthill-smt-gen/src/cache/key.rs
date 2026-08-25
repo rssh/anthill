@@ -183,6 +183,14 @@ fn hash_occurrence(
         Expr::ConstructorWithin { name, .. } => fn_node(kb, b"CW", *name, h, out),
         Expr::Instantiation { name, .. } => fn_node(kb, b"I", *name, h, out),
         Expr::Dictionary { impl_sort, .. } => fn_node(kb, b"CR", *impl_sort, h, out),
+        // Proposal 055 — a nominal type value. CONTRIBUTES its head, like the other
+        // Fn-shaped nodes: the applied form used to arrive here as an `Expr::Apply`
+        // whose functor was the sort, so it already fed `out`, and a sort CAN head
+        // facts (an instance claim is one). Keeping the contribution keeps cache
+        // invalidation at least as eager as it was — the safe direction, since the
+        // other one is a stale key. Its own tag, so a type value and a call to a
+        // same-named operation cannot hash alike.
+        Expr::TypeValue { head, .. } => fn_node(kb, b"TV", *head, h, out),
         // Member/leaf symbols (not functors — don't feed `out`).
         Expr::DotApply { name, .. } => leaf_sym(kb, b"D", *name, h),
         Expr::VarRef { name } => leaf_sym(kb, b"VR", *name, h),

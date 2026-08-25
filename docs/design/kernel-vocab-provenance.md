@@ -16,7 +16,8 @@ positions that ask are deliberately NOT listed here: the list that stood here ro
 on both counts — it named `resolve_name_in_kb_opt`, renamed by WI-907, and attributed
 `resolve_name_in_global` to the reflect bridge, which WI-908 measured had not called
 it since WI-632 — and two of its four entries (`resolve_name_in_global`,
-`name_denotes_for_rule_head`) had come to reach `resolve_implicit` through the ladder
+`rule_head_ladder_answer`, then spelled `name_denotes_for_rule_head`) had come to
+reach `resolve_implicit` through the ladder
 rather than directly, leaving `remap_name_str_inner` and the ladder itself as the only
 direct callers. Grep the one function; that it is one is the whole claim. A user
 name in scope always wins, so a name can never go `Ambiguous` against a user name —

@@ -1159,6 +1159,44 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         Some(Expr::Spliced(v)) => v.head(kb),
         Some(Expr::Ref(s)) => ViewHead::Ref(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
+        // Proposal 055 — a nominal type value reads as THE TERM TWIN
+        // `try_occurrence_to_term` builds for it, which is this file's standing
+        // invariant (WI-425) and not a courtesy: `ViewHead::Opaque` is payload-free,
+        // so leaving it there would make two structurally DIFFERENT type values compare
+        // equal and share a `GoalKey` — the same wrong-answers-instead-of-an-error the
+        // WI-1014 note on `wrapped_expr_head` describes.
+        //
+        // TWO SHAPES, because the twin has two (proposal 055 §7): the BARE face lowers
+        // to the `var_ref(name: Ref(S))` a bare identifier has always lowered to, so it
+        // must head exactly as an `Expr::VarRef` does — through the SAME wrapped-shape
+        // table, so the two cannot drift; the APPLIED face lowers to `Fn{S, args}`, the
+        // same shape a bracket-less `Expr::Apply` heads as. It is NOT in
+        // `expr_wrapped_shape` for that reason: that table is static per variant and
+        // this variant's twin depends on whether it carries arguments.
+        // Proposal 055 — a nominal type value heads as THE TERM TWIN
+        // `try_occurrence_to_term` builds for it, which is this file's standing
+        // invariant (WI-425). `ViewHead::Opaque` — where this used to land, being a new
+        // variant — is payload-free, so it would not merely lose precision: `Cell` and
+        // `Cell[V = Int64]` would compare EQUAL and share a `GoalKey`.
+        //
+        // TWO FACES, because the twin has two (proposal 055 §7). The BARE one is
+        // `Ref(S)`, so it heads exactly as the `Expr::Ref(s)` arm above — NOT through a
+        // `var_ref` wrapped shape, which is what it would head as if the twin were still
+        // route-dependent. The APPLIED one is `Fn{S, args}`, the same shape a
+        // bracket-less `Expr::Apply` heads as. Keep this arm and the twin in step: the
+        // carrier-agreement row of `wi_wahb6_type_value_classification_test` fails the
+        // moment they disagree, which is how the two halves of this pair were found.
+        Some(Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        }) => {
+            if pos_args.is_empty() && named_args.is_empty() {
+                ViewHead::Ref(*head)
+            } else {
+                functor_view_head(kb, *head, pos_args.len(), named_args.len())
+            }
+        }
         // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
         // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
         // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
@@ -1299,7 +1337,10 @@ fn occ_pos_child(
         Expr::Apply { pos_args, .. }
         | Expr::Constructor { pos_args, .. }
         // WI-520: `Instantiation` reads like `Constructor` — expose its children.
-        | Expr::Instantiation { pos_args, .. } => pos_args.get(i).map(Rc::clone),
+        | Expr::Instantiation { pos_args, .. }
+        // Proposal 055 — an APPLIED type value's type arguments are its positional /
+        // named children, mirroring the `Fn{S, args}` twin. (The bare face has none.)
+        | Expr::TypeValue { pos_args, .. } => pos_args.get(i).map(Rc::clone),
         // WI-683: a list literal's elements are its positional children, mirroring
         // the `Fn{ListLiteral, pos_args: e…}` term twin.
         Expr::ListLit(es) => es.get(i).map(Rc::clone),
@@ -1361,7 +1402,9 @@ fn occ_named_child(
         }
         Expr::Constructor { named_args, .. }
         // WI-520: `Instantiation` reads like `Constructor`.
-        | Expr::Instantiation { named_args, .. } => named_args,
+        | Expr::Instantiation { named_args, .. }
+        // Proposal 055 — see the positional peer above.
+        | Expr::TypeValue { named_args, .. } => named_args,
         // WI-1014: a tuple literal's children are ALL named — the declared ones
         // under their own labels, the positional ones under `_N`. Handled below
         // rather than here, because the `_N` half is not in this slice.
@@ -1419,7 +1462,10 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::Dictionary { .. }) => vec![dictionary_impl_key(kb)],
         Some(Expr::Constructor { named_args, .. })
         // WI-520: `Instantiation` reads like `Constructor`.
-        | Some(Expr::Instantiation { named_args, .. }) => {
+        | Some(Expr::Instantiation { named_args, .. })
+        // Proposal 055 — the applied type value's keys, which is what `occ_head` counted
+        // for it and what `try_occurrence_to_term` builds; all three read one list.
+        | Some(Expr::TypeValue { named_args, .. }) => {
             named_args.iter().map(|(s, _)| *s).collect()
         }
         // WI-1014: a tuple literal's keys are its declared labels PLUS an `_N` per

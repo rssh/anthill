@@ -42,12 +42,14 @@ fn negative_infinity_and_nan_evaluate() {
         r#"
 namespace test.wi532.siblings
   import anthill.prelude.Float.{negativeInfinity, nan}
-  operation neg() -> Float = negativeInfinity
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- may not be re-declared free-standing. The name here was only ever a label.
+  operation neginf() -> Float = negativeInfinity
   operation bad() -> Float = nan
 end
 "#,
     );
-    match i.call("test.wi532.siblings.neg", &[]) {
+    match i.call("test.wi532.siblings.neginf", &[]) {
         Ok(Value::Float(f)) => assert!(f.is_infinite() && f < 0.0, "expected -∞, got {f}"),
         other => panic!("expected Float(-∞), got {other:?}"),
     }

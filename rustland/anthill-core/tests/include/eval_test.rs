@@ -1333,7 +1333,9 @@ namespace test.wi414
   operation at1() -> Int64 = unwrap(nth([10, 20, 30], 1))
   operation at2() -> Int64 = unwrap(nth([10, 20, 30], 2))
   operation oob() -> Int64 = unwrap(nth([10, 20, 30], 5))
-  operation neg() -> Int64 = unwrap(nth([10, 20, 30], 0 - 1))
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- may not be re-declared free-standing. The name here was only ever a label.
+  operation negidx() -> Int64 = unwrap(nth([10, 20, 30], 0 - 1))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -1348,7 +1350,7 @@ end
     assert_eq!(run(&mut interp, "test.wi414.at1"), 20);
     assert_eq!(run(&mut interp, "test.wi414.at2"), 30);
     assert_eq!(run(&mut interp, "test.wi414.oob"), -1);
-    assert_eq!(run(&mut interp, "test.wi414.neg"), -1);
+    assert_eq!(run(&mut interp, "test.wi414.negidx"), -1);
 }
 
 /// WI-415: the CALL-SITE dual of WI-414. `member`'s `eq(head, x)` is genuinely

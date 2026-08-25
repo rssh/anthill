@@ -1662,6 +1662,19 @@ pub(super) fn reassemble(
             conclude: conclude.as_ref().map(|c| cur.take(c)),
             body: cur.take(body),
         },
+        // Proposal 055 — a type value's type ARGUMENTS are children (`for_each_child`
+        // yields them), so it needs an arm of its own. Reaching the leaf catch-all below
+        // instead would return the node unchanged and silently keep the OLD arguments
+        // whenever a child moved.
+        Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        } => Expr::TypeValue {
+            head: *head,
+            pos_args: cur.take_vec(pos_args),
+            named_args: cur.take_named(named_args),
+        },
         // Genuine leaves (`Var`/`Const`/`Ref`/`Ident`/`Bottom`/`VarRef`) — no
         // children to reassemble.
         _ => return Rc::clone(occ),

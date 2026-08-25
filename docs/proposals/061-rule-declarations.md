@@ -2,13 +2,13 @@
 
 **Canonical reference:** [`kernel-language.md` §8.6](../kernel-language.md), §"A rule head functor is resolved, not declared" and §"A rule-introduced functor is scoped where it is written".
 
-## Status: DELIVERED (2026-08-21, WI-20260821-FQC85; drafted the same day). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
+## Status: DELIVERED (2026-08-21, WI-20260821-FQC85; drafted the same day), amended by C666A (2026-08-24). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
 
-## Relates to: WI-980 (order-independent head binding — this proposal is its structural alternative), WI-896 (a head is resolved, not declared — amended here), 059 §Definitions (the FILE as the unit at which "two parties" becomes real), 052 (rules as stream-valued operations — a declared predicate is the name such a value is cited by), WI-898 (equational heads index under the connective — **out of scope**, see below), 060 (clause-level typed heads — the guard that makes a shared predicate safe), WI-995 (imports are file-local — the reason a predicate's clauses in two files can disagree).
+## Relates to: WI-980 (order-independent head binding — this proposal is its structural alternative), WI-896 (a head is resolved, not declared — amended here), 059 §Definitions (the FILE as the unit at which "two parties" becomes real), 052 (rules as stream-valued operations — a declared predicate is the name such a value is cited by), WI-898 (equational heads index under the connective — **out of scope**, see below), 060 (clause-level typed heads — the guard that makes a shared predicate safe), C666A (an unguarded clause may not reach that declaration only through a whole-scope non-enclosing edge), WI-995 (imports are file-local — the reason a predicate's clauses in two files can disagree).
 
 ## Delivered — what the implementation settled that this text did not
 
-The rule and its staging shipped as written. Five things the draft above states were
+The rule and its staging shipped as written. Six things the draft above states were
 **corrected or decided by measurement** during delivery, and the text is left standing
 because a proposal keeps its own record:
 
@@ -48,6 +48,14 @@ because a proposal keeps its own record:
    filed silences the refusal now covers in their body-less spelling. The last two were
    found by `/code-review` after the first version of each guard shipped — the
    never-reached one had asked the resolution LADDER, which any prelude name satisfies.
+6. **A declaration does not opt every visible scope into appending clauses (C666A).**
+   The draft's unqualified "contributes a clause to whatever it lands on" was too wide
+   after 845G7 made ownership explicit. A predicate imported by name or reached through
+   the lexical enclosing chain is explicitly selected and remains joinable. A `Goal`
+   reached only through `requires`, conversion-style `provides`, or a wildcard import
+   is a whole-scope side effect, so an unguarded head there is a located load error.
+   Proposal 060's generated carrier-selecting `domain` goal is the safe relaxation;
+   WI-742 must admit that guarded form at the refusal boundary, not delete the refusal.
 
 Open question 2 (arity) is **not** settled by this delivery: a declaration states its
 head's arity and enforces nothing, and one-arity-per-predicate remains
@@ -183,6 +191,8 @@ What remains is the single-file case, decided by §WI-896's ladder as it is toda
 An equational rule (`lhs <=> rhs`) is about **extending unification**, not about naming a predicate. Its clauses are indexed under the `eq`/`unify` **connective**, not under its subject (WI-898), so the subject owns no clauses and there is no predicate to declare: `rule eq(red, red) <=> true` leaves `eq` owning nothing, and a carrier that wants `eq` by cases writes **predicate** heads instead (§8.7). The two shapes already earn different symbol kinds — `Goal` for a predicate head, `EquationFunctor` for an equation's subject — precisely because of where the clauses land.
 
 So this proposal governs **logical rules only**. An equational head neither needs a declaration nor is auto-declared by one, and `[simp]`'s enablement (§5.3, WI-881) is untouched.
+
+**AMENDED BY WI-20260821-D0EXD — and "nor is auto-declared by one" needed a rule, not a sentence.** This proposal makes a body-less `rule` DECLARE a predicate, minted in pass 1, and §WI-896's ladder then lets any head that resolves become a clause of what it resolves to. Measured, that let a declaration at an ENCLOSING scope take a sort's equation subject: `qlib { rule f(2); sort Rec { rule f() <=> 1 [simp] } }` left `qlib.Rec.f` absent while `qlib.f()` answered `Int(1)`, and renaming the declaration gave the exact mirror — two programs one token apart, both silent. An equation's subject may now only resolve to something equations DEFINE (an `operation`, or another subject); another scope's predicate is a load error naming both sites. The declaration this proposal introduces is therefore the remedy for a predicate name and *not* for an equation-defined one, whose declaration is an `operation`. Stated at kernel-language.md §"A rule head functor is resolved, not declared".
 
 **This section is also where the declaration's syntax lands its weight**, now that the declaration is a body-less rule. The two constructs share the shape `body: None` and are told apart by the head's functor — a minted `unify` node is an equation, anything else is a declaration — which is the reader the loader already runs (`EQUATION_FUNCTORS` has one member and its doc defines an equation as exactly "a body-less rule head"). The corpus makes the stakes concrete: **97** body-less heads are minted equations and must not move, against **20** plain heads that this proposal re-reads. The pairing with `SimpleTermStore::is_minted` is not optional — `unify` is also an ordinary identifier a user may call, and WI-948 records that this predicate is *a name, not a verdict*.
 

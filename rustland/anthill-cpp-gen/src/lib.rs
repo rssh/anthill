@@ -3218,6 +3218,24 @@ fn lower_node(
         // would otherwise have been added twice.
         Expr::Ref(sym) | Expr::Ident(sym) => lower_symbol_ref(kb, ctx, *sym, false),
         Expr::VarRef { name } => lower_symbol_ref(kb, ctx, *name, true),
+        // Proposal 055 §5 — a reflect `Type` VALUE has no representation in a target
+        // without a reflect runtime, so it cannot be lowered; refuse, naming the sort
+        // it denotes.
+        //
+        // THIS IS THE LOCAL REFUSAL, NOT THE FENCE. The specified per-profile check —
+        // reflect sort in a value-carrying position of a compiled operation, reported
+        // early and naming the profile — is work item (b), WI-20260823-Z9HJ2. What this
+        // arm buys until then is that the case stops being lowered as something it is
+        // not: before the classification existed, `Cell[V = Int64]` reached the `Apply`
+        // arm below and was emitted as a C++ CALL to `Cell(...)`.
+        Expr::TypeValue { head, .. } => Err(CppCodegenError {
+            message: format!(
+                "type value `{}` in a compiled body: the reflect `Type` sort has no \
+                 C++ representation (proposal 055 §5; the per-profile fence is \
+                 WI-20260823-Z9HJ2)",
+                kb.qualified_name_of(*head)
+            ),
+        }),
         Expr::Apply { functor, pos_args, named_args, .. } => {
             let fn_qn = kb.qualified_name_of(*functor).to_string();
             let fn_short = cpp_identifier(short_name_of(&fn_qn));

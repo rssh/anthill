@@ -1,7 +1,7 @@
 //! WI-900 — THE MINT GUARD AND THE NAME LADDER MUST AGREE on which names a rule head
 //! may introduce. The rule lives in `docs/kernel-language.md` §"A rule-introduced
 //! functor is scoped where it is written"; the mechanism is
-//! `load::name_denotes_for_rule_head`. This file drives the two edges of *denotes* —
+//! `load::rule_head_ladder_answer`. This file drives the two edges of *denotes* —
 //! an implicit name whose target is NOT loaded, and an ambiguous one.
 //!
 //! STDLIB LOADS: THREE, one per stdlib-bearing `#[test]` (~0.5s each). The per-claim

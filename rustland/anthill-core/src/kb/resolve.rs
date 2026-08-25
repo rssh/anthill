@@ -8708,6 +8708,49 @@ impl KnowledgeBase {
                     None => NodeOccurrence::new_expr(Expr::Ref(name), span, None),
                 })
             }
+            // Proposal 055 — a nominal type value. NOT hoisted: hoisting exists to turn a
+            // nested op CALL into a fresh var plus an `eq` goal that re-triggers the
+            // unfold, and a type value is not a call — there is nothing to unfold, and its
+            // head is a closed datum the resolver can decide structurally.
+            //
+            // WHAT EACH FACE USED TO DO HERE, since neither is quite this. The BARE face
+            // arrived as an `Expr::VarRef` and took the arm directly above, emitting
+            // `Ref(S)` — reproduced exactly below, for the same reason that arm gives:
+            // the resolver must be able to DECIDE a closed datum, not flounder on it.
+            // The APPLIED face arrived as an `Expr::Apply` and was hoisted as though it
+            // were an op call; that was a consequence of the missing classification, not
+            // a decision, and it is what this arm stops doing. Declining outright (the
+            // `_ => None` below) would be the third option and the worst: it abandons the
+            // whole unfold because a body mentions a type.
+            Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            } => {
+                let head = *head;
+                let pos_c = pos_args.clone();
+                let named_c = named_args.clone();
+                if pos_c.is_empty() && named_c.is_empty() {
+                    return Some(NodeOccurrence::new_expr(Expr::Ref(head), span, None));
+                }
+                let mut pos = Vec::with_capacity(pos_c.len());
+                for a in &pos_c {
+                    pos.push(self.anf_flatten(a, rename, hoists)?);
+                }
+                let mut named = Vec::with_capacity(named_c.len());
+                for (fs, a) in &named_c {
+                    named.push((*fs, self.anf_flatten(a, rename, hoists)?));
+                }
+                Some(NodeOccurrence::new_expr(
+                    Expr::TypeValue {
+                        head,
+                        pos_args: pos,
+                        named_args: named,
+                    },
+                    span,
+                    None,
+                ))
+            }
             _ => None,
         }
     }

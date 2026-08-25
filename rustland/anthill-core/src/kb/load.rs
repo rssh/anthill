@@ -1287,6 +1287,89 @@ pub enum LoadError {
         /// The first head, so the error has a line.
         span: Span,
     },
+    /// AN EQUATION'S SUBJECT MAY NOT NAME ANOTHER SCOPE'S PREDICATE
+    /// (WI-20260821-D0EXD).
+    ///
+    /// §"A rule head functor is resolved, not declared" reaches every head shape, an
+    /// equation's subject included: a head whose functor RESOLVES is a clause of what it
+    /// resolves to. For an equation that reading is only coherent when what it lands on
+    /// is a thing equations DEFINE — an `operation`, or another equation's subject.
+    /// A rule-introduced PREDICATE is not one: an equation's clauses index under the
+    /// `eq`/`unify` CONNECTIVE and never under the subject (WI-898), so the equation
+    /// does not become a clause of the predicate — the subject merely points at it, and
+    /// the equation-defined operation the writing scope meant to name CEASES TO EXIST.
+    ///
+    /// MEASURED, two arms one token apart, the sort body identical in both:
+    ///
+    /// ```text
+    ///   namespace qlib
+    ///     rule f(2)                       -- 061: a body-less rule DECLARES a predicate
+    ///     sort Rec { entity r(n: Int64)   rule f() <=> 1 [simp] }
+    ///   end
+    ///     -> qlib.Rec.f ABSENT.  `Rec.f()` = "unknown functor"; `f()` under
+    ///        `import qlib.*` = Int(1) -- the sort's operation MOVED to the namespace.
+    ///   the same file with the declaration renamed `rule other(2)`
+    ///     -> the exact mirror: qlib.Rec.f present, `Rec.f()` = Int(1).
+    /// ```
+    ///
+    /// Both loaded, and nothing was reported.
+    ///
+    /// REFUSED RATHER THAN SPLIT, and the language's own answer for the SAME PAIR is why.
+    /// Where neither side is minted before phase 2 the two are already refused: measured,
+    /// `zi { rule f(true) <=> 7 [simp] }` beside `zj { import zi.*  rule f(1) :- true }`
+    /// is [`NameIntroducedAtTwoVisibleScopes`], because both heads introduce and phase 2
+    /// reads a pre-mint table. A 061 DECLARATION is minted in pass 1, so it is the one
+    /// shape that reaches phase 2 already denoting — a HOLE in that refusal rather than a
+    /// different question, and letting it split silently would leave a predicate and an
+    /// equation subject sharing a short name across visible scopes, which is exactly the
+    /// shadowing hazard that refusal exists for.
+    ///
+    /// SCOPED TO ANOTHER SCOPE'S PREDICATE, on 845G7's own principle: the shadow itself
+    /// is not the defect, INVENTING it is. `sort Rec { rule f(?y)  rule f() <=> 1 [simp] }`
+    /// is one author writing both in one place, the name carries both roles, and it
+    /// WORKS — driven, `Rec.f(false)` = Int(2). Nothing was captured, so nothing is
+    /// refused.
+    ///
+    /// CENSUS over the whole suite — stdlib, `anthill-stl`, `examples`, `anthill-todo`
+    /// and every fixture — instrumenting phase 2 with the resolved symbol's kinds:
+    /// **643,866** heads that denote, of which **516,224** are an equation subject on an
+    /// `operation`, **63,915** a predicate head on a predicate, **63,654** a predicate
+    /// head on an operation (the law layer), **12** an equation subject on another
+    /// equation subject (`Bool.ite`, `Float.nonEqRefl`) — and **4** an equation subject
+    /// on a predicate, every one of them in `wi980_rule_head_order_test`'s own remedy
+    /// arms. Zero in the shipped corpus.
+    ///
+    /// THE REMAINING **57** ARE NAMED rather than left as a gap in the arithmetic (found
+    /// by `/code-review`, which added the four figures up): 30 a predicate head on a
+    /// nested sort's constructor, 16 an equation subject on an ENTITY, 6 a predicate head
+    /// on an entity, 2 on a name that is both a predicate and a sort, 2 on one that is
+    /// both a predicate and an operation, 1 on a namespace. The 16 are the class this
+    /// rule admits in silence: whether an equation may define an entity constructor is a
+    /// different question from whether it may define a relation, and nothing here answers
+    /// it.
+    EquationSubjectNamesAPredicate {
+        /// The subject's short name, as written.
+        name: String,
+        /// The scope the equation is WRITTEN in — the one losing the operation.
+        head_scope: String,
+        /// Every scope declaring a predicate the subject reached, in display order.
+        /// A LIST because `Ambiguous` counts as denoting: naming whichever candidate the
+        /// resolver happened to sort first would send the author to fix one and meet the
+        /// identical error pointing at the next (found by `/code-review`).
+        predicate_scopes: Vec<String>,
+        /// Did the subject resolve AMBIGUOUSLY? Carried rather than inferred from
+        /// `predicate_scopes.len() > 1`, which is not the same question: the group is
+        /// keyed on `(scope, name)` while the ladder is asked per head with that head's
+        /// own asking-file, so one scope reopened in two files with different imports
+        /// gives two UNAMBIGUOUS answers naming two scopes (found by `/code-review`,
+        /// which drove it — the message then pointed at "the other error", and there was
+        /// no other error). It decides only the prescription: where the name is genuinely
+        /// ambiguous, settling the ambiguity settles nothing, because every candidate is
+        /// a relation whichever way it goes.
+        ambiguous: bool,
+        /// The equation's head, so the error has a line.
+        span: Span,
+    },
     /// TWO SCOPES THAT CAN SEE EACH OTHER MAY NOT BOTH INTRODUCE ONE NAME
     /// (WI-20260821-E85J5, generalized by WI-20260822-845G7).
     ///
@@ -1338,7 +1421,39 @@ pub enum LoadError {
         /// does — a chain, or two siblings a third scope imports — and the message then
         /// prescribes a per-scope declaration instead.
         owner: Option<String>,
+        /// WI-20260821-D0EXD — is one of the colliding heads an EQUATION SUBJECT written
+        /// somewhere the named owner is not? Then the body-less `rule` this message used
+        /// to prescribe is NOT a working owner for it: a subject that lands on another
+        /// scope's predicate is refused ([`LoadError::EquationSubjectNamesAPredicate`]),
+        /// so taking the advice would trade this error for that one. Measured on `zeq`,
+        /// whose advice was TAKEN and refused. What collects an equation subject across
+        /// scopes is an `operation` — the declaration of what equations define — driven
+        /// to Int(2) through the sort's own citation.
+        equation_elsewhere: bool,
         /// The first head, so the error has a line.
+        span: Span,
+    },
+    /// C666A — an unguarded clause may not join a predicate it reaches only through a
+    /// whole-scope, non-enclosing edge (`requires`, `provides`, or wildcard import).
+    ///
+    /// Proposal 061 already refuses the undeclared version: each head auto-declares at
+    /// its written scope and [`Self::NameIntroducedAtTwoVisibleScopes`] reports the
+    /// collision.  The remaining unsafe shape has an EXPLICIT declaration at the
+    /// target, so the joining head denotes it and silently enters its clause set.
+    ///
+    /// A named import is deliberately outside this variant: it is a local alias, not a
+    /// parent edge, and explicitly opts into this predicate.  An enclosing declaration
+    /// is outside it too.  WI-742 will add the third admitted case at the producer: a
+    /// relational typed head whose generated `domain` goal selects its carrier.  The
+    /// unguarded refusal remains.
+    UnguardedNonEnclosingPredicateJoin {
+        /// The short functor written at the joining head.
+        name: String,
+        /// The scope containing the joining clause.
+        scope: String,
+        /// The qualified predicate the head would extend.
+        predicate: String,
+        /// The joining head, so each independent contributor has its own location.
         span: Span,
     },
     /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
@@ -1617,6 +1732,32 @@ pub enum LoadError {
         name: String,
         declared_in: String,
         scope_name: String,
+        span: Span,
+    },
+    /// WI-20260824-BFB9A — ONE SPEC OPERATION, ONE SYMBOL. A FREE-STANDING
+    /// `operation` whose name, at the address it is written, already denotes a
+    /// SPEC OPERATION — a member of a parametric sort. The declaration would mint a
+    /// SECOND symbol of that spelling, and the language's way to give a carrier its
+    /// own implementation is a PROVISION (`provides PartialEq[T = MySort]`), which
+    /// attaches to the ONE symbol and is selected by carrier at the call site
+    /// (WI-350/444/627: `Set.eq`, `Map.eq`).
+    ///
+    /// REFUSED RATHER THAN ABSORBED: a free-standing operation has no carrier and
+    /// dispatch keys on the carrier, so there is nothing for the spec op to select —
+    /// the declaration cannot be turned into an implementation, only rejected.
+    ///
+    /// `read_in` names the FILE whose reading of the name makes it a rival, and is
+    /// `None` when that is the declaration's own file (the ordinary case). Two files
+    /// may write text at one address and read one name differently (WI-995: an import
+    /// resolves only in the file that wrote it), so a refusal earned by a SIBLING
+    /// file's reading has to say so — otherwise the message tells an author to repair
+    /// a relationship their own file does not have.
+    RivalSpecOperation {
+        name: String,
+        rival_qualified: String,
+        spec_qualified: String,
+        scope_name: String,
+        read_in: Option<String>,
         span: Span,
     },
     /// WI-525 (proposal 049, NAF discipline): a `<=>` (unify) goal occurs under
@@ -1964,6 +2105,7 @@ impl LoadError {
             | LoadError::UnresolvedTypeName { span, .. }
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
+            | LoadError::RivalSpecOperation { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
@@ -1984,6 +2126,8 @@ impl LoadError {
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
             | LoadError::NameIntroducedAtTwoVisibleScopes { span, .. }
+            | LoadError::EquationSubjectNamesAPredicate { span, .. }
+            | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -2479,13 +2623,29 @@ impl LoadError {
                 name,
                 scopes,
                 owner,
+                equation_elsewhere,
                 span,
             } => {
                 let repair = match owner {
+                    // WI-20260821-D0EXD — an EQUATION SUBJECT is not collected by a
+                    // body-less `rule`, so where one of the heads is a subject written
+                    // outside the named owner the prescription changes to the declaration
+                    // that DOES collect it. Both were driven before being prescribed.
+                    Some(o) if *equation_elsewhere => format!(
+                        "One of those heads is an EQUATION's subject, which a body-less \
+                         `rule` does not collect — an equation is not a clause of a \
+                         predicate (WI-898). Declare what the equations define: an \
+                         `operation {}(…) -> R` in '{}' makes every one of those heads \
+                         its own, or a body-less `rule {}(…)` in EACH scope says they \
+                         are separate.",
+                        name, o, name
+                    ),
                     Some(o) => format!(
-                        "Declare it (proposal 061): a body-less `rule {}(…)` in '{}' makes \
-                         every one of those heads a clause of it, or one in EACH scope \
-                         says they are separate predicates.",
+                        "Declare it (proposal 061): a body-less `rule {}(…)` in '{}', \
+                         with a named import of that predicate in each non-enclosing \
+                         contributor, makes every one of those heads a clause of it. \
+                         Alternatively, one declaration in EACH scope says they are \
+                         separate predicates.",
                         name, o
                     ),
                     // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces
@@ -2500,8 +2660,20 @@ impl LoadError {
                          the program says which should own it. Declare it (proposal 061): \
                          a body-less `rule {}(…)` in each scope that should own one says \
                          they are separate predicates, and one in a scope the others can \
-                         all reach makes their heads its clauses.",
-                        name
+                         all reach, with named imports in its non-enclosing contributors, \
+                         makes their heads its clauses{}.",
+                        name,
+                        // BOTH CLAUSES, and they are about different things: C666A's
+                        // named-import requirement is what makes the owner collect a
+                        // non-enclosing contributor's head at all, and D0EXD's exception
+                        // is which head shapes a body-less `rule` collects once it does.
+                        // The `Some(o)` arms above carry the same pair.
+                        if *equation_elsewhere {
+                            " — except an EQUATION's subject, which a body-less `rule` \
+                             does not collect (WI-898); an `operation` there does"
+                        } else {
+                            ""
+                        }
                     ),
                 };
                 let named = if scopes.len() <= COLLISION_SCOPES_SHOWN {
@@ -2526,6 +2698,69 @@ impl LoadError {
                     named,
                     name,
                     repair
+                )
+            }
+            LoadError::EquationSubjectNamesAPredicate {
+                name,
+                head_scope,
+                predicate_scopes,
+                ambiguous,
+                span,
+            } => format!(
+                "{}: the equation subject `{}` names the RELATION `{}` declared in {} — \
+                 a predicate, or a labelled rule, which a rule head names and equations \
+                 do not define. An equation's clauses index under the `<=>` connective \
+                 and never under its subject (WI-898), so this equation would define that \
+                 relation and `{}.{}` would not exist. {}",
+                loc.format_start(*span),
+                name,
+                name,
+                quoted_scope_list(predicate_scopes),
+                head_scope,
+                name,
+                if *ambiguous {
+                    // EVERY CANDIDATE IS A RELATION, so settling the ambiguity the other
+                    // error reports does not settle this — whichever way it goes, the
+                    // equation lands on one. Only the head-scope declaration is a repair
+                    // that stands on its own here, and it is the one that is driven; the
+                    // `operation` half is stated as what it is, a second edit.
+                    format!(
+                        "Declare a body-less `rule {name}(…)` in '{head_scope}' to keep \
+                         this equation here — every candidate above is a relation, so \
+                         settling the ambiguity that the other error names would not \
+                         settle this one."
+                    )
+                } else {
+                    format!(
+                        "Declare what the equation defines: make `{name}` in {} an \
+                         `operation {name}(…) -> R` INSTEAD of a relation — one name \
+                         cannot be both, so this replaces the declaration rather than \
+                         joining it — or a body-less `rule {name}(…)` in '{head_scope}' \
+                         says the relation and this equation are separate things that \
+                         share a spelling.",
+                        quoted_scope_list(predicate_scopes)
+                    )
+                }
+            ),
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name,
+                scope,
+                predicate,
+                span,
+            } => {
+                format!(
+                    "{}: the unguarded rule head `{}` in '{}' joins predicate '{}' \
+                     through a non-enclosing scope edge. `requires`, `provides`, and a \
+                     wildcard import expose a whole scope; they do not opt this clause \
+                     into another predicate. Declare `{}` in '{}' to keep a separate \
+                     predicate, or import '{}' by name to extend it explicitly.",
+                    loc.format_start(*span),
+                    name,
+                    scope,
+                    predicate,
+                    name,
+                    scope,
+                    predicate
                 )
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
@@ -2812,6 +3047,26 @@ impl LoadError {
                     name,
                     declared_in,
                     scope_name,
+                )
+            }
+            LoadError::RivalSpecOperation {
+                name,
+                rival_qualified,
+                spec_qualified,
+                scope_name,
+                read_in,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    rival_spec_operation_message(
+                        name,
+                        scope_name,
+                        rival_qualified,
+                        spec_qualified,
+                        read_in.as_deref(),
+                    ),
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -3514,6 +3769,7 @@ impl std::fmt::Display for LoadError {
                 name,
                 scopes,
                 owner,
+                equation_elsewhere,
                 span,
             } => {
                 // TRUNCATED LIKE `format_with_source`, and for its reason: a transitive
@@ -3535,11 +3791,49 @@ impl std::fmt::Display for LoadError {
                     scopes.len(),
                     named,
                     match owner {
+                        // WI-20260821-D0EXD — the terse form carries the same
+                        // correction as `format_with_source`'s: a body-less `rule` in
+                        // the owner does not collect an equation subject written
+                        // elsewhere, so this one-liner must not say "declare it" flat.
+                        Some(o) if *equation_elsewhere =>
+                            format!("; declare it in '{o}' as an `operation`"),
                         Some(o) => format!("; declare it in '{o}'"),
                         None => String::new(),
                     },
                     span.start,
                     span.end
+                )
+            }
+            LoadError::EquationSubjectNamesAPredicate {
+                name,
+                head_scope,
+                predicate_scopes,
+                ambiguous,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the equation subject `{}` in '{}' names the relation `{}` declared \
+                     in {}{} (at {}..{})",
+                    name,
+                    head_scope,
+                    name,
+                    quoted_scope_list(predicate_scopes),
+                    if *ambiguous { " (ambiguously)" } else { "" },
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name,
+                scope,
+                predicate,
+                span,
+            } => {
+                write!(
+                    f,
+                    "the unguarded rule head '{}' in '{}' joins predicate '{}' through a non-enclosing scope edge (at {}..{})",
+                    name, scope, predicate, span.start, span.end
                 )
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
@@ -3767,6 +4061,28 @@ impl std::fmt::Display for LoadError {
                     f,
                     "'{}' is internal to '{}' and cannot be referenced from scope '{}' at {}..{}",
                     name, declared_in, scope_name, span.start, span.end,
+                )
+            }
+            LoadError::RivalSpecOperation {
+                name,
+                rival_qualified,
+                spec_qualified,
+                scope_name,
+                read_in,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    rival_spec_operation_message(
+                        name,
+                        scope_name,
+                        rival_qualified,
+                        spec_qualified,
+                        read_in.as_deref(),
+                    ),
+                    span.start,
+                    span.end,
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -4156,7 +4472,7 @@ pub fn scan_definitions_with_sources(
     // same table — declarations, imports and `requires`-inherited names, all of which
     // pass 1 and pass 2 finished. Phase 3 mints.
     //
-    // The DECISION is what changed, not a schedule. `name_denotes_for_rule_head` alone
+    // The DECISION is what changed, not a schedule. `rule_head_ladder_answer` alone
     // cannot answer this question: it asks "has a symbol been minted", which is true or
     // false depending on how much of the pass has run. What decides it is whether the
     // name is WRITTEN as a head in a scope this one can see — a syntactic property of
@@ -4193,13 +4509,89 @@ pub fn scan_definitions_with_sources(
     }
     // Phase 2 — every ladder answer read off the pre-mint table. Collected in full
     // before phase 3 starts, which is what makes them order-free.
-    let denotes: Vec<bool> = heads
+    // THE ANSWER IS KEPT, not just its verdict. The refusal below needs the SYMBOL the
+    // head landed on, and re-asking the ladder for it would resolve every equation
+    // subject twice on every load — per this change's own census, 516,236 of 643,866
+    // denoting head sites (found by `/code-review`). `denotes()` is still the only thing
+    // the mint and the collision check read, so nothing else gains a second question.
+    let resolved: Vec<ResolveResult> = heads
         .iter()
         .map(|h| {
             kb.symbols.set_asking_file(Some(source_ids[h.file_idx]));
-            name_denotes_for_rule_head(kb, h.name, h.scope)
+            rule_head_ladder_answer(kb, h.name, h.scope)
         })
         .collect();
+    let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
+    // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
+    //
+    // The ladder above answers one question — does the name resolve — for every head
+    // shape. That is right for a predicate head, and right for an equation subject too
+    // wherever what it lands on is a thing equations DEFINE. It is wrong for exactly one
+    // target: a rule-introduced PREDICATE, which owns clauses an equation never
+    // contributes to (WI-898), so the equation's own operation silently ceases to exist
+    // at the scope that wrote it. Asked HERE rather than inside the ladder because the
+    // ladder is the one definition of what a name denotes and must stay one — this is a
+    // refusal layered on its answer, not a second ladder.
+    // ONE SUBJECT IS ONE MESSAGE, however many equations are written about it — the rule
+    // is about the NAME, and every clause about it has the same cause and the same
+    // repair. Reporting per clause printed one fault twice for
+    // `sort Rec { rule f(true) <=> 1 [simp]  rule f(false) <=> 2 [simp] }` (found by
+    // `/code-review`), which is what this pass's sibling refusal already avoids
+    // ("ONE MISSING DECLARATION IS ONE MESSAGE"). Reported at the FIRST clause, by file
+    // and offset, so the group's line does not depend on the walk order.
+    let mut absorbed: HashMap<(ScopeId, &str), (usize, Vec<ScopeId>, bool)> = HashMap::new();
+    for ((idx, (head, &denotes_already)), answer) in
+        heads.iter().zip(&denotes).enumerate().zip(&resolved)
+    {
+        if !denotes_already || head.introduced_by != RuleIntroduction::Equation {
+            continue;
+        }
+        let owners = equation_subject_lands_on_predicate(kb, head, answer, global);
+        if owners.is_empty() {
+            continue;
+        }
+        let ambiguous = matches!(answer, ResolveResult::Ambiguous(_));
+        match absorbed.entry((head.scope, head.name)) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((idx, owners, ambiguous));
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let (first, seen, was_ambiguous) = e.get_mut();
+                if (heads[idx].file_idx, heads[idx].span.start)
+                    < (heads[*first].file_idx, heads[*first].span.start)
+                {
+                    *first = idx;
+                }
+                *was_ambiguous |= ambiguous;
+                for o in owners {
+                    if !seen.contains(&o) {
+                        seen.push(o);
+                    }
+                }
+            }
+        }
+    }
+    // A DETERMINISTIC REPORT ORDER, so two absorbed subjects do not print in hash order.
+    let mut groups: Vec<(usize, Vec<ScopeId>, bool)> = absorbed.into_values().collect();
+    groups.sort_by_key(|(first, _, _)| (heads[*first].file_idx, heads[*first].span.start));
+    for (first, owners, ambiguous) in groups {
+        let head = &heads[first];
+        let mut scopes: Vec<String> = owners
+            .iter()
+            .map(|o| kb.scope_display_name(*o).to_owned())
+            .collect();
+        scopes.sort();
+        errors.push(
+            LoadError::EquationSubjectNamesAPredicate {
+                name: head.name.to_owned(),
+                head_scope: kb.scope_display_name(head.scope).to_owned(),
+                predicate_scopes: scopes,
+                ambiguous,
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
+    }
     // Phase 3 — DECIDE every head, then mint. Deciding reads the table and minting
     // writes it, so they cannot interleave: `head_name_collisions` takes the KB immutably
     // and no mint has happened when any of its answers is taken. It sees a scope through
@@ -4261,11 +4653,21 @@ pub fn scan_definitions_with_sources(
             .map(|s| kb.scope_display_name(*s).to_owned())
             .collect();
         scope_names.sort();
+        // WI-20260821-D0EXD — does the prescription have to change? A body-less `rule`
+        // in the named owner collects a PREDICATE head; it does not collect an EQUATION
+        // SUBJECT written anywhere else, because such a subject landing on another
+        // scope's predicate is itself refused. Asked per SITE, not per group: where every
+        // subject in the group sits AT the owner, the ordinary text is still true.
+        let equation_elsewhere = c.sites.iter().any(|&i| {
+            heads[i].introduced_by == RuleIntroduction::Equation
+                && c.owner != Some(heads[i].scope)
+        });
         errors.push(
             LoadError::NameIntroducedAtTwoVisibleScopes {
                 name: c.name.to_owned(),
                 scopes: scope_names,
                 owner: c.owner.map(|o| kb.scope_display_name(o).to_owned()),
+                equation_elsewhere,
                 span: heads[first].span,
             }
             .located_in(files[heads[first].file_idx]),
@@ -4393,6 +4795,36 @@ pub fn scan_definitions_with_sources(
         }
     }
 
+    // C666A — AN UNGUARDED CLAUSE MAY NOT JOIN A DECLARED PREDICATE THROUGH AN
+    // IMPLICIT WHOLE-SCOPE EDGE.
+    //
+    // AFTER SUB-PASS 4, for the same reason the agreement check below waits: a
+    // selective predicate import is the explicit opt-in that makes this join legal,
+    // and deferred predicate imports must be visible before the verdict.  One error per
+    // joining head, not per target predicate — two independent implementors are two
+    // authors and each needs its own location.
+    //
+    // Proposal 061's undeclared case does NOT reach this check.  Phase 3 minted each
+    // auto-declaration at its written scope and `NameIntroducedAtTwoVisibleScopes`
+    // already refused the collision.  This loop covers the complementary case where a
+    // body-less declaration made the target real in pass 1, so every foreign head
+    // denotes it and the 061 collision candidate set deliberately excludes it.
+    for head in &heads {
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        let Some(target) = unguarded_non_enclosing_predicate_join_target(kb, head) else {
+            continue;
+        };
+        errors.push(
+            LoadError::UnguardedNonEnclosingPredicateJoin {
+                name: head.name.to_owned(),
+                scope: kb.scope_display_name(head.scope).to_owned(),
+                predicate: kb.qualified_name_of(target).to_owned(),
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
+    }
+
     // WI-980 — THE AGREEMENT CHECK: every head must now resolve to EXACTLY ONE thing.
     //
     // WHY IT EXISTS. The decision above asks the ladder through an OVERLAY, and the
@@ -4416,7 +4848,7 @@ pub fn scan_definitions_with_sources(
     // message tells the author to reach for. Measured: adding `import ext.{p}` did not
     // save a program the check had already refused.
     //
-    // IT ASKS THE LOADER'S OWN LADDER (`name_denotes_for_rule_head`), not the overlay
+    // IT ASKS THE LOADER'S OWN LADDER (`rule_head_ladder_answer`), not the overlay
     // walk — that is the point. The two asking different questions is exactly the class
     // of defect this catches, so the check must speak the consumer's language.
     for head in &heads {
@@ -4687,6 +5119,27 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
         .copied()
         .filter(|qn| !kb.symbols.by_qualified_name.contains_key(*qn))
         .collect()
+}
+
+/// WI-20260824-BFB9A: the SHORT NAMES the implicit tier answers — every name a program
+/// can write bare, with no import, and have resolve. Read off the two tables, beside
+/// them, for the reason [`implicit_target_orphans`] states: a test that needs this
+/// population must not go and get it somewhere else.
+///
+/// `wi_bfb9a_rival_spec_operation_test::the_refusal_population_is_the_ten_spec_operations`
+/// is the reader, and its previous version SCRAPED THIS FILE'S SOURCE for the table
+/// literals — `read_to_string("src/kb/load.rs")` and `split('"').step_by(2)`, which one
+/// `"` inside a table comment silently unbalances, dropping names while every assertion
+/// still passed. Found by `/code-review`.
+pub fn implicit_tier_short_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = KERNEL_VOCAB_QUALIFIED
+        .iter()
+        .chain(PRELUDE_QUALIFIED.iter())
+        .filter_map(|qn| qn.rsplit('.').next())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// §6.3 (WI-926) — a sort's constructor that carries THE SORT'S OWN NAME *is*
@@ -5152,7 +5605,7 @@ fn scan_rule(
 /// declared operation, or an IMPORT of another scope's rule functor — the rule
 /// binds to that ORIGIN symbol instead of minting a shadowing sort-local `Goal`.
 /// Only a genuinely-new name gets a fresh Goal, and WHICH names those are is
-/// [`name_denotes_for_rule_head`]'s question — the ladder, read-only.
+/// [`rule_head_ladder_answer`]'s question — the ladder, read-only.
 ///
 /// WI-898 — WHICH KIND that fresh symbol gets is [`RuleIntroduction`]'s question,
 /// answered by the SAME head walk that picked the name. A predicate head keeps
@@ -5168,7 +5621,7 @@ fn scan_rule(
 /// scope that writes one name in both shapes would otherwise be classified by
 /// whichever of its two rules this pass reached first.
 fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>) {
-    // NO RE-CHECK HERE. It asked `name_denotes_for_rule_head` once more — a question the
+    // NO RE-CHECK HERE. It asked `rule_head_ladder_answer` once more — a question the
     // decision phase already froze — against the table THIS LOOP IS FILLING, which is the
     // very defect WI-980 removes, one layer down. Measured: three files, `rule zq(0)` with
     // no namespace beside `namespace zq1 { rule zq(1) }` and `namespace zq2 { rule zq(2) }`,
@@ -5286,7 +5739,7 @@ fn parse_connective_head<'a>(
 /// The mint damage this can still do is only ever to the ARGUMENT: every connective
 /// spelling is implicit-tier reserved vocabulary ([`PRELUDE_QUALIFIED`] /
 /// [`kernel_vocab_qualified`]), so a head can never introduce one of them whatever
-/// this answers — [`name_denotes_for_rule_head`] refuses it (WI-530), measured
+/// this answers — [`rule_head_ladder_answer`] refuses it (WI-530), measured
 /// identical with the `is_minted` guard and without it.
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
@@ -5627,7 +6080,7 @@ fn non_defining_connective_head(
 /// and introduces NOTHING, because that head is minted, so the `is_minted(subject)`
 /// guard below returns first. WI-530's outcome, reached without WI-530's special case.
 /// (This doc used to say the CALLER's mint guard refuses it via
-/// [`name_denotes_for_rule_head`]; that rung is never consulted for this shape, and a
+/// [`rule_head_ladder_answer`]; that rung is never consulted for this shape, and a
 /// reader backing out either guard would have predicted the wrong control. Corrected
 /// under WI-948, which measured the path.)
 ///
@@ -5642,7 +6095,7 @@ fn non_defining_connective_head(
 /// cell, wrong for the other three.
 ///
 /// WHAT THIS FUNCTION DOES NOT DECIDE (WI-900): whether that name is FREE. Every "does
-/// it already mean something here?" rung belongs to [`name_denotes_for_rule_head`], so
+/// it already mean something here?" rung belongs to [`rule_head_ladder_answer`], so
 /// the guard and `remap_name_str_inner` cannot answer differently. What stays HERE is
 /// only what the SOURCE SHAPE decides.
 ///
@@ -5993,6 +6446,66 @@ fn secondary_entry_message(
          sort's own scope (proposal 059 R2/R3), and may add members and spec claims, \
          never identity. Write it in the sort's own declaration instead, or at an \
          address no sort occupies."
+    )
+}
+
+/// WI-20260824-BFB9A — the body of [`LoadError::RivalSpecOperation`]'s message, owned
+/// ONCE. The located renderer and `Display` each add their own position and share this;
+/// hand-keeping two copies is what this file's [`provides_needs_sort_message`]
+/// convention exists to prevent.
+///
+/// THE MESSAGE NAMES THE PROBLEM AND THE DIRECTION, AND PRESCRIBES NO RECIPE — this is
+/// the THIRD wording, and the first two each told authors to write something that does
+/// not load. `/code-review` drove both:
+///
+/// 1. "write `provides {spec}[T = <carrier>]` with the operation inside it" — a
+///    `provides` clause has no body at all: the grammar's only bodied form requires a
+///    literal `language <ident>` and admits no operation declaration.
+/// 2. "declare it as a member of the `sort` it is for, alongside a `provides` clause in
+///    the same body" — followed verbatim with a type-correct body this LOADS for 5 of
+///    the 10 tier-reachable names and FAILS for the other 5, splitting cleanly. RE-DRIVEN
+///    2026-08-25 over all ten, one fixture each (`sort Box { entity boxed(v: Int64);
+///    provides <Spec>[T = Box]; operation <name>(…) }`): `eq` / `gt` / `lt` / `gte` /
+///    `lte` load; `add` / `sub` / `mul` / `neg` fail with "'Box' provides
+///    'anthill.prelude.Numeric', which requires 'anthill.prelude.PartialOrd', but 'Box'
+///    does not provide" — the one prescribed clause does not supply the further
+///    provision, nor `Numeric`'s own `neg` / zero members; and `neq` fails with a
+///    PRE-EXISTING check refusing exactly what this prescribed — "`neq` is not an
+///    override point: carrier 'Box' supplies its own `neq` … and no `eq`".
+///
+/// A diagnostic that prescribes a repair nobody ran is worse than one that does not
+/// prescribe: the author follows it and lands on a second, unrelated error. So this
+/// states WHAT IS WRONG and WHERE the operation belongs, and leaves the carrier — which
+/// the loader cannot know — to the author and the spec section that owns it.
+///
+/// `read_in` IS NOT DECORATION. The refusal is earned if ANY file writing text at this
+/// address reads the name as the spec operation, and that file need not be the one the
+/// span points at: an import is visible only in the file that wrote it (WI-995), so a
+/// declaration whose own file imports some other `add` is still a rival for a sibling
+/// file that does not. Without naming the reader, that message tells the author to
+/// repair a relationship their file does not have — found by `/code-review` on the
+/// previous cut of this pass, where the sentence was the same either way.
+fn rival_spec_operation_message(
+    name: &str,
+    scope_name: &str,
+    rival_qualified: &str,
+    spec_qualified: &str,
+    read_in: Option<&str>,
+) -> String {
+    let reader = match read_in {
+        Some(file) => format!(
+            " — as read from '{file}', which also writes at this address; the declaring \
+             file reads the name differently"
+        ),
+        None => String::new(),
+    };
+    format!(
+        "operation '{name}' in scope '{scope_name}' would declare a second symbol of \
+         that name: '{name}' already denotes '{rival_qualified}', a spec operation of \
+         '{spec_qualified}'{reader}. A spec operation takes a carrier-specific meaning \
+         by the CARRIER PROVIDING that spec (kernel-language.md §8.7), which a \
+         free-standing declaration cannot do: move it onto the carrier it is for, or \
+         rename it"
     )
 }
 
@@ -11136,6 +11649,17 @@ fn load_phase_inner(
     // supports.
     all_errors.extend(check_name_captures(kb));
     mark!("check_name_captures");
+    // WI-20260824-BFB9A — beside the capture check because it is the same FAMILY of
+    // question (what a declaration does to a name that already meant something) asked at
+    // the one address `check_name_captures` does not reach and about the one reader it
+    // does not consult: a NAMESPACE, and the implicit tier. Placed after it only so the
+    // two read in the order a reader meets them; the ORDER is not load-bearing, because
+    // the populations are near-complementary by their gates — that check requires
+    // `has_kind(decl.scope.owner(), Sort)` where this one requires
+    // `!is_sort_scope(decl.scope)`, and those differ only for a CONSTRUCTOR's own scope,
+    // which `is_sort_scope` excludes on purpose (see its doc).
+    all_errors.extend(check_rival_spec_operations(kb));
+    mark!("check_rival_spec_operations");
     // WI-939 item 4: one operation, ONE definition — a body or clauses, never both.
     // Here rather than beside `check_duplicate_operation_declarations` (which runs
     // before `resolve_instantiations`) because it reads the RULE index, and a rule
@@ -13722,24 +14246,12 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
     // (WI-1049 / WI-997 already refused it by then), and naming the first line is
     // what this message needs — it names ONE other place, not a census.
     let mut sites: HashMap<Symbol, &DeclSite> = HashMap::new();
-    // Which files' text can read a name at each address (see
-    // `KnowledgeBase::scope_text_files` for why the union of two records).
-    let mut askers: HashMap<ScopeId, Vec<SourceId>> = HashMap::new();
     for d in decls {
         sites.entry(d.sym).or_insert(d);
-        let files = askers.entry(d.scope).or_default();
-        if !files.contains(&d.site.source) {
-            files.push(d.site.source);
-        }
     }
-    for (scope, files) in &kb.scope_text_files {
-        let entry = askers.entry(*scope).or_default();
-        for f in files {
-            if !entry.contains(f) {
-                entry.push(*f);
-            }
-        }
-    }
+    // Which files' text can read a name at each address — [`scope_reading_files`] owns
+    // that union; see it for why neither of its two records subsumes the other.
+    let askers = scope_reading_files(kb);
     let mut errors = Vec::new();
     // WI-995 — the ambient asking file is `None` by here (every whole-KB pass runs
     // outside the per-file loops). Restored after the sweep so nothing downstream
@@ -13808,6 +14320,46 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
     }
     kb.symbols.set_asking_file(saved_asker);
     errors
+}
+
+/// WHICH FILES' TEXT CAN READ A NAME AT EACH ADDRESS — the union of two records, and
+/// ONE owner of that union rather than a copy per pass.
+///
+/// An import resolves only in the file that wrote it (WI-995), so "what did this name
+/// denote here" has one answer PER FILE and no single answer to ask for. A scope's
+/// readers are the files that DECLARE at it (from [`KnowledgeBase::decl_sites`]) plus
+/// the files that merely write text there (from [`KnowledgeBase::scope_text_files`]) —
+/// see that field for why neither record subsumes the other.
+///
+/// [`check_name_captures`] and [`check_rival_spec_operations`] both need it and both
+/// used to build it inline, byte for byte. Two copies of a rule about which readings
+/// count is exactly the drift this file's other shared helpers exist to prevent.
+///
+/// EACH SCOPE'S LIST IS SORTED, because half of it comes out of a `HashMap` and both
+/// readers STOP AT THE FIRST file that answers — so an unsorted list makes which reader
+/// is reported vary run to run on a program two files read differently. Source ids are
+/// issued in file order (`register_sources`), so sorting by id is the order the caller
+/// passed the files in.
+fn scope_reading_files(kb: &KnowledgeBase) -> HashMap<ScopeId, Vec<SourceId>> {
+    let mut askers: HashMap<ScopeId, Vec<SourceId>> = HashMap::new();
+    for d in &kb.decl_sites {
+        let files = askers.entry(d.scope).or_default();
+        if !files.contains(&d.site.source) {
+            files.push(d.site.source);
+        }
+    }
+    for (scope, files) in &kb.scope_text_files {
+        let entry = askers.entry(*scope).or_default();
+        for f in files {
+            if !entry.contains(f) {
+                entry.push(*f);
+            }
+        }
+    }
+    for files in askers.values_mut() {
+        files.sort_unstable_by_key(|f| f.raw());
+    }
+    askers
 }
 
 /// WI-999 — is the captured name a NAMESPACE and nothing else? Then it is not a
@@ -13892,6 +14444,324 @@ fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> boo
         || super::typing::requires_chain_flat(kb, sort)
             .iter()
             .any(|e| e.required_sort == spec)
+}
+
+/// WI-20260824-BFB9A — ONE SPEC OPERATION, ONE SYMBOL. A FREE-STANDING `operation` may
+/// not take a name that, at the address it is written, already denotes a SPEC
+/// OPERATION — so a spelling like `eq` denotes ONE symbol program-wide. The repair the
+/// error names is a PROVISION (`provides PartialEq[T = MySort]`), which attaches an
+/// implementation to the one symbol and is selected by carrier at the call site.
+///
+/// WHY THE LANGUAGE WANTS THIS, beyond tidiness. [`resolve_implicit`] — the implicit
+/// prelude / reserved kernel vocab — is the LOWEST-PRECEDENCE rung of the name ladder,
+/// and WI-521's entire reason for putting it there rather than injecting a `<global>`
+/// import is that a user's own `eq` had to be able to shadow the prelude's without the
+/// two going `Ambiguous` (the footgun WI-476's collision blocklist worked around). That
+/// requirement exists only because the rival is permitted. Refuse the rival and the
+/// tier's position stops being load-bearing for spec-operation names, which is what
+/// WI-909 needs in order to back the tier with the prelude SCOPE instead of a table of
+/// qualified strings.
+///
+/// THE RULE IS ABOUT A SPELLING, and both halves of that are load-bearing:
+///
+/// * The DECLARED NAME must be a spec operation's OWN name ([`spec_operation_short_names`]).
+///   Today that is EXACT rather than an approximation: every route to a symbol carries
+///   its own short name, because a RENAMING import is design-only (proposal 063 /
+///   WXHNY — no implementation, so `import lib.Spec.{Report -> BReport}` does not
+///   parse). When it lands, a spec operation reached under a chosen second spelling is
+///   a capture of a FILE-LOCAL ALIAS — [`check_name_captures`]' question, not "one
+///   spelling denoting two symbols" — and this gate declining it is the right verdict
+///   rather than a hole. It is also what keeps this pass linear: the walk below runs
+///   for the handful of declarations whose name a spec operation carries, not for
+///   every free-standing operation in the KB.
+/// * WHAT THE NAME DENOTES AT THAT ADDRESS decides, not membership of the tier's
+///   tables. `anthill.kernel.not` IS what a bare `not` resolves to, so the tier's own
+///   target is not a rival of itself; and an `import mylib.Arith.{add}` in scope means a
+///   bare `add` there never denoted `Numeric.add`, so declaring one does not rival the
+///   tier — it captures `mylib.Arith.add`, which is the other question again.
+///
+/// AN IMPORT OF THE SPEC OP DOES NOT EXCUSE IT. Asking only "does anything resolve in
+/// scope?" and standing down if so INVERTS the headline case: writing
+/// `import anthill.prelude.PartialEq.{eq}` beside `operation eq(…)` would make the load
+/// clean, so the one line that makes the collision real would defeat the rule whose
+/// purpose is that collision. Asking what the name DENOTES fixes it by construction —
+/// an import of the spec op denotes the spec op. The same shape covers an import of the
+/// declaration's OWN symbol (`import test.slf.{eq}` inside `test.slf`): that candidate
+/// is skipped and the walk CONTINUES, rather than being taken as an answer.
+/// `/code-review` drove the version that did not, where that one import silenced the
+/// whole rule.
+///
+/// [`crate::kb::typing::spec_op_parent_sort`] IS THE PREDICATE, not `declaring_scope`
+/// plus `has_kind(Sort)`. The latter is a proxy for "the owner is a spec you can
+/// provide" and gets it wrong for the tier names that live on NON-PARAMETRIC concrete
+/// sorts — `Int64.div`, `Int64.mod`, `Bool.and`, `BigInt.to_bigint`, `BigInt.to_int`.
+/// Driven on the previous cut: `operation mod(…)` was refused telling the author to
+/// write `provides anthill.prelude.Int64[T = <carrier>]`, which is unwritable —
+/// `int64.anthill` declares no `sort T = ?` — and following it yields 11 further
+/// errors. It also hands back the spec, so the repair names it by construction instead
+/// of by string surgery on a qualified name.
+///
+/// WHAT THIS DELIBERATELY DOES NOT REACH, each with its reason:
+///
+/// * **A TYPE MEMBER.** `Set.eq` / `Map.eq` live in their carrier's scope and are
+///   reached by dispatch or qualification, never by the bare-name ladder — that is the
+///   shape this error tells an author to write. 89 of the 95 operator-named
+///   declarations WI-20260824-BFB9A censused are members. `is_sort_scope` rather than a
+///   bare `has_kind`, so a CONSTRUCTOR's scope is not mistaken for its sort's. A
+///   `namespace X` at a SORT's address is exempt too, and that is correct rather than a
+///   fail-open: 059 R2/R3 makes it a SECONDARY ENTRY to the sort's own scope, which
+///   "may add members and spec claims", so an operation written there IS a member.
+///   Driven by `wi_bfb9a_rival_spec_operation_test::a_secondary_entry_is_a_member_site`,
+///   which loads it clean AND calls the member.
+/// * **CONSTRUCTORS.** `has_kind(Operation)` runs before `spec_op_parent_sort`, because
+///   the tier's constructors (`cons`, `nil`, `some`, `none`) sit on `List` / `Option`,
+///   which ARE parametric. Measured on the previous cut, which lacked the gate: a
+///   free-standing `operation cons(…)` was refused and told to write
+///   `provides List[T = …]`, which a second check refuses because a sort with
+///   constructors is a DATA sort. The two questions separate
+///   cleanly by kind — every escapee is `Entity`, every real spec op is `Operation`.
+/// * **SORTS, ENTITIES AND `const`s.** A user's own `sort List` is a genuinely
+///   different type from `anthill.prelude.List` and must keep shadowing it — that is
+///   the whole reason the tier sits below scope resolution. A `const` taking a
+///   spec-operation name is the same shape as this and is NOT reached (driven:
+///   `namespace n { const eq: Int64 = 1 }` loads clean); widening is a `decl.category`
+///   line and a census, and the census is what decides it.
+/// * **EVERY NAME, IN A KB WITH NO STDLIB SOURCES.** `spec_op_parent_sort` needs the
+///   parent's `sort T = ?` declarations, which only the stdlib FILES carry —
+///   `register_prelude` defines the target symbols but no type params. So
+///   [`spec_operation_short_names`] is empty there and the rule is uniformly OFF rather
+///   than partly on, which is why the early return is spelled out instead of falling
+///   out of the loop. It is a user-visible property of `--no-stdlib` and is pinned by
+///   `wi_bfb9a_rival_spec_operation_test::a_stdlib_less_kb_refuses_nothing`; the first
+///   implementation had the opposite property (gating on `by_qualified_name` alone made
+///   `eq` refusable while `neg` / `div` / `mod` were not), so the same program was
+///   legal or illegal depending on the load configuration.
+/// * **NOT EXEMPTED, AND KNOWN: an operation under a NAMESPACE-LEVEL `provides`
+///   block.** `namespace n { provides PartialEq[T = Int64]  operation eq(…) }` draws TWO
+///   errors — "a `provides` clause needs a type at its address", and then this rule's. A
+///   `provides` block creates no scope, so the operation lands in the namespace's. It is
+///   a CASCADE on a program the first error already refuses, left standing rather than
+///   special-cased: suppressing it would mean this pass reading another pass's errors.
+///
+/// WHAT IT COSTS, MEASURED (release CLI, `ANTHILL_LOAD_TIMING=1`, stdlib + one empty
+/// namespace, min of 9): **112 µs**, against [`check_name_captures`]' 488 µs in the same
+/// runs and a ~100 ms load. THE SPELLING GATE IS WHY. The previous cut walked every
+/// free-standing operation against every file writing at its address and `/code-review`
+/// measured it going 11.2 ms → 42.7 ms → 171 ms → 674 ms as that product doubled —
+/// exactly 4× per doubling, and the largest phase in the load. On a K-files × K-`eq`
+/// declarations fixture at one address this one is 128 µs at K=50 and 880 µs at K=400
+/// (min of 3), and flat at 158 → 332 µs when the declarations carry names no spec
+/// operation does: a declaration the spelling gate rejects never enters the walk at all,
+/// and one that passes short-circuits on the first reader that answers. The worst case
+/// is unchanged in SHAPE — K spec-op-named declarations at one address × M files reading
+/// there is still K×M — and that is the shape [`check_name_captures`] has always had;
+/// what changed is that no realistic program is in it.
+///
+/// WHY A WHOLE-KB PASS AND NOT A HOOK IN [`Loader::load_operation`], which is where it
+/// was first written. Three defects came from the placement rather than the rule, and
+/// all three dissolve here:
+///
+/// * **A DOTTED NAME BYPASSED IT.** The hook skipped `name.segments.len() != 1` on the
+///   ground that `operation Foo.eq` declares into `Foo`, "the member case wearing a
+///   path". That holds only when `Foo` is a SORT; when it is a namespace,
+///   `ensure_intermediate_namespaces` mints one and the operation is free-standing
+///   inside it. Measured on that cut: `namespace test.dotc { operation Foo.eq(…) = true }`
+///   loaded clean while the byte-identical undotted spelling was refused — same address,
+///   two spellings, opposite verdicts. [`DeclSite::scope`] is the scope declared INTO
+///   after that minting, and [`DeclSite::local`] is the name as it enters that scope, so
+///   the dotted case simply arrives correct here;
+///   `wi_bfb9a_rival_spec_operation_test::a_dotted_free_standing_operation_is_refused_too`
+///   is the row that keeps it so.
+/// * **IT FIRED PER DECLARATION SITE, NOT PER NAME.** Two same-named operations in one
+///   namespace emitted two byte-identical messages on top of WI-1049's duplicate error —
+///   three errors for one mistake. `reported` keys on `(scope, name)`, which is what the
+///   rule is about.
+/// * **IT BROKE THE FAMILY BOUNDARY** documented at [`check_name_captures`]: every
+///   whole-KB declaration check lives in [`load_phase_inner`], which `load_all` /
+///   `load_incremental` reach and the single-file [`load`] does not. Firing from
+///   `load_operation` made `load` and `load_all` disagree on one file.
+fn check_rival_spec_operations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let spec_op_names = spec_operation_short_names(kb);
+    if spec_op_names.is_empty() {
+        return Vec::new();
+    }
+    // The same readers `check_name_captures` asks, from the same owner.
+    let askers = scope_reading_files(kb);
+    let mut errors = Vec::new();
+    let mut reported: HashSet<(ScopeId, &str)> = HashSet::new();
+    // WI-995 — the ambient asking file is `None` by here (every whole-KB pass runs
+    // outside the per-file loops). Restored after the sweep so nothing downstream
+    // inherits one of ours.
+    let saved_asker = kb.symbols.set_asking_file(None);
+    for decl in &kb.decl_sites {
+        if decl.category != DeclCategory::Operation
+            || is_sort_scope(kb, decl.scope)
+            || !spec_op_names.contains(decl.local.as_str())
+        {
+            continue;
+        }
+        // THE TIER'S ANSWER, HOISTED OUT OF THE FILE LOOP. It is the LAST rung and does
+        // not depend on the asking file; the previous cut asked it inside the per-file
+        // closure, which `/code-review` measured at 190,400 calls where 400 were needed.
+        let via_tier = resolve_implicit(kb, &decl.local)
+            .filter(|&sym| is_rivalled_spec_operation(kb, sym, decl.sym));
+        let mut hit: Option<(Symbol, SourceId)> = None;
+        'files: for asker in reading_files(&askers, decl) {
+            kb.symbols.set_asking_file(Some(asker));
+            // [`SymbolTable::resolve_ignoring_own_locals`], NOT `resolve_captured_name`:
+            // the two differ by one switch and it decides this pass. See that method for
+            // the driven case — an exposed constructor of a sibling sort, which a
+            // reference written here DOES reach and the capture question deliberately
+            // does not follow. Found by `/code-review` after the first cut fused them.
+            let candidates = match kb.symbols.resolve_ignoring_own_locals(&decl.local, decl.scope)
+            {
+                crate::intern::ResolveResult::NotFound => SmallVec::<[Symbol; 2]>::new(),
+                crate::intern::ResolveResult::Found(sym) => smallvec::smallvec![sym],
+                // An AMBIGUITY answers too, and EVERY candidate is examined rather than
+                // the first: a name meaning several things, one of which is the spec
+                // operation, is still a name this declaration silences.
+                crate::intern::ResolveResult::Ambiguous(cands) => {
+                    SmallVec::<[Symbol; 2]>::from_vec(cands)
+                }
+            };
+            let mut scope_answered = false;
+            for other in candidates {
+                // The declaration reaching ITSELF — through a parent path, or through an
+                // `import` of its own scope — is not an answer to "what did this name
+                // mean here". CONTINUE, so a later candidate and then the tier are still
+                // consulted; taking it as an answer is how one import silenced the rule.
+                //
+                // EVERY OTHER CANDIDATE ANSWERS, a bare `namespace` INCLUDED. It cannot
+                // be a rival — `is_rivalled_spec_operation` wants an `Operation` kind —
+                // but it does END the ladder, so the tier is not what the name denotes.
+                // `check_name_captures` excuses one (a namespace has no value reading to
+                // be silently repointed), and copying that excuse here was wrong twice
+                // over: driven, a sibling `namespace add` makes a bare `add` in a child
+                // scope report "`add` is a member of sorts Numeric, Ring, not in scope as
+                // a bare name here" — so the namespace really does shadow the tier, and
+                // refusing a declaration on the tier's behalf named a symbol the address
+                // does not denote. Found by `/code-review`.
+                if other == decl.sym {
+                    continue;
+                }
+                scope_answered = true;
+                if is_rivalled_spec_operation(kb, other, decl.sym) {
+                    hit = Some((other, asker));
+                    break 'files;
+                }
+            }
+            // The tier is the LOWEST rung: consulted only where scope resolution found
+            // nothing for THIS file. A file that reads the name as some unrelated symbol
+            // never saw the tier, so this declaration does not rival it there.
+            if !scope_answered {
+                if let Some(rival) = via_tier {
+                    hit = Some((rival, asker));
+                    break 'files;
+                }
+            }
+        }
+        kb.symbols.set_asking_file(None);
+        let Some((rival, asker)) = hit else {
+            continue;
+        };
+        let spec = crate::kb::typing::spec_op_parent_sort(kb, rival)
+            .expect("is_rivalled_spec_operation proved the parent");
+        // ONE MESSAGE PER NAME. Inserted HERE rather than at the top of the loop, so a
+        // declaration skipped by a leg above does not consume the slot a later one at
+        // the same address would have reported through.
+        if !reported.insert((decl.scope, decl.local.as_str())) {
+            continue;
+        }
+        // LOCATED, like every other whole-KB refusal in this phase — its two neighbours
+        // (`check_rule_body_goals`, `check_contract_clause_goals`) both do this, and
+        // `located_in_kb_source`'s own doc warns that skipping it is "one drift away
+        // from a diagnostic that silently loses its file".
+        errors.push(
+            LoadError::RivalSpecOperation {
+                name: decl.local.clone(),
+                rival_qualified: kb.qualified_name_of(rival).to_owned(),
+                spec_qualified: kb.qualified_name_of(spec).to_owned(),
+                scope_name: kb.scope_display_name(decl.scope).to_owned(),
+                // `SourceRegistry::name` is the file's path, or `<unknown>` for a
+                // path-less one (a hand-built `ParsedFile`). Naming an unnamed file
+                // still says "another file, not this one", which is the half of the
+                // sentence the author cannot otherwise get.
+                read_in: (asker != decl.site.source)
+                    .then(|| kb.sources.name(asker).to_string()),
+                span: decl.site.span,
+            }
+            .located_in_kb_source(kb, decl.site.source),
+        );
+    }
+    kb.symbols.set_asking_file(saved_asker);
+    errors
+}
+
+/// The files whose text can read `decl`'s name at its address, THE DECLARATION'S OWN
+/// FILE FIRST and the rest in [`scope_reading_files`]' order.
+///
+/// OWN FILE FIRST IS ABOUT THE MESSAGE, not about cost. The refusal is earned by ANY
+/// reader (see [`check_rival_spec_operations`]) and names the one that earned it when
+/// that is not the declaration's own file — so trying the declaration's own file first
+/// means the ordinary single-file program never names a file at all, and a program that
+/// does name one names the same one every run.
+///
+/// NO ALLOCATION, and that is what keeps the pass off the quadratic its sibling sits on:
+/// this is asked once per declaration that passes the spelling gate, and a scope with
+/// M files would otherwise build and sort an M-element vector M times over.
+///
+/// Never empty for a scope that owns a declaration — `askers` is built from `decl_sites`
+/// itself — so the loop above cannot silently skip a declaration by iterating nothing.
+fn reading_files<'a>(
+    askers: &'a HashMap<ScopeId, Vec<SourceId>>,
+    decl: &'a DeclSite,
+) -> impl Iterator<Item = SourceId> + 'a {
+    let rest = askers
+        .get(&decl.scope)
+        .map(|v| v.as_slice())
+        .unwrap_or_default();
+    std::iter::once(decl.site.source).chain(
+        rest.iter()
+            .copied()
+            .filter(move |&f| f != decl.site.source),
+    )
+}
+
+/// Is `sym` a SPEC OPERATION that `declared` would rival — a member of a PARAMETRIC
+/// type, which is the only kind a `provides` clause can name?
+///
+/// See [`check_rival_spec_operations`] for why `has_kind(Operation)` comes first (the
+/// tier's constructors sit on parametric sorts) and why the parent test is
+/// [`crate::kb::typing::spec_op_parent_sort`] rather than a `declaring_scope` proxy.
+fn is_rivalled_spec_operation(kb: &KnowledgeBase, sym: Symbol, declared: Symbol) -> bool {
+    sym != declared
+        && kb.has_kind(sym, crate::intern::SymbolKind::Operation)
+        && crate::kb::typing::spec_op_parent_sort(kb, sym).is_some()
+}
+
+/// The SHORT NAMES every spec operation in `kb` carries — the gate
+/// [`check_rival_spec_operations`] runs before it walks a scope, and the population its
+/// refusal is drawn from.
+///
+/// A SPELLING TEST, and it is the rule rather than an approximation of it: this refusal
+/// is about one spelling denoting two symbols, so a declaration whose name no spec
+/// operation carries cannot be a rival however it resolves. Nothing escapes it on
+/// today's surface — a renaming import, the one way a symbol could be reached under a
+/// spelling that is not its own, is design-only (proposal 063 / WXHNY).
+///
+/// EMPTY IN A KB WITH NO STDLIB SOURCES, which is where the pass's whole "uniformly off"
+/// property comes from: `sort_is_parametric` reads the parent's `sort T = ?`
+/// declarations, and `register_prelude` defines the prelude's symbols without any.
+pub fn spec_operation_short_names(kb: &KnowledgeBase) -> HashSet<&str> {
+    kb.symbols
+        .by_qualified_name
+        .values()
+        .filter(|&&sym| {
+            kb.has_kind(sym, crate::intern::SymbolKind::Operation)
+                && crate::kb::typing::spec_op_parent_sort(kb, sym).is_some()
+        })
+        .map(|&sym| kb.local_name_of(sym))
+        .collect()
 }
 
 /// WI-346 — requires-shadow lint. A sort that `requires` a spec and declares a
@@ -14997,6 +15867,153 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         })
 }
 
+/// WI-20260821-D0EXD — the equation subject's half of the head ladder: what this
+/// subject lands on, when that is a rule-introduced RELATION declared in ANOTHER scope.
+/// The scopes declaring it, in resolution order — EMPTY when the subject landed on
+/// something an equation may legitimately define, or on nothing. More than one only where
+/// the name resolved AMBIGUOUSLY, which is why the message carries that fact separately
+/// rather than reading it off this length.
+///
+/// THE THREE THINGS AN EQUATION SUBJECT MAY NAME, and the census that says so (see
+/// [`LoadError::EquationSubjectNamesAPredicate`]): an `operation` — the declaration of
+/// what equations define, 516,224 sites; another equation's SUBJECT — several laws about
+/// one name, 12 sites; or nothing, in which case it mints its own. A `Goal` is none of
+/// them, and one in the subject's OWN scope is not refused because one author wrote both
+/// there and the name simply carries both roles — driven on
+/// `sort Rec { rule f(?x)  rule f(false) <=> 2 [simp] }`, whose citation answers Int(2).
+///
+/// THE KIND IS ASKED AS A SET, never as `kind_of`. A name that plays BOTH `Goal` and
+/// `Operation` — a rule head merged onto an operation's own symbol, which 061 §"a
+/// body-less rule that can declare nothing" measured and permits — is a legitimate
+/// target through its operation half, and reading only the primary kind would refuse it
+/// or admit it according to which keyword the declaration happened to open with.
+///
+/// `Ambiguous` is refused only when EVERY candidate is such a predicate: one candidate
+/// an equation may define is a reading under which the program is meant, and the
+/// ambiguity itself is reported at the reference.
+fn equation_subject_lands_on_predicate(
+    kb: &KnowledgeBase,
+    head: &RuleHeadSite<'_>,
+    resolved: &ResolveResult,
+    global: ScopeId,
+) -> Vec<ScopeId> {
+    // `<global>` IS NOT A PARTY AS A TARGET, and only as a target. The exclusion
+    // [`head_name_reach`] takes for the visibility refusal rests on nobody OPTING INTO
+    // `<global>`: it is the scope every file shares, so a namespace's head must not be
+    // answerable for what a namespace-less file happens to spell. That argument is
+    // DIRECTIONAL and the first cut of this guard took it both ways, which left the very
+    // defect it closes live in the half where the opting-in did happen — driven by
+    // `/code-review`: a namespace-less file writing `import pgz.*` and
+    // `rule f(true) <=> 7 [simp]` loaded clean with `<global>.f` ABSENT, the equation
+    // defining `pgz`'s predicate, and a THIRD namespace that never saw that file reading
+    // `Int(7)` out of it. A `<global>` head reaches a namespace's name only through an
+    // import it wrote, so it opted in exactly as any namespace does.
+    //
+    // WHAT THE TARGET-SIDE EXCLUSION COSTS is the silence that scope has always taken
+    // (§8.6): a `<global>` predicate does absorb a namespace's equation subject, and
+    // nothing says so. Measured, and recorded in the spec rather than discovered.
+    // INLINE FOR THE SINGLE-SYMBOL CASE, which is all but a handful of the 516,224
+    // equation subjects a full load resolves: a `Vec` here allocated once per subject on
+    // the very path phase 2 keeps its answer to protect (found by `/code-review`).
+    let syms: SmallVec<[Symbol; 1]> = match resolved {
+        ResolveResult::Found(s) => smallvec::smallvec![*s],
+        ResolveResult::Ambiguous(v) => v.iter().copied().collect(),
+        ResolveResult::NotFound => return Vec::new(),
+    };
+    let mut owners: Vec<ScopeId> = Vec::new();
+    for sym in syms {
+        // `Goal` ALONE ANSWERS IT, and the two exemptions this test used to carry —
+        // `Operation` and `EquationFunctor` — were REMOVED rather than kept unmeasured:
+        // backing each out failed ZERO rows across the whole suite, because neither
+        // combination is reachable in a program that loads. An operation's symbol never
+        // gains `Goal`: the body-less rule that would merge them is refused in both
+        // orders (061, `a_declaration_of_a_name_another_construct_owns_is_refused`), and
+        // a BODIED head on an operation's name is a clause of it and adds no kind
+        // (measured: `operation f(b: Bool) -> Int64` beside `rule f(true) :- true` leaves
+        // `f` a bare `Operation` carrying one clause). A subject landing on a bare
+        // `EquationFunctor` — the 12 `Bool.ite` / `Float.nonEqRefl` sites — has no `Goal`
+        // to trip this test at all. Asked as a SET nonetheless, never `kind_of`: the
+        // question is "does this name play the predicate role", which is order-free,
+        // where the primary kind reports whichever keyword the declaration opened with.
+        if !subject_may_not_name(kb, sym) {
+            return Vec::new();
+        }
+        match kb.symbols.declaring_scope(sym) {
+            Some(s) if s != head.scope && s != global => {
+                if !owners.contains(&s) {
+                    owners.push(s);
+                }
+            }
+            _ => return Vec::new(),
+        }
+    }
+    owners
+}
+
+/// Is `sym` a name an equation may NOT define — a RULE-INTRODUCED RELATION playing no
+/// role that equations do define?
+///
+/// STATED AS THE QUESTION, not as a list of exemptions, because the list is what went
+/// wrong once already. `Operation` is the role that matters and it is DRIVEN
+/// ([`wi_d0exd_equation_subject_owner_test::a_name_that_is_also_an_operation_is_not_this_-
+/// refusal`]): a scope holding BOTH `rule f(2)` and `operation f() -> Int64` carries one
+/// symbol with both kinds, and without this test the refusal fired there and told the
+/// author to declare the `operation` that was already on the next line — on a program
+/// 061 refuses anyway, so it printed one fault as two and one of them was false. An
+/// earlier cut deleted the exemption because backing it out failed zero rows; the shape
+/// existed and no row reached it (found by `/code-review`).
+///
+/// `EquationFunctor` is DRIVEN too, and in both directions: a BARE subject is a join
+/// target and is exempt (the 12 `Bool.ite` / `Float.nonEqRefl` sites), while a name
+/// carrying it BESIDE `Goal` is still a relation and is refused
+/// ([`wi_d0exd_equation_subject_owner_test::a_relation_that_also_carries_equations_is_-
+/// still_a_relation`]). The distinction is not decorative: exempting the pair let a
+/// later batch's equation be absorbed in silence.
+///
+/// ASKED AS A SET, never `kind_of`: the question is which roles the name plays, which is
+/// order-free, where the primary kind reports whichever keyword the declaration opened
+/// with.
+fn subject_may_not_name(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    let def = kb.symbols.get(sym);
+    // AN `operation` IS WHAT EQUATIONS DEFINE, and that is a role the name PLAYS however
+    // many others it plays beside — so it is the one unconditional exemption.
+    if def.has_kind(SymbolKind::Operation) {
+        return false;
+    }
+    // `EquationFunctor` IS FILTERED HERE, NOT EXEMPTED ABOVE, and the difference is a
+    // measured defect. An earlier cut exempted any symbol CARRYING it, on the claim that
+    // `Goal` + `EquationFunctor` could not be constructed. It can: the visibility refusal
+    // needs TWO scopes, so two heads minting one name at ONE scope is ordinary
+    // auto-declaration — driven, `namespace pza9 { rule f(1) :- true  rule f(true) <=> 7
+    // [simp] }` loads clean carrying both roles, and a later BATCH's equation about it
+    // was then absorbed in silence while the `Goal`-only control was refused. Found by
+    // `/code-review`. A name that is a relation is a relation however many equations
+    // already live on it; only a BARE subject is a join target, and the filter says
+    // exactly that.
+    //
+    // KEYED ON [`DECLARABLE_BY_A_RULE`], not on a list written out here. That constant is
+    // the loader's own answer to "what can a rule's mint produce", and asking it directly
+    // is what stops this guard drifting behind it — which it already had: the first cut
+    // named `Goal` alone and missed `Rule`, a labelled rule's own name, which reproduces
+    // this defect verbatim (driven by `/code-review`:
+    // `lc1 { rule f: p(?x) :- q(?x) … }` beside `lc2 { import lc1.*  rule f(true) <=> 7
+    // [simp] }` loaded clean with `lc2.f` ABSENT and `lc2.g()` = `Int(7)`). A rule's
+    // operation name is its LABEL else its head functor ([052] §"Naming the relation"),
+    // so both spellings name a relation and neither is a thing equations define.
+    DECLARABLE_BY_A_RULE
+        .iter()
+        .any(|k| *k != SymbolKind::EquationFunctor && def.has_kind(*k))
+}
+
+/// `'a'`, or `'a', 'b'` — the declaring scopes as the message names them.
+fn quoted_scope_list(scopes: &[String]) -> String {
+    scopes
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// WI-900: does `name` ALREADY DENOTE something at `scope` — the question the MINT
 /// GUARD ([`scan_rule_goal`]) asks before letting a rule head introduce a name? A head
 /// that names something introduces nothing; it is a CLAUSE ABOUT that thing.
@@ -15017,8 +16034,54 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
 /// ambiguous candidates, so the conflict the author has to see would be silently decided
 /// in their favour. Pinned by
 /// `wi900_implicit_tier_agreement_test::an_ambiguous_head_is_a_reference_so_the_load_is_refused`.
-fn name_denotes_for_rule_head(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> bool {
-    resolve_name_in_kb(kb, name, scope).denotes()
+///
+/// RETURNS THE ANSWER, NOT THE VERDICT — renamed from `name_denotes_for_rule_head` by
+/// WI-20260821-D0EXD, which needs the SYMBOL a subject landed on and not merely whether
+/// it landed. `.denotes()` is what phase 2 reads for the mint and the collision check, so
+/// nothing else gained a question; keeping the answer is what stops the ladder being
+/// walked twice for every equation subject on every load.
+fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
+    resolve_name_in_kb(kb, name, scope)
+}
+
+/// C666A — the predicate an UNGUARDED relational head would join solely because a
+/// whole-scope, non-enclosing parent exposed it.
+///
+/// Proposal 061 makes the target explicit: an undeclared predicate is handled by the
+/// auto-declaration collision check before this point, while a declared predicate has a
+/// real [`SymbolKind::Goal`] for the head to denote.  Compare the symbol table's full
+/// scope resolution with the SAME ladder restricted to locals, named imports, and the
+/// enclosing chain.  `NotFound` on the restricted reading means `requires`, `provides`,
+/// or a wildcard import was load-bearing for the join.
+///
+/// Predicate heads only.  An equation subject and an operation law index elsewhere and
+/// are not clauses of a `Goal`.  Ambiguity is likewise left to the ordinary head
+/// resolver, which reports its candidate set at this same site.
+///
+/// WI-742 extends the admission at THIS boundary: once a relational typed head has a
+/// generated `domain` guard proven to select the contributing carrier, it bypasses this
+/// unguarded check.  Do not delete the path classification when adding that case.
+fn unguarded_non_enclosing_predicate_join_target(
+    kb: &KnowledgeBase,
+    head: &RuleHeadSite<'_>,
+) -> Option<Symbol> {
+    if head.introduced_by != RuleIntroduction::Predicate {
+        return None;
+    }
+    let ResolveResult::Found(target) = kb.symbols.resolve_in_scope(head.name, head.scope) else {
+        return None;
+    };
+    if !kb.has_kind(target, SymbolKind::Goal) {
+        return None;
+    }
+    if !matches!(
+        kb.symbols
+            .resolve_without_non_enclosing_parents(head.name, head.scope),
+        ResolveResult::NotFound
+    ) {
+        return None;
+    }
+    Some(target)
 }
 
 // ---------------------------------------------------------------------------
@@ -18684,7 +19747,44 @@ impl<'a> Loader<'a> {
     fn push_leaf_occ(&mut self, parse_id: TermId, kb_id: TermId) {
         if self.occ_suppress == 0 {
             let span = self.source_span_of(parse_id);
-            let occ = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
+            let leaf = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
+            // Proposal 055 §2 — the BARE half of the classification, made by the same
+            // rule as the applied half in `build_load`: by the RESOLVED HEAD, never by
+            // what the enclosing position expects.
+            //
+            // HERE, AND NOT IN THE `Term::Ident` ARM, because a bare name reaches the
+            // occurrence stream by more than one route and only this builder is on all of
+            // them. MEASURED: classifying at `Term::Ident` alone left the ARGUMENTS of a
+            // type application unclassified — a bracket argument is a parse-side
+            // `Term::Ref` (the converter lowered it as a type), not an `Ident`, so
+            // `is_modifiable(Cell[V = Int64])` reported `Int64` as an unresolved name the
+            // moment the enclosing hint stopped rescuing it. Five rows of
+            // `wi707_type_application_value_test` said so.
+            //
+            // The TERM this leaf was built FROM is untouched — it is the OCCURRENCE that
+            // now says which of the things a bare name can be this one is. What the
+            // occurrence lowers BACK to is a separate question, and the answer moved:
+            // `try_occurrence_to_term` gives a bare type value `Ref(S)` on both routes,
+            // rather than the route-dependent `var_ref(name: Ref(S))` / `Ref(S)` the two
+            // leaf shapes used to give. See that arm for why.
+            let head = match leaf.as_expr() {
+                Some(Expr::Ref(s)) | Some(Expr::Ident(s)) | Some(Expr::VarRef { name: s }) => {
+                    Some(*s)
+                }
+                _ => None,
+            };
+            let occ = match head.filter(|s| self.bare_name_denotes_type(*s)) {
+                Some(head) => node_occurrence::NodeOccurrence::new_expr(
+                    Expr::TypeValue {
+                        head,
+                        pos_args: Vec::new(),
+                        named_args: Vec::new(),
+                    },
+                    span,
+                    None,
+                ),
+                None => leaf,
+            };
             self.expr_occ_results.push(occ);
         }
     }
@@ -19076,6 +20176,25 @@ impl<'a> Loader<'a> {
                 let is_entity = !self.parsed.terms.is_type_application(outer_parse_id)
                     && (self.kb.symbols.get(kb_functor).has_kind(SymbolKind::Entity)
                         || self.kb.is_entity_constructor(kb_functor));
+                // Proposal 055 §2 / design §1 — CLASSIFY ONCE, HERE. WI-927 already
+                // asked this exact question one line up, to keep a bracketed
+                // application from being read as a construction, and then discarded the
+                // answer: the occurrence it built was an `Expr::Apply` whose functor
+                // happened to name a sort, which is the same shape a paren call
+                // produces. Four readers downstream re-derived the distinction from
+                // `kind_of` (the typer's apply arm and bare-ref arm, and eval's twins of
+                // both). Recording it is what lets those readers stop asking.
+                //
+                // A NON-SORT BRACKETED HEAD IS DELIBERATELY NOT CLASSIFIED: an
+                // `Entity`-headed or unresolved bracketed application keeps the
+                // `Expr::Apply` reading it has today and fails where it fails today.
+                // Widening that is not this increment's business.
+                //
+                // `kind_of`, not `has_kind` — see [`Self::bare_name_denotes_type`], which
+                // asks the same question about the bare face and carries the reason.
+                let is_type_value = !is_entity
+                    && self.parsed.terms.is_type_application(outer_parse_id)
+                    && self.kb.kind_of(kb_functor) == Some(SymbolKind::Sort);
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -19103,7 +20222,7 @@ impl<'a> Loader<'a> {
                 // the Vec on that arm is exactly the silent drop this ticket closes
                 // (measured: it loaded clean). Left unread, the bracket stays
                 // unconsumed and the end-of-file sweep reports it.
-                let type_args = if is_entity {
+                let type_args = if is_entity || is_type_value {
                     Vec::new()
                 } else {
                     self.build_call_type_args(outer_parse_id)
@@ -19144,7 +20263,21 @@ impl<'a> Loader<'a> {
                     // the occurrence's named args line up with the term.
                     let occ_named_keys: Vec<Symbol> =
                         named_keys.iter().map(|s| self.reintern(*s)).collect();
-                    let frame = if is_entity {
+                    let frame = if is_type_value {
+                        // Proposal 055 — the type ARGUMENTS ride as this node's children,
+                        // exactly as the `Apply` reading carried them; what changes is
+                        // that the node now says what it is. The call-type-args channel
+                        // is left UNREAD above (WI-839's rule): a type application's
+                        // bracket IS this node, so a second bracket on it would be a
+                        // surface nothing produces — left unconsumed, the end-of-file
+                        // sweep reports it rather than this arm dropping it silently.
+                        node_occurrence::BuildFrame::TypeValue {
+                            span,
+                            head: kb_functor,
+                            pos_count,
+                            named_keys: occ_named_keys,
+                        }
+                    } else if is_entity {
                         node_occurrence::BuildFrame::Constructor {
                             span,
                             name: kb_functor,
@@ -19919,6 +21052,47 @@ impl<'a> Loader<'a> {
             let name_ref = self.convert_term(parse_id);
             self.mk_var_ref_from_term(name_ref)
         }
+    }
+
+    /// Proposal 055 §2 — does a BARE reference to `sym` denote a `Type` value?
+    ///
+    /// SORTS ONLY, and the two exclusions are measured rather than cautious:
+    ///
+    /// * an EPONYMOUS sort (`sort E { entity E(…) }`) is ONE symbol carrying the
+    ///   `Sort` kind (WI-926), and a bare reference to it means CONSTRUCTION today —
+    ///   `check_bare_ref` reaches its `is_constructor_symbol` arm before any type
+    ///   reading. Classifying it here would answer first and steal that reading, which
+    ///   is a behavior change this increment has no business making. `is_entity_constructor`
+    ///   is the same predicate the sibling `ApplyOrConstructor` gate asks, and it reads
+    ///   the declared field schema by NAMES — registered in `scan_definitions` pass 1,
+    ///   so it is answerable here.
+    /// * a standalone ENTITY does already denote its `Type` unconditionally (in
+    ///   `check_bare_ref` and its eval twin), so it belongs in this record too — but
+    ///   [`KnowledgeBase::is_free_standing_entity`] is `entity_field_types(..).is_some()
+    ///   && !is_constructor_symbol(..)`, and the constructor registry is populated
+    ///   DURING the load (eval's `reduce_var` says as much at its own nullary-constructor
+    ///   arm: "fully populated by eval time, unlike mid-load"). Asked here it can answer
+    ///   `true` for a sort-nested constructor whose registration has not happened yet,
+    ///   which would silently re-read `none` as a type value. Left on its existing arms
+    ///   until it can be asked at a point that can answer it.
+    /// THE PRIMARY KIND, not the set, and deliberately — this is the one predicate in
+    /// this neighbourhood that asks `kind_of` where its sibling `is_entity` asks
+    /// `has_kind`, so the reason belongs here rather than in a reader's head.
+    ///
+    /// Symbol categories ARE a set, and a name can carry `Sort` alongside another kind
+    /// (D0EXD's census counted two that are both a predicate and a sort). Widening to
+    /// `has_kind(Sort)` would classify every bare reference to such a name as a type
+    /// value — and this classification runs BEFORE the typer, so it would answer first
+    /// and take the reading `check_bare_ref`'s relation arm gives it today. A missed
+    /// classification leaves today's behavior in place; an extra one silently replaces
+    /// it, so narrow is the safe direction for an increment whose fence is "the decision
+    /// moves, the answers do not".
+    ///
+    /// MEASURED: the corpus does not separate the two — the whole suite passes either
+    /// way — so this is a policy, not a measurement, and it is the widening ticket
+    /// (WI-20260824-Q0093) that should revisit it with a row that DOES separate them.
+    fn bare_name_denotes_type(&self, sym: Symbol) -> bool {
+        self.kb.kind_of(sym) == Some(SymbolKind::Sort) && !self.kb.is_entity_constructor(sym)
     }
 
     /// WI-487: convert an op-body logical variable (`Expr::Var(Global)`). A
@@ -23729,7 +24903,7 @@ impl<'a> Loader<'a> {
                 // separates them from a working declaration.
                 //
                 // THE LADDER IS THE WRONG INSTRUMENT, and it was the first thing tried:
-                // `name_denotes_for_rule_head` answers YES for any name the scope can
+                // `rule_head_ladder_answer` answers YES for any name the scope can
                 // SEE, so `provides Widget language anthill { rule eq(?x) }` passed it
                 // (the prelude's `eq` denotes) and the declaration still introduced
                 // nothing — the very drop the check exists for, one name away from the

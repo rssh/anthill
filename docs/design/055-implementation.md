@@ -232,10 +232,16 @@ repository's code-review skill; if unavailable, report that it was not run.
 
 ## 10. Delivery order
 
-1. Introduce the resolved `TypeValue` distinction without widening acceptance;
-   translate currently accepted expectation-hinted sites into it.
+1. Introduce the resolved `TypeValue` distinction, minted where the loader
+   already decides the bracket surface. Steps 1 and 2 widen acceptance
+   TOGETHER, not in sequence: classification by the resolved head is
+   unconditional, so the reading stops depending on the position everywhere at
+   once. Holding the old rejections back would require the typer to refuse a
+   *classified* type value wherever the old hint could not fire — an
+   expectation-directed rejection, which is the mechanism step 6 removes.
 2. Make every operation-expression occurrence in §3 consume it; add both-side
-   controls.
+   controls. This step PINS the widening per occurrence family; it does not
+   deliver it family by family.
 3. Carry the distinction through raw fact/rule lowering and add declared-column
    validation.
 4. Decide and implement the dot receiver split.

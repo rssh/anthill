@@ -133,9 +133,26 @@ end
     );
 }
 
-/// The sort-as-`Type` reading is confined to a slot that ASKS for a `Type`. A sort
-/// name in an ordinary value position stays the loud error it is today rather than
-/// silently typing as a type value — the guard on the typer's new arm.
+/// A sort name in an ordinary value position does not load. THE INVARIANT IS
+/// UNCHANGED; what the rejection is MADE OF changed under proposal 055 §2
+/// (WI-20260824-WAHB6).
+///
+/// Denotation no longer depends on the slot: the loader classifies a bare `Cell` as a
+/// `Type` value wherever it stands, so this is no longer an unresolved NAME — it is the
+/// ordinary sort mismatch §2 specifies ("a stray sort name in a `String` slot today
+/// errors as `UnresolvedName`, under this rule as `expected String, got Type` — still
+/// loud, arguably clearer"). The test asserts the two tokens that separate the readings:
+/// the destination sort and `Type`.
+///
+/// STILL OWED, and owned: §8 requires the diagnostic to NAME THE DENOTED SORT
+/// (`expected Int64, got Type (Cell)`) so a forgotten-parentheses constructor stays
+/// short to trace. That is WI-20260824-JM6ZW's item, with its own control; this row
+/// deliberately does not assert `Cell` yet, because asserting it here would make this
+/// test the measurement of a change it is not paired with.
+///
+/// BACK-OUT: with the classification removed, the load still fails — as an unresolved
+/// name — so `contains("got Type")` is the half that inverts and `Err(..)` is the half
+/// that holds either way.
 #[test]
 fn a_sort_name_in_a_non_type_slot_is_still_an_error() {
     let src = r#"
@@ -150,7 +167,9 @@ end
         Ok(_) => panic!("a bare sort name in an Int64 slot must not load"),
     };
     assert!(
-        errs.iter().any(|e| e.contains("Cell")),
-        "expected a loud diagnostic naming Cell, got {errs:?}"
+        errs.iter()
+            .any(|e| e.contains("expected Int64") && e.contains("got Type")),
+        "expected the ordinary destination mismatch proposal 055 §2 specifies \
+         (`expected Int64, got Type`), got {errs:?}"
     );
 }

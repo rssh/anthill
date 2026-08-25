@@ -417,8 +417,10 @@ impl ResolveResult {
     /// lower rung (kernel-language.md §8.6, WI-907).
     ///
     /// Asked directly by the positions that need the verdict and not the symbol — the
-    /// rule-head mint guard (`load::name_denotes_for_rule_head`) and the dot-call
-    /// re-route gate (`Loader::qualified_name_resolves`).
+    /// rule-head mint guard, which reads it off `load::rule_head_ladder_answer`'s answer
+    /// rather than re-asking (WI-20260821-D0EXD keeps that answer, because the refusal
+    /// beside it needs the SYMBOL), and the dot-call re-route gate
+    /// (`Loader::qualified_name_resolves`).
     pub fn denotes(&self) -> bool {
         !matches!(self, ResolveResult::NotFound)
     }
@@ -644,6 +646,16 @@ enum EnclosingLinks {
     Followed,
     /// Below an import edge: what was imported is in scope, its container is not.
     StoppedByImport,
+}
+
+/// C666A — which PARENT edges a resolution may cross.  Direct named imports are
+/// not parent edges: they are local aliases read before this switch, which is the
+/// distinction C666A needs between explicitly naming one predicate and opening a
+/// whole scope through `requires`, `provides`, or a wildcard import.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ParentLinks {
+    All,
+    EnclosingOnly,
 }
 
 /// WI-995 — one name whose resolution DEPENDS on an import written in another file:
@@ -1595,6 +1607,37 @@ impl SymbolTable {
         self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::OwnFileOnly)
     }
 
+    /// C666A — resolve through the entry scope's locals and named imports, then only
+    /// through its ENCLOSING chain.  A different answer from [`Self::resolve_in_scope`]
+    /// means the full resolution needed at least one whole-scope, non-enclosing edge
+    /// (`requires`, `provides`, wildcard import, or variant exposure).
+    ///
+    /// Named imports deliberately remain visible: [`Scope::imports`] is consulted
+    /// before parent traversal, so `import lib.{p}` is an explicit opt-in to `p` while
+    /// `import lib.*` is the implicit extension C666A refuses.  The method returns the
+    /// ordinary three-way result and applies `internal` visibility identically to the
+    /// full resolver, so the rule-head admission check compares two readings of ONE
+    /// ladder rather than maintaining a second name resolver.
+    pub fn resolve_without_non_enclosing_parents(
+        &self,
+        name: &str,
+        scope: ScopeId,
+    ) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Visible,
+            ExposureLinks::Followed,
+            EnclosingLinks::Followed,
+            ParentLinks::EnclosingOnly,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
     /// WI-369: drop matched symbols not visible from `from_scope` (the entry
     /// scope of the resolution). A hidden `internal` symbol becomes `NotFound`
     /// (the loader then probes [`Self::resolve_in_scope_ignoring_internal`] to
@@ -1672,6 +1715,52 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
+            ParentLinks::All,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
+    /// WI-20260824-BFB9A — WHAT `name` WOULD DENOTE AT `scope` IF THIS SCOPE DECLARED
+    /// NOTHING: the ORDINARY ladder ([`Self::resolve_in_scope`]) with this scope's own
+    /// `locals` held back, and nothing else changed.
+    ///
+    /// IT IS NOT [`Self::resolve_captured_name`], AND THE ONE SWITCH BETWEEN THEM IS THE
+    /// WHOLE DIFFERENCE. That one skips [`ExposureLinks`] as well, because 059's amended
+    /// clause 3 says members and constructors are named PER TYPE — a sibling sort's
+    /// exposed constructor is not "the name in use at this address" for the CAPTURE
+    /// question, and following the link there refuses the stdlib itself (see that
+    /// method). `load::check_rival_spec_operations` asks a different question — what a
+    /// reference written here actually resolves to — and for that the link is followed,
+    /// because a reference written here DOES reach it.
+    ///
+    /// DRIVEN, and it was `/code-review` that found the two answers had been fused:
+    /// `namespace p3 { sort S { entity eq(v: Int64) }  namespace inner { operation
+    /// useit(a: Int64) -> p3.S = eq(a) } }` loads clean and the bare `eq` in `inner`
+    /// reaches `S.eq` — while `resolve_captured_name` reports `NotFound` for it, which
+    /// sent the rival check on to the implicit tier and made it refuse a declaration
+    /// naming a symbol the address does not denote.
+    ///
+    /// THE INTERNAL FILTER STAYS, and matches the reader rather than the resolver: a
+    /// hidden `internal` hit becomes `NotFound` here, and `Loader::remap_name_str_inner`
+    /// consults the implicit tier BEFORE `forbid_if_internal` — so the tier really is
+    /// what such a name denotes, and a caller falling through to it is right.
+    pub fn resolve_ignoring_own_locals(&self, name: &str, scope: ScopeId) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Skipped,
+            ExposureLinks::Followed,
+            EnclosingLinks::Followed,
+            // [`ParentLinks::All`] — the ORDINARY ladder's value, which is the point of
+            // this method. C666A's [`Self::resolve_without_non_enclosing_parents`] passes
+            // `EnclosingOnly` as ITS rule's second reading of the same walk; a reference
+            // written here really does cross those edges, so borrowing that switch would
+            // make this answer a question no program asks.
+            ParentLinks::All,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -1713,6 +1802,7 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
+            ParentLinks::All,
             Some(overlay),
         );
         self.filter_internal_visibility(raw, scope)
@@ -1733,6 +1823,7 @@ impl SymbolTable {
             OwnLocals::Visible,
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
+            ParentLinks::All,
             None,
         )
     }
@@ -1752,6 +1843,7 @@ impl SymbolTable {
         own_locals: OwnLocals,
         exposure: ExposureLinks,
         enclosing: EnclosingLinks,
+        parent_links: ParentLinks,
         overlay: Option<&ScopeNameOverlay<'_>>,
     ) -> ResolveResult {
         if !visited.insert(scope) {
@@ -1796,6 +1888,9 @@ impl SymbolTable {
             data.parents
                 .iter()
                 .filter_map(|p| {
+                    if parent_links == ParentLinks::EnclosingOnly && !p.is_enclosing {
+                        return None;
+                    }
                     // WI-1089: below an import edge, the ENCLOSING chain is not
                     // re-entered — `import a.b.C` opens `C`, not the `a.b` around it.
                     if enclosing == EnclosingLinks::StoppedByImport && p.is_enclosing {
@@ -1920,6 +2015,7 @@ impl SymbolTable {
                 OwnLocals::Visible,
                 below,
                 enclosing_below,
+                parent_links,
                 overlay,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),

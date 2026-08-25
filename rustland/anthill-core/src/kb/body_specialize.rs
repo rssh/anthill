@@ -459,6 +459,29 @@ fn reduce(
                 pass,
             ))
         }
+        // Proposal 055 — a nominal type value reduces like a constructor: its head is a
+        // SORT and can never be a body variable, and its type arguments are reduced in
+        // case one of them is. Written rather than left to the `_ => None` tail below,
+        // which would decline the whole inline for a body that merely MENTIONS a type —
+        // and that would be a regression, since a bare sort reference used to arrive as
+        // an `Expr::VarRef` and reduce to itself here.
+        Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        } => {
+            let pos = reduce_vec(kb, pos_args, env, pass)?;
+            let named = reduce_named(kb, named_args, env, pass)?;
+            Some(rebuild(
+                occ,
+                Expr::TypeValue {
+                    head: *head,
+                    pos_args: pos,
+                    named_args: named,
+                },
+                pass,
+            ))
+        }
 
         // Any other form (lambda / higher-order / post-elaboration) is not
         // specialized in this increment — decline the inline rather than emit a

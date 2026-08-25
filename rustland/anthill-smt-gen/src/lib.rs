@@ -1489,6 +1489,21 @@ impl<'kb> Emitter<'kb> {
                 named_args: self.close_named(named_args, env, str_env)?,
                 type_args: type_args.clone(),
             },
+            // Proposal 055 — a nominal type value closes like the two shapes it
+            // replaced: the BARE face was an `Expr::Ref` and passed through as a leaf,
+            // the APPLIED face was an `Expr::Apply` and closed its children. Both are
+            // this one arm (a bare one simply has no children). Without it a `[simp]`
+            // body that merely MENTIONS a type would reach the loud `other =>` arm
+            // below and fail SMT lowering, where it lowered fine before.
+            Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            } => Expr::TypeValue {
+                head: *head,
+                pos_args: self.close_all(pos_args, env, str_env)?,
+                named_args: self.close_named(named_args, env, str_env)?,
+            },
             Expr::Constructor {
                 name,
                 pos_args,
@@ -2059,6 +2074,15 @@ fn occ_as_fn(
             pos_args,
             named_args,
             ..
+        }
+        // Proposal 055 — the applied face answers with its head and type arguments,
+        // which is what it answered as an `Expr::Apply` before it was classified. The
+        // bare face answers through this arm too, with empty argument lists, which is
+        // what `nullary_ctor_sym` needs to keep reading its symbol.
+        | Expr::TypeValue {
+            head: functor,
+            pos_args,
+            named_args,
         } => Some((*functor, pos_args, named_args)),
         Expr::Constructor {
             name,
