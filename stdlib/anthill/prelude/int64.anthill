@@ -4,7 +4,7 @@
 -- — see proposal 038.
 sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ord, Numeric}
-  import anthill.prelude.Numeric.{add, sub}
+  import anthill.prelude.Additive.{add, sub}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
   -- import rather than by a global name — see the note in `ordered.anthill`.
   import anthill.prelude.Bool.{ite}

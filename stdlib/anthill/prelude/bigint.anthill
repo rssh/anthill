@@ -6,7 +6,7 @@
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
-  import anthill.prelude.Numeric.{sub}
+  import anthill.prelude.Additive.{sub}
 
   -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`. See

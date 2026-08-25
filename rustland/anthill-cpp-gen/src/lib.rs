@@ -4288,7 +4288,7 @@ fn render_as_indexed_seq(fn_qn: &str, args: &[String]) -> Option<String> {
 /// table's first claim to hold only spec ops. Keeping half a carrier's operations in a
 /// Rust table and half in its binding was the divergence this ticket exists to end.
 ///
-/// What is left is genuinely NOT per-carrier: one lowering of `Numeric.add` serves
+/// What is left is genuinely NOT per-carrier: one lowering of `Additive.add` serves
 /// every carrier whose values are a C++ arithmetic type, and no carrier declares an
 /// `add` of its own to hang a mapping on. When WI-880 moves the spec-op families per
 /// carrier, these follow — and a carrier that maps its own already WINS, since
@@ -4300,9 +4300,12 @@ fn render_as_indexed_seq(fn_qn: &str, args: &[String]) -> Option<String> {
 fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
     // (qualified_name, arity, infix_or_prefix_op)
     let infix: &[(&str, &str)] = &[
-        ("anthill.prelude.Numeric.add", "+"),
-        ("anthill.prelude.Numeric.sub", "-"),
-        ("anthill.prelude.Numeric.mul", "*"),
+        // WI-20260825-1WBZT — the SYNTAX CATEGORY that declares each (`Additive`,
+        // `Multiplicative`), not the `Numeric` bundle that used to. Keyed by qualified
+        // name, so the key follows the declaration.
+        ("anthill.prelude.Additive.add", "+"),
+        ("anthill.prelude.Additive.sub", "-"),
+        ("anthill.prelude.Multiplicative.mul", "*"),
         // WI-644 / proposal 004: the partial comparison ops live on PartialEq /
         // PartialOrd. Mapping them to C++ `==`/`>`/… (IEEE) is now CORRECT — these
         // are the partial specs, so the compiler and the interpreter's IEEE-for-Float

@@ -155,8 +155,13 @@ fn a_user_sorts_eq_is_not_smt_equality() {
 }
 
 /// THE OTHER DIRECTION, and the reason the three above are not satisfied by an emitter
-/// that recognises nothing: the prelude's `Numeric.add` and `PartialOrd.lte`, reached
-/// by import, still lower to `(+ …)` and `(<= …)`. Passes either way by design.
+/// that recognises nothing: the prelude's `add` and `PartialOrd.lte`, reached by import,
+/// still lower to `(+ …)` and `(<= …)`. Passes either way by design.
+///
+/// `import anthill.prelude.Numeric.{add}` reaches `Additive.add` since
+/// WI-20260825-1WBZT moved the declaration to the `+` category — `Numeric` provides it
+/// — so this row also pins that the member-import CHAIN survives the move, which is what
+/// keeps every such import in the corpus working.
 #[test]
 fn no_prelude_op_regressed() {
     let kb = load_kb_with(PRELUDE_SRC);
@@ -164,7 +169,7 @@ fn no_prelude_op_regressed() {
         .unwrap_or_else(|e| panic!("emit prelude_add: {}", e.message));
     assert!(
         add.contains("(+ "),
-        "the prelude's `Numeric.add` must still lower to SMT `+` — got:\n{add}"
+        "the prelude's `add` must still lower to SMT `+` — got:\n{add}"
     );
     let lte = emit_satisfiability_check(&kb, "test.wi897.prelude_side.prelude_lte")
         .unwrap_or_else(|e| panic!("emit prelude_lte: {}", e.message));

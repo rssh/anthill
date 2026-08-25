@@ -186,18 +186,18 @@ fn resolve_op_real_impl_yields_callable_opref() {
 #[test]
 fn resolve_op_no_table_row_falls_back_to_spec_op() {
     let mut interp = interp();
-    // Bool does NOT provide Numeric — no `add` row for the Bool impl — so
-    // resolveOp falls back to the spec op itself (mirrors
+    // Bool does NOT provide Additive (nor the `Numeric` that would carry it) — no `add`
+    // row for the Bool impl — so resolveOp falls back to the spec op itself (mirrors
     // `dispatch_via_sort_ops_table`'s `unwrap_or(fn_sym)`).
     let bool_sym = resolve(&interp, "anthill.prelude.Bool");
-    let add = sym_val(&mut interp, "anthill.prelude.Numeric.add");
+    let add = sym_val(&mut interp, "anthill.prelude.Additive.add");
     let dict = crate::common::dict(&interp, bool_sym, []).into_value();
 
     let opref = interp
         .call(&format!("{DICT}.resolveOp"), &[dict, add])
         .unwrap();
     let op_id = interp.call(&format!("{OPREF}.op"), &[opref]).unwrap();
-    assert_eq!(sym_qn(&interp, &op_id), "anthill.prelude.Numeric.add");
+    assert_eq!(sym_qn(&interp, &op_id), "anthill.prelude.Additive.add");
 }
 
 // ── Dictionary.ops — bulk enumeration ────────────────────────────────────────

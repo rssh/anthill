@@ -128,7 +128,7 @@ fn field_access_in_expression_position() {
     let cpp = emit_traits_struct(&mut kb, "test.expr_b_field2.Calc").expect("emit Calc");
 
     // Phase E rewrites `add(p.x, p.y)` to `(p.x + p.y)` since add is
-    // the anthill.prelude.Numeric.add typeclass method.
+    // the anthill.prelude.Additive.add typeclass method.
     assert!(
         cpp.contains("return (p.x + p.y);"),
         "nested field access in arithmetic should produce (p.x + p.y):\n{cpp}"

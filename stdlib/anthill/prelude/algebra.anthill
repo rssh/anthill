@@ -9,8 +9,8 @@
 -- VectorSpace[V = Vec3, F = Float].
 --
 -- This is a more abstract layer than anthill.prelude.Numeric (which
--- bundles Ring + Ord into one spec for primitive arithmetic
--- types). Ring is intentionally Ord-free so non-ordered fields
+-- bundles the arithmetic categories + Ord into one spec for primitive
+-- arithmetic types). Ring is intentionally Ord-free so non-ordered fields
 -- (complex numbers, finite fields) can satisfy it later if needed.
 
 namespace anthill.prelude.algebra
@@ -25,24 +25,46 @@ namespace anthill.prelude.algebra
   --
   -- Float satisfies Ring via the prelude's Numeric ops + the
   -- multiplicative identity 1.0.
+  --
+  -- WI-20260825-1WBZT — IT DECLARES NO OPERATION ANY MORE, and the duplication that
+  -- removes was live rather than cosmetic. `Ring.add` and `Numeric.add` were two
+  -- DIFFERENT operations under one spelling, so a bare `add` in scope of both was
+  -- "member of sorts Numeric, Ring, not in scope as a bare name here" — resolved only
+  -- because the implicit tier deterministically answered `Numeric.add`. Worse, the
+  -- additive identity had two NAMES (`Ring.zero` and `Numeric.zero-val`), which do not
+  -- collide, so a carrier providing both specs got two `sort_ops` entries for one
+  -- concept and nothing complained. One declaration per short name is the fix, and
+  -- `provides` is how this sort reaches it (`arithmetic.anthill`'s header, and the
+  -- `Eq provides PartialEq` precedent WI-1110 measured).
+  --
+  -- `Float` NOW REACHES `Additive` BY TWO PATHS — `provides Numeric[T = Float]` and
+  -- `provides Ring[Float]` are both written in `anthill-stl/anthill/float.anthill` — and
+  -- that diamond is the BENIGN one: the base declares each operation ONCE and both
+  -- branches only PROVIDE, so there is no "which parent's method" question for a merge to
+  -- get wrong. Driven on user sorts (that shape loads clean, and implementation stays
+  -- CARRIER-directed — each route resolves to the carrier's own member by the short-name
+  -- join); for `Float` itself the resolution bottoms out in the host builtin registered
+  -- on the spec op, since `Float` declares no `add` of its own — which is separately
+  -- WI-944's subject, `fact Ring[Float]` being an unbacked provision.
+  --
+  -- What keeps the diamond benign is the declare-once discipline itself, and that is
+  -- enforced NOWHERE: a spec redeclaring a provided base's operation loads clean, and
+  -- with two such specs over one carrier the answer follows SOURCE ORDER. WI-20260825-EBMG8
+  -- owns that gap; this sort is the shape it has to keep safe.
   sort Ring
     sort T = ?
 
-    operation {
-      add(a: T, b: T) -> T            -- +
-      sub(a: T, b: T) -> T            -- -
-      mul(a: T, b: T) -> T            -- *
-      zero() -> T                      -- additive identity
-      one() -> T                       -- multiplicative identity
-    }
+    provides Additive[T = T]
+    provides Multiplicative[T = T]
 
+    -- WHAT IS LEFT IS WHAT IS GENUINELY RING'S. `add_comm` / `add_assoc` /
+    -- `add_identity` moved to `Additive` and `mul_assoc` / `mul_identity` to
+    -- `Multiplicative` — each sits with the operation that declares it. These two do
+    -- not: `distrib` reads BOTH operations, so no single category can state it, and
+    -- `mul_comm` is a claim about multiplication that is false in general (matrices,
+    -- quaternions) and true of the COMMUTATIVE ring this sort names itself after.
     rule {
-      add_comm:      add(?a, ?b) <=> add(?b, ?a)
-      add_assoc:     add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
-      add_identity:  add(?a, zero) <=> ?a
       mul_comm:      mul(?a, ?b) <=> mul(?b, ?a)
-      mul_assoc:     mul(mul(?a, ?b), ?c) <=> mul(?a, mul(?b, ?c))
-      mul_identity:  mul(?a, one) <=> ?a
       distrib:       mul(?a, add(?b, ?c)) <=> add(mul(?a, ?b), mul(?a, ?c))
     }
   end
@@ -60,6 +82,28 @@ namespace anthill.prelude.algebra
   -- Vec3 (in anthill.geometry) provides VectorSpace[V = Vec3, F = Float]
   -- via per-component implementations.
   sort VectorSpace
+    -- WI-20260825-1WBZT — THE IMPORT IS A WORKAROUND, and it is here rather than in a
+    -- ticket comment because it looks like a no-op: `Ring` is this sort's own SIBLING.
+    -- It stops a bare `Ring` below from going AMBIGUOUS against a user's top-level
+    -- `sort Ring` (`anthill-testcases/ring-polynom/ring.anthill` is one), which it began
+    -- doing the moment `Ring` gained a `provides` of a spec in ANOTHER namespace: a
+    -- `provides` edge is walked like a `requires` one and RE-ENTERS the target's
+    -- enclosing chain, so `VectorSpace -> requires Ring -> provides anthill.prelude.
+    -- Additive -> anthill.prelude -> <global>` puts the user's `Ring` in reach. MEASURED
+    -- as a general defect, not a property of this file: a `Base` providing a
+    -- same-namespace spec is fine, a `Base` providing one across namespaces makes its
+    -- own name ambiguous at every consumer that `requires` it. Filed as
+    -- WI-20260825-N2865; when that lands, this import can go.
+    import anthill.prelude.algebra.{Ring}
+    -- The scalar-side categories the laws below name. WRITTEN OUT rather than left to the
+    -- `requires Ring[F]` chain, because an import is a CHECKED position and the laws are
+    -- not: measured on scaland, loading `algebra.anthill` without `arithmetic.anthill`
+    -- makes this line say "unresolved name 'Additive' in scope 'anthill.prelude'", while
+    -- `Ring`'s own `provides Additive[T = T]` eight lines up says NOTHING — an unresolved
+    -- provision target degrades to an interned name. So this import is what turns "the
+    -- categories are in scope here" from an assumption into something the loader states.
+    import anthill.prelude.{Additive, Multiplicative}
+
     sort V = ?
     sort F = ?
     requires Ring[F]
@@ -71,19 +115,32 @@ namespace anthill.prelude.algebra
       vec_zero() -> V                  -- additive identity vector
     }
 
-    -- Scalar-side ops (`Ring.add`, `Ring.sub`, `Ring.mul`, `Ring.zero`,
-    -- `Ring.one`) are explicitly qualified in the laws below — the same
-    -- names are also in scope from `anthill.prelude.Numeric` and the
-    -- resolver can't disambiguate without the prefix.
+    -- Scalar-side ops are explicitly qualified in the laws below, and WI-20260825-1WBZT
+    -- CHANGED WHICH PREFIX IS CORRECT. They read `Ring.add` / `Ring.sub` / `Ring.mul` /
+    -- `Ring.zero` / `Ring.one`, on the ground that "the same names are also in scope from
+    -- `anthill.prelude.Numeric` and the resolver can't disambiguate without the prefix".
+    -- That reason is GONE — the categories declare each short name ONCE, so there is
+    -- nothing left to disambiguate — and worse, those five addresses now name NOTHING:
+    -- `Ring` reaches its operations by `provides` and declares none of them.
+    --
+    -- NOTHING CAUGHT IT, which is why this note is long. An equational law's head and RHS
+    -- are UNCHECKED positions: driven on the built tree, `rule r: f(?a) <=> Bogus.nope(?a)`
+    -- inside a sort loads clean, byte-identically to the `Ring.sub` spelling — so "the
+    -- stdlib loads" distinguishes a live address from a typo not at all. The same name in
+    -- a rule-body GOAL is two loud errors ("rule-body term `Ring.sub` names nothing")
+    -- and in an operation body one ("unknown functor"); only the law position is silent.
+    -- Filed as WI-20260825-6RRVA; `wi_1wbzt_syntax_category_test::
+    -- the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not` is the row that
+    -- pins these five through the guarded position instead.
     rule {
       vec_add_comm:        vec_add(?a, ?b) <=> vec_add(?b, ?a)
       vec_add_assoc:       vec_add(vec_add(?a, ?b), ?c) <=> vec_add(?a, vec_add(?b, ?c))
       vec_add_identity:    vec_add(?a, vec_zero) <=> ?a
-      vec_sub_def:         vec_sub(?a, ?b) <=> vec_add(?a, vec_scale(Ring.sub(Ring.zero, Ring.one), ?b))
-      vec_scale_identity:  vec_scale(Ring.one, ?v) <=> ?v
-      vec_scale_assoc:     vec_scale(?c, vec_scale(?d, ?v)) <=> vec_scale(Ring.mul(?c, ?d), ?v)
+      vec_sub_def:         vec_sub(?a, ?b) <=> vec_add(?a, vec_scale(Additive.sub(Additive.zero, Multiplicative.one), ?b))
+      vec_scale_identity:  vec_scale(Multiplicative.one, ?v) <=> ?v
+      vec_scale_assoc:     vec_scale(?c, vec_scale(?d, ?v)) <=> vec_scale(Multiplicative.mul(?c, ?d), ?v)
       vec_scale_distrib_v: vec_scale(?c, vec_add(?a, ?b)) <=> vec_add(vec_scale(?c, ?a), vec_scale(?c, ?b))
-      vec_scale_distrib_s: vec_scale(Ring.add(?c, ?d), ?v) <=> vec_add(vec_scale(?c, ?v), vec_scale(?d, ?v))
+      vec_scale_distrib_s: vec_scale(Additive.add(?c, ?d), ?v) <=> vec_add(vec_scale(?c, ?v), vec_scale(?d, ?v))
     }
   end
 end

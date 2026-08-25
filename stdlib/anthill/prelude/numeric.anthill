@@ -1,25 +1,57 @@
--- Numeric: basic arithmetic (requires PartialOrd)
+-- Numeric: the ARITHMETIC BUNDLE — `Additive` + `Multiplicative` + a comparison surface.
+--
+-- WHAT IT ALREADY CALLED ITSELF IS NOW ITS JOB. `algebra.anthill` describes this sort as
+-- "Ring + Ord bundled into one spec for primitive arithmetic types" — a convenience
+-- beside the algebra rather than in it, written as an apology. Under the syntax-category
+-- rule (WI-20260825-1WBZT, `arithmetic.anthill`) that becomes the design: the operations
+-- are DECLARED by the categories that mint them, and this spec's whole content is the
+-- claim that a carrier has all of them at once. A primitive arithmetic type says
+-- `provides Numeric[T = C]` and gets `+ - *` and the comparisons in one row.
+--
+-- IT DECLARES NOTHING, and that is what makes it a bundle rather than a rival. Before the
+-- split it declared `add` / `sub` / `mul` / `neg` / `zero-val` itself, which forced any
+-- carrier that could only add to claim a multiplication it did not have — and made
+-- `Numeric.add` and `Ring.add` two different operations under one spelling. Both are gone
+-- with the declarations; `arithmetic.anthill`'s header carries the measurement.
+--
+-- `provides`, NOT `requires`, for the reason WI-1110 measured on `Eq`/`PartialEq` and
+-- `Ord`/`WeakOrd`: a `provides` on a spec is a CONVERSION — hold a `Numeric[T]` and you
+-- can obtain an `Additive[T]` — so the four existing providers (`anthill-stl` int64 /
+-- bigint / float, `anthill-cpp-gen` int64) keep their one row and reach every category
+-- through the chain, with no edit to any of them. The opposite spelling would make each
+-- write three rows and be trusted to keep them consistent.
+--
+-- ONE COST, ON A POPULATION THE FOUR-PROVIDER CENSUS DID NOT COVER: a NON-HOST carrier
+-- claiming this bundle now owes `Multiplicative.one`, an operation `Numeric` never had.
+-- `check_provider_operations` walks DERIVED provision rows, and it skips the four
+-- bindings above wholesale (they are host targets) — so the census that found "no
+-- per-carrier edit" was taken over exactly the population the change cannot break.
+-- MEASURED on the pre-split `Money` fixture (add/sub/mul/neg/zero-val + four comparisons,
+-- `fact Numeric[T = Money]`): it now fails with TWO errors, "backs no operation
+-- 'anthill.prelude.Additive.zero'" and "…'anthill.prelude.Multiplicative.one'", and
+-- renaming `zero-val` to `zero` leaves the second. `wi_vt8cf_division_tower_test`'s
+-- carrier gained `operation one() -> Money` for that reason.
+--
+-- THE DEMAND IS THE BUNDLE BEING HONEST, not a regression to absorb: `Numeric` says a
+-- carrier has the whole arithmetic surface, and a multiplicative monoid has an identity.
+-- A carrier that does not want to owe it claims the categories it can back — which is
+-- what this ticket exists to make possible, and what `+`-only carriers should now do.
+-- Recorded rather than left to be discovered, because the error arrives at LOAD on a
+-- program that used to load.
 sort anthill.prelude.Numeric
 
   sort T = ?
   -- WI-644 / proposal 004: Numeric requires only the PARTIAL order — IEEE Float is
   -- Numeric but not totally Ord (NaN is unordered). Numeric itself uses no
   -- ordering op; the requirement is the comparison surface consumers rely on.
+  --
+  -- IT STAYS HERE rather than moving to a category, and the split is why it can: a
+  -- consumer that wants arithmetic AND comparison asks for `Numeric` and gets both,
+  -- while a carrier that only adds asks for `Additive` and owes no comparison at all.
+  -- Before the split there was no second address to offer, so this requirement reached
+  -- every `+` in the language.
   requires PartialOrd[T]
 
-  operation {
-    add(a: T, b: T) -> T           -- +
-    sub(a: T, b: T) -> T           -- - (binary)
-    neg(a: T) -> T                 -- - (prefix); defaulted to sub(zero-val, a)
-    mul(a: T, b: T) -> T           -- *
-    zero-val() -> T                -- additive identity
-  }
-
-  rule {
-    add_comm:  add(?a, ?b) <=> add(?b, ?a)
-    add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
-    add_identity: add(?a, zero-val) <=> ?a
-    -- prefix `-`: default impl; a carrier (e.g. Int64) may override it.
-    neg_def:   neg(?a) <=> sub(zero-val, ?a)
-  }
+  provides Additive[T = T]
+  provides Multiplicative[T = T]
 end

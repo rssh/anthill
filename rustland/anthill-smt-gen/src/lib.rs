@@ -2236,9 +2236,13 @@ const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
     //
     // Lowering the spec op needs the emitter to carry the operand sort; that is its own
     // change, with its own census of what else keys on a functor alone.
-    ("anthill.prelude.Numeric.add", SmtBuiltin::Arith("+")),
-    ("anthill.prelude.Numeric.sub", SmtBuiltin::Arith("-")),
-    ("anthill.prelude.Numeric.mul", SmtBuiltin::Arith("*")),
+    // WI-20260825-1WBZT — the SYNTAX CATEGORY that declares each, not the `Numeric`
+    // bundle that used to. Keyed by qualified name, so a moved declaration is a moved key
+    // or the lowering silently stops (`+` would emit an uninterpreted function instead of
+    // SMT `+`, and the discharge would just get weaker).
+    ("anthill.prelude.Additive.add", SmtBuiltin::Arith("+")),
+    ("anthill.prelude.Additive.sub", SmtBuiltin::Arith("-")),
+    ("anthill.prelude.Multiplicative.mul", SmtBuiltin::Arith("*")),
     ("anthill.prelude.Float.div", SmtBuiltin::Arith("/")),
     ("anthill.prelude.Int64.div", SmtBuiltin::Arith("div")),
     // Trigonometry (WI-681). SMT-LIB's Real logics have no transcendental cos/sin,
@@ -2260,7 +2264,7 @@ const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
         "anthill.prelude.Int64.abs",
         SmtBuiltin::Unary("anthill_abs"),
     ),
-    ("anthill.prelude.Numeric.neg", SmtBuiltin::Unary("-")),
+    ("anthill.prelude.Additive.neg", SmtBuiltin::Unary("-")),
     ("anthill.prelude.Float.neg", SmtBuiltin::Unary("-")),
     ("anthill.prelude.Int64.neg", SmtBuiltin::Unary("-")),
     // `ite` (WI-680). The refolded defining-equation body uses the `Expr::If`

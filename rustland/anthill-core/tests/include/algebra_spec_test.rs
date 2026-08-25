@@ -25,17 +25,43 @@ fn ring_spec_loads_and_resolves() {
             .is_some(),
         "Ring spec must be loaded from stdlib"
     );
-    // Operation symbols are scoped under Ring (Ring.add, Ring.mul, …).
+    // WI-20260825-1WBZT — `Ring` DECLARES NONE OF THEM ANY MORE, and this row is where
+    // that is pinned. It used to assert five `anthill.prelude.algebra.Ring.*` addresses;
+    // those were a SECOND declaration of `add` / `sub` / `mul` under a spelling
+    // `anthill.prelude.Numeric` also carried, plus a `zero` that was the same value as
+    // `Numeric.zero-val` under a different name. The categories own them now
+    // (`stdlib/anthill/prelude/arithmetic.anthill`) and `Ring` reaches them by
+    // `provides`, so the qualified addresses are the categories'.
     for op in [
+        "anthill.prelude.Additive.add",
+        "anthill.prelude.Additive.sub",
+        "anthill.prelude.Additive.neg",
+        "anthill.prelude.Additive.zero",
+        "anthill.prelude.Multiplicative.mul",
+        "anthill.prelude.Multiplicative.one",
+    ] {
+        assert!(
+            kb.try_resolve_symbol(op).is_some(),
+            "missing arithmetic-category operation: {op}"
+        );
+    }
+    // …and the OLD addresses are gone rather than merely unused. Without this half the
+    // row above passes on a KB where `Ring` still declares its own five and the
+    // duplication the ticket removed is back — which is exactly the state a careless
+    // merge would restore.
+    for gone in [
         "anthill.prelude.algebra.Ring.add",
         "anthill.prelude.algebra.Ring.sub",
         "anthill.prelude.algebra.Ring.mul",
         "anthill.prelude.algebra.Ring.zero",
         "anthill.prelude.algebra.Ring.one",
+        "anthill.prelude.Numeric.add",
+        "anthill.prelude.Numeric.zero-val",
     ] {
         assert!(
-            kb.try_resolve_symbol(op).is_some(),
-            "missing Ring operation: {op}"
+            kb.try_resolve_symbol(gone).is_none(),
+            "{gone} must NOT be declared: one spec declares each short name, and the \
+             bundles reach it by `provides` (WI-20260825-1WBZT)"
         );
     }
 }

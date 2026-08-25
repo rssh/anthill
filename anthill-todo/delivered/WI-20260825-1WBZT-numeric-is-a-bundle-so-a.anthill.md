@@ -3,9 +3,9 @@
 - id: WI-20260825-1WBZT-numeric-is-a-bundle-so-a
 - created: 2026-08-25T17:15:42Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-25T17:15:42Z
+- status_at: 2026-08-25T20:37:04Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -93,4 +93,58 @@ IT REMOVES A LIVE DUPLICATION RATHER THAN ADDING ONE, which is the half worth st
 WHAT EBMG8 OWNS: the rule `ordered.anthill` states in prose ("declaring them a second time gives a carrier two `sort_ops` entries for one short name, and which one wins is HashMap-iteration order — a coin flip, not a rule") and 058 §3.8 restates ("the derivation adds a provision ROW, never a second op declaration") is enforced NOWHERE. Driven: a spec redeclaring a provided base's operation loads clean; and with two such specs over one carrier the answer follows SOURCE ORDER — 22 with `sort L` first, 33 with `sort R` moved above it, stable across runs either way.
 
 NOT A BLOCKER for this ticket — the categories land in the benign shape — but this ticket's safety rests ENTIRELY on a discipline nothing checks, so EBMG8 should land near it. Source order is worse than a coin flip for exactly the reason it looks safe: stable in tests, stable across machines, and it flips when someone reorders two declarations or renames a file.
+
+### 2026-08-25T19:55:06Z — feedback — claude
+
+DELIVERED. Every operator now names a SYNTAX CATEGORY — a spec owning exactly the operation it mints — and `Numeric` / `algebra.Ring` reach them by `provides`, declaring nothing themselves.
+
+  stdlib/anthill/prelude/arithmetic.anthill   NEW
+    Additive        add, sub, neg, zero   add_comm / add_assoc / add_identity / sub_def / neg_def
+    Multiplicative  mul, one              mul_assoc / mul_identity
+  numeric.anthill    `Numeric` declares NOTHING; `requires PartialOrd[T]`, `provides` both
+  algebra.anthill    `Ring` declares NOTHING; `provides` both; keeps `mul_comm` / `distrib`
+
+THE CONTROL PASSES. A `Money` carrier declaring `add` / `sub` / `neg` / `zero` and asserting `fact Additive[T = Money]` — no `mul`, no comparison surface, no `fact Numeric` — loads clean and answers `Money(700) + Money(25)` = 725 and `- ` = 675 through minted operators, off the carrier's own `cents` field. And the second control: `Int64` keeps its single `provides Numeric[T = Int64]`, no row anywhere names a category for it, and `1 + 2`, `7 - 2`, `6 * 7`, `7 / 2`, `7 % 2`, `1 < 2`, `10.0 / 4.0` all still answer. Four providers, zero per-carrier edits.
+
+THE CLAIM SIZE, MEASURED RATHER THAN CLAIMED. `Additive` alone is FOUR operations, and the loader demands TWO of them — omit `neg` or `zero` and it is a load error naming the operation; omit `add` or `sub` and it loads clean, because those two carry resolver builtins (`BuiltinTag::Add`/`Sub`) and the backing check reads a builtin as backing. That split is WI-876's finding on `gt`/`lt`/`gte`/`lte`, still live for arithmetic until WI-880 moves the arithmetic families into each carrier's `operation_map`; it is why `Money * Money` over an `Additive`-only carrier still LOADS and dies at run time. THE SPLIT REMOVES THE LIE, NOT THE MASK — recorded at `arithmetic.anthill`'s declaration block rather than left to be rediscovered.
+
+`sub` HAS NO DEFAULT BODY, and the obvious move was refused by measurement. It is derivable (`sub_def` states it) and WI-876's shape was right there — but `eval::builtins` registers `numeric_sub` on the spec op, which SHADOWS a default body. Driven with the body written: a three-operation carrier loads clean and `Money(700) - Money(25)` dies at run time with "expected matching Int, BigInt, or Float, got Entity". That trades a LOUD load error for a SILENT hole, i.e. the trade this ticket exists to undo.
+
+`zero`, NOT `zero-val`, AND THE TICKET'S STATED COUNTER-ARGUMENT WAS FALSE. "`zero-val` is what the four current carriers implement" — censused, NO carrier implements it, in either spelling: `Int64`, `BigInt`, `Float` and the cpp `Int64` declare no additive identity at all. So the rename touches no carrier, and `zero` pairs with the `one` that came across from `Ring`. Its one cost is recorded: `zero-val` was the ONLY hyphenated identifier in the stdlib, so scaland's WI-1054 CORPUS row loses its subject (the synthetic five-position row still drives the normalisation).
+
+TWO PRE-EXISTING DEFECTS SURFACED, both filed rather than absorbed, both with the measurement on the ticket:
+
+  * WI-20260825-N2865 — a spec's CROSS-NAMESPACE `provides` leaks the provided sort's enclosing chain to every consumer that `requires` the providing spec, so the providing spec's own NAME goes ambiguous against a same-named global. Minimized to two files with one deciding line. `algebra.Ring providing anthill.prelude.Additive` is the tree's first such edge, and it turned `anthill-testcases/ring-polynom/ring.anthill`'s top-level `sort Ring` into seven load errors. Unblocked by ONE line — `import anthill.prelude.algebra.{Ring}` inside `VectorSpace`, importing its own SIBLING — with the measurement written at the import.
+  * WI-20260825-X9RRN — a QUALIFIED `Spec.op(...)` reached through a `provides` chain is "unknown functor". `Eq.eq(a, b)` and `Field.div(a, b)` have answered that since WI-1110 / WI-20260824-VT8CF; this ticket adds `Numeric.{add,sub,mul,neg}` and `Ring.*`. The MEMBER-IMPORT spelling still resolves, so the ~43 corpus sites written `import anthill.prelude.Numeric.{add}` were untouched — measured, and pinned by a row.
+
+ONE ROW INVERTED. `vec3_ops_test::control_ring_now_loads_and_its_residual_failure_is_the_unbacked_provision` pinned `Ring.add`'s "loads, then dies at eval with 'operation has no body'". It is refused at LOAD now — not because `fact Ring[Float]` gained backing (WI-944 is untouched) but because `Ring` no longer declares `add`. Rewritten to assert the new verdict, to attribute it to X9RRN, and to carry the separator that keeps "unknown functor" from being read as "the operation is missing": `Additive.add(a, a)` over the same `Float` operands LOADS.
+
+SPEC. kernel-language.md gains the rule at §6.6 (the category table, the `Money` measurement, one-declaration-per-short-name as a RESOLUTION constraint, and `^` restated as deliberately category-less); §5.1's "declare it as a member alongside a `provides`" table was RE-DRIVEN over all twelve tier names — six load, six refused, each for its own reason, and the reason for `add`/`sub`/`mul`/`neg` changed from "`Numeric` further requires `PartialOrd`" to "the category's own remaining operations". The prelude sketch at §"Sorts" now shows `Additive` + the declaring-nothing `Numeric`.
+
+### 2026-08-25T20:29:09Z — feedback — claude
+
+/code-review (high) FOUND A REAL BREAKAGE THE GREEN SUITES COULD NOT, and it is the one worth reading first.
+
+`algebra.VectorSpace`'s FOUR SCALAR-SIDE LAWS WENT ON NAMING `Ring.{add,sub,mul,zero,one}` after `Ring` stopped declaring them. Five addresses that name NOTHING — and the full stdlib load stayed clean, rustland stayed at 5723/0 and scaland at 538/0, because AN EQUATIONAL LAW'S HEAD AND RHS ARE UNCHECKED POSITIONS. Driven side by side, same undeclared name each time:
+
+  rule r: f(?a) <=> Bogus.nope(?a)          (law RHS)        -> LOADS CLEAN
+  rule r: f(Bogus.nope(?a)) <=> ?a          (law HEAD)       -> LOADS CLEAN
+  rule g(?a) :- Bogus.nope(?a, ?a)          (rule-body GOAL) -> "names nothing"
+  operation f(x: Float) = Bogus.nope(x)     (op BODY)        -> "unknown functor"
+
+The `Ring.sub` spelling loaded byte-identically to the `Bogus.nope` one. MY HEADER ASSERTED THE OPPOSITE — "`algebra.VectorSpace` still writes `Ring.sub(Ring.zero, Ring.one)` in its laws and loads" — which was true and proved nothing: I read loadability as resolution in the one position where they come apart.
+
+REPAIRED: the laws name `Additive.sub` / `Additive.zero` / `Multiplicative.one` / `Multiplicative.mul` / `Additive.add`, `VectorSpace` writes `import anthill.prelude.{Additive, Multiplicative}` out loud, and `wi_1wbzt_syntax_category_test::the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not` pins all ten addresses THROUGH THE GUARDED POSITION — a rule-body goal, where `Additive.add`/`.sub`/`Multiplicative.mul` load, `Additive.zero`/`Multiplicative.one` reach "ambiguous dispatch of `anthill.prelude.Additive.zero`" (which is PROOF the name resolved: five providers found, nullary call cannot pick), and every `Ring.*` spelling is "names nothing". The `Ring.*` half is what makes it a measurement — without it the row passes on the pre-split tree too, where BOTH spellings resolve. Missing guard filed as WI-20260825-6RRVA.
+
+AND THE IMPORT IS WHY, measured on scaland: with `arithmetic.anthill` left out of the load, `VectorSpace`'s import says "unresolved name 'Additive' in scope 'anthill.prelude'" while `Ring`'s `provides Additive[T = T]` says NOTHING — an unresolved provision target degrades to an interned name. So the import is the only CHECKED statement that the categories are in scope, which is the argument for writing it rather than leaning on the `requires Ring[F]` chain.
+
+SIX MORE FINDINGS, all applied:
+  2. A NON-HOST carrier claiming `fact Numeric[T = C]` now owes `Multiplicative.one`, an operation `Numeric` never had — `check_provider_operations` walks derived rows. My "no per-carrier edit anywhere" census covered only the four HOST bindings, which that check skips wholesale, i.e. exactly the population the change cannot break. Driven on the pre-split `Money`: two errors, `Additive.zero` and `Multiplicative.one`. Recorded at `numeric.anthill` with the reasoning that the demand is the bundle being honest — a carrier that does not want to owe it claims the category instead, which is the point.
+  3. WI-20260825-X9RRN ships now, so kernel-language.md §8.6 gains the import-vs-qualified-call asymmetry rather than leaving authors to find it.
+  4. scaland's `SmtGen` gained bare `"Additive.add"` / `"Multiplicative.mul"` arms — REMOVED. A user's own top-level `sort Additive` qualifies its member as exactly that, so those arms would lower it to SMT `+` and make a discharge silently unsound: the failure rustland keyed `SMT_BUILTINS` on `Symbol` to refuse (WI-897). Only the fully-qualified arm was added; the pre-existing `"Numeric.add"`/`"add"` arms carry the defect already and are scaland's own WI-897 work, but this ticket must not enlarge the population.
+  5. `docs/smtlib-forward-mapping.md`'s QN table repointed (edited for `zero-val`, table missed).
+  6. `load.rs`'s division-tower comment cited the `Numeric` bootstrap block this change deleted — repointed at the categories.
+  7. The replacement WI-1054 hyphen predicate truncated at the first `/` and blinded any line containing `->`, so it promised more than it checked — rewritten to strip the `//` tail only.
+
+FINAL: rustland 5724 passed / 0 failed across 36 binaries; scaland 538 passed / 0 failed.
 

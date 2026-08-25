@@ -125,9 +125,29 @@ object SmtGen:
 
   /** Map anthill arithmetic functor QNs to SMT-LIB ops. */
   private[smtgen] def mapArithOp(qn: String): Option[String] = qn match
-    case "anthill.prelude.Numeric.add" | "Numeric.add" | "add" => Some("+")
-    case "anthill.prelude.Numeric.sub" | "Numeric.sub" | "sub" => Some("-")
-    case "anthill.prelude.Numeric.mul" | "Numeric.mul" | "mul" => Some("*")
+    // WI-20260825-1WBZT — the SYNTAX CATEGORY declares each of these now (`Additive`,
+    // `Multiplicative`; `stdlib/anthill/prelude/arithmetic.anthill`), and `Numeric`
+    // reaches them by `provides`. The FULLY-QUALIFIED arm is the only one the move could
+    // invalidate, and a stale one does not error — it silently lowers `+` as an
+    // uninterpreted function and just weakens the discharge — so that is the arm added.
+    //
+    // NO `"Additive.add"` / `"Multiplicative.mul"` SORT-QUALIFIED ARM, deliberately. A
+    // user's own top-level `sort Additive` with an `add` qualifies its member as exactly
+    // `Additive.add`, so a bare arm would lower THAT to SMT `+` and make a discharge
+    // silently unsound — the failure rustland's WI-897 keyed `SMT_BUILTINS` on `Symbol`
+    // to refuse (`wi897_symbol_identity_test`, "a user's `Numeric.add` is NOT SMT
+    // addition"). The `"Numeric.add"` / `"add"` arms below carry that defect already and
+    // are left alone as scaland's own WI-897 work; this ticket must not enlarge the
+    // population it applies to.
+    case "anthill.prelude.Additive.add" | "anthill.prelude.Numeric.add" | "Numeric.add" |
+        "add" =>
+      Some("+")
+    case "anthill.prelude.Additive.sub" | "anthill.prelude.Numeric.sub" | "Numeric.sub" |
+        "sub" =>
+      Some("-")
+    case "anthill.prelude.Multiplicative.mul" | "anthill.prelude.Numeric.mul" |
+        "Numeric.mul" | "mul" =>
+      Some("*")
     case "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/")
     case "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div")
     case _ => None
@@ -135,6 +155,7 @@ object SmtGen:
   private[smtgen] def mapUnaryOp(qn: String): Option[String] = qn match
     case "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs")
     case "anthill.prelude.Int64.abs" => Some("anthill_abs")
+    case "anthill.prelude.Additive.neg" | "anthill.prelude.Numeric.neg" => Some("-")
     case "anthill.prelude.Float.neg" | "Float.neg" => Some("-")
     case "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-")
     case _ => None

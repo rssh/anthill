@@ -1333,7 +1333,7 @@ namespace test.wi414
   operation at1() -> Int64 = unwrap(nth([10, 20, 30], 1))
   operation at2() -> Int64 = unwrap(nth([10, 20, 30], 2))
   operation oob() -> Int64 = unwrap(nth([10, 20, 30], 5))
-  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Additive.neg` and
   -- may not be re-declared free-standing. The name here was only ever a label.
   operation negidx() -> Int64 = unwrap(nth([10, 20, 30], 0 - 1))
 end

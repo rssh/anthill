@@ -205,11 +205,12 @@ pub enum BuiltinTag {
     Gte,
     /// `anthill.prelude.Ord.lte(?a, ?b)` — less-or-equal on Int/Float constants.
     Lte,
-    /// `anthill.prelude.Numeric.add(?a, ?b)` — arithmetic addition (equation builtin).
+    /// `anthill.prelude.Additive.add(?a, ?b)` — arithmetic addition (equation builtin).
     Add,
-    /// `anthill.prelude.Numeric.sub(?a, ?b)` — arithmetic subtraction (equation builtin).
+    /// `anthill.prelude.Additive.sub(?a, ?b)` — arithmetic subtraction (equation builtin).
     Sub,
-    /// `anthill.prelude.Numeric.mul(?a, ?b)` — arithmetic multiplication (equation builtin).
+    /// `anthill.prelude.Multiplicative.mul(?a, ?b)` — arithmetic multiplication (equation
+    /// builtin).
     Mul,
     /// `anthill.prelude.Int64.div(?a, ?b)` — truncated integer division (also the
     /// `divExact` alias); the `/` and `div` operators desugar here. PARTIAL: a
@@ -12902,7 +12903,7 @@ mod tests {
     #[test]
     fn builtin_add_three_arg_binds_result() {
         let mut kb = kb_with_prelude();
-        let add_sym = kb.resolve_symbol("anthill.prelude.Numeric.add");
+        let add_sym = kb.resolve_symbol("anthill.prelude.Additive.add");
         let three = kb.alloc(Term::Const(Literal::Int(3)));
         let four = kb.alloc(Term::Const(Literal::Int(4)));
         let x_sym = kb.intern("x");

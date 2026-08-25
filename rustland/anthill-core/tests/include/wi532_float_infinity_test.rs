@@ -42,7 +42,7 @@ fn negative_infinity_and_nan_evaluate() {
         r#"
 namespace test.wi532.siblings
   import anthill.prelude.Float.{negativeInfinity, nan}
-  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Additive.neg` and
   -- may not be re-declared free-standing. The name here was only ever a label.
   operation neginf() -> Float = negativeInfinity
   operation bad() -> Float = nan

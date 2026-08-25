@@ -70,3 +70,23 @@ SO: DO THE SPEC SPLITS FIRST, then mint. Any ticket that moves where one of the 
 
 AND A COST THE BODY DOES NOT NAME. After this ticket `+` and `add(…)` become DIFFERENT THINGS in one file: with `import Weird.{add}` in scope, `1 + 2` answers the spec op (3) while `add(1, 2)` answers the import (99). That is measured for the CURRENT behaviour — driven, both arms, `99` and `3` — and it is what this ticket deliberately breaks. kernel-language.md §5.5 currently says "Infix and prefix operators are sugar for function application — `a + b` desugars to `add(a, b)`", which stops being true: `a + b` would desugar to an ADDRESS, and refactoring it to the bare call can change the answer with no diagnostic. Either the sentence is corrected as part of this ticket, or the ticket is refused on it. That is the strongest argument against the change and it belongs in front of anyone deciding.
 
+### 2026-08-25T19:47:45Z — feedback — claude
+
+THE PREREQUISITE IS DELIVERED — WI-20260825-1WBZT landed, so the addresses a mint would bake are FINAL for the arithmetic four. Concretely, the targets to mint are now:
+
+  `+`  ..anthill.prelude.Additive.add          (was ..anthill.prelude.Numeric.add)
+  `-`  ..anthill.prelude.Additive.sub          (was ..anthill.prelude.Numeric.sub)
+  `*`  ..anthill.prelude.Multiplicative.mul    (was ..anthill.prelude.Numeric.mul)
+  neg  ..anthill.prelude.Additive.neg          (was ..anthill.prelude.Numeric.neg)
+  `/`  ..anthill.prelude.Divisible.div         (VT8CF, unchanged)
+  `%`  ..anthill.prelude.EuclideanDomain.mod   (VT8CF, unchanged)
+  `=` `!=` `<` `<=` `>` `>=`  PartialEq / PartialOrd, unchanged
+
+THE TWELVE-NAME CENSUS DID NOT MOVE, which is worth stating because the ordering feedback said it might: `wi_bfb9a_rival_spec_operation_test::the_refusal_population_is_the_twelve_spec_operations` still reads `add div eq gt gte lt lte mod mul neg neq sub` and passed unchanged through the split. The move was between two PARAMETRIC carriers, so nothing about spec-op-hood changed — only the owning sort. `wi_1wbzt_syntax_category_test::the_implicit_tier_points_at_the_syntax_categories` is the row that pins it, and it adds `zero` / `one` to the spec-operation set (both are category members now) while asserting `pow` stays out.
+
+NOTHING ELSE IS PENDING FOR YOU on the declaration-location question. 1WBZT was the last ticket that moved one of the twelve; the `PartialOrd` four were already minimal and are not scheduled to move.
+
+ONE THING THE SPLIT MAKES CHEAPER, and one it makes sharper:
+  * CHEAPER — the tier hop this ticket would delete is now a table of six arithmetic/division entries pointing at four category sorts, all of which are minimal specs. `PRELUDE_QUALIFIED` is the single reader (kb/load.rs), and `implicit_target_orphans` already pins that every entry resolves, so a mint that names the address outright has a ready control: that orphan check should stay empty and the twelve-name census unchanged.
+  * SHARPER — WI-20260825-X9RRN records that a QUALIFIED `Numeric.add(a, b)` does NOT walk the `provides` chain ("unknown functor"), while `import anthill.prelude.Numeric.{add}` does. A minted `..anthill.prelude.Additive.add` is an ABSOLUTE path, so it is unaffected either way — but the two tickets touch the same question (what a qualified spec-op address denotes) and whoever settles X9RRN should check that a mint's absolute reading is not accidentally routed through the same predicate.
+

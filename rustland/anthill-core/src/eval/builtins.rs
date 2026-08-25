@@ -6,9 +6,11 @@
 //! prelude by rules (e.g. `anthill.prelude.List.length`) are not registered
 //! here — those need the resolver bridge that arrives with M4.
 //!
-//! `anthill.prelude.Numeric.zero-val` is a nullary operation returning the
+//! `anthill.prelude.Additive.zero` is a nullary operation returning the
 //! additive identity. Dispatch needs a type hint that we don't have inside
-//! a zero-arg call, so it's left for the resolver / rule system.
+//! a zero-arg call, so it's left for the resolver / rule system. (It was
+//! `Numeric.zero-val` until WI-20260825-1WBZT split the syntax categories out;
+//! `Multiplicative.one` is the same shape and is unregistered for the same reason.)
 //!
 //! `anthill.prelude.Bool.ite(cond, t, e)` is deliberately **not** registered:
 //! registering it would eagerly evaluate both branches, silently breaking
@@ -38,10 +40,15 @@ use super::{EvalError, Interpreter, Value};
 /// current KB (stdlib partially loaded, e.g. a minimal test harness) are
 /// skipped — every other error is propagated.
 pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
-    register_if_present(interp, "anthill.prelude.Numeric.add", numeric_add)?;
-    register_if_present(interp, "anthill.prelude.Numeric.sub", numeric_sub)?;
-    register_if_present(interp, "anthill.prelude.Numeric.mul", numeric_mul)?;
-    register_if_present(interp, "anthill.prelude.Numeric.neg", numeric_neg)?;
+    // WI-20260825-1WBZT: the OPERATOR'S OWN CATEGORY declares each of these now
+    // (`stdlib/anthill/prelude/arithmetic.anthill`); `Numeric` reaches them by
+    // `provides`. `register_if_present` skips a name that does not resolve, so a stale
+    // address here would be a SILENT loss of the host implementation rather than an
+    // error — the address must follow the declaration.
+    register_if_present(interp, "anthill.prelude.Additive.add", numeric_add)?;
+    register_if_present(interp, "anthill.prelude.Additive.sub", numeric_sub)?;
+    register_if_present(interp, "anthill.prelude.Additive.neg", numeric_neg)?;
+    register_if_present(interp, "anthill.prelude.Multiplicative.mul", numeric_mul)?;
 
     register_if_present(interp, "anthill.prelude.Int64.neg", int_neg)?;
     register_if_present(interp, "anthill.prelude.Int64.abs", int_abs)?;

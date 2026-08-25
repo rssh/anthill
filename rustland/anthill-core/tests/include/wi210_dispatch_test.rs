@@ -356,40 +356,47 @@ fn dispatch_workitemstore_op(op_short: &str) -> (KnowledgeBase, anthill_core::in
 
 #[test]
 fn dispatch_unique_finds_int_impl_for_numeric_add() {
-    // `add` on Numeric is dispatch-eligible; with the rustland binding
-    // emitting `fact Numeric[T = Int64]`, find_unique_impl_op should
-    // resolve a Unique outcome whose impl sort is Int64.
+    // `add` on Additive is dispatch-eligible; with the rustland binding emitting
+    // `fact Numeric[T = Int64]`, find_unique_impl_op should resolve a Unique outcome
+    // whose impl sort is Int64.
+    //
+    // WI-20260825-1WBZT — `add` MOVED to `Additive` and the binding did NOT move with
+    // it, which is what makes this row drive that ticket's central claim: `Numeric
+    // provides Additive[T = T]` is a CONVERSION, so `Int64`'s single
+    // `provides Numeric[T = Int64]` reaches the category through the chain with no
+    // per-carrier row anywhere. Ask for `Additive` here and get `Int64` back.
     let mut kb = load_with("");
     let add_sym = kb
-        .try_resolve_symbol("anthill.prelude.Numeric.add")
-        .expect("Numeric.add registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Numeric.add is a spec op");
-    let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Int64");
+        .try_resolve_symbol("anthill.prelude.Additive.add")
+        .expect("Additive.add registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Additive.add is a spec op");
+    let subst = subst_with_t(&mut kb, "anthill.prelude.Additive", "anthill.prelude.Int64");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert!(
         matches!(outcome, DispatchOutcome::Unique(_)),
-        "expected Unique impl for Numeric add at T=Int64; got {outcome:?}"
+        "expected Unique impl for `Additive.add` at T=Int64 — reached through \
+         `Numeric provides Additive`, with no row on Int64 naming Additive; got {outcome:?}"
     );
 }
 
 #[test]
 fn dispatch_no_candidates_when_carrier_lacks_impl() {
-    // Numeric has impls for Int64 / Float / BigInt but not Bool. A
-    // per-call subst at T=Bool must yield NoCandidates: the existing
+    // Additive is reached (through `Numeric`) for Int64 / Float / BigInt but not Bool.
+    // A per-call subst at T=Bool must yield NoCandidates: the existing
     // Numeric[Int64]/Float/BigInt impls are independent specifications
     // about different sorts and must not gate Bool dispatch (same
     // rationale as `Eq[T=Type]` not gating `Eq[T=Int64]`).
     let mut kb = load_with("");
     let add_sym = kb
-        .try_resolve_symbol("anthill.prelude.Numeric.add")
-        .expect("Numeric.add registered");
-    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Numeric.add is a spec op");
-    let subst = subst_with_t(&mut kb, "anthill.prelude.Numeric", "anthill.prelude.Bool");
+        .try_resolve_symbol("anthill.prelude.Additive.add")
+        .expect("Additive.add registered");
+    let spec_sort = lookup_spec_op_dispatch(&kb, add_sym).expect("Additive.add is a spec op");
+    let subst = subst_with_t(&mut kb, "anthill.prelude.Additive", "anthill.prelude.Bool");
     let op_short = kb.intern("add");
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &[]);
     assert_eq!(outcome, DispatchOutcome::NoCandidates,
-        "expected NoCandidates for Numeric.add at T=Bool (no Bool/Numeric binding); got {outcome:?}");
+        "expected NoCandidates for `Additive.add` at T=Bool (no Bool/Numeric binding); got {outcome:?}");
 }
 
 #[test]
@@ -832,8 +839,8 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
     // resolves to Unique without bailing the typer.
     let mut kb = load_with("");
     let add_sym = kb
-        .try_resolve_symbol("anthill.prelude.Numeric.add")
-        .expect("Numeric.add registered");
+        .try_resolve_symbol("anthill.prelude.Additive.add")
+        .expect("Additive.add registered");
     let int_sym = kb
         .try_resolve_symbol("anthill.prelude.Int64")
         .expect("Int64 registered");

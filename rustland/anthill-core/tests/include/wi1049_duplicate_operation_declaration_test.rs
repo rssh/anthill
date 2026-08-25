@@ -169,7 +169,7 @@ fn arity_is_order_dependent_without_the_refusal() {
 
 /// CONTROL — passes either way BY DESIGN, and it is the one that says the
 /// bootstrap was not caught. The stdlib is where the pre-registration lives:
-/// `PartialEq.eq` / `WeakOrd.compare` / `Numeric.add` are each `symbols.define`d by
+/// `PartialEq.eq` / `WeakOrd.compare` / `Additive.add` are each `symbols.define`d by
 /// the prelude bootstrap AND declared by source in the same scope. A name-state
 /// check in `scan_definitions` pass 1 refuses all of them; a fact-count check
 /// sees exactly one `OperationInfo` apiece. Driven, not asserted from the load
@@ -193,6 +193,12 @@ fn prelude_and_full_stdlib_still_load_clean() {
     for qn in [
         "anthill.prelude.PartialEq.eq",
         "anthill.prelude.WeakOrd.compare",
+        // WI-20260825-1WBZT moved the arithmetic pre-registrations onto the syntax
+        // categories (`Additive` / `Multiplicative`), so these three are the population
+        // this row's own comment names — and the one a repoint could double-declare.
+        "anthill.prelude.Additive.add",
+        "anthill.prelude.Additive.sub",
+        "anthill.prelude.Multiplicative.mul",
     ] {
         let sym = kb
             .try_resolve_symbol(qn)

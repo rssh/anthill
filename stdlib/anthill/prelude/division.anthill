@@ -98,8 +98,8 @@ sort anthill.prelude.EuclideanDomain
   -- `mod`'s precondition, in the shape this library writes an integrity guard:
   -- INVARIANT `:-` OCCURRENCE, read as "wherever `mod(_, b)` appears, require `b > 0`".
   -- `int64.anthill`'s `mod_positive` is the same row over the concrete carrier, and the
-  -- two agree deliberately; written the other way round (`gte(mod(?a, ?b), zero-val) :-
-  -- gt(?b, zero-val)`) the guard is a CONDITION rather than an occurrence pattern, which
+  -- two agree deliberately; written the other way round (`gte(mod(?a, ?b), zero) :-
+  -- gt(?b, zero)`) the guard is a CONDITION rather than an occurrence pattern, which
   -- binds nothing and states nothing.
   --
   -- `mod`'s RANGE — `0 <= mod(a, b) < |b|` — is deliberately NOT written as a constraint.
@@ -107,5 +107,5 @@ sort anthill.prelude.EuclideanDomain
   -- pairs `div` with `rem` instead, above), and it needs an absolute value this tower
   -- does not declare; a constraint that cannot be driven is decoration, so it is stated
   -- here as prose until there is a `Norm`-like member to state it against.
-  constraint mod_nonneg: gt(?b, zero-val) :- mod(?_, ?b)
+  constraint mod_nonneg: gt(?b, zero) :- mod(?_, ?b)
 end

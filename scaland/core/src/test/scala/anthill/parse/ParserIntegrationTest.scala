@@ -273,23 +273,49 @@ class ParserIntegrationTest extends munit.FunSuite:
     // eight WI-988 measured whose fixture (not whose code) was the thing at fault.
     val kb = kbWithStdlib()
 
-    // Verify: sort and operations are registered with qualified names
+    // Verify: sort and operations are registered with qualified names.
+    //
+    // WI-20260825-1WBZT — `add` / `sub` / `mul` are DECLARED by the syntax category each
+    // operator mints (`stdlib/anthill/prelude/arithmetic.anthill`), not by the `Numeric`
+    // bundle, which declares nothing and reaches them by `provides`. The absence rows
+    // below are the half that matters: without them this test passes on a KB where
+    // `Numeric` declares its own five again beside the categories' — which is the
+    // duplication that ticket removed (`Numeric.add` and `algebra.Ring.add` were two
+    // different operations under one spelling).
     assert(kb.hasQualifiedName("anthill.prelude.Numeric"), "Numeric sort should be registered")
-    assert(kb.hasQualifiedName("anthill.prelude.Numeric.add"), "Numeric.add should be registered")
-    assert(kb.hasQualifiedName("anthill.prelude.Numeric.sub"), "Numeric.sub should be registered")
-    assert(kb.hasQualifiedName("anthill.prelude.Numeric.mul"), "Numeric.mul should be registered")
+    assert(kb.hasQualifiedName("anthill.prelude.Additive"), "Additive sort should be registered")
+    assert(
+      kb.hasQualifiedName("anthill.prelude.Multiplicative"),
+      "Multiplicative sort should be registered"
+    )
+    assert(kb.hasQualifiedName("anthill.prelude.Additive.add"), "Additive.add should be registered")
+    assert(kb.hasQualifiedName("anthill.prelude.Additive.sub"), "Additive.sub should be registered")
+    assert(
+      kb.hasQualifiedName("anthill.prelude.Multiplicative.mul"),
+      "Multiplicative.mul should be registered"
+    )
+    for gone <- IndexedSeq(
+        "anthill.prelude.Numeric.add",
+        "anthill.prelude.Numeric.sub",
+        "anthill.prelude.Numeric.mul"
+      )
+    do
+      assert(
+        !kb.hasQualifiedName(gone),
+        s"$gone must NOT be a second declaration — one spec declares each short name"
+      )
 
-    // Step 4: Load "fact 2 + 2" into KB — "add" should resolve to Numeric.add
+    // Step 4: Load "fact 2 + 2" into KB — "add" should resolve to Additive.add
     val exprErrors = Loader.loadAll(kb, IndexedSeq(pf))
     assert(exprErrors.isEmpty, s"Load errors for expr: $exprErrors")
 
-    // Verify: the loaded fact's functor resolved to anthill.prelude.Numeric.add
-    val addSym = kb.tryResolveSymbol("anthill.prelude.Numeric.add")
-    assert(addSym.isDefined, "anthill.prelude.Numeric.add should exist in KB")
+    // Verify: the loaded fact's functor resolved to anthill.prelude.Additive.add
+    val addSym = kb.tryResolveSymbol("anthill.prelude.Additive.add")
+    assert(addSym.isDefined, "anthill.prelude.Additive.add should exist in KB")
     val addDef = kb.symbols.get(addSym.get)
     addDef match
       case SymbolDef.Resolved(_, qualName, _, _) =>
-        assertEquals(qualName, "anthill.prelude.Numeric.add")
+        assertEquals(qualName, "anthill.prelude.Additive.add")
       case other =>
         fail(s"Expected resolved symbol, got $other")
   }
@@ -754,19 +780,34 @@ class ParserIntegrationTest extends munit.FunSuite:
     val sorts = ns.items.collect { case Item.SortWithBodyItem(s) => s }
     assertEquals(sorts.map(s => pf.symbols.name(s.name.last)).toSet, Set("Ring", "VectorSpace"))
 
-    // Ring: 1 abstract sort (T), 5 operations (in one block), 7 algebraic-law rules.
+    // Ring: 1 abstract sort (T), ZERO operations, 2 `provides` clauses, 2 laws.
+    //
+    // WI-20260825-1WBZT — IT DECLARED FIVE OPERATIONS AND SEVEN LAWS, and both numbers
+    // went down for one reason: every operator now names a SYNTAX CATEGORY that owns the
+    // operation it mints (`stdlib/anthill/prelude/arithmetic.anthill`), and `Ring`
+    // reaches `add`/`sub`/`neg`/`zero` and `mul`/`one` by `provides` instead of by a
+    // SECOND declaration of names `anthill.prelude.Numeric` also carried. Five laws went
+    // with the operations that state them (`add_comm`/`add_assoc`/`add_identity` to
+    // `Additive`, `mul_assoc`/`mul_identity` to `Multiplicative`); `mul_comm` and
+    // `distrib` stay, because `distrib` reads BOTH operations and `mul_comm` is a claim
+    // about multiplication that only a COMMUTATIVE ring makes.
     val ring = sorts.find(s => pf.symbols.name(s.name.last) == "Ring").get
     assertEquals(countItems(ring.items) { case Item.AbstractSortItem(_) => }, 1)
     val ringOps = sumItems(ring.items) {
       case Item.OperationBlockItem(b) => b.entries.length
       case Item.OperationItem(_)      => 1
     }
-    assertEquals(ringOps, 5, "Ring should expose 5 operations (add/sub/mul/zero/one)")
+    assertEquals(ringOps, 0, "Ring declares NO operation: it provides the categories that do")
+    assertEquals(
+      countItems(ring.items) { case Item.ProvidesClauseItem(_) => },
+      2,
+      "…by two `provides` clauses — `Additive` and `Multiplicative`"
+    )
     val ringRules = sumItems(ring.items) {
       case Item.RuleBlockItem(b) => b.entries.length
       case Item.RuleItem(_)      => 1
     }
-    assertEquals(ringRules, 7, "Ring should declare 7 algebraic-law rules")
+    assertEquals(ringRules, 2, "Ring keeps only `mul_comm` and `distrib`")
 
     // VectorSpace: 2 abstract sorts (V, F), 1 requires (Ring[F]), 4 ops, 8 laws
     // (WI-935 added `vec_sub_def`).
@@ -780,15 +821,36 @@ class ParserIntegrationTest extends munit.FunSuite:
     // abstract counterpart — when it retired the per-component copies.
     assertEquals(vsRules, 8, "VectorSpace should declare 8 algebraic-law rules")
 
-    // Loads cleanly into a KB primed with Prelude (algebra is self-contained
-    // except for `?` placeholders for abstract T/V/F).
+    // Loads cleanly into a KB primed with Prelude — TOGETHER WITH arithmetic.anthill,
+    // which WI-20260825-1WBZT made it depend on. It used to be self-contained "except for
+    // `?` placeholders for abstract T/V/F"; now `Ring provides Additive` /
+    // `provides Multiplicative` and `VectorSpace`'s scalar-side laws name
+    // `Additive.{add,sub,zero}` / `Multiplicative.{mul,one}`, so the categories have to be
+    // in the KB. `EmbeddedStdlib` already loads `arithmetic` ahead of `numeric` and
+    // `algebra` for the same reason.
+    //
+    // THE IMPORT IS WHAT FAILS LOUDLY, and it is worth knowing which half does: with
+    // `arithmetic` left out, `VectorSpace`'s `import anthill.prelude.{Additive,
+    // Multiplicative}` reports "unresolved name 'Additive' in scope 'anthill.prelude'"
+    // — while `Ring`'s `provides Additive[T = T]` says nothing at all, because an
+    // unresolved provision target degrades to an interned name. That asymmetry is why the
+    // import is written out rather than left to the `provides` chain.
+    val arithmeticPf = parseStdlibFile("anthill.prelude.arithmetic")
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val errs = Loader.loadAll(kb, IndexedSeq(pf))
+    val errs = Loader.loadAll(kb, IndexedSeq(arithmeticPf, pf))
     assert(errs.isEmpty, s"load errors: $errs")
+    assert(kb.hasQualifiedName("anthill.prelude.Additive.add"))
+    assert(kb.hasQualifiedName("anthill.prelude.Multiplicative.mul"))
     assert(kb.hasQualifiedName("anthill.prelude.algebra.Ring"))
     assert(kb.hasQualifiedName("anthill.prelude.algebra.VectorSpace"))
-    assert(kb.hasQualifiedName("anthill.prelude.algebra.Ring.add"))
+    // WI-20260825-1WBZT: `Ring.add` is NOT a name any more — `add` is declared once, by
+    // `anthill.prelude.Additive`, and `Ring` reaches it through `provides`. The absence
+    // is the assertion: a second declaration under the same short name is exactly what
+    // the syntax-category rule removes, and `algebra.anthill` would otherwise be free to
+    // reintroduce one silently.
+    assert(!kb.hasQualifiedName("anthill.prelude.algebra.Ring.add"),
+      "`Ring` must declare no `add`: one spec declares each short name")
     assert(kb.hasQualifiedName("anthill.prelude.algebra.VectorSpace.vec_add"))
   }
 

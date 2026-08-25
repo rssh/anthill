@@ -1,0 +1,161 @@
+-- Arithmetic: the SYNTAX CATEGORIES for `+` `-` and `*`.
+--
+-- THE RULE THIS FILE IS AN INSTANCE OF (WI-20260825-1WBZT): every operator gets a
+-- CATEGORY — a spec owning exactly the operation that operator mints — and a carrier
+-- claims the categories whose operations it can honestly back, and nothing more.
+-- `Divisible` (division.anthill) is the shipped prototype; the whole table is:
+--
+--   `=` `!=`   PartialEq        eq, neq             eq.anthill
+--   `<` `<=` … PartialOrd       lt, lte, gt, gte    ordered.anthill
+--   `+` `-`    Additive         add, sub, neg, zero HERE
+--   `*`        Multiplicative   mul, one            HERE
+--   `/`        Divisible        div                 division.anthill
+--   `%`        EuclideanDomain  mod, rem            division.anthill
+--   `^`        —                pow                 NONE, deliberately (spec §6.6)
+--
+-- WHY A CATEGORY AND NOT A BUNDLE, measured. Before this ticket `+` minted a bare `add`
+-- whose tier target was `Numeric.add`, and `Numeric` declares `add`, `sub`, `mul`, `neg`,
+-- `zero-val` and `requires PartialOrd[T]` (four comparisons) — NINE operations for one
+-- operator. A `Money(cents: Int64)` carrier means five of them and does NOT mean `mul`:
+-- cents times cents is cents-squared, which is not money. Driven on the built tree, the
+-- author's two options were both bad: implement a `mul` that is a lie, or omit it — which
+-- LOADS AND RUNS CLEAN (`Money(700) + Money(25)` answers 725 with no `mul` anywhere) and
+-- then dies at run time on `Money * Money` with "expected matching Int, BigInt, or Float,
+-- got Entity", because the call falls through to the host builtin on the spec op. Nothing
+-- at load time said which had been chosen. A category is the third option: `fact
+-- Additive[T = Money]` claims exactly what is true.
+--
+-- THE SECOND THING IT BUYS is that ONE spec declares each short name. `Numeric.add` and
+-- `algebra.Ring.add` used to be two DIFFERENT operations under one spelling — a bare
+-- `add` seeing both is "member of sorts Numeric, Ring, not in scope as a bare name here",
+-- resolved only because the implicit tier deterministically answered `Numeric.add`. The
+-- same duplication had the additive identity under TWO NAMES (`Numeric.zero-val` and
+-- `Ring.zero`), which does not even collide, so nothing complained; a carrier providing
+-- both specs would get two `sort_ops` entries for one concept. Both specs now reach these
+-- declarations by `provides`, so there is one `add` and one `zero`.
+--
+-- `zero`, NOT `zero-val`, and the argument for keeping the old spelling was refuted by a
+-- census: "it is what the four current carriers implement" is false — NO carrier
+-- implements it (`Int64`, `BigInt`, `Float` and the cpp `Int64` declare no additive
+-- identity at all, in either spelling). So the rename touches no carrier, and `zero`
+-- pairs with the `one` that comes across from `Ring`. Its one cost is recorded rather
+-- than hidden: `zero-val` was the ONLY hyphenated identifier in the whole stdlib, so
+-- scaland's WI-1054 corpus row loses its subject — see `BootstrapTest`, where the
+-- synthetic five-position row keeps driving the normalisation.
+--
+-- `provides`, NOT `requires`, IS THE DIRECTION, and both wrong answers were measured on
+-- `Eq`/`PartialEq` (WI-1109/WI-1110): `requires` + `provides` fails 1867 of 2849 tests
+-- with "construction is cyclic", `provides` alone under the wrong filing fails 32 with
+-- "unresolved import". Filed as a CONVERSION in the chain it is correct and brings the
+-- SCOPE with it, which is why `algebra.VectorSpace` — which `requires Ring[F]` — still
+-- writes `Ring.sub(Ring.zero, Ring.one)` in its laws and loads. What it buys over
+-- `requires`: a carrier writes ONE row (`fact Numeric[T = C]`) instead of one per
+-- category and cannot state them inconsistently.
+--
+-- TWO THINGS THE CHAIN DOES NOT CARRY, both measured and both pre-existing rather than
+-- introduced here, recorded so neither is rediscovered as a regression of this ticket:
+--   * A QUALIFIED CALL from a scope that merely IMPORTS the bundle — `Numeric.add(a, b)`
+--     in an operation body — is "unknown functor". `Eq.eq(a, b)` and `Field.div(a, b)`
+--     have answered the same since their own declarations moved (WI-1110,
+--     WI-20260824-VT8CF); this ticket adds four addresses to that population.
+--     WI-20260825-X9RRN. The MEMBER-IMPORT spelling
+--     (`import anthill.prelude.Numeric.{add}`) does resolve, and every corpus site
+--     written that way was untouched by this change.
+--   * A `provides` ACROSS NAMESPACES leaks the provided sort's enclosing chain to every
+--     consumer that `requires` the providing spec, so the providing spec's own NAME goes
+--     ambiguous against a same-named global. `algebra.Ring` providing `anthill.prelude.
+--     Additive` is the tree's only such edge; `VectorSpace` carries a one-line
+--     sibling-import workaround with the measurement at it. WI-20260825-N2865.
+
+-- Additive: the `+` and `-` category — an additive commutative monoid with inverses.
+--
+-- UNLIKE `Divisible`, THIS IS NOT LAW-FREE. `Divisible` exists only so that one short
+-- name has one qualified target; there is no structure every `/` shares. Addition is
+-- different: `Numeric` already carried `add_comm` / `add_assoc` / `add_identity`, and
+-- those are exactly additive-commutative-monoid laws, so they belong on the floor that
+-- DECLARES `add` rather than on a bundle above it.
+--
+-- NAMED `Additive` AND NOT `AbelianGroup` (which is what it IS, `neg` included), on
+-- `Divisible`'s precedent: an operator-carrier name, legible without an algebra course.
+-- The prelude has no algebraic tower to borrow from — `Semigroup`, `Monoid`, `Group`,
+-- `AbelianGroup`, `CommutativeRing`, `IntegralDomain` and `GCDDomain` are zero hits
+-- across the tree — so a standard name here would be the first rung of a tower nothing
+-- else has. `EuclideanDomain` next door is the counter-example that shows the rule:
+-- a standard name where the LAW is the standard one and the carriers are its carriers.
+sort anthill.prelude.Additive
+
+  sort T = ?
+
+  -- NO `requires`. Addition needs no order and no equality to be addition, and that is
+  -- the point of the split: `requires PartialOrd[T]` stays on `Numeric`, where WI-644
+  -- put it for "the comparison surface consumers rely on" — a consumer's requirement,
+  -- not this operation's.
+  --
+  -- FOUR OPERATIONS ARE THE CLAIM; THE LOADER DEMANDS TWO OF THEM. Measured by omitting
+  -- each in turn from a `Money` carrier asserting `fact Additive[T = Money]`:
+  --
+  --   omit `neg`   -> LOAD ERROR "backs no operation 'anthill.prelude.Additive.neg'"
+  --   omit `zero`  -> LOAD ERROR "backs no operation 'anthill.prelude.Additive.zero'"
+  --   omit `add`   -> loads clean
+  --   omit `sub`   -> loads clean
+  --
+  -- The split of that table is NOT this file's doing and is not a property of the
+  -- operations: `add` and `sub` carry RESOLVER BUILTINS (`BuiltinTag::Add` / `Sub`), and
+  -- the backing check reads a builtin as backing, so it demands nothing and the gap
+  -- surfaces at eval instead. That is WI-876's finding on `gt`/`lt`/`gte`/`lte`, still
+  -- live for arithmetic because WI-880 has not yet moved the arithmetic families into
+  -- each carrier's `operation_map` the way `operation_map { compare: … }` already holds
+  -- the order. It is why `Money * Money` over an `Additive`-only carrier still LOADS and
+  -- dies at run time ("type mismatch: expected matching Int, BigInt, or Float, got
+  -- Entity") — the categories remove the need to LIE, and the mask that hides an omission
+  -- is a separate defect one layer down.
+  --
+  -- `sub` THEREFORE HAS NO DEFAULT BODY, though `sub_def` below says it is derivable and
+  -- WI-876's shape is right there. Driven with the body written: the eval builtin
+  -- registered on this very spec op SHADOWS it, so a three-operation carrier loads clean
+  -- and `Money(700) - Money(25)` dies at run time with that same message — trading a LOUD
+  -- load error for a SILENT hole, which is the trade this ticket exists to undo. The body
+  -- belongs here the day the registration moves per carrier.
+  operation {
+    add(a: T, b: T) -> T           -- +
+    sub(a: T, b: T) -> T           -- - (binary)
+    neg(a: T) -> T                 -- - (prefix)
+    zero() -> T                    -- additive identity
+  }
+
+  -- Untagged, so INERT as rewrites (WI-881/884): what they are FOR is being the
+  -- specification the carriers' implementations are proved against.
+  rule {
+    add_comm:  add(?a, ?b) <=> add(?b, ?a)
+    add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))
+    add_identity: add(?a, zero) <=> ?a
+    -- The two ways `sub` and `neg` relate — both true in an abelian group, and NEITHER
+    -- executable: a rule is not backing (WI-818), and these are untagged besides. They
+    -- are the specification a carrier's own `sub` and `neg` are proved against, and
+    -- `sub_def` is the derivation the note above says cannot yet be a body.
+    sub_def:   sub(?a, ?b) <=> add(?a, neg(?b))
+    neg_def:   neg(?a) <=> sub(zero, ?a)
+  }
+end
+
+-- Multiplicative: the `*` category — a multiplicative monoid.
+--
+-- `mul_comm` IS NOT HERE, and the asymmetry with `Additive`'s `add_comm` is deliberate
+-- rather than an oversight. Commutativity of addition is shared by everything that adds;
+-- commutativity of MULTIPLICATION is not (matrices, quaternions, function composition),
+-- so it is a claim a specific structure makes. `algebra.Ring` — which calls itself a
+-- COMMUTATIVE ring — is where it stays.
+sort anthill.prelude.Multiplicative
+
+  sort T = ?
+
+  operation {
+    mul(a: T, b: T) -> T           -- *
+    one() -> T                     -- multiplicative identity
+  }
+
+  rule {
+    mul_assoc: mul(mul(?a, ?b), ?c) <=> mul(?a, mul(?b, ?c))
+    mul_identity: mul(?a, one) <=> ?a
+  }
+end

@@ -303,31 +303,39 @@ sort anthill.prelude.WeakOrd
   }
 end
 
--- Numeric: basic arithmetic (requires PartialOrd — IEEE Float is Numeric but only
--- partially ordered, so the requirement is the partial comparison surface)
-sort anthill.prelude.Numeric
+-- Additive: the `+` / `-` SYNTAX CATEGORY — the operations those operators mint, and
+-- nothing else. A carrier claims it when it genuinely adds (money, durations, offsets,
+-- vectors) without owing a multiplication it does not have.
+sort anthill.prelude.Additive
   sort T = ?
-  requires PartialOrd[T]
 
   operation {
     add(a: T, b: T) -> T           -- +
-    sub(a: T, b: T) -> T           -- -
-    mul(a: T, b: T) -> T           -- *
-    div(a: T, b: T) -> T           -- /
-    mod(a: T, b: T) -> T           -- %
-    pow(a: T, b: T) -> T           -- ^
-    zero-val() -> T                -- additive identity
+    sub(a: T, b: T) -> T           -- - (binary)
+    neg(a: T) -> T                 -- - (prefix)
+    zero() -> T                    -- additive identity
   }
 
   rule {
     add_comm:  add(?a, ?b) <=> add(?b, ?a)                     -- laws are equational heads: `<=>`
     add_assoc: add(add(?a, ?b), ?c) <=> add(?a, add(?b, ?c))   -- symmetric; citable both ways via `using`
-    add_identity: add(?a, zero-val) <=> ?a
+    add_identity: add(?a, zero) <=> ?a
   }
+end
+
+-- Numeric: the arithmetic BUNDLE — every category at once, plus the comparison surface.
+-- It declares NO operation: it reaches them by `provides`, so one `fact Numeric[T = C]`
+-- gives a primitive arithmetic carrier `+ - *` and the comparisons in one row.
+sort anthill.prelude.Numeric
+  sort T = ?
+  requires PartialOrd[T]          -- IEEE Float is Numeric but only PARTIALLY ordered
+
+  provides Additive[T = T]
+  provides Multiplicative[T = T]
 end
 ```
 
-**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Numeric[T = Money]`). One target is **position-directed**: `not(…)` is negation-as-failure (`anthill.kernel.not`, a resolver primitive over a `Term`) in a rule-body goal position, but boolean negation (`Bool.not`, a dispatched operation) as a value expression — see §6.6.
+**Infix and prefix operators** are sugar for function application — `a + b` desugars to `add(a, b)`, `!a` to `not(a)`, etc. The full operator table is in §6.6. The prelude sorts above define the operations these operators desugar to; the operators are available when the corresponding sort is required (e.g. `requires Additive[T = Money]` for `+`, or `requires Numeric[T = Money]` for the whole arithmetic bundle). One target is **position-directed**: `not(…)` is negation-as-failure (`anthill.kernel.not`, a resolver primitive over a `Term`) in a rule-body goal position, but boolean negation (`Bool.not`, a dispatched operation) as a value expression — see §6.6.
 
 **Instantiation** — via inline type expressions (`Name[bindings]`):
 
@@ -990,7 +998,7 @@ deliberate: a top-level `sort S` is still visible KB-wide, because a definition 
 a name to the *program*, while an import only chooses what one file's *text* may call
 it. It follows that an import is **not a re-export** — `import a.b.{n}` requires `b`
 to *declare* `n`, not merely to have imported it — so name the declaring scope
-(`import anthill.prelude.Numeric.{sub}`, not `…Int64.{sub}`, which has `sub` only
+(`import anthill.prelude.Additive.{sub}`, not `…Int64.{sub}`, which has `sub` only
 because `int64.anthill` imported it there).
 
 **A resolution with no file** — a query pattern, or a host-supplied name — reads only
@@ -1305,11 +1313,24 @@ the declaration cannot be reinterpreted as an implementation, only rejected. It 
 name shadows whatever it denoted regardless of how many parameters either side takes.
 And the refusal **prescribes no step-by-step repair**, which is deliberate: two earlier
 wordings each prescribed one that does not load — `provides` has no body to put an
-operation in, and "declare it as a member alongside a `provides`" succeeds for only five
-of the ten names the tier reaches. Driven over all ten: `eq` / `gt` / `lt` / `gte` /
-`lte` load, while `add` / `sub` / `mul` / `neg` are refused because `Numeric` further
-*requires* `PartialOrd`, and `neq` is refused by a separate check as "not an override
-point". The carrier an operation belongs to is the author's to name.
+operation in, and "declare it as a member alongside a `provides`" succeeds for only half
+the names the tier reaches. Re-driven over all twelve after WI-20260825-1WBZT split the
+syntax categories out (six load, six refused, and *each* refusal for its own reason):
+
+| loads | refused | why |
+|-------|---------|-----|
+| `eq` `gt` `lt` `gte` `lte` `div` | | the spec's other members are backed or defaulted |
+| | `add` `sub` `neg` | `Additive` also declares the two the carrier did not write (`neg` or `zero`) |
+| | `mul` | `Multiplicative` also declares `one` |
+| | `mod` | `EuclideanDomain` *requires* `Numeric`, which the carrier does not provide |
+| | `neq` | a separate check — "not an override point" (§8.3) |
+
+The category split **changed the reason without changing the count**: `add`/`sub`/`mul`/
+`neg` used to be refused because `Numeric` further *required* `PartialOrd`, i.e. for a
+comparison surface nothing to do with addition. They are now refused for their own
+category's remaining operations, which is a far shorter list — but a list all the same,
+so the prescription would still be wrong. The carrier an operation belongs to is the
+author's to name.
 
 **The question is what the name denotes, not which table it is in.** The declared name
 runs the ordinary ladder at its own address (§8.6) — enclosing scopes and imports first,
@@ -1323,7 +1344,7 @@ each of which a membership test would get wrong:
 - **Anything the ladder answers stands the rule down**, because the tier is its last
   rung and never runs. With `import mylib.Fixed.{add}` in scope — `Fixed` a
   *non-parametric* sort, so its `add` is not a spec operation — a bare `add` never
-  denoted `Numeric.add`, so declaring one does not rival the tier. It *captures*
+  denoted `Additive.add`, so declaring one does not rival the tier. It *captures*
   `mylib.Fixed.add`, which is the rule below's question rather than this one's. (The
   import has to name a **member**: a free-standing `operation add` in `mylib` would be
   refused by this very rule.) The same holds for every other rung, and two are easy to
@@ -2045,7 +2066,7 @@ comma list are ordinary spec requirements or value preconditions.
 checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
 
 - A **value precondition** names a boolean condition over the parameters —
-  `requires neq(b, zero-val)`. It is *proved*, at the call site, from what the caller
+  `requires neq(b, zero)`. It is *proved*, at the call site, from what the caller
   knows: in an operation body any unproved precondition is a load error, and in a rule
   body only a ground **refutation** is one — an under-determined condition legitimately
   floats rather than raising, since a rule-body goal's arguments are variables and a
@@ -2189,7 +2210,7 @@ The bracket is read in exactly **two** positions: on a call **in an operation bo
 
 ```
 operation deposit(a: Account, m: Money) -> Account
-  requires gt(m, zero-val)
+  requires gt(m, zero)
   ensures eq(balance(result), add(balance(a), m))
   effects Modify[Ledger]
 
@@ -3033,12 +3054,12 @@ operation {
   add(a: T, b: T) -> T
   sub(a: T, b: T) -> T
   div(a: T, b: T) -> T
-    requires neq(b, zero-val)
+    requires neq(b, zero)
 }
 →  operation add(a: T, b: T) -> T
    operation sub(a: T, b: T) -> T
    operation div(a: T, b: T) -> T
-     requires neq(b, zero-val)
+     requires neq(b, zero)
 
 rule {
   add_comm:  add(?a, ?b) <=> add(?b, ?a)
@@ -3058,7 +3079,7 @@ operation {
 }
 
 operation div(a: T, b: T) -> T
-  requires neq(b, zero-val)
+  requires neq(b, zero)
   ensures eq(mul(result, b), a)
 ```
 
@@ -3092,9 +3113,9 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `<=` | 4 | None | `lte` | `PartialOrd` |
 | `>` | 4 | None | `gt` | `PartialOrd` |
 | `>=` | 4 | None | `gte` | `PartialOrd` |
-| `+` | 5 | Left | `add` | `Numeric` |
-| `-` | 5 | Left | `sub` | `Numeric` |
-| `*` | 6 | Left | `mul` | `Numeric` |
+| `+` | 5 | Left | `add` | `Additive` |
+| `-` | 5 | Left | `sub` | `Additive` |
+| `*` | 6 | Left | `mul` | `Multiplicative` |
 | `/` | 6 | Left | `div` | `Divisible` |
 | `%` | 6 | Left | `mod` | `EuclideanDomain` |
 | `mod` | 6 | Left | `mod` | `EuclideanDomain` (word form) |
@@ -3102,6 +3123,43 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `^` | 7 | Right | `pow` | `Float` (**not** a spec — see below) |
 | `->` | 8 | Right | `arrow` | type arrows |
 | `.` | 10 | Left | `field_access` | `anthill.reflect` |
+
+**Every operator names a SYNTAX CATEGORY — a spec owning exactly the operation that
+operator mints** (WI-20260825-1WBZT). Reading down the Origin column: `PartialEq` owns
+`eq`/`neq`, `PartialOrd` the four comparisons, `Additive` `add`/`sub`/`neg`/`zero`,
+`Multiplicative` `mul`/`one`, `Divisible` `div`, `EuclideanDomain` `mod`/`rem`. A carrier
+claims the categories whose operations it can honestly back, and nothing more; a bundle
+that wants several — `Numeric`, `algebra.Ring` — reaches them by `provides`, never by a
+second declaration of the same short name.
+
+A category holds its operator's operation **and the companions that operation cannot be
+stated without** — the identity it needs (`Additive.zero`, `Multiplicative.one`), the
+sibling its laws pair it with (`EuclideanDomain.rem`, and `Additive`'s `neg`, which no
+operator mints since prefix `-` would collide with negative-literal lexing). What it does
+*not* hold is an operation belonging to a different operator: that is the bundling this
+rule exists to undo.
+
+The rule is what makes `+` claimable alone. Before it, `+` minted a bare `add` whose tier
+target was `Numeric.add`, and `Numeric` declared five operations and required four more —
+so a `Money(cents: Int64)` carrier had to claim a `mul` that is meaningless for it (cents
+times cents is cents-squared). Driven at the time, both available answers were bad:
+implement the lie, or omit it, which loads clean and dies at run time with "expected
+matching Int, BigInt, or Float, got Entity". `fact Additive[T = Money]` is the third
+answer, and a `Money` declaring `add`/`sub`/`neg`/`zero` alone now answers
+`Money(700) + Money(25)` through a minted `+`.
+
+**One declaration per short name is the load-bearing half**, and it is a *resolution*
+constraint rather than a taste: the implicit tier (§8.6) maps one short name to exactly one
+qualified name, and a carrier providing two specs that both declare `add` gets two
+`sort_ops` entries whose winner is HashMap-iteration order. `Numeric.add` and
+`algebra.Ring.add` *were* two such operations under one spelling until this rule; the
+additive identity was worse, carried under two NAMES (`Numeric.zero-val`, `Ring.zero`),
+which do not collide and so were never diagnosed. Nothing enforces the discipline yet —
+a spec redeclaring a provided base's operation still loads clean, and with two such specs
+over one carrier the answer follows source order (WI-20260825-EBMG8).
+
+**`^` has no category, and the rule is the reason to restate that rather than change it**:
+"a category per operator that HAS one", not "invent a spec so the table is uniform".
 
 **The division rows are a tower, and `^` is not in it** (WI-20260824-VT8CF). `/` resolves
 to `Divisible.div` — a spec whose *only* content is that operation, with no law and no
@@ -3140,7 +3198,7 @@ Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?
 
 **Boolean operators are position-directed** (WI-529). `not`, `or`, and `and` each name a dispatched **value** operation on `Bool` (`Bool.not` / `Bool.or` / `Bool.and`) inside an **operation body** (evaluated), but a **goal** form in a **rule body** (resolved): `not(goal)` is negation-as-failure (`anthill.kernel.not`), `or(g1, g2)` is disjunction (`anthill.kernel.or`), and `and(g1, g2)` is conjunction (`anthill.kernel.and`, over the `push_and` primitive). Resolution is by syntactic position, not by a distinct glyph or operand type — in BOTH directions (WI-1046). For `not` the pair are two SYMBOLS and not two readings of one, because they are two different functions: `Bool.not` takes a Bool **value** and returns one, while `kernel.not` takes a reified **goal** and is three-valued (succeed / fail / DELAY on an unbound variable), and a failed goal is not the value `false`. `sort Bool`'s own laws measure the gap — `not(true) <=> false`, `not(not(?a)) <=> ?a` and de Morgan are each false of negation-as-failure — which is also why proposal 052's uniform `eq(op(args), true)` routing for a bare Bool goal is not available for it (052 §Open questions 7). An operation body redirects the primitives to the `Bool` ops; a rule body redirects the `Bool` ops to the primitives, at every GOAL position (the body's atoms, and the goal slots of the connectives above them — a goal's ARGUMENT is a value expression and keeps the `Bool` reading). Position-directedness cannot rest on the implicit-prelude fallback alone, which sits below scope resolution: before WI-1046 an ordinary `import anthill.prelude.Bool` captured `not` and `|` in that namespace's rule bodies, and every negated or disjunctive rule silently stopped answering — a wrong answer for `not`, whose whole job is to succeed where its goal fails.
 
-`a & b` in a goal position **is** goal conjunction, and the comma stays its other spelling: `a, b` and `a & b` are the same conjunction, refuse the same dead conjunct, and answer the same. Watch the precedence, since `&` binds looser than `=` and `?r = ?a & ?b` is `and(eq(?r, ?a), ?b)`. Until WI-20260822-J38JE this was **refused at load** on the ground that "there is no `kernel.and`" — which was a missing primitive, not a rule about the language: `not` and `or` each had one to be redirected to and `and` did not. Adding `push_and` (§ the kernel primitives) made the three symmetric and retired the refusal; a statement elsewhere that `kernel.and` does not exist predates it. The conjunction reading also **subsumes** the boolean-value one wherever both apply: a `Bool` expression in goal position is a condition (§5.3), so "`?a` succeeds" is "`?a` is true", and `true & false` fails as a conjunction exactly as it is false as a value — with the unground case resolved as a goal rather than required to evaluate. Unlike `not`, `and` needs no separate account of the two functions: goal conjunction and value conjunction agree wherever both are defined, so one symbol chosen by position is enough. Negation of a numeric value is written `neg(x)` → `Numeric.neg` (a defaulted spec op, `neg(?a) <=> sub(zero-val, ?a)`); negative literals (`-1`, `-0.45`) are lexed directly. A prefix `-` *operator* on non-literal expressions is not provided (it would collide with negative-literal lexing — WI-529).
+`a & b` in a goal position **is** goal conjunction, and the comma stays its other spelling: `a, b` and `a & b` are the same conjunction, refuse the same dead conjunct, and answer the same. Watch the precedence, since `&` binds looser than `=` and `?r = ?a & ?b` is `and(eq(?r, ?a), ?b)`. Until WI-20260822-J38JE this was **refused at load** on the ground that "there is no `kernel.and`" — which was a missing primitive, not a rule about the language: `not` and `or` each had one to be redirected to and `and` did not. Adding `push_and` (§ the kernel primitives) made the three symmetric and retired the refusal; a statement elsewhere that `kernel.and` does not exist predates it. The conjunction reading also **subsumes** the boolean-value one wherever both apply: a `Bool` expression in goal position is a condition (§5.3), so "`?a` succeeds" is "`?a` is true", and `true & false` fails as a conjunction exactly as it is false as a value — with the unground case resolved as a goal rather than required to evaluate. Unlike `not`, `and` needs no separate account of the two functions: goal conjunction and value conjunction agree wherever both are defined, so one symbol chosen by position is enough. Negation of a numeric value is written `neg(x)` → `Additive.neg` (`neg(?a) <=> sub(zero, ?a)` is its law, inert); negative literals (`-1`, `-0.45`) are lexed directly. A prefix `-` *operator* on non-literal expressions is not provided (it would collide with negative-literal lexing — WI-529).
 
 **Desugaring examples:**
 
@@ -3153,7 +3211,7 @@ Prefix binds tighter than all infix operators: `!?a + ?b` desugars to `add(not(?
 ?a ^ ?b ^ ?c        →  pow(?a, pow(?b, ?c))
 ```
 
-**Extensibility.** The operator dictionary is currently hardcoded. A future phase will allow sorts to declare operators via meta annotations (e.g. `[infix: "+"]` on `Numeric.add`), extending the dictionary at load time.
+**Extensibility.** The operator dictionary is currently hardcoded. A future phase will allow sorts to declare operators via meta annotations (e.g. `[infix: "+"]` on `Additive.add`), extending the dictionary at load time.
 
 ### 6.7 Field Access (Dot Projection)
 
@@ -3877,6 +3935,19 @@ reflection result sorts. It sits at the **bottom** of the ladder, which is what 
 user name shadow one without conflict: a local declaration or an explicit import is
 found first, so a user's own `add` wins and can never go *ambiguous* against it.
 
+**A member reached through a `provides` chain answers to an IMPORT and not to a QUALIFIED
+CALL**, and the asymmetry is a live gap rather than a rule (WI-20260825-X9RRN). A spec's
+`provides` is a conversion that brings the provided sort's scope with it, so
+`import anthill.prelude.Numeric.{add}` resolves to the inherited `Additive.add` — which is
+what proposal 004 wanted for source compatibility, and what keeps every such import in the
+corpus working. Writing the address out does **not**: `Numeric.add(a, b)` in an operation
+body is *"expected known operation or arrow-typed variable, got unknown functor"*, and in
+a rule-body goal *"names nothing"*. `Eq.eq(a, b)` and `Field.div(a, b)` have answered the
+same since their declarations moved (WI-1109/WI-1110, WI-20260824-VT8CF). The repair is to
+name the **declaring** spec — `Additive.add`, `PartialEq.eq`, `Divisible.div` — and a
+`requires` clause is the one thing that does make the members reachable bare, which is why
+`algebra.VectorSpace` can write them at all.
+
 **Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
 `if`, `let`, `\`, member access and the `[…]` / `{…}` / `(…)` literals are *desugared*:
 the converter builds a term whose functor is the reflect declaration's **absolute path**
@@ -4373,6 +4444,10 @@ A complete algebra with type parameters, operations, contracts, and laws. Becaus
 sort banking
   sort Money = ?                                     -- type parameter (unspecified)
   requires Numeric[T = Money]                        -- gives us +, -, >, >=, = for Money
+                                                     -- (this algebra compares as well as
+                                                     -- adds, so it wants the BUNDLE; a
+                                                     -- consumer that only added would ask
+                                                     -- for `Additive[T = Money]` — §6.6)
 
   entity Account(                                    -- sugar: sort Account { entity Account(...) }
     id      : AccountId,
@@ -4380,11 +4455,11 @@ sort banking
   )
 
   operation deposit(a: Account, m: Money) -> Account
-    requires gt(m, zero-val)                          -- m > 0
+    requires gt(m, zero)                          -- m > 0
     ensures eq(balance(result), add(balance(a), m))   -- balance(result) = balance(a) + m
 
   operation withdraw(a: Account, m: Money) -> Account
-    requires gt(m, zero-val)                          -- m > 0
+    requires gt(m, zero)                          -- m > 0
     requires gte(balance(a), m)                       -- balance(a) >= m
     ensures eq(balance(result), sub(balance(a), m))   -- balance(result) = balance(a) - m
 
@@ -4392,11 +4467,11 @@ sort banking
 
   -- Laws (as rules):
   rule deposit_positive: gt(balance(deposit(?a, ?m)), balance(?a))
-    :- gt(?m, zero-val)
+    :- gt(?m, zero)
 
   -- Integrity constraint (sugar):
-  constraint non_negative: gte(balance(?a), zero-val) :- balance(?a, ?_)
-    -- desugars to: rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, zero-val)
+  constraint non_negative: gte(balance(?a), zero) :- balance(?a, ?_)
+    -- desugars to: rule non_negative: ⊥ :- balance(?a, ?b), lt(?b, zero)
 end
 ```
 

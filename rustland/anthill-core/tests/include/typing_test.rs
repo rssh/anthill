@@ -7035,6 +7035,12 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
         // WI-644: Numeric requires the PARTIAL order (IEEE Float is Numeric but not
         // totally Ord).
         ("anthill.prelude.Numeric", "anthill.prelude.PartialOrd"),
+        // WI-20260825-1WBZT: …and it PROVIDES the two arithmetic syntax categories, which
+        // is what puts `add`/`sub`/`neg`/`zero`/`mul`/`one` in a `Numeric` carrier's
+        // hands without `Numeric` declaring any of them. A `provides` on a spec is a
+        // CONVERSION and so a chain entry — the same shape `Ord`'s two rows above have.
+        ("anthill.prelude.Numeric", "anthill.prelude.Additive"),
+        ("anthill.prelude.Numeric", "anthill.prelude.Multiplicative"),
         (
             "anthill.logic.Constructive.Constructive",
             "anthill.logic.Minimal.Minimal",

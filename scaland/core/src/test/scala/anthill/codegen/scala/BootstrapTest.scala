@@ -2143,7 +2143,20 @@ class BootstrapTest extends munit.FunSuite:
       ("eq", "NonEq", "trait NonEq[T] extends PartialEq[T]:"),
       ("lattice", "Lattice", "trait Lattice[T] extends _root_.anthill.prelude.Eq[T]:"),
       ("lattice", "BoundedLattice", "trait BoundedLattice[T] extends Lattice[T]:"),
-      ("numeric", "Numeric", "trait Numeric[T] extends _root_.anthill.prelude.PartialOrd[T]:"),
+      // WI-20260825-1WBZT — `Numeric` DECLARES NOTHING now (no trailing `:`, because the
+      // trait has no members) and its `extends` list carries THREE clauses of TWO kinds:
+      // `provides Additive` / `provides Multiplicative` (the syntax categories that own
+      // `add`/`sub`/`neg`/`zero` and `mul`/`one`) plus `requires PartialOrd`. It is the
+      // widest mixed-clause row in this set — `Field` and `EuclideanDomain` below carry
+      // one of each — which is why it is worth spelling out rather than shortening.
+      ("numeric", "Numeric",
+        "trait Numeric[T] extends _root_.anthill.prelude.Additive[T], " +
+        "_root_.anthill.prelude.Multiplicative[T], _root_.anthill.prelude.PartialOrd[T]"),
+      // The categories themselves: neither has a `requires` or a `provides`, so neither
+      // emits an `extends` at all. Present as the FLOOR of the arithmetic tower — without
+      // them the row above could be satisfied by a `Numeric` that still declared its own.
+      ("arithmetic", "Additive", "trait Additive[T]:"),
+      ("arithmetic", "Multiplicative", "trait Multiplicative[T]:"),
       // WI-20260824-VT8CF — the FIRST rows carrying BOTH clause kinds on one sort, which
       // is why they are worth listing rather than just repairing. `Divisible` comes from
       // a `provides` (the is-a conversion, as `Ord`'s and `Eq`'s rows above do) and
@@ -2346,23 +2359,56 @@ class BootstrapTest extends munit.FunSuite:
   // `_` FIRST, then the per-kind convention runs, so `zero-val` and `zero_val` reach
   // Scala as one name.
 
-  test("WI-1054 CORPUS: numeric.anthill's `zero-val` emits `zeroVal`, and the file compiles") {
-    // The corpus instance the ticket was measured on (WI-1020's harness, commit
-    // 0ebec357): `Numeric.scala:8: '=' expected, but identifier found`.
+  test("WI-1054 CORPUS: the prelude carries NO hyphen left to normalise, and still compiles") {
+    // THE SUBJECT IS GONE, AND THAT IS WHAT THIS ROW NOW SAYS. It read "numeric.anthill's
+    // `zero-val` emits `zeroVal`" and asserted `def zeroVal(): T` in `Numeric.scala` —
+    // the corpus instance the ticket was measured on (WI-1020's harness, commit
+    // 0ebec357: `Numeric.scala:8: '=' expected, but identifier found`).
+    // WI-20260825-1WBZT moved the additive identity onto `Additive` and renamed it
+    // `zero`, settling a name that `algebra.Ring` already carried under a second
+    // spelling. `zero-val` was the ONLY hyphenated identifier in the whole stdlib
+    // (measured, and this row is now what keeps that true), so the CORPUS rung of
+    // WI-1054 has nothing left to drive.
     //
-    // FAILS WHEN BACKED OUT: drop `normalize` from `Names.scalaMethodName` and the
-    // `def zeroVal` assertion fails; `assertCompiles` then fails too, with that same
-    // parse error. The siblings are in the set because Numeric `requires
-    // PartialOrd[T]`, which `requires PartialEq[T]` — neither carries a hyphen, so
-    // both pass either way and are here only to close the compile.
-    val files = preludeClosure("numeric", "ordered", "eq")
+    // WHAT REPLACES IT is an absence pinned rather than assumed, plus the compile the
+    // original row also bought. If a hyphen is ever added to a prelude declaration this
+    // fails, and the reader is sent to the row below — "WI-1054: a hyphen in EVERY
+    // identifier position", five positions over three normalisation sites, each with its
+    // own back-out — which is the real driver of the rule and always was.
+    //
+    // NOT DELETED, for the reason the emission half is worth keeping: `Numeric.scala`
+    // and its closure still have to be legal Scala, and `Numeric` now emits a
+    // THREE-supertrait `extends` list with no members at all, which is a shape nothing
+    // else in the prelude has.
+    // THE PREDICATE IS THE ASSERTION, so it is written to mean what the message says.
+    // A first cut read `l.takeWhile(_ != '/')` and exempted any line containing `->` or
+    // `--`, which (a) truncates at the FIRST slash rather than at `//`, and (b) blinds
+    // the whole line whenever an arrow appears anywhere on it — so it promised "no
+    // hyphen" while checking much less. Instead: strip the `//` comment TAIL only, then
+    // remove the two legitimate multi-character tokens (`->` and `-` in a numeric
+    // literal's exponent/sign is not emitted here), and look for what is left.
+    val files = preludeClosure("arithmetic", "numeric", "ordered", "eq")
+    val hyphenated = files.filter(f => f.contents.linesIterator.exists { l =>
+      val code = l.indexOf("//") match
+        case -1 => l
+        case i  => l.take(i)
+      code.replace("->", "").contains("-")
+    })
+    assert(hyphenated.isEmpty,
+      "no hyphen may survive into emitted Scala — and the prelude no longer declares one " +
+      "to normalise, so a failure here means a hyphenated declaration was ADDED and the " +
+      "corpus rung of WI-1054 is live again:\n" +
+      hyphenated.map(f => s"${f.relPath}\n${f.contents}").mkString("\n"))
     val src = files.find(_.relPath == "src/main/scala/anthill/prelude/Numeric.scala")
       .getOrElse(fail(s"expected Numeric.scala in: ${files.map(_.relPath)}")).contents
-    assert(src.contains("def zeroVal(): T"),
-      s"a hyphenated operation must emit as camelCase:\n$src")
-    assert(!src.contains("zero-val"),
-      s"no hyphen may survive into the emitted source:\n$src")
-    ScalaCompile.assertCompiles("numeric.anthill's emission", files)
+    assert(!src.contains("def "),
+      "`Numeric` declares no operation since WI-20260825-1WBZT — it reaches them by " +
+      s"`provides`, so the trait has no members:\n$src")
+    val additive = files.find(_.relPath == "src/main/scala/anthill/prelude/Additive.scala")
+      .getOrElse(fail(s"expected Additive.scala in: ${files.map(_.relPath)}")).contents
+    assert(additive.contains("def zero(): T"),
+      s"…and `Additive` is where the additive identity is DECLARED, under one name:\n$additive")
+    ScalaCompile.assertCompiles("the arithmetic prelude's emission", files)
   }
 
   test("WI-1054: a hyphen in EVERY identifier position emits a legal Scala name") {

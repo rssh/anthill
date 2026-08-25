@@ -93,7 +93,7 @@ end
 /// that makes the rule ask what the name DENOTES rather than which table it is in.
 ///
 /// With `import test.bfb9aarith.Arith.{add}` in scope, a bare `add` in that file never
-/// denoted `anthill.prelude.Numeric.add`, so declaring one does not rival the tier.
+/// denoted `anthill.prelude.Additive.add`, so declaring one does not rival the tier.
 /// (What it DOES do is capture `test.bfb9aarith.Arith.add` — a real question, and
 /// `check_name_captures`' rather than this pass's, which does not reach namespace level.)
 ///
@@ -141,12 +141,12 @@ end
     assert_eq!(
         rivals.len(),
         1,
-        "with the import removed the same declaration DOES rival `Numeric.add` — this \
+        "with the import removed the same declaration DOES rival `Additive.add` — this \
          half is what stops the row above from passing with the rule deleted; got: \
          {errs:?}"
     );
     assert!(
-        rivals[0].contains("anthill.prelude.Numeric.add"),
+        rivals[0].contains("anthill.prelude.Additive.add"),
         "and it names the spec operation; got: {rivals:?}"
     );
 }
@@ -289,7 +289,7 @@ end
 /// at one address read one name differently. Here the DECLARING file imports an unrelated
 /// `add` — so on its own reading the declaration is a capture, not a rival — while the
 /// sibling file writing at the same address has no such import and its bare `add` still
-/// meant `Numeric.add`. The declaration repoints the sibling's text, so it is refused;
+/// meant `Additive.add`. The declaration repoints the sibling's text, so it is refused;
 /// and because the reader is not the declaring file, the message says whose reading
 /// earned the refusal.
 ///
@@ -338,7 +338,7 @@ end
         rivals.len(),
         1,
         "a sibling file that never imported the other `add` still read the bare name as \
-         `Numeric.add`, so the declaration is refused; got: {errs:?}"
+         `Additive.add`, so the declaration is refused; got: {errs:?}"
     );
     assert!(
         rivals[0].contains("sibling.anthill"),
@@ -762,11 +762,18 @@ end
 /// pass copied that excuse. Wrong here: the excuse is about whether a capture HARMS, and
 /// this pass's question is whether the name RESOLVES. The middle row below is the proof
 /// that it does: with `namespace add` in scope, a bare `add` stops reaching
-/// `Numeric.add` and says so loudly.
+/// `Additive.add` and says so loudly.
 ///
 /// FAILS IF the namespace candidate is skipped without ending the ladder: the first
-/// assertion picks up a rival error naming `anthill.prelude.Numeric.add`, which the
+/// assertion picks up a rival error naming `anthill.prelude.Additive.add`, which the
 /// middle row proves the address does not denote. Found by `/code-review`.
+///
+/// THE MIDDLE ROW'S SENTENCE WENT FROM PLURAL TO SINGULAR under WI-20260825-1WBZT, and
+/// the change is that ticket's whole claim in one diagnostic. It read "`add` is a member
+/// of sorts Numeric, Ring" — TWO different operations under one spelling, resolved only
+/// because the implicit tier deterministically answered `Numeric.add`. One
+/// `Additive.add` declaration is what makes it "a member of sort Additive"; `Numeric`
+/// and `algebra.Ring` now reach that one by `provides`.
 #[test]
 fn a_sibling_namespace_of_the_name_stands_the_rule_down() {
     const SHADOWED: &str = r#"
@@ -785,7 +792,7 @@ end
     assert!(
         rival_errs(&errs).is_empty(),
         "a `namespace add` at the enclosing address ends the ladder, so `add` in the \
-         child scope never denoted `Numeric.add`; got: {errs:?}"
+         child scope never denoted `Additive.add`; got: {errs:?}"
     );
     // THE MIDDLE ROW: the same shadow, with a REFERENCE instead of a declaration. It
     // shows the namespace really does beat the tier — which is what makes the refusal
@@ -807,8 +814,9 @@ end
     assert!(
         shadowed_ref
             .iter()
-            .any(|e| e.contains("`add` is a member of sorts") && e.contains("not in scope as a bare name here")),
-        "with `namespace add` in scope a bare `add(a, 1)` must NOT reach `Numeric.add` — \
+            .any(|e| e.contains("`add` is a member of sort Additive")
+                && e.contains("not in scope as a bare name here")),
+        "with `namespace add` in scope a bare `add(a, 1)` must NOT reach `Additive.add` — \
          and the DISTINGUISHING sentence is asserted, not merely non-emptiness, because \
          any unrelated failure would otherwise be read as proof of the shadow; got: \
          {shadowed_ref:?}"

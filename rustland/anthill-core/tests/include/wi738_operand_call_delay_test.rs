@@ -222,7 +222,7 @@ fn wi738_term_carried_operand_also_delays() {
     let mut kb = load_kb();
     let one = int(&mut kb, 1);
     let two = int(&mut kb, 2);
-    let sub_call = goal(&mut kb, "anthill.prelude.Numeric.sub", &[two, one]);
+    let sub_call = goal(&mut kb, "anthill.prelude.Additive.sub", &[two, one]);
     let g = goal(&mut kb, "anthill.prelude.PartialEq.neq", &[one, sub_call]);
     let cfg = ResolveConfig {
         max_solutions: 10,

@@ -65,6 +65,14 @@ pub static SOURCES: &[(&str, &str)] = &[
         "anthill/prelude/totalfloat",
         include_str!("../../../stdlib/anthill/prelude/totalfloat.anthill"),
     ),
+    // WI-20260825-1WBZT — `Additive` / `Multiplicative`, the `+` `-` and `*` syntax
+    // categories. BEFORE `numeric`, which reaches all four operations through them
+    // (`provides Additive[T = T]`) instead of declaring them itself; `prelude/algebra`'s
+    // `Ring` does the same, further down.
+    (
+        "anthill/prelude/arithmetic",
+        include_str!("../../../stdlib/anthill/prelude/arithmetic.anthill"),
+    ),
     (
         "anthill/prelude/numeric",
         include_str!("../../../stdlib/anthill/prelude/numeric.anthill"),

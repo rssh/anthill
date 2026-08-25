@@ -8922,9 +8922,16 @@ impl KnowledgeBase {
         ] {
             self.register_builtin_tag(qn, tag);
         }
-        self.register_builtin_tag("anthill.prelude.Numeric.add", BuiltinTag::Add);
-        self.register_builtin_tag("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
-        self.register_builtin_tag("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
+        // WI-20260825-1WBZT — `add` / `sub` / `mul` are SPEC operations on their OPERATOR'S
+        // OWN CATEGORY (`Additive`, `Multiplicative` —
+        // `stdlib/anthill/prelude/arithmetic.anthill`), and the category op is what `+`
+        // `-` `*` resolve to (`PRELUDE_QUALIFIED`, kb/load.rs). They were `Numeric.*`
+        // until then; the tag has to follow the DECLARATION, because a tag keyed on a
+        // name nothing declares stops computing in a rule-body query (WI-863) with
+        // nothing said anywhere.
+        self.register_builtin_tag("anthill.prelude.Additive.add", BuiltinTag::Add);
+        self.register_builtin_tag("anthill.prelude.Additive.sub", BuiltinTag::Sub);
+        self.register_builtin_tag("anthill.prelude.Multiplicative.mul", BuiltinTag::Mul);
         // WI-20260824-VT8CF — `div` / `mod` are SPEC operations, on `Divisible` and
         // `EuclideanDomain` respectively, and the SPEC op is what the `/` `div` `%`
         // `mod` operators resolve to (`PRELUDE_QUALIFIED`, kb/load.rs). Registering the

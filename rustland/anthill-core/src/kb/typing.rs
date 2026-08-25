@@ -191,7 +191,7 @@ pub enum TypeError {
     },
     /// Spec-op dispatch found no impl whose per-call bindings match the
     /// inferred type arguments. `op` is the qualified spec-op symbol
-    /// (e.g. `anthill.prelude.Numeric.add`).
+    /// (e.g. `anthill.prelude.Additive.add`).
     ///
     /// WI-869 — `unmet` is the goal the search actually failed on, as the search
     /// itself rendered it (never re-derived here; the WI-828 rule). For a
@@ -15787,7 +15787,7 @@ fn check_apply_iter(
         // the rustland binding emits a SortProvidesInfo whose binding
         // value resolves to the same Int sort as the per-call subst sees.
         if let Some(spec_sort) = lookup_spec_op_dispatch(kb, fn_sym) {
-            // The op's short name (e.g. "add" for "anthill.prelude.Numeric.add")
+            // The op's short name (e.g. "add" for "anthill.prelude.Additive.add")
             // joins with the impl sort to find the impl operation symbol.
             let op_qn = kb.qualified_name_of(fn_sym).to_string();
             let op_short_sym = kb.intern(short_name_of(&op_qn));

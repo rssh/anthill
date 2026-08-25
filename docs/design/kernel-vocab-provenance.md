@@ -217,6 +217,12 @@ already knows, and the two surfaces converge on the same functor term regardless
 glyph split would not help. The WI's old hedge ("likely type-directed or distinct functors") is
 resolved against both.
 
+> **Relocated since (WI-20260825-1WBZT).** `neg` is `anthill.prelude.Additive.neg` now, and
+> `zero-val` is `Additive.zero`: every operator gets a SYNTAX CATEGORY owning exactly the
+> operation it mints, and `Numeric` — which declares nothing any more — reaches them by
+> `provides`. Everything C.1 decided still holds; only the addresses moved. The text below
+> is left as WI-529 wrote it (kernel-language.md §6.6 carries the live table).
+
 **The only new stdlib: `Numeric.neg`.** `neg` is the one operator with no existing op —
 `Numeric` (numeric.anthill) has add/sub/mul/zero-val but no `neg`, and only `Int64` declares
 its own (`neg(?a) = sub(0, ?a)`). Add `operation neg(a: T) -> T` to `Numeric` with default law

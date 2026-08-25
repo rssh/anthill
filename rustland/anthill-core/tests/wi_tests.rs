@@ -582,6 +582,9 @@ mod wi_bfb9a_rival_spec_operation_test;
 #[path = "include/wi_vt8cf_division_tower_test.rs"]
 mod wi_vt8cf_division_tower_test;
 
+#[path = "include/wi_1wbzt_syntax_category_test.rs"]
+mod wi_1wbzt_syntax_category_test;
+
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
 

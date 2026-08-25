@@ -11,7 +11,7 @@ enum anthill.prelude.List
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Stream.{isEmpty}
   import anthill.prelude.EmptyStream.{empty_stream}
-  import anthill.prelude.Numeric.{add, sub}
+  import anthill.prelude.Additive.{add, sub}
   import anthill.prelude.PartialOrd.{gt}
 
   sort T = ?                                           -- type parameter (abstract)

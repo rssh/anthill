@@ -434,7 +434,7 @@ namespace test.yqb1ymem
     anyone.join(anyone, lambda (c, q) -> eq(1, 1)).takeN(5)
 
   -- and `Membership` accepts it, which it cannot do for an empty NAMED TUPLE
-  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Numeric.neg` and
+  -- WI-20260824-BFB9A: renamed off `neg`, which denotes `anthill.prelude.Additive.neg` and
   -- may not be re-declared free-standing. The name here was only ever a label.
   operation negated() -> Bool effects Error =
     negate(anyone.join(anyone, lambda (c, q) -> eq(1, 1))).isEmpty

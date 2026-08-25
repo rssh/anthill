@@ -45,3 +45,15 @@ CONTROL, when it is fixed: shape 3 becomes a load error naming both declarations
 
 ACCEPTANCE: the three shapes above behave as the control says; every existing prelude tower still loads (`Eq`/`PartialEq`, the three ordering floors, the division tower); full workspace green via rustland/scripts/test.sh and scaland sbt test.
 
+## Changes
+
+### 2026-08-25T19:47:16Z — feedback — claude
+
+WI-20260825-1WBZT IS DELIVERED, so this ticket's "WHY NOW" is now "WHY". The stdlib diamond it predicted EXISTS: `anthill.prelude.Numeric` and `anthill.prelude.algebra.Ring` both `provides Additive[T = T]` and `provides Multiplicative[T = T]`, and `rustland/anthill-stl/anthill/float.anthill` writes both `provides Numeric[T = Float]` and `provides Ring[Float]` — so `Float` reaches `Additive` by two paths on the shipped tree.
+
+IT IS SHAPE 1, AND IT IS PINNED. `Additive` declares `add`/`sub`/`neg`/`zero` ONCE, `Multiplicative` `mul`/`one` ONCE, and both branches only PROVIDE — neither redeclares anything. `wi_1wbzt_syntax_category_test::float_reaches_the_category_by_two_routes_and_still_adds` asserts both provision rows are present (read out of the INTERPRETER's KB, since the two `Float` rows live in the rust binding and a stdlib-directory walk answers `[]` for it) and drives `2.5 + 2.5` = 5.0. `each_arithmetic_short_name_is_declared_exactly_once` asserts the ABSENCE half — the ten old addresses (`Numeric.{add,sub,mul,neg,zero-val}`, `algebra.Ring.{add,sub,mul,zero,one}`) resolve to nothing, so a merge that restores shape 2 fails there rather than silently.
+
+THE STDLIB IS THEREFORE THE FIRST REAL SUBJECT FOR SHAPE 3's refusal — and nothing in it is one today. That is the whole argument for landing this near 1WBZT rather than later: the tower is correct by discipline alone, the discipline is a comment in `arithmetic.anthill` and `ordered.anthill`, and shape 2 (a spec redeclaring a provided base's operation) is what a well-meaning contributor writes when they want to give `Ring` a doc-comment on `add`.
+
+ONE THING THE 1WBZT WORK ADDS TO YOUR SHAPE LIST, measured while building it and NOT this ticket's: `Ring` gaining a `provides` of a spec in ANOTHER namespace made `Ring`'s own NAME ambiguous at `VectorSpace`, which `requires Ring[F]` — the `provides` edge re-enters the provided sort's enclosing chain up to `<global>`, where a user's top-level `sort Ring` sits. Filed as WI-20260825-N2865 with its own two-file repro. It is a resolution defect rather than a declare-once one, but it lives on the same edge, so whoever picks up either should read both.
+

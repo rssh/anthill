@@ -35,6 +35,11 @@ object EmbeddedStdlib:
     //    list/reflect now parse)
     "anthill.prelude.eq",
     "anthill.prelude.ordered",
+    // WI-20260825-1WBZT: `Additive` / `Multiplicative` — the `+` `-` and `*` syntax
+    // categories. BEFORE `numeric`, which reaches their operations by `provides` instead
+    // of declaring them; scaland reads the same `stdlib/` files from disk, so
+    // numeric.anthill's provisions are unresolved without this line.
+    "anthill.prelude.arithmetic",
     "anthill.prelude.numeric",
     // monad.anthill defines `sort Monad[M[T]]` — imported by option (Option is a
     // Monad instance). Self-contained (no imports); the 2-phase scan tolerates

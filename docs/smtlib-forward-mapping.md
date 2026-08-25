@@ -175,9 +175,9 @@ reinterpreted such an operation (the hazard WI-680 recorded).
 
 | Anthill operation | SMT-LIB |
 |---|---|
-| `anthill.prelude.Numeric.add(a, b)` | `(+ a b)` |
-| `anthill.prelude.Numeric.sub(a, b)` | `(- a b)` |
-| `anthill.prelude.Numeric.mul(a, b)` | `(* a b)` |
+| `anthill.prelude.Additive.add(a, b)` | `(+ a b)` |
+| `anthill.prelude.Additive.sub(a, b)` | `(- a b)` |
+| `anthill.prelude.Multiplicative.mul(a, b)` | `(* a b)` |
 | `anthill.prelude.Int64.div(a, b)` | `(div a b)` |
 | `anthill.prelude.Float.div(a, b)` | `(/ a b)` |
 | `anthill.prelude.Float.neg(a)` / `anthill.prelude.Int64.neg(a)` | `(- a)` |
@@ -320,7 +320,7 @@ rule eq(red, red) <=> true
 ### 6.1 Constraints → Satisfiability Assertions
 
 ```
-constraint non_negative: gte(balance(?a), zero-val) :- balance(?a, ?b)
+constraint non_negative: gte(balance(?a), zero) :- balance(?a, ?b)
 
 → (assert (forall ((a Account) (b Money))
     (! (=> (balance a b) (>= b 0))
@@ -343,7 +343,7 @@ To find violations, negate and check:
 
 ```
 operation deposit(a: Account, m: Money) -> Account
-  requires gt(m, zero-val)
+  requires gt(m, zero)
   ensures eq(balance(result), add(balance(a), m))
 
 → (assert (forall ((a Account) (m Int) (result Account))

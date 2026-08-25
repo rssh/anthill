@@ -3,7 +3,7 @@
 -- binding files (e.g. rustland/anthill-stl/anthill/string.anthill) — see proposal 038.
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ord, Int64}
-  import anthill.prelude.Numeric.{sub}
+  import anthill.prelude.Additive.{sub}
 
   -- WI-876: `String`'s ORDERING (lexicographic by code unit), declared here and
   -- backed by the host in `rustland/anthill-stl/anthill/string.anthill`'s

@@ -4984,10 +4984,19 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.PartialOrd.lt",
     "anthill.prelude.PartialOrd.gte",
     "anthill.prelude.PartialOrd.lte",
-    "anthill.prelude.Numeric.add",
-    "anthill.prelude.Numeric.sub",
-    "anthill.prelude.Numeric.mul",
-    "anthill.prelude.Numeric.neg", // prefix `-` (WI-529); not position-directed
+    // WI-20260825-1WBZT: EACH OPERATOR NAMES ITS OWN SYNTAX CATEGORY — a spec owning
+    // exactly the operation that operator mints (`stdlib/anthill/prelude/arithmetic.anthill`).
+    // These four pointed at `anthill.prelude.Numeric.{add,sub,mul,neg}` until then, and
+    // `Numeric` is a BUNDLE: nine operations reachable from one `fact`, so a carrier that
+    // could only add had to claim a `mul` it did not have (or omit it, which loads clean
+    // and dies at run time). Splitting the declarations means `+` can be claimed alone.
+    // The tier is why the split has to be a LIBRARY change: one short name maps to exactly
+    // ONE qualified name here, so the operation must be DECLARED once — `Numeric` and
+    // `algebra.Ring` now reach these by `provides` rather than by a second declaration.
+    "anthill.prelude.Additive.add",
+    "anthill.prelude.Additive.sub",
+    "anthill.prelude.Additive.neg", // prefix `-` (WI-529); not position-directed
+    "anthill.prelude.Multiplicative.mul",
     // WI-863: `/` and word-`div` desugar to `div`, `%` and word-`mod` to `mod`.
     // WI-20260824-VT8CF: THESE ARE SPEC OPERATIONS ON PARAMETRIC CARRIERS, and that is
     // the whole point of the entries. They pointed at `Int64.div` / `Int64.mod` — a
@@ -9947,42 +9956,78 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         ord_sort_scope,
     );
 
-    // anthill.prelude.Numeric sort (operations: add, sub, mul)
-    let num_sort_sym = kb.symbols.define(
-        "Numeric",
-        "anthill.prelude.Numeric",
+    // `anthill.prelude.Numeric` IS NOT PRE-REGISTERED, and its departure is the point.
+    // It was here — sort scope plus `add` / `sub` / `mul` — solely so that
+    // `register_builtin_tags` could resolve `anthill.prelude.Numeric.add`'s owning scope
+    // from the qualified-name prefix before `load_all` runs. WI-20260825-1WBZT moved those
+    // three tags onto the syntax categories below, so nothing names `Numeric` in the
+    // bootstrap any more, and what is left of it here is exactly what the division-tower
+    // note calls a second, silently-drifting copy of a sort's contents. MEASURED before
+    // removing: the whole `anthill-core` suite (4,926 tests, `wi_bfb9a`'s two
+    // stdlib-less rows included) is green without it — the stdlib load defines the sort
+    // like every other spec that needs no bootstrap entry.
+
+    // WI-20260825-1WBZT — the ARITHMETIC SYNTAX CATEGORIES
+    // (`stdlib/anthill/prelude/arithmetic.anthill`), pre-registered for the reason the
+    // division tower below is: `register_builtin_tags` runs BEFORE `load_all` and
+    // resolves each tag's owning scope from the qualified name's namespace prefix, so
+    // `anthill.prelude.Additive.add` needs its sort to exist as a scope already or the
+    // registration panics.
+    //
+    // Only the three carrying resolver builtins — `add` / `sub` on `Additive`, `mul` on
+    // `Multiplicative`. `neg`, `zero` and `one` carry none (a tier ENTRY is not a
+    // bootstrap requirement: it resolves through `by_qualified_name` after the stdlib
+    // load, which is why `Numeric.neg` was never pre-registered either), so they are left
+    // to the stdlib load like every other member — pre-registering more than the
+    // bootstrap requires would be a second, silently-drifting copy of the sorts'
+    // contents.
+    let additive_sort_sym = kb.symbols.define(
+        "Additive",
+        "anthill.prelude.Additive",
         SymbolKind::Sort,
         prelude_scope,
     );
-    let num_sort_scope = kb.symbols.scope_id(num_sort_sym);
+    let additive_sort_scope = kb.symbols.scope_id(additive_sort_sym);
     kb.symbols.add_parent(
-        num_sort_scope,
+        additive_sort_scope,
+        ScopeInclusion {
+            parent_scope: prelude_scope,
+            is_enclosing: true,
+        },
+    );
+    for (short, qualified) in [
+        ("add", "anthill.prelude.Additive.add"),
+        ("sub", "anthill.prelude.Additive.sub"),
+    ] {
+        kb.symbols
+            .define(short, qualified, SymbolKind::Operation, additive_sort_scope);
+    }
+
+    let multiplicative_sort_sym = kb.symbols.define(
+        "Multiplicative",
+        "anthill.prelude.Multiplicative",
+        SymbolKind::Sort,
+        prelude_scope,
+    );
+    let multiplicative_sort_scope = kb.symbols.scope_id(multiplicative_sort_sym);
+    kb.symbols.add_parent(
+        multiplicative_sort_scope,
         ScopeInclusion {
             parent_scope: prelude_scope,
             is_enclosing: true,
         },
     );
     kb.symbols.define(
-        "add",
-        "anthill.prelude.Numeric.add",
-        SymbolKind::Operation,
-        num_sort_scope,
-    );
-    kb.symbols.define(
-        "sub",
-        "anthill.prelude.Numeric.sub",
-        SymbolKind::Operation,
-        num_sort_scope,
-    );
-    kb.symbols.define(
         "mul",
-        "anthill.prelude.Numeric.mul",
+        "anthill.prelude.Multiplicative.mul",
         SymbolKind::Operation,
-        num_sort_scope,
+        multiplicative_sort_scope,
     );
 
     // WI-20260824-VT8CF — the DIVISION TOWER (`stdlib/anthill/prelude/division.anthill`).
-    // Pre-registered here for the same reason `Numeric` above is: `register_builtin_tags`
+    // Pre-registered here for the same reason the ARITHMETIC CATEGORIES above are (this
+    // sentence named `Numeric` until WI-20260825-1WBZT removed that block):
+    // `register_builtin_tags`
     // runs BEFORE `load_all`, and it resolves a tag's owning scope from the qualified
     // name's namespace PREFIX — so `anthill.prelude.Divisible.div` needs its sort to
     // exist as a scope already, or the registration panics. Driven: without these two

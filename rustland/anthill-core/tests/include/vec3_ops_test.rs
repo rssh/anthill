@@ -649,21 +649,37 @@ end
     }
 }
 
-/// THE TICKET'S CONTROL B, RE-MEASURED — and it says something different now.
+/// THE TICKET'S CONTROL B, RE-MEASURED TWICE — and it says something different again.
 ///
-/// WI-942 filed `dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)` as the
-/// construct that was refused where the `VectorSpace` twin passed. It now LOADS,
-/// which is the agreement the ticket asked for. Its CALL still fails — and the
-/// control below is what attributes that: the SAME call with no generics anywhere
-/// (`dbl(a: Float) = Ring.add(a, a)`) fails identically, so the cause is that
-/// `fact Ring[Float]` is an UNBACKED provision — `Float` declares no `add` of its
-/// own (its arithmetic comes from `Numeric`, a different spec) — and not anything
-/// about generic consumption. That is a WI-818-class stdlib gap, filed as WI-944.
+/// WI-942 filed `dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)` as the construct
+/// refused where its `VectorSpace` twin passed. It then LOADED, and its CALL failed with
+/// "operation has no body: anthill.prelude.algebra.Ring.add"; the concrete twin
+/// (`dbl(a: Float) = Ring.add(a, a)`, no generics anywhere) failed IDENTICALLY, which is
+/// how the cause was attributed to `fact Ring[Float]` being an unbacked provision rather
+/// than to generic consumption. That is WI-944.
 ///
-/// Asserted rather than left implicit because the ticket's framing assumed the two
-/// constructs differed only in LOAD behaviour. They do not: the `VectorSpace`
-/// provision is backed and the `Ring[Float]` one is not, which is why only the
-/// former reaches a value.
+/// UNDER WI-20260825-1WBZT BOTH ROUTES ARE REFUSED AT LOAD INSTEAD, and the reason is
+/// NOT that `Ring[Float]` gained backing — it did not. `Ring` no longer DECLARES `add`:
+/// the syntax categories own it (`stdlib/anthill/prelude/arithmetic.anthill`) and `Ring`
+/// reaches it by `provides`, so the qualified address `Ring.add` resolves to nothing and
+/// the typer says "expected known operation or arrow-typed variable, got unknown
+/// functor". THAT is a different defect, filed as WI-20260825-X9RRN, and the third row
+/// below is what separates the two readings: `Additive.add(a, a)` over the same `Float`
+/// operands LOADS — so the operation exists, is backed, and is reachable; only the
+/// `Ring.` address is not.
+///
+/// WHAT THIS ROW STILL MEASURES, and why it is not now a test of X9RRN's business:
+///   * THE AGREEMENT WI-942 asked for — generic and concrete behave IDENTICALLY. That
+///     was the ticket's question and it is still answered, one verdict later.
+///   * THAT WI-944 IS NOT DELIVERED. Its acceptance is "`Ring.add(2.5, 2.5)` at Float
+///     either answers 5.0 or is REFUSED AT LOAD naming the unbacked member". It is
+///     refused at load — and the message names no member and no provision, so the
+///     acceptance is met by accident and in the wrong words. When WI-944 or X9RRN lands,
+///     this row is what says which.
+///
+/// FAILS IF `Ring` regains its own `add` declaration: the two loads start succeeding and
+/// the first assertion fires. The `Additive` row passes either way BY DESIGN — it is the
+/// control that keeps "unknown functor" from being read as "the operation is missing".
 #[test]
 fn control_ring_now_loads_and_its_residual_failure_is_the_unbacked_provision() {
     let generic = r#"
@@ -683,30 +699,39 @@ namespace test.wi942.ring.concrete
   end
 end
 "#;
-    // The AGREEMENT: the construct the ticket found refused now loads, exactly as
-    // its `VectorSpace` twin does.
-    crate::common::try_load_kb_with(generic)
-        .map(|_| ())
-        .expect("the Ring-shaped generic must LOAD, agreeing with the VectorSpace one");
-    crate::common::try_load_kb_with(concrete)
-        .map(|_| ())
-        .expect("the concrete control loads");
-
-    // The ATTRIBUTION: both routes fail the same way, so the abstract one is not
-    // the cause. If `Ring[Float]` ever gains its backing (WI-944) both of these
-    // start answering 5.0 and this test is what says so.
-    for (label, src, entry) in [
-        ("generic", generic, "test.wi942.ring.generic.GR.dbl"),
-        ("concrete", concrete, "test.wi942.ring.concrete.CR.dbl"),
-    ] {
-        let mut interp = crate::common::interp_for(src);
-        let err = interp
-            .call(entry, &[Value::Float(2.5)])
-            .err()
-            .unwrap_or_else(|| panic!("{label}: `Ring[Float]` is unbacked — see WI-944"));
+    // THE AGREEMENT, now at LOAD: both routes are refused, and by the same sentence.
+    for (label, src) in [("generic", generic), ("concrete", concrete)] {
+        let errs = crate::common::try_load_kb_with(src)
+            .map(|_| Vec::new())
+            .unwrap_or_else(|e| e);
         assert!(
-            format!("{err}").contains("anthill.prelude.algebra.Ring.add"),
-            "{label}: the failure must name the unbacked SPEC member, got: {err}",
+            errs.iter().any(|e| e.contains("Ring.add")
+                && e.contains("unknown functor")),
+            "{label}: `Ring.add` is reached only by `provides` since \
+             WI-20260825-1WBZT, so the qualified address names nothing and the load must \
+             say so — see WI-20260825-X9RRN; got: {errs:?}"
         );
     }
+
+    // THE SEPARATOR: the operation itself is fine. Same operands, the address that
+    // DECLARES `add`, and it loads — so "unknown functor" is about the `Ring.` prefix
+    // and not about `add` being missing or `Float` being unable to add.
+    let via_category = r#"
+namespace test.wi942.ring.category
+  import anthill.prelude.{Float, Additive}
+  sort AR
+    operation dbl(a: Float) -> Float = Additive.add(a, a)
+  end
+end
+"#;
+    crate::common::try_load_kb_with(via_category)
+        .map(|_| ())
+        .unwrap_or_else(|errs| {
+            panic!(
+                "`Additive.add` over Float operands must LOAD — it is the declaring \
+                 address, and without this row the two refusals above read as \"Float \
+                 cannot add\"; got:\n{}",
+                errs.join("\n")
+            )
+        });
 }

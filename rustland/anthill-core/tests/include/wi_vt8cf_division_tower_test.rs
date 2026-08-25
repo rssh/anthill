@@ -380,7 +380,10 @@ end
 /// `fact Numeric[T = Money]`; a minted `+` then reaches `Money.add` by the short-name
 /// join, with no `operation_map` entry and no host registration. `700 + 25 = 725` off the
 /// carrier's OWN field, so a dispatch that had fallen through to the host `numeric_add`
-/// would type-error on an `Entity` rather than answer.
+/// would type-error on an `Entity` rather than answer. Since WI-20260825-1WBZT the join
+/// runs one hop further — `+` names `Additive.add` and `Numeric provides Additive[T = T]`
+/// — and this row is unchanged in what it asserts, which is the point: the bundle still
+/// bundles.
 ///
 /// THE DIVISION HALF DOES NOT, and this row RECORDS that rather than leaving it to be
 /// discovered. A user carrier cannot provide `EuclideanDomain` when its implementation
@@ -388,8 +391,8 @@ end
 ///
 ///   effects Error[DivisionByZero]                      "must not widen" (unguarded is
 ///                                                       wider than the spec's guarded row)
-///   effects { … :- eq(b, zero-val()) }                 "must not widen"
-///   effects { … :- eq(b, zero-val) }                   "must not widen"
+///   effects { … :- eq(b, zero()) }                     "must not widen"
+///   effects { … :- eq(b, zero) }                       "must not widen"
 ///   effects { … :- eq(b, Money(cents: 0)) }            "must not widen"
 ///   (no effects row at all)                            "undeclared effect" from the body
 ///
@@ -409,18 +412,23 @@ fn a_user_carrier_gets_plus_but_cannot_yet_provide_the_division_tower() {
     operation add(a: Money, b: Money) -> Money = Money(cents: a.cents + b.cents)
     operation sub(a: Money, b: Money) -> Money = Money(cents: a.cents - b.cents)
     -- MEANINGLESS, AND DECLARED ANYWAY — cents times cents is cents-SQUARED, which is
-    -- not money. It is here because `+` lives on `Numeric`, and `Numeric` is a bundle:
-    -- a carrier that only adds must claim `add`, `sub`, `mul`, `neg`, `zero-val` and,
-    -- through `requires PartialOrd[T]`, four comparisons — NINE operations for one
-    -- operator. Omitting this one LOADS AND RUNS CLEAN (measured: the `plus` row below
-    -- still answers 725 without it) and then dies at run time on `Money * Money` with
-    -- "expected matching Int, BigInt, or Float, got Entity". So the choice a carrier
-    -- author has today is a LIE OR A SILENT HOLE, and this fixture takes the lie
-    -- deliberately, so that the row measures the dispatch and not the hole.
-    -- WI-20260825-1WBZT splits `Additive` out to remove the choice.
+    -- not money. It is here because this fixture claims the WHOLE BUNDLE
+    -- (`fact Numeric[T = Money]`), which is `Additive` + `Multiplicative` + a comparison
+    -- surface: ten operations for one operator. That was the only way to get `+` until
+    -- WI-20260825-1WBZT gave each operator its own syntax category — a carrier that only
+    -- adds now writes `fact Additive[T = Money]` and owes four
+    -- (`wi_1wbzt_syntax_category_test`). This row keeps the bundle spelling on purpose:
+    -- it is the control that a carrier may STILL claim everything, so the split is a new
+    -- option rather than a replacement, and the `plus` assertion below measures the
+    -- dispatch through it either way.
     operation mul(a: Money, b: Money) -> Money = Money(cents: a.cents * b.cents)
     operation neg(a: Money) -> Money = Money(cents: 0 - a.cents)
-    operation zero-val() -> Money = Money(cents: 0)
+    -- `zero` / `one` — the two identities the bundle's categories declare. `zero` was
+    -- spelled `zero-val` until WI-20260825-1WBZT, which settled the additive identity on
+    -- ONE name (`algebra.Ring` carried the other, `zero`); `one` had no `Numeric`
+    -- counterpart before the split and is `Multiplicative`'s.
+    operation zero() -> Money = Money(cents: 0)
+    operation one() -> Money = Money(cents: 1)
     operation gt(a: Money, b: Money) -> Bool  = a.cents > b.cents
     operation gte(a: Money, b: Money) -> Bool = a.cents >= b.cents
     operation lt(a: Money, b: Money) -> Bool  = a.cents < b.cents
@@ -451,7 +459,7 @@ end
     // unlucky spelling.
     for effects in [
         "effects Error[DivisionByZero]",
-        "effects { Error[DivisionByZero] :- eq(b, zero-val()) }",
+        "effects { Error[DivisionByZero] :- eq(b, zero()) }",
         "effects { Error[DivisionByZero] :- eq(b, Money(cents: 0)) }",
         "",
     ] {

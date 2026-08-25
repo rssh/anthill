@@ -255,7 +255,7 @@ Quoted terms in other languages (e.g., `Quoted("sql", ...)`) are ignored during 
 Constraints (denials) generate debug assertion helpers or test-time checks:
 
 ```
-constraint non_negative: gte(balance(?a), zero-val)
+constraint non_negative: gte(balance(?a), zero)
 
 →  // Invariant: non_negative — balance(a) >= 0
    fn check_non_negative(a: &Account) -> bool {
@@ -899,14 +899,23 @@ sort anthill.prelude.Ord
   ...
 end
 
-sort anthill.prelude.Numeric
+-- WI-20260825-1WBZT: `Numeric` is the arithmetic BUNDLE and declares nothing; each
+-- operator's SYNTAX CATEGORY owns the operation it mints. Sketched here as the members a
+-- `Numeric` carrier reaches, which is what this section is about.
+sort anthill.prelude.Additive
   sort T
-  requires Ord[T]
   operation add(a: T, b: T) -> T
   operation sub(a: T, b: T) -> T
-  operation mul(a: T, b: T) -> T
-  operation zero-val() -> T
+  operation neg(a: T) -> T
+  operation zero() -> T
   ...
+end
+
+sort anthill.prelude.Numeric
+  sort T
+  requires PartialOrd[T]
+  provides Additive[T = T]
+  provides Multiplicative[T = T]   -- mul, one
 end
 ```
 
@@ -993,7 +1002,7 @@ Banking is parametric over `Money` (abstract sub-sort), so it is a `sort`, not a
 ```
 -- Anthill:
 sort banking
-  import anthill.prelude.Numeric.{Numeric, add, sub, gt, gte, zero-val}
+  import anthill.prelude.Numeric.{Numeric, add, sub, gt, gte, zero}
 
   sort Money                                         -- type parameter (abstract)
   requires Numeric[T = Money]
@@ -1001,15 +1010,15 @@ sort banking
   entity Account(id: AccountId, balance: Money)
 
   operation deposit(a: Account, m: Money) -> Account
-    requires gt(m, zero-val)
+    requires gt(m, zero)
     ensures eq(balance(result), add(balance(a), m))
   operation withdraw(a: Account, m: Money) -> Account
-    requires gt(m, zero-val)
+    requires gt(m, zero)
     requires gte(balance(a), m)
     ensures eq(balance(result), sub(balance(a), m))
   operation balance(a: Account) -> Money
 
-  constraint non_negative: gte(balance(?a), zero-val)
+  constraint non_negative: gte(balance(?a), zero)
 end
 ```
 
