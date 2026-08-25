@@ -113,6 +113,12 @@ pub static SOURCES: &[(&str, &str)] = &[
         "anthill/prelude/map",
         include_str!("../../../stdlib/anthill/prelude/map.anthill"),
     ),
+    // WI-20260824-VT8CF — BEFORE `field`, which now reaches `div` through it
+    // (`provides Divisible[T = T]`) instead of declaring a second one.
+    (
+        "anthill/prelude/division",
+        include_str!("../../../stdlib/anthill/prelude/division.anthill"),
+    ),
     (
         "anthill/prelude/field",
         include_str!("../../../stdlib/anthill/prelude/field.anthill"),

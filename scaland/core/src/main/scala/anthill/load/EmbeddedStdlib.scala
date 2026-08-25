@@ -43,6 +43,11 @@ object EmbeddedStdlib:
     "anthill.prelude.option",
     "anthill.prelude.pair",
     "anthill.prelude.function",
+    // WI-20260824-VT8CF: `Divisible` / `EuclideanDomain` — the `/` and `%` tower.
+    // BEFORE `field`, which reaches `div` through it (`provides Divisible[T = T]`)
+    // instead of declaring a second one; scaland reads the same `stdlib/` files from
+    // disk, so field.anthill's import of `Divisible` is unresolved without this line.
+    "anthill.prelude.division",
     "anthill.prelude.field",
     "anthill.prelude.lattice",
     // ── effects + I/O

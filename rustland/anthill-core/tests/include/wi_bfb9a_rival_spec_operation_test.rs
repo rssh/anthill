@@ -369,10 +369,10 @@ end
 /// THE POPULATION, DRIVEN — every short name the implicit tier answers, declared
 /// free-standing in its own namespace, in ONE load.
 ///
-/// The refused set is TEN, asserted literally rather than re-derived from the predicate
-/// the pass uses: a population computed the same way the code computes it cannot
-/// disagree with it. What the literal catches is a change of MEANING — a tier entry that
-/// starts or stops being a spec operation.
+/// The refused set is TWELVE, asserted literally rather than re-derived from the
+/// predicate the pass uses: a population computed the same way the code computes it
+/// cannot disagree with it. What the literal catches is a change of MEANING — a tier
+/// entry that starts or stops being a spec operation.
 ///
 /// THE NAMES COME FROM `load::implicit_tier_short_names`, which reads the tier's table.
 /// The previous version SCRAPED THIS CRATE'S SOURCE (`read_to_string("src/kb/load.rs")`
@@ -380,15 +380,23 @@ end
 /// unbalances the parity and drops names while every assertion still passes — found by
 /// `/code-review`.
 ///
-/// WHY TEN AND NOT THE ELEVEN TIER NAMES A SPEC OPERATION CARRIES. `div` IS some spec
-/// operation's short name in the stdlib, so it passes the pass's spelling gate — but the
-/// tier resolves a bare `div` to `anthill.prelude.Int64.div`, whose carrier is not
-/// parametric, so nothing is refused. A count over "tier names that some spec op
-/// carries" says eleven and is the wrong question; only the load answers.
+/// IT WAS TEN, AND `div` / `mod` JOINING IS WI-20260824-VT8CF — the whole of that
+/// ticket, read off this one list. Both names were already tier entries and already
+/// SOME spec operation's short name, so they always passed the pass's spelling gate;
+/// what they lacked was a parametric carrier at the address the tier resolved to
+/// (`anthill.prelude.Int64.{div,mod}`). Repointing the tier at `Divisible.div` /
+/// `EuclideanDomain.mod` moved them across with nothing added to the pass. The old
+/// doc's warning still holds and is why the census is driven rather than counted: "tier
+/// names that some spec op carries" would have said twelve all along and been the wrong
+/// question — only the load answers.
+///
+/// `rem` is NOT here, and that is the same distinction from the other side: it is an
+/// `EuclideanDomain` member, so it IS a spec operation, but no operator mints it and it
+/// is not a tier entry — so a free-standing `rem` shadows nothing and is not refused.
 ///
 /// FAILS IF the refusal widens (a name joins) or narrows (one leaves).
 #[test]
-fn the_refusal_population_is_the_ten_spec_operations() {
+fn the_refusal_population_is_the_twelve_spec_operations() {
     let names = load::implicit_tier_short_names();
     // WI-20260825-5W3RJ SHRANK THIS FROM 62 TO 34, and the floor moved with it. The
     // tier used to carry a second table — the 28 addresses of the forms the CONVERTER
@@ -422,10 +430,14 @@ fn the_refusal_population_is_the_ten_spec_operations() {
     refused.sort_unstable();
     assert_eq!(
         refused,
-        vec!["add", "eq", "gt", "gte", "lt", "lte", "mul", "neg", "neq", "sub"],
-        "the tier names that denote a SPEC operation are exactly these ten; every other \
-         entry is a constructor, a literal carrier, a reflection sort, a primitive with \
-         no spec, or an operation on a non-parametric carrier. Rival errors: {rivals:?}"
+        vec![
+            "add", "div", "eq", "gt", "gte", "lt", "lte", "mod", "mul", "neg", "neq", "sub"
+        ],
+        "the tier names that denote a SPEC operation are exactly these twelve; every \
+         other entry is a constructor, a literal carrier, a reflection sort, a primitive \
+         with no spec, or an operation on a non-parametric carrier. `div` and `mod` are \
+         WI-20260824-VT8CF's; drop them and this is the pre-ticket list. Rival errors: \
+         {rivals:?}"
     );
 }
 
@@ -468,23 +480,29 @@ fn a_stdlib_less_kb_refuses_nothing() {
     );
 }
 
-/// THE GAP THIS RULE DOES NOT CLOSE, RECORDED RATHER THAN LEFT TO BE REDISCOVERED —
-/// WI-20260824-VT8CF owns it.
+/// THE INVERTED GAP — WI-20260824-VT8CF, and this row IS its measurement.
 ///
-/// `anthill.prelude.Int64.mod` is the tier's target for a bare `mod` and for the minted
-/// `%`, and `Int64` declares no `sort T = ?` — so it is not a SPEC operation, there is no
-/// `provides Int64[T = …]` to prescribe, and this rule correctly stands down. The
-/// consequence is that a namespace-level `operation mod(…)` DOES capture `%` written in
-/// that namespace, silently: the row below asserts 99, the local declaration's value,
-/// where `7 % 2` is 1.
+/// It used to assert the opposite, and the ONE-LINE HISTORY is the point. `mod`'s tier
+/// target was `anthill.prelude.Int64.mod`; `Int64` declares no `sort T = ?`, so
+/// `spec_op_parent_sort` answered `None`, this rule correctly stood down, and a
+/// namespace-level `operation mod(…)` captured a minted `%` SILENTLY — the row asserted
+/// `Int(99)`, the local declaration's value, where `7 % 2` is 1.
 ///
-/// DRIVEN THROUGH AN OPERATION BODY, not a rule: `:- eq(7 % 2, 1)` answers 0 definite
-/// solutions with or without the shadow, because `eq` never binds and the goal suspends
-/// (memory: an eq-only relation drains nothing), so it would measure nothing.
+/// NOTHING WAS ADDED TO THIS PASS TO CLOSE IT. The tier was repointed at
+/// `anthill.prelude.EuclideanDomain.mod`, which IS parametric, so the existing rule
+/// reaches it by construction. That is why the repair belonged in the library rather
+/// than in a guard: a name the tier answers is refusable exactly when what it points at
+/// can be `provides`-ed, and division could not be until it had a spec.
 ///
-/// THIS ROW INVERTS WHEN VT8CF CLOSES, and that inversion is its measurement.
+/// DRIVEN THROUGH AN OPERATION BODY, not a rule, and the second half still matters:
+/// `:- eq(7 % 2, 1)` answers 0 definite solutions with or without the shadow, because
+/// `eq` never binds and the goal suspends, so it would measure nothing either way.
+///
+/// BACKING THE CHANGE OUT — repoint `PRELUDE_QUALIFIED`'s `div`/`mod` entries at
+/// `anthill.prelude.Int64.{div,mod}` — makes both halves fail: no rival error, and the
+/// unshadowed value below stops being reachable because the shadow takes it.
 #[test]
-fn a_non_parametric_carriers_operation_is_not_a_spec_op() {
+fn a_free_standing_mod_is_refused_now_that_its_tier_target_is_a_spec_op() {
     let src = r#"
 namespace test.bfb9a.modgap
   import anthill.prelude.{Int64}
@@ -493,21 +511,83 @@ namespace test.bfb9a.modgap
 end
 "#;
     let errs = errs_for(src);
+    let rivals = rival_errs(&errs);
+    assert_eq!(
+        rivals.len(),
+        1,
+        "`EuclideanDomain.mod` IS a spec operation, so the free-standing `mod` is now \
+         refused — one message, at the declaration; got: {errs:?}"
+    );
+    assert!(
+        rivals[0].contains("anthill.prelude.EuclideanDomain.mod"),
+        "and the message must name the spec operation the declaration silenced, so the \
+         author knows which carrier to move it onto; got: {}",
+        rivals[0]
+    );
+
+    // …and WITHOUT the shadow the minted `%` means the carrier's operation. The arm
+    // above cannot show this (its program does not load), so the value half is driven on
+    // the same expression with the declaration removed — which is the control for
+    // "refused" being a repair rather than merely a refusal.
+    let unshadowed = r#"
+namespace test.bfb9a.modok
+  import anthill.prelude.{Int64}
+  operation drive() -> Int64 = 7 % 2
+end
+"#;
+    assert!(
+        rival_errs(&errs_for(unshadowed)).is_empty(),
+        "sanity: the same program without the declaration is not refused"
+    );
+    let mut interp = crate::common::interp_for(unshadowed);
+    let got = interp
+        .call("test.bfb9a.modok.drive", &[])
+        .expect("the body must evaluate");
+    assert_eq!(
+        format!("{got:?}"),
+        "Int(1)",
+        "`7 % 2` is 1 — `EuclideanDomain.mod` dispatched to `Int64.mod`, with no import \
+         written anywhere. Got {got:?}"
+    );
+}
+
+/// THE EXEMPTION LEG, RE-SUBJECTED. `mod` was this file's witness that a tier entry on a
+/// NON-PARAMETRIC carrier is not refused; the row above took it away by making `mod`
+/// parametric, so the leg needs a subject that still is one or it goes untested — a rule
+/// can stop standing down and nothing would say so.
+///
+/// `anthill.prelude.BigInt.to_bigint` is that subject: a `PRELUDE_QUALIFIED` entry, so
+/// the tier really does answer a bare `to_bigint`, on a carrier with no `sort T = ?` and
+/// therefore no `provides BigInt[T = …]` to prescribe. There is no repair to name, so
+/// the declaration stands. §5.1 lists it, `Bool.and` beside it.
+///
+/// PASSES BOTH WAYS BY DESIGN with respect to VT8CF — it measures the exemption, not the
+/// refusal. It fails if `is_rivalled_spec_operation` drops its parametric requirement,
+/// which is the direction that would make the rule refuse names it cannot repair.
+#[test]
+fn a_non_parametric_carriers_operation_is_still_not_a_spec_op() {
+    let src = r#"
+namespace test.bfb9a.tobigintgap
+  import anthill.prelude.{Int64, BigInt}
+  operation to_bigint(n: Int64) -> Int64 = 99
+  operation drive() -> Int64 = to_bigint(7)
+end
+"#;
+    let errs = errs_for(src);
     assert!(
         rival_errs(&errs).is_empty(),
-        "`Int64.mod` is not a spec operation, so a free-standing `mod` is not refused; \
-         got: {errs:?}"
+        "`BigInt.to_bigint` sits on a non-parametric carrier, so a free-standing \
+         `to_bigint` has no provision to be moved onto and is not refused; got: {errs:?}"
     );
     let mut interp = crate::common::interp_for(src);
     let got = interp
-        .call("test.bfb9a.modgap.drive", &[])
+        .call("test.bfb9a.tobigintgap.drive", &[])
         .expect("the body must evaluate");
     assert_eq!(
         format!("{got:?}"),
         "Int(99)",
-        "RECORDING A GAP: the minted `%` reaches the namespace's own `mod`, so `7 % 2` \
-         answers the local declaration's 99 instead of 1, with no diagnostic anywhere. \
-         WI-20260824-VT8CF owns it; this row inverts when it closes. Got {got:?}"
+        "and the local declaration is what a written `to_bigint` reaches — the exemption \
+         is a REACHABLE shadow, not merely an unraised diagnostic. Got {got:?}"
     );
 }
 
@@ -600,26 +680,47 @@ operation eq(a: Int64, b: Int64) -> Bool = true
 /// THE RULE IS ABOUT SPEC OPERATIONS, NOT ABOUT THE TIER'S TABLE — and this is the only
 /// row that separates the two readings.
 ///
-/// `div` is in `PRELUDE_QUALIFIED`, but its TIER target is `anthill.prelude.Int64.div`,
-/// whose carrier is not parametric — so a bare `div` with no import is NOT refused (the
-/// population row above proves that). `anthill.prelude.Field.div` is a different symbol
-/// on a PARAMETRIC carrier, and importing it makes `div` denote a spec operation at this
-/// address. The declaration is then refused, naming `Field.div` and `Field`.
+/// The separating shape needs a name whose TIER target is NOT a spec operation, plus an
+/// IMPORT that makes the same spelling denote one at this address. `to_bigint` is that
+/// name: it is a `PRELUDE_QUALIFIED` entry resolving to `anthill.prelude.BigInt.to_bigint`
+/// on a non-parametric carrier, so a bare one is not refused (the population row above
+/// proves it, and `a_non_parametric_carriers_operation_is_still_not_a_spec_op` drives the
+/// shadow it leaves reachable). Importing a PARAMETRIC sort's member of that spelling
+/// makes the declaration a rival, and the message names that member.
+///
+/// IT USED TO BE `div`, AND WI-20260824-VT8CF TOOK THE SUBJECT AWAY — `div`'s tier target
+/// is now `Divisible.div`, parametric, so the "without import" control would be refused
+/// too and the row would stop separating anything. The spec is DECLARED HERE rather than
+/// borrowed from the stdlib for exactly that reason: a row whose subject is a library
+/// accident expires when the library changes, and this one already did once.
 ///
 /// FAILS IF the pass is narrowed to "the name's TIER target is a spec operation" — under
 /// which the import would be irrelevant and this program would load. Both halves are
 /// driven: the import removed is the second assertion, and it loads clean.
 #[test]
 fn a_spec_op_reached_only_by_import_is_a_rival_too() {
-    let errs = errs_for(
-        r#"
-namespace test.bfb9a.fielddiv
-  import anthill.prelude.{Int64, Field}
-  import anthill.prelude.Field.{div}
-  operation div(a: Int64, b: Int64) -> Int64 = 1
+    let spec = r#"
+namespace test.bfb9a.widening
+  import anthill.prelude.{Int64}
+  sort Widening
+    sort T = ?
+    operation to_bigint(n: T) -> Int64
+  end
+end
+"#;
+    let errs = errs_for_named(&[
+        ("widening.anthill", spec),
+        (
+            "importer.anthill",
+            r#"
+namespace test.bfb9a.importedspec
+  import anthill.prelude.{Int64}
+  import test.bfb9a.widening.Widening.{to_bigint}
+  operation to_bigint(a: Int64) -> Int64 = 1
 end
 "#,
-    );
+        ),
+    ]);
     let rivals = rival_errs(&errs);
     assert_eq!(
         rivals.len(),
@@ -628,21 +729,28 @@ end
          {errs:?}"
     );
     assert!(
-        rivals[0].contains("anthill.prelude.Field.div") && rivals[0].contains("anthill.prelude.Field'"),
-        "and it names `Field.div`, NOT the tier's `Int64.div`; got: {rivals:?}"
+        rivals[0].contains("test.bfb9a.widening.Widening.to_bigint"),
+        "and it names the IMPORTED spec operation, NOT the tier's \
+         `BigInt.to_bigint`; got: {rivals:?}"
     );
-    let without_import = errs_for(
-        r#"
-namespace test.bfb9a.intdiv
+
+    let without_import = errs_for_named(&[
+        ("widening.anthill", spec),
+        (
+            "tier.anthill",
+            r#"
+namespace test.bfb9a.tierbigint
   import anthill.prelude.{Int64}
-  operation div(a: Int64, b: Int64) -> Int64 = 1
+  operation to_bigint(a: Int64) -> Int64 = 1
 end
 "#,
-    );
+        ),
+    ]);
     assert!(
         rival_errs(&without_import).is_empty(),
-        "with no import the tier answers `Int64.div`, which is not a spec operation — \
-         and that gap is WI-20260824-VT8CF's, not this rule's; got: {without_import:?}"
+        "with no import the tier answers `BigInt.to_bigint`, whose carrier is not \
+         parametric, so this rule stands down — the IMPORT is what changed the verdict, \
+         which is the whole point of the row; got: {without_import:?}"
     );
 }
 

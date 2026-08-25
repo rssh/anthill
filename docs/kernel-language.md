@@ -1365,11 +1365,17 @@ Four things are outside it, each for its own reason.
   operation written there is a member too.
 - The rival must be a **spec** operation — a member of a *parametric* type, the only
   kind a `provides` clause can name. A tier entry on a **non-parametric** carrier
-  (`Int64.div`, `Int64.mod`, `Bool.and`, `BigInt.to_bigint`, `BigInt.to_int`) or a
+  (`Bool.and`, `BigInt.to_bigint`, `BigInt.to_int`) or a
   namespace-level **primitive** (`anthill.kernel.unify`, `.cut`, `.not`, `.or`) has no
   provision to write, so there would be no repair to name, and a free-standing
   declaration of one is left alone. What that costs is recorded at
-  **WI-20260824-VT8CF**: a namespace-level `mod` *does* capture a minted `%`, silently.
+  **WI-20260825-P9Y67**: a namespace-level `or` *does* capture a minted `|`, silently,
+  and in a rule body it turns the disjunction into a suspended boolean test.
+  `Int64.div` / `Int64.mod` **used to be on this list**, and are worth reading twice.
+  They left it under **WI-20260824-VT8CF** not by a new exemption but by the tier being
+  repointed at `Divisible.div` / `EuclideanDomain.mod` (§6.6) — parametric carriers, so
+  the rule above reaches them with nothing added here. The escape was never a property of
+  division; it was a property of what the tier entry pointed at.
   `anthill.reflect` declaring its own `unify` is the same exemption and is **settled
   rather than tolerated**: a `<=>` written there still means the kernel primitive
   (§8.3), and only a *written* `unify(a, b, kb)` call reaches the local declaration.
@@ -3089,13 +3095,30 @@ Operators are sugar for `Fn` terms. The tree-sitter grammar parses them as flat 
 | `+` | 5 | Left | `add` | `Numeric` |
 | `-` | 5 | Left | `sub` | `Numeric` |
 | `*` | 6 | Left | `mul` | `Numeric` |
-| `/` | 6 | Left | `div` | `Numeric` |
-| `%` | 6 | Left | `mod` | `Numeric` |
-| `mod` | 6 | Left | `mod` | `Numeric` (word form) |
-| `div` | 6 | Left | `div` | `Numeric` (word form) |
-| `^` | 7 | Right | `pow` | `Numeric` |
+| `/` | 6 | Left | `div` | `Divisible` |
+| `%` | 6 | Left | `mod` | `EuclideanDomain` |
+| `mod` | 6 | Left | `mod` | `EuclideanDomain` (word form) |
+| `div` | 6 | Left | `div` | `Divisible` (word form) |
+| `^` | 7 | Right | `pow` | `Float` (**not** a spec — see below) |
 | `->` | 8 | Right | `arrow` | type arrows |
 | `.` | 10 | Left | `field_access` | `anthill.reflect` |
+
+**The division rows are a tower, and `^` is not in it** (WI-20260824-VT8CF). `/` resolves
+to `Divisible.div` — a spec whose *only* content is that operation, with no law and no
+`requires`. It exists because the implicit tier (§8.6) maps one short name to exactly one
+qualified name, so a `div` that were a member of two specs would leave a minted `/` with
+no target unless resolution consulted the operand's carrier. **The single base spec is
+the alternative to carrier-dependent name resolution.** The laws live on the two branches,
+each of which reaches `div` by `provides Divisible[T = T]` rather than by declaring a
+second one: `EuclideanDomain` adds `mod`/`rem` and the division identity (`Int64`,
+`BigInt`), `Field` adds `recip` and the inverse law (`Float`). A carrier providing either
+branch thereby provides the base, so `10.0 / 4.0` and `7 / 2` both resolve with no import
+and dispatch to their own carrier's operation.
+
+`^` has no such spec: `pow` is declared on `Float` alone, nothing owns it parametrically,
+and a bare `^` is a diagnostic naming the carrier and the repair. That is deliberate —
+inventing a spec for one operation with no second carrier would assert a structure nothing
+satisfies.
 
 Higher priority binds tighter: `a + b * c` desugars to `add(a, mul(b, c))`. Left-associative: `a + b + c` desugars to `add(add(a, b), c)`. Right-associative: `a ^ b ^ c` desugars to `pow(a, pow(b, c))`. None-associative: `a = b = c` is an error.
 

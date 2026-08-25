@@ -2211,7 +2211,31 @@ const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
     // Arithmetic. Linear-arithmetic only (`/` against a Real constant is still
     // linear in QF_LRA). `Int64`/`Float` do not declare their own `add`/`sub`/`mul`
     // — they provide `Numeric`, so those three resolve to the SPEC op's symbol for
-    // every carrier; only `div` is declared per carrier and needs two rows.
+    // every carrier; `div` is declared per carrier and needs two rows.
+    //
+    // WI-20260824-VT8CF — AND `anthill.prelude.Divisible.div` IS DELIBERATELY ABSENT,
+    // which is a REFUSAL and not an oversight. That ticket made `div` a spec operation
+    // as well as a per-carrier one, so a BARE `/` — with no import naming a carrier's
+    // `div` — now resolves to the spec op: ONE symbol serving both carriers. This emitter
+    // keys on the functor alone and has no operand sort at the site, and the two carriers
+    // need DIFFERENT SMT operators: `div` is SMT-LIB INTEGER division, `/` is Real. A row
+    // either way would be silently wrong for the other carrier, on a proof obligation —
+    // the last place to guess, as this table's `abs` note already argues. So a bare `/`
+    // fails loudly with `unhandled arithmetic op 'div'`.
+    //
+    // BOTH HALVES REGRESSED, and the integer one is the easier to overlook. A bare
+    // `a / b` over `Float` never worked at all before (the tier pointed at `Int64.div`,
+    // so it was a type error); a bare `a / b` over `Int64` DID work and emitted SMT-LIB
+    // `div`, and now needs an `import anthill.prelude.Int64.{div}` it never needed. The
+    // repair is a carrier-naming import either way — `Float.{div}` for the float half, as
+    // `examples/webots-modelling/lf1/safety_gps.anthill` and the `comm_delay` /
+    // `step_distance` tests already write, and `Int64.{div}` for the integer half. NO
+    // in-tree `.anthill` file is affected (censused: every bare `/` in the stdlib, the
+    // examples and the binding dirs is inside a comment or a string), so this is
+    // user-facing only.
+    //
+    // Lowering the spec op needs the emitter to carry the operand sort; that is its own
+    // change, with its own census of what else keys on a functor alone.
     ("anthill.prelude.Numeric.add", SmtBuiltin::Arith("+")),
     ("anthill.prelude.Numeric.sub", SmtBuiltin::Arith("-")),
     ("anthill.prelude.Numeric.mul", SmtBuiltin::Arith("*")),

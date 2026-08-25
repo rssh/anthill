@@ -29,5 +29,13 @@ namespace anthill.prelude
     provides PartialOrd[T = Int64]
     provides Ord[T = Int64]
     provides Numeric[T = Int64]
+    -- WI-20260824-VT8CF — `Int64` is where division-with-remainder lives, so `/` and
+    -- `%` written over `Int64` operands reach `Int64.div` / `Int64.mod` / `Int64.rem`
+    -- by the short-name join on THIS provision. It carries `Divisible[Int64]` with it
+    -- (`EuclideanDomain provides Divisible[T = T]`), which is the row `/` resolves
+    -- against; writing both would be the inconsistency that `provides`-chaining exists
+    -- to prevent. `Field[Int64]` is deliberately absent: truncated division has no
+    -- multiplicative inverse (`div(7, 2) * 2 = 6`, not 7).
+    provides EuclideanDomain[T = Int64]
   end
 end

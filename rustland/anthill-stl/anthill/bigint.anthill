@@ -11,7 +11,12 @@ namespace anthill.prelude
       lt: "ordered_lt",
       lte: "ordered_lte",
       max: "ordered_max",
-      min: "ordered_min"
+      min: "ordered_min",
+      -- WI-20260824-VT8CF: division with remainder, the surface behind
+      -- `provides EuclideanDomain[T = BigInt]` below.
+      div: "bigint_div",
+      mod: "bigint_mod",
+      rem: "bigint_rem"
     }
     -- WI-644 / proposal 004: BigInt is lawful — partial bases + total markers.
     provides PartialEq[T = BigInt]
@@ -19,5 +24,10 @@ namespace anthill.prelude
     provides PartialOrd[T = BigInt]
     provides Ord[T = BigInt]
     provides Numeric[T = BigInt]
+    -- WI-20260824-VT8CF: BigInt is the second Euclidean domain, and carries
+    -- `Divisible[BigInt]` with it, so a minted `/` over BigInt operands resolves to the
+    -- spec op and dispatches here. `Field[BigInt]` is absent for the reason `Int64`'s
+    -- is: truncated division has no multiplicative inverse.
+    provides EuclideanDomain[T = BigInt]
   end
 end

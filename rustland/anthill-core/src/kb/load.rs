@@ -4989,14 +4989,23 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.Numeric.mul",
     "anthill.prelude.Numeric.neg", // prefix `-` (WI-529); not position-directed
     // WI-863: `/` and word-`div` desugar to `div`, `%` and word-`mod` to `mod`.
-    // Division is not total on Numeric, so these live on Int64 (partial: a zero
-    // divisor yields no solution). Bare `div`/`mod` resolve here so a query
-    // computes them, as `+`/`-`/`*` already do above. NOT yet computing in a query
-    // (named-resolvable but with no resolver builtin, so they refuse/flounder):
-    // `^`→`pow` (no Int `pow` op exists at all), prefix `-`→`neg`, and `and`→
-    // `Bool.and` — each needs its own resolver builtin, tracked separately.
-    "anthill.prelude.Int64.div",
-    "anthill.prelude.Int64.mod",
+    // WI-20260824-VT8CF: THESE ARE SPEC OPERATIONS ON PARAMETRIC CARRIERS, and that is
+    // the whole point of the entries. They pointed at `Int64.div` / `Int64.mod` — a
+    // NON-PARAMETRIC carrier — until VT8CF, and the cost was twofold. A minted `/` meant
+    // the Int64 operation whatever its operands were, so `10.0 / 4.0` was a type error
+    // unless the file wrote `import anthill.prelude.Float.{div}`; and because
+    // `typing::spec_op_parent_sort` answers `None` for a non-parametric carrier,
+    // `check_rival_spec_operations` stood down, so a namespace-level
+    // `operation mod(a, b) = 99` captured a minted `7 % 2` silently. Both follow from
+    // one fact — a tier entry is resolved by SCOPE, and scope is shadowable. Pointing
+    // them at the specs makes the ladder carrier-agnostic (the typer dispatches to the
+    // carrier's own operation) and puts the names inside the rival refusal by
+    // construction. NOT yet computing in a query (named-resolvable but with no resolver
+    // builtin, so they refuse/flounder): `^`→`pow` (declared on `Float` alone, and no
+    // spec owns it), prefix `-`→`neg`, and `and`→`Bool.and` — each needs its own
+    // resolver builtin, tracked separately.
+    "anthill.prelude.Divisible.div",
+    "anthill.prelude.EuclideanDomain.mod",
     // WI-529: `&`/word-`and` is value-only (no goal connective — conjunction is the
     // comma, there is no kernel.and), so it resolves to the dispatched Bool op
     // everywhere via this general fallback. `not`/`or` are position-directed instead
@@ -9970,6 +9979,61 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         "anthill.prelude.Numeric.mul",
         SymbolKind::Operation,
         num_sort_scope,
+    );
+
+    // WI-20260824-VT8CF — the DIVISION TOWER (`stdlib/anthill/prelude/division.anthill`).
+    // Pre-registered here for the same reason `Numeric` above is: `register_builtin_tags`
+    // runs BEFORE `load_all`, and it resolves a tag's owning scope from the qualified
+    // name's namespace PREFIX — so `anthill.prelude.Divisible.div` needs its sort to
+    // exist as a scope already, or the registration panics. Driven: without these two
+    // blocks every `anthill` invocation died on
+    // "namespace prefix for 'anthill.prelude.Divisible.div' not found".
+    //
+    // `div` alone on `Divisible` and `mod` alone on `EuclideanDomain` — the two the
+    // implicit tier points at (`PRELUDE_QUALIFIED`) and the two carrying resolver
+    // builtins. `rem` needs neither, so it is left to the stdlib load like every other
+    // member; pre-registering more than the bootstrap requires would be a second,
+    // silently-drifting copy of the sorts' contents.
+    let divisible_sort_sym = kb.symbols.define(
+        "Divisible",
+        "anthill.prelude.Divisible",
+        SymbolKind::Sort,
+        prelude_scope,
+    );
+    let divisible_sort_scope = kb.symbols.scope_id(divisible_sort_sym);
+    kb.symbols.add_parent(
+        divisible_sort_scope,
+        ScopeInclusion {
+            parent_scope: prelude_scope,
+            is_enclosing: true,
+        },
+    );
+    kb.symbols.define(
+        "div",
+        "anthill.prelude.Divisible.div",
+        SymbolKind::Operation,
+        divisible_sort_scope,
+    );
+
+    let euclid_sort_sym = kb.symbols.define(
+        "EuclideanDomain",
+        "anthill.prelude.EuclideanDomain",
+        SymbolKind::Sort,
+        prelude_scope,
+    );
+    let euclid_sort_scope = kb.symbols.scope_id(euclid_sort_sym);
+    kb.symbols.add_parent(
+        euclid_sort_scope,
+        ScopeInclusion {
+            parent_scope: prelude_scope,
+            is_enclosing: true,
+        },
+    );
+    kb.symbols.define(
+        "mod",
+        "anthill.prelude.EuclideanDomain.mod",
+        SymbolKind::Operation,
+        euclid_sort_scope,
     );
 
     // Proposal 038: register primitive sorts at anthill.prelude scope so

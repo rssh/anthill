@@ -77,5 +77,17 @@ namespace anthill.prelude
     provides NonEq[T = Float]
     provides Numeric[T = Float]
     provides Ring[Float]
+    -- WI-20260824-VT8CF — IEEE division, and the row a minted `/` over `Float` operands
+    -- resolves against: `Field provides Divisible[T = T]`, so this one provision is what
+    -- makes `10.0 / 4.0` reach `Float.div`. Before it, a bare `/` meant `Int64.div` and
+    -- float division was a type error unless the file wrote
+    -- `import anthill.prelude.Float.{div}` — which every float site in the corpus did.
+    --
+    -- APPROXIMATELY, and the library says so rather than pretending: rounding refutes
+    -- the inverse law at the boundary exactly as it refutes `Ring`'s associativity just
+    -- above. NOT `EuclideanDomain[Float]`, though every field is trivially one: its
+    -- remainder is identically 0, and `Float.fmod` is the IEEE remainder instead — so
+    -- `%` over floats stays unavailable, which is what it was before this ticket.
+    provides Field[T = Float]
   end
 end

@@ -2144,7 +2144,22 @@ class BootstrapTest extends munit.FunSuite:
       ("lattice", "Lattice", "trait Lattice[T] extends _root_.anthill.prelude.Eq[T]:"),
       ("lattice", "BoundedLattice", "trait BoundedLattice[T] extends Lattice[T]:"),
       ("numeric", "Numeric", "trait Numeric[T] extends _root_.anthill.prelude.PartialOrd[T]:"),
-      ("field", "Field", "trait Field[T] extends _root_.anthill.prelude.Numeric[T]:"),
+      // WI-20260824-VT8CF — the FIRST rows carrying BOTH clause kinds on one sort, which
+      // is why they are worth listing rather than just repairing. `Divisible` comes from
+      // a `provides` (the is-a conversion, as `Ord`'s and `Eq`'s rows above do) and
+      // `Numeric` from a `requires`; the emitted `extends` list holds them together, so a
+      // rule that read only one clause kind per sort would drop half of each line here.
+      // `Field` gained its `Divisible` when `div` moved off it onto the shared base.
+      ("field", "Field",
+        "trait Field[T] extends _root_.anthill.prelude.Divisible[T], " +
+        "_root_.anthill.prelude.Numeric[T]:"),
+      // …and this one mixes the two QUALIFICATIONS as well as the two clause kinds:
+      // `Divisible` is in the same file so it emits bare, `Numeric` is not so it emits
+      // `_root_`-qualified — the same split `Ord`'s bare `WeakOrd` and `PartialOrd`'s
+      // qualified `PartialEq` show above, here on ONE line.
+      ("division", "EuclideanDomain",
+        "trait EuclideanDomain[T] extends Divisible[T], " +
+        "_root_.anthill.prelude.Numeric[T]:"),
     ).foreach { case (file, sort, decl) =>
       val src = wi1066Emission(sort, preludeClosure(file))
       assert(src.contains(decl), s"$sort's supertrait must be unchanged:\n$src")

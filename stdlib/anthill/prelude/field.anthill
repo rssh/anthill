@@ -4,16 +4,32 @@
 --
 -- `Int64` does NOT satisfy Field: truncated integer division discards
 -- information (`div(7, 2) * 2 = 6 ≠ 7`). Code that wants integer truncation
--- uses `Int64.div` directly; code that wants proper division works over a
--- `Field` instance (Float approximately, Rational exactly).
+-- works over an `EuclideanDomain` instance (`division.anthill`), which is where
+-- `Int64`'s `div` lives; code that wants proper division works over a `Field`
+-- instance (Float approximately, Rational exactly).
+--
+-- WI-20260824-VT8CF — `div` IS NOT DECLARED HERE ANY MORE. It is
+-- `Divisible.div`, and this sort reaches it by `provides` rather than by a second
+-- declaration. Two specs declaring one short name is what `ordered.anthill` refuses for
+-- `gt`/`lt` (a carrier providing both would get two `sort_ops` entries and
+-- HashMap-iteration order would pick), and here it would also leave the implicit tier
+-- with two candidates for the bare `div` that `/` mints — the carrier-dependent name
+-- resolution the base spec exists to remove. What is genuinely Field's is `recip` and
+-- the inverse law, and those are what remain.
+--
+-- FIELD IS MATHEMATICALLY A EUCLIDEAN DOMAIN — trivially, with remainder identically 0
+-- — and this library deliberately does NOT write `provides EuclideanDomain[T = T]`.
+-- That implication is true and useless: the degenerate structure is not what any
+-- carrier here computes, and asserting it would owe every field a `mod` answering 0
+-- where `Float.fmod` answers the IEEE remainder.
 sort anthill.prelude.Field
-  import anthill.prelude.{Numeric}
+  import anthill.prelude.{Numeric, Divisible}
 
   sort T = ?
   requires Numeric[T]
+  provides Divisible[T = T]
 
   operation {
-    div(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }    -- `a * inv(b)`; partial: b ≠ 0
     recip(a: T) -> T effects { Error[DivisionByZero] :- eq(a, 0) }         -- `1 / a`; partial: a ≠ 0
   }
 

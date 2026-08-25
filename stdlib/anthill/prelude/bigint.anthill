@@ -22,6 +22,21 @@ sort anthill.prelude.BigInt
     min(a: BigInt, b: BigInt) -> BigInt     -- the lesser
   }
 
+  -- WI-20260824-VT8CF: `BigInt`'s DIVISION WITH REMAINDER, the surface that makes
+  -- `provides EuclideanDomain[T = BigInt]` true. Until this ticket it did not exist —
+  -- this sort declared eighteen ordering and conversion operations and no division at
+  -- all — so a minted `/` or `%` over BigInt operands had nothing to reach, while the
+  -- RESOLVER computed both (the BigInt slots of `BuiltinTag::Div` / `Mod`). Host-backed,
+  -- named in `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`.
+  --
+  -- ONLY THE ZERO DIVISOR IS PARTIAL: `BigInt` is unbounded, so there is no
+  -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes.
+  operation {
+    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated quotient; partial: b ≠ 0
+    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- Euclidean remainder, never negative; partial: b ≠ 0
+    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+  }
+
   -- Conversion operations
   operation to_bigint(n: Int64) -> BigInt
   operation to_int(n: BigInt) -> Option[Int64]

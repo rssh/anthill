@@ -63,5 +63,10 @@ namespace anthill.prelude
     provides PartialOrd[T = Int64]
     provides Ord[T = Int64]
     provides Numeric[T = Int64]
+    -- WI-20260824-VT8CF: the C++ backend's `Int64` is the same Euclidean domain the
+    -- rust binding declares, and the `div` / `mod` / `rem` templates above are already
+    -- its implementations — this row is what a minted `/` or `%` resolves against, and
+    -- carries `Divisible[Int64]` with it.
+    provides EuclideanDomain[T = Int64]
   end
 end

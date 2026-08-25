@@ -384,6 +384,13 @@ const HOST_FNS: &[(
     ("ordered_lte", 2, ordered_lte),
     ("ordered_max", 2, ordered_max),
     ("ordered_min", 2, ordered_min),
+    // WI-20260824-VT8CF — `BigInt`'s division with remainder, named by its own binding's
+    // `operation_map`. `Int64`'s three are registered by hardcoded qualified name
+    // instead (see `register_standard_builtins`); the split is WI-884's, not this
+    // ticket's, and the mapped spelling is the one WI-880 wants everything migrated to.
+    ("bigint_div", 2, bigint_div),
+    ("bigint_mod", 2, bigint_mod),
+    ("bigint_rem", 2, bigint_rem),
     // The IEEE partial order (`PartialOrd` on `Float`): a NaN operand is
     // UNORDERED, so every comparison answers false. Its own four functions
     // rather than a carrier test inside the total ones — `Float` names these
@@ -932,6 +939,72 @@ fn float_div(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     match (&a, &b) {
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
         _ => Err(type_mismatch("Float", &a, Some(&b))),
+    }
+}
+
+// ── BigInt: division with remainder ─────────────────────────────────────
+//
+// WI-20260824-VT8CF — `BigInt` provides `EuclideanDomain`, and until this ticket it
+// declared NO division at all: eighteen ordering and conversion operations and not one
+// of `div` / `mod` / `rem`. The RESOLVER already computed all three
+// (`Self::bigint_checked_div`, `Self::bigint_rem_euclid` — the BigInt slots of
+// `BuiltinTag::Div` / `Mod`), so a rule-body `div` over BigInt answered while the same
+// division in an operation body had nothing to dispatch to. These three close that, with
+// the same semantics as the resolver's slots and as `Int64`'s: `div` truncates, `mod` is
+// Euclidean (never negative), `rem`'s sign follows the dividend.
+//
+// NO OVERFLOW ARM, unlike `Int64`'s: `num_bigint::BigInt` is unbounded, so the zero
+// divisor is the only partiality — which is also why `num_bigint`'s own `/` and `%`
+// PANIC there rather than returning, making the guard load-bearing rather than
+// defensive.
+
+fn bigint_div(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.div", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(y)) if y.sign() == num_bigint::Sign::NoSign => {
+            Err(i.raise_division_by_zero("BigInt.div"))
+        }
+        (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x / y)),
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
+    }
+}
+
+/// Euclidean remainder — always non-negative, matching `Int64.mod`'s `rem_euclid`.
+/// `num_bigint`'s `%` follows the DIVIDEND's sign, so a negative result is lifted by
+/// `|b|`; the divisor's own sign decides which way, which is why the inner test is on
+/// `b` and not on `r` alone.
+fn bigint_mod(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.mod", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(y)) if y.sign() == num_bigint::Sign::NoSign => {
+            Err(i.raise_division_by_zero("BigInt.mod"))
+        }
+        (Value::BigInt(x), Value::BigInt(y)) => {
+            let r = x % y;
+            Ok(Value::BigInt(if r.sign() == num_bigint::Sign::Minus {
+                if y.sign() == num_bigint::Sign::Minus {
+                    r - y
+                } else {
+                    r + y
+                }
+            } else {
+                r
+            }))
+        }
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
+    }
+}
+
+/// Truncated remainder — sign follows the dividend, the partner `div` satisfies
+/// `b * div(a, b) + rem(a, b) = a` with (`EuclideanDomain`'s `euclid_div` law).
+fn bigint_rem(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.rem", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(y)) if y.sign() == num_bigint::Sign::NoSign => {
+            Err(i.raise_division_by_zero("BigInt.rem"))
+        }
+        (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x % y)),
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
     }
 }
 

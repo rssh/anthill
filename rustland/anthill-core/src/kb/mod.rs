@@ -8925,11 +8925,25 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.prelude.Numeric.add", BuiltinTag::Add);
         self.register_builtin_tag("anthill.prelude.Numeric.sub", BuiltinTag::Sub);
         self.register_builtin_tag("anthill.prelude.Numeric.mul", BuiltinTag::Mul);
-        // div/mod live on Int64 (division is not total on Numeric); the `/` `div`
-        // `%` `mod` operators desugar to the bare names, resolved to these
-        // registrations so a query computes them (WI-863). divExact aliases div (a
-        // stdlib rule); it is registered for the QUALIFIED form but deliberately
-        // kept out of PRELUDE_QUALIFIED — no operator mints a bare `divExact`.
+        // WI-20260824-VT8CF — `div` / `mod` are SPEC operations, on `Divisible` and
+        // `EuclideanDomain` respectively, and the SPEC op is what the `/` `div` `%`
+        // `mod` operators resolve to (`PRELUDE_QUALIFIED`, kb/load.rs). Registering the
+        // tag there is what keeps a rule-body query computing them (WI-863).
+        //
+        // THE BUILTINS WERE ALREADY CARRIER-POLYMORPHIC and only the KEYS were not:
+        // `builtin_arith`'s `Div` fills the Int, BigInt AND Float slots, and `Mod` fills
+        // Int and BigInt with the float slot already `None` — Divisible over three
+        // carriers, EuclideanDomain over two, which is exactly the tower the specs now
+        // declare. Keyed on `Int64.div` the resolver would answer a FLOAT division under
+        // a name the typer had just refused for float operands.
+        //
+        // THE CARRIER ENTRIES STAY BESIDE THEM, and are not redundant: a QUALIFIED
+        // `Int64.div(a, b)` written by hand never goes through the tier, so it needs its
+        // own tag or it stops computing in a query. `divExact` is an Int64-only alias (a
+        // stdlib rule rewrites it to `div`) and is deliberately kept out of
+        // `PRELUDE_QUALIFIED` — no operator mints a bare `divExact`.
+        self.register_builtin_tag("anthill.prelude.Divisible.div", BuiltinTag::Div);
+        self.register_builtin_tag("anthill.prelude.EuclideanDomain.mod", BuiltinTag::Mod);
         self.register_builtin_tag("anthill.prelude.Int64.div", BuiltinTag::Div);
         self.register_builtin_tag("anthill.prelude.Int64.divExact", BuiltinTag::Div);
         self.register_builtin_tag("anthill.prelude.Int64.mod", BuiltinTag::Mod);

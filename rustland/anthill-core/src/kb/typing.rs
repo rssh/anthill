@@ -15213,39 +15213,15 @@ fn check_apply_iter(
             // census that settles it, and the wrapper is total accordingly). The
             // pre-CTD6D `.flatten()` here declassified any other carrier back to a
             // plain atom, silently undoing this very flatten.
-            let (bare_row, walked) = if value_is_bare_row_expr(kb, &walked) {
-                (true, wrap_bare_effect_expr_as_row(kb, &walked))
-            } else {
-                (false, walked)
-            };
-            if bare_row || matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
-                // A WRITTEN row wrapper: flatten to its present labels, then — WI-067
-                // — drop the label of any guarded atom inside whose σ(guard) refutes
-                // from Γ. The flatten leaves a guarded atom's label conservatively
-                // present (WI-478); discharge removes only the proven-dropped ones.
-                let mut present = effect_row_present_values(kb, &walked);
-                if op_has_guarded {
-                    drop_refuted_guarded_labels(
-                        kb,
-                        flow,
-                        &subst,
-                        &guard_sigma,
-                        &walked,
-                        &mut present,
-                    );
-                }
-                substituted_op_effects.extend(present);
-            } else if op_has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
-                // A STANDALONE guarded atom (how a partial primitive declares its
-                // single effect: `div … effects { Error[…] :- eq(b, 0) }`). Refute
-                // σ(guard) from Γ; drop the atom on a positive proof of ¬guard, else
-                // keep it conservatively present (unchanged from WI-478).
-                if !guarded_atom_value_refuted(kb, flow, &subst, &guard_sigma, &walked) {
-                    substituted_op_effects.push(walked);
-                }
-            } else {
-                substituted_op_effects.push(walked);
-            }
+            push_effect_with_guard_discharge(
+                kb,
+                flow,
+                &subst,
+                &guard_sigma,
+                op_has_guarded,
+                walked,
+                &mut substituted_op_effects,
+            );
         }
         // WI-20260823-4GBQV: a `Modify` that STILL names one of the CALLEE's own
         // parameters got no argument to be re-keyed onto — refuse here, against the
@@ -15550,6 +15526,7 @@ fn check_apply_iter(
                     let impl_op = only.target;
                     let derived = dispatched_impl_effects(
                         kb,
+                        flow,
                         impl_op,
                         &op.params,
                         &subst,
@@ -15908,6 +15885,7 @@ fn check_apply_iter(
                     if impl_op != fn_sym {
                         let derived = dispatched_impl_effects(
                             kb,
+                            flow,
                             impl_op,
                             &op.params,
                             &subst,
@@ -16319,6 +16297,7 @@ fn check_apply_iter(
                     {
                         let derived = dispatched_impl_effects(
                             kb,
+                            flow,
                             impl_op,
                             &op.params,
                             &subst,
@@ -16536,6 +16515,7 @@ fn check_apply_iter(
                     if impl_op_sym != fn_sym {
                         let derived = dispatched_impl_effects(
                             kb,
+                            flow,
                             impl_op_sym,
                             &op.params,
                             &subst,
@@ -35089,6 +35069,59 @@ fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
     }
 }
 
+/// WI-067 / WI-478 — flatten one callee effect expression into `out`, DROPPING any
+/// guarded atom whose σ(guard) refutes from Γ. The one owner of that decision.
+///
+/// IT HAS TWO CALLERS AND USED TO HAVE ONE, which is the whole reason it is a function.
+/// The op's-own-effect loop in [`check_apply_iter`] discharged; [`dispatched_impl_effects`]
+/// — the row a DISPATCHED spec-op call takes instead — did not, so an impl's guarded
+/// effect came back conservatively present after the spec op's identical one had just
+/// been discharged. Invisible while `/` resolved to `Int64.div` (a concrete op, no
+/// dispatch); WI-20260824-VT8CF made `/` a spec operation and MEASURED it at once —
+/// `Int64.div(n, 2)` loaded pure while `n / 2` and `Divisible.div(n, 2)` both demanded a
+/// declared `Error[DivisionByZero]`, for a divisor literal `2` that refutes `eq(b, 0)`
+/// by ground evaluation.
+///
+/// `has_guarded` is the caller's own "this op declares a guarded atom at all" answer,
+/// kept as a parameter rather than recomputed: both callers have already paid for it,
+/// and the guard-σ they pass is built only when it is true.
+fn push_effect_with_guard_discharge(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    subst: &Substitution,
+    guard_sigma: &HashMap<Symbol, TermId>,
+    has_guarded: bool,
+    walked: Value,
+    out: &mut Vec<Value>,
+) {
+    let (bare_row, walked) = if value_is_bare_row_expr(kb, &walked) {
+        (true, wrap_bare_effect_expr_as_row(kb, &walked))
+    } else {
+        (false, walked)
+    };
+    if bare_row || matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
+        // A WRITTEN row wrapper: flatten to its present labels, then — WI-067 — drop the
+        // label of any guarded atom inside whose σ(guard) refutes from Γ. The flatten
+        // leaves a guarded atom's label conservatively present (WI-478); discharge
+        // removes only the proven-dropped ones.
+        let mut present = effect_row_present_values(kb, &walked);
+        if has_guarded {
+            drop_refuted_guarded_labels(kb, flow, subst, guard_sigma, &walked, &mut present);
+        }
+        out.extend(present);
+    } else if has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
+        // A STANDALONE guarded atom (how a partial primitive declares its single effect:
+        // `div … effects { Error[…] :- eq(b, 0) }`). Refute σ(guard) from Γ; drop the
+        // atom on a positive proof of ¬guard, else keep it conservatively present
+        // (unchanged from WI-478).
+        if !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked) {
+            out.push(walked);
+        }
+    } else {
+        out.push(walked);
+    }
+}
+
 /// WI-365 — the EFFECT dual of WI-357's element threading. When a body-less
 /// self-receiver spec op (`Box.peek`, polymorphic `effects Effect`) dispatches
 /// to a concrete impl that OVERRIDES it with a genuine effect
@@ -35122,6 +35155,7 @@ fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
 /// the arg named with the SPEC op's param[i] name (`spec_params`).
 fn dispatched_impl_effects(
     kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
     impl_op_sym: Symbol,
     spec_params: &[(Symbol, Value)],
     subst: &Substitution,
@@ -35136,6 +35170,15 @@ fn dispatched_impl_effects(
     if impl_op.effects.is_empty() {
         return Vec::new();
     }
+    // WI-20260824-VT8CF — the impl's own guarded atoms, and the call σ to refute them
+    // with. `collect_guarded_atoms` walks each effect, so it is asked once and the σ
+    // below is filled only when the answer is yes — the common effect-bearing op that
+    // declares no guard pays nothing.
+    let impl_has_guarded = impl_op
+        .effects
+        .iter()
+        .any(|e| !collect_guarded_atoms(kb, subst, e).is_empty());
+    let mut guard_sigma: HashMap<Symbol, TermId> = HashMap::new();
     let mut param_to_arg: HashMap<Symbol, Symbol> = HashMap::new();
     // WI-604: the IMPL op's parameter TYPES, keyed by impl-param symbol, so a
     // projection-bearing impl effect (`Stream.isEmpty effects s.E`) is δ-reduced
@@ -35173,6 +35216,37 @@ fn dispatched_impl_effects(
         }
         if let Some(t) = arg_ty {
             param_to_arg_type.insert(*impl_param_sym, t);
+        }
+        // WI-20260824-VT8CF — σ for the guard, paired THE WAY THIS FUNCTION'S DOC
+        // PRESCRIBES: positionally by index, or — for a named call — by the SPEC op's
+        // `param[i]` label, because that is what a caller writes.
+        //
+        // NOT `build_call_guard_sigma(kb, &impl_op.params, …)`, which is what this did
+        // first and which is wrong in both directions. That helper matches a named arg's
+        // LABEL against the params it is handed — correct where the call was matched
+        // against those very params, and not here, where the call was matched against the
+        // SPEC op. An override may rename or permute its parameters (`align_effect_label`
+        // exists for exactly that), so with impl params: a RENAMED one leaves σ empty, the
+        // guard cannot ground, and a literal divisor that refutes it keeps a spurious
+        // `undeclared effect` — the very false positive this discharge exists to remove,
+        // reintroduced for named calls; a PERMUTED one binds the guard to the WRONG
+        // OPERAND, which drops an effect that is really incurred. The second direction is
+        // unsound, not merely imprecise. Found by `/code-review`, which also found that
+        // the paragraph stating this rule had been displaced off this function.
+        if impl_has_guarded {
+            let guard_arg = pos_args.get(i).cloned().or_else(|| {
+                spec_params.get(i).and_then(|(spec_name, _)| {
+                    named_args
+                        .iter()
+                        .find(|(n, _)| same_label(kb, *n, *spec_name))
+                        .map(|(_, occ)| Rc::clone(occ))
+                })
+            });
+            if let Some(occ) = guard_arg {
+                if let Some(t) = super::node_occurrence::try_occurrence_to_term(kb, &occ) {
+                    guard_sigma.insert(*impl_param_sym, t);
+                }
+            }
         }
     }
     let arg_syms = (!param_to_arg.is_empty()).then_some(&param_to_arg);
@@ -35215,7 +35289,21 @@ fn dispatched_impl_effects(
         };
         let walked = walk_type_deep_value(kb, subst, &sub);
         if !effect_is_unresolved_var(kb, &walked) {
-            out.push(walked);
+            // WI-20260824-VT8CF — DISCHARGE HERE TOO, through the same owner the
+            // op's-own-effect loop uses. σ is built over the IMPL's parameters, because
+            // it is the impl's guard (`Int64.div`'s `eq(b, 0)`) being refuted and its
+            // `b` that the call's argument must be bound to; the caller names the SPEC
+            // op's params, which is exactly what `build_call_guard_sigma` resolves by
+            // position and by label.
+            push_effect_with_guard_discharge(
+                kb,
+                flow,
+                subst,
+                &guard_sigma,
+                impl_has_guarded,
+                walked,
+                &mut out,
+            );
         }
     }
     out

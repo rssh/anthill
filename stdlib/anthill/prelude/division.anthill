@@ -1,0 +1,111 @@
+-- Division: the `/` operator's spec, and the structure that gives `%` its meaning.
+--
+-- `Divisible` IS NOT AN ALGEBRAIC STRUCTURE, and reading it as one is the mistake this
+-- header exists to prevent. It declares `div` and asserts NOTHING about it — no law, no
+-- `requires`. Its whole job is that `/` mints a BARE `div`, and the implicit tier maps
+-- one short name to exactly ONE qualified name (kb/load.rs `PRELUDE_QUALIFIED`), so a
+-- `div` that were a member of two specs would leave the tier unable to point anywhere
+-- without choosing by operand carrier. THE SINGLE BASE SPEC IS THE ALTERNATIVE TO
+-- CARRIER-DEPENDENT NAME RESOLUTION (WI-20260824-VT8CF). Anything that later gives it
+-- laws is undoing the point; the laws belong on the branches, which have carriers that
+-- can satisfy them.
+--
+-- WHY NOT `EuclideanDomain` AS THE BASE, which IS the standard structure with division:
+-- because `Field` would then sit UNDER it (every field is trivially Euclidean, with
+-- remainder identically 0) and Float would owe a `mod` that is always 0 — which is not
+-- what any Float operation computes. Float's remainder is `Float.fmod`, IEEE, sign
+-- following the dividend, and it relates to Float's exact `div` by no division identity
+-- at all: `2.0 * div(-7.0, 2.0) + fmod(-7.0, 2.0)` is -8.0, not -7.0. The standard
+-- structure exists and does not fit; that is the argument FOR the law-free base.
+--
+-- The two branches are what carry meaning, and each declares only what is NEW:
+--
+--   Divisible          div                                    -- no law; the `/` slot
+--     +-- EuclideanDomain  + mod, rem, the division identity   -> Int64, BigInt
+--     +-- Field            + recip, the inverse law            -> Float, Rational
+--
+-- `provides`, not `requires`, is the direction (WI-1110, and the same argument as
+-- `Eq provides PartialEq`): hold a `Field[T]` and you can OBTAIN a `Divisible[T]`, so a
+-- carrier writes one row instead of two and cannot state them inconsistently.
+
+sort anthill.prelude.Divisible
+
+  sort T = ?
+
+  -- THE GUARDED EFFECT BELONGS HERE, ON THE SPEC OP, and the reason is a rule this was
+  -- written the other way round to learn. An override may NARROW a spec operation's
+  -- effect row and may not WIDEN it, so declaring nothing here made every carrier that
+  -- declares the guarded `Error[DivisionByZero]` a load error — MEASURED, four of them:
+  -- "'anthill.prelude.Int64' overrides 'anthill.prelude.EuclideanDomain.mod' but does
+  -- not refine it: the override declares effect ... which is not covered by any effect
+  -- the spec operation declares (effects must not widen)".
+  --
+  -- SO THE ROW IS THE PERMISSIVE DIRECTION, not a claim every carrier is partial: the
+  -- spec says a division MAY raise at a zero divisor, and IEEE `Float.div` — which is
+  -- total, `1.0 / 0.0` being +Infinity — declares no effect at all and thereby NARROWS
+  -- it to nothing. That is the refinement working, and it is why the guard is written
+  -- `:- eq(b, 0)` rather than unconditionally: WI-479's discharge then drops the effect
+  -- at any call whose divisor is a literal non-zero, on every carrier at once.
+  --
+  -- NO `requires`. A base that states no law needs nothing beneath it to state it with;
+  -- `Numeric` is required by each branch, where the laws that read `mul` and `add`
+  -- actually live.
+  operation div(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }
+end
+
+-- EuclideanDomain: division WITH REMAINDER. The standard structure — an integral domain
+-- with a Euclidean function N such that for every `a` and every `b` != 0 there exist
+-- `q`, `r` with `a = b*q + r` and either `r = 0` or `N(r) < N(b)`. `Int64` and `BigInt`
+-- are the carriers; `Z` is the canonical example, with N = absolute value.
+--
+-- THE PAIR IS NOT UNIQUE, and that is why the convention below is stated rather than
+-- derived. The definition asserts EXISTENCE only: for `-7 = 2q + r` with `|r| < 2`, both
+-- `(-3, -1)` and `(-4, 1)` qualify. So the algebra does not choose between truncated,
+-- floored and Euclidean division; a language must, and the choice is EXTRA to the
+-- structure.
+--
+-- THE LAW PAIRS `div` WITH `rem`, NOT WITH `mod`, and this is measured rather than
+-- stylistic. This library's `div` truncates toward zero, its `rem`'s sign follows the
+-- dividend (the same convention), and its `mod` is Euclidean — always non-negative,
+-- which is a DIFFERENT convention. Driven on `Int64`:
+--
+--   div(-7, 2) = -3      mod(-7, 2) = 1       rem(-7, 2) = -1
+--   2*div + mod = -5     WRONG                2*div + rem = -7    the identity holds
+--
+-- Each operation is correct against its own declaration; the pair `(div, mod)` simply
+-- satisfies no division identity. So `mod` is characterized by its RANGE below instead
+-- of by a quotient — the library has no floored quotient for it to pair with, and
+-- giving `div` one would flip `-7 / 2` from -3 to -4, which
+-- `wi863_operator_arithmetic_test` pins deliberately.
+sort anthill.prelude.EuclideanDomain
+  import anthill.prelude.{Numeric, Divisible}
+
+  sort T = ?
+  requires Numeric[T]
+  provides Divisible[T = T]
+
+  -- The guarded effect, for the reason `Divisible.div` states: an override NARROWS and
+  -- never widens, so the row a carrier declares must already be covered here.
+  operation {
+    mod(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }   -- Euclidean remainder: always non-negative; `%`
+    rem(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }   -- truncated remainder: sign follows the dividend
+  }
+
+  -- The division identity, over the pair that satisfies it. Guarded, so it keeps `=`
+  -- (a bodyless equational head takes `<=>`; a guarded one does not — spec §5.3).
+  rule euclid_div: add(mul(?b, div(?a, ?b)), rem(?a, ?b)) = ?a :- neq(?b, 0)
+
+  -- `mod`'s precondition, in the shape this library writes an integrity guard:
+  -- INVARIANT `:-` OCCURRENCE, read as "wherever `mod(_, b)` appears, require `b > 0`".
+  -- `int64.anthill`'s `mod_positive` is the same row over the concrete carrier, and the
+  -- two agree deliberately; written the other way round (`gte(mod(?a, ?b), zero-val) :-
+  -- gt(?b, zero-val)`) the guard is a CONDITION rather than an occurrence pattern, which
+  -- binds nothing and states nothing.
+  --
+  -- `mod`'s RANGE — `0 <= mod(a, b) < |b|` — is deliberately NOT written as a constraint.
+  -- It is the property that replaces the division identity for this operation (which
+  -- pairs `div` with `rem` instead, above), and it needs an absolute value this tower
+  -- does not declare; a constraint that cannot be driven is decoration, so it is stated
+  -- here as prose until there is a `Norm`-like member to state it against.
+  constraint mod_nonneg: gt(?b, zero-val) :- mod(?_, ?b)
+end
