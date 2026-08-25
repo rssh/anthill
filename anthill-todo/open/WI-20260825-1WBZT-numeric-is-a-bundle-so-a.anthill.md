@@ -51,3 +51,34 @@ ORDER THIS BEFORE WI-20260825-KD9SW, and the reason is stronger than the one in 
 
 A CLARIFICATION THE SAME QUESTION EARNED, recorded because it is the natural worry and the answer is not obvious: a carrier does NOT have to provide `Numeric` for `+` to reach it, and will not have to provide `Additive` either in any address-specific sense. The mint names the SPEC op, the spec op is what DISPATCHES, and the carrier never appears in the address. Driven today: `Money(700) + Money(25)` = 725 through `Money.add`, off one `fact Numeric[T = Money]`, with the name resolved via the implicit tier to `Numeric.add`. After this split the same call would route `..Additive.add` -> dispatch -> `Money.add` with a `fact Additive[T = Money]` and NO `mul`, which is this ticket's whole point.
 
+### 2026-08-25T18:42:52Z — feedback — claude
+
+WIDENED, AND SETTLED ON TWO POINTS: this is not one split but a RULE — every operator gets a SYNTAX CATEGORY, a spec owning exactly the operation that operator mints — and `Numeric` reaches them by `provides`, not `requires`.
+
+THE RULE. `Divisible` is the shipped prototype and this ticket generalizes it: WI-20260824-VT8CF gave `/` a spec whose only content is `div`, for a resolution reason (one short name, one qualified target), and the same shape answers this ticket's claim-size problem for free. A carrier claims the categories whose operations it can honestly back, and nothing more.
+
+  operator   category            owns                     status
+  `=` `!=`   PartialEq           eq, neq                  EXISTS, already minimal
+  `<` etc.   PartialOrd          lt, lte, gt, gte         EXISTS, already minimal
+  `+` `-`    Additive            add, sub, neg, <zero>    NEW — this ticket
+  `*`        Multiplicative      mul, <one>               NEW
+  `/`        Divisible           div                      SHIPPED (VT8CF)
+  `%`        EuclideanDomain     mod, rem                  SHIPPED (VT8CF)
+  `^`        —                    pow                       NONE, deliberately (see below)
+  `|` `&` `!` —                   or, and, not              WI-20260825-P9Y67's question
+
+`Numeric` THEN BECOMES WHAT IT ALREADY CALLS ITSELF. `algebra.anthill` describes it as "Ring + Ord bundled into one spec for primitive arithmetic types" — a convenience bundle beside the algebra rather than in it. Under this rule that stops being an apology and becomes its job: `Numeric` provides `Additive`, `Multiplicative`, `Divisible`-or-not, and requires `PartialOrd`. Its four existing providers (`anthill-stl` int64 / bigint / float, `anthill-cpp-gen` int64) keep their one row and get every category by the chain — no per-carrier edit anywhere.
+
+`provides`, NOT `requires`, AND THE DIRECTION WAS MEASURED. `Numeric provides Additive[T = T]`. The opposite spelling means a carrier must write BOTH rows and be trusted to keep them consistent; the `provides` form gives one row and one operation. WI-1109/WI-1110 measured exactly this choice on `Eq`/`PartialEq` and recorded both wrong answers: `requires` + `provides` fails 1867 of 2849 tests with "construction is cyclic: PartialEq[X] -> PartialEq[X]" because the provision is filed as a PROVIDER of the floor; `provides` alone under the wrong filing fails 32 with "unresolved import 'anthill.prelude.Eq.eq'". Filed as a CONVERSION in the chain it is correct, and it brings the scope with it, which is why `Eq.eq` still resolves to the inherited `PartialEq.eq`. Copy that filing.
+
+THE TYPER REMAP IS NOT NEEDED FOR THIS, and should not be built for it. Minting `Additive.add` and letting the typer fall back to `Numeric.add` "when Numeric has add but does not provide Additive" trades a ONE-LINE declaration for a typer rule, and the rule is ambiguous in the CURRENT stdlib: `anthill-stl/anthill/float.anthill` writes both `provides Numeric[T = Float]` and `provides Ring[Float]`, and BOTH `Numeric` and `Ring` declare `add`, so "the spec has a same-named member" has two answers and no tie-break — the `sort_ops` coin flip `ordered.anthill` refuses, relocated into the typer. It also makes `provides` optional, which is a hole in proposal 058's model rather than a part of it: no provision, no condition, nothing for a coherence check to read. Recorded because the idea is reasonable-sounding and will be reached for again.
+
+TWO THINGS THE GENERALIZATION TURNS UP, both pre-existing:
+
+  * THE ADDITIVE IDENTITY HAS TWO NAMES. `numeric.anthill` declares `zero-val()` and `algebra.anthill`'s `Ring` declares `zero()` — same value, two spellings, and `Ring` also has `one()` with no `Numeric` counterpart. A category that owns the additive identity must own ONE of them, and every carrier providing both specs today would otherwise get two `sort_ops` entries for one concept under different names (not the coin flip — worse, because nothing collides and so nothing complains). Deciding the name is part of this ticket; `zero` is shorter and matches `one`, `zero-val` is what the four current carriers implement.
+  * `^` STAYS WITHOUT A CATEGORY, and this rule is the reason to restate that rather than to change it. `pow` is declared on `Float` alone, `Int64` has none, and there are ZERO uses of `^` as an operator in the tree — so a `Power` category would assert a structure exactly one carrier satisfies. VT8CF decided that and wrote it at kernel-language.md §6.6; the generalization does not overturn it, because the rule is "a category per operator that HAS one", not "invent a spec so the table is uniform".
+
+WHAT THIS DOES TO WI-20260825-KD9SW. Each operator would mint its own category's address (`..anthill.prelude.Additive.add`, `..anthill.prelude.Multiplicative.mul`), which is the same one-line-per-operator change either way — but it makes the ORDERING argument on that ticket sharper rather than weaker: every category this ticket creates MOVES a declaration, so all of them must land before any address is baked. Do the categories first.
+
+CONTROL, unchanged in shape from the body's: a `Money` declaring ONLY `add` / `neg` / `zero` and asserting `fact Additive[T = Money]` — no `mul`, no comparison surface, no `fact Numeric` — loads clean and answers `Money(700) + Money(25) = Money(725)` through a minted `+`. Add a second row for the rule: `Int64` keeps its single `provides Numeric[T = Int64]` and `1 + 2`, `7 / 2`, `7 % 2`, `1 < 2` all still answer, which is what proves the bundle still bundles.
+
