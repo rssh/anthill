@@ -648,6 +648,16 @@ enum EnclosingLinks {
     StoppedByImport,
 }
 
+/// C666A — which PARENT edges a resolution may cross.  Direct named imports are
+/// not parent edges: they are local aliases read before this switch, which is the
+/// distinction C666A needs between explicitly naming one predicate and opening a
+/// whole scope through `requires`, `provides`, or a wildcard import.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ParentLinks {
+    All,
+    EnclosingOnly,
+}
+
 /// WI-995 — one name whose resolution DEPENDS on an import written in another file:
 /// the two readings disagree about it.
 #[derive(Clone, Debug)]
@@ -1487,6 +1497,37 @@ impl SymbolTable {
         self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::OwnFileOnly)
     }
 
+    /// C666A — resolve through the entry scope's locals and named imports, then only
+    /// through its ENCLOSING chain.  A different answer from [`Self::resolve_in_scope`]
+    /// means the full resolution needed at least one whole-scope, non-enclosing edge
+    /// (`requires`, `provides`, wildcard import, or variant exposure).
+    ///
+    /// Named imports deliberately remain visible: [`Scope::imports`] is consulted
+    /// before parent traversal, so `import lib.{p}` is an explicit opt-in to `p` while
+    /// `import lib.*` is the implicit extension C666A refuses.  The method returns the
+    /// ordinary three-way result and applies `internal` visibility identically to the
+    /// full resolver, so the rule-head admission check compares two readings of ONE
+    /// ladder rather than maintaining a second name resolver.
+    pub fn resolve_without_non_enclosing_parents(
+        &self,
+        name: &str,
+        scope: ScopeId,
+    ) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Visible,
+            ExposureLinks::Followed,
+            EnclosingLinks::Followed,
+            ParentLinks::EnclosingOnly,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
     /// WI-369: drop matched symbols not visible from `from_scope` (the entry
     /// scope of the resolution). A hidden `internal` symbol becomes `NotFound`
     /// (the loader then probes [`Self::resolve_in_scope_ignoring_internal`] to
@@ -1564,6 +1605,7 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
+            ParentLinks::All,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -1603,6 +1645,12 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
+            // [`ParentLinks::All`] — the ORDINARY ladder's value, which is the point of
+            // this method. C666A's [`Self::resolve_without_non_enclosing_parents`] passes
+            // `EnclosingOnly` as ITS rule's second reading of the same walk; a reference
+            // written here really does cross those edges, so borrowing that switch would
+            // make this answer a question no program asks.
+            ParentLinks::All,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -1644,6 +1692,7 @@ impl SymbolTable {
             OwnLocals::Skipped,
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
+            ParentLinks::All,
             Some(overlay),
         );
         self.filter_internal_visibility(raw, scope)
@@ -1664,6 +1713,7 @@ impl SymbolTable {
             OwnLocals::Visible,
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
+            ParentLinks::All,
             None,
         )
     }
@@ -1683,6 +1733,7 @@ impl SymbolTable {
         own_locals: OwnLocals,
         exposure: ExposureLinks,
         enclosing: EnclosingLinks,
+        parent_links: ParentLinks,
         overlay: Option<&ScopeNameOverlay<'_>>,
     ) -> ResolveResult {
         if !visited.insert(scope) {
@@ -1727,6 +1778,9 @@ impl SymbolTable {
             data.parents
                 .iter()
                 .filter_map(|p| {
+                    if parent_links == ParentLinks::EnclosingOnly && !p.is_enclosing {
+                        return None;
+                    }
                     // WI-1089: below an import edge, the ENCLOSING chain is not
                     // re-entered — `import a.b.C` opens `C`, not the `a.b` around it.
                     if enclosing == EnclosingLinks::StoppedByImport && p.is_enclosing {
@@ -1851,6 +1905,7 @@ impl SymbolTable {
                 OwnLocals::Visible,
                 below,
                 enclosing_below,
+                parent_links,
                 overlay,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),

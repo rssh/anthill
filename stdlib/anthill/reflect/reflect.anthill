@@ -694,6 +694,25 @@ namespace anthill.reflect
     effects      : List[Term],                      -- effect type expressions
     requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
     ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
+    -- The operation's OWN type parameters, as the logical variables the loader
+    -- minted for them (`op_info::type_param_entries` decodes each back to its
+    -- surface name).
+    --
+    -- EMITTED LONG BEFORE IT WAS DECLARED (WI-20260823-GMG6N), and that gap made every
+    -- `OperationInfo` fact unreachable from anthill. The loader wrote an eight-slot
+    -- head against this seven-slot declaration, while `convert_term_inner`'s named-arg
+    -- completion (load.rs, "every fact/pattern of a functor presents the same named
+    -- slots") gives every writable goal the DECLARED slots — so no goal could match
+    -- one. Both spellings failed and neither said why: the seven-slot goal matched
+    -- nothing in silence, and naming `type_params` was refused as an unknown field.
+    -- `check_metadata_slots` now compares the emitted slot set against this
+    -- declaration, so the two cannot drift apart again.
+    --
+    -- Declaring it also makes the field WRITABLE in a hand-written `fact
+    -- OperationInfo(…)`, which is where WI-849's malformed-entry report earns its
+    -- keep — and an OMITTED `type_params` arrives as a fresh variable, read as
+    -- "no type parameters" (see `op_info::type_param_entries`).
+    type_params  : List[Term],
     -- WI-087: operation attributes / metadata. A `meta(key: value, ...)` term
     -- (same shape as rule/fact meta) carrying the operation's `[Marker, Key: v]`
     -- meta_block. Empty `meta()` when the operation has no meta_block. Downstream

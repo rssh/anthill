@@ -326,8 +326,13 @@ fn requires_src(ns: &str, spec_first: bool, deeper: bool, decl: &str) -> String 
     // absorbed into this row (WI-20260822-845G7's own notes).
     let spec =
         format!("{spec_open}  sort Spec\n{decl}    rule p(1) :- true\n  end\n{spec_close}");
+    let explicit = if decl.is_empty() {
+        String::new()
+    } else {
+        format!("    import {spec_path}.{{p}}\n")
+    };
     let a = format!(
-        "  sort A\n    requires {spec_path}\n    entity a(n: Int64)\n    rule p(2) :- true\n  end\n"
+        "  sort A\n    requires {spec_path}\n{explicit}    entity a(n: Int64)\n    rule p(2) :- true\n  end\n"
     );
     let body = if spec_first {
         format!("{spec}{a}")
@@ -361,8 +366,9 @@ fn a_requires_parent_and_its_user_must_declare_a_shared_name() {
             &[&format!("{ns}.A"), &spec],
         );
     }
-    // DECLARED IN THE SPEC — `A`'s clause is reachable through the spec's predicate,
-    // which is what "shared" has to mean along a `requires` edge.
+    // DECLARED IN THE SPEC AND IMPORTED BY NAME — C666A makes the explicit import the
+    // opt-in that turns `A`'s head into a clause of the spec predicate. `requires` alone
+    // still drives the collision rows above, but cannot append an unguarded clause.
     for (ns, spec_first, deeper) in [
         ("wi980.rq5", true, false),
         ("wi980.rq6", false, false),
@@ -399,7 +405,7 @@ fn a_facade_and_its_submodule_must_declare_a_shared_name() {
     assert_collides(&[TWO], "p", &["fa1", "fa1.inner"]);
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[TWO]),
-        &["a body-less `rule p(…)` in 'fa1' makes every one of those heads a clause of it"],
+        &["a body-less `rule p(…)` in 'fa1', with a named import of that predicate"],
     );
     // ONE LEVEL DEEPER — the control on the reach being the real one. Measured under an
     // earlier tie-break that scanned scopes by ADDRESS PREFIX, the two-level shape worked
@@ -444,17 +450,18 @@ fn a_mutual_import_cycle_must_declare_a_shared_name() {
     // true of the SINK test it was written against and false of the program.
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[&one_file]),
-        &["a body-less `rule p(…)` in 'mA' makes every one of those heads a clause of it"],
+        &["a body-less `rule p(…)` in 'mA', with a named import of that predicate"],
     );
 
-    // REMEDY 1 — DECLARE IT ONCE, in `mA`. `mB`'s head resolves through its own
-    // `import mA.*` and is a CLAUSE of `mA.p`, so the import that made the cycle is LIVE.
+    // REMEDY 1 — DECLARE IT ONCE, in `mA`, and name it from `mB`. C666A rejects the
+    // wildcard-only spelling; the selective import is the explicit opt-in to append.
     const A_DECL: &str = concat!(
         "namespace mA\n  import mB.*\n  rule p(?x)\n  rule p(1) :- true\n",
         "  rule usesp(?x) :- p(?x)\nend\n"
     );
+    const B_SELECTED: &str = "namespace mB\n  import mA.{p}\n  rule p(2) :- true\nend\n";
     let mut shared =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B]));
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A_DECL, B_SELECTED]));
     assert_eq!(clauses(&shared, "mA.p"), Some(2), "one predicate, both clauses");
     assert_eq!(clauses(&shared, "mB.p"), None, "`mB` introduced nothing");
     assert_eq!(answers(&mut shared, "mA.usesp(1)"), 1);
@@ -497,12 +504,14 @@ fn a_one_way_import_must_declare_a_shared_name_and_the_owner_is_named() {
     for files in [[C, D], [D, C]] {
         crate::common::expect_load_errors(
             crate::common::try_load_kb_with_files(&files),
-            &["a body-less `rule p(…)` in 'mD' makes every one of those heads a clause of it"],
+            &["a body-less `rule p(…)` in 'mD', with a named import of that predicate"],
         );
     }
-    // AND THE OWNER IT NAMES IS THE ONE THAT WORKS.
+    // AND THE OWNER IT NAMES IS THE ONE THAT WORKS, with C666A's explicit opt-in.
+    const C_SELECTED: &str = "namespace mC\n  import mD.{p}\n  rule p(1) :- true\n  rule usesp(?x) :- p(?x)\nend\n";
     const D_DECL: &str = "namespace mD\n  rule p(?x)\n  rule p(2) :- true\nend\n";
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[C, D_DECL]));
+    let mut kb =
+        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[C_SELECTED, D_DECL]));
     assert_eq!(clauses(&kb, "mD.p"), Some(2), "one predicate, both clauses");
     assert_eq!(clauses(&kb, "mC.p"), None);
     assert_eq!(answers(&mut kb, "mC.usesp(1)"), 1);
@@ -512,7 +521,8 @@ fn a_one_way_import_must_declare_a_shared_name_and_the_owner_is_named() {
 #[test]
 fn a_named_owner_must_be_reachable_from_every_other_member() {
     // THE MESSAGE'S PROMISE IS PART OF THE MESSAGE. When it names a scope it says
-    // declaring there "makes every one of those heads a clause of it", so the test that
+    // declaring there, with C666A's named imports where needed, makes every head a
+    // clause of it, so the test that
     // picks the scope is "IS REACHED BY EVERY OTHER MEMBER" — not "reaches nothing".
     // The two differ exactly where reach is NOT transitive, which a wildcard import
     // always is not: it is never re-exported.
@@ -532,16 +542,13 @@ fn a_named_owner_must_be_reachable_from_every_other_member() {
         crate::common::try_load_kb_with_files(&[A, B, C]),
         &["No one of them is reachable from all the others"],
     );
-    // AND THE ADVICE THAT WOULD HAVE BEEN GIVEN IS SHOWN NOT TO WORK — the second half of
-    // the same measurement, so a future change that reinstates the sink test cannot look
-    // harmless. Declaring in `zzC` leaves `zzA` on its own, silently.
+    // AND THE OLD DECLARATION-ONLY ADVICE IS NOW REFUSED BY C666A — the second half of
+    // the same measurement. Declaring in `zzC` cannot silently absorb `zzB` while
+    // leaving `zzA` split; the joining wildcard head is a located error.
     const C_DECL: &str = "namespace zzC\n  rule cp(?x)\n  rule cp(3) :- true\nend\n";
-    let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A, B, C_DECL]));
-    assert_eq!(clauses(&kb, "zzC.cp"), Some(2), "the declaration collects only what sees it");
-    assert_eq!(
-        clauses(&kb, "zzA.cp"),
-        Some(1),
-        "and the far end is STILL split — which is why no owner may be named here"
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with_files(&[A, B, C_DECL]),
+        &["the unguarded rule head `cp` in 'zzB' joins predicate 'zzC.cp'"],
     );
     // AND THE SAME PROMISE ACROSS FILES, not only across hops. `pwA` is reopened in two
     // files and only ONE carries `import pwB.*`, so `pwB` is reached from one of `pwA`'s
@@ -565,11 +572,16 @@ fn a_named_owner_must_be_reachable_from_every_other_member() {
     const A2I: &str = "namespace pwA\n  import pwB.*\n  rule p(9) :- true\nend\n";
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[A1, A2I, PWB]),
-        &["a body-less `rule p(…)` in 'pwB' makes every one of those heads a clause of it"],
+        &["a body-less `rule p(…)` in 'pwB', with a named import of that predicate"],
     );
     const PWB_DECL: &str = "namespace pwB\n  rule p(?x)\n  rule p(2) :- true\nend\n";
-    let all3 =
-        crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[A1, A2I, PWB_DECL]));
+    const A1_SELECTED: &str = "namespace pwA\n  import pwB.{p}\n  rule p(1) :- true\nend\n";
+    const A2_SELECTED: &str = "namespace pwA\n  import pwB.{p}\n  rule p(9) :- true\nend\n";
+    let all3 = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
+        A1_SELECTED,
+        A2_SELECTED,
+        PWB_DECL,
+    ]));
     assert_eq!(clauses(&all3, "pwB.p"), Some(3), "CONTROL: all three clauses");
     assert_eq!(clauses(&all3, "pwA.p"), None, "CONTROL");
 
@@ -582,11 +594,15 @@ fn a_named_owner_must_be_reachable_from_every_other_member() {
     const F: &str = "namespace zzF\n  rule cp(3) :- true\nend\n";
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[D, E, F]),
-        &["a body-less `rule cp(…)` in 'zzF' makes every one of those heads a clause of it"],
+        &["a body-less `rule cp(…)` in 'zzF', with a named import of that predicate"],
     );
     const F_DECL: &str = "namespace zzF\n  rule cp(?x)\n  rule cp(3) :- true\nend\n";
+    const D_SELECTED: &str = "namespace zzD\n  import zzF.{cp}\n  rule cp(1) :- true\nend\n";
+    const E_SELECTED: &str = "namespace zzE\n  import zzF.{cp}\n  rule cp(2) :- true\nend\n";
     let mut ok = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
-        D, E, F_DECL,
+        D_SELECTED,
+        E_SELECTED,
+        F_DECL,
     ]));
     assert_eq!(clauses(&ok, "zzF.cp"), Some(3), "CONTROL: the promise is kept");
     assert_eq!(clauses(&ok, "zzD.cp"), None, "CONTROL");
@@ -794,12 +810,11 @@ fn a_cycle_member_reopened_in_a_second_file_is_reported_once() {
     );
     const F2: &str = "namespace wA\n  import wB.*\n  rule p(9) :- true\nend\n";
     assert_collides(&[F1, F2], "p", &["wA", "wB"]);
-    // THE REPAIR. One declaration in `wA` collects all three clauses — `wB`'s included —
-    // so the surviving message is not merely the shorter of two, it is one whose
-    // prescription works.
+    // THE REPAIR. One declaration in `wA`, named explicitly by `wB`, collects all three
+    // clauses. C666A makes that named import part of the prescription.
     const F1_DECL: &str = concat!(
         "namespace wA\n  import wB.*\n  rule p(?x)\n  rule p(1) :- true\nend\n",
-        "namespace wB\n  import wA.*\n  rule p(2) :- true\nend\n"
+        "namespace wB\n  import wA.{p}\n  rule p(2) :- true\nend\n"
     );
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[F1_DECL, F2]));
     assert_eq!(clauses(&kb, "wA.p"), Some(3), "one predicate, all three clauses");
@@ -947,7 +962,7 @@ fn a_head_that_binds_is_not_an_owner() {
         // the declaration is pinned in `wi_fqc85_rule_declaration_test::a_sibling_files_-
         // head_no_longer_moves_another_files_clause`, which runs this same program.
         "namespace zlib\n  rule q(?x)\n  rule q(1) :- true\nend\n",
-        "namespace zdemo\n  import zlib.*\n  rule q(2) :- true\nend\n",
+        "namespace zdemo\n  import zlib.{q}\n  rule q(2) :- true\nend\n",
         "namespace zdemo\n  sort Rec\n    entity rec(n: Int64)\n    rule q(3) :- true\n  end\nend\n",
     ]));
     assert_eq!(
@@ -1002,7 +1017,8 @@ fn a_head_binds_through_its_own_files_import() {
     // phase earlier: whether `b`'s head sees the declaration at all is
     // `rule_head_ladder_answer` asked on `b`'s behalf, through `b`'s OWN import.
     const LIB: &str = "namespace wi980_lib\n  rule q(?x)\n  rule q(1) :- true\nend\n";
-    const IMPORTER: &str = "namespace wi980.viaimport.b\n  import wi980_lib.*\n  rule q(2) :- true\nend\n";
+    const IMPORTER: &str =
+        "namespace wi980.viaimport.b\n  import wi980_lib.{q}\n  rule q(2) :- true\nend\n";
     // A third file, scanned LAST, so a stale asking-file is a DIFFERENT file's and the
     // row cannot pass by the two coinciding.
     const TRAILING: &str = "namespace wi980.viaimport.z\n  rule unrelated(3) :- true\nend\n";
@@ -1047,9 +1063,9 @@ fn nobody_yields_to_a_scope_that_mints_nothing() {
     // consequence of file-locality (WI-995), not of the import graph. The declaration
     // keeps all three files and every answer below.
     const EXT: &str = "namespace ext\n  rule p(?x)\n  rule p(9) :- true\nend\n";
-    const FB: &str = "namespace fb\n  import fb.inner.*\n  import ext.*\n  rule p(1) :- true\n  \
+    const FB: &str = "namespace fb\n  import fb.inner.*\n  import ext.{p}\n  rule p(1) :- true\n  \
                       namespace inner\n    rule p(2) :- true\n  end\nend\n";
-    const FB_CONTROL: &str = "namespace fb\n  import ext.*\n  rule p(1) :- true\n  \
+    const FB_CONTROL: &str = "namespace fb\n  import ext.{p}\n  rule p(1) :- true\n  \
                               namespace inner\n    rule p(2) :- true\n  end\nend\n";
     const SIB: &str = "namespace sib\n  import fb.*\n  rule p(3) :- true\nend\n";
 

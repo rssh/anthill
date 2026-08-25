@@ -4523,8 +4523,120 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-630's twin, and the one that catches a SILENTLY UNREACHABLE relation.
+    ///
+    /// `convert_term_inner`'s named-arg handling gives EVERY term written in source —
+    /// fact head, rule head, rule-body goal, CLI pattern — the entity's DECLARED fields,
+    /// in DECLARATION ORDER: absent ones are filled (load.rs, "every fact/pattern of a
+    /// functor presents the same named slots") and the list is sorted by
+    /// `canonicalize_record_named_args`. A loader-emitted head goes through neither: it
+    /// is assembled from a hand-written field list and handed to `alloc`, which applies
+    /// only the WI-511 nullary-constructor canon and never reorders. Diverge on the SET
+    /// or on the ORDER and the facts are still in the KB and still listed by
+    /// `rules_by_functor`, but NO goal can reach them.
+    ///
+    /// ORDER, not just membership, and that is not belt-and-braces: `SubstTree`'s
+    /// `insert_walk_args` lays down `DiscrimKey::NamedKey` edges in the HEAD's storage
+    /// order while `query_args` descends in the QUERY's, so a head carrying the right
+    /// fields in the wrong order is exactly as unreachable as one missing a field, and
+    /// by the same silence. (A set-only comparison shipped first and this is the
+    /// /code-review finding that corrected it.)
+    ///
+    /// Both spellings of the failure are silent or misleading: a goal omitting a slot
+    /// the head has matches nothing, and naming a slot the declaration lacks is refused
+    /// as an unknown field.
+    ///
+    /// MEASURED: `OperationInfo` shipped an eight-slot head (`type_params`) against a
+    /// seven-slot declaration, so all 398 of its facts were unreachable from anthill;
+    /// `Implementation` shipped seven of its eight, so a hand-written
+    /// `fact Implementation(…)` and a `provides … language rust` block had different
+    /// shapes and no goal could see both.
+    ///
+    /// `None` means the functor declares no entity schema (`SortAlias` / `meta`, which
+    /// are registered qualified-only and have no `entity` declaration); there is
+    /// nothing to compare, not a violation.
+    #[cfg(debug_assertions)]
+    fn check_metadata_slots(&self, functor: Symbol, pos_arity: usize, named: &[Symbol]) {
+        let Some(declared) = self.entity_field_names(functor) else {
+            return;
+        };
+        // A named tuple's order IS its identity, so `canonicalize_record_named_args`
+        // exempts it and the declaration order is not the canon to compare against.
+        if self.is_ordered_product_functor(functor) {
+            return;
+        }
+        // Positional args fill the declared fields not given by name, in declaration
+        // order — `positional_to_named_plan`'s convention — so they occupy the TAIL of
+        // the declared list only when the named ones occupy a prefix. Rather than model
+        // that, require what the converter actually produces: the named labels are a
+        // PREFIX of the declared fields, in order, and the positional args make up the
+        // remainder exactly.
+        //
+        // THE AGREEING CASE ALLOCATES NOTHING. This runs on every loader-emitted
+        // metadata fact — thousands per load — in the build every test uses.
+        let agrees = named.len() + pos_arity == declared.len()
+            && named
+                .iter()
+                .zip(declared.iter())
+                .all(|(written, expected)| written == expected);
+        if agrees {
+            return;
+        }
+        let render = |v: &[Symbol]| {
+            v.iter()
+                .map(|s| self.local_name_of(*s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        // Render BOTH SEQUENCES rather than a set difference. A difference reads as
+        // "(-) / (-)" whenever the two agree on membership — which is every ordering
+        // drift, and every positional-arity drift — leaving the tripwire firing with
+        // nothing to act on.
+        panic!(
+            "metadata fact schema drift: `{}` is emitted as [{}]{} but declares [{}]. \
+             Every goal a user can write is completed and sorted into the DECLARED \
+             order, and the discrimination tree keys on the head's own order, so these \
+             facts are unreachable from anthill — silently. Fix the declaration and the \
+             emitter together.",
+            self.qualified_name_of(functor),
+            render(named),
+            if pos_arity == 0 {
+                String::new()
+            } else {
+                format!(" plus {pos_arity} positional")
+            },
+            render(declared),
+        );
+    }
+
+    /// [`Self::check_metadata_slots`] over a hash-consed head, reading BOTH storage
+    /// forms a metadata head can be in.
+    ///
+    /// `Term::Ref` is not a curiosity to skip: [`Self::alloc`] rewrites a nullary
+    /// application of a constructor symbol to `Ref` (WI-511), and every reflect entity
+    /// functor IS a constructor symbol — so a head that drifted all the way down to zero
+    /// slots arrives here as `Ref`, which is exactly the drift most worth catching. A
+    /// `Term::Fn`-only match would skip it, leaving this check narrower than the
+    /// `check_metadata_head` it sits beside (that one reads through `head_functor`,
+    /// which handles `Ref`).
+    #[cfg(debug_assertions)]
+    fn check_metadata_slots_of_term(&self, term: TermId) {
+        match self.get_term(term) {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                let labels: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                self.check_metadata_slots(*functor, pos_args.len(), &labels);
+            }
+            Term::Ref(functor) => self.check_metadata_slots(*functor, 0, &[]),
+            _ => {}
+        }
+    }
+
     /// [`Self::assert_fact`] for a loader metadata fact (WI-630) — see the
-    /// module-level note. Debug-only head-functor tripwire, then delegate.
+    /// module-level note. Debug-only head tripwires, then delegate.
     pub fn assert_metadata_fact(
         &mut self,
         term: TermId,
@@ -4533,7 +4645,10 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         #[cfg(debug_assertions)]
-        self.check_metadata_head(self.head_functor(term));
+        {
+            self.check_metadata_head(self.head_functor(term));
+            self.check_metadata_slots_of_term(term);
+        }
         self.assert_fact(term, clause_kind, domain, meta)
     }
 
@@ -4554,6 +4669,19 @@ impl KnowledgeBase {
                 _ => None,
             };
             self.check_metadata_head(functor);
+            // BOTH carriers, like the functor check above: a value head is a
+            // `Value::Entity` when a field is Node-bearing and a `Value::Term` when the
+            // caller had a hash-consed head to hand. Any OTHER carrier already panicked
+            // in `check_metadata_head` (its `functor` read is `None` for them), so there
+            // is no third case to answer here.
+            match &head {
+                Value::Entity { functor, pos, named } => {
+                    let labels: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
+                    self.check_metadata_slots(*functor, pos.len(), &labels);
+                }
+                Value::Term { id, .. } => self.check_metadata_slots_of_term(*id),
+                _ => {}
+            }
         }
         self.assert_fact_value(head, clause_kind, domain, meta)
     }
@@ -4569,7 +4697,11 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         #[cfg(debug_assertions)]
-        self.check_metadata_head(Some(functor));
+        {
+            self.check_metadata_head(Some(functor));
+            let labels: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
+            self.check_metadata_slots(functor, pos.len(), &labels);
+        }
         self.assert_fact_carrier(functor, pos, named, clause_kind, domain, meta)
     }
 

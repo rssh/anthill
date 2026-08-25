@@ -2,13 +2,13 @@
 
 **Canonical reference:** [`kernel-language.md` §8.6](../kernel-language.md), §"A rule head functor is resolved, not declared" and §"A rule-introduced functor is scoped where it is written".
 
-## Status: DELIVERED (2026-08-21, WI-20260821-FQC85; drafted the same day). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
+## Status: DELIVERED (2026-08-21, WI-20260821-FQC85; drafted the same day), amended by C666A (2026-08-24). Written from WI-980, which made a rule head's binding order-independent and, in doing so, measured what it costs to decide a name *during* the pass that creates it. Measurement claims below are taken from the Rust loader with both-sides controls; the rule and its staging are prescriptive.
 
-## Relates to: WI-980 (order-independent head binding — this proposal is its structural alternative), WI-896 (a head is resolved, not declared — amended here), 059 §Definitions (the FILE as the unit at which "two parties" becomes real), 052 (rules as stream-valued operations — a declared predicate is the name such a value is cited by), WI-898 (equational heads index under the connective — **out of scope**, see below), 060 (clause-level typed heads — the guard that makes a shared predicate safe), WI-995 (imports are file-local — the reason a predicate's clauses in two files can disagree).
+## Relates to: WI-980 (order-independent head binding — this proposal is its structural alternative), WI-896 (a head is resolved, not declared — amended here), 059 §Definitions (the FILE as the unit at which "two parties" becomes real), 052 (rules as stream-valued operations — a declared predicate is the name such a value is cited by), WI-898 (equational heads index under the connective — **out of scope**, see below), 060 (clause-level typed heads — the guard that makes a shared predicate safe), C666A (an unguarded clause may not reach that declaration only through a whole-scope non-enclosing edge), WI-995 (imports are file-local — the reason a predicate's clauses in two files can disagree).
 
 ## Delivered — what the implementation settled that this text did not
 
-The rule and its staging shipped as written. Five things the draft above states were
+The rule and its staging shipped as written. Six things the draft above states were
 **corrected or decided by measurement** during delivery, and the text is left standing
 because a proposal keeps its own record:
 
@@ -48,6 +48,14 @@ because a proposal keeps its own record:
    filed silences the refusal now covers in their body-less spelling. The last two were
    found by `/code-review` after the first version of each guard shipped — the
    never-reached one had asked the resolution LADDER, which any prelude name satisfies.
+6. **A declaration does not opt every visible scope into appending clauses (C666A).**
+   The draft's unqualified "contributes a clause to whatever it lands on" was too wide
+   after 845G7 made ownership explicit. A predicate imported by name or reached through
+   the lexical enclosing chain is explicitly selected and remains joinable. A `Goal`
+   reached only through `requires`, conversion-style `provides`, or a wildcard import
+   is a whole-scope side effect, so an unguarded head there is a located load error.
+   Proposal 060's generated carrier-selecting `domain` goal is the safe relaxation;
+   WI-742 must admit that guarded form at the refusal boundary, not delete the refusal.
 
 Open question 2 (arity) is **not** settled by this delivery: a declaration states its
 head's arity and enforces nothing, and one-arity-per-predicate remains

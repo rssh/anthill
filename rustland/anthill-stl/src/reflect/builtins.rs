@@ -70,6 +70,7 @@ struct ReflectSyms {
     f_parameters: Symbol,
     f_requires: Symbol,
     f_ensures: Symbol,
+    f_type_params: Symbol,
     f_meta: Symbol,
     f_params: Symbol,
     f_return_type: Symbol,
@@ -126,6 +127,7 @@ impl ReflectSyms {
             f_parameters: kb.intern("parameters"),
             f_requires: kb.intern("requires"),
             f_ensures: kb.intern("ensures"),
+            f_type_params: kb.intern("type_params"),
             f_meta: kb.intern("meta"),
             f_params: kb.intern("params"),
             f_return_type: kb.intern("return_type"),
@@ -407,6 +409,16 @@ fn kb_operations(
         let effects_v = build_list_value(syms, rec.effects);
         let requires_v = build_list_value(syms, rec.requires);
         let ensures_v = build_list_value(syms, rec.ensures);
+        let type_params_v =
+            build_list_value(syms, rec.type_params.into_iter().map(Value::term).collect());
+        // EVERY DECLARED FIELD, in DECLARATION ORDER. `make_entity` sorts but does not
+        // COMPLETE, so a field missing here yields a value with fewer slots than
+        // `anthill.reflect.OperationInfo` declares — and both consumers are arity-strict
+        // (`eval::pattern::match_constructor_pattern`, `resolve::unify_concrete`'s
+        // `na != nb`), so one anthill pattern could not cover both this result and a
+        // loader-emitted fact. That is the WI-20260823-GMG6N drift class one layer out:
+        // `type_params` was added to the declaration and to the host bridge
+        // (`bridge.rs`) and missed here, which no test would have caught.
         let fields = vec![
             (syms.f_name, Value::term(rec.name)),
             (syms.f_params, params_v),
@@ -414,6 +426,7 @@ fn kb_operations(
             (syms.f_effects, effects_v),
             (syms.f_requires, requires_v),
             (syms.f_ensures, ensures_v),
+            (syms.f_type_params, type_params_v),
             (syms.f_meta, Value::term(rec.meta)),
         ];
         entries.push(make_entity(kb, syms.operation_info, fields));
