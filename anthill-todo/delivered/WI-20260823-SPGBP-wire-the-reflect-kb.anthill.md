@@ -3,9 +3,9 @@
 - id: WI-20260823-SPGBP-wire-the-reflect-kb
 - created: 2026-08-23T11:49:58Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-24T10:10:03Z
+- status_at: 2026-08-25T11:26:23Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -244,3 +244,4 @@ read strict meant RECOGNISING the `nil` terminator rather than just stopping at 
 `ViewHead::Ref` (WI-436 / WI-511). A `ViewHead::Functor`-only match therefore saw every
 list as unterminated. `ViewHead::functor_sym` is the reader that spans both spellings.
 `value_list_elements` never met this because it only ever `break`s on a non-`cons`.
+
