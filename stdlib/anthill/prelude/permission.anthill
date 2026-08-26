@@ -1,0 +1,125 @@
+-- Permission[X]: the RUNTIME CONSULTATION OF AN AMBIENT GRANT for capability
+-- `X`. The consultation can refuse. Proposal 064.
+--
+-- IT GOES ON THE MINT, NEVER ON THE USE. An operation that CONSUMES a
+-- capability object it was handed carries whatever it carries and no
+-- `Permission`; holding the object is the authority thereafter, and the effect
+-- marks the one moment that authority was checked. This is the whole design:
+-- it is what makes the label rare (a program introduces far fewer capabilities
+-- than it uses), and it is what makes the effect an EVENT rather than a
+-- standing attribute of code.
+--
+--   sort FsRoot
+--     internal entity fs_root
+--     operation open() -> FsRoot
+--       effects {Permission[FileSystem]} = fs_root()
+--   end
+--
+--   operation write_file(root: FsRoot, path: String, content: String) -> Unit
+--     effects {External}
+--
+-- `write_file` carries no `Permission`: the check already happened, and the
+-- `FsRoot` in its signature is the evidence.
+--
+-- CONTAINMENT IS STRUCTURAL, and it is not a convention. The capability
+-- object's constructor is `internal`, which kernel-language.md §8.6 makes the
+-- ONLY hide gate — it hides the name from cross-scope resolution and from field
+-- projection alike, with top-level code outside every declaring scope (WI-977).
+-- So the constructor cannot be called from outside its sort and the
+-- `Permission`-carrying operation is the sole introduction. WITHOUT IT THE
+-- EFFECT IS ADVISORY: a program writes `fs_root()` and skips the check.
+--
+-- `Permission` AND `External` ARE ORTHOGONAL, answering different questions
+-- about one call — *may I* versus *what licence does the runtime have here* —
+-- and they combine freely. An in-memory root minted through the same gate is
+-- `{Permission[FileSystem]}` with no `External`; that cell is where a test
+-- double lives, exercising the authority path with nothing leaving the process.
+--
+-- LICENCES TAKEN. The observable is a possible REFUSAL rather than a value,
+-- which is what distinguishes it from a pure call: no constant-folding or
+-- equational use, no reorder across the guarded operation, and — the one that
+-- is easy to get wrong — no DROP when the result is unused, because dropping
+-- the check drops the refusal. Dedup within one grant's extent is sound; there
+-- is no revocation inside an extent.
+--
+-- SUBSUMPTION IS ORDINARY SET INCLUSION. `Permission[X]` is a row member like
+-- any other, so `{} <: {Permission[X]} <: {Permission[X], Permission[Y]}` and
+-- the existing not-widen rule decides everything. There is no join and no rank:
+-- two distinct capabilities coexist in a row by set union.
+--
+-- CONTRAVARIANT IN THE CAPABILITY — the one SUBSUMPTION rule that is this
+-- effect's own, and it is declared rather than hardcoded (the fact at the foot of
+-- this file). A permission is a DEMAND, and demands weaken as their subject
+-- widens, so `X <: Y  =>  Permission[Y] <: Permission[X]`. The safety consequence
+-- is the test: with `AdminFs <: Fs`, a spec granting `Permission[AdminFs]` accepts
+-- an implementation acquiring only `Permission[Fs]` (it takes less), while a spec
+-- granting `Permission[Fs]` REFUSES one acquiring `Permission[AdminFs]`.
+-- COVARIANCE INVERTS EXACTLY THAT AND ADMITS PRIVILEGE ESCALATION. Where no
+-- subtyping is declared among capabilities (the expected first case) the rule
+-- degenerates to name equality.
+--
+-- THE NEGATIVE FORM NEEDED A RULE OF ITS OWN, and proposal 064 said it would not
+-- — corrected there, and recorded here because this file is where a reader looks.
+-- `-Permission[Y]` forbids `Permission[X]` for every `X <: Y`, because an `X`
+-- capability IS a `Y` capability; that is ENTAILMENT, and it runs COVARIANTLY in
+-- the capability while SUBSUMPTION (above) runs contravariantly. The two are
+-- genuinely opposite HERE and coincide for an ordinary nominal label, so no single
+-- reading of the subsumption order gives both — the present-vs-absent verdict
+-- therefore compares the capability ARGUMENTS directly and runs only for this label
+-- (`typing::permission_entails`). Measured before the rule existed: a row carrying
+-- `-Permission[Model]` and acquiring `Permission[GptModel]` loaded clean, which is
+-- exactly the escalation that makes `-Permission[Model]` worth writing.
+--
+-- A BARE `-Permission` is the general denial *acquires no authority whatsoever* — it
+-- forbids every capability at once and assumes neither a capability order nor a root.
+-- A VARIABLE argument (`-Permission[?]`) is NOT that and constrains nothing: an
+-- undecided argument leaves the pair undecided.
+--
+-- A ROW MAY NOT BOTH ADMIT AND LACK ONE LABEL. `{Permission[X], -Permission[X]}` is
+-- uninhabitable and refused at LOAD (for every label, not just this one — kernel-
+-- language.md §5.5), because writing the label present beside its own denial was the
+-- cheapest way to silence both legs at once. A GUARDED occurrence is exempt and
+-- defers to discharge (WI-067).
+--
+-- The KIND is registered here; the CAPABILITY is project vocabulary. `Model`,
+-- `FileSystem`, `AdminFs` are sorts a project declares and names in the
+-- argument slot — nothing about them is prelude business, which is the
+-- separation 054 asks for ("one effect, not one per capability", with authority
+-- in values).
+--
+-- NOT IN SCOPE (064 §Not in scope): release, revocation and lifetimes — a
+-- capability is minted and never given back, and no locking is implied; a
+-- general object-capability discipline; preventing a capability object from
+-- outliving the extent that granted it.
+namespace anthill.prelude
+  import anthill.prelude.{Effect}
+  import anthill.reflect.typing.{Contravariant}
+
+  sort Permission
+    sort T = ?
+  end
+
+  fact Effect[T = Permission[?]]
+
+  -- THE VARIANCE LIVES HERE, NOT WITH THE OTHER VARIANCE FACTS, and that is a
+  -- decision rather than an oversight. Every other `Covariant`/`Contravariant` in
+  -- the tree sits in `stdlib/anthill/reflect/typing.anthill` beside its neighbours
+  -- (proposal 035), and this one would have too, but two things argue it home:
+  --
+  --   * IT IS PART OF THE MEANING. The facts over there are ergonomic — they let
+  --     `List[Cat] <: List[Animal]` hold. This one decides whether a spec's
+  --     permission budget can be escalated by an implementation, so the sort and
+  --     its variance must not be separable: deleting this file deletes both halves
+  --     together, and there is no state where `Permission` exists without its rule.
+  --   * IT WOULD COUPLE THE REFLECT LAYER TO A PRELUDE SORT ACROSS
+  --     IMPLEMENTATIONS. Declaring it there means importing `Permission` into
+  --     `anthill.reflect.typing`, which scaland loads (`EmbeddedStdlib.stdlibPaths`)
+  --     from a list that does not carry this file — so a rustland-only addition
+  --     would have broken every scaland test that loads the stdlib, invisibly to
+  --     this ticket's `cargo-test` acceptance. Found by review, not by a gate.
+  --
+  -- The forward reference is fine: pass 1 defines every name across every file
+  -- before any pass 2 runs (WI-321), so `Contravariant` resolves even though
+  -- `anthill.reflect.typing` loads after this file.
+  fact Contravariant(sort: Permission, param: T)
+end

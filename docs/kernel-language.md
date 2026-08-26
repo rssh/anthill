@@ -2301,6 +2301,8 @@ Currently implemented effect kinds:
 | `Modify[target]` | Mutates a parameter — non-obvious from the signature |
 | `Error` | Can fail with an untyped error |
 | `Error[type]` | Can fail with a typed error |
+| `External` | Depends on, or changes, state outside the tracked heap ([proposal 054](proposals/054-external-effect.md)) |
+| `Permission[X]` | Consults an ambient grant for capability `X`, and the consultation may refuse (below) |
 
 Future effect kinds (not yet implemented in codegen):
 
@@ -2308,8 +2310,12 @@ Future effect kinds (not yet implemented in codegen):
 |-------------|---------|
 | `Suspend` | May suspend and resume execution (async/coroutine) |
 | `Branch` | May produce multiple results (nondeterminism, backtracking) |
-| `Requires[capability]` | Needs a capability to execute |
 | Concrete I/O effects | E.g. `Output[stdout]`, `Log[logger]` — ambient resources not in parameters |
+
+This table once also promised a `Requires[capability]` kind, read as *needs a capability
+to execute*. `Permission[X]` is the answer to the question it gestured at, and it is
+deliberately not that reading: the label goes on the operation that **acquires** the
+authority, never on the ones that use it.
 
 **Design principle:** Effects declare what is NOT visible from parameters. If something can be passed as a parameter, it should be a parameter, not an effect. Effects exist for:
 - **Mutation annotation** — `Modify[x]` tells the caller that parameter `x` will be mutated, which changes how it is passed in the host language.
@@ -2397,6 +2403,108 @@ The rule is enforced on an **operation's own row** only. A row nested in a *para
 arrow type (`handle(body: () -> X @ {K, Rho})`) is a different position, scoped to that
 arrow's binder, and is not reached — the same boundary §5.6's `Modify`-target rule
 records, and for the same reason: that position's population has not been measured.
+
+**`Permission[X]` — authority as an effect, at the point of acquisition**
+([proposal 064](proposals/064-permission-effect.md), WI-20260825-CBRSW). The label
+denotes the *runtime consultation of an ambient grant* for capability `X`, and the
+consultation can refuse. It is written on the operation that **mints** a capability
+object and nowhere else; holding the object is the authority thereafter, and the effect
+marks the one moment that authority was checked:
+
+```anthill
+sort FsRoot
+  internal entity fs_root
+  operation open() -> FsRoot
+    effects {Permission[FileSystem]} = fs_root()
+end
+
+operation write_file(root: FsRoot, path: String, content: String) -> Unit
+  effects {External}
+```
+
+`write_file` carries no `Permission`: the check already happened, and the `FsRoot` in its
+signature is the evidence. This is what makes the label **rare** — a program introduces
+far fewer capabilities than it uses — and what makes it an *event* rather than a standing
+attribute of code. The kernel registers the **kind** (`anthill.prelude.Permission`); the
+**capability** is project vocabulary, so `FileSystem`, `Model` and `AdminFs` are ordinary
+sorts a project declares and names in the argument slot.
+
+*Containment is structural, and it is not a convention.* The capability object's
+constructor is `internal`, which §8.6 makes the only hide gate — hiding the name from
+cross-scope resolution and from field projection alike, with top-level code outside every
+declaring scope (WI-977). So the constructor cannot be called from outside its sort and
+the `Permission`-carrying operation is the sole introduction. **Without it the effect is
+advisory**: a program writes `fs_root()` and skips the check.
+
+*Subsumption is ordinary set inclusion.* `Permission[X]` is a row member like any other,
+so `{} <: {Permission[X]} <: {Permission[X], Permission[Y]}` and both legs of the
+override rule (§8.7) decide everything: the spec's row bounds a provider's **declared**
+row, and the declared row bounds the row **inferred from its body**. A provider therefore
+cannot grant itself a permission its spec never gave — it can neither declare one (a
+widening) nor mint one in its body while declaring the spec's row (an undeclared effect).
+There is no join and no rank; two distinct capabilities coexist by set union.
+
+*`Permission` and `External` are orthogonal*, answering different questions about one
+call — *may I* versus *what licence does the runtime have here* — and combine freely. A
+row carrying `Permission` without `External` is an in-memory root that is still gated,
+which is where a test double lives.
+
+*`Permission` is **contravariant** in its capability*, and this is the one typing rule
+that is its own:
+
+```
+X <: Y   =>   Permission[Y] <: Permission[X]
+```
+
+A permission is a **demand**, and demands weaken as their subject widens: requiring `Y`
+is satisfied by anything that is a `Y`, so it asks less than requiring the more specific
+`X`. With `AdminFs <: Fs`, a spec granting `Permission[AdminFs]` accepts an
+implementation acquiring only `Permission[Fs]` — it takes less — while a spec granting
+`Permission[Fs]` **refuses** one acquiring `Permission[AdminFs]`. Covariance inverts
+exactly that and admits privilege escalation. The variance is *declared*, not hardcoded:
+`fact Contravariant(sort: Permission, param: T)` (proposal 035), written in
+`stdlib/anthill/prelude/permission.anthill` beside the sort rather than with the other
+variance facts — it decides whether a permission budget can be escalated, so the sort and
+its rule must not be separable. Where no subtyping is declared among
+capabilities — the expected first case — the rule degenerates to name equality.
+
+*The negative form is downward-closed in the capability, and it needed a rule of its
+own.* `-Permission[Y]` forbids `Permission[X]` for every `X <: Y`, because an `X`
+capability **is** a `Y` capability — so a denial cannot be evaded by declaring a
+sub-capability, which is what makes `-Permission[Model]` worth writing. The converse is
+not a violation: denying the stronger demand `-Permission[AdminFs]` leaves the weaker
+`Permission[Fs]` admissible.
+
+This is **entailment**, and for `Permission` it runs *covariantly* in the capability
+while subsumption runs contravariantly — the two are genuinely opposite, so no reading of
+the subsumption order gives both and the verdict compares the capability **arguments**
+directly (`typing::permission_entails`). A **bare** `-Permission` is the general denial
+*acquires no authority whatsoever*: it forbids every capability at once and needs neither
+a capability order nor a root. A **variable** argument (`-Permission[?]`) is *not* the way
+to spell it — an undecided argument leaves the pair undecided, so such an atom constrains
+nothing.
+
+> This is stated for `Permission` and **only** for it. What a lacks constraint should mean
+> for an ordinary nominal label under subtyping is open: `-Color` beside a present `Red`
+> (with `Red provides Color`) loads clean, and generalizing the rule above to every label
+> is *backwards* there — measured, it left that case open while newly refusing `-Red`
+> beside a present `Color`, which is admissible. Entailment and subsumption coincide for
+> an ordinary label and diverge for this one.
+
+**A row may not both admit and lack a label** (`{K, -K}`), and this is refused at **load**,
+for every label — the row is uninhabitable, so no call of the operation could be
+well-typed. A *guarded* occurrence is exempt: `{K :- g, -K}` defers to guard discharge
+(WI-067), since refuting `g` drops the label; only an unconditional occurrence is a
+contradiction. The call-site twin, for a row an *instantiation* makes uninhabitable, is
+WI-705's.
+
+*Licences taken.* The observable is a possible **refusal** rather than a value: no
+constant-folding or equational use, no reorder across the guarded operation, and — the
+one that is easy to get wrong — **no drop when the result is unused**, because dropping
+the check drops the refusal. Dedup within one grant's extent is sound; there is no
+revocation inside an extent. Release, revocation, lifetimes and a general
+object-capability discipline are out of scope (064 §Not in scope): a capability is minted
+and never given back, and it may outlive the extent that granted it.
 
 ### 5.6 Effect Semantics (State-Passing Interpretation)
 

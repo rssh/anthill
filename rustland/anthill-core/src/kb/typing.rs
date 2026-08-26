@@ -32830,6 +32830,114 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
     errors
 }
 
+/// WI-20260825-CBRSW — an operation's OWN declared effect row may not both ADMIT and
+/// LACK a label. Load-blocking.
+///
+/// THE SITE THE CODE ALREADY NAMED. [`check_signature_self_contradiction`] is WI-705's
+/// call-site check and is gated on at least one op type parameter being BOUND, because —
+/// in its own words — "an uninstantiated signature carries its rows as declared (a
+/// literal `{X, -X}` is a load-time concern, not this call-site one)". No load-time site
+/// asked, so the literal was admitted: MEASURED, an operation declaring
+/// `effects {Permission[Model], -Permission[Model]}` whose body actually mints the
+/// capability loaded completely clean, with BOTH legs silent — the body leg because the
+/// label IS among the declared atoms, and WI-705 because nothing was instantiated. That
+/// is the cheapest possible evasion of a denial, and proposal 064's whole value is in the
+/// denial being trustworthy.
+///
+/// The verdict is [`uninhabitable_row_clash`], shared with the call-site check, so the
+/// guarded deferral is the same one rule: a `X :- g` atom is only CONDITIONALLY present
+/// (WI-067 discharge may refute `g`), so `{X :- g, -X}` is left to discharge while a row
+/// carrying a literal `X` beside it still rejects. Only the RENDERING differs — this one
+/// names a declaration, WI-705's names a call.
+///
+/// SCOPE — AN OPERATION'S OWN ROW ONLY, the same limit as its two neighbours
+/// [`check_modify_targets`] and [`check_effect_registration`] and for the same measured
+/// reason: `all_operation_effects` does not reach a row nested in a PARAMETER's arrow
+/// type. A contradiction THERE is the shape WI-705 does catch, at the call that
+/// instantiates it.
+///
+/// Reported once per operation — `load_incremental` banks a second `OperationInfo` fact
+/// for a type-parameter-bearing operation (WI-1049), and one declaration must not read as
+/// two errors.
+pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    // An EMPTY substitution: this reads the row AS DECLARED. Anything an instantiation
+    // makes contradictory is WI-705's, at the call.
+    let subst = Substitution::new();
+    let mut errors = Vec::new();
+    let mut reported: HashSet<Symbol> = HashSet::new();
+    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+        // Accumulate ACROSS the atom list, not per atom: a clash may span two elements
+        // (`effects {E}, -X`) as well as sit inside one written row. A non-decomposable
+        // element contributes nothing — it has its own diagnostic path and must neither
+        // mask nor fabricate a clash here.
+        let mut present: Vec<Value> = Vec::new();
+        let mut absent: Vec<Value> = Vec::new();
+        for e in &effects {
+            // CLASSIFY BY SHAPE, and do not lean on `decompose_effect_row_raw` to tell a
+            // bare label from a row. It returns an EMPTY decomposition — `Some((⌀,⌀,⌀))`,
+            // not `None` — for anything that is not an `EffectExpression`, so an element
+            // written as just `Boom` decomposes to nothing at all and silently
+            // contributes no present label. MEASURED: the first cut of this pass read
+            // `effects {Boom, -Boom}` as (present = [], absent = [Boom]) and therefore
+            // refused nothing, in the corpus or in its own fixture.
+            //
+            // The row functors are the ones that walk's own match names; everything else
+            // that heads as a TYPE is an ordinary bare label, i.e. a PRESENT atom (the
+            // default spelling, §5.5). Anything else — a malformed element — contributes
+            // nothing: it has its own diagnostic path and must neither mask nor fabricate
+            // a clash here.
+            let row_shaped = matches!(
+                resolved_functor_name(kb, e),
+                Some(
+                    "empty_row"
+                        | "present"
+                        | "guarded"
+                        | "absent"
+                        | "open"
+                        | "merge"
+                        | "effects_rows"
+                )
+            );
+            if row_shaped {
+                if let Some((p, _tails, a)) = decompose_effect_row_raw(kb, &subst, e) {
+                    present.extend(p);
+                    absent.extend(a);
+                }
+            } else if matches!(
+                type_head(kb, e),
+                TypeHead::SortRef(_) | TypeHead::Parameterized { .. }
+            ) {
+                present.push(e.clone());
+            }
+        }
+        // The overwhelmingly common row carries no `-X` at all; bail before the walk.
+        if absent.is_empty() {
+            continue;
+        }
+        let Some(clash) = uninhabitable_row_clash(kb, &subst, &present, &absent, &effects)
+        else {
+            continue;
+        };
+        if !reported.insert(op_sym) {
+            continue;
+        }
+        let label = type_display_name_value(kb, &clash);
+        errors.push(super::load::LoadError::Other {
+            message: format!(
+                "operation `{}` declares an effect row that both ADMITS and LACKS `{label}`, \
+                 so no call of it can be well-typed: `-{label}` says the operation never \
+                 performs that effect, and the same row says it may. Drop whichever half is \
+                 wrong — the denial, if the operation really does perform it; the presence, \
+                 if the claim is that it does not. (A GUARDED occurrence `{label} :- g` is \
+                 not a contradiction: it defers to guard discharge, and only an \
+                 unconditional one is reported here.)",
+                kb.qualified_name_of(op_sym),
+            ),
+        });
+    }
+    errors
+}
+
 /// WI-20260823-VM3YB — AN EFFECT LABEL MUST NAME A REGISTERED EFFECT KIND.
 ///
 /// `stdlib/anthill/prelude/effects.anthill` has stated the registration since it was
@@ -38046,6 +38154,27 @@ fn uninhabitable_row_error(
     param: Option<Symbol>,
     span: Option<Span>,
 ) -> Option<TypeError> {
+    let clash = uninhabitable_row_clash(kb, subst, present, absent, rows)?;
+    Some(signature_self_contradiction_error(
+        kb, fn_sym, param, &clash, span,
+    ))
+}
+
+/// WI-705's verdict WITHOUT its diagnostic — the ABSENT label a row unconditionally
+/// contradicts, or `None`.
+///
+/// Split out by WI-20260825-CBRSW so the LOAD-time twin
+/// ([`check_declared_row_contradiction`]) asks the same question the call-site check
+/// asks, rather than re-deriving the guarded-deferral rule a second time. The two
+/// RENDER differently — a load error names a declaration, a `TypeError` names a call —
+/// but "is this row uninhabitable" is one decision and lives here.
+fn uninhabitable_row_clash(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    present: &[Value],
+    absent: &[Value],
+    rows: &[Value],
+) -> Option<Value> {
     // Cheap pre-check: is any present label also absent at all? (Almost always no —
     // a row needs a `-X` lacks-constraint to clash.) Bail before the guarded walk.
     row_self_contradiction(kb, subst, present, absent)?;
@@ -38062,17 +38191,27 @@ fn uninhabitable_row_error(
             guarded.push(label);
         }
     }
-    let count = |hay: &[Value], needle: &Value| {
+    // WI-20260825-CBRSW: counted with the same DIRECTIONAL verdict the pre-check used
+    // ([`label_violates_absence`]), not with equality. Counting by equality here would
+    // have made the pre-check's wider reading unreachable — a `Permission[GptModel]`
+    // that violates `-Permission[Model]` is not EQUAL to it, so both counts came out 0
+    // and `find` returned `None`, i.e. the pre-check found the clash and this line
+    // dropped it. The guarded side is counted the same way, so a `Permission[GptModel]
+    // :- g` still defers to WI-067 discharge exactly as a literal one does.
+    fn count(
+        kb: &mut KnowledgeBase,
+        subst: &Substitution,
+        hay: &[Value],
+        needle: &Value,
+    ) -> usize {
         hay.iter()
-            .filter(|h| resolved_labels_equal(kb, subst, h, needle))
+            .filter(|h| label_violates_absence(kb, subst, h, needle))
             .count()
-    };
-    let clash = absent
-        .iter()
-        .find(|a| count(present, a) > count(&guarded, a))?;
-    Some(signature_self_contradiction_error(
-        kb, fn_sym, param, clash, span,
-    ))
+    }
+    let clash_idx = absent.iter().position(|a| {
+        count(kb, subst, present, a) > count(kb, subst, &guarded, a)
+    })?;
+    Some(absent[clash_idx].clone())
 }
 
 /// The WI-705 diagnostic: an instantiation (explicit `[E = {…}]` or inferred) made a
@@ -45445,24 +45584,181 @@ fn decompose_effect_row_raw(
 }
 
 /// WI-700 / WI-328 (piece d / proposal §7.2): the first PRESENT label of a row that
-/// is ALSO ABSENT (`{e, -e}`) — the self-contradictory, uninhabitable shape. Labels
-/// compare carrier-agnostically through the substitution (a ground `Value::Term`
-/// label and a structurally-equal `Value::Node` occurrence label match across
-/// carriers). Two callers share this so the detection cannot drift: the filtering
+/// is ALSO ABSENT (`{e, -e}`) — the self-contradictory, uninhabitable shape. Two
+/// callers share this so the detection cannot drift: the filtering
 /// [`decompose_effect_row`] tests `.is_some()` (drops the malformed row to `None`);
 /// [`validate_callback_effect_row`] binds the returned label for its lacks-violation
 /// diagnostic (an explicit instantiation that violates its own `-X` lacks-constraint).
+///
+/// The per-pair verdict is [`label_violates_absence`], which is DIRECTIONAL and wider
+/// than equality — see there.
 fn row_self_contradiction<'a>(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &Substitution,
     present: &'a [Value],
     absent: &[Value],
 ) -> Option<&'a Value> {
-    present.iter().find(|p| {
-        absent
-            .iter()
-            .any(|a| resolved_labels_equal(kb, subst, p, a))
-    })
+    present
+        .iter()
+        .find(|p| absent.iter().any(|a| label_violates_absence(kb, subst, p, a)))
+}
+
+/// WI-20260825-CBRSW — render ONE effect-row atom the way it is WRITTEN.
+///
+/// [`type_display_name_value`] renders a type, and a row ATOM is not one: an absence is
+/// the term `absent(label: K)`, which the type renderer prints as `absent[label = K]` —
+/// internal row syntax in a user diagnostic, for a spelling the author wrote as `-K`. A
+/// row that a message prints element by element must print what the author can find in
+/// their file. Presence (`present(label: K)`) renders bare, which is its default written
+/// form; a guarded atom keeps the type rendering, since its guard is a rule body this
+/// has no reader for.
+///
+/// `label_key` is the caller's already-interned `"label"` — the same shape
+/// [`peel_effect_atom`] takes, and for the same reason: interning needs `&mut`, and every
+/// caller here holds a row it is about to walk element by element.
+fn effect_atom_display(kb: &KnowledgeBase, v: &Value, label_key: Symbol) -> String {
+    match resolved_functor_name(kb, v) {
+        Some("absent") => match named_child_value(kb, v, label_key) {
+            Some(l) => format!("-{}", type_display_name_value(kb, &l)),
+            None => type_display_name_value(kb, v),
+        },
+        Some("present") => match named_child_value(kb, v, label_key) {
+            Some(l) => type_display_name_value(kb, &l),
+            None => type_display_name_value(kb, v),
+        },
+        _ => type_display_name_value(kb, v),
+    }
+}
+
+/// WI-20260825-CBRSW (proposal 064) — does a PRESENT label violate an ABSENT one?
+///
+/// EQUALITY, PLUS ONE LABEL'S ENTAILMENT. Every caller had equality before this ticket
+/// and every label but `Permission` still has exactly that; the extra arm is
+/// [`permission_entails`], and it is deliberately not a general rule about lacks
+/// constraints. Widening it to one was tried and is WRONG — see that function's
+/// "WHY NOT GENERAL", which records the two programs that measured it.
+///
+/// Directional: `violates(present, absent)` is not `violates(absent, present)`.
+fn label_violates_absence(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    present: &Value,
+    absent: &Value,
+) -> bool {
+    // Resolve ONCE and share. This is [`resolved_labels_equal`]'s body with the walk
+    // hoisted, not a second opinion about what equality is — the verdict is still
+    // `views_structurally_equal` — and the hoist is what keeps the NON-equal path (the
+    // common one once a row carries a `-X` at all) from walking both sides twice.
+    let p = walk_value_to_resolved(kb, subst, present.clone());
+    let a = walk_value_to_resolved(kb, subst, absent.clone());
+    // Carrier-aware equality first (WI-486): the common case, and — outside
+    // `Permission` — the whole of the verdict, exactly as before this ticket.
+    if views_structurally_equal(kb, &p, &a) {
+        return true;
+    }
+    permission_entails(kb, subst, &p, &a)
+}
+
+/// WI-20260825-CBRSW — does performing `present` ENTAIL performing `absent`, for the one
+/// label whose entailment proposal 064 defines?
+///
+/// `-Permission[Y]` forbids `Permission[X]` for every `X <: Y`, because an `X`
+/// capability IS a `Y` capability. So the verdict compares the CAPABILITY ARGUMENTS,
+/// `X <: Y`, and both labels must head at `anthill.prelude.Permission` for it to run at
+/// all.
+///
+/// WHAT IT BUYS, and it is not hypothetical — MEASURED loading clean before this
+/// function existed: a row carrying `-Permission[Model]` while acquiring
+/// `Permission[GptModel]` (with `GptModel <: Model`). That is the privilege escalation
+/// 064 names, and closing it is the whole reason `-Permission[Model]` is worth writing.
+/// `permission_denial_is_not_evaded_by_a_sub_capability` is that program.
+///
+/// WHY NOT GENERAL, which is the part worth reading. The first cut asked
+/// `types_compatible(absent, present)` for EVERY label — "the denied effect is subsumed
+/// by the one actually present" — on the reasoning that 064's negative form should fall
+/// out of the ordinary effect order. It does not, and TWO measured programs say so:
+///
+///   * `-Color` beside a supplied `Red` (with `Red provides Color`) LOADED CLEAN under
+///     it. Performing `Red` plainly entails performing a `Color`, so the general rule
+///     was not even catching the general case — its direction is the one `Permission`
+///     needs, and `Permission` alone.
+///   * `-Red` beside a supplied `Color` was newly REFUSED. That program loaded clean
+///     before and should: performing some `Color` does not entail performing `Red`.
+///
+/// The reason is that ENTAILMENT and SUBSUMPTION run OPPOSITE ways for `Permission` and
+/// the same way for an ordinary nominal label. `Permission` is declared CONTRAVARIANT
+/// (a permission is a demand, and demands weaken as their subject widens), so
+/// `Permission[Model] <: Permission[GptModel]` — while entailment runs COVARIANTLY in
+/// the capability, since acquiring the sub-capability acquires the super. No single
+/// reading of the subsumption order gives both families, which is why this compares the
+/// ARGUMENTS directly rather than the labels. What a lacks constraint should mean for an
+/// ordinary label under subtyping is a real question and is LEFT OPEN: it predates this
+/// ticket (the `-Color`/`Red` program loads clean before and after), it is about every
+/// label rather than this one, and no population in the tree exercises it.
+///
+/// THE ABSENT SIDE'S ARGUMENT DECIDES THE DEGENERATE CASES, and they are not symmetric:
+///
+///   * ABSENT with no argument — a bare `-Permission` — is the GENERAL DENIAL, *acquires
+///     no authority whatsoever*, and forbids every capability at once. This is 064's
+///     open question 1, and the answer is that the general denial needs no variable in a
+///     lacks-constraint: it assumes neither a capability order nor a root.
+///   * PRESENT with no argument names no capability, so nothing is decided and nothing
+///     is refused — the conservative direction, and the one that cannot turn a loading
+///     program into a refusal.
+///   * Either side PARAMETRIC (`-Permission[?]`, a row parameter, an opened `Rho`) is
+///     undecided for the same reason the override leg's effects-⊆ gate withholds there:
+///     `types_compatible` would BIND the variable and report a contradiction the row
+///     does not have. This is what leaves `-Permission[?]` inert — a trap, pinned and
+///     documented as one by `a_variable_argument_in_a_lacks_constraint_constrains_
+///     nothing`, with bare `-Permission` as the working spelling.
+///
+/// The probe substitution is a CLONE and is discarded: this is a test, not a commitment,
+/// and both callers go on to make independent decisions.
+fn permission_entails(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    present: &Value,
+    absent: &Value,
+) -> bool {
+    // Head both labels FIRST — the cheap reject, and the common one, since most rows
+    // carrying a `-X` at all carry no `Permission`.
+    let head = |kb: &KnowledgeBase, v: &Value| match type_head(kb, v) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(kb.canonical_sort_sym(s)),
+        _ => None,
+    };
+    let (Some(p_base), Some(a_base)) = (head(kb, present), head(kb, absent)) else {
+        return false;
+    };
+    if p_base != a_base {
+        return false;
+    }
+    let Some(perm) = kb.try_resolve_symbol("anthill.prelude.Permission") else {
+        // No prelude `Permission` — nothing in this KB can name the label.
+        return false;
+    };
+    if p_base != kb.canonical_sort_sym(perm) {
+        return false;
+    }
+    // The capability slot, read from `Permission`'s DECLARATION rather than spelled `"T"`
+    // here, so renaming it in permission.anthill moves both ends together — the same
+    // discipline `check_effect_registration` keeps for `Effect`'s.
+    let Some(param) = kb.type_params_of_sort(perm).first().cloned() else {
+        return false;
+    };
+    let arg = |kb: &KnowledgeBase, v: &Value| extract_type_param(kb, v, &param);
+    // A bare `-Permission` denies every capability; see the doc comment.
+    let Some(a_arg) = arg(kb, absent) else {
+        return true;
+    };
+    // A bare present `Permission` names none, so nothing is decided.
+    let Some(p_arg) = arg(kb, present) else {
+        return false;
+    };
+    if view_contains_type_param(kb, &p_arg) || view_contains_type_param(kb, &a_arg) {
+        return false;
+    }
+    let mut probe = subst.clone();
+    types_compatible(kb, &mut probe, &p_arg, &a_arg)
 }
 
 /// The self-contradiction-filtering decomposition used by the row subtype / unify
@@ -57838,10 +58134,26 @@ fn check_operation_bodies(
                     .iter()
                     .map(|e| walk_type_deep_value(kb, &canon_subst, e))
                     .collect();
+                let atom_label_key = kb.intern("label");
                 let declared_display: Vec<String> = effective_effects
                     .iter()
-                    .map(|e| type_display_name_value(kb, e))
+                    .map(|e| effect_atom_display(kb, e, atom_label_key))
                     .collect();
+                // WI-20260825-CBRSW — the DENIED atoms of the declared row, kept apart
+                // so an effect the row explicitly forbids is not reported as one the
+                // author merely forgot to declare. The two have different repairs: an
+                // undeclared effect is fixed by adding the label, and a denied one
+                // cannot be — the row says the body must not perform it. Proposal 064's
+                // whole value is in that negative claim, so it gets its own message.
+                let mut declared_absent: Vec<Value> = Vec::new();
+                for e in &effective_effects {
+                    if resolved_functor_name(kb, e) != Some("absent") {
+                        continue;
+                    }
+                    if let Some(l) = named_child_value(kb, e, atom_label_key) {
+                        declared_absent.push(walk_type_deep_value(kb, &canon_subst, &l));
+                    }
+                }
                 for effect in &ext_effects {
                     // WI-441: a ROW-shaped incurred effect — a callback's row
                     // value flowing into the body effects (applying a
@@ -57876,15 +58188,42 @@ fn check_operation_bodies(
                                 })
                         });
                         if !declared {
+                            // WI-20260825-CBRSW: a DENIED effect first. The verdict is
+                            // [`label_violates_absence`], so the closure holds here too
+                            // — a body minting `Permission[GptModel]` under a declared
+                            // `-Permission[Model]` names the denial it broke rather than
+                            // a label the row never mentioned.
+                            // The op's OWN rigidify subst, not an empty one — the same
+                            // one every neighbouring comparison in this block uses.
+                            // `walk_type_deep_value` does not rewrite inside occurrence
+                            // carriers (the WI-441 note above), so a `Value::Node`-carried
+                            // label still holds its Global var here; resolving through
+                            // the rigidify is what maps it to the Rigid the declared atom
+                            // became. With an empty subst that pair silently degraded to
+                            // the generic "undeclared effect" wording — the failure this
+                            // branch exists to avoid. (Found by review.)
+                            let denied = declared_absent.iter().find(|a| {
+                                label_violates_absence(kb, &canon_subst, &comp_canon, a)
+                            });
+                            let actual = match denied {
+                                Some(a) => format!(
+                                    "denied effect: {} — the row DECLARES `-{}`, so this \
+                                     is not a missing declaration but a violated one; \
+                                     the body must not perform it",
+                                    type_display_name_value(kb, &comp_canon),
+                                    type_display_name_value(kb, a),
+                                ),
+                                None => format!(
+                                    "undeclared effect: {}",
+                                    type_display_name_value(kb, &comp_canon)
+                                ),
+                            };
                             errors.push(TypeError::Other {
                                 site: TypeError::here(),
                                 span: op.span,
                                 context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
                                 expected: format!("declared: [{}]", declared_display.join(", ")),
-                                actual: format!(
-                                    "undeclared effect: {}",
-                                    type_display_name_value(kb, &comp_canon)
-                                ),
+                                actual,
                             });
                         }
                     }

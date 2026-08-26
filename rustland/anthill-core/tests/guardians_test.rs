@@ -323,7 +323,15 @@ fn model_consulting_checker_is_refused_by_lacks_model() {
     // that carries `Model`. Asserting the body-leg needle rather than
     // "effects must not widen" is what keeps this from silently degrading into a
     // duplicate of the declared-row test, which is what it used to be.
-    assert_refused("bad_checker", "got undeclared effect: Model");
+    //
+    // THE NEEDLE SHARPENED (WI-20260825-CBRSW), and the refusal did not move: this
+    // used to read `got undeclared effect: Model`, which understated it. `check`
+    // does not merely fail to declare `Model` — its row DENIES it, and the two
+    // failures have different repairs (an undeclared effect is fixed by adding the
+    // label; a denied one cannot be). The body leg now says which of the two it is,
+    // and `denied effect` is a needle no other leg can produce — so this row is now
+    // pinned against the declared-row test twice over.
+    assert_refused("bad_checker", "got denied effect: Model");
 }
 
 // ── group: usefulness, which is where the fake earns its place ───

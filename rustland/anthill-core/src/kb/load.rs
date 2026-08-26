@@ -11699,6 +11699,10 @@ fn load_phase_inner(
     // no later point, it just silently becomes a new effect.
     all_errors.extend(super::typing::check_effect_registration(kb));
     mark!("check_effect_registration");
+    // WI-20260825-CBRSW — the LOAD-time twin of WI-705's call-site check, beside the
+    // registration pass because both ask a question of an operation's own declared row.
+    all_errors.extend(super::typing::check_declared_row_contradiction(kb));
+    mark!("check_declared_row_contradiction");
     // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so
