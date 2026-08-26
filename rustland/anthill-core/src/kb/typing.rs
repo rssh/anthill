@@ -2635,7 +2635,18 @@ pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
 /// a fact `eq(x, not(b))` is a boolean VALUE, and rewriting it to the NAF primitive
 /// would change what the fact says. `and` / `or` conditions are therefore left in
 /// their value spelling and simply discharge nothing (conservative — the guard stays
-/// present), which is what §6.6 leaves them as: `and` has no goal reading at all.
+/// present).
+///
+/// THAT BOUND IS NOT ABOUT `and` LACKING A GOAL READING, and this doc used to end by
+/// saying it was ("`and` has no goal reading at all"). It has had one since
+/// WI-20260822-J38JE (`kernel.and` over `push_and`, and §6.6 now calls the three
+/// symmetric). The reason to leave an arbitrary operand alone is the category error
+/// stated above and nothing else — which makes the bound STRONGER, since it no longer
+/// rests on a property of one connective that has since changed. WI-20260825-P9Y67
+/// re-measured this the expensive way: a loader change that redirected every rule-body
+/// data slot made `rule r() :- holds(not(true))` stop matching `fact holds(not(true))`,
+/// exit 0 and no diagnostic — this paragraph's own argument, one pass over. Corrected
+/// via `/code-review`.
 fn goal_form_proposition(kb: &mut KnowledgeBase, v: Value) -> Value {
     let ViewHead::Functor {
         functor: Some(f),

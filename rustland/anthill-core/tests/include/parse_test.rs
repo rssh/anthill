@@ -3305,21 +3305,29 @@ fn parse_prefix_not() {
     // `parse_prefix_in_infix` one row down is the whole point: this `add` is WRITTEN, so
     // it is an ordinary name resolved in scope, while a minted `+` names
     // `..anthill.prelude.Additive.add` outright. Same shape, two functors.
+    //
+    // BOTH KINDS OF ADDRESS ARE VISIBLE IN THIS ONE ROW since WI-20260825-P9Y67, which
+    // is what makes it worth reading as a pair: the `!` is minted, so it carries
+    // `..anthill.kernel.not` — a RESOLVER PRIMITIVE, where `+`'s address is a prelude
+    // SPEC op. Written short, minted-at-a-spec, minted-at-the-kernel, all three legible.
     let (terms, symbols, term) = parse_term_ir("add(!?a, ?b)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(not(?a), ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(..anthill.kernel.not(?a), ?b)");
 }
 
 #[test]
 fn parse_prefix_in_infix() {
     // !?a + ?b → add(not(?a), ?b): prefix binds tighter
     let (terms, symbols, term) = parse_term_ir("!?a + ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(not(?a), ?b)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "..anthill.prelude.Additive.add(..anthill.kernel.not(?a), ?b)"
+    );
 }
 
 #[test]
 fn parse_new_operators() {
     let (terms, symbols, term) = parse_term_ir("?a | ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "or(?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.kernel.or(?a, ?b)");
 
     let (terms, symbols, term) = parse_term_ir("?a != ?b");
     assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.PartialEq.neq(?a, ?b)");
@@ -3522,15 +3530,20 @@ fn head_tail_literal_surface_removed() {
     // `cons(?h, ?t)` constructor instead. `|` is a plain infix operator, so
     // `[?h | ?t]` now parses as a SINGLE-element list whose element is the
     // infix `or(?h, ?t)` — NOT a head-tail `ListLiteral(?h, tail: ?t)`.
+    //
+    // WI-20260825-P9Y67: that `or` carries its ADDRESS now, which makes this row say
+    // something it could not before — the `|` here is the ORDINARY infix operator, the
+    // same one a rule body means, and not a surviving fragment of the removed head-tail
+    // surface. A short `or` would have been consistent with either reading.
     let (terms, symbols, term) = parse_term_ir("[?h | ?t]");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "..anthill.reflect.ListLiteral(or(?h, ?t))"
+        "..anthill.reflect.ListLiteral(..anthill.kernel.or(?h, ?t))"
     );
     let (terms, symbols, term) = parse_term_ir("[?a, ?b | ?t]");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "..anthill.reflect.ListLiteral(?a, or(?b, ?t))"
+        "..anthill.reflect.ListLiteral(?a, ..anthill.kernel.or(?b, ?t))"
     );
 }
 

@@ -753,8 +753,11 @@ missing requirement surfaces at query time, not load; the runtime path itself is
      not: `?a` BINDS its variables where `not(not(?a))` discards whatever the inner search found, and for
      a non-ground `?a` the inner `not` flounders exactly where `?a` would have bound. Double negation
      under NAF is a check with the bindings thrown away, not an identity.
-   - de Morgan — both directions need a goal `and`, and there is no `kernel.and`: goal conjunction is the
-     comma (§6.6). Two of the five are not even spellable in goal position.
+   - de Morgan — both directions need a goal `and`. **This leg has been corrected**
+     (WI-20260825-P9Y67): `anthill.kernel.and` exists since WI-20260822-J38JE, so both directions ARE
+     spellable in goal position now. It does not rescue them, and the repair makes the objection cleaner
+     rather than weaker: the equation relates two VALUES, and in goal position neither side denotes one.
+     So all five fail for the reason `not_true` already gives, and spellability was never the reason.
 
    **So the replacement direction is bounded, not blocked.** "An explicit form that selects the same
    symbol's relational face" presupposes a symbol whose relational face is the wanted one. `not` has
@@ -764,6 +767,26 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    is looking for; it is the right answer for the case where the two readings are two different
    FUNCTIONS. What the explicit form has to serve is the other case — one predicate, two consumptions —
    and its scope statement should say so rather than leave `not` looking like a counter-example to it.
+
+   **`or` AND `and` ARE NOT BOUNDED THE SAME WAY, and this is what the boundary is a boundary OF**
+   (WI-20260825-P9Y67). The argument above is measured on `not` and it is specific to `not`; a scope
+   statement that generalized it to "the boolean vocabulary", or to any goal reading implemented as a
+   resolver effect, would be wrong. Driven, on the laws each carrier declares:
+
+   | law, read as goals | answers | agrees with the value reading? |
+   |---|---|---|
+   | `and(true, ?a) <=> ?a` — `true & p(?x)` | `?x = 1, 2` | yes, **bindings included** |
+   | `and(false, ?_) <=> false` — `false & p(?x)` | no solutions | yes |
+   | `and(?a, ?b) <=> and(?b, ?a)` — both orders | `?x = 1` either way | yes, identical bags |
+   | `or(false, ?a) <=> ?a` — `false \| p(?x)` | `?x = 1, 2` | yes, **bindings included** |
+   | `or(false, false)` | no solutions | yes |
+   | `or(true, ?_) <=> true` — `true \| p(?x)` | `?x = ?_`, `1`, `2` — **three** | **no — multiplicity** |
+
+   `and`'s two readings agree on success/failure, on bindings and on multiplicity in every row; `or`'s
+   agree on success/failure and bindings and diverge only on the annihilation law, where the goal reading
+   does not discard the right branch. That is one extension under two consumptions — *this question's own
+   precondition* — modulo the bag, which item 6 above already makes an explicit property of the relation
+   entry point rather than an accident. `not` is the member with no such face, and it is the only one.
 
    The third option — fold both into one operator over `Term`, with the Bool case a coercion that reifies
    `b` as the goal `eq(b, true)` — is REJECTED. It loses the law block above, and it costs the value

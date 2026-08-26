@@ -2192,7 +2192,11 @@ impl<'a> Converter<'a> {
                     Some(entry) => entry.functor,
                     None => {
                         self.err(format!("unknown prefix operator: {op_text}"), node);
-                        "not"
+                        // WI-20260825-P9Y67: the recovery node must carry the same
+                        // ADDRESS a real `!` mints, not the short spelling — an error
+                        // path that mints a bare `not` hands the recovery term to the
+                        // name ladder, where a local declaration captures it.
+                        super::pratt::NOT_FUNCTOR
                     }
                 };
                 let functor = self.intern(functor_name);

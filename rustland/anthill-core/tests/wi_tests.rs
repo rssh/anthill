@@ -579,6 +579,9 @@ mod wi521_prelude_test;
 #[path = "include/wi_kd9sw_minted_operator_address_test.rs"]
 mod wi_kd9sw_minted_operator_address_test;
 
+#[path = "include/wi_p9y67_connective_address_test.rs"]
+mod wi_p9y67_connective_address_test;
+
 #[path = "include/wi_vt8cf_division_tower_test.rs"]
 mod wi_vt8cf_division_tower_test;
 

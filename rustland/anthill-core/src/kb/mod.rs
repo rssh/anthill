@@ -4036,10 +4036,15 @@ impl KnowledgeBase {
     ///
     /// Recognised by local name where the connective is a kernel RULE (`or`, and the
     /// quantifier markers) — `builtin_of` misses those — and by builtin tag otherwise.
-    /// `and` is deliberately ABSENT: no kernel rule defines it, there is no
-    /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and`, a boolean
-    /// OPERATION over values (spec §6.6: "goal conjunction is the comma"). WI-1046
-    /// refuses it at a goal position rather than walking its data as goals.
+    /// `and` IS HERE, and this doc said the opposite until WI-20260825-P9Y67 — it read
+    /// "`and` is deliberately ABSENT: no kernel rule defines it, there is no
+    /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and` … WI-1046
+    /// refuses it at a goal position", while the arm below has been `("or" | "and", 2)`
+    /// since WI-20260822-J38JE. That ticket added `kernel.and` over the `push_and`
+    /// primitive and retired the refusal, so all three clauses of the old sentence are
+    /// false and the one an editor would act on — "refuses it" — is the furthest from
+    /// the code. Left standing it sends the next reader to the wrong conclusion at the
+    /// table that DECIDES the reading. Found by `/code-review`.
     /// EVERY arm is gated on `pos_arity`, and that is not defensive. A connective is
     /// recognised by NAME here (a kernel rule and the markers head no builtin), so
     /// without the gate a USER predicate that merely shares the short name has its DATA

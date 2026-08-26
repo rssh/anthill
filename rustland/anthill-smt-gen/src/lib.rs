@@ -2296,6 +2296,26 @@ const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
     ("anthill.prelude.Bool.and", SmtBuiltin::BoolConn("and")),
     ("anthill.prelude.Bool.or", SmtBuiltin::BoolConn("or")),
     ("anthill.prelude.Bool.not", SmtBuiltin::BoolConn("not")),
+    // BOTH SPELLINGS, and the KERNEL one is not a second-best (WI-20260825-P9Y67).
+    // `not`/`or`/`and` are POSITION-DIRECTED (kernel §6.6): a goal means the resolver
+    // primitive, a value expression means the dispatched `Bool` op. A CONDITION is a
+    // value — but it sits in a rule body's data slot, and the loader leaves a data
+    // slot's spelling alone on purpose, because a term's spelling is its identity and
+    // it cannot tell a condition from a reified goal being STORED (`fact
+    // holdsN(not(true))`). Rewriting there was tried and regressed exactly that: the
+    // rule body stopped matching the fact, exit 0, no diagnostic.
+    //
+    // So the position knowledge belongs HERE, at a consumer that knows what it is
+    // reading. `translate_condition` is only ever called on a condition, so the two
+    // spellings denote one function at this site and both must lower. Before
+    // WI-20260825-KD9SW/P9Y67 gave operators an address, a rule body reached the
+    // `Bool` row only when the author had written `import anthill.prelude.Bool.{not}`
+    // and the import CAPTURED the operator — so this table's coverage was an accident
+    // of the fixture's imports, and `wi680_ite_lowering_test` is what made that
+    // visible when the capture went away.
+    ("anthill.kernel.and", SmtBuiltin::BoolConn("and")),
+    ("anthill.kernel.or", SmtBuiltin::BoolConn("or")),
+    ("anthill.kernel.not", SmtBuiltin::BoolConn("not")),
     // Comparisons, THREE ROWS DEEP PER OPERATOR because three different sorts
     // declare them and a call resolves to whichever one it named.
     //

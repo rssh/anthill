@@ -79,6 +79,72 @@ pub const LTE_FUNCTOR: &str = "..anthill.prelude.PartialOrd.lte";
 pub const GT_FUNCTOR: &str = "..anthill.prelude.PartialOrd.gt";
 pub const GTE_FUNCTOR: &str = "..anthill.prelude.PartialOrd.gte";
 
+/// WI-20260825-P9Y67 — THE THREE CONNECTIVE ADDRESSES A MINTED BOOLEAN OPERATOR NAMES.
+///
+/// [`SPEC_OP_FUNCTORS`] one table over, and for the same reason: a minted operator that
+/// carries a SHORT functor is resolved down the ordinary name ladder, whose lowest rung
+/// is the implicit tier, so a same-spelled declaration in scope CAPTURES it. Driven,
+/// before this ticket, on all six rows — a namespace-level `operation or(a: Bool, b:
+/// Bool) -> Bool = false` turned an op-body `true | true` into `false`, and a rule body's
+/// `p(?x) | p(99)` from `?x = 1` into a floundered conditional with the residual
+/// `eq(or(p(?_), p(99)), true)`. The goal row is the one that matters: the disjunction
+/// stops being a disjunction, `?x` never binds, and nothing is reported.
+///
+/// THE ADDRESS IS THE KERNEL CONNECTIVE, NOT A SPEC OP, which is the one way this list
+/// differs from the twelve — and it is why no library move had to land first. `+` needed
+/// WI-1WBZT to split `Numeric` because the address names where the operation is
+/// DECLARED and `Numeric.add` was a bundle. These three already have exactly one honest
+/// declaration each: the resolver primitive. `|` IS disjunction, and disjunction is
+/// `push_choice`; there is no spec to split and none to invent.
+///
+/// THE VALUE READING IS NOT LOST, and this is the whole reason the goal spelling is the
+/// right address rather than a choice between two. `not`/`or`/`and` are POSITION-DIRECTED
+/// (§6.6): a rule-body goal means the primitive, an operation body means the dispatched
+/// `Bool` op. That routing already runs on the RESOLVED SYMBOL, downstream of the ladder
+/// — `Loader::redirect_op_body_boolean` maps `kernel.X` to `Bool.X` whenever
+/// `in_op_body_value` — so an addressed mint reaches the value op exactly as a
+/// tier-resolved short name did, and its goal-position peer
+/// (`Loader::route_body_goal_boolean`) is simply a no-op on a functor already at the goal
+/// spelling. NO NEW ROUTING IS ADDED ANYWHERE, and that is what distinguishes this from
+/// the attempt withdrawn from WI-20260824-BFB9A: `reclaim_minted_operator` added a
+/// `goal_position_boolean` call to `convert_query_term_expecting`'s `Term::Fn` arm, which
+/// recurses through itself into positional AND named args, so it routed at every depth
+/// and on WRITTEN calls — measured, a fact holding `or(true, false)` became unqueryable
+/// by any spelling, exit 0, no diagnostic. A written `or` carries no `..`, so that
+/// failure mode is unreachable here.
+///
+/// THIS TICKET TRIED TO ADD ROUTING ANYWAY AND HAD TO BACK IT OUT, which is why the
+/// sentence above is a rule rather than an observation. §6.6 says a goal's ARGUMENT is a
+/// value expression, so redirecting a rule body's non-goal slots (`kernel.X` → `Bool.X`)
+/// looked like a missing mirror. It reproduced BFB9A's defect from the other side: fact
+/// heads, rule heads and query patterns build through `convert_term` and are NOT
+/// redirected, so `rule r() :- holds(not(true))` stopped matching `fact holds(not(true))`
+/// — exit 0, no diagnostic, with an entity control in the same file still green. A DATA
+/// SLOT HOLDS A TERM and a term's spelling is its identity. Position knowledge belongs at
+/// a consumer that knows it is reading a condition (`anthill-smt-gen`'s condition
+/// lowering reads both spellings); the loader cannot tell a condition from a reified goal
+/// being stored. Caught by `/code-review`; the lesson is recorded at the site in
+/// `kb::load` as well, because that is where the next attempt would be written.
+///
+/// A WRITTEN BARE `not(...)` IS UNTOUCHED. These three keep their
+/// `kb::load::PRELUDE_QUALIFIED` entries where the twelve lost theirs: the
+/// stdlib writes bare `not(...)` in rule bodies throughout, and retiring the tier for
+/// them is a migration rather than a repair. So the split KD9SW drew holds here too —
+/// the operator is uncapturable, the written name is an ordinary name.
+pub const OR_FUNCTOR: &str = "..anthill.kernel.or";
+pub const AND_FUNCTOR: &str = "..anthill.kernel.and";
+pub const NOT_FUNCTOR: &str = "..anthill.kernel.not";
+
+/// The three, as one list. Peer of [`SPEC_OP_FUNCTORS`], kept SEPARATE rather than merged
+/// into it because the two answer different questions: every member of that list is a
+/// spec operation on a parametric carrier and dispatches, and these are resolver
+/// primitives that never dispatch at all. Merging them would make the name of the wider
+/// list a lie at three of fifteen entries — and `spec_op`-shaped readers ask a real
+/// question. Both lists are chained by
+/// `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`,
+/// which is what keeps either from naming an orphan.
+pub const CONNECTIVE_FUNCTORS: &[&str] = &[OR_FUNCTOR, AND_FUNCTOR, NOT_FUNCTOR];
+
 /// The twelve, as one list — the population `kb::load::check_rival_spec_operations`
 /// existed to refuse a capture of, and which this ticket makes uncapturable instead.
 ///
@@ -211,7 +277,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 1,
                 assoc: Assoc::Left,
-                functor: "or",
+                functor: OR_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -220,7 +286,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 1,
                 assoc: Assoc::Left,
-                functor: "or",
+                functor: OR_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -229,7 +295,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 2,
                 assoc: Assoc::Left,
-                functor: "and",
+                functor: AND_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -238,7 +304,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 2,
                 assoc: Assoc::Left,
-                functor: "and",
+                functor: AND_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -416,14 +482,14 @@ pub(crate) fn prefix_entry(op: &str) -> Option<&'static PrefixEntry> {
             "!",
             PrefixEntry {
                 priority: 9,
-                functor: "not",
+                functor: NOT_FUNCTOR,
             },
         ),
         (
             "not",
             PrefixEntry {
                 priority: 9,
-                functor: "not",
+                functor: NOT_FUNCTOR,
             },
         ),
         (
@@ -662,9 +728,16 @@ mod tests {
     /// EVERY ONE CARRIES THE MARKER, and that is the property rather than the strings:
     /// `..` is unspellable by any identifier, so a marked head can collide with no user
     /// declaration. The negative half is what says the list is not simply "everything":
-    /// `or` / `and` / `not` / `pow` are deliberately NOT here — the first three are
-    /// position-directed (a resolver primitive in a goal, a `Bool` op as a value), and no
-    /// spec owns `pow`.
+    /// `pow` is deliberately NOT here, because no spec owns it.
+    ///
+    /// THE BOOLEAN THREE ARE ADDRESSED TOO NOW (WI-20260825-P9Y67) — but at the KERNEL
+    /// connective, not a prelude spec op, so they ride [`CONNECTIVE_FUNCTORS`] and the
+    /// `..anthill.prelude.` assertion above stays exact. They used to be listed here as
+    /// exclusions on the ground that they are position-directed; that was the reason they
+    /// carried no address, and it was wrong — the position routing runs on the RESOLVED
+    /// symbol, so an address at the goal spelling preserves both readings. The two lists
+    /// are asserted DISJOINT below, which is the row that would notice either drifting
+    /// into the other.
     #[test]
     fn minted_operators_carry_their_spec_op_address() {
         for f in SPEC_OP_FUNCTORS {
@@ -679,13 +752,28 @@ mod tests {
             );
         }
         assert_eq!(SPEC_OP_FUNCTORS.len(), 12, "the population is the twelve");
-        for short in ["or", "and", "not", "pow"] {
+        assert!(
+            !SPEC_OP_FUNCTORS
+                .iter()
+                .any(|f| super::super::desugar_target::short(f) == "pow"),
+            "`pow` is NOT one of the twelve: no spec owns it"
+        );
+        for f in CONNECTIVE_FUNCTORS {
             assert!(
-                !SPEC_OP_FUNCTORS.iter().any(|f| super::super::desugar_target::short(f) == short),
-                "`{short}` is NOT one of the twelve: the boolean three are \
-                 position-directed and no spec owns `pow`"
+                f.starts_with(crate::intern::ABSOLUTE_PATH_MARKER),
+                "`{f}` must be an ABSOLUTE address, for the reason above"
+            );
+            assert!(
+                f.starts_with("..anthill.kernel."),
+                "`{f}` must name the RESOLVER PRIMITIVE — the goal spelling is the \
+                 address, and `redirect_op_body_boolean` supplies the value reading"
+            );
+            assert!(
+                !SPEC_OP_FUNCTORS.contains(f),
+                "`{f}` is a connective, not a spec op: the two lists are disjoint"
             );
         }
+        assert_eq!(CONNECTIVE_FUNCTORS.len(), 3, "the population is the three");
     }
 
     #[test]

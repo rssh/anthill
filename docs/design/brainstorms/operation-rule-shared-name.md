@@ -369,9 +369,19 @@ than schematic helper names:
    proposal-059 short-name-capture refusal.
 9. **Scope — which symbols the form can serve at all:** state the precondition that makes "the same
    symbol's relational face" meaningful, namely that the operation's graph IS the relation wanted. A
-   position-directed pair whose two readings are two different functions (`not`, above) is OUT, and so is
-   anything else whose goal reading is a resolver effect rather than a predicate; the refusal belongs at
-   the name occurrence with the "no written predicate clauses" refusal of item 1, and needs its own driven
-   control (`relation(not)` refused, `relation(colouring)` accepted).
+   position-directed pair whose two readings are two different functions (`not`, above) is OUT; the
+   refusal belongs at the name occurrence with the "no written predicate clauses" refusal of item 1, and
+   needs its own driven control (`relation(not)` refused, `relation(colouring)` accepted).
+
+   **THE PRECONDITION IS THE EXTENSION, NOT THE IMPLEMENTATION** (WI-20260825-P9Y67). This item used to
+   add "and so is anything else whose goal reading is a resolver effect rather than a predicate", which
+   generalized `not`'s argument one step too far: `or` and `and` are resolver effects by that test —
+   `push_choice` and `push_and` splice the goal queue — and their goal readings agree with their value
+   readings on success/failure, on bindings, and (for `and`) on multiplicity too, measured law by law in
+   [proposal 052 §Open questions 7](../../proposals/052-rules-as-stream-valued-operations.md#open-questions).
+   `or` diverges on the annihilation law's multiplicity alone, which item 7 above is the place to settle.
+   So the gate has to ask whether the two readings pick out the same extension, and a symbol whose goal
+   reading is an effect can still pass it. `not` fails on the extension itself and is OUT for that reason
+   — the only member of the boolean vocabulary that is.
 
 Only after these decisions are closed should a condensed normative section return to proposal 052.

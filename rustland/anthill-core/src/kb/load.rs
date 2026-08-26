@@ -478,16 +478,6 @@ pub enum LoadError {
     /// conjuncts present: `rule both(?x) :- l(?x) & r(?x)` answers ZERO where the comma
     /// form answers one.
     ///
-    /// Its own variant rather than an `Other` because the repair is one character and
-    /// belongs in the message, and because the operator is what the author must see —
-    /// `Bool.and` is a name they never wrote.
-    BooleanOperatorInGoalPosition {
-        /// The operator's local name (`and`) — the word form; the message gives both
-        /// spellings, since `&` is the one more often written.
-        operator: String,
-        /// Where the goal is written.
-        span: Span,
-    },
     /// WI-20260822-J38JE item 4 (spec §5.3): a NON-BOOLEAN CONSTANT written in a
     /// rule-body GOAL position — `:- 42`, `:- "hello"`, `:- 1.5`.
     ///
@@ -2090,7 +2080,6 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
-            | LoadError::BooleanOperatorInGoalPosition { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
@@ -2386,13 +2375,6 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_contract_goal_message(functor, op, clause)
-                )
-            }
-            LoadError::BooleanOperatorInGoalPosition { operator, span } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    boolean_operator_in_goal_message(operator)
                 )
             }
             LoadError::ConstantInGoalPosition { literal, span } => {
@@ -3505,15 +3487,6 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_rule_body_term_message(functor),
-                    span.start,
-                    span.end
-                )
-            }
-            LoadError::BooleanOperatorInGoalPosition { operator, span } => {
-                write!(
-                    f,
-                    "{} at {}..{}",
-                    boolean_operator_in_goal_message(operator),
                     span.start,
                     span.end
                 )
@@ -10404,6 +10377,28 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         SymbolKind::Operation,
         kernel_scope,
     );
+    // WI-20260825-P9Y67 — `and` IS PRE-DECLARED TOO, and its absence was a live defect
+    // rather than a gap this ticket opened. WI-20260822-J38JE added `kernel.and` (the
+    // rule over `push_and`) and a `POSITION_DIRECTED_BOOLEANS` row crediting it with the
+    // goal reading of `&`. But `kernel.anthill` declares `and` ONLY as a RULE HEAD, and a
+    // rule head does not register a qualified name — so `anthill.kernel.and` was absent
+    // from `by_qualified_name`, `goal_position_boolean`'s lookup answered `None`, and
+    // THAT ROW HAS NEVER FIRED. The conjunction reading worked anyway, by a different
+    // mechanism: `goal_arg_slots` and `is_goal_conjunction` both match on the resolved
+    // symbol's LOCAL NAME (`"and"`), which `anthill.prelude.Bool.and` also answers. So
+    // the capability was real and its stated guard was not the one supplying it.
+    //
+    // Its peer `or` needed this line for the same reason and has always had it;
+    // `push_choice` / `push_and` get theirs from `register_builtin_tag`, which defines a
+    // missing name rather than skipping it. Found by extending
+    // `wi040_reserved_vocab_test` to the connective addresses, which named
+    // `..anthill.kernel.and` as an orphan the moment `&` started carrying one.
+    kb.symbols.define(
+        "and",
+        "anthill.kernel.and",
+        SymbolKind::Operation,
+        kernel_scope,
+    );
 
     // WI-521: the user-facing PRELUDE (cons / nil / some / none, the arithmetic
     // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
@@ -10640,41 +10635,6 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
-/// WI-1046 — the ONE wording of [`LoadError::BooleanOperatorInGoalPosition`], shared by
-/// the located rendering and the span-less `Display`.
-///
-/// Gives BOTH spellings (`&` and the word form) because the operator table maps them to
-/// one functor and the author may have written either, and names the comma as the
-/// repair — which is the whole content of spec §6.6's "goal conjunction is the comma".
-///
-/// WHAT THE MESSAGE NO LONGER CLAIMS (WI-20260822-J38JE item 1). It used to say `&` "has
-/// no meaning in a rule-body GOAL position", full stop. That is now false as a design
-/// statement: §5.3 reads a `Bool`-VALUED expression in goal position as a CONDITION, and
-/// `and` of two `Bool` values is one. Two different things kept the refusal standing and
-/// the message must not conflate them:
-///
-///   * the case this was MEASURED on — `l(?x) & r(?x)`, where the operands are GOALS and
-///     therefore not `Bool` values at all. The comma is the repair, and always was.
-///   * the case the evaluator cannot yet serve — `Bool.and(?b, ?b)` with `?b: Bool`,
-///     which IS a condition by §5.3 but answers 0, because `Bool.and` is host-backed and
-///     a rule body reduces only bodied operations and resolver builtins
-///     (**WI-20260822-ZJZS7**). Refused rather than admitted, deliberately: a located
-///     error is the honest state of a reading the evaluator cannot deliver, and silently
-///     answering nothing is what this refusal exists to prevent.
-fn boolean_operator_in_goal_message(operator: &str) -> String {
-    format!(
-        "`{operator}` (the `&` / `{operator}` operator) does not resolve in a rule-body \
-         GOAL position: it names `anthill.prelude.Bool.{operator}`, a boolean VALUE \
-         operation, and a rule body reduces only bodied operations and resolver builtins \
-         — so this goal can never match and the rule silently answers nothing. Goal \
-         conjunction is the COMMA: if you meant to conjoin two GOALS, write `a, b` \
-         instead of `a {operator} b` (kernel-language.md §6.6). If both operands really are \
-         `Bool` VALUES, §5.3 reads that as a condition, but the rule-body evaluator \
-         cannot yet reduce a host-backed operation (WI-20260822-ZJZS7) — spell the \
-         condition through a bodied operation for now. The `&` form is evaluated \
-         normally inside an OPERATION body."
-    )
-}
 
 /// WI-20260822-J38JE item 4 — the ONE wording of [`LoadError::ConstantInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
@@ -17306,9 +17266,18 @@ impl<'a> Loader<'a> {
 
     /// WI-529: in op-body value context, map a resolved resolver-primitive symbol to
     /// its dispatched Bool value-op counterpart (`kernel.not` → `Bool.not`,
-    /// `kernel.or` → `Bool.or`). Returns `sym` unchanged when it is neither primitive
-    /// (or when the Bool target is not loaded). `and`/`neg` need no entry — they have no
-    /// resolver primitive and already route to `Bool.and` / `Numeric.neg` everywhere.
+    /// `kernel.or` → `Bool.or`, and `kernel.and` → `Bool.and`). Returns `sym` unchanged
+    /// when it is neither primitive (or when the Bool target is not loaded).
+    ///
+    /// `and` HAS AN ENTRY, and this doc said it needed none — "no resolver primitive,
+    /// already routes to `Bool.and` everywhere". WI-20260822-J38JE gave it one
+    /// (`kernel.and` over `push_and`) and added the `POSITION_DIRECTED_BOOLEANS` row; the
+    /// row could not FIRE until WI-20260825-P9Y67 pre-declared `anthill.kernel.and` in
+    /// `register_stdlib_scopes`, because a rule head does not register a qualified name
+    /// and the lookup answered `None`. So this function's `and` behaviour is new and the
+    /// doc described the state before both tickets. `neg` genuinely needs no entry — no
+    /// resolver primitive, and it routes to `Additive.neg` everywhere. Found by
+    /// `/code-review`.
     fn redirect_op_body_boolean(&self, sym: Symbol) -> Symbol {
         self.kb.value_position_boolean(sym).unwrap_or(sym)
     }
@@ -20776,6 +20745,29 @@ impl<'a> Loader<'a> {
                 let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
                 let new_functor = self.remap_functor(functor, parse_id);
                 // A WRAPPER is not a goal — its components are — so it is not routed.
+                //
+                // AND NEITHER IS A DATA SLOT — WI-20260825-P9Y67 tried it and it was a
+                // REGRESSION, recorded here because the shape is inviting. §6.6 says a
+                // goal's ARGUMENT is a value expression, so applying the op-body redirect
+                // (`kernel.X` → `Bool.X`) in this `else` looks like the missing mirror of
+                // `route_body_goal_boolean`. It is not: a fact HEAD, a rule head and a
+                // query pattern all build through `convert_term` and are NOT redirected,
+                // so the rewrite made a rule body spell the same source text differently
+                // from the fact it is meant to match. MEASURED, with an entity control in
+                // the same file that stayed green:
+                //
+                //   fact holdsN(not(true))    rule viaN() :- holdsN(not(true))   -> 0
+                //   fact holdsO(or(true,false)) rule viaO() :- holdsO(or(true,false)) -> 0
+                //   fact wrap(boxed(v: 1))    rule viaF() :- wrap(boxed(v: 1))   -> 1
+                //
+                // Exit 0, no diagnostic — the same silent unqueryability the withdrawn
+                // `reclaim_minted_operator` produced (WI-20260824-BFB9A), reached from
+                // the other side. A DATA SLOT HOLDS A TERM, and a term's spelling is its
+                // identity; normalizing one side of a match is never a repair (WI-756).
+                // Position knowledge belongs at a CONSUMER that knows it is reading a
+                // condition — `anthill-smt-gen::translate_condition` is such a place and
+                // reads both spellings; the loader is not, because it cannot tell a
+                // condition from a reified goal being stored. Found by `/code-review`.
                 let new_functor = if at_goal && !is_wrapper {
                     self.route_body_goal_boolean(
                         new_functor,

@@ -181,6 +181,10 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
     ]
     .into_iter()
     .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
+    // WI-20260825-P9Y67: the boolean connectives carry addresses too, at
+    // `anthill.kernel` rather than a prelude spec. Same claim, same row — an
+    // address that denotes nothing is the failure this test exists to name.
+    .chain(anthill_core::parse::pratt::CONNECTIVE_FUNCTORS.iter().copied())
     .collect();
     let orphans: Vec<&str> = targets
         .iter()

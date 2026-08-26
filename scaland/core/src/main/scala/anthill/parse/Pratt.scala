@@ -33,8 +33,8 @@ object Pratt:
     * rustland's `parse::desugar_target` — unspellable by any identifier, so a marked
     * head can collide with no user declaration.
     *
-    * NOT ALL OPERATORS: `or`/`and`/`not` are position-directed and `pow` is owned by no
-    * spec, so they stay short — exactly rustland's `SPEC_OP_FUNCTORS` population. */
+    * NOT ALL OPERATORS: `pow` is owned by no spec, so it stays short — exactly
+    * rustland's `SPEC_OP_FUNCTORS` population. */
   val addFunctor:  String = "..anthill.prelude.Additive.add"
   val subFunctor:  String = "..anthill.prelude.Additive.sub"
   val negFunctor:  String = "..anthill.prelude.Additive.neg"
@@ -48,11 +48,32 @@ object Pratt:
   val gtFunctor:   String = "..anthill.prelude.PartialOrd.gt"
   val gteFunctor:  String = "..anthill.prelude.PartialOrd.gte"
 
+  /** WI-20260825-P9Y67 (rustland's twin, same ticket) — THE THREE CONNECTIVE ADDRESSES.
+    *
+    * `|`/`&`/`!` were capturable the same way the twelve were, and are addressed the same
+    * way — mirrored here for the DIVERGENCE reason above, which is the whole of scaland's
+    * stake in either ticket: without these three the same source parses to `or(a, b)`
+    * here and to `..anthill.kernel.or(a, b)` there.
+    *
+    * THE ADDRESS IS THE KERNEL CONNECTIVE, NOT A SPEC OP, and that is the one way this
+    * list differs from the twelve above. `+` needed the `Numeric` split
+    * (WI-20260825-1WBZT) before it had an honest address, because the address names where
+    * the operation is DECLARED; these three already have exactly one declaration each —
+    * the resolver primitive. `|` IS disjunction, and disjunction is `push_choice`.
+    *
+    * The VALUE reading is not lost by naming the goal spelling: `not`/`or`/`and` are
+    * position-directed (kernel §6.6) and rustland resolves that downstream, on the
+    * RESOLVED symbol. Scaland has no resolver, so it carries the spelling only — which is
+    * exactly what a shared parse layer is for. */
+  val orFunctor:   String = "..anthill.kernel.or"
+  val andFunctor:  String = "..anthill.kernel.and"
+  val notFunctor:  String = "..anthill.kernel.not"
+
   private val infixTable: Map[String, InfixEntry] = Map(
-    "|"   -> InfixEntry(1, Assoc.Left,  "or"),
-    "or"  -> InfixEntry(1, Assoc.Left,  "or"),
-    "&"   -> InfixEntry(2, Assoc.Left,  "and"),
-    "and" -> InfixEntry(2, Assoc.Left,  "and"),
+    "|"   -> InfixEntry(1, Assoc.Left,  orFunctor),
+    "or"  -> InfixEntry(1, Assoc.Left,  orFunctor),
+    "&"   -> InfixEntry(2, Assoc.Left,  andFunctor),
+    "and" -> InfixEntry(2, Assoc.Left,  andFunctor),
     "="   -> InfixEntry(3, Assoc.None,  eqFunctor),
     "!="  -> InfixEntry(3, Assoc.None,  neqFunctor),
     // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
@@ -81,8 +102,8 @@ object Pratt:
   )
 
   private val prefixTable: Map[String, PrefixEntry] = Map(
-    "!"   -> PrefixEntry(9, "not"),
-    "not" -> PrefixEntry(9, "not"),
+    "!"   -> PrefixEntry(9, notFunctor),
+    "not" -> PrefixEntry(9, notFunctor),
     "-"   -> PrefixEntry(9, negFunctor),
   )
 

@@ -929,12 +929,15 @@ class ParseTest extends munit.FunSuite:
     assertEquals(functorName(pf, body(1)), "cut")
   }
 
+  // WI-20260825-P9Y67: the functor is the ADDRESS now, mirroring rustland — `!` names
+  // `..anthill.kernel.not` outright so no declaration in scope can capture it. The SHAPE
+  // is what WI-568 is about and it is unchanged; only the spelling of the head moved.
   test("WI-568: `! atom` stays prefix negation `not(atom)`") {
     val pf = Parser.parse("rule p(?x) :- ! q(?x)", "<not>").toOption
       .getOrElse(fail("parse failed"))
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
-    assertEquals(functorName(pf, body(0)), "not")
+    assertEquals(functorName(pf, body(0)), Pratt.notFunctor)
   }
 
   // WI-027: bounded quantification `(forall/some ?x in xs: body)`.
