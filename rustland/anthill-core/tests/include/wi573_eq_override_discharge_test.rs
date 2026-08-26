@@ -108,7 +108,7 @@ fn is_undeclared_boom(errs: &[String]) -> bool {
 /// equality `eq(Green, Red)` is TRUE, so the guard `eq(c, Red)` HOLDS and `Boom`
 /// must be kept. The structural builtin would (wrongly) refute it.
 const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Effect}
   -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
   -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
   import anthill.prelude.PartialEq.{eq}
@@ -116,6 +116,8 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   sort Color
     entity Red
@@ -132,7 +134,7 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
 /// `Color` with NO override (`provides Eq` only) — the structural builtin IS this
 /// carrier's equality, so the WI-592 discharge applies unchanged.
 const STRUCTURAL_EQ_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Effect}
   -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
   -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
   import anthill.prelude.PartialEq.{eq}
@@ -140,6 +142,8 @@ const STRUCTURAL_EQ_PRELUDE: &str = r#"
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   sort Color
     entity Red
@@ -285,12 +289,15 @@ fn custom_eq_override_dispatches_and_drops() {
     let src = format!(
         r#"
 namespace anthill.test.wi573suspend
+  import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Effect}}
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
   import anthill.prelude.PartialEq.{{eq}}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
     effects {{ Boom :- eq(c, Red) }}
@@ -331,12 +338,15 @@ fn symbolic_operand_suspends_rather_than_dispatching() {
     let src = format!(
         r#"
 namespace anthill.test.wi573symbolic
+  import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Effect}}
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
   import anthill.prelude.PartialEq.{{eq}}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
     effects {{ Boom :- eq(c, Red) }}
@@ -416,13 +426,15 @@ fn nested_element_override_keeps_effect() {
     // — the reach must descend into the element.
     let src = r#"
 namespace anthill.test.wi573nestedelem
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option, Effect}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   sort Color
     entity Red
@@ -459,12 +471,14 @@ fn nested_field_override_keeps_effect() {
     // reach, distinct from the positional element case.
     let src = r#"
 namespace anthill.test.wi573nestedfield
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   sort Color
     entity Red
@@ -509,13 +523,15 @@ fn nested_native_element_still_discharges() {
     // regresses to "kept", and the suspension above would mean nothing).
     let src = r#"
 namespace anthill.test.wi573nestednative
-  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
+  import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option, Effect}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   sort Color
     entity Red

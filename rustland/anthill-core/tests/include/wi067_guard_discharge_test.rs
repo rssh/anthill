@@ -46,7 +46,7 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
 /// awkward in expression position). The caller body varies per test; only the
 /// bodies that establish `neq(b, 0)` may omit `effects Boom`.
 const RISKY_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, Effect}
   -- WI-20260825-KD9SW: the effect GUARD below writes `eq` out, so this fragment brings
   -- it into scope itself. A minted `=` would need nothing; a written name is a name.
   import anthill.prelude.PartialEq.{eq}
@@ -54,6 +54,8 @@ const RISKY_PRELUDE: &str = r#"
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky(b: Int64) -> Int64
     effects { Boom :- eq(b, 0) }
@@ -186,12 +188,14 @@ fn refuted_guard_keeps_same_label_unconditional_effect() {
     // label-removal would unsoundly lose the unconditional effect.
     let src = r#"
 namespace anthill.test.wi067dup
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky2(b: Int64) -> Int64
     effects { Boom, Boom :- eq(b, 0) }
@@ -213,12 +217,14 @@ end
     // Declaring `Boom` loads clean — only the guarded twin discharged.
     let declared = r#"
 namespace anthill.test.wi067dup2
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky2(b: Int64) -> Int64
     effects { Boom, Boom :- eq(b, 0) }

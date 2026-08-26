@@ -94,12 +94,11 @@ namespace wi329.decl
   -- by review, not by the suite, which was green under the collision.
   sort Beep
   end
-  -- Registered as an effect, as `external.anthill` registers `External`. NOT
-  -- load-bearing today, and that is measured rather than assumed: removing this fact
-  -- leaves this file at 21/21 — the loader does not require a label in an effect row
-  -- to be registered (only 6 `fact Effect[…]` exist in the whole tree, while `Clock`
-  -- and the console effects are used unregistered). Written because it is the correct
-  -- declaration, not because anything checks it.
+  -- Registered as an effect, as `external.anthill` registers `External`. LOAD-BEARING
+  -- since WI-20260823-VM3YB: `check_effect_registration` refuses a row label that names
+  -- no registered kind, so deleting this line now fails every row in this file rather
+  -- than none of them. (It used to be measured as inert — removing it left the file at
+  -- 21/21 — which is the observation that ticket started from.)
   fact Effect[T = Beep]
 
   -- Bodies, by which labels they perform.

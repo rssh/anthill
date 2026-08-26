@@ -1419,3 +1419,9 @@ mod wi_jsfhg_variant_type_is_inhabited_test;
 
 #[path = "include/wi_nb88h_member_import_stops_at_the_sort_test.rs"]
 mod wi_nb88h_member_import_stops_at_the_sort_test;
+
+#[path = "include/wi_vm3yb_effect_registration_test.rs"]
+mod wi_vm3yb_effect_registration_test;
+
+#[path = "include/wi_cbrsw_permission_effect_test.rs"]
+mod wi_cbrsw_permission_effect_test;

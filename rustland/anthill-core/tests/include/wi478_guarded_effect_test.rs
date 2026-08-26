@@ -43,12 +43,14 @@ fn ground_label_guarded_effect_loads() {
     // clean load proves grammar → loader → representation end to end.
     let src = r#"
 namespace anthill.test.wi478ground
-  import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.{Unit, Int64, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }
@@ -97,12 +99,14 @@ fn guarded_effect_is_conservatively_present_at_call() {
     // exactly like an unconditional effect. A caller that omits it must fail.
     let undeclared = r#"
 namespace anthill.test.wi478call
-  import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.{Unit, Int64, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }
@@ -125,12 +129,14 @@ end
     // — the guarded `Boom` is subsumed by a plain `Boom`.
     let declared = r#"
 namespace anthill.test.wi478call2
-  import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.{Unit, Int64, Effect}
   import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }

@@ -208,6 +208,10 @@ pub static SOURCES: &[(&str, &str)] = &[
         include_str!("../../../stdlib/anthill/prelude/external.anthill"),
     ),
     (
+        "anthill/prelude/permission",
+        include_str!("../../../stdlib/anthill/prelude/permission.anthill"),
+    ),
+    (
         "anthill/prelude/cell",
         include_str!("../../../stdlib/anthill/prelude/cell.anthill"),
     ),
