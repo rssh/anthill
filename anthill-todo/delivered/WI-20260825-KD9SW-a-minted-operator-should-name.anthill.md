@@ -3,9 +3,9 @@
 - id: WI-20260825-KD9SW-a-minted-operator-should-name
 - created: 2026-08-25T17:07:46Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: user
-- status_at: 2026-08-26T10:03:45Z
+- status_at: 2026-08-26T13:16:02Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -89,4 +89,31 @@ NOTHING ELSE IS PENDING FOR YOU on the declaration-location question. 1WBZT was 
 ONE THING THE SPLIT MAKES CHEAPER, and one it makes sharper:
   * CHEAPER — the tier hop this ticket would delete is now a table of six arithmetic/division entries pointing at four category sorts, all of which are minimal specs. `PRELUDE_QUALIFIED` is the single reader (kb/load.rs), and `implicit_target_orphans` already pins that every entry resolves, so a mint that names the address outright has a ready control: that orphan check should stay empty and the twelve-name census unchanged.
   * SHARPER — WI-20260825-X9RRN records that a QUALIFIED `Numeric.add(a, b)` does NOT walk the `provides` chain ("unknown functor"), while `import anthill.prelude.Numeric.{add}` does. A minted `..anthill.prelude.Additive.add` is an ABSOLUTE path, so it is unaffected either way — but the two tickets touch the same question (what a qualified spec-op address denotes) and whoever settles X9RRN should check that a mint's absolute reading is not accidentally routed through the same predicate.
+
+### 2026-08-26T13:15:59Z — feedback — user
+
+DELIVERED IN FULL, including the tier removal and the migration. The user took the language decision the ticket left open ("either §5.5 is corrected as part of this ticket, or the ticket is refused on it") and chose to correct §5.5.
+
+MECHANISM. Eleven operators desugar to `..anthill.prelude.<Category>.<op>`; a twelfth entry (prefix `-`) is UNREACHABLE — `-x` is a syntax error (WI-529, §6.6) — which the body did not know and which cost the `neg` address its only coverage until wi040's orphan test was widened.
+
+DRIVEN, all four claims the ticket rests on:
+  1 + 2 with `import Weird.{add}` in scope   99  ->  3      the capture, gone
+  add(1, 2) with the same import             99  ->  99     the written name, unchanged
+  money(700) + money(25) via provides       725  ->  725    dispatch, uncosted
+  all twelve with NO spec import anywhere    ok  ->  ok      an operator needs nothing
+and `operation mod(a, b) = 99` beside a minted `7 % 2` now LOADS and the operator still answers 1 — the row the ticket named as separating "the capture is refused" from "the capture is impossible".
+
+THE MIGRATION WAS ~20x THE TICKET'S ESTIMATE, not the ~5x WI-061's precedent suggested. 18 corpus sites (the ticket predicted 17 — accurate), 19 stdlib effect-guard sites, and 389 failing tests across 117 modules. Reported the number to the user mid-flight rather than spending it silently; they chose the full migration.
+
+THE COUNT WAS A FLOOR IN A SECOND SENSE THE BODY DID NOT NAME, and this is the lesson worth carrying: the loader name-checks rule-BODY GOALS only. A CONSTRAINT HEAD, an EFFECT GUARD and an EQUATIONAL-LAW BODY are not checked, so a name that stopped resolving there is SILENT — and a guard whose functor names nothing is VACUOUSLY DISCHARGED. My corpus control ("81 errors before, 81 after, same kinds and counts") was therefore measuring a channel that could not see the damage: seven stdlib files shipped dead guards under it — int64's three division-by-zero constraints, float's `recip_nonzero` / `div_float_nonzero`, division's `euclid_div` law and `mod_nonneg`, plus algebra, field, lattice, string. Found by /code-review; replaced the loader-error census with a scope-aware SOURCE census, which reports zero. Several tests written as "omitting `effects Boom` must fail" had been passing by LOSING the effect rather than keeping it.
+
+AND ONE UNSOUND REPAIR OF MINE, also caught by review. The lf1 SMT discharge broke because `safety_gps.anthill`'s `import anthill.prelude.Float.{div}` had been RETARGETING its minted `/` — i.e. the discharge worked only through the capture this ticket removes. I added `("anthill.prelude.Divisible.div", Arith("/"))` to SMT_BUILTINS, justifying it with "a minted `/` is a type error on Int64 (VT8CF)" — a claim I asserted and never drove. It is false: `operation q() -> Int64 = 7 / 2` loads clean, so that one row lowers INTEGER division to SMT-LIB REAL `/` on a proof obligation. WI-20260824-VT8CF's own paragraph refuses exactly that, three lines above where I put the row. Reverted; the lf1 spec now writes `Float.div(?r, ?c)`, which is the repair that paragraph and the new §5.5 both prescribe. (A guessed `EuclideanDomain.div` row was refused on the spot by WI-897's orphan guard — that guard working.)
+
+WHAT `check_rival_spec_operations` LEAVES BEHIND: `spec_operation_short_names` survives with three TEST callers and no production reader; its doc now says so rather than naming the deleted gate.
+
+DOCS: §5.5 rewritten (an operator names its operation ABSOLUTELY; four consequences, including that operator<->bare-call refactoring is no longer meaning-preserving); §5.1's "One spec operation, one symbol" WITHDRAWN with its two cross-references; §6.6's Functor column, desugar examples and both tier-based justifications re-stated.
+
+CONTROLS: wi_kd9sw_minted_operator_address_test (5 rows, back-outs stated per row) replaces the retired wi_bfb9a file, whose subject was the deleted pass. wi040's orphan test now walks SPEC_OP_FUNCTORS — driven: a wrong NEG address fails it, which is that address's ONLY coverage.
+
+ACCEPTANCE: rustland 5772 passed / 0 failed (36 binaries); scaland 542 / 0. Commit 5067ddb5.
 
