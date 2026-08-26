@@ -77,21 +77,77 @@ sort guardians.Llm
     effects {External, Model, Error}
 end
 
+-- ================================================================
+-- THE CARRIERS ARE CAPABILITY OBJECTS (proposal 064).
+--
+-- Each constructor is `internal`, which kernel-language.md §8.6 makes the ONLY
+-- hide gate: it hides the name from cross-scope resolution AND from field
+-- projection, with top-level code outside every declaring scope (WI-977). So
+-- `open` is the only way to obtain an `Llm`, and `open` carries
+-- `Permission[Model]` — the runtime consultation of an ambient grant, which can
+-- refuse.
+--
+-- WITHOUT `internal` THE EFFECT IS ADVISORY, and that is not a slogan here: it
+-- is what these two lines used to be. Before 064 a generated checker could write
+-- `fake_llm(fixture: "x")` and hold a model, and the ONLY thing that then caught
+-- it was `complete`'s `Model` label at the moment of USE. Now it is caught twice,
+-- at two different moments, and `rejected/forged_llm.anthill` measures the first.
+--
+-- WHY `complete` STILL CARRIES `Model`, when 064 says the label goes on the mint
+-- and nowhere else. That rule is about `Permission`, and it holds: `complete`
+-- carries no `Permission`, because the check already happened and the `Llm` in
+-- its signature is the evidence. `Model` is a DIFFERENT label answering a
+-- DIFFERENT question — *did this code consult a model*, not *did it acquire the
+-- authority to* — and this example needs both, because a checker can fail either
+-- way independently:
+--
+--   holds an Llm it was handed, calls it   caught by `-Model`            (bad_checker)
+--   holds none, mints one                  caught by `-Permission[Model]`(minting_checker)
+--   holds none, forges one                 caught by `internal`          (forged_llm)
+--
+-- Neither label sees the other's program. vocabulary.anthill states the split at
+-- the sort; this is where it bites.
+-- ================================================================
 sort guardians.LiveLlm
-  import anthill.prelude.{String, Error, External}
-  import guardians.{Llm, Prompt, Text, Model}
+  import anthill.prelude.{String, Error, External, Permission}
+  import guardians.{Llm, Prompt, Text, Model, FrontierModel}
   import guardians.TrustLevel.{Untrusted}
-  entity live_llm(endpoint: String, model: String)
+
+  internal entity live_llm(endpoint: String, model: String)
+
+  -- THE MINT, and the sole introduction. The `Permission[Model]` is consumed
+  -- here and nowhere downstream.
+  operation open(endpoint: String, model: String) -> LiveLlm
+    effects {Permission[Model]} = live_llm(endpoint: endpoint, model: model)
+
+  -- A STRONGER DEMAND for the same object. Acquiring a frontier model is
+  -- acquiring a model (`FrontierModel <: Model`), so `-Permission[Model]`
+  -- forbids this one too — the downward closure that stops a denial being
+  -- evaded by naming a narrower capability. Measured:
+  -- rejected/frontier_checker.anthill.
+  operation open_frontier(endpoint: String) -> LiveLlm
+    effects {Permission[FrontierModel]} =
+      live_llm(endpoint: endpoint, model: "frontier")
+
   operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Model, Error}
   provides Llm
 end
 
 sort guardians.FakeLlm
-  import anthill.prelude.{String, Error, External}
+  import anthill.prelude.{String, Error, External, Permission}
   import guardians.{Llm, Prompt, Text, Model}
   import guardians.TrustLevel.{Untrusted}
-  entity fake_llm(fixture: String)
+
+  internal entity fake_llm(fixture: String)
+
+  -- THE TEST DOUBLE OCCUPIES 064's TOP-RIGHT CELL: `Permission` without
+  -- `External`. The same authority path is exercised — the grant is consulted
+  -- and may refuse — and nothing leaves the process. That the two axes are
+  -- orthogonal is what makes a double possible without a second code path.
+  operation open(fixture: String) -> FakeLlm
+    effects {Permission[Model]} = fake_llm(fixture: fixture)
+
   operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Model, Error}
   provides Llm

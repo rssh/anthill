@@ -15,9 +15,11 @@ generation is trying to do), **the flow**, **what fires**, **the control**, and
 **what it would mean if it did not fire**. A run without its control measures
 nothing, so the controls are not optional reading.
 
-The eleven runs fall into three groups. Group A is data confinement — the
-`Text[Trust]` label. Group B is capability confinement — the `provides` chain.
-Group C is what did *not* work, which is as load-bearing as the rest. Two of its
+The runs fall into four groups. Group A is data confinement — the `Text[Trust]`
+label. Group B is capability confinement — the `provides` chain. Group D
+(2026-08-26, added with proposal 064) is authority at the point of ACQUISITION,
+which is independent of B and measured to be. Group C is what did *not* work,
+which is as load-bearing as the rest. Two of its
 rows have since been closed — C1 by WI-20260822-1MAGR and C2 by WI-9PGCM — and both
 are kept here with their original verdict beside the new one, because a measurement
 record that quietly drops what it measured is not one.
@@ -209,6 +211,137 @@ never depended on that.)
 
 **If it did not fire,** WI-935 would be a security gap rather than a
 correctness one, and the chain B1→B2→B3 would have a hole at the bottom.
+
+---
+
+# Group D — authority at the point of acquisition (2026-08-26)
+
+Added when proposal 064's `Permission[X]` landed (WI-20260825-CBRSW) and this
+example became its first consumer. Group B confines what a generated agent may
+DO; this group confines what it may ACQUIRE.
+
+**What was actually missing, before anything else here makes sense.** Acquisition
+was not typed at all. `LiveLlm`/`FakeLlm`'s entity constructors were public and
+construction carries no effect, so a generated component could obtain a model out
+of thin air, and `-Model` caught it only if it went on to CALL one. A checker that
+acquired a model and stashed it, or passed it to something else, was unconstrained
+by anything in the example. D3 closes the forging route and D1 types the remaining
+one.
+
+Run against `anthill load examples/guardians` and
+`cargo test -p anthill-core --test guardians_test` at the commit that added them.
+
+## D1 · Acquisition is confined by the same leg that confines use
+
+**Scenario.** `Checker.check` must provably not be steerable by a model. There
+are TWO ways to be steered, and they are caught at different moments:
+
+| the checker… | fixture | what performs the effect |
+|---|---|---|
+| holds an `Llm` it was handed, and calls it | `rejected/bad_checker.anthill` | `complete` → `Model` |
+| holds none, and MINTS one | `rejected/minting_checker.anthill` | `LiveLlm.open` → `Permission[Model]` |
+
+**Flow.** `bad_checker` smuggles an `Llm` into its own carrier (`entity mk(llm:
+Llm)`) and reaches it through `self`; it acquires nothing, so no `Permission` is
+ever performed. `minting_checker`'s carrier is bare `mk` — an audit of "what was
+this checker handed" comes back empty — and its body mints; it consults nothing,
+so `Model` is never performed.
+
+**Fires,** both on B3's body leg, each naming the label its own program performed:
+
+```
+check.effects (op-effects): expected declared:
+    [External, Error, -Model, -Permission[T = Model]],
+  got denied effect: Model — the row DECLARES `-Model` …
+```
+```
+  got denied effect: Permission[T = Model] — the row DECLARES `-Permission[T = Model]` …
+```
+
+**Control**, and it corrects what an earlier draft of this entry claimed. Deleting
+a denial from the spec, its carrier and the fixtures does **not** make the fixture
+load — measured, both directions:
+
+| edit | `bad_checker` | `minting_checker` |
+|---|---|---|
+| drop `-Permission[Model]` | refused (`denied effect: Model`) | **still refused**, as `undeclared effect: Permission[T = Model]` |
+| drop `-Model` | **still refused**, as `undeclared effect: Model` | refused (`denied effect: Permission[T = Model]`) |
+
+**So a `-X` on a CLOSED row is the contract, not the mechanism** — "not in the
+row" already means "not incurred", and B3 refuses either way. What the denial buys
+is that the claim is written where a reviewer reads it, and that the diagnostic
+names a VIOLATED denial rather than a missing declaration: two failures whose
+repairs differ, since an undeclared effect is fixed by adding the label and a
+denied one cannot be. `guardians_test` asserts the `denied effect` needle, so both
+rows do go red under the edits above — the fixture's verdict does not change, the
+message does.
+
+The positive control is separate and load-bearing: `guardians.open_round`
+(`lib/harness.anthill`) mints legitimately and declares `{Permission[Model],
+External, Model, Error}`, while `guardians.attempt` — the same round with the
+capability in hand — declares no `Permission`.
+`the_legitimate_acquisition_path_is_accepted` reads both rows back out of the KB,
+so moving the label downstream fails it.
+
+**If it did not fire,** a generated checker could mint its own model. That is not
+hypothetical: it is what this example permitted before 064, since construction
+carried no effect at all.
+
+## D2 · A sub-capability is named as a violated denial, not as an omission
+
+**Scenario.** The row denies `Permission[Model]`. A generated checker asks for
+something whose NAME is different: `Permission[FrontierModel]`.
+
+**Flow.** `rejected/frontier_checker.anthill` calls `LiveLlm.open_frontier`.
+`FrontierModel <: Model` (vocabulary.anthill), declared with an ordinary
+`provides` on a constructor-less sort.
+
+**Fires** — `got denied effect: Permission[T = FrontierModel] — the row DECLARES
+-Permission[T = Model]`.
+
+**Control.** Deleting `provides Model` from `FrontierModel` — leaving the two
+capabilities unrelated — reds this row alone. It does not make the fixture load:
+the message degrades to `undeclared effect: Permission[T = FrontierModel]`,
+because B3 refuses an unrelated capability just as readily. What the closure
+decides is whether the checker is told it broke a denial it wrote, or merely
+forgot a declaration it never intended to write.
+
+**THE MECHANISM IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE**, and the two run
+opposite ways — an earlier draft of this entry got it backwards.
+`fact Contravariant(sort: Permission, param: T)` is the SUBSUMPTION rule (a spec
+granting `Permission[AdminFs]` accepts an implementation taking only
+`Permission[Fs]`). The closure is the other direction: acquiring an `X` IS
+acquiring a `Y` whenever `X <: Y`, which runs COVARIANTLY in the capability and
+needed its own rule in the kernel (`typing::permission_entails`). See
+`stdlib/anthill/prelude/permission.anthill`.
+
+**If it did not fire,** the denial would still refuse the program, but would name
+the wrong failure — and on an OPEN row, where a lacks-constraint is the only thing
+standing between a program and a capability, it would not refuse it at all. That
+case is measured in the kernel, not here:
+`wi_cbrsw_permission_effect_test::permission_denial_is_not_evaded_by_a_sub_capability`.
+
+## D3 · Containment is what stops the effect being advisory
+
+**Scenario.** Skip the gate entirely: name the capability object's constructor
+directly.
+
+**Flow.** `rejected/forged_llm.anthill` writes `fake_llm(fixture: "advice")`.
+
+**Fires** — `'fake_llm' is internal to 'guardians.FakeLlm' and cannot be
+referenced from scope 'guardians.agent.ForgingChecker.check'`. A NAME RESOLUTION
+failure, not an effect-row one, so it holds for a body carrying no effects at
+all: `internal` is §8.6's only hide gate, and WI-977 puts a sibling namespace
+outside the declaring scope.
+
+**Control.** Removing `internal` from `fake_llm` reds this row alone — and that
+is not a hypothetical edit: it is what this file said before 064. The constructors
+were public, so every row in D1 and D2 could be satisfied by a checker that simply
+never used a gate.
+
+**If it did not fire,** D1 and D2 would both be true and both useless. THIS is the
+row the other two rest on, which is the reverse of how the group reads at first
+glance.
 
 ---
 

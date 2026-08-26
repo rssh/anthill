@@ -1,0 +1,30 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` implementation, REFUSED BY `-Permission[Model]`.
+--
+-- THE ATTACK bad_checker CANNOT MAKE, and the reason this example carries two
+-- denials rather than one. bad_checker smuggles an `Llm` into its own carrier and
+-- CONSULTS it, which `-Model` catches at the moment of use. This one holds no
+-- `Llm` at all and takes none as a parameter — the carrier is bare `mk`, so every
+-- audit of "what was this checker handed" comes back empty — and simply MINTS one.
+--
+-- Minting is not consulting, so `-Model` never fires here: it would fire only on
+-- a call to `complete`, and this body makes none. What refuses it is `Llm.open`'s
+-- `Permission[Model]` reaching a row that DENIES it (proposal 064).
+--
+-- The refusal is on the BODY leg — the declared row is the spec's, verbatim — so
+-- it is independent of wide_row.anthill's declared-row leg in exactly the way
+-- bad_checker is.
+-- ================================================================
+sort guardians.agent.MintingChecker
+  import anthill.prelude.{String, Error, External, Permission}
+  import guardians.{Checker, Source, CheckResult, Model, FakeLlm}
+  import guardians.CheckResult.{Accepted}
+  entity mk
+
+  operation check(self: MintingChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model, -Permission[Model]} =
+      let llm = FakeLlm.open("advice")
+      Accepted(carrier: "minted my own oracle")
+
+  provides Checker[C = MintingChecker]
+end

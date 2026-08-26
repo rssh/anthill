@@ -6,13 +6,23 @@
 -- takes the reply as a candidate program, and checks it. The effect rows say
 -- which half is trusted:
 --
---   render_task  {Error}                    reads declarations; no model
---   Llm.complete {External, Model, Error}   the untrusted step
---   check        {External, Error, -Model}  provably not steerable
+--   render_task  {Error}                       reads declarations; no model
+--   LiveLlm.open {Permission[Model]}           the ACQUISITION — see llm.anthill
+--                                              (on the CARRIERS; `Llm` the spec
+--                                               declares no mint, and nothing
+--                                               forces a carrier to have one)
+--   Llm.complete {External, Model, Error}      the untrusted step
+--   check        {External, Error,
+--                 -Model, -Permission[Model]}  provably not steerable
 --
--- `-Model` on the checker is the answer to "who guards the guard". A verifier
--- that could itself be steered by a model is as manipulable as the thing it
--- verifies.
+-- The checker's row is the answer to "who guards the guard". A verifier that
+-- could itself be steered by a model is as manipulable as the thing it verifies,
+-- and there are TWO ways to be steered — consulting a model you were handed, and
+-- acquiring one yourself. `-Model` denies the first, `-Permission[Model]` the
+-- second (proposal 064), and neither implies the other: minting is not
+-- consulting, and consulting a smuggled `Llm` acquires nothing. Both are written,
+-- and `rejected/bad_checker.anthill` and `rejected/minting_checker.anthill` are
+-- the two programs that show a single one would not do.
 -- ================================================================
 
 -- A candidate program. Opaque and unverified: the ONLY thing that can be done
@@ -78,7 +88,7 @@ sort guardians.Harness
 end
 
 sort guardians.Checker
-  import anthill.prelude.{String, Error, External}
+  import anthill.prelude.{String, Error, External, Permission}
   import guardians.{Source, CheckResult, Model}
 
   sort C = ?
@@ -86,25 +96,51 @@ sort guardians.Checker
   -- Loads the candidate ALONGSIDE the trusted declarations and runs every
   -- check: namespace isolation, types (taint), row conformance against the
   -- spec (capability), and the contract legs. `External` because it touches
-  -- the loader and the filesystem; `-Model` because the guard must not be
-  -- steerable.
+  -- the loader and the filesystem; the two denials because the guard must not be
+  -- steerable — it neither consults a model nor acquires the authority to, and
+  -- the second half is downward-closed, so naming a narrower capability does not
+  -- evade it (see the file header, and vocabulary.anthill).
   operation check(self: C, src: Source, spec: String) -> CheckResult
-    effects {External, Error, -Model}
+    effects {External, Error, -Model, -Permission[Model]}
 end
 
 namespace guardians
-  import anthill.prelude.{String, List, Error, External}
-  import guardians.{Harness, Checker, Llm, Source, CheckResult, Model}
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult, Model}
 
   -- ONE ROUND of the loop: render, complete, check. The repair loop is the
   -- caller's — `Rejected`'s diagnostics are exactly what `render_task` takes
   -- as `feedback` on the next round, which is why the signature carries it.
+  --
+  -- IT TAKES THE `Llm` AND ACQUIRES NOTHING, which is the shape proposal 064 is
+  -- about: the check happened before this call, and the `Llm` in the signature is
+  -- the evidence. So this row carries `Model` (it consults one, through
+  -- `generate`) and no `Permission` at all.
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: String, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
     effects {External, Model, Error} =
       let p = h.render_task(spec, tools, feedback)
       chk.check(h.generate(llm, p), spec)
+
+  -- THE ACQUISITION, and the POSITIVE CONTROL for every `Permission` refusal in
+  -- this example. Without it `Permission[Model]` would appear only in
+  -- `fixtures/agent/rejected/`, and a vocabulary that shows up exclusively in
+  -- refused programs is indistinguishable from one that refuses everything — the
+  -- trap this example's own methodology warns about (docs/design/measured.md, on
+  -- controls).
+  --
+  -- This is where the whole pipeline's model authority enters, ONCE, and the row
+  -- says so. `attempt` above is the same round with the capability already in
+  -- hand: same `{External, Model, Error}`, no `Permission`. The one line between
+  -- them is the entire difference between using authority and obtaining it.
+  operation open_round(h: Harness, chk: Checker,
+                       endpoint: String, model: String,
+                       spec: String, tools: List[T = String],
+                       feedback: List[T = String]) -> CheckResult
+    effects {Permission[Model], External, Model, Error} =
+      let llm = LiveLlm.open(endpoint, model)
+      attempt(h, llm, chk, spec, tools, feedback)
 end
 
 -- Carriers.
@@ -122,11 +158,11 @@ sort guardians.FileHarness
 end
 
 sort guardians.LoadChecker
-  import anthill.prelude.{String, Error, External}
+  import anthill.prelude.{String, Error, External, Permission}
   import guardians.{Checker, Source, CheckResult, Model}
   entity load_checker(lib_dir: String)
   operation check(self: LoadChecker, src: Source, spec: String) -> CheckResult
-    effects {External, Error, -Model}
+    effects {External, Error, -Model, -Permission[Model]}
   provides Checker
 end
 

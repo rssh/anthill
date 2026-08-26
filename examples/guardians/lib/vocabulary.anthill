@@ -79,10 +79,51 @@ end
 sort guardians.Approval
 end
 
--- A project-defined effect label: "this operation consults a model."
--- Not a kernel effect (it is authority, not semantics — docs/design/
--- effects.md), so it lives as project vocabulary.
+-- `Model` WEARS TWO HATS, and after proposal 064 that is the point rather than
+-- an ambiguity. It is
+--
+--   * a project-defined EFFECT LABEL — "this operation consults a model" — not
+--     a kernel effect (it is authority, not semantics: docs/design/effects.md),
+--     so it lives as project vocabulary and is registered below; and
+--   * a CAPABILITY, the argument of `Permission[Model]` — "this operation
+--     ACQUIRES the authority to consult a model" (kernel-language.md §5.5).
+--
+-- THE TWO CLAIMS ARE DIFFERENT AND THE CHECKER NEEDS BOTH, which is why this
+-- example carries both rather than migrating from one to the other. `-Model`
+-- says the body never consults a model — it catches a checker HANDED an `Llm`
+-- it should not have (rejected/bad_checker.anthill smuggles one in its own
+-- carrier). `-Permission[Model]` says the body never acquires one — it catches
+-- a checker that MINTS (rejected/minting_checker.anthill), which the use-site
+-- label cannot see, since minting is not consulting. Neither subsumes the
+-- other, and llm.anthill states where each bites.
 sort guardians.Model
+end
+
+-- A SUB-CAPABILITY. A frontier model is a model, so `FrontierModel <: Model`,
+-- and that is the whole declaration — `provides` on a constructor-less sort is
+-- the is-a.
+--
+-- IT EXISTS TO BE DENIED. A denial is DOWNWARD-CLOSED in the capability:
+-- `-Permission[Model]` forbids `Permission[X]` for every `X <: Model`, because
+-- acquiring a frontier model IS acquiring a model. So a generated checker cannot
+-- evade its denial by naming a narrower capability
+-- (rejected/frontier_checker.anthill).
+--
+-- THAT IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE, and the two run OPPOSITE
+-- ways — worth stating because the names invite the wrong reading.
+-- `fact Contravariant(sort: Permission, param: T)` is the SUBSUMPTION rule: a
+-- spec granting `Permission[FrontierModel]` accepts an implementation that takes
+-- only `Permission[Model]`, because it asks less. The closure above is the other
+-- direction and runs COVARIANTLY in the capability; it needed its own rule in the
+-- kernel (`typing::permission_entails`), which is the one thing proposal 064
+-- predicted would come free and did not. See
+-- `stdlib/anthill/prelude/permission.anthill`.
+--
+-- NOT registered as an effect kind: it is a capability and never a bare label,
+-- which is the separation 064 asks for.
+sort guardians.FrontierModel
+  import guardians.{Model}
+  provides Model
 end
 
 -- A second project effect: touching the filesystem. Present so the row checks
@@ -99,6 +140,10 @@ namespace guardians
   import guardians.TrustLevel.{Untrusted, Public}
   import guardians.{Text, Message, Approval, Model, Filesystem}
 
+  -- The two project effect KINDS. `FrontierModel` is deliberately absent: it is
+  -- a CAPABILITY (an argument of `Permission[…]`) and never a bare row label, so
+  -- registering it would claim a use it has none of. `Permission` itself is
+  -- registered by the prelude.
   fact Effect[T = Model]
   fact Effect[T = Filesystem]
 

@@ -601,9 +601,18 @@ regeneration loop — feed the type error back, try again — is part of the des
 rather than an afterthought. That loop is also the strongest argument for the
 approach: the error messages are precise, mechanical, and already written.
 
-**One genuinely new piece.** `-Model` needs somewhere for a project-defined
-effect label to live, which is the `User` family of [`effects.md`](effects.md).
-Everything else in Flow 2 exists today.
+**One genuinely new piece — and it turned out not to need families.** This said
+`-Model` needed somewhere for a project-defined effect label to live, which would
+be the `User` family of [`effects.md`](effects.md). BUILT (2026-08-26), and the
+family was not required: a project sort registered with `fact Effect[T = Model]`
+is a label, full stop, and the registration is now checked
+(WI-20260823-VM3YB) so a misspelling is an error rather than a silent new effect.
+
+What WAS missing is the other half of the claim. `-Model` denies the USE; nothing
+denied the ACQUISITION, so a generated component that minted its own model
+satisfied it. [Proposal 064](../../../../docs/proposals/064-permission-effect.md)'s
+`Permission[X]` is that half, and `lib/harness.anthill` now writes both. Families
+remain unfiled and nothing here waits on them.
 
 ---
 

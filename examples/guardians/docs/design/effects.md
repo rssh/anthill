@@ -1,8 +1,11 @@
 # What the guardians example asks of the effect vocabulary
 
-**Status:** Design argument (2026-08-22). Nothing measured — unlike
-[`high-level-api.md`](high-level-api.md) §8.1, this note is reasoning, not
-runs. Companion to [proposal 054](../../../../docs/proposals/054-external-effect.md).
+**Status:** Design argument (2026-08-22), with one half now MEASURED (2026-08-26).
+`Permission[X]` — found in this note's §Families and filed as
+[064](../../../../docs/proposals/064-permission-effect.md) — is implemented and this
+example is its first consumer; see *What running it changed* below. The rest is still
+reasoning rather than runs, unlike [`high-level-api.md`](high-level-api.md) §8.1.
+Companion to [proposal 054](../../../../docs/proposals/054-external-effect.md).
 
 ## The test every candidate has to pass
 
@@ -65,6 +68,26 @@ Six candidates, six rejections, and the example is not weakened by any of them.
 That is the note's main result: **the challenge motivates no new capability
 labels**, and 054's "one effect, not one per capability" holds up under the
 case designed to break it.
+
+> **Where the `Model` rejection landed, once it was built (2026-08-26).** The
+> verdict above is about the KERNEL row and it stands — `Permission[X]` is the one
+> label 064 added, and its argument is a capability rather than a new label per
+> capability. But the example carries `Model` as a project label anyway, and the
+> reason is sharper than "a project needs it": the two claims are not the same
+> claim, and the checker needs both.
+>
+> | claim | spelled | catches |
+> |---|---|---|
+> | this code never CONSULTS a model | `-Model` | a checker handed an `Llm` it should not have |
+> | this code never ACQUIRES one | `-Permission[Model]` | a checker that mints its own |
+>
+> Neither implies the other — minting is not consulting, and consulting a
+> smuggled `Llm` acquires nothing — and both directions are measured, not argued:
+> `rejected/bad_checker.anthill` and `rejected/minting_checker.anthill` are the two
+> programs, and deleting either denial reds exactly one of them while the other
+> stays green. So the honest reading of the six rejections is that `Model` is
+> authority AT THE POINT OF ACQUISITION, where 064 now puts it, and semantics at
+> the point of use, where a project label still earns its place.
 
 ## The one thing that does not fit: `External` is one label doing three jobs
 
@@ -163,14 +186,32 @@ of it rather than being bolted on.
 
 ## Families: a row per family — and the label that came out of it
 
-> **Reconciliation with proposal 064 (2026-08-25).** `Permission[X]` was found
-> here, while asking what a `User` family would have to hold, and is now filed as
+> **Reconciliation with proposal 064 (2026-08-25), and what running it changed
+> (2026-08-26).** `Permission[X]` was found here, while asking what a `User`
+> family would have to hold, and was filed as
 > [064](../../../../docs/proposals/064-permission-effect.md) — **without**
 > families. It is an ordinary row member there: set-inclusion subsumption, both
 > legs of the existing not-widen check, no family-indexed algebra. So this
 > section is the note's exploration and the record of where the label came from;
 > 064 is its specification, and the two must not be read as one proposal.
 > Families remain unfiled, and nothing in 064 waits on them.
+>
+> IT IS NOW IMPLEMENTED (WI-20260825-CBRSW) and this example is its first
+> consumer. Three things the note did not predict:
+>
+> * **The row half cost nothing and the NEGATIVE half cost everything.** 064
+>   claimed the lacks-constraint would follow from the existing order with no rule
+>   of its own. It did not: present-vs-absent was decided by label EQUALITY, so a
+>   row denying `Permission[Model]` while acquiring `Permission[FrontierModel]`
+>   loaded clean. `rejected/frontier_checker.anthill` is that program, and closing
+>   it is the one typer rule the increment added.
+> * **Containment is load-bearing, and was absent here.** These carriers' entity
+>   constructors were public, so a generated checker could write
+>   `fake_llm(fixture: "x")` and hold a model without acquiring one — the effect
+>   would have been advisory. `internal` closes it;
+>   `rejected/forged_llm.anthill` measures it.
+> * **The `-label` this section says "nothing has used yet" now has TWO users on
+>   one row**, and they are not redundant. See the table under *Six candidates*.
 
 The six rejections above were all of the form "this is authority, not
 semantics, so it does not belong in the row". That verdict is right about the
