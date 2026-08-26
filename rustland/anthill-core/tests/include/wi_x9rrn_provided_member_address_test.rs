@@ -117,8 +117,8 @@ end
 fn the_stdlib_addresses_the_ticket_named_now_compute() {
     let src = r#"
 namespace test.x9rrn.stdlib
-  import anthill.prelude.{Int64, Bool, Float, Numeric, Eq}
-  import anthill.prelude.algebra.{Field, Ring}
+  import anthill.prelude.{Int64, Bool, Float, Numeric, Eq, Field}
+  import anthill.prelude.algebra.{Ring}
   operation same() -> Bool = Eq.eq(21, 21)
   operation plus() -> Int64 = Numeric.add(20, 22)
   operation quot() -> Float = Field.div(10.0, 4.0)
@@ -672,15 +672,21 @@ end
         );
     }
 
-    // CONTAINMENT, and its two witnesses: the import is STRICTLY wider, by exactly the
-    // edge kinds `dotted_by_provision` refuses.
-    for (path, why) in [
-        ("anthill.prelude.Numeric.lt", "`lt` is `PartialOrd`'s, reached by `requires`"),
-        (
-            "anthill.prelude.Numeric.List",
-            "`List` is a SIBLING of `Numeric`, reached by the enclosing chain",
-        ),
-    ] {
+    // CONTAINMENT: the import is STRICTLY wider, by exactly the edge kinds
+    // `dotted_by_provision` refuses.
+    //
+    // ONE WITNESS NOW, NOT TWO, and the missing one is the news. This ticket shipped with
+    // `anthill.prelude.Numeric.List` beside `…lt` — a SIBLING of `Numeric`, reached
+    // because strategy 2 re-entered the enclosing chain — and said that if the import
+    // were ever narrowed, this row is what would tell you. WI-20260826-NB88H narrowed it:
+    // the import path now starts its walk below the import edge, so the enclosing chain
+    // is no longer one of the kinds by which the import exceeds the address. The row
+    // moved to the negative list below rather than being deleted, because "both spellings
+    // refuse it" is a claim worth keeping.
+    for (path, why) in [(
+        "anthill.prelude.Numeric.lt",
+        "`lt` is `PartialOrd`'s, reached by `requires`",
+    )] {
         assert!(
             import_resolves(path),
             "{path}: the member import DOES reach it ({why}) — if this ever stops being \
@@ -690,6 +696,18 @@ end
             !qualified_resolves(path),
             "{path}: …and the ADDRESS must not, because {why} and neither edge is an offer"
         );
+    }
+
+    // AND WHERE THE TWO NOW AGREE BY REFUSING. The enclosing chain is an offer under
+    // neither spelling; `wi_nb88h_member_import_stops_at_the_sort_test` owns the import
+    // half and its back-out.
+    for (path, why) in [(
+        "anthill.prelude.Numeric.List",
+        "`List` is a SIBLING of `Numeric`, and the enclosing chain is not a route for \
+         either spelling since WI-20260826-NB88H",
+    )] {
+        assert!(!qualified_resolves(path), "{path}: the ADDRESS must not ({why})");
+        assert!(!import_resolves(path), "{path}: nor may the IMPORT ({why})");
     }
 }
 

@@ -46,8 +46,13 @@ namespace anthill.todo
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, bool_flag}
   import anthill.cli.parse.{Binding}
-  import anthill.prelude.Option.{Option, none, some}
-  import anthill.prelude.Pair.{Pair, pair}
+  -- WI-20260826-NB88H: the SORT names come from the namespace that declares them.
+  -- `import anthill.prelude.Option.{Option}` used to bind `Option` by walking out of
+  -- `Option`'s own scope into `anthill.prelude` around it — a path naming the sort,
+  -- answering with its container's contents.
+  import anthill.prelude.{Option, Pair}
+  import anthill.prelude.Option.{none, some}
+  import anthill.prelude.Pair.{pair}
   import anthill.prelude.Ord.{lt, lte, gte}
   import anthill.prelude.Eq.{eq}
   import anthill.prelude.Stream.{splitFirst}

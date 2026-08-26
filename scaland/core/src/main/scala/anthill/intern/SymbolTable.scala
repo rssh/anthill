@@ -373,6 +373,30 @@ class SymbolTable:
     val visited = HashSet.empty[ScopeId]
     resolveRecursive(name, scopeId, visited)
 
+  /** WI-20260826-NB88H — [[resolveInScope]] asked FROM BELOW AN IMPORT EDGE: the scope's
+    * own contents and everything its declared clauses reach, but never the lexical
+    * container around it.
+    *
+    * THE ONE PATH WI-1089 DID NOT REACH. That rule (see [[resolveRecursive]]) was applied
+    * to the edges the walk CROSSES. [[Loader.resolveSelectiveImport]] crosses no edge: it
+    * calls the resolver AT the base scope, so the walk began with `enclosingStopped =
+    * false` and the stop never engaged — and `import a.b.C.{n}` answered out of `a.b`, and
+    * out of whatever encloses THAT. Measured on the delivered tree, one member import
+    * reaching two things the path does not name:
+    *
+    *   `import anthill.prelude.Numeric.{List}` -> bound `anthill.prelude.List`, a SIBLING
+    *   `import anthill.prelude.Pair.{Pair}`    -> bound `Pair` ITSELF, one level out
+    *
+    * WHAT STAYS REACHABLE is the other half of WI-1089's own sentence: a `requires`, a
+    * variant exposure and the imported scope's own imports are contents of the thing
+    * imported. So `import anthill.prelude.Ord.{gte}` still resolves through `Ord provides
+    * WeakOrd` and `WeakOrd requires PartialOrd`. Rustland's twin is
+    * `SymbolTable::resolve_below_import`, whose doc carries why the `requires` half is a
+    * separate decision and not this one's to take. */
+  def resolveBelowImport(name: String, scopeId: ScopeId): ResolveResult =
+    val visited = HashSet.empty[ScopeId]
+    resolveRecursive(name, scopeId, visited, enclosingStopped = true)
+
   /** WI-1089 — `enclosingStopped` is set once the walk has crossed a link an IMPORT
     * contributed, and stays set for the rest of that path: an import opens what it
     * NAMES, and not the module around it. `import a.b.*` splices `a.b` in, and `a.b`

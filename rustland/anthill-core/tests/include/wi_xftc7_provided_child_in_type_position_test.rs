@@ -512,3 +512,87 @@ end
         );
     }
 }
+
+/// WHAT A NAME MAY BE USED AS IS A SET, NOT THE KEYWORD THAT CAME FIRST.
+///
+/// `type_admissible` (kb/load.rs) is the positive gate this ticket added so that an
+/// `operation Zero()` cannot mint a type. It asked `kb.kind_of`, which is
+/// `SymbolDef::primary_kind` — and that method's own doc says it is "the keyword the
+/// declaration opened with — for DISPLAY only … Not a test for what the name can be used
+/// as: see `has_kind`". `define` / `add_kind` accumulate a category SET precisely so
+/// source order stops deciding things (WI-926), and asking the first keyword put the
+/// order back: a `Base` declaring BOTH `operation Inner()` and `sort Inner` refused the
+/// projection when the operation was written first and accepted it when the sort was.
+/// Byte-identical programs, two verdicts. Found by `/code-review`.
+///
+/// WHAT FAILS ON BACK-OUT (restore `matches!(kb.kind_of(sym), Some(Sort) | Some(Entity))`):
+/// the `operation`-first row below — the sort-first row and both refusal controls pass
+/// either way, and are what says the repair widened the gate by exactly the ordering and
+/// not at all in what it admits.
+#[test]
+fn a_child_that_is_also_an_operation_is_a_type_in_either_declaration_order() {
+    let program = |first: &str, second: &str| {
+        format!(
+            r#"
+namespace test.xftc7.order
+  import anthill.prelude.{{Int64}}
+  sort Base
+    {first}
+    {second}
+  end
+  operation take(x: Base.Inner) -> Int64 = 1
+end
+"#
+        )
+    };
+    let as_sort = "sort Inner\n      entity mk\n    end";
+    let as_op = "operation Inner() -> Int64";
+
+    // THE SUBJECT and its order-twin: the same declarations, swapped.
+    for (a, b, which) in [
+        (as_op, as_sort, "operation first"),
+        (as_sort, as_op, "sort first"),
+    ] {
+        let errs = errs_of(&program(a, b));
+        assert!(
+            errs.is_empty(),
+            "`Base.Inner` names a sort whichever keyword opened the name first \
+             ({which}); got {errs:?}"
+        );
+    }
+
+    // CONTROL 1 — a name that is ONLY an operation is still not a type. This is what the
+    // gate exists for, and `has_kind` must not have given it away.
+    let only_op = r#"
+namespace test.xftc7.order2
+  import anthill.prelude.{Int64}
+  sort Base
+    operation Zero() -> Int64
+  end
+  operation take(x: Base.Zero) -> Int64 = 1
+end
+"#;
+    assert!(
+        errs_of(only_op)
+            .iter()
+            .any(|e| e.contains("has no member") && e.contains("Zero")),
+        "an operation-only member must not mint a type; got {:?}",
+        errs_of(only_op)
+    );
+
+    // CONTROL 2 — the gate is a gate, not a pass-through: a member of neither category
+    // is still refused, so CONTROL 1 is not passing merely because nothing is checked.
+    let field = r#"
+namespace test.xftc7.order3
+  import anthill.prelude.{Int64}
+  sort Base
+    entity base(fld: Int64)
+  end
+  operation take(x: Base.fld) -> Int64 = 1
+end
+"#;
+    assert!(
+        !errs_of(field).is_empty(),
+        "a FIELD is not a type either; got a clean load"
+    );
+}

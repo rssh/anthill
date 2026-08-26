@@ -67,7 +67,8 @@ fn replace_named_arg_swaps_one_field() {
     // Pair(fst: 1, snd: 99). Pair is a stdlib entity with named-args.
     let src = r#"
 namespace test.replace_arg
-  import anthill.prelude.Pair.{Pair, pair}
+  import anthill.prelude.{Pair}
+  import anthill.prelude.Pair.{pair}
   import anthill.reflect.{Term, replace_named_arg}
 
   fact pair(fst: 1, snd: 2)

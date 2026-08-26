@@ -1534,21 +1534,29 @@ impl SymbolTable {
     /// on the whole [`ScopeInclusion`] — so `all` would drop exactly that case, which is
     /// [`Self::parent_edge_is_import_only`]'s own two-writer note read the other way round.
     ///
-    /// WHY NOT SIMPLY [`Self::resolve_in_scope`] AT THE HEAD'S SCOPE — the shape the
-    /// SELECTIVE-IMPORT path already uses (`load::process_imports`, strategy 2), which is
-    /// what makes `import anthill.prelude.Numeric.{add}` reach the inherited
-    /// `Additive.add`. Measured on the delivered tree, that walk answers two questions the
-    /// qualified reading must not:
+    /// WHY NOT SIMPLY A SCOPE WALK AT THE HEAD'S SCOPE — the shape the SELECTIVE-IMPORT
+    /// path uses (`load::process_imports`, strategy 2), which is what makes
+    /// `import anthill.prelude.Numeric.{add}` reach the inherited `Additive.add`. When
+    /// X9RRN measured it, that walk was [`Self::resolve_in_scope`] and answered two
+    /// questions the qualified reading must not:
     ///
-    ///   `import anthill.prelude.Numeric.{List}` -> LOADS  (`List` is a SIBLING of
+    ///   `import anthill.prelude.Numeric.{List}` -> LOADED (`List` is a SIBLING of
     ///                                              `Numeric` in `anthill.prelude`; the
-    ///                                              enclosing chain is walked)
+    ///                                              enclosing chain was walked)
     ///   `import anthill.prelude.Numeric.{lt}`   -> LOADS  (`lt` is `PartialOrd`'s, reached
     ///                                              by `Numeric requires PartialOrd[T]`)
     ///
     /// Both are over-hits, and `Numeric.List` is the WI-751 shape one clause over. Copying
     /// the walk would have made `Numeric.List(…)` a qualified call; the origin filter is
     /// what keeps the rung to the members the head actually offers.
+    ///
+    /// ONE OF THE TWO HAS SINCE BEEN CLOSED AT THE IMPORT (WI-20260826-NB88H): the
+    /// selective path now walks from below the import edge
+    /// ([`Self::resolve_below_import`]), so `…{List}` is refused there as well and the
+    /// remaining gap between the import and this rung is `requires` alone. The paragraph
+    /// above is kept in the past tense rather than deleted because it is the MEASUREMENT
+    /// that chose this filter — a reader asking "why not the walk?" needs the two
+    /// programs, not just the one that is still live.
     ///
     /// A SET-VALUED ANSWER: the caller compares the hits rather than taking the first, so a
     /// head reaching two same-named members reports [`ResolveResult::Ambiguous`]. The
@@ -1756,6 +1764,56 @@ impl SymbolTable {
         // it. `ImportVisibility::All` survives for the AUDIT, which answers both ways to
         // report what the rule costs; nothing in production selects it.
         self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::OwnFileOnly)
+    }
+
+    /// WI-20260826-NB88H — [`Self::resolve_in_scope`] asked FROM BELOW AN IMPORT EDGE:
+    /// the entry scope's own contents and everything its declared clauses reach, but
+    /// never the lexical container around it.
+    ///
+    /// THE ONE PATH WI-1089 DID NOT REACH. That ticket's rule is written on
+    /// [`EnclosingLinks`] — "`import a.b.C` puts `C` in scope. `C`'s scope is enclosed
+    /// by `a.b`, so a walk that re-enters the enclosing chain answers with every name of
+    /// `a.b` — and of the namespace above THAT — from a line that named one sort" — and
+    /// it was applied to the edges the resolver CROSSES. `load::process_imports`'
+    /// selective strategy 2 crosses no edge: it calls the resolver AT the base scope, so
+    /// it started the walk in `EnclosingLinks::Followed` and the stop never applied.
+    /// Measured on the delivered tree, that is one member import reaching two things the
+    /// path does not name:
+    ///
+    ///   `import anthill.prelude.Numeric.{List}` -> bound `anthill.prelude.List`, a
+    ///                                             SIBLING of `Numeric`
+    ///   `import anthill.prelude.Pair.{Pair}`    -> bound `Pair` ITSELF, one level out
+    ///
+    /// WHAT STAYS REACHABLE IS THE OTHER HALF OF WI-1089'S OWN SENTENCE: "a `requires`,
+    /// a variant exposure and the imported scope's own imports are contents of the thing
+    /// imported, and stay reachable". So `import anthill.prelude.Ord.{gte}` still
+    /// resolves through `Ord provides WeakOrd` and `WeakOrd requires PartialOrd` (the
+    /// link WI-1110 calls load-bearing, and it still is), and
+    /// `import anthill.prelude.{nil}` still reaches `List`'s exposed constructor.
+    ///
+    /// NOT [`Self::provision_parents`]' POPULATION, deliberately — that would make the
+    /// import agree with the qualified ADDRESS (`load::dotted_by_provision`) outright,
+    /// and it is a different question with a different answer: an address asks what a
+    /// sort OFFERS under its own name, an import asks what the author may take from it.
+    /// Narrowing this to offers alone reverses the sentence above and refuses
+    /// `Ord.{gt, gte, lt, lte}` at 55 measured sites; that is a decision on its own
+    /// terms, not a consequence of this one. `wi_x9rrn_provided_member_address_test::
+    /// the_qualified_population_is_contained_in_the_member_imports` is where the two
+    /// populations are compared, and it still records the import as the wider of them.
+    pub fn resolve_below_import(&self, name: &str, scope: ScopeId) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Visible,
+            ExposureLinks::Followed,
+            EnclosingLinks::StoppedByImport,
+            ParentLinks::All,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
     }
 
     /// C666A — resolve through the entry scope's locals and named imports, then only

@@ -48,8 +48,13 @@ namespace anthill.reflect.typing_pass
   -- the unresolved-name load warnings — so the staleness is non-fatal; a
   -- term-backed rewrite is follow-up work (cf. WI-2202, which also lists this
   -- file for effect-set treatment).
-  import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeBinding, TypeField}
-  import anthill.prelude.{Int64, Float, String, Bool, List, Option, Type, Nothing}
+  -- WI-20260826-NB88H: `TypeBinding` moved to the namespace import below, which is
+  -- where `anthill.prelude.TypeBinding` is declared — a member import of `Type` used
+  -- to reach it by walking out into `anthill.prelude`. The names left on this line are
+  -- the pre-existing staleness the comment above describes; they resolved to nothing
+  -- before this ticket too.
+  import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeField}
+  import anthill.prelude.{Int64, Float, String, Bool, List, Option, Type, Nothing, TypeBinding}
 
   import anthill.prelude.{Error, Modify}
 

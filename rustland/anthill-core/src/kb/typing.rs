@@ -9280,6 +9280,12 @@ fn type_slot_arg_hint(
 /// was UNSATISFIABLE — every constructor application typed at the parent, so the program
 /// did not load — so no loading program has such a slot for the hint to reach. What it can
 /// do is turn a refusal into an acceptance, never the reverse.
+///
+/// IT SEES ONLY THE DECLARED TYPE, which is a real limit rather than a simplification:
+/// `entity box(v: T)` declares a type VAR, so a variant arriving through the parameter
+/// (`Box[T = Colour.red]`) is invisible here and needs the expected type substituted in
+/// first. [`variant_field_expected_from_ctor`] is that second reading, consulted after
+/// this one declines.
 fn variant_slot_arg_hint(
     kb: &KnowledgeBase,
     arg: &Rc<NodeOccurrence>,
@@ -9400,6 +9406,26 @@ fn tuple_field_expected_from_ctor(
     field_sym: Symbol,
     expected: &Option<Value>,
 ) -> Option<Value> {
+    let walked = ctor_field_expected(kb, ctor_sym, field_sym, expected)?;
+    // Only a useful hint if the walk produced a concrete tuple type (a still-abstract
+    // field param, or a non-tuple field, leaves a tuple literal nothing to thread).
+    matches!(extract_type(kb, &walked), TypeExtractor::NamedTuple(_)).then_some(walked)
+}
+
+/// One constructor field's declared type, INSTANTIATED by unifying the constructor's
+/// parent sort against `expected` — `Box`'s `v: T` read as `Colour.red` when the slot
+/// awaits a `Box[T = Colour.red]`.
+///
+/// Extracted from [`tuple_field_expected_from_ctor`], which was the only caller and kept
+/// only the tuple-typed answers. [`variant_field_expected_from_ctor`] wants the same walk
+/// and a different filter, and doing the unify twice in two spellings is how the two
+/// readings of one field would drift.
+fn ctor_field_expected(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+    expected: &Option<Value>,
+) -> Option<Value> {
     let exp = expected.as_ref()?;
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
@@ -9410,10 +9436,36 @@ fn tuple_field_expected_from_ctor(
     if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
         return None;
     }
-    let walked = walk_type_deep_value(kb, &subst, &field_decl);
-    // Only a useful hint if the walk produced a concrete tuple type (a still-abstract
-    // field param, or a non-tuple field, leaves a tuple literal nothing to thread).
-    matches!(extract_type(kb, &walked), TypeExtractor::NamedTuple(_)).then_some(walked)
+    Some(walk_type_deep_value(kb, &subst, &field_decl))
+}
+
+/// [`variant_slot_arg_hint`] for a field whose VARIANT type arrives through a type
+/// parameter — the one-level-nested case its own gate cannot see.
+///
+/// `variant_slot_arg_hint` asks [`type_head_names_an_entity`] of the field's DECLARED
+/// type. For `entity box(v: T)` that is the type var `T`, which names no entity, so no
+/// hint reached the argument and `box(v: red(v: 1))` classified `red(…)` at `Colour` —
+/// making `Box[T = Colour.red]` uninhabitable exactly as §8.2's own variant types were
+/// before WI-20260826-JSFHG, one level down. Driven: `mk() -> Box[T = Colour.red] =
+/// box(v: red(v: 1))` reported *"expected Box[T = red], got Box[T = Colour]"*. Found by
+/// `/code-review`.
+///
+/// SAME CONFINEMENT AS ITS SIBLING, and it is what keeps this from widening anything:
+/// gated on the argument being a constructor application, and consulted only AFTER the
+/// declared-type hint has declined — so a slot that already had a hint keeps it, and the
+/// only arguments whose reading changes are those that had none.
+fn variant_field_expected_from_ctor(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+    expected: &Option<Value>,
+    arg: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    if !arg_is_constructor_application(kb, arg) {
+        return None;
+    }
+    let walked = ctor_field_expected(kb, ctor_sym, field_sym, expected)?;
+    type_head_names_an_entity(kb, &walked).then_some(walked)
 }
 
 /// Aggregate sibling errors into one `TypeError`. Flattens nested
@@ -10981,6 +11033,11 @@ fn visit_type(
                         .or_else(|| {
                             variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                         })
+                        .or_else(|| {
+                            let fs = field.as_ref().map(|(s, _)| *s)?;
+                            variant_field_expected_from_ctor(kb, name, fs, &expected, arg)
+                        })
+
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
@@ -11006,6 +11063,10 @@ fn visit_type(
                     nested_call_arg_hint(kb, arg, ft.as_ref())
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| {
+                            variant_field_expected_from_ctor(kb, name, *fname, &expected, arg)
+                        })
+
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {

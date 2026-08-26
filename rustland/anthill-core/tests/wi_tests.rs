@@ -1416,3 +1416,6 @@ mod wi_xftc7_provided_child_in_type_position_test;
 
 #[path = "include/wi_jsfhg_variant_type_is_inhabited_test.rs"]
 mod wi_jsfhg_variant_type_is_inhabited_test;
+
+#[path = "include/wi_nb88h_member_import_stops_at_the_sort_test.rs"]
+mod wi_nb88h_member_import_stops_at_the_sort_test;

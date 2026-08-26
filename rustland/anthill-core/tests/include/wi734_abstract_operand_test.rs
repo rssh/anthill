@@ -27,7 +27,7 @@ use crate::common::try_load_kb_with;
 /// whose own operands are abstract — so `merge`'s return inside it is a residual `Concat`.
 const GENERIC: &str = r#"
   import anthill.prelude.{String, Int64, Bool, Relation}
-  import anthill.prelude.Relation.{Concat}
+  import anthill.prelude.{Concat}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -148,7 +148,7 @@ fn wi734_nested_residual_operand_stays_symbolic() {
     const SRC: &str = r#"
 namespace test.wi734nest
   import anthill.prelude.{String, Int64, Bool, Relation}
-  import anthill.prelude.Relation.{Concat, Without}
+  import anthill.prelude.{Concat, Without}
   sort Person
     entity person(name: String, age: Int64)
   end
@@ -176,7 +176,7 @@ fn wi734_denoted_operand_is_still_loud() {
     const SRC: &str = r#"
 namespace test.wi734den
   import anthill.prelude.{String, Int64, Bool, Relation}
-  import anthill.prelude.Relation.{Concat}
+  import anthill.prelude.{Concat}
   sort Person
     entity person(name: String, age: Int64)
   end

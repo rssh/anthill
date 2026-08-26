@@ -67,6 +67,14 @@
 //!   (whose own third assertion pins the fail-open that CAUSES it) and
 //!   `known_gap_the_auto_some_coercion_is_withheld_at_a_variant_typed_field`.
 //!
+//! A THIRD POSITION WAS FOUND AFTER SHIPPING and is CLOSED rather than recorded as a gap:
+//! a variant reaching a constructor field through a TYPE PARAMETER (`Box[T = Colour.red]`
+//! built by `box(v: red(v: 1))`). The hint reads the field's declared type, which there is
+//! the type var `T`, so it declined and the position was uninhabitable one level down.
+//! `a_variant_type_nested_in_a_parameterized_type_is_inhabited` owns it and carries its own
+//! back-out. Found by `/code-review`; it was not among the four positions above because
+//! every one of those has the variant on the slot ITSELF.
+//!
 //! ## What /code-review found, and what it changed
 //!
 //! Four positions the first cut left uninhabitable, none of them variations on the others —
@@ -766,3 +774,96 @@ end
     assert_eq!(drive(&parent, "test.jsfhg.coerce.drive"), "Int(1)");
 }
 
+
+/// A VARIANT TYPE ONE LEVEL DOWN, THROUGH A TYPE PARAMETER, IS INHABITED TOO.
+///
+/// This ticket made `Colour.red` a type a value can have, by pushing the slot's declared
+/// type down to a constructor application as a hint (`variant_slot_arg_hint`). That hint
+/// reads the field's DECLARED type, and for `entity box(v: T)` the declared type is the
+/// type var `T` — which names no entity. So the hint declined, `red(…)` classified at
+/// `Colour`, and `Box[T = Colour.red]` was uninhabitable exactly as the bare variant type
+/// had been: driven, `mk() -> Box[T = Colour.red] = box(v: red(v: 1))` reported "expected
+/// Box[T = red], got Box[T = Colour]". Found by `/code-review` after the ticket shipped.
+///
+/// `variant_field_expected_from_ctor` instantiates the field type against the expected
+/// type first — the walk `tuple_field_expected_from_ctor` already did for the tuple case,
+/// now shared — so `T` is read as `Colour.red` before the entity test is asked.
+///
+/// WHAT FAILS ON BACK-OUT (drop the two `variant_field_expected_from_ctor` arms in
+/// `check_constructor_iter`'s hint chains): `a_user_sort_carrier` and `the_stdlib_option`
+/// below. `the_wrong_variant_is_still_refused` and `an_abstract_carrier_is_unaffected`
+/// pass EITHER WAY by design — they are what says the arm widened acceptance by exactly
+/// the correct-variant case and did not turn the slot into an unchecked one.
+#[test]
+fn a_variant_type_nested_in_a_parameterized_type_is_inhabited() {
+    let program = |ret: &str, val: &str| {
+        format!(
+            r#"
+namespace test.jsfhg.nested
+  import anthill.prelude.{{Int64}}
+  sort Colour
+    entity red(v: Int64)
+    entity blue(v: Int64)
+  end
+  sort Box
+    sort T = ?
+    entity box(v: T)
+  end
+  operation mk() -> {ret} = {val}
+  operation peek() -> Int64 = 7
+end
+"#
+        )
+    };
+
+    // a_user_sort_carrier — the subject.
+    let errs = errs_of(&program("Box[T = Colour.red]", "box(v: red(v: 1))"));
+    assert!(
+        errs.is_empty(),
+        "`box(v: red(v: 1))` must classify its argument at `red`, so the value has type \
+         `Box[T = Colour.red]`; got {errs:?}"
+    );
+
+    // the_wrong_variant_is_still_refused — CONTROL. Passes either way: before the fix it
+    // was refused for the wrong reason (no hint at all), after it is refused because the
+    // hint says `red` and the value is `blue`. Either way a `blue` may not pass.
+    let errs = errs_of(&program("Box[T = Colour.red]", "box(v: blue(v: 1))"));
+    assert!(
+        errs.iter().any(|e| e.contains("blue")),
+        "a `blue` in a `red` slot must still be refused, and named; got {errs:?}"
+    );
+
+    // an_abstract_carrier_is_unaffected — CONTROL. The parent sort still types the slot
+    // when that is what was asked for, so the hint has not made the slot unchecked.
+    let errs = errs_of(&program("Box[T = Colour]", "box(v: red(v: 1))"));
+    assert!(
+        errs.is_empty(),
+        "`Box[T = Colour]` accepts any constructor of `Colour` — §8.2's subtyping, and \
+         the reading that must survive; got {errs:?}"
+    );
+
+    // the_stdlib_option — the same shape on a library sort, so the row is not an artifact
+    // of a fixture built for it. DRIVEN: the value is constructed and read back.
+    let opt = r#"
+namespace test.jsfhg.nestedopt
+  import anthill.prelude.{Int64, Option}
+  import anthill.prelude.Option.{some}
+  sort Colour
+    entity red(v: Int64)
+    entity blue(v: Int64)
+  end
+  operation mk() -> Option[T = Colour.red] = some(red(v: 3))
+  operation peek() -> Int64 = 3
+end
+"#;
+    assert!(
+        errs_of(opt).is_empty(),
+        "`Option[T = Colour.red] = some(red(v: 3))` must load; got {:?}",
+        errs_of(opt)
+    );
+    assert_eq!(
+        drive(opt, "test.jsfhg.nestedopt.peek"),
+        "Int(3)",
+        "the fixture must actually run, not merely load"
+    );
+}

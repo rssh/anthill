@@ -9129,6 +9129,16 @@ fn process_imports(
                 // `{X}` against a scope the path never named. Strategies 1 and 3 read
                 // the qualified index and are untouched, and the miss below still
                 // reports through the existence test rather than through this.
+                //
+                // WI-20260826-NB88H: and strategy 2 asks it FROM BELOW AN IMPORT EDGE
+                // (`resolve_below_import`), which is WI-1089's rule at the one site that
+                // never applied it. WI-993 stopped a base with NO scope from answering
+                // out of the chain; a base that HAS one still did, so
+                // `import anthill.prelude.Numeric.{List}` bound a sibling of `Numeric`
+                // and `import anthill.prelude.Pair.{Pair}` bound `Pair` itself. What the
+                // sort reaches through `requires` / `provides` / its own imports / a
+                // variant exposure is unchanged — see `SymbolTable::resolve_below_import`
+                // for why that half is not this ticket's to narrow.
                 let base_scope = find_scope_by_name(kb, &path);
                 if base_scope.is_none() && !kb.symbols.by_qualified_name.contains_key(&path) {
                     // The base path itself doesn't resolve
@@ -9147,7 +9157,7 @@ fn process_imports(
                         .copied()
                         .or_else(|| {
                             base_scope.and_then(|bs| {
-                                match kb.symbols.resolve_in_scope(&short, bs) {
+                                match kb.symbols.resolve_below_import(&short, bs) {
                                     crate::intern::ResolveResult::Found(sym) => Some(sym),
                                     _ => None,
                                 }
@@ -16471,11 +16481,18 @@ const PROVISION_HEAD_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
 /// Each hop asks the same `by_qualified_name` question [`dotted_by_head`] asks, at the
 /// provided sort's own qualified name — so a provided sort answers with what IT declares,
 /// and nothing it merely has in view. The alternative — `resolve_in_scope(tail, head's
-/// scope)`, which is literally what the import path does — was measured and rejected:
-/// `import anthill.prelude.Numeric.{List}` and `…{lt}` BOTH load today, reaching a sibling
+/// scope)`, which is what the import path did — was measured and rejected:
+/// `import anthill.prelude.Numeric.{List}` and `…{lt}` BOTH loaded, reaching a sibling
 /// of `Numeric` through the enclosing chain and a `PartialOrd` member through `requires`.
 /// Copying that walk would have made `Numeric.List` and `Numeric.lt` addresses.
 /// [`crate::intern::SymbolTable::provision_parents`] carries the two programs.
+///
+/// WI-20260826-NB88H CLOSED THE ENCLOSING HALF AT THE IMPORT, so `…{List}` is refused
+/// there too and the two spellings now differ by `requires` ALONE — see
+/// [`crate::intern::SymbolTable::resolve_below_import`]. It did NOT converge the import
+/// onto this population, and that is the decision rather than an omission: an address
+/// asks what a sort OFFERS under its own name, an import asks what the author may take
+/// from it, and a `requires` is contents of the thing imported (WI-1089).
 ///
 /// `requires` IS DELIBERATELY NOT FOLLOWED, and the reason is that it is already served
 /// somewhere better: measured, a sort writing `requires Mid[T]` reaches `Mid`'s provided
@@ -22339,11 +22356,20 @@ impl<'a> Loader<'a> {
             // through the conversion behave identically at a call site — measured, both
             // load and both accept an `Int64`. Refusing one would have introduced the very
             // position-dependence this ticket removes.
+            //
+            // `has_kind`, NOT `kind_of` (found by `/code-review`). A symbol's categories
+            // are a SET and `add_kind` accumulates them precisely so source order stops
+            // mattering (WI-926); `kind_of` is `primary_kind`, whose own doc says it is
+            // "the keyword the declaration opened with — for DISPLAY only … Not a test
+            // for what the name can be used as". Asking it here made the FIRST keyword
+            // decide, so one `Base` declaring both `operation Inner()` and `sort Inner`
+            // answered differently depending on which line came first — driven, the two
+            // orders gave "type 'Base' has no member 'Inner'" and a clean load of the
+            // byte-identical program. That is also the shape the gate was added to
+            // refuse: an `operation Zero()` must not mint a type, and it still does not —
+            // an operation that is ONLY an operation has no `Sort`/`Entity` category.
             let type_admissible = |kb: &KnowledgeBase, sym: Symbol| {
-                matches!(
-                    kb.kind_of(sym),
-                    Some(SymbolKind::Sort) | Some(SymbolKind::Entity)
-                )
+                kb.has_kind(sym, SymbolKind::Sort) || kb.has_kind(sym, SymbolKind::Entity)
             };
             let visible = |kb: &KnowledgeBase, sym: Symbol, scope: ScopeId| {
                 kb.symbols.internal_visible_from(sym, scope)

@@ -122,7 +122,7 @@ fn render_schema(kb: &KnowledgeBase, ty: &anthill_core::eval::Value) -> String {
 
 const REL: &str = r#"
   import anthill.prelude.{String, Int64, Bool, List, Relation}
-  import anthill.prelude.Relation.{Project}
+  import anthill.prelude.{Project}
 
   sort Person
     entity person(name: String, age: Int64)

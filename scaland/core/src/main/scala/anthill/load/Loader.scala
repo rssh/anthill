@@ -893,7 +893,11 @@ object Loader:
   private def resolveSelectiveImport(
     kb: KnowledgeBase, target: TermSymbol, pathStr: String, name: String
   ): Option[TermSymbol] =
-    kb.symbols.resolveInScope(name, kb.symbols.scopeOf(target)) match
+    // WI-20260826-NB88H — `resolveBelowImport`, not `resolveInScope`: this call IS the
+    // import edge, so the walk starts with the enclosing chain already stopped. Without
+    // it a path naming a sort answered out of the namespace around it — see that
+    // method's doc for the two measured over-hits.
+    kb.symbols.resolveBelowImport(name, kb.symbols.scopeOf(target)) match
       case ResolveResult.Found(s) => Some(s)
       // Last resort: an entity exported by the namespace but defined one scope
       // deeper, e.g. `execution_platform` declared inside `sort ExecutionPlatform`

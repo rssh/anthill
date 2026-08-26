@@ -3990,12 +3990,14 @@ question the head asks, at the provided sort's own path, so a sort answers with 
 declares and nothing it merely has in view. Two same-named members reached at one level
 are an **ambiguity**, reported with both candidates rather than settled by clause order.
 
-**The address's population is therefore a strict subset of the member import's**, and the
-difference is exactly those two edge kinds: `import anthill.prelude.Numeric.{lt}` and
-`…{List}` both resolve today, because a selective import resolves its name by a full scope
-walk in the base scope. That walk crossing `requires` and the enclosing chain is an
-over-hit of the import's own — the `Sort.{Sibling}` case is WI-751's shape one clause over
-— not a rule about what a conversion conveys.
+**The address's population is therefore a strict subset of the member import's**, and
+since WI-20260826-NB88H the difference is exactly ONE edge kind rather than two:
+`import anthill.prelude.Numeric.{lt}` resolves and `…{List}` no longer does. The
+enclosing chain was never a rule about what a conversion conveys — it was an over-hit of
+the import's own walk, the `Sort.{Sibling}` case being WI-751's shape one clause over —
+and the import form now stops it for the same reason the address does. What the two
+spellings still disagree about is `requires`, which the address refuses as a demand
+rather than an offer and the import keeps as contents of the thing imported.
 
 **A TYPE reference reads it too** (WI-20260826-XFTC7), so `x: Mid.Inner` names the nested
 sort `Base` declares exactly as `Mid.f()` names its operation. The type position asks its
@@ -4153,9 +4155,11 @@ file's text.
   Scala, Java and Rust. `C.member` reaches through the bound name; `import
   a.b.C.*` or `requires` brings `C`'s contents in.
 - `import a.b.{C, D}` — alias each name, resolved by: direct `a.b.C`
-  qualified lookup, then `resolve_in_scope(C, a.b)`, then a one-level nested
-  lookup (`a.b.<segment>.C`, taken only if unique) so an entity declared inside
-  a sort/enum of `a.b` is importable by its short name.
+  qualified lookup, then a resolution in `a.b`'s scope *from below the import
+  edge* (WI-20260826-NB88H — the same walk as step 3, entered with the enclosing
+  chain already stopped), then a one-level nested lookup (`a.b.<segment>.C`,
+  taken only if unique) so an entity declared inside a sort/enum of `a.b` is
+  importable by its short name.
 - `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
 
 **An import opens what it names, and not the module around it** (WI-1089). The
@@ -4168,6 +4172,24 @@ and stay reachable. Without this stop every import also delivered the whole
 declaration chain above its target, which is what made the plain form *look*
 like "include `a.b`": the reach was an artifact of the walk, and it disappeared
 whenever the imported name had no scope of its own (WI-993).
+
+**The selective form's own resolution obeys it** (WI-20260826-NB88H), and until
+that ticket it did not — because it crosses no edge to be stopped at. Its second
+strategy calls the resolver *at* the base scope, so the walk began unstopped and
+`import a.b.C.{n}` answered out of `a.b`, and out of whatever encloses that:
+`import anthill.prelude.Numeric.{List}` bound `List`, a **sibling** of `Numeric`,
+and `import anthill.prelude.Pair.{Pair}` bound `Pair` itself. Such a line
+documents a membership that does not exist and would silently bind something else
+the day the enclosing namespace gained a shadowing sibling. The stop is a
+property of the **path**, not of one hop, so it holds past a `requires` too: a
+name reachable only out through the constraint's own container is refused as
+well. What the sort genuinely reaches is untouched — `import
+anthill.prelude.Ord.{gte}` still resolves through `Ord provides WeakOrd` and
+`WeakOrd requires PartialOrd`, and `import anthill.prelude.{some}` still reaches
+`Option`'s exposed constructor. Narrowing the form further, to the members a sort
+*offers* (§8.6's conversion rung), would make the import agree with the qualified
+address outright; that is a separate decision, because a `requires` is contents
+of the thing imported under the rule above.
 
 **A parent link needs a scope to link.** The wildcard form's path must name a
 **namespace** (§5.1) or a **sort** (§5.2) — the two declarations that *can have*
