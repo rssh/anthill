@@ -23,6 +23,10 @@ namespace anthill.realization.platform
   import anthill.realization.{LanguageMapping}
   -- `needs_rebuild` below uses the Filesystem operations as relations.
   import anthill.realization.platform.Filesystem.{exists, status}
+  -- WI-20260825-KD9SW: a WRITTEN bare `gt` names the operation by import now. A minted
+  -- `>` needs nothing — it names `..anthill.prelude.PartialOrd.gt` outright — but this
+  -- goal is written out, and the implicit tier that used to answer it is gone.
+  import anthill.prelude.PartialOrd.{gt}
 
   -- ================================================================
   -- ExecutionPlatform

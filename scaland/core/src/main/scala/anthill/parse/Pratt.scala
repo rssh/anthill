@@ -17,13 +17,44 @@ object Pratt:
   case class InfixEntry(priority: Int, assoc: Assoc, functor: String)
   case class PrefixEntry(priority: Int, functor: String)
 
+  /** WI-20260825-KD9SW (rustland's twin, same ticket) — THE TWELVE SPEC-OPERATION
+    * ADDRESSES A MINTED OPERATOR NAMES.
+    *
+    * A minted operator carried the SHORT functor (`"add"`) and rustland's
+    * `kb::load::PRELUDE_QUALIFIED` said where that lived — two encodings of one fact,
+    * the second BELOW scope resolution, so a same-spelled name in scope CAPTURED the
+    * operator (driven there: with `import Weird.{add}` in scope, `1 + 2` answered 99).
+    *
+    * SCALAND HAS NO SUCH TIER, so it never had that capture to fix. What it would have
+    * without this change is a DIVERGENCE: the same source would parse to `add(a, b)`
+    * here and to `..anthill.prelude.Additive.add(a, b)` there, so the two
+    * implementations would disagree about what a program IS. The addresses are mirrored
+    * for that reason, and the `..` marker carries the same guarantee it does in
+    * rustland's `parse::desugar_target` — unspellable by any identifier, so a marked
+    * head can collide with no user declaration.
+    *
+    * NOT ALL OPERATORS: `or`/`and`/`not` are position-directed and `pow` is owned by no
+    * spec, so they stay short — exactly rustland's `SPEC_OP_FUNCTORS` population. */
+  val addFunctor:  String = "..anthill.prelude.Additive.add"
+  val subFunctor:  String = "..anthill.prelude.Additive.sub"
+  val negFunctor:  String = "..anthill.prelude.Additive.neg"
+  val mulFunctor:  String = "..anthill.prelude.Multiplicative.mul"
+  val divFunctor:  String = "..anthill.prelude.Divisible.div"
+  val modFunctor:  String = "..anthill.prelude.EuclideanDomain.mod"
+  val eqFunctor:   String = "..anthill.prelude.PartialEq.eq"
+  val neqFunctor:  String = "..anthill.prelude.PartialEq.neq"
+  val ltFunctor:   String = "..anthill.prelude.PartialOrd.lt"
+  val lteFunctor:  String = "..anthill.prelude.PartialOrd.lte"
+  val gtFunctor:   String = "..anthill.prelude.PartialOrd.gt"
+  val gteFunctor:  String = "..anthill.prelude.PartialOrd.gte"
+
   private val infixTable: Map[String, InfixEntry] = Map(
     "|"   -> InfixEntry(1, Assoc.Left,  "or"),
     "or"  -> InfixEntry(1, Assoc.Left,  "or"),
     "&"   -> InfixEntry(2, Assoc.Left,  "and"),
     "and" -> InfixEntry(2, Assoc.Left,  "and"),
-    "="   -> InfixEntry(3, Assoc.None,  "eq"),
-    "!="  -> InfixEntry(3, Assoc.None,  "neq"),
+    "="   -> InfixEntry(3, Assoc.None,  eqFunctor),
+    "!="  -> InfixEntry(3, Assoc.None,  neqFunctor),
     // WI-522 / proposal 049: `<=>` = unify (anthill.kernel.unify). It lexes as one
     // operator token (maximal munch wins `<=>` over `<=`); maps to the `unify`
     // functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
@@ -34,17 +65,17 @@ object Pratt:
     // `struct_eq` functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
     // builtin; the head/body functor just round-trips.)
     "===" -> InfixEntry(3, Assoc.None,  "struct_eq"),
-    "<"   -> InfixEntry(4, Assoc.None,  "lt"),
-    "<="  -> InfixEntry(4, Assoc.None,  "lte"),
-    ">"   -> InfixEntry(4, Assoc.None,  "gt"),
-    ">="  -> InfixEntry(4, Assoc.None,  "gte"),
-    "+"   -> InfixEntry(5, Assoc.Left,  "add"),
-    "-"   -> InfixEntry(5, Assoc.Left,  "sub"),
-    "*"   -> InfixEntry(6, Assoc.Left,  "mul"),
-    "/"   -> InfixEntry(6, Assoc.Left,  "div"),
-    "%"   -> InfixEntry(6, Assoc.Left,  "mod"),
-    "mod" -> InfixEntry(6, Assoc.Left,  "mod"),
-    "div" -> InfixEntry(6, Assoc.Left,  "div"),
+    "<"   -> InfixEntry(4, Assoc.None,  ltFunctor),
+    "<="  -> InfixEntry(4, Assoc.None,  lteFunctor),
+    ">"   -> InfixEntry(4, Assoc.None,  gtFunctor),
+    ">="  -> InfixEntry(4, Assoc.None,  gteFunctor),
+    "+"   -> InfixEntry(5, Assoc.Left,  addFunctor),
+    "-"   -> InfixEntry(5, Assoc.Left,  subFunctor),
+    "*"   -> InfixEntry(6, Assoc.Left,  mulFunctor),
+    "/"   -> InfixEntry(6, Assoc.Left,  divFunctor),
+    "%"   -> InfixEntry(6, Assoc.Left,  modFunctor),
+    "mod" -> InfixEntry(6, Assoc.Left,  modFunctor),
+    "div" -> InfixEntry(6, Assoc.Left,  divFunctor),
     "^"   -> InfixEntry(7, Assoc.Right, "pow"),
     "->"  -> InfixEntry(8, Assoc.Right, "arrow"),
   )
@@ -52,7 +83,7 @@ object Pratt:
   private val prefixTable: Map[String, PrefixEntry] = Map(
     "!"   -> PrefixEntry(9, "not"),
     "not" -> PrefixEntry(9, "not"),
-    "-"   -> PrefixEntry(9, "neg"),
+    "-"   -> PrefixEntry(9, negFunctor),
   )
 
   def lookupInfix(name: String): Option[InfixEntry] = infixTable.get(name)
@@ -97,8 +128,10 @@ object Pratt:
     * needed by the loader's refusal so it can name the operator back to the author. */
   val structEqFunctor: String =
     infixTable("===").functor
-  val eqFunctor: String =
-    infixTable("=").functor
+  // `eqFunctor` is a LITERAL above, not derived here: WI-20260825-KD9SW made the table
+  // reference it, and a `val` reading `infixTable` initialises after the table — so
+  // deriving it would be a circular forward reference (null at class init, silently).
+
 
   /** Desugar a flat infix chain.
     *

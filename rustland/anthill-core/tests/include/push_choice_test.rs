@@ -364,6 +364,7 @@ fn wi580_relational_append_solves_first_arg() {
     let src = r#"
         namespace test.wi580ra
           import anthill.prelude.List.{append, cons, nil}
+          import anthill.prelude.PartialEq.{eq}
           rule solve(?a) :- eq(append(?a, cons(head: 3, tail: nil)), cons(head: 1, tail: cons(head: 3, tail: nil)))
         end
     "#;
@@ -505,6 +506,7 @@ fn wi580_catchall_arm_declines_no_overgeneration() {
     let src = r#"
         namespace test.wi580ca
           import anthill.prelude.{Int64, String}
+          import anthill.prelude.PartialEq.{eq}
           operation label(n: Int64) -> String =
             match n
               case 0 -> "zero"
@@ -540,6 +542,7 @@ fn wi580_op_call_other_operand_declines() {
     let src = r#"
         namespace test.wi580oc
           import anthill.prelude.List.{append, cons, nil}
+          import anthill.prelude.PartialEq.{eq}
           rule q(?a, ?b) :- eq(append(?a, cons(head: 3, tail: nil)), append(?b, cons(head: 4, tail: nil)))
         end
     "#;
@@ -572,6 +575,7 @@ const MEMBER_EQ_SRC: &str = r#"
     namespace test.wi580mem
       import anthill.prelude.{Int64, Bool, Eq, PartialEq, List}
       import anthill.prelude.List.{contains, cons, nil}
+      import anthill.prelude.PartialEq.{eq}
       sort AE
         entity ae(k: Int64, tag: Int64)
         operation aeq(a: AE, b: AE) -> Bool = eq(a.k, b.k)

@@ -38,11 +38,18 @@ namespace wi896.fourcases
 
   sort BarePrelude
     import anthill.prelude.{Float}
+    -- WI-20260825-KD9SW: `gte` reached these heads through the IMPLICIT TIER, which is
+    -- gone — a minted `>=` names its address, and a WRITTEN `gte` is an ordinary name.
+    -- The import is what now makes the head a clause ABOUT `PartialOrd.gte`, which is
+    -- this row's whole subject; without it the head would introduce a new predicate and
+    -- the test would be measuring the opposite case.
+    import anthill.prelude.PartialOrd.{gte}
     rule gte(?x, 3.0) :- gte(?x, 5.0)
   end
 
   sort LabeledPrelude
     import anthill.prelude.{Float}
+    import anthill.prelude.PartialOrd.{gte}
     rule bound896: gte(?x, 3.0) :- gte(?x, 5.0)
   end
 end

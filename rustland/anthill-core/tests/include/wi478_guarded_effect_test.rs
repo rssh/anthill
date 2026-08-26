@@ -44,6 +44,7 @@ fn ground_label_guarded_effect_loads() {
     let src = r#"
 namespace anthill.test.wi478ground
   import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -74,6 +75,7 @@ fn denoted_label_guarded_effect_loads() {
     let src = r#"
 namespace anthill.test.wi478node
   import anthill.prelude.{Unit, Cell, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
     effects { Modify[c] :- eq(b, 0) }
@@ -96,6 +98,7 @@ fn guarded_effect_is_conservatively_present_at_call() {
     let undeclared = r#"
 namespace anthill.test.wi478call
   import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -123,6 +126,7 @@ end
     let declared = r#"
 namespace anthill.test.wi478call2
   import anthill.prelude.{Unit, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang

@@ -69,6 +69,7 @@ fn floundered_goal_is_residual_not_definite() {
     // residualizes.
     let src = r#"
         namespace wi519.flounder
+          import anthill.prelude.PartialEq.{eq}
           rule maybe(?a, ?b) :- eq(?a, ?b)
         end
     "#;
@@ -149,6 +150,7 @@ fn naf_three_way_over_ground_inner() {
     let src = r#"
         namespace wi519.naf
           import anthill.prelude.{Int64}
+          import anthill.prelude.PartialEq.{eq}
           sort Thing
             entity thing(id: Int64)
           end

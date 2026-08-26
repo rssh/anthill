@@ -125,6 +125,9 @@ fn rule_bodies_apply(kb: &KnowledgeBase, functor_qn: &str, op_short: &str) -> bo
 /// `?b.guarded(?k)` and `?b.guarded(?n)` respectively.
 const PRELUDE: &str = r#"
   import anthill.prelude.{Int64}
+  -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
+  -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
+  import anthill.prelude.PartialEq.{neq}
   sort Box
     entity box(value: Int64)
     operation guarded(b: Box, n: Int64) -> Int64
@@ -149,6 +152,7 @@ fn rule_body_value_precondition_dot_dispatches() {
     let src = format!(
         r#"
 namespace anthill.test.wi557rule
+  import anthill.prelude.PartialEq.{{eq}}
 {PRELUDE}
   rule uses(?b, ?k, ?r)
     :- holder(b: ?b, k: ?k), eq(?r, ?b.guarded(?k))
@@ -227,6 +231,7 @@ fn rule_body_definite_precondition_violation_is_rejected() {
     let rule_src = format!(
         r#"
 namespace anthill.test.wi600
+  import anthill.prelude.PartialEq.{{eq}}
 {PRELUDE}
   rule uses(?b, ?r)
     :- holder(b: ?b, k: ?), eq(?r, ?b.guarded(0))

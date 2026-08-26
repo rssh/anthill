@@ -145,7 +145,9 @@ fn kb_of(body: &str) -> KnowledgeBase {
     crate::common::load_kb_with(&format!(
         "namespace wi1096\n  \
          import anthill.prelude.{{List, Int64, Bool, Set}}\n  \
-         import anthill.prelude.List.{{cons, nil, contains, length}}\n{MARK}{body}\nend\n"
+         import anthill.prelude.List.{{cons, nil, contains, length}}\n  \
+         import anthill.prelude.PartialEq.{{eq}}\n  \
+         import anthill.prelude.PartialOrd.{{gt}}\n{MARK}{body}\nend\n"
     ))
 }
 

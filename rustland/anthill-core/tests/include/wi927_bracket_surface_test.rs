@@ -45,6 +45,7 @@ fn eponymous(body: &str) -> String {
         r#"
 namespace test.wi927
   import anthill.prelude.{{Int64, Bool, Type}}
+  import anthill.prelude.PartialEq.{{eq}}
   sort Box
     sort T = ?
     entity Box(value: T)
@@ -61,6 +62,7 @@ fn control(body: &str) -> String {
         r#"
 namespace test.wi927ctl
   import anthill.prelude.{{Int64, Bool, Type}}
+  import anthill.prelude.PartialEq.{{eq}}
   sort Holder
     sort T = ?
     entity mk(value: T)

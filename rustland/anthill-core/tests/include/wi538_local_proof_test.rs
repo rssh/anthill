@@ -108,6 +108,7 @@ fn in_body_proof_conclude_form_loads_as_expr_proof_and_types() {
     let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.concl
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation f(b: Box) -> Int64 =
@@ -184,6 +185,7 @@ fn proof_is_transparent_to_simp_rewriting() {
     let kb = crate::common::load_kb_with(
         r#"
         namespace wi538.simp
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x

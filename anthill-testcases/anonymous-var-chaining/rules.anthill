@@ -9,6 +9,11 @@
 
 namespace test.anon_chaining
   import anthill.prelude.{Int64}
+  -- WI-20260825-KD9SW: WRITTEN bare spec-operation names are imported now. A minted
+  -- operator (`+`, `<`, …) names its target outright and needs nothing; these call
+  -- the same operations by NAME, and the implicit tier that answered them is gone.
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.PartialOrd.{lt}
 
   -- Data: triples where a+b < c
   fact triple(1, 2, 10)

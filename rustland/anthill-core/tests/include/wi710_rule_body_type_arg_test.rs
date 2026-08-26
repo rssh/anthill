@@ -24,6 +24,7 @@ fn an_undeclared_type_argument_in_a_rule_body_is_loud() {
 namespace test.wi710.body
   import anthill.prelude.{Cell, Int64, Bool}
   import anthill.reflect.{is_modifiable}
+  import anthill.prelude.PartialEq.{eq}
 
   rule bad(?x) :- eq(?x, is_modifiable(Cell[W = Int64]))
 end
@@ -104,6 +105,7 @@ fn a_rule_body_call_site_type_argument_list_is_refused_as_unsupported_not_as_a_s
     let src = r#"
 namespace test.wi710.callsite_body
   import anthill.prelude.{Int64, Bool, List}
+  import anthill.prelude.PartialEq.{eq}
 
   operation pick[T](xs: List[T = T]) -> Bool = true
   rule ok(?b) :- eq(?b, pick[T = Int64](nil))
@@ -195,6 +197,7 @@ fn an_over_applied_positional_in_a_rule_body_is_loud() {
 namespace test.wi710.overapplied
   import anthill.prelude.{Cell, Int64, String, Bool}
   import anthill.reflect.{is_modifiable}
+  import anthill.prelude.PartialEq.{eq}
 
   rule bad(?x) :- eq(?x, is_modifiable(Cell[Int64, String]))
 end
@@ -219,6 +222,7 @@ fn a_rule_body_type_pattern_with_variable_arguments_still_loads() {
 namespace test.wi710.vars
   import anthill.prelude.{Cell, List, Int64, Bool, Modifiable}
   import anthill.reflect.{is_modifiable}
+  import anthill.prelude.PartialEq.{eq}
 
   -- A variable type ARGUMENT, named and positional, in a rule body and in a goal.
   rule modifiable_elem(?t) :- Modifiable[T = ?t]

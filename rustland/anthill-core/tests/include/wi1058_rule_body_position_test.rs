@@ -173,6 +173,7 @@ fn a_subgoal_with_the_wrong_arity_is_refused_naming_the_rule() {
     let msg = refusal(
         "namespace test.wi1058.arity\n\
          \x20 import anthill.prelude.Int64\n\
+         \x20 import anthill.prelude.PartialEq.{eq}\n\
          \x20 rule q1058(?x) :- ?x = 1\n\
          \x20 rule bad1058(?a, ?b) :- q1058(?a, ?b)\n\
          end\n",
@@ -368,6 +369,7 @@ fn a_type_application_in_a_rule_body_is_not_a_call() {
         "namespace test.wi1058.types\n\
          \x20 import anthill.prelude.{Cell, List, Int64, Bool, Modifiable}\n\
          \x20 import anthill.reflect.{is_modifiable}\n\
+         \x20 import anthill.prelude.PartialEq.{eq}\n\
          \x20 rule modifiable1058(?t) :- Modifiable[T = ?t]\n\
          \x20 rule anylist1058(?t, ?b) :- eq(?b, is_modifiable(List[T = ?t]))\n\
          \x20 rule arrow1058(?t) :- ?t <=> (Int64 -> Int64)\n\

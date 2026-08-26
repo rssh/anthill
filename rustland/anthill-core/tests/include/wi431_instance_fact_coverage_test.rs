@@ -234,6 +234,7 @@ end
 fn instance_fact_op_dispatches_when_spec_has_requires() {
     let src = r#"namespace test.wi431.subreq
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
 
   sort MyEq
     sort T = ?
@@ -299,6 +300,7 @@ fn instance_fact_eq_powers_list_member() {
     let src = r#"namespace test.wi431.member
   import anthill.prelude.{List, Int64, Bool, Eq, PartialEq}
   import anthill.prelude.List.{contains}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Color
     entity color(code: Int64)

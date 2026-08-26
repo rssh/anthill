@@ -24,6 +24,11 @@
 -- where `Float.fmod` answers the IEEE remainder.
 sort anthill.prelude.Field
   import anthill.prelude.{Numeric, Divisible}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{eq, neq}
+  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+  import anthill.prelude.Multiplicative.{mul}
 
   sort T = ?
   requires Numeric[T]

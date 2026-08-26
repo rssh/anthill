@@ -49,6 +49,10 @@ fn is_undeclared_boom(errs: &[String]) -> bool {
 /// `eq` override). `risky(c)` raises `Boom` only when `c = Red`.
 const COLOR_PRELUDE: &str = r#"
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  -- WI-20260825-KD9SW: the effect GUARD below writes `eq` out. A guard whose functor
+  -- names nothing is VACUOUSLY discharged, so without this the "must keep Boom" rows
+  -- silently pass by losing the effect rather than by keeping it.
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -151,6 +155,9 @@ end
 /// because both `Ref(Green)=Ref(Green)` and a floundering `var_ref` keep `Boom`).
 const ALT_GUARD_PRELUDE: &str = r#"
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  -- WI-20260825-KD9SW: the effect guard writes `eq` out; a guard naming nothing is
+  -- VACUOUSLY discharged, which would make the KEEP half pass for the wrong reason.
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang

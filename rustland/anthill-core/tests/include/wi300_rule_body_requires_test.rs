@@ -71,6 +71,7 @@ const SRC: &str = r#"
       -- WI-1089: `eq` is imported by name. `import anthill.prelude.Int64` binds
       -- `Int64` and nothing else, so the bare body call needs its own import.
       import anthill.prelude.PartialEq.eq
+      import anthill.prelude.PartialEq.{eq}
       -- A carrier that DECLARES it provides Eq …
       sort Witheq
         entity we(v: Int64)
@@ -219,6 +220,7 @@ fn two_requires_on_same_spec_is_a_loud_error() {
         namespace test.wi300.dup
           import anthill.prelude.{Int64, PartialEq, Eq}
           import anthill.prelude.PartialEq.eq
+          import anthill.prelude.PartialEq.{eq}
           sort Thing
             entity thing(v: Int64)
           end

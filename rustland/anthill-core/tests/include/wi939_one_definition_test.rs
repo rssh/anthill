@@ -258,6 +258,7 @@ fn a_clause_at_the_operations_own_arity_is_a_lemma() {
         r#"
 namespace wi939d.lemma
   import anthill.prelude.{PartialOrd}
+  import anthill.prelude.PartialOrd.{gte}
   rule bound939: gte(?x, 3.0) :- gte(?x, 5.0)
 end
 "#,
@@ -326,6 +327,7 @@ fn a_same_arity_lemma_on_a_builtin_backed_bool_op_is_legal() {
         r#"
 namespace wi939d.lemma2
   import anthill.prelude.{PartialOrd}
+  import anthill.prelude.PartialOrd.{gte}
   rule bound939b: gte(?x, 3.0) :- gte(?x, 5.0)
 end
 "#,

@@ -1,5 +1,7 @@
 -- Lattice: partial order with least upper bound and greatest lower bound
 sort anthill.prelude.Lattice
+  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+  import anthill.prelude.PartialEq.{eq}
 
   sort T = ?
   requires Eq[T]

@@ -100,6 +100,8 @@ fn a_two_slot_operation_loads() {
             r#"
 namespace test.wi840.two_slots
   import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.PartialEq.{{neq}}
+  import anthill.prelude.PartialOrd.{{gt}}
 {SPECS}
   sort Use
     operation biFold(xs: Int64, n: Int64) -> Int64
@@ -631,6 +633,7 @@ fn the_anonymous_forms_are_unchanged_and_record_nothing() {
             r#"
 namespace test.wi840.anonymous
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.PartialEq.{{neq}}
 {SPECS}
   sort Box
     sort E = ?
@@ -676,6 +679,7 @@ fn a_value_precondition_contributes_no_candidate_but_its_head_is_still_capturabl
         r#"
 namespace test.wi840.value_precondition
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{neq}
   sort Use
     operation div[U](a: Int64, b: Int64) -> Int64 requires neq(b, 0)
       = a
@@ -688,6 +692,7 @@ end
         r#"
 namespace test.wi840.value_precondition_captured
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{neq}
   sort Use
     operation div[neq](a: Int64, b: Int64) -> Int64 requires neq(b, 0)
       = a

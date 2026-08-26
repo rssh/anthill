@@ -122,6 +122,7 @@ fn wildcard_let_emits_discard_statement() {
     let source = r#"
         namespace test.expr_f_void
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation sink(x: Int64) -> Int64 = x
             operation chain(x: Int64) -> Int64 =
@@ -146,6 +147,7 @@ fn wildcard_let_followed_by_named_let_composes() {
     let source = r#"
         namespace test.expr_f_mix
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation sink(x: Int64) -> Int64 = x
             operation step(x: Int64) -> Int64 =

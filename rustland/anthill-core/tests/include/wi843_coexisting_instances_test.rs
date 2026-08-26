@@ -95,7 +95,7 @@ fn program(ns: &str, body: &str) -> String {
 /// control needs `TWO_MONOIDS` minus `MulM`, and spelling the preamble twice to get
 /// it is how the two drift.
 fn program_with(ns: &str, monoids: &str, body: &str) -> String {
-    format!("\nnamespace {ns}\n  import anthill.prelude.{{Int64, List}}\n{monoids}{body}\nend\n")
+    format!("\nnamespace {ns}\n  import anthill.prelude.{{Int64, List}}\n  import anthill.prelude.Additive.{{add}}\n  import anthill.prelude.Multiplicative.{{mul}}\n  import anthill.prelude.PartialEq.{{eq}}\n{monoids}{body}\nend\n")
 }
 
 /// `TWO_MONOIDS` with the multiplicative one dropped.

@@ -62,6 +62,7 @@ fn check_discharges_pending_derivation_proof() {
 fn check_warns_but_completes_on_unverified_proof() {
     let src = r#"
         namespace test.wi564.warn
+          import anthill.prelude.PartialEq.{eq}
           entity Light(state: String)
           fact Light(state: "bright")
 
@@ -94,6 +95,7 @@ fn check_warns_but_completes_on_unverified_proof() {
 fn check_require_proofs_errors_on_unverified_proof() {
     let src = r#"
         namespace test.wi564.strict
+          import anthill.prelude.PartialEq.{eq}
           entity Light(state: String)
           fact Light(state: "bright")
 

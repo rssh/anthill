@@ -69,6 +69,8 @@ fn with_desc(ns: &str, body: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
 {DESC}
 {body}
 end

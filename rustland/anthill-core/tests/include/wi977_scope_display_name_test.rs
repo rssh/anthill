@@ -269,6 +269,7 @@ fn a_rule_inside_the_declaring_sort_sees_its_internal_field() {
 namespace wi977.rin
   sort Point
     import anthill.prelude.Int64
+  import anthill.prelude.PartialEq.{eq}
     internal entity point(x: Int64, y: Int64)
     entity wrap(p: Point, v: Int64)
     rule holds(?p, ?v)
@@ -298,6 +299,7 @@ namespace wi977.rout
   end
   import anthill.prelude.Int64
   import wi977.rout.Point
+  import anthill.prelude.PartialEq.{eq}
   rule holds(?p, ?v)
     :- Point.wrap(p: ?p, v: ?v), eq(?v, ?p.x)
 end

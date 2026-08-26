@@ -27,6 +27,7 @@ fn fixture(extra_import: &str, policy_decl: &str) -> String {
     format!(
         r#"
 namespace test.wi781.dispatch
+  import anthill.prelude.PartialOrd.{{gte, lt}}
   {extra_import}
 
   rule bound_d: gte(?x, 3.0)

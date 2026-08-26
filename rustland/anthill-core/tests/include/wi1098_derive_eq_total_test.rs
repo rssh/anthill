@@ -423,7 +423,6 @@ fn a_dispatched_eq_is_not_shadowed_by_a_derived_provision() {
     let src = r#"
 namespace wi1098.boundary
   import anthill.prelude.{Bool, Int64, PartialEq}
-  import anthill.prelude.PartialEq.{eq}
   sort Pebble
     entity pebble(n: Int64)
   end
@@ -432,6 +431,10 @@ namespace wi1098.boundary
     operation eq(a: Pebble, b: Pebble) -> Bool = true
   end
   sort Driver
+    -- WI-20260825-KD9SW: the WRITTEN `eq` below is imported HERE, not at namespace
+    -- level: `sort PebbleEq` declares its own `eq`, and a namespace-level import would
+    -- make that declaration a proposal-059 R4 capture.
+    import anthill.prelude.PartialEq.{eq}
     operation distinct(n: Int64) -> Int64 =
       if eq(pebble(n: 1), pebble(n: 2)) then 1 else 0
   end

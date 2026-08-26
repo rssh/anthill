@@ -21,6 +21,7 @@ fn single_let_emits_iife() {
     let source = r#"
         namespace test.expr_c
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation step(n: Int64) -> Int64 =
               let x = add(n, 1)
@@ -45,6 +46,7 @@ fn nested_let_chain_flattened() {
     let source = r#"
         namespace test.expr_c
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation chain(n: Int64) -> Int64 =
               let a = add(n, 1)
@@ -69,6 +71,7 @@ fn let_with_if_in_body() {
     let source = r#"
         namespace test.expr_c
           import anthill.prelude.{Int64, Bool}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation pick(n: Int64, b: Bool) -> Int64 =
               let x = add(n, 1)
@@ -99,6 +102,7 @@ fn lambda_emits_generic_lambda() {
     let source = r#"
         namespace test.expr_c
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation lam(n: Int64) -> (x: Int64) -> Int64 = lambda x -> add(x, n)
           end
@@ -120,6 +124,7 @@ fn let_iife_compiles() {
     let source = r#"
         namespace test.expr_c_compile
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation forty_two() -> Int64 =
               let x = 21

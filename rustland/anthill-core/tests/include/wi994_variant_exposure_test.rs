@@ -74,6 +74,7 @@ fn a_freshly_declared_prelude_sorts_variants_were_always_exposed() {
         r#"
 namespace wi994.ctrl
   import anthill.prelude.*
+  import anthill.prelude.PartialEq.{eq}
   operation two() -> Bool = eq(pair(fst: 1, snd: 2), pair(fst: 1, snd: 2))
 end
 "#,

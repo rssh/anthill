@@ -189,6 +189,9 @@ pub(crate) fn body_less(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> 
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a caller's `tail` may write a bare `eq` goal, and a WRITTEN
+  -- name is brought into scope by import. A minted `=` would need nothing.
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Desc
     sort T = ?
@@ -514,6 +517,9 @@ fn abstract_receiver(ns: &str, call: &str, rival: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a caller's `tail` may write a bare `eq` goal, and a WRITTEN
+  -- name is brought into scope by import. A minted `=` would need nothing.
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Desc
     sort T = ?

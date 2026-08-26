@@ -68,6 +68,7 @@ fn deferring_sort(ns: &str, sort: &str, op: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Bool, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq}}
   sort {sort}
     sort T = ?
     requires PartialEq[T]
@@ -153,6 +154,7 @@ fn two_sites_in_one_body_are_two_entries() {
     let src = r#"
 namespace test.wi873.twice
   import anthill.prelude.{Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort Wi873Twice
     sort T = ?
     requires PartialEq[T]
@@ -216,6 +218,7 @@ fn a_simp_expansion_with_two_calls_is_two_entries() {
     let src = r#"
 namespace test.wi873.simp
   import anthill.prelude.{Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort Wi873Simp
     sort T = ?
     requires PartialEq[T]

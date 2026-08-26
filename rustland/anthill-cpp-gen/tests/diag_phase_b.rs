@@ -9,6 +9,7 @@ fn dump_phase_b_shapes() {
     let source = r#"
         namespace test.dumpb
           import anthill.prelude.{Int64, Bool, Float}
+          import anthill.prelude.PartialOrd.{gt}
           entity Pose(x: Float, y: Float)
           sort Calc
             operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else 0

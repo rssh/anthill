@@ -145,6 +145,7 @@ fn with_body(spec: &str) -> String {
     format!(
         r#"
 namespace test.pbody
+  import anthill.prelude.PartialEq.{{eq}}
   sort Stack
     sort T = ?
     rule is_full(?s) :- eq(?s, ?s)

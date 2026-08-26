@@ -143,6 +143,8 @@ fn program(ns: &str, parts: &[&str]) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
   import anthill.reflect.typing.DefaultProvider
 
   sort Desc
@@ -534,6 +536,8 @@ fn a_sole_supplier_dot_still_takes_its_member() {
 namespace {ns}
   import anthill.prelude.{{Int64}}
 
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
   sort Desc2
     sort T = ?
     operation describe2(x: T) -> Int64 = 1
@@ -594,6 +598,8 @@ fn the_dot_spelling_reads_the_same_arbitration() {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
   import anthill.reflect.typing.DefaultProvider
 {defaulted}{leaf}{rival}  fact DefaultProvider(spec: Desc2, provider: Rival2)
   sort Driver
@@ -629,6 +635,8 @@ fn a_marked_default_does_not_reopen_the_coherent_family() {
     let src = r#"
 namespace wi861.coherent
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
   import anthill.reflect.typing.DefaultProvider
 
   sort Coin

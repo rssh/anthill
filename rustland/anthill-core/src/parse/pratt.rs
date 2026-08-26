@@ -45,10 +45,77 @@ pub const ARROW_FUNCTOR: &str = "arrow";
 /// The functor the ternary `-> … @ …` desugars to (an effectful arrow type).
 pub const ARROW_EFFECT_FUNCTOR: &str = "arrow_effect";
 
+/// WI-20260825-KD9SW — THE TWELVE SPEC-OPERATION ADDRESSES A MINTED OPERATOR NAMES.
+///
+/// A minted operator used to carry the SHORT functor (`"add"`) and `kb::load`'s
+/// `PRELUDE_QUALIFIED` said where that lived (`anthill.prelude.Additive.add`). Two
+/// encodings of one fact, with nothing keeping them in step — and the second sat BELOW
+/// scope resolution, so a same-spelled name in scope CAPTURED the operator. Driven,
+/// before this ticket: with `import Weird.{add}` in scope, `1 + 2` answered `99`.
+///
+/// This is WI-20260825-5W3RJ's move one table over, and the reasoning is entirely that
+/// module's — see [`crate::parse::desugar_target`] for why the `..` marker is the right
+/// instrument (it is unspellable by any identifier, so a marked head can collide with no
+/// user declaration) and for the reader rule that comes with it.
+///
+/// THE ADDRESS IS THE SPEC OP, NOT A CARRIER, so this costs no polymorphism: the spec op
+/// is what dispatches. Driven — a `Money` providing `Additive[T = Money]` answers
+/// `money(700) + money(25)` = 725 through its own `add`, with `+` naming
+/// `..anthill.prelude.Additive.add`.
+///
+/// AND IT IS WHY THE SPEC SPLITS HAD TO LAND FIRST. The address names where the
+/// operation is DECLARED, so WI-20260825-1WBZT moving `add` off `Numeric` onto
+/// `Additive` changed it. These are the post-1WBZT / post-VT8CF homes, and a later split
+/// must move them HERE rather than leaving a table to drift.
+pub const ADD_FUNCTOR: &str = "..anthill.prelude.Additive.add";
+pub const SUB_FUNCTOR: &str = "..anthill.prelude.Additive.sub";
+pub const NEG_FUNCTOR: &str = "..anthill.prelude.Additive.neg";
+pub const MUL_FUNCTOR: &str = "..anthill.prelude.Multiplicative.mul";
+pub const DIV_FUNCTOR: &str = "..anthill.prelude.Divisible.div";
+pub const MOD_FUNCTOR: &str = "..anthill.prelude.EuclideanDomain.mod";
+pub const NEQ_FUNCTOR: &str = "..anthill.prelude.PartialEq.neq";
+pub const LT_FUNCTOR: &str = "..anthill.prelude.PartialOrd.lt";
+pub const LTE_FUNCTOR: &str = "..anthill.prelude.PartialOrd.lte";
+pub const GT_FUNCTOR: &str = "..anthill.prelude.PartialOrd.gt";
+pub const GTE_FUNCTOR: &str = "..anthill.prelude.PartialOrd.gte";
+
+/// The twelve, as one list — the population `kb::load::check_rival_spec_operations`
+/// existed to refuse a capture of, and which this ticket makes uncapturable instead.
+///
+/// ELEVEN OF THEM ARE REACHABLE FROM SOURCE. [`NEG_FUNCTOR`] is the prefix `-` entry's
+/// target, and no surface form mints it: a prefix `-` on a non-literal is a SYNTAX ERROR
+/// (WI-529 — it collides with negative-literal lexing; kernel-language.md §6.6 states
+/// it), so `-x` does not parse and `-5` lexes as a literal. It stays in this list because
+/// it is what that entry names, and because the tier entry it replaces WAS real — a
+/// WRITTEN `neg(x)` resolved through `PRELUDE_QUALIFIED` and now needs an import like any
+/// other written name. Its address is therefore pinned only by
+/// `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`;
+/// nothing can drive it from source. Found by `/code-review`, which caught the earlier
+/// doc here claiming a coverage it did not have.
+pub const SPEC_OP_FUNCTORS: &[&str] = &[
+    ADD_FUNCTOR,
+    SUB_FUNCTOR,
+    NEG_FUNCTOR,
+    MUL_FUNCTOR,
+    DIV_FUNCTOR,
+    MOD_FUNCTOR,
+    EQ_FUNCTOR,
+    NEQ_FUNCTOR,
+    LT_FUNCTOR,
+    LTE_FUNCTOR,
+    GT_FUNCTOR,
+    GTE_FUNCTOR,
+];
+
 /// The functors the infix desugar mints for the equality family, `=`/`<=>`/`===`
 /// (proposal 049/051). Only `unify` is an EQUATION connective — see
 /// [`EQUATION_FUNCTORS`].
-pub const EQ_FUNCTOR: &str = "eq";
+///
+/// `EQ_FUNCTOR` is one of [`SPEC_OP_FUNCTORS`] and so carries an ADDRESS, while `unify`
+/// and `struct_eq` are KERNEL primitives and stay short. Every reader of this family
+/// compares against these constants rather than against a spelling, which is what lets
+/// the list be mixed without a second rule.
+pub const EQ_FUNCTOR: &str = "..anthill.prelude.PartialEq.eq";
 pub const UNIFY_FUNCTOR: &str = "unify";
 pub const STRUCT_EQ_FUNCTOR: &str = "struct_eq";
 
@@ -189,7 +256,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 3,
                 assoc: Assoc::None,
-                functor: "neq",
+                functor: NEQ_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -224,7 +291,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 4,
                 assoc: Assoc::None,
-                functor: "lt",
+                functor: LT_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -233,7 +300,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 4,
                 assoc: Assoc::None,
-                functor: "lte",
+                functor: LTE_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -242,7 +309,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 4,
                 assoc: Assoc::None,
-                functor: "gt",
+                functor: GT_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -251,7 +318,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 4,
                 assoc: Assoc::None,
-                functor: "gte",
+                functor: GTE_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -260,7 +327,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 5,
                 assoc: Assoc::Left,
-                functor: "add",
+                functor: ADD_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -269,7 +336,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 5,
                 assoc: Assoc::Left,
-                functor: "sub",
+                functor: SUB_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -278,7 +345,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 6,
                 assoc: Assoc::Left,
-                functor: "mul",
+                functor: MUL_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -287,7 +354,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 6,
                 assoc: Assoc::Left,
-                functor: "div",
+                functor: DIV_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -296,7 +363,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 6,
                 assoc: Assoc::Left,
-                functor: "mod",
+                functor: MOD_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -305,7 +372,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 6,
                 assoc: Assoc::Left,
-                functor: "mod",
+                functor: MOD_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -314,7 +381,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
             InfixEntry {
                 priority: 6,
                 assoc: Assoc::Left,
-                functor: "div",
+                functor: DIV_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -363,7 +430,7 @@ pub(crate) fn prefix_entry(op: &str) -> Option<&'static PrefixEntry> {
             "-",
             PrefixEntry {
                 priority: 9,
-                functor: "neg",
+                functor: NEG_FUNCTOR,
             },
         ),
     ];
@@ -558,13 +625,19 @@ mod tests {
         (terms, symbols, result)
     }
 
+    /// Renders the SHORT spelling of a functor, so these rows go on stating
+    /// ASSOCIATIVITY and PRECEDENCE rather than restating each address twelve times.
+    /// WI-20260825-KD9SW made the twelve spec operations carry an address; which address
+    /// each carries is pinned once, by
+    /// [`minted_operators_carry_their_spec_op_address`], and that the address DENOTES
+    /// something by `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`.
     fn fmt_term(terms: &SimpleTermStore, symbols: &SymbolTable, tid: TermId) -> String {
         match terms.get(tid) {
             Term::Ident(sym) => symbols.local_name(*sym).to_string(),
             Term::Fn {
                 functor, pos_args, ..
             } => {
-                let name = symbols.local_name(*functor);
+                let name = crate::parse::desugar_target::short(symbols.local_name(*functor));
                 let args: Vec<String> = pos_args
                     .iter()
                     .map(|&a| fmt_term(terms, symbols, a))
@@ -572,6 +645,46 @@ mod tests {
                 format!("{name}({})", args.join(", "))
             }
             other => format!("{other:?}"),
+        }
+    }
+
+    /// WI-20260825-KD9SW — THE ADDRESS, pinned once. Every other row here renders the
+    /// short spelling, so this is the only place that would notice a mint silently going
+    /// back to a bare name — which is the state where a same-spelled declaration in scope
+    /// captures the operator again.
+    ///
+    /// THAT THE ADDRESS DENOTES SOMETHING IS A DIFFERENT CLAIM, and it is
+    /// `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`
+    /// that carries it — this row checks only the SPELLING. An earlier draft of this doc
+    /// said that test covered these constants when it walked `desugar_target`'s ten
+    /// alone; it walks [`SPEC_OP_FUNCTORS`] now. Found by `/code-review`.
+    ///
+    /// EVERY ONE CARRIES THE MARKER, and that is the property rather than the strings:
+    /// `..` is unspellable by any identifier, so a marked head can collide with no user
+    /// declaration. The negative half is what says the list is not simply "everything":
+    /// `or` / `and` / `not` / `pow` are deliberately NOT here — the first three are
+    /// position-directed (a resolver primitive in a goal, a `Bool` op as a value), and no
+    /// spec owns `pow`.
+    #[test]
+    fn minted_operators_carry_their_spec_op_address() {
+        for f in SPEC_OP_FUNCTORS {
+            assert!(
+                f.starts_with(crate::intern::ABSOLUTE_PATH_MARKER),
+                "`{f}` must be an ABSOLUTE address — a relative path takes the \
+                 head-qualified reading (WI-1075) and its head segment is a scope rung"
+            );
+            assert!(
+                f.starts_with("..anthill.prelude."),
+                "`{f}` must name a prelude declaration"
+            );
+        }
+        assert_eq!(SPEC_OP_FUNCTORS.len(), 12, "the population is the twelve");
+        for short in ["or", "and", "not", "pow"] {
+            assert!(
+                !SPEC_OP_FUNCTORS.iter().any(|f| super::super::desugar_target::short(f) == short),
+                "`{short}` is NOT one of the twelve: the boolean three are \
+                 position-directed and no spec owns `pow`"
+            );
         }
     }
 

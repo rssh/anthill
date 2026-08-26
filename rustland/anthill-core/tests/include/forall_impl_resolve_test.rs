@@ -67,6 +67,7 @@ fn t1_resolver_does_not_crash_on_forall_impl() {
     // infinite loop) when a body goal is forall_impl(...).
     let src = r#"
         namespace test.forall_impl.t1
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -92,6 +93,7 @@ fn t3_skolem_reflexivity_succeeds() {
     // consequent is reflexivity which holds for any skolem.
     let src = r#"
         namespace test.forall_impl.t3a
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -117,6 +119,7 @@ fn t3_skolem_cannot_unify_with_concrete_succeeds_only_if_unsound() {
     // binder var bind freely, this would falsely succeed.
     let src = r#"
         namespace test.forall_impl.t3b
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -186,6 +189,7 @@ fn t4_assumption_does_not_leak_to_next_body_goal() {
     // The test is the canary for the scoping invariant.
     let src = r#"
         namespace test.forall_impl.t4_leak
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -410,6 +414,7 @@ fn gap_skolem_does_not_leak_into_caller_solution() {
     // skolems are local to the discharge, never user-visible.
     let src = r#"
         namespace test.forall_impl.no_leak
+          import anthill.prelude.PartialEq.{eq}
           sort Witness
             entity marker
           end
@@ -466,6 +471,7 @@ fn gap_duplicate_binders_in_forall_impl() {
     // reject at load OR produce a result consistent with one binder.
     let src = r#"
         namespace test.forall_impl.dup_binder
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -496,6 +502,7 @@ fn gap_nested_forall_impl_in_consequent() {
     // compose.
     let src = r#"
         namespace test.forall_impl.nested
+          import anthill.prelude.PartialEq.{eq}
           sort Stub
             entity stub_root
           end
@@ -531,6 +538,7 @@ fn structural_induction_on_stdlib_polymorphic_list() {
     // and discharge induction.
     let src = r#"
         namespace test.forall_impl.poly_list
+          import anthill.prelude.PartialEq.{eq}
           rule poly_pred(nil) :- eq(1, 1)
           rule poly_pred(cons(head: ?_h, tail: ?t)) :- poly_pred(?t)
         end

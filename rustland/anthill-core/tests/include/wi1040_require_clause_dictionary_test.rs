@@ -114,6 +114,9 @@ fn program(ns: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq` in a rule body names the operation by
+  -- import; a minted `=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Desc
     sort T = ?
@@ -140,6 +143,9 @@ fn two_carriers(ns: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq` in a rule body names the operation by
+  -- import; a minted `=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Desc
     sort T = ?
@@ -307,6 +313,7 @@ fn a_body_less_builtin_spec_op_behaves_exactly_as_the_check_only_spelling() {
   -- rest of the prelude in with it.
   import anthill.prelude.{{Int64, PartialEq, Eq}}
   import anthill.prelude.PartialEq.eq
+  import anthill.prelude.PartialEq.{{eq}}
   sort Witheq
     entity we(v: Int64)
   end
@@ -564,6 +571,9 @@ fn a_two_supplier_carrier_dispatches_silently_through_the_dictionary() {
         format!(
             r#"namespace {ns}
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq` in a rule body names the operation by
+  -- import; a minted `=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Desc
     sort T = ?

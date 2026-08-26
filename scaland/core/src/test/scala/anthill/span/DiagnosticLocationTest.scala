@@ -253,10 +253,23 @@ class DiagnosticLocationTest extends munit.FunSuite:
     assertEquals(src.split("\n")(11).substring(22, 25), "dup")
   }
 
-  test("WI-957: an ambiguous INFIX operator is located at the operator token") {
-    // `?a + ?b` desugars to `add(?a, ?b)`, and `add` is what resolves. That functor is
-    // written nowhere, so the position has to be the `+` the author typed — the one
-    // token that denotes it.
+  test("WI-20260825-KD9SW: a minted INFIX operator cannot be ambiguous against user names") {
+    // THIS ROW INVERTED. It used to read "an ambiguous INFIX operator is located at the
+    // operator token": `?a + ?b` desugared to the SHORT functor `add`, which went
+    // ambiguous against the two user `add` declarations below, and WI-957's claim was
+    // that the diagnostic points at the `+` the author typed rather than at a functor
+    // written nowhere.
+    //
+    // KD9SW made `+` name `..anthill.prelude.Additive.add` outright. An absolute address
+    // is unspellable by any identifier, so it can collide with no user declaration and
+    // there is no ambiguity left to locate — which is the ticket's whole point, seen from
+    // the diagnostic side. The fixture is UNCHANGED so the inversion is visible: the same
+    // program that drew one ambiguity now draws none.
+    //
+    // WI-957'S OWN CLAIM IS NOT LOST — "a synthesized node is located at the token that
+    // denotes it" is still pinned by
+    // `WI-957: a SYNTHESIZED marker the loader still resolves is located too` and by the
+    // dot-member row above, neither of which depends on a minted operator failing.
     val src =
       """namespace demo
         |  sort A
@@ -272,9 +285,14 @@ class DiagnosticLocationTest extends munit.FunSuite:
         |  end
         |end""".stripMargin
     val errs = ambiguities(loadErrors(src))
-    assertEquals(errs.length, 1, s"got: ${errs.map(_.render).mkString("; ")}")
-    assertEquals(errs.head.name, "add")
-    assertEquals(at(errs.head.span), (11, 27))
+    assertEquals(
+      errs.length,
+      0,
+      s"a minted `+` names its target absolutely, so two user `add`s cannot contest it; " +
+        s"got: ${errs.map(_.render).mkString("; ")}",
+    )
+    // …and the `+` really is there, so this is an inversion rather than a fixture that
+    // stopped exercising the shape.
     assertEquals(src.split("\n")(10).charAt(26), '+')
   }
 

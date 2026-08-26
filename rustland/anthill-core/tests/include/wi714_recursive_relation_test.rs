@@ -26,6 +26,7 @@ const SRC: &str = r#"
 namespace test.wi714rec
   import anthill.prelude.{String, Int64, Option, List, Unit}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Family
     entity parent(of: String, is: String)

@@ -381,6 +381,7 @@ fn wi750_row_lambda_schema_through_a_computed_receiver() {
 namespace test.wi750rowschema
   import anthill.prelude.{String, Int64, Bool}
   import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
   sort Person
     entity person(name: String, age: Int64)
   end
@@ -424,6 +425,7 @@ fn wi750_bad_column_stays_loud_through_a_computed_receiver() {
 namespace test.wi750badcol1
   import anthill.prelude.{String, Int64, Bool}
   import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
   sort Person
     entity person(name: String, age: Int64)
   end
@@ -437,6 +439,7 @@ end
 namespace test.wi750badcol2
   import anthill.prelude.{String, Int64, Bool}
   import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
   sort Person
     entity person(name: String, age: Int64)
   end
@@ -451,6 +454,7 @@ end
 namespace test.wi750badcol3
   import anthill.prelude.{String, Int64, Bool}
   import anthill.prelude.Relation.{where}
+  import anthill.prelude.PartialEq.{eq}
   sort Person
     entity person(name: String, age: Int64)
   end

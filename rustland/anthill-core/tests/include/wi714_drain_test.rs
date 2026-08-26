@@ -47,6 +47,7 @@ namespace test.wi714drain
   import anthill.prelude.{String, Int64, Option, List, Pair, Unit, Bool, Map}
   import anthill.prelude.Map.{empty, put, get, size}
   import anthill.prelude.List.{foldLeft, length}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Person
     entity person(name: String, age: Int64)

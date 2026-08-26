@@ -130,6 +130,7 @@ namespace wi894.labels
   -- Names that already mean something globally must not be captured.
   sort C
     import anthill.prelude.{Int64, List, Bool}
+  import anthill.prelude.PartialEq.{eq}
     rule { consLaw: cons(?h, ?t) <=> ?h }
     rule { someLaw: some(?x) <=> ?x }
     rule { eqLaw: eq(?a, ?a) <=> true }

@@ -20,9 +20,12 @@
 //! shadowable — so both close by repointing the entries at spec operations:
 //! `Divisible.div` and `EuclideanDomain.mod` (`stdlib/anthill/prelude/division.anthill`).
 //! The refusal half is measured next door, in
-//! `wi_bfb9a_rival_spec_operation_test::a_free_standing_mod_is_refused_now_that_its_tier_target_is_a_spec_op`;
-//! this file measures the DISPATCH half — that the operator reaches each carrier's own
-//! operation.
+//! `wi_kd9sw_minted_operator_address_test::a_free_standing_spec_op_name_is_legal_again`
+//! — which INVERTS it: WI-20260825-KD9SW made a minted `%` name
+//! `..anthill.prelude.EuclideanDomain.mod` outright, so a free-standing `mod` can no
+//! longer silence anything and is legal again, while `7 % 2` still answers 1. This file
+//! measures the DISPATCH half — that the operator reaches each carrier's own operation —
+//! and that half is unchanged by the mint, since the address names the SPEC op.
 //!
 //! ## The back-out these rows are stated against
 //!
@@ -124,6 +127,7 @@ fn bigint_division_now_exists() {
     let src = r#"
 namespace test.vt8cf.bdiv
   import anthill.prelude.{Int64, BigInt, Option}
+  import anthill.prelude.PartialEq.{eq}
   -- The divisor is a COMPUTED expression, not a literal, so `eq(b, 0)` cannot be
   -- refuted and the guarded effect stays conservatively present — WI-478's rule, not
   -- anything specific to BigInt. The `Int64` rows above need no declaration because
@@ -344,6 +348,7 @@ fn the_guard_sigma_pairs_by_the_spec_ops_labels() {
     let src = r#"
 namespace test.vt8cf.rename
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Halver
     sort T = ?

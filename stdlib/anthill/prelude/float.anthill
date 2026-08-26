@@ -6,6 +6,9 @@
 sort anthill.prelude.Float
   import anthill.prelude.{Eq, NonEq, Ord, Numeric}
   import anthill.prelude.algebra.{Ring}
+  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+  import anthill.prelude.PartialEq.{neq}
+  import anthill.prelude.Multiplicative.{mul}
 
   -- WI-876: `Float`'s comparison surface, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/float.anthill`'s `operation_map`, which names the

@@ -112,6 +112,7 @@ fn int_div_guarded_branch_is_pure() {
         r#"
 namespace test.wi066.guarded
   import anthill.prelude.Int64.{div}
+  import anthill.prelude.PartialEq.{neq}
   operation safe(n: Int64, d: Int64) -> Int64 =
     if neq(d, 0) then div(n, d) else 0
 end

@@ -29,6 +29,8 @@
 -- carrier writes one row instead of two and cannot state them inconsistently.
 
 sort anthill.prelude.Divisible
+  -- WI-20260825-KD9SW: the `:- eq(b, 0)` effect guard below writes the name out.
+  import anthill.prelude.PartialEq.{eq}
 
   sort T = ?
 
@@ -79,6 +81,13 @@ end
 -- `wi863_operator_arithmetic_test` pins deliberately.
 sort anthill.prelude.EuclideanDomain
   import anthill.prelude.{Numeric, Divisible}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{eq, neq}
+  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
+  import anthill.prelude.PartialOrd.{gt}
 
   sort T = ?
   requires Numeric[T]

@@ -53,6 +53,7 @@ const SRC: &str = r#"
 namespace wi739.guard
   import anthill.prelude.{Int64, Bool}
   import anthill.prelude.Numeric.{add}
+  import anthill.prelude.PartialEq.{eq, neq}
 
   sort N
     entity num(v: Int64)
@@ -92,6 +93,7 @@ const FIX_SRC: &str = r#"
 namespace wi739.fixcase
   import anthill.prelude.{Int64, List, Bool}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{neq}
 
   sort N
     entity num(v: Int64)

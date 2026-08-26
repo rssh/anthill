@@ -71,6 +71,7 @@ const NAMED: &str = r#"
 namespace test.wi741.ground
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Family
     entity parent(of: String, is: String)
@@ -103,6 +104,7 @@ end
 const NAMED_CLAIMED_INT: &str = r#"
 namespace test.wi741.claimint
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Family
     entity parent(of: String, is: String)
@@ -122,6 +124,7 @@ end
 const GENERATED: &str = r#"
 namespace test.wi741.generated
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Family
     entity parent(of: String, is: String)
@@ -146,6 +149,7 @@ end
 const SOLO: &str = r#"
 namespace test.wi741.solo
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Family
     entity parent(of: String, is: String)
@@ -185,6 +189,7 @@ end
 const CONCRETE_OUTVOTES: &str = r#"
 namespace test.wi741.outvotes
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity parent(of: String, is: String)
@@ -207,6 +212,7 @@ end
 const TWO_CARRIERS: &str = r#"
 namespace test.wi741.twocarriers
   import anthill.prelude.{String, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Box
     entity box(value: Int64)

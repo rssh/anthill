@@ -99,7 +99,7 @@ const OTHER_BINDINGS: &str = r#"
 
 fn program(ns: &str, extra: &str, body: &str) -> String {
     format!(
-        "\nnamespace {ns}\n  import anthill.prelude.{{Int64, Bool, String}}\n\
+        "\nnamespace {ns}\n  import anthill.prelude.{{Int64, Bool, String}}\n  import anthill.prelude.Additive.{{add}}\n  import anthill.prelude.Multiplicative.{{mul}}\n\
          {SPECS}{extra}{body}\nend\n"
     )
 }

@@ -40,6 +40,7 @@ fn key_for(src: &str) -> String {
 
 const BASE_SRC: &str = r#"
     namespace test.cache
+      import anthill.prelude.PartialEq.{eq}
       rule proof_a(?r) :- b(?r), c(?r), d(?r)
       rule b(?r)       :- eq(?r, 1)
       rule c(?r)       :- eq(?r, 2)

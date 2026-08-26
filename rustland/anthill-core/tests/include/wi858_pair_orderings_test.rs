@@ -678,7 +678,6 @@ fn nested_local_carrier_equality_is_componentwise_in_every_slot() {
     let src = r#"
 namespace wi858.localnest
   import anthill.prelude.{Int64, Bool, PartialEq}
-  import anthill.prelude.PartialEq.{eq}
 
   sort Duo
     sort A = ?

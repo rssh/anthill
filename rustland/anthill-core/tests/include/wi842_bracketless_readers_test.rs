@@ -86,6 +86,7 @@ fn program(ns: &str, extra: &str, tail: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.PartialEq.{{eq}}
 {INSTANCES}{extra}{HOLDER}{tail}
 end
 "#
@@ -342,6 +343,7 @@ fn two_provision_program(ns: &str, first: &str, second: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, String}}
+  import anthill.prelude.PartialEq.{{eq}}
   sort Iter
     sort Self = ?
     sort Element = ?

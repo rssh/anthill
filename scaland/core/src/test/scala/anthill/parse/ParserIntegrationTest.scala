@@ -246,7 +246,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val factTerm = pf.terms.get(facts.head.term)
     factTerm match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "add")
+        assertEquals(pf.symbols.name(fn.functor), anthill.parse.Pratt.addFunctor)
         assertEquals(fn.posArgs.length, 2)
         assertEquals(pf.terms.get(fn.posArgs(0)), Term.Const(Literal.IntLit(2)))
         assertEquals(pf.terms.get(fn.posArgs(1)), Term.Const(Literal.IntLit(2)))

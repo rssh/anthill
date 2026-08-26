@@ -20,6 +20,7 @@ fn no_explicit_policy_no_cites_inlines() {
     let kb = common::load_kb_with(
         r#"
         namespace test.policy.inline
+          import anthill.prelude.PartialOrd.{gte}
           rule foo(?x) :- gte(?x, 0)
         end
     "#,
@@ -37,6 +38,7 @@ fn no_explicit_policy_with_cite_lifts_axiom() {
     let kb = common::load_kb_with(
         r#"
         namespace test.policy.lifted
+          import anthill.prelude.PartialOrd.{gte}
           rule foo(?x) :- gte(?x, 0)
         end
     "#,
@@ -57,6 +59,7 @@ fn explicit_policy_overrides_default() {
         r#"
         namespace test.policy.explicit
           import anthill.realization.policy.{TranslationPolicy, DeclareFun}
+          import anthill.prelude.PartialOrd.{gte}
 
           rule bar(?x) :- gte(?x, 0)
 
@@ -94,6 +97,7 @@ fn bodied_translation_policy_rule_is_refused() {
         r#"
         namespace test.policy.bodied
           import anthill.realization.policy.{TranslationPolicy, DeclareFun}
+          import anthill.prelude.PartialOrd.{gte}
 
           rule bar(?x) :- gte(?x, 0)
 
@@ -134,6 +138,7 @@ fn bodied_policy_rule_is_refused_despite_matching_fact() {
         r#"
         namespace test.policy.bodiedcoex
           import anthill.realization.policy.{TranslationPolicy, DeclareFun, Inline}
+          import anthill.prelude.PartialOrd.{gte}
 
           rule bar(?x) :- gte(?x, 0)
 
@@ -183,6 +188,7 @@ fn citable_kb(ns: &str, decl: &str) -> anthill_core::kb::KnowledgeBase {
         r#"
         namespace {ns}
           import anthill.realization.policy.{{TranslationPolicy, Inline, DefineFun, DeclareFun, LiftedAxiom}}
+          import anthill.prelude.PartialOrd.{{gte}}
 
           rule bound: gte(?x, 3.0)
             :- gte(?x, 5.0)
@@ -240,6 +246,7 @@ fn unimplemented_arms_are_refused_not_lifted() {
         r#"
         namespace test.render.unimpl
           import anthill.realization.policy.{TranslationPolicy, DefineFun, DeclareFun}
+          import anthill.prelude.PartialOrd.{gte}
 
           rule defined: gte(?x, 3.0)
             :- gte(?x, 5.0)

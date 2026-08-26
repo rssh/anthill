@@ -389,6 +389,8 @@ fn a_conditional_provision_can_mark_itself() {
 namespace {ns}
   import anthill.prelude.{{Int64}}
   import anthill.reflect.typing.DefaultProvider
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
 
   sort Desc
     sort T = ?

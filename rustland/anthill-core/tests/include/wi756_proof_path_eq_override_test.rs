@@ -154,6 +154,8 @@ fn requires_src(ns: &str, color: &str, goal: &str) -> String {
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Option}}
   import anthill.prelude.Option.{{some, none}}
+  -- WI-20260825-KD9SW: the spliced contract goal writes `eq`/`neq` out.
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {color}
   operation needy(c: Color) -> Int64
     requires {goal}
@@ -260,6 +262,7 @@ fn custom_eq_requires_stays_unproved_for_a_symbolic_operand() {
         r#"
 namespace wi756.reqsymbolic
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {CUSTOM_EQ}
   operation needy(c: Color) -> Int64
     requires neq(c, Red)
@@ -294,6 +297,7 @@ fn buried_override_operand_stays_unproved() {
 namespace wi756.reqburied.custom
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Option}}
   import anthill.prelude.Option.{{some, none}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {CUSTOM_EQ}
   operation needy(o: Option[T = Color]) -> Int64
     requires neq(o, some(Red))
@@ -326,6 +330,7 @@ fn structural_carrier_buried_operand_proves() {
 namespace wi756.reqburied.struct
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Option}}
   import anthill.prelude.Option.{{some, none}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {STRUCTURAL_EQ}
   operation needy(o: Option[T = Color]) -> Int64
     requires neq(o, some(Red))
@@ -392,6 +397,7 @@ fn rule_body_src(ns: &str, color: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {color}
   sort Holder
     entity holder(c: Color)
@@ -472,6 +478,8 @@ fn contract_src(ns: &str, color: &str, ret: &str, goal: &str, body: &str) -> Str
 namespace {ns}
   import anthill.prelude.{{Bool, Eq, PartialEq, Option}}
   import anthill.prelude.Option.{{some, none}}
+  -- WI-20260825-KD9SW: the spliced contract goal writes `eq`/`neq` out.
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {color}
   operation pick() -> {ret}
     ensures {goal}
@@ -645,6 +653,8 @@ fn inbody_src(ns: &str, color: &str, goal: &str) -> String {
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Option}}
   import anthill.prelude.Option.{{some, none}}
+  -- WI-20260825-KD9SW: the spliced contract goal writes `eq`/`neq` out.
+  import anthill.prelude.PartialEq.{{eq, neq}}
 {color}
   operation caller(c: Color) -> Int64 =
     proof h by derivation conclude {goal} end
@@ -827,6 +837,9 @@ fn in_body_proof_over_a_binder_stays_unproved() {
 /// Γ fact can discharge, since `c` is symbolic and the goal flounders in the KB.
 const NEEDY_COLOR: &str = r#"
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  -- WI-20260825-KD9SW: `needy`'s `requires eq(c, Red)` writes the name out. A contract
+  -- clause naming nothing is refused (WI-20260822-59CDQ), so the import is the repair.
+  import anthill.prelude.PartialEq.{eq}
   sort Color
     entity Red
     entity Green
@@ -846,6 +859,7 @@ fn if_premise_over_a_constructor_discharges_a_later_requires() {
     let src = format!(
         r#"
 namespace wi756.gammaif
+  import anthill.prelude.PartialEq.{{eq}}
 {NEEDY_COLOR}
   operation caller(c: Color) -> Int64 =
     if eq(c, Red) then needy(c) else 0
@@ -869,6 +883,7 @@ fn if_premise_over_an_int_literal_still_discharges() {
     let src = r#"
 namespace wi756.gammaifint
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{neq}
   operation needy(b: Int64) -> Int64
     requires neq(b, 0)
     = 0
@@ -949,6 +964,7 @@ fn an_in_body_proof_reads_the_gamma_its_producers_write() {
     let src = r#"
 namespace wi756.gammaproof
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort Color
     entity Red
     entity Green

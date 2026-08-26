@@ -3,9 +3,9 @@
 - id: WI-20260825-KD9SW-a-minted-operator-should-name
 - created: 2026-08-25T17:07:46Z
 
-- status: Open
-- status_agent: claude
-- status_at: 2026-08-25T17:07:46Z
+- status: Claimed
+- status_agent: user
+- status_at: 2026-08-26T10:03:45Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

@@ -1388,6 +1388,7 @@ fn a_guarded_modify_over_a_type_is_refused_too() {
     let src = r#"
         namespace wi39ad2.guarded_type_target
           import anthill.prelude.{Unit, Int64, Modify}
+          import anthill.prelude.PartialEq.{eq}
           sort Wrapped
             entity w(id: Int64)
             operation touch(c: Wrapped, b: Int64) -> Unit
@@ -1411,6 +1412,7 @@ fn a_guarded_modify_over_a_place_still_loads() {
     let src = r#"
         namespace wi39ad2.guarded_place_target
           import anthill.prelude.{Unit, Int64, Modify, Modifiable}
+          import anthill.prelude.PartialEq.{eq}
           sort Wrapped
             entity w(id: Int64)
             fact Modifiable[T = Wrapped]

@@ -109,6 +109,9 @@ fn is_undeclared_boom(errs: &[String]) -> bool {
 /// must be kept. The structural builtin would (wrongly) refute it.
 const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
+  -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -130,6 +133,9 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
 /// carrier's equality, so the WI-592 discharge applies unchanged.
 const STRUCTURAL_EQ_PRELUDE: &str = r#"
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
+  -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -280,6 +286,7 @@ fn custom_eq_override_dispatches_and_drops() {
         r#"
 namespace anthill.test.wi573suspend
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Boom
     entity Bang
@@ -325,6 +332,7 @@ fn symbolic_operand_suspends_rather_than_dispatching() {
         r#"
 namespace anthill.test.wi573symbolic
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
+  import anthill.prelude.PartialEq.{{eq}}
 
   sort Boom
     entity Bang
@@ -410,6 +418,7 @@ fn nested_element_override_keeps_effect() {
 namespace anthill.test.wi573nestedelem
   import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
   import anthill.prelude.Option.{some, none}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -451,6 +460,7 @@ fn nested_field_override_keeps_effect() {
     let src = r#"
 namespace anthill.test.wi573nestedfield
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -501,6 +511,7 @@ fn nested_native_element_still_discharges() {
 namespace anthill.test.wi573nestednative
   import anthill.prelude.{Int64, Bool, Eq, PartialEq, Option}
   import anthill.prelude.Option.{some, none}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang

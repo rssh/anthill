@@ -1,6 +1,9 @@
 -- Map: abstract key-value association (requires Eq on keys)
 sort anthill.prelude.Map
   import anthill.prelude.{Option, List, Pair, Bool, Int64, Eq, PartialEq, Iterable, FiniteCollection, Stream}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{neq}
 
   sort K = ?
   sort V = ?

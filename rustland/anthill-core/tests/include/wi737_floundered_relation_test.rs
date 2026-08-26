@@ -39,6 +39,7 @@ const SRC: &str = r#"
 namespace test.wi737
   import anthill.prelude.{Int64, List, Unit, Bool}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{neq}
 
   sort Num
     entity num(v: Int64)

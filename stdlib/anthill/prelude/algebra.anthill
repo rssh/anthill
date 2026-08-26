@@ -52,6 +52,11 @@ namespace anthill.prelude.algebra
   -- with two such specs over one carrier the answer follows SOURCE ORDER. WI-20260825-EBMG8
   -- owns that gap; this sort is the shape it has to keep safe.
   sort Ring
+    -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+    -- A minted operator carries its own address; these positions spell the name out, and
+    -- neither a constraint head nor a law body is name-checked, so a miss here is SILENT.
+    import anthill.prelude.Additive.{add}
+
     sort T = ?
 
     provides Additive[T = T]

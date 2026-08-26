@@ -19,7 +19,25 @@ use crate::common::{anthill, fixtures_dir};
 /// just a non-empty target the CLI requires.
 fn query(pattern: &str) -> crate::common::Output {
     let kb = fixtures_dir("wi754").join("props.anthill");
-    anthill(&["query", "-p", kb.to_str().unwrap(), pattern])
+    // WI-20260825-KD9SW — the `-i` flags are for the WRITTEN spellings below
+    // (`div(6, 2, ?r)`, `mod(…)`), not for the operators. A minted `/` or `%` names its
+    // spec op outright and needs nothing; a written `div` is an ordinary name, and a
+    // query has no file to hold an import — which is what `-i` is for, and it "reads
+    // exactly as the same `import` line in source does" (WI-1089).
+    anthill(&[
+        "query",
+        "-p",
+        kb.to_str().unwrap(),
+        "-i",
+        "anthill.prelude.Divisible.{div}",
+        "-i",
+        "anthill.prelude.EuclideanDomain.{mod}",
+        "-i",
+        "anthill.prelude.Additive.{add, sub}",
+        "-i",
+        "anthill.prelude.Multiplicative.{mul}",
+        pattern,
+    ])
 }
 
 /// The acceptance case: `6 / 2` no longer refuses `div` — it resolves. The 3-arg

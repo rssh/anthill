@@ -111,6 +111,8 @@ namespace wi881.float
   sort Constants
     import anthill.prelude.{Float, Int64}
     import anthill.prelude.Float.{pi, e, tau}
+  import anthill.prelude.Additive.{neg}
+  import anthill.prelude.PartialOrd.{lt}
     operation barePi(n: Int64) -> Float = pi
     operation bareE(n: Int64) -> Float = e
     operation bareTau(n: Int64) -> Float = tau

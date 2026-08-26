@@ -30,6 +30,8 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 const SRC_BASE: &str = r#"
     namespace test.cache.simple
+      import anthill.prelude.PartialEq.{eq}
+      import anthill.prelude.PartialOrd.{gt}
       entity Cfg(scale: Int64)
       fact Cfg(scale: 5)
 

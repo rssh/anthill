@@ -801,6 +801,7 @@ const GUARDED_SELFCONTRA_SRC: &str = r#"
 namespace smoke.e7_guarded
   import anthill.prelude.{Int64}
   import smoke.e_lacks.{Outside}
+  import anthill.prelude.PartialEq.{eq}
 
   operation g[E]() -> Int64
     effects { Outside :- eq(1, 0), -Outside, E }
@@ -1123,6 +1124,7 @@ end
 const BRANCH_GUARDED_EXTERNAL_SRC: &str = r#"
 namespace smoke.g6_branch_guarded_external
   import anthill.prelude.{Int64, Branch, External}
+  import anthill.prelude.PartialEq.{eq}
 
   operation guarded_region(b: Int64) -> Int64
     effects {Branch, External :- eq(b, 0)}

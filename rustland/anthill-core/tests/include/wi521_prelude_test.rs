@@ -13,7 +13,8 @@
 //! name is NEVER ambiguous … so the clash cannot happen", which is false one scope
 //! over: a namespace-LESS `operation eq(…)` lands in `<global>`, a non-enclosing
 //! parent of every scope, and DOES go ambiguous inside the stdlib's own namespaces —
-//! driven by `wi_bfb9a_rival_spec_operation_test::a_namespace_less_declaration_is_free_standing_too`.
+//! driven by `wi_kd9sw_minted_operator_address_test::a_free_standing_spec_op_name_is_legal_again`
+//! (WI-20260825-KD9SW: such a declaration is legal now — it captures nothing).
 //! The property is about the FALLBACK's precedence, not a guarantee about every
 //! program.
 //!
@@ -81,7 +82,18 @@ fn load_stdlib_errors(extra: &str) -> Vec<String> {
 /// general property and be wrong. The message-content assertion below is what this row
 /// can actually support.
 #[test]
-fn a_free_standing_eq_rivalling_the_spec_op_is_refused() {
+fn a_free_standing_eq_no_longer_rivals_the_spec_op() {
+    // INVERTED BY WI-20260825-KD9SW. This row used to assert that a free-standing
+    // `operation eq` was REFUSED, because it would silence the implicit tier for a minted
+    // `=`. The mint now names `..anthill.prelude.PartialEq.eq` outright, so there is no
+    // tier entry left to silence, the capture is unrepresentable rather than refused, and
+    // `load::check_rival_spec_operations` — this row's whole subject — is deleted.
+    //
+    // THE FIXTURE IS UNCHANGED so the inversion is visible: the same program that drew one
+    // rival message now loads clean. That the OPERATOR keeps its meaning anyway is
+    // `wi_kd9sw_minted_operator_address_test::an_import_can_no_longer_retarget_an_operator`,
+    // and that such a declaration is legal is
+    // `…::a_free_standing_spec_op_name_is_legal_again`.
     let src = r#"
 namespace test.wi521.mymod
   import anthill.prelude.{Bool, Int64}
@@ -95,36 +107,51 @@ end
 "#;
     let errs = load_stdlib_errors(src);
     assert!(
-        errs.iter().any(|e| e
-            .contains("would declare a second symbol of that name")
-            && e.contains("anthill.prelude.PartialEq.eq")
-            && e.contains("anthill.prelude.PartialEq'")),
-        "a free-standing `eq` must be refused, naming both the spec OPERATION it rivals \
-         and the SPEC that owns it — the message deliberately does NOT prescribe a \
-         `provides` recipe, because two earlier wordings each prescribed something that \
-         does not load (see `rival_spec_operation_message`); got: {errs:?}"
-    );
-    assert_eq!(
-        errs.len(),
-        1,
-        "ONE mistake, ONE message — the rule is about the NAME, so a second rival \
-         message (or a per-declaration-site duplicate) is a regression; got: {errs:?}"
+        errs.is_empty(),
+        "a free-standing `eq` contests nothing now that `=` carries its address; \
+         got: {errs:?}"
     );
 }
 
-/// Bare prelude operators resolve with NO import line — the fallback supplies them.
+/// Bare prelude names resolve with NO import line — the fallback supplies them.
+///
+/// THE NAMES HERE ARE NOT THE SPEC OPERATIONS ANY MORE (WI-20260825-KD9SW). `add` / `eq`
+/// used to be this row's subject and are now the counter-example: the twelve left the
+/// implicit tier when a minted operator started naming its target outright, so writing
+/// one bare is an ordinary unresolved name. `cons` / `some` / `not` are what the tier
+/// still carries, so they are what this row measures — and the arm below pins the split,
+/// which is what stops the row from quietly becoming a tautology. Found by
+/// `/code-review`: an earlier cut of this ticket left the old fixture in place with
+/// imports added, so the test's own name asserted the opposite of what it ran.
 #[test]
 fn bare_prelude_names_resolve_without_import() {
     let src = r#"
 namespace test.wi521.use
-  import anthill.prelude.{Int64, Bool}
-  operation plus(x: Int64, y: Int64) -> Int64 = add(x, y)
-  operation same(x: Int64, y: Int64) -> Bool = eq(x, y)
+  import anthill.prelude.{Int64, List, Option}
+  operation one() -> List[T = Int64] = cons(head: 1, tail: nil)
+  operation just() -> Option[T = Int64] = some(value: 7)
 end
 "#;
     let errs = load_stdlib_errors(src);
     assert!(
         errs.is_empty(),
-        "bare prelude `add` / `eq` must resolve without importing them; got: {errs:?}"
+        "`cons` / `nil` / `some` / `none` are still on the tier and must resolve with no \
+         import naming them; got: {errs:?}"
+    );
+
+    // THE SPLIT, and the half that makes the row above mean something: a spec operation
+    // is NOT on the tier, so the byte-identical treatment of `add` is a load error.
+    let spec_op = r#"
+namespace test.wi521.specop
+  import anthill.prelude.{Int64}
+  operation plus(x: Int64, y: Int64) -> Int64 = add(x, y)
+end
+"#;
+    let errs = load_stdlib_errors(spec_op);
+    assert!(
+        errs.iter().any(|e| e.contains("add")),
+        "a bare `add` must NOT resolve — the tier no longer carries it, and a minted `+` \
+         needs no tier because it names `..anthill.prelude.Additive.add` outright; \
+         got: {errs:?}"
     );
 }

@@ -118,6 +118,7 @@ fn rule_body_return_only_type_param_dot_dispatches() {
     let src = format!(
         r#"
 namespace anthill.test.wi622utp
+  import anthill.prelude.PartialEq.{{eq}}
 {GADGET}
   rule uses(?g, ?r)
     :- gholder(g: ?g), eq(?r, ?g.make())
@@ -182,6 +183,7 @@ fn rule_body_concrete_spec_op_dot_dispatches() {
     let src = r#"
 namespace anthill.test.wi622specdot
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{eq}
   sort Comparable
     sort T = ?
     operation pick(a: T, b: T) -> T = a

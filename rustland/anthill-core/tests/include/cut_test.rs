@@ -273,6 +273,7 @@ fn cut_with_a_ground_guard_succeeds_definitely() {
     // result is a definite (empty-residual) solution.
     let src = r#"
         namespace cuttest.delay
+          import anthill.prelude.PartialOrd.{gt}
           rule g(?x) :- gt(?x, 0), !
         end
     "#;
@@ -295,6 +296,7 @@ fn cut_coexists_with_delay_and_residualization() {
     // not panic and the result must be reported honestly as non-definite.
     let src = r#"
         namespace cuttest.delay2
+          import anthill.prelude.PartialOrd.{gt}
           rule g(?x) :- gt(?x, 0), !
         end
     "#;

@@ -247,6 +247,7 @@ fn nest(i: &mut Interpreter, elems: &[TermId]) -> TermId {
 // carries the instance-fact carrier and dispatch runs the bodied `taggedEq`.
 const TAGGED_SRC: &str = r#"namespace gap2.instfact.eval
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort Tagged
     entity tagged(key: Int64, note: Int64)
   end
@@ -318,6 +319,7 @@ fn eval_instance_fact_neq_dispatches() {
 fn eval_undecidable_instance_fact_eq_is_loud_not_false() {
     let src = r#"namespace gap2.loopeq
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
   sort Loop
     entity lp(v: Int64)
   end

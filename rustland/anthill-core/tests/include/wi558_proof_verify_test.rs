@@ -123,6 +123,7 @@ fn top_level_by_derivation_that_does_not_derive_is_failed_not_discharged() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace test.verify.fail
+          import anthill.prelude.PartialEq.{eq}
           entity Light(state: String)
           fact Light(state: "bright")
 

@@ -52,6 +52,9 @@ fn emit_ops(ns: &str, ops: &[(&str, &str, &str, &str)]) -> Result<String, String
         r#"
         namespace {ns}
           import anthill.prelude.{{Float, Int64, Bool, String}}
+          -- WI-20260825-KD9SW: some `ops` bodies write `add` out; a minted `+` would need
+          -- nothing, but a WRITTEN name is an ordinary name and comes in by import.
+          import anthill.prelude.Additive.{{add}}
           sort Calc
 {decls}          end
         end

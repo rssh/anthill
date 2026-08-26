@@ -124,6 +124,7 @@ fn match_with_let_in_branch_body() {
     let source = r#"
         namespace test.expr_d_compose
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           enum Sign
             entity Pos
             entity Neg

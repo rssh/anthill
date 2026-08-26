@@ -2841,6 +2841,8 @@ fn type_check_op_let_expr_correct() {
     // failures surface — use the actual grammar shape.
     let source = r#"
 sort Math
+  -- WI-20260825-KD9SW: a WRITTEN bare `add` names the operation by import.
+  import anthill.prelude.Additive.{add}
   operation double(x: Int64) -> Int64 =
     let y = x
     add(y, y)
@@ -5625,6 +5627,8 @@ fn type_check_sorts_op_with_type_param_instantiation() {
     // add(x, x) where x: Int64 should resolve Numeric.T to Int64, return Int64
     let source = r#"
 sort Math
+  -- WI-20260825-KD9SW: a WRITTEN bare `add` names the operation by import.
+  import anthill.prelude.Additive.{add}
   operation double(x: Int64) -> Int64 = add(x, x)
 end
 "#;
@@ -6952,6 +6956,7 @@ fn wi237_pattern_subst_parameterized_field_type() {
 namespace test.wi237_buried
   import anthill.prelude.{List}
   import anthill.prelude.String.{concat}
+  import anthill.prelude.PartialEq.{eq}
   enum Container
     sort T = ?
     entity wrapped(items: List[T = T])

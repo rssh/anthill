@@ -396,6 +396,7 @@ fn control_a_rule_body_goal_is_not_refused() {
     const SRC: &str = r#"
 namespace wi1102.rulebody
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64

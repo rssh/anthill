@@ -53,6 +53,7 @@ fn dot_rule_src(bound: &str) -> String {
 namespace test.wi903
   import anthill.prelude.{{Int64, String}}
   import anthill.prelude.Numeric.{{add}}
+  import anthill.prelude.Additive.{{add}}
 
   sort Holder
     entity holder(value: Int64)

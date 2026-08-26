@@ -44,6 +44,7 @@ fn expect_int(v: Value) -> i64 {
 const EVAL_SRC: &str = r#"
 namespace test.wi529.eval
   import anthill.prelude.{Bool, Int64}
+  import anthill.prelude.Additive.{neg}
   -- op bodies are evaluated: not/or/and are the dispatched Bool VALUE ops
   operation t_not() -> Bool = not(true)
   operation t_bang() -> Bool = !false

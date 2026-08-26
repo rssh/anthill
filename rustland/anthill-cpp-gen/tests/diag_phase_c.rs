@@ -9,6 +9,7 @@ fn dump_phase_c_shapes() {
     let source = r#"
         namespace test.dumpc
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation step(n: Int64) -> Int64 =
               let x = add(n, 1)

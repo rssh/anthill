@@ -55,6 +55,7 @@ fn map_eq_in_rule_body_goal_is_a_load_error() {
     let src = r#"
         namespace mapeq.rulebody
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation same(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
           rule same(?a, ?b) :- eq(?a, ?b)
         end
@@ -75,6 +76,7 @@ fn map_neq_in_rule_body_goal_is_a_load_error() {
     let src = r#"
         namespace mapneq.rulebody
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{neq}
           operation differ(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
           rule differ(?a, ?b) :- neq(?a, ?b)
         end
@@ -92,6 +94,7 @@ fn map_neq_in_op_body_is_a_load_error() {
     let src = r#"
         namespace mapneq.opbody
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{neq}
           operation differ(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
             = neq(a, b)
         end
@@ -109,6 +112,7 @@ fn map_eq_in_op_body_is_a_load_error() {
     let src = r#"
         namespace mapeq.opbody
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation same(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool
             = eq(a, b)
         end
@@ -144,6 +148,7 @@ fn set_eq_in_body_loads_clean() {
     let src = r#"
         namespace mapeq.seteq
           import anthill.prelude.{Bool, Int64, Set, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation same(a: Set[T = Int64], b: Set[T = Int64]) -> Bool
           rule same(?a, ?b) :- eq(?a, ?b)
         end
@@ -165,6 +170,7 @@ fn map_eq_compound_operand_in_rule_body_is_a_load_error() {
     let src = r#"
         namespace mapeq.compound
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation build_map(x: Int64) -> Map[K = Int64, V = Int64]
           operation other() -> Map[K = Int64, V = Int64]
           operation same(x: Int64) -> Bool
@@ -184,6 +190,7 @@ fn map_eq_put_empty_compound_operand_is_a_load_error() {
     let src = r#"
         namespace mapeq.putempty
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation same() -> Bool
           rule same() :- eq(Map.put(Map.empty(), 1, 2), Map.empty())
         end
@@ -244,6 +251,7 @@ fn map_eq_compound_in_quantifier_constraint_is_a_load_error() {
     let src = r#"
         namespace mapeq.constraint
           import anthill.prelude.{Bool, Int64, Map, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation build_map(x: Int64) -> Map[K = Int64, V = Int64]
           fact num(1)
           constraint c: no ?x: num(?x) -: eq(build_map(?x), build_map(?x))
@@ -276,6 +284,7 @@ fn set_eq_compound_operand_loads_clean() {
     let src = r#"
         namespace mapeq.setcompound
           import anthill.prelude.{Bool, Int64, Set, Eq}
+          import anthill.prelude.PartialEq.{eq}
           operation build_set(x: Int64) -> Set[T = Int64]
           operation same(x: Int64) -> Bool
           rule same(?x) :- eq(build_set(?x), build_set(?x))

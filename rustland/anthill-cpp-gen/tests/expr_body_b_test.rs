@@ -44,6 +44,7 @@ fn if_then_else_with_call_in_condition() {
     let source = r#"
         namespace test.expr_b
           import anthill.prelude.{Int64, Bool}
+          import anthill.prelude.PartialOrd.{gt}
           sort Calc
             operation abs(n: Int64) -> Int64 = if gt(n, 0) then n else 0
           end
@@ -118,6 +119,7 @@ fn field_access_in_expression_position() {
     let source = r#"
         namespace test.expr_b_field2
           import anthill.prelude.{Float}
+          import anthill.prelude.Additive.{add}
           entity Pose(x: Float, y: Float)
           sort Calc
             operation sum_xy(p: Pose) -> Float = add((p).x, (p).y)

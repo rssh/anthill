@@ -294,7 +294,8 @@ fn each_arithmetic_short_name_is_declared_exactly_once() {
 ///
 /// `spec_operation_short_names` is the second half: `add`/`sub`/`mul`/`neg` must still be
 /// SPEC operations, which is what keeps them inside `check_rival_spec_operations` — the
-/// refusal `wi_bfb9a_rival_spec_operation_test` counts. The move was between two
+/// refusal `wi_bfb9a_rival_spec_operation_test` counted (retired by
+/// WI-20260825-KD9SW; see `wi_kd9sw_minted_operator_address_test`). The move was between two
 /// PARAMETRIC carriers, so nothing there had to change, and this row is what says so.
 #[test]
 fn the_implicit_tier_points_at_the_syntax_categories() {

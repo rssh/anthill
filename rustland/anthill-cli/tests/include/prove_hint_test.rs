@@ -43,6 +43,7 @@ fn hint_attributed_rule_auto_included_in_proof() {
     // brace-less block form, so these parse as two rule_declarations.
     let src = r#"
         namespace test.hint.basic
+          import anthill.prelude.PartialOrd.{gte}
 
           rule bound_d: gte(?x, 3.0) :- gte(?x, 5.0) [hint]
           rule target:  gte(?x, 3.0) :- gte(?x, 5.0)

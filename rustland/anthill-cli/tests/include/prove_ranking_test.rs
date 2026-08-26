@@ -30,6 +30,9 @@ fn write_temp(name: &str, contents: &str) -> PathBuf {
 
 const SRC_BOTH_UNSAT: &str = r#"
     namespace test.ranking.ok
+      import anthill.prelude.Additive.{add}
+      import anthill.prelude.PartialEq.{eq}
+      import anthill.prelude.PartialOrd.{gte, lt}
       entity State(upc: Int64, upc_next: Int64)
 
       -- Ranking function: R(upc) = -upc. Post-armed invariant: -6 ≤ upc < 0.
@@ -95,6 +98,8 @@ fn ranking_with_failing_decrease_disproves() {
     // sub-query name.
     let src = r#"
         namespace test.ranking.fail
+          import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.PartialOrd.{gt}
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 

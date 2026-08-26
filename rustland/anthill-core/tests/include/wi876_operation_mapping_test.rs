@@ -409,7 +409,7 @@ fn registration_err(src: &str) -> String {
 fn mapping_program(ns: &str, entry: &str) -> String {
     format!(
         "\nnamespace {ns}\n  \
-         sort Widget\n    import anthill.prelude.{{Int64}}\n    \
+         sort Widget\n    import anthill.prelude.{{Int64}}\n  import anthill.prelude.PartialOrd.{{gt}}\n    \
          entity widget(v: Int64)\n    \
          operation squish(a: Widget, b: Widget) -> Int64\n  end\n  \
          provides Widget language rust\n    artifact \"nowhere.rs\"\n    \

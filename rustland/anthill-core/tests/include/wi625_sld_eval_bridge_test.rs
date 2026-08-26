@@ -33,6 +33,7 @@ use smallvec::SmallVec;
 const MATCH_SRC: &str = r#"
     namespace gap1.matchop
       import anthill.prelude.{Int64}
+      import anthill.prelude.PartialEq.{eq}
       sort Color
         entity red
         entity green
@@ -161,6 +162,7 @@ fn nonground_operand_case_splits_via_unfold() {
 const REC_SRC: &str = r#"
     namespace gap1.recop
       import anthill.prelude.{Int64, List}
+      import anthill.prelude.PartialEq.{eq}
       operation last(xs: List[T = Int64]) -> Int64 =
         match xs
           case nil() -> 0
@@ -768,6 +770,7 @@ fn inherited_requires_ordered_types_and_decides_via_gt() {
 const TYPED_SET_EQ_SRC: &str = r#"
     namespace test.wi625.typedeq
       import anthill.prelude.{Set, Int64, Bool}
+      import anthill.prelude.PartialEq.{eq}
       operation setsEqual(a: Set[T = Int64], b: Set[T = Int64]) -> Bool = eq(a, b)
     end
 "#;
@@ -792,6 +795,7 @@ fn typed_op_body_eq_over_set_float_rejected() {
     const SRC: &str = r#"
         namespace test.wi625.typedeqf
           import anthill.prelude.{Set, Float, Bool}
+          import anthill.prelude.PartialEq.{eq}
           operation setsEqual(a: Set[T = Float], b: Set[T = Float]) -> Bool = eq(a, b)
         end
     "#;
@@ -816,12 +820,14 @@ fn typed_op_body_eq_over_map_rejected_nested_set_loads() {
     const MAP_SRC: &str = r#"
         namespace test.wi625.typedeqmap
           import anthill.prelude.{Map, Int64, Bool}
+          import anthill.prelude.PartialEq.{eq}
           operation mapsEqual(a: Map[K = Int64, V = Int64], b: Map[K = Int64, V = Int64]) -> Bool = eq(a, b)
         end
     "#;
     const NEST_SRC: &str = r#"
         namespace test.wi625.typedeqnest
           import anthill.prelude.{Set, Int64, Bool}
+          import anthill.prelude.PartialEq.{eq}
           operation nestEqual(a: Set[T = Set[T = Int64]], b: Set[T = Set[T = Int64]]) -> Bool = eq(a, b)
         end
     "#;
@@ -1018,6 +1024,7 @@ fn transitive_op_requires_single_param_loads() {
 const INSTFACT_SRC: &str = r#"
     namespace gap2.instfact
       import anthill.prelude.{Int64, Bool, Eq, PartialEq}
+      import anthill.prelude.PartialEq.{eq}
       sort Tagged
         entity tagged(key: Int64, note: Int64)
       end

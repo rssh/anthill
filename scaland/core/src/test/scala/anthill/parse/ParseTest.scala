@@ -26,12 +26,12 @@ class ParseTest extends munit.FunSuite:
     // Result should be add(add(1, 2), 3)
     terms.get(result) match
       case fn: Term.Fn =>
-        assertEquals(st.name(fn.functor), "add")
+        assertEquals(st.name(fn.functor), Pratt.addFunctor)
         assertEquals(fn.posArgs.length, 2)
         // Left child should be add(1, 2)
         terms.get(fn.posArgs(0)) match
           case inner: Term.Fn =>
-            assertEquals(st.name(inner.functor), "add")
+            assertEquals(st.name(inner.functor), Pratt.addFunctor)
           case other => fail(s"expected Fn, got $other")
         // Right child should be 3
         terms.get(fn.posArgs(1)) match
@@ -92,7 +92,7 @@ class ParseTest extends munit.FunSuite:
 
     terms.get(result) match
       case fn: Term.Fn =>
-        assertEquals(st.name(fn.functor), "add")
+        assertEquals(st.name(fn.functor), Pratt.addFunctor)
         // Left should be 1
         terms.get(fn.posArgs(0)) match
           case Term.Const(Literal.IntLit(1)) => // ok
@@ -100,7 +100,7 @@ class ParseTest extends munit.FunSuite:
         // Right should be mul(2, 3)
         terms.get(fn.posArgs(1)) match
           case inner: Term.Fn =>
-            assertEquals(st.name(inner.functor), "mul")
+            assertEquals(st.name(inner.functor), Pratt.mulFunctor)
           case other => fail(s"expected Fn, got $other")
       case other => fail(s"expected Fn, got $other")
   }
@@ -826,7 +826,9 @@ class ParseTest extends munit.FunSuite:
       "plain-term operation body must not be swallowed into the ensures clause")
     assertEquals(op.ensures.length, 1, "exactly one ensures clause")
     assertEquals(op.ensures.head.length, 1, "the clause holds one (binary) eq goal, not a chained one")
-    assertEquals(functorName(pf, op.ensures.head.head), "eq")
+    // The `=` is MINTED, so it carries its address; the body `mul(2, x)` is WRITTEN, so
+    // it is an ordinary short name. WI-20260825-KD9SW: same shape, two functors.
+    assertEquals(functorName(pf, op.ensures.head.head), Pratt.eqFunctor)
     assertEquals(functorName(pf, op.body.get), "mul")
   }
 
@@ -1037,7 +1039,7 @@ class ParseTest extends munit.FunSuite:
   test("a clause `ensures result = x` keeps `=` as the eq goal (no spurious body)") {
     val (pf, op) = parseDemoOp("  operation abs(x: Int) -> Int ensures result = x")
     assertEquals(op.ensures.length, 1)
-    assertEquals(functorName(pf, op.ensures.head.head), "eq")
+    assertEquals(functorName(pf, op.ensures.head.head), Pratt.eqFunctor)
     assert(op.body.isEmpty, "`= x` is the ensures eq goal, not an operation body")
   }
 

@@ -31,6 +31,7 @@ namespace test.wi531_residual
   import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Directory
     entity Person(name: String, role: String)

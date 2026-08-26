@@ -122,7 +122,7 @@ fn driver(call: &str) -> String {
 
 fn program(ns: &str, parts: &[&str]) -> String {
     format!(
-        "\nnamespace {ns}\n  import anthill.prelude.{{Int64, Bool}}\n{BASE}{}\nend\n",
+        "\nnamespace {ns}\n  import anthill.prelude.{{Int64, Bool}}\n  import anthill.prelude.Additive.{{add}}\n  import anthill.prelude.Multiplicative.{{mul}}\n{BASE}{}\nend\n",
         parts.concat()
     )
 }

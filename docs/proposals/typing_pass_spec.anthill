@@ -56,6 +56,8 @@ namespace anthill.reflect.typing_pass
   import anthill.prelude.Type.{sort_ref, parameterized, arrow, type_var, named_tuple, nothing, TypeField}
   import anthill.prelude.{Int64, Float, String, Bool, List, Option, Type, Nothing, TypeBinding}
 
+  -- WI-20260825-KD9SW: a WRITTEN bare `neq`; a minted `!=` names its target outright.
+  import anthill.prelude.PartialEq.{neq}
   import anthill.prelude.{Error, Modify}
 
   -- ################################################################

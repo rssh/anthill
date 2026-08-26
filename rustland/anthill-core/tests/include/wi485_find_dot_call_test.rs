@@ -76,6 +76,7 @@ namespace test.wi485.use_plain
   import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
+  import anthill.prelude.PartialOrd.{{gt}}
   operation is_big(n: Int64) -> Bool = gt(n, 2)
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = findX(xs, is_big)
 end
@@ -99,6 +100,7 @@ namespace test.wi485.use_dot
   import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
+  import anthill.prelude.PartialOrd.{{gt}}
   operation is_big(n: Int64) -> Bool = gt(n, 2)
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = xs.findX(is_big)
 end
@@ -123,6 +125,7 @@ namespace test.wi485.use_plain_lambda
   import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
+  import anthill.prelude.PartialOrd.{{gt}}
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = findX(xs, lambda n -> gt(n, 2))
 end
 "#
@@ -145,6 +148,7 @@ namespace test.wi485.use_dot_lambda
   import anthill.prelude.Ord.{{gt}}
   import test.wi485.lst.{{Lst}}
   import test.wi485.strm.Strm.{{findX}}
+  import anthill.prelude.PartialOrd.{{gt}}
   operation run(xs: Lst[T = Int64]) -> Option[T = Int64] = xs.findX(lambda n -> gt(n, 2))
 end
 "#

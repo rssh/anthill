@@ -15,6 +15,10 @@
 -- ================================================================
 namespace guardians
   import anthill.prelude.{String, Bool}
+  -- WI-20260825-KD9SW: WRITTEN bare spec-operation names are imported now. A minted
+  -- operator (`+`, `<`, …) names its target outright and needs nothing; these call
+  -- the same operations by NAME, and the implicit tier that answered them is gone.
+  import anthill.prelude.PartialEq.{eq}
   import guardians.{MessageId, Message, Address, Mailbox, Observed, Span, Feature}
   import guardians.Feature.{ForwardingInstruction, SecrecyInstruction,
                             CredentialRequest, PaymentRedirect,

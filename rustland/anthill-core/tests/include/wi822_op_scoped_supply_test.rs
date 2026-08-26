@@ -116,6 +116,8 @@ fn value_directed_supply_is_per_call_not_shared() {
         r#"
 namespace wi822.percall
   import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
 {INSTANCES}
   sort Holder
     sort HT = ?
@@ -170,6 +172,7 @@ fn unpinnable_impl_requirement_is_refused_before_it_can_run() {
         r#"
 namespace wi822.ghost
   import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.Additive.{{add}}
 {INSTANCES}
   sort Box
     sort B = ?
@@ -369,6 +372,8 @@ fn op_scoped_supply_is_per_call_site() {
     let src = r#"
 namespace wi822.percallsite
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
   sort Zeroable
     sort T = ?
     operation zero() -> T
@@ -434,6 +439,8 @@ fn a_colliding_op_slot_name_does_not_move_the_sort_slot() {
     let src = r#"
 namespace wi822.collide
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
   sort Zeroable
     sort T = ?
     operation zero() -> T
@@ -497,6 +504,7 @@ fn a_transitively_required_op_slot_is_located_through_its_projection() {
     let src = r#"
 namespace wi822.transitive
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Additive.{add}
   sort Zeroable
     sort T = ?
     operation zero() -> T
@@ -653,6 +661,8 @@ fn wi1091_an_unpinnable_op_element_is_completed_only_when_the_providers_agree() 
             r#"
 namespace {ns}
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
   sort Tag
     entity tag
   end

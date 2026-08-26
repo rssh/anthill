@@ -2243,6 +2243,23 @@ const SMT_BUILTINS: &[(&str, SmtBuiltin)] = &[
     ("anthill.prelude.Additive.add", SmtBuiltin::Arith("+")),
     ("anthill.prelude.Additive.sub", SmtBuiltin::Arith("-")),
     ("anthill.prelude.Multiplicative.mul", SmtBuiltin::Arith("*")),
+    // WI-20260825-KD9SW — A MINTED `/` NAMES `Divisible.div`, AND THE REFUSAL ABOVE STILL
+    // STANDS. That ticket made an operator uncapturable, so the `import
+    // anthill.prelude.Float.{div}` that `safety_gps.anthill` writes no longer retargets a
+    // minted `/` — which means the lf1 discharge was relying on exactly the capture KD9SW
+    // removes. The repair is the one VT8CF's paragraph already prescribes and §5.5 now
+    // states: NAME THE CARRIER at the site (`Float.div(a, b)`), not a spec-op row here.
+    // Adding one was tried and is UNSOUND: `operation q() -> Int64 = 7 / 2` loads clean
+    // (driven), so a single row lowers Int64 division to SMT-LIB REAL `/`. Found by
+    // `/code-review`.
+    // The three rows above were re-keyed onto their syntax categories by WI-1WBZT; `/`
+    // was left on the CARRIERS because until KD9SW a minted `/` resolved its short
+    // functor by SCOPE, so a file writing `import anthill.prelude.Float.{div}` made it
+    // mean `Float.div` — which is exactly the capture that ticket removes. Driven: the
+    // lf1 spec does write that import, and its `/` emitted SMT `/` only through it.
+    //
+    // BOTH CARRIER ROWS STAY. They are what a WRITTEN `Float.div(a, b)` still resolves
+    // to, and dropping them would silently weaken every discharge that spells it out.
     ("anthill.prelude.Float.div", SmtBuiltin::Arith("/")),
     ("anthill.prelude.Int64.div", SmtBuiltin::Arith("div")),
     // Trigonometry (WI-681). SMT-LIB's Real logics have no transcendental cos/sin,

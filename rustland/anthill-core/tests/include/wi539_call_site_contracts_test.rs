@@ -42,6 +42,9 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
 /// varies per test; only bodies that establish `neq(b, 0)` at the call may load.
 const NEEDY_PRELUDE: &str = r#"
   import anthill.prelude.{Int64}
+  -- WI-20260825-KD9SW: a WRITTEN guard functor is brought into scope by import; a
+  -- guard naming nothing is VACUOUSLY discharged, so the row would pass for the wrong reason.
+  import anthill.prelude.PartialEq.{neq}
 
   operation needy(b: Int64) -> Int64
     requires neq(b, 0)
@@ -77,6 +80,7 @@ fn precondition_proved_by_if_guard() {
     let src = format!(
         r#"
 namespace anthill.test.wi539if
+  import anthill.prelude.PartialEq.{{neq}}
 {NEEDY_PRELUDE}
   operation caller(b: Int64) -> Int64 =
     if neq(b, 0) then needy(b) else 0
@@ -150,6 +154,9 @@ end
 const ENSURES_PRELUDE: &str = r#"
   import anthill.prelude.{Int64}
   import anthill.prelude.Int64.{div}
+  -- WI-20260825-KD9SW: the `ensures` clause below writes `neq` out. A contract clause
+  -- naming nothing is refused loudly (WI-20260822-59CDQ), so the import is the repair.
+  import anthill.prelude.PartialEq.{neq}
 
   operation mk_nonzero(seed: Int64) -> Int64
     ensures neq(result, 0)
@@ -172,6 +179,7 @@ fn ensures_discharges_a_later_div_guard() {
     let src = format!(
         r#"
 namespace anthill.test.wi539ens
+  import anthill.prelude.Divisible.{{div}}
 {ENSURES_PRELUDE}
   operation caller() -> Int64 =
     let y = mk_nonzero(7)
@@ -198,6 +206,7 @@ fn no_ensures_keeps_the_div_guard() {
     let src = format!(
         r#"
 namespace anthill.test.wi539noens
+  import anthill.prelude.Divisible.{{div}}
 {ENSURES_PRELUDE}
   operation caller() -> Int64 =
     let y = anyInt(7)
@@ -230,6 +239,8 @@ fn requires_multi_goal_conjunction_all_proved() {
     let src = r#"
 namespace anthill.test.wi539conjreq
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{neq}
+  import anthill.prelude.PartialOrd.{gt}
   operation needy2(b: Int64) -> Int64
     requires neq(b, 0), gt(b, 0)
     = b
@@ -257,6 +268,8 @@ fn ensures_multi_goal_conjunction_conjunct_discharges() {
 namespace anthill.test.wi539conjens
   import anthill.prelude.{Int64}
   import anthill.prelude.Int64.{div}
+  import anthill.prelude.PartialEq.{neq}
+  import anthill.prelude.PartialOrd.{gt}
   operation mk2(seed: Int64) -> Int64
     ensures neq(result, 0), gt(result, 0)
     = seed

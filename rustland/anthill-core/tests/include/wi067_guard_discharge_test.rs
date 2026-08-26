@@ -47,6 +47,9 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
 /// bodies that establish `neq(b, 0)` may omit `effects Boom`.
 const RISKY_PRELUDE: &str = r#"
   import anthill.prelude.{Int64}
+  -- WI-20260825-KD9SW: the effect GUARD below writes `eq` out, so this fragment brings
+  -- it into scope itself. A minted `=` would need nothing; a written name is a name.
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -114,6 +117,7 @@ fn if_branch_narrowed_divisor_discharges() {
     let src = format!(
         r#"
 namespace anthill.test.wi067if
+  import anthill.prelude.PartialEq.{{neq}}
 {RISKY_PRELUDE}
   operation caller(b: Int64) -> Int64 =
     if neq(b, 0) then risky(b) else 0
@@ -183,6 +187,7 @@ fn refuted_guard_keeps_same_label_unconditional_effect() {
     let src = r#"
 namespace anthill.test.wi067dup
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -209,6 +214,7 @@ end
     let declared = r#"
 namespace anthill.test.wi067dup2
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Boom
     entity Bang
@@ -266,6 +272,7 @@ fn denoted_modify_label_guard_discharges_and_keeps() {
     let discharged = r#"
 namespace anthill.test.wi067mod
   import anthill.prelude.{Unit, Cell, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
     effects { Modify[c] :- eq(b, 0) }
@@ -286,6 +293,7 @@ end
     let kept = r#"
 namespace anthill.test.wi067mod2
   import anthill.prelude.{Unit, Cell, Int64}
+  import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
     effects { Modify[c] :- eq(b, 0) }

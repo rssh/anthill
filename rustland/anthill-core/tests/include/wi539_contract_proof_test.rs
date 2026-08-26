@@ -92,6 +92,7 @@ fn predicate_ensures_by_field_projection_discharges() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.box
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation wrap(x: Int64) -> Box
@@ -134,6 +135,7 @@ fn reflexive_ensures_discharges() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.refl
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation wrap(x: Int64) -> Box
@@ -158,6 +160,7 @@ fn false_ensures_is_failed_not_discharged() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.bad
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation wrap(x: Int64) -> Box
@@ -194,6 +197,7 @@ fn requires_premise_enables_ensures() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.pre
+          import anthill.prelude.PartialEq.{eq}
           rule known(?x) :- eq(?x, 0)
           operation needs_pre(x: Int64) -> Int64
             requires known(x)
@@ -230,6 +234,7 @@ fn abstract_op_ensures_is_deferred_not_discharged() {
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.abstr
+          import anthill.prelude.PartialEq.{eq}
           sort Thing
             entity thing(v: Int64)
             operation describe(t: Thing) -> Int64

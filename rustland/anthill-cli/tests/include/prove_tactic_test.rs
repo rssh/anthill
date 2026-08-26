@@ -30,6 +30,8 @@ fn prove_unsat_with(tactic_clause: &str) -> String {
     let src = format!(
         r#"
         namespace test.tac.{slug}
+          import anthill.prelude.PartialEq.{{eq}}
+          import anthill.prelude.PartialOrd.{{gt}}
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
           rule r(?marker)

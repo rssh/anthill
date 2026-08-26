@@ -44,6 +44,7 @@ use smallvec::SmallVec;
 /// identical ones before dispatch is ever consulted) are EQUAL iff the witness ran.
 const WITNESS_SRC: &str = r#"namespace test.wi837
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{neq, eq}
 
   sort Pebble
     entity pebble(n: Int64)
@@ -202,6 +203,7 @@ fn witness_eq_dispatches_at_the_interpreter() {
 fn an_unprovided_carrier_keeps_structural_equality() {
     let src = r#"namespace test.wi837.control
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)
@@ -340,6 +342,7 @@ end
 fn a_type_only_provision_does_not_hide_a_later_eq_binding() {
     let src = r#"namespace test.wi837.hidden
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)
@@ -386,6 +389,7 @@ fn a_single_witness_eq_loads_clean() {
 fn a_carrier_own_eq_still_dispatches() {
     let src = r#"namespace test.wi837.own
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)
@@ -420,6 +424,7 @@ end
 fn a_witness_that_binds_eq_supplies_it_too() {
     let src = r#"namespace test.wi837.wbind
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)
@@ -463,6 +468,7 @@ end
 /// as the WI-616 own-member and WI-837 witness routes did.
 const NS_ENTITY_SRC: &str = r#"namespace test.wi837.nsent
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   entity binding(n: Int64, note: Int64)
 
@@ -477,6 +483,7 @@ end
 /// The same program with the entity wrapped in a `sort`.
 const SORT_ENTITY_SRC: &str = r#"namespace test.wi837.sortent
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Binding
     entity binding(n: Int64, note: Int64)
@@ -534,6 +541,7 @@ fn a_namespace_level_entity_carrier_keys_the_index() {
 fn a_witness_supplies_eq_for_a_namespace_level_entity_carrier() {
     let src = r#"namespace test.wi856.nswitness
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   entity binding(n: Int64, note: Int64)
 
@@ -569,6 +577,7 @@ end
 fn a_variant_named_as_a_carrier_is_not_a_witness_carrier() {
     let src = r#"namespace test.wi856.variant
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)

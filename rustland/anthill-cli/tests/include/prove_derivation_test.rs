@@ -46,6 +46,7 @@ fn by_derivation_discharges_simple_horn_rule() {
 fn by_derivation_reports_unknown_when_unsatisfiable() {
     let src = r#"
         namespace test.derive.fail
+          import anthill.prelude.PartialEq.{eq}
           entity Light(state: String)
           fact Light(state: "bright")
 

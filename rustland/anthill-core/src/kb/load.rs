@@ -1735,32 +1735,6 @@ pub enum LoadError {
         scope_name: String,
         span: Span,
     },
-    /// WI-20260824-BFB9A — ONE SPEC OPERATION, ONE SYMBOL. A FREE-STANDING
-    /// `operation` whose name, at the address it is written, already denotes a
-    /// SPEC OPERATION — a member of a parametric sort. The declaration would mint a
-    /// SECOND symbol of that spelling, and the language's way to give a carrier its
-    /// own implementation is a PROVISION (`provides PartialEq[T = MySort]`), which
-    /// attaches to the ONE symbol and is selected by carrier at the call site
-    /// (WI-350/444/627: `Set.eq`, `Map.eq`).
-    ///
-    /// REFUSED RATHER THAN ABSORBED: a free-standing operation has no carrier and
-    /// dispatch keys on the carrier, so there is nothing for the spec op to select —
-    /// the declaration cannot be turned into an implementation, only rejected.
-    ///
-    /// `read_in` names the FILE whose reading of the name makes it a rival, and is
-    /// `None` when that is the declaration's own file (the ordinary case). Two files
-    /// may write text at one address and read one name differently (WI-995: an import
-    /// resolves only in the file that wrote it), so a refusal earned by a SIBLING
-    /// file's reading has to say so — otherwise the message tells an author to repair
-    /// a relationship their own file does not have.
-    RivalSpecOperation {
-        name: String,
-        rival_qualified: String,
-        spec_qualified: String,
-        scope_name: String,
-        read_in: Option<String>,
-        span: Span,
-    },
     /// WI-525 (proposal 049, NAF discipline): a `<=>` (unify) goal occurs under
     /// `not(...)` in a rule body with a variable that no EARLIER positive goal
     /// binds. `<=>` BINDS, and NAF on a non-ground goal is unsound — so a
@@ -2106,7 +2080,6 @@ impl LoadError {
             | LoadError::UnresolvedTypeName { span, .. }
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
-            | LoadError::RivalSpecOperation { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
@@ -3048,26 +3021,6 @@ impl LoadError {
                     name,
                     declared_in,
                     scope_name,
-                )
-            }
-            LoadError::RivalSpecOperation {
-                name,
-                rival_qualified,
-                spec_qualified,
-                scope_name,
-                read_in,
-                span,
-            } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    rival_spec_operation_message(
-                        name,
-                        scope_name,
-                        rival_qualified,
-                        spec_qualified,
-                        read_in.as_deref(),
-                    ),
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -4078,28 +4031,6 @@ impl std::fmt::Display for LoadError {
                     name, declared_in, scope_name, span.start, span.end,
                 )
             }
-            LoadError::RivalSpecOperation {
-                name,
-                rival_qualified,
-                spec_qualified,
-                scope_name,
-                read_in,
-                span,
-            } => {
-                write!(
-                    f,
-                    "{} at {}..{}",
-                    rival_spec_operation_message(
-                        name,
-                        scope_name,
-                        rival_qualified,
-                        spec_qualified,
-                        read_in.as_deref(),
-                    ),
-                    span.start,
-                    span.end,
-                )
-            }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
                 write!(
                     f,
@@ -4975,46 +4906,23 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.List.nil",
     "anthill.prelude.Option.some",
     "anthill.prelude.Option.none",
-    // WI-644 / proposal 004: the partial comparison ops live on the PartialEq /
-    // PartialOrd bases (Eq / Ord are the lawful/total markers above them). A
-    // bare `eq`/`gt`/… resolves to the base op via this fallback.
-    "anthill.prelude.PartialEq.eq",
-    "anthill.prelude.PartialEq.neq",
-    "anthill.prelude.PartialOrd.gt",
-    "anthill.prelude.PartialOrd.lt",
-    "anthill.prelude.PartialOrd.gte",
-    "anthill.prelude.PartialOrd.lte",
-    // WI-20260825-1WBZT: EACH OPERATOR NAMES ITS OWN SYNTAX CATEGORY — a spec owning
-    // exactly the operation that operator mints (`stdlib/anthill/prelude/arithmetic.anthill`).
-    // These four pointed at `anthill.prelude.Numeric.{add,sub,mul,neg}` until then, and
-    // `Numeric` is a BUNDLE: nine operations reachable from one `fact`, so a carrier that
-    // could only add had to claim a `mul` it did not have (or omit it, which loads clean
-    // and dies at run time). Splitting the declarations means `+` can be claimed alone.
-    // The tier is why the split has to be a LIBRARY change: one short name maps to exactly
-    // ONE qualified name here, so the operation must be DECLARED once — `Numeric` and
-    // `algebra.Ring` now reach these by `provides` rather than by a second declaration.
-    "anthill.prelude.Additive.add",
-    "anthill.prelude.Additive.sub",
-    "anthill.prelude.Additive.neg", // prefix `-` (WI-529); not position-directed
-    "anthill.prelude.Multiplicative.mul",
-    // WI-863: `/` and word-`div` desugar to `div`, `%` and word-`mod` to `mod`.
-    // WI-20260824-VT8CF: THESE ARE SPEC OPERATIONS ON PARAMETRIC CARRIERS, and that is
-    // the whole point of the entries. They pointed at `Int64.div` / `Int64.mod` — a
-    // NON-PARAMETRIC carrier — until VT8CF, and the cost was twofold. A minted `/` meant
-    // the Int64 operation whatever its operands were, so `10.0 / 4.0` was a type error
-    // unless the file wrote `import anthill.prelude.Float.{div}`; and because
-    // `typing::spec_op_parent_sort` answers `None` for a non-parametric carrier,
-    // `check_rival_spec_operations` stood down, so a namespace-level
-    // `operation mod(a, b) = 99` captured a minted `7 % 2` silently. Both follow from
-    // one fact — a tier entry is resolved by SCOPE, and scope is shadowable. Pointing
-    // them at the specs makes the ladder carrier-agnostic (the typer dispatches to the
-    // carrier's own operation) and puts the names inside the rival refusal by
-    // construction. NOT yet computing in a query (named-resolvable but with no resolver
-    // builtin, so they refuse/flounder): `^`→`pow` (declared on `Float` alone, and no
-    // spec owns it), prefix `-`→`neg`, and `and`→`Bool.and` — each needs its own
-    // resolver builtin, tracked separately.
-    "anthill.prelude.Divisible.div",
-    "anthill.prelude.EuclideanDomain.mod",
+    // WI-20260825-KD9SW REMOVED THE TWELVE SPEC OPERATIONS FROM THIS TABLE —
+    // `add sub neg mul div mod eq neq lt lte gt gte`. They were here so that a minted
+    // operator's SHORT functor had somewhere to resolve, which made this table the
+    // second encoding of a fact `parse::pratt` already stated, and put the resolution
+    // BELOW scope: a same-spelled name in scope captured the operator (driven — with
+    // `import Weird.{add}` in scope, `1 + 2` answered `99`).
+    //
+    // A minted operator now names its target outright
+    // (`crate::parse::pratt::SPEC_OP_FUNCTORS`), so there is no short name here to
+    // resolve and no capture to refuse. `check_rival_spec_operations`, whose whole
+    // subject was that capture, went with them.
+    //
+    // WHAT THIS COSTS, and it is the ticket's migration rather than a side effect: a
+    // WRITTEN bare `gt(a, b)` / `eq(a, 0)` no longer resolves through the tier either,
+    // because the tier entry is what carried it. Those sites name the operation by
+    // import now — which is what §8.6 has always said brings a sort's members into
+    // scope. The operator itself needs nothing.
     // WI-529: `&`/word-`and` is value-only (no goal connective — conjunction is the
     // comma, there is no kernel.and), so it resolves to the dispatched Bool op
     // everywhere via this general fallback. `not`/`or` are position-directed instead
@@ -5117,7 +5025,8 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
 /// one reader asks which tier names denote a spec operation, and no synthesized form
 /// ever did.
 ///
-/// `wi_bfb9a_rival_spec_operation_test::the_refusal_population_is_the_ten_spec_operations`
+/// `wi_kd9sw_minted_operator_address_test` (WI-20260825-KD9SW retired the refusal this
+/// named: a minted operator carries its address, so there is no tier name to capture)
 /// is the reader, and its previous version SCRAPED THIS FILE'S SOURCE for the table
 /// literals — `read_to_string("src/kb/load.rs")` and `split('"').step_by(2)`, which one
 /// `"` inside a table comment silently unbalances, dropping names while every assertion
@@ -6440,65 +6349,6 @@ fn secondary_entry_message(
     )
 }
 
-/// WI-20260824-BFB9A — the body of [`LoadError::RivalSpecOperation`]'s message, owned
-/// ONCE. The located renderer and `Display` each add their own position and share this;
-/// hand-keeping two copies is what this file's [`provides_needs_sort_message`]
-/// convention exists to prevent.
-///
-/// THE MESSAGE NAMES THE PROBLEM AND THE DIRECTION, AND PRESCRIBES NO RECIPE — this is
-/// the THIRD wording, and the first two each told authors to write something that does
-/// not load. `/code-review` drove both:
-///
-/// 1. "write `provides {spec}[T = <carrier>]` with the operation inside it" — a
-///    `provides` clause has no body at all: the grammar's only bodied form requires a
-///    literal `language <ident>` and admits no operation declaration.
-/// 2. "declare it as a member of the `sort` it is for, alongside a `provides` clause in
-///    the same body" — followed verbatim with a type-correct body this LOADS for 5 of
-///    the 10 tier-reachable names and FAILS for the other 5, splitting cleanly. RE-DRIVEN
-///    2026-08-25 over all ten, one fixture each (`sort Box { entity boxed(v: Int64);
-///    provides <Spec>[T = Box]; operation <name>(…) }`): `eq` / `gt` / `lt` / `gte` /
-///    `lte` load; `add` / `sub` / `mul` / `neg` fail with "'Box' provides
-///    'anthill.prelude.Numeric', which requires 'anthill.prelude.PartialOrd', but 'Box'
-///    does not provide" — the one prescribed clause does not supply the further
-///    provision, nor `Numeric`'s own `neg` / zero members; and `neq` fails with a
-///    PRE-EXISTING check refusing exactly what this prescribed — "`neq` is not an
-///    override point: carrier 'Box' supplies its own `neq` … and no `eq`".
-///
-/// A diagnostic that prescribes a repair nobody ran is worse than one that does not
-/// prescribe: the author follows it and lands on a second, unrelated error. So this
-/// states WHAT IS WRONG and WHERE the operation belongs, and leaves the carrier — which
-/// the loader cannot know — to the author and the spec section that owns it.
-///
-/// `read_in` IS NOT DECORATION. The refusal is earned if ANY file writing text at this
-/// address reads the name as the spec operation, and that file need not be the one the
-/// span points at: an import is visible only in the file that wrote it (WI-995), so a
-/// declaration whose own file imports some other `add` is still a rival for a sibling
-/// file that does not. Without naming the reader, that message tells the author to
-/// repair a relationship their file does not have — found by `/code-review` on the
-/// previous cut of this pass, where the sentence was the same either way.
-fn rival_spec_operation_message(
-    name: &str,
-    scope_name: &str,
-    rival_qualified: &str,
-    spec_qualified: &str,
-    read_in: Option<&str>,
-) -> String {
-    let reader = match read_in {
-        Some(file) => format!(
-            " — as read from '{file}', which also writes at this address; the declaring \
-             file reads the name differently"
-        ),
-        None => String::new(),
-    };
-    format!(
-        "operation '{name}' in scope '{scope_name}' would declare a second symbol of \
-         that name: '{name}' already denotes '{rival_qualified}', a spec operation of \
-         '{spec_qualified}'{reader}. A spec operation takes a carrier-specific meaning \
-         by the CARRIER PROVIDING that spec (kernel-language.md §8.7), which a \
-         free-standing declaration cannot do: move it onto the carrier it is for, or \
-         rename it"
-    )
-}
 
 /// WI-1000 — the sentence for [`LoadError::ProvidesClauseNeedsSort`]. One owner, for
 /// the reason [`duplicate_type_message`] states in full: `LoadError` renders through
@@ -11750,8 +11600,6 @@ fn load_phase_inner(
     // `has_kind(decl.scope.owner(), Sort)` where this one requires
     // `!is_sort_scope(decl.scope)`, and those differ only for a CONSTRUCTOR's own scope,
     // which `is_sort_scope` excludes on purpose (see its doc).
-    all_errors.extend(check_rival_spec_operations(kb));
-    mark!("check_rival_spec_operations");
     // WI-939 item 4: one operation, ONE definition — a body or clauses, never both.
     // Here rather than beside `check_duplicate_operation_declarations` (which runs
     // before `resolve_instantiations`) because it reads the RULE index, and a rule
@@ -14423,9 +14271,10 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// the files that merely write text there (from [`KnowledgeBase::scope_text_files`]) —
 /// see that field for why neither record subsumes the other.
 ///
-/// [`check_name_captures`] and [`check_rival_spec_operations`] both need it and both
-/// used to build it inline, byte for byte. Two copies of a rule about which readings
-/// count is exactly the drift this file's other shared helpers exist to prevent.
+/// [`check_name_captures`] needs it, and so did `check_rival_spec_operations` until
+/// WI-20260825-KD9SW deleted that pass; both built it inline, byte for byte. Two copies
+/// of a rule about which readings count is exactly the drift this file's other shared
+/// helpers exist to prevent, and the helper stays for the reader that remains.
 ///
 /// EACH SCOPE'S LIST IS SORTED, because half of it comes out of a `HashMap` and both
 /// readers STOP AT THE FIRST file that answers — so an unsorted list makes which reader
@@ -14538,308 +14387,31 @@ fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> boo
             .any(|e| e.required_sort == spec)
 }
 
-/// WI-20260824-BFB9A — ONE SPEC OPERATION, ONE SYMBOL. A FREE-STANDING `operation` may
-/// not take a name that, at the address it is written, already denotes a SPEC
-/// OPERATION — so a spelling like `eq` denotes ONE symbol program-wide. The repair the
-/// error names is a PROVISION (`provides PartialEq[T = MySort]`), which attaches an
-/// implementation to the one symbol and is selected by carrier at the call site.
-///
-/// WHY THE LANGUAGE WANTS THIS, beyond tidiness. [`resolve_implicit`] — the implicit
-/// prelude / reserved kernel vocab — is the LOWEST-PRECEDENCE rung of the name ladder,
-/// and WI-521's entire reason for putting it there rather than injecting a `<global>`
-/// import is that a user's own `eq` had to be able to shadow the prelude's without the
-/// two going `Ambiguous` (the footgun WI-476's collision blocklist worked around). That
-/// requirement exists only because the rival is permitted. Refuse the rival and the
-/// tier's position stops being load-bearing for spec-operation names, which is what
-/// WI-909 needs in order to back the tier with the prelude SCOPE instead of a table of
-/// qualified strings.
-///
-/// THE RULE IS ABOUT A SPELLING, and both halves of that are load-bearing:
-///
-/// * The DECLARED NAME must be a spec operation's OWN name ([`spec_operation_short_names`]).
-///   Today that is EXACT rather than an approximation: every route to a symbol carries
-///   its own short name, because a RENAMING import is design-only (proposal 063 /
-///   WXHNY — no implementation, so `import lib.Spec.{Report -> BReport}` does not
-///   parse). When it lands, a spec operation reached under a chosen second spelling is
-///   a capture of a FILE-LOCAL ALIAS — [`check_name_captures`]' question, not "one
-///   spelling denoting two symbols" — and this gate declining it is the right verdict
-///   rather than a hole. It is also what keeps this pass linear: the walk below runs
-///   for the handful of declarations whose name a spec operation carries, not for
-///   every free-standing operation in the KB.
-/// * WHAT THE NAME DENOTES AT THAT ADDRESS decides, not membership of the tier's
-///   tables. `anthill.kernel.not` IS what a bare `not` resolves to, so the tier's own
-///   target is not a rival of itself; and an `import mylib.Arith.{add}` in scope means a
-///   bare `add` there never denoted `Numeric.add`, so declaring one does not rival the
-///   tier — it captures `mylib.Arith.add`, which is the other question again.
-///
-/// AN IMPORT OF THE SPEC OP DOES NOT EXCUSE IT. Asking only "does anything resolve in
-/// scope?" and standing down if so INVERTS the headline case: writing
-/// `import anthill.prelude.PartialEq.{eq}` beside `operation eq(…)` would make the load
-/// clean, so the one line that makes the collision real would defeat the rule whose
-/// purpose is that collision. Asking what the name DENOTES fixes it by construction —
-/// an import of the spec op denotes the spec op. The same shape covers an import of the
-/// declaration's OWN symbol (`import test.slf.{eq}` inside `test.slf`): that candidate
-/// is skipped and the walk CONTINUES, rather than being taken as an answer.
-/// `/code-review` drove the version that did not, where that one import silenced the
-/// whole rule.
-///
-/// [`crate::kb::typing::spec_op_parent_sort`] IS THE PREDICATE, not `declaring_scope`
-/// plus `has_kind(Sort)`. The latter is a proxy for "the owner is a spec you can
-/// provide" and gets it wrong for the tier names that live on NON-PARAMETRIC concrete
-/// sorts — `Int64.div`, `Int64.mod`, `Bool.and`, `BigInt.to_bigint`, `BigInt.to_int`.
-/// Driven on the previous cut: `operation mod(…)` was refused telling the author to
-/// write `provides anthill.prelude.Int64[T = <carrier>]`, which is unwritable —
-/// `int64.anthill` declares no `sort T = ?` — and following it yields 11 further
-/// errors. It also hands back the spec, so the repair names it by construction instead
-/// of by string surgery on a qualified name.
-///
-/// WHAT THIS DELIBERATELY DOES NOT REACH, each with its reason:
-///
-/// * **A TYPE MEMBER.** `Set.eq` / `Map.eq` live in their carrier's scope and are
-///   reached by dispatch or qualification, never by the bare-name ladder — that is the
-///   shape this error tells an author to write. 89 of the 95 operator-named
-///   declarations WI-20260824-BFB9A censused are members. `is_sort_scope` rather than a
-///   bare `has_kind`, so a CONSTRUCTOR's scope is not mistaken for its sort's. A
-///   `namespace X` at a SORT's address is exempt too, and that is correct rather than a
-///   fail-open: 059 R2/R3 makes it a SECONDARY ENTRY to the sort's own scope, which
-///   "may add members and spec claims", so an operation written there IS a member.
-///   Driven by `wi_bfb9a_rival_spec_operation_test::a_secondary_entry_is_a_member_site`,
-///   which loads it clean AND calls the member.
-/// * **CONSTRUCTORS.** `has_kind(Operation)` runs before `spec_op_parent_sort`, because
-///   the tier's constructors (`cons`, `nil`, `some`, `none`) sit on `List` / `Option`,
-///   which ARE parametric. Measured on the previous cut, which lacked the gate: a
-///   free-standing `operation cons(…)` was refused and told to write
-///   `provides List[T = …]`, which a second check refuses because a sort with
-///   constructors is a DATA sort. The two questions separate
-///   cleanly by kind — every escapee is `Entity`, every real spec op is `Operation`.
-/// * **SORTS, ENTITIES AND `const`s.** A user's own `sort List` is a genuinely
-///   different type from `anthill.prelude.List` and must keep shadowing it — that is
-///   the whole reason the tier sits below scope resolution. A `const` taking a
-///   spec-operation name is the same shape as this and is NOT reached (driven:
-///   `namespace n { const eq: Int64 = 1 }` loads clean); widening is a `decl.category`
-///   line and a census, and the census is what decides it.
-/// * **EVERY NAME, IN A KB WITH NO STDLIB SOURCES.** `spec_op_parent_sort` needs the
-///   parent's `sort T = ?` declarations, which only the stdlib FILES carry —
-///   `register_prelude` defines the target symbols but no type params. So
-///   [`spec_operation_short_names`] is empty there and the rule is uniformly OFF rather
-///   than partly on, which is why the early return is spelled out instead of falling
-///   out of the loop. It is a user-visible property of `--no-stdlib` and is pinned by
-///   `wi_bfb9a_rival_spec_operation_test::a_stdlib_less_kb_refuses_nothing`; the first
-///   implementation had the opposite property (gating on `by_qualified_name` alone made
-///   `eq` refusable while `neg` / `div` / `mod` were not), so the same program was
-///   legal or illegal depending on the load configuration.
-/// * **NOT EXEMPTED, AND KNOWN: an operation under a NAMESPACE-LEVEL `provides`
-///   block.** `namespace n { provides PartialEq[T = Int64]  operation eq(…) }` draws TWO
-///   errors — "a `provides` clause needs a type at its address", and then this rule's. A
-///   `provides` block creates no scope, so the operation lands in the namespace's. It is
-///   a CASCADE on a program the first error already refuses, left standing rather than
-///   special-cased: suppressing it would mean this pass reading another pass's errors.
-///
-/// WHAT IT COSTS, MEASURED (release CLI, `ANTHILL_LOAD_TIMING=1`, stdlib + one empty
-/// namespace, min of 9): **112 µs**, against [`check_name_captures`]' 488 µs in the same
-/// runs and a ~100 ms load. THE SPELLING GATE IS WHY. The previous cut walked every
-/// free-standing operation against every file writing at its address and `/code-review`
-/// measured it going 11.2 ms → 42.7 ms → 171 ms → 674 ms as that product doubled —
-/// exactly 4× per doubling, and the largest phase in the load. On a K-files × K-`eq`
-/// declarations fixture at one address this one is 128 µs at K=50 and 880 µs at K=400
-/// (min of 3), and flat at 158 → 332 µs when the declarations carry names no spec
-/// operation does: a declaration the spelling gate rejects never enters the walk at all,
-/// and one that passes short-circuits on the first reader that answers. The worst case
-/// is unchanged in SHAPE — K spec-op-named declarations at one address × M files reading
-/// there is still K×M — and that is the shape [`check_name_captures`] has always had;
-/// what changed is that no realistic program is in it.
-///
-/// WHY A WHOLE-KB PASS AND NOT A HOOK IN [`Loader::load_operation`], which is where it
-/// was first written. Three defects came from the placement rather than the rule, and
-/// all three dissolve here:
-///
-/// * **A DOTTED NAME BYPASSED IT.** The hook skipped `name.segments.len() != 1` on the
-///   ground that `operation Foo.eq` declares into `Foo`, "the member case wearing a
-///   path". That holds only when `Foo` is a SORT; when it is a namespace,
-///   `ensure_intermediate_namespaces` mints one and the operation is free-standing
-///   inside it. Measured on that cut: `namespace test.dotc { operation Foo.eq(…) = true }`
-///   loaded clean while the byte-identical undotted spelling was refused — same address,
-///   two spellings, opposite verdicts. [`DeclSite::scope`] is the scope declared INTO
-///   after that minting, and [`DeclSite::local`] is the name as it enters that scope, so
-///   the dotted case simply arrives correct here;
-///   `wi_bfb9a_rival_spec_operation_test::a_dotted_free_standing_operation_is_refused_too`
-///   is the row that keeps it so.
-/// * **IT FIRED PER DECLARATION SITE, NOT PER NAME.** Two same-named operations in one
-///   namespace emitted two byte-identical messages on top of WI-1049's duplicate error —
-///   three errors for one mistake. `reported` keys on `(scope, name)`, which is what the
-///   rule is about.
-/// * **IT BROKE THE FAMILY BOUNDARY** documented at [`check_name_captures`]: every
-///   whole-KB declaration check lives in [`load_phase_inner`], which `load_all` /
-///   `load_incremental` reach and the single-file [`load`] does not. Firing from
-///   `load_operation` made `load` and `load_all` disagree on one file.
-fn check_rival_spec_operations(kb: &KnowledgeBase) -> Vec<LoadError> {
-    let spec_op_names = spec_operation_short_names(kb);
-    if spec_op_names.is_empty() {
-        return Vec::new();
-    }
-    // The same readers `check_name_captures` asks, from the same owner.
-    let askers = scope_reading_files(kb);
-    let mut errors = Vec::new();
-    let mut reported: HashSet<(ScopeId, &str)> = HashSet::new();
-    // WI-995 — the ambient asking file is `None` by here (every whole-KB pass runs
-    // outside the per-file loops). Restored after the sweep so nothing downstream
-    // inherits one of ours.
-    let saved_asker = kb.symbols.set_asking_file(None);
-    for decl in &kb.decl_sites {
-        if decl.category != DeclCategory::Operation
-            || is_sort_scope(kb, decl.scope)
-            || !spec_op_names.contains(decl.local.as_str())
-        {
-            continue;
-        }
-        // THE TIER'S ANSWER, HOISTED OUT OF THE FILE LOOP. It is the LAST rung and does
-        // not depend on the asking file; the previous cut asked it inside the per-file
-        // closure, which `/code-review` measured at 190,400 calls where 400 were needed.
-        let via_tier = resolve_implicit(kb, &decl.local)
-            .filter(|&sym| is_rivalled_spec_operation(kb, sym, decl.sym));
-        let mut hit: Option<(Symbol, SourceId)> = None;
-        'files: for asker in reading_files(&askers, decl) {
-            kb.symbols.set_asking_file(Some(asker));
-            // [`SymbolTable::resolve_ignoring_own_locals`], NOT `resolve_captured_name`:
-            // the two differ by one switch and it decides this pass. See that method for
-            // the driven case — an exposed constructor of a sibling sort, which a
-            // reference written here DOES reach and the capture question deliberately
-            // does not follow. Found by `/code-review` after the first cut fused them.
-            let candidates = match kb.symbols.resolve_ignoring_own_locals(&decl.local, decl.scope)
-            {
-                crate::intern::ResolveResult::NotFound => SmallVec::<[Symbol; 2]>::new(),
-                crate::intern::ResolveResult::Found(sym) => smallvec::smallvec![sym],
-                // An AMBIGUITY answers too, and EVERY candidate is examined rather than
-                // the first: a name meaning several things, one of which is the spec
-                // operation, is still a name this declaration silences.
-                crate::intern::ResolveResult::Ambiguous(cands) => {
-                    SmallVec::<[Symbol; 2]>::from_vec(cands)
-                }
-            };
-            let mut scope_answered = false;
-            for other in candidates {
-                // The declaration reaching ITSELF — through a parent path, or through an
-                // `import` of its own scope — is not an answer to "what did this name
-                // mean here". CONTINUE, so a later candidate and then the tier are still
-                // consulted; taking it as an answer is how one import silenced the rule.
-                //
-                // EVERY OTHER CANDIDATE ANSWERS, a bare `namespace` INCLUDED. It cannot
-                // be a rival — `is_rivalled_spec_operation` wants an `Operation` kind —
-                // but it does END the ladder, so the tier is not what the name denotes.
-                // `check_name_captures` excuses one (a namespace has no value reading to
-                // be silently repointed), and copying that excuse here was wrong twice
-                // over: driven, a sibling `namespace add` makes a bare `add` in a child
-                // scope report "`add` is a member of sorts Numeric, Ring, not in scope as
-                // a bare name here" — so the namespace really does shadow the tier, and
-                // refusing a declaration on the tier's behalf named a symbol the address
-                // does not denote. Found by `/code-review`.
-                if other == decl.sym {
-                    continue;
-                }
-                scope_answered = true;
-                if is_rivalled_spec_operation(kb, other, decl.sym) {
-                    hit = Some((other, asker));
-                    break 'files;
-                }
-            }
-            // The tier is the LOWEST rung: consulted only where scope resolution found
-            // nothing for THIS file. A file that reads the name as some unrelated symbol
-            // never saw the tier, so this declaration does not rival it there.
-            if !scope_answered {
-                if let Some(rival) = via_tier {
-                    hit = Some((rival, asker));
-                    break 'files;
-                }
-            }
-        }
-        kb.symbols.set_asking_file(None);
-        let Some((rival, asker)) = hit else {
-            continue;
-        };
-        let spec = crate::kb::typing::spec_op_parent_sort(kb, rival)
-            .expect("is_rivalled_spec_operation proved the parent");
-        // ONE MESSAGE PER NAME. Inserted HERE rather than at the top of the loop, so a
-        // declaration skipped by a leg above does not consume the slot a later one at
-        // the same address would have reported through.
-        if !reported.insert((decl.scope, decl.local.as_str())) {
-            continue;
-        }
-        // LOCATED, like every other whole-KB refusal in this phase — its two neighbours
-        // (`check_rule_body_goals`, `check_contract_clause_goals`) both do this, and
-        // `located_in_kb_source`'s own doc warns that skipping it is "one drift away
-        // from a diagnostic that silently loses its file".
-        errors.push(
-            LoadError::RivalSpecOperation {
-                name: decl.local.clone(),
-                rival_qualified: kb.qualified_name_of(rival).to_owned(),
-                spec_qualified: kb.qualified_name_of(spec).to_owned(),
-                scope_name: kb.scope_display_name(decl.scope).to_owned(),
-                // `SourceRegistry::name` is the file's path, or `<unknown>` for a
-                // path-less one (a hand-built `ParsedFile`). Naming an unnamed file
-                // still says "another file, not this one", which is the half of the
-                // sentence the author cannot otherwise get.
-                read_in: (asker != decl.site.source)
-                    .then(|| kb.sources.name(asker).to_string()),
-                span: decl.site.span,
-            }
-            .located_in_kb_source(kb, decl.site.source),
-        );
-    }
-    kb.symbols.set_asking_file(saved_asker);
-    errors
-}
+// WI-20260825-KD9SW DELETED `check_rival_spec_operations` HERE, and with it
+// `reading_files` / `is_rivalled_spec_operation`, which had no other callers.
+//
+// WI-20260824-BFB9A wrote it to refuse a FREE-STANDING `operation eq(…)` that would
+// silence the implicit tier for a minted `=`. Its whole subject was that capture, and
+// its population was exactly the twelve spec operations. A minted operator now names
+// its target outright (`crate::parse::pratt::SPEC_OP_FUNCTORS`), so there is no tier
+// entry left for a declaration to shadow and the capture is UNREPRESENTABLE rather
+// than refused — which is why this is a deletion and not a narrowing.
+//
+// WHAT A USER GETS INSTEAD: `operation mod(a, b) = 99` beside a minted `7 % 2` is
+// legal again, and the two are simply different operations. That is the ticket's
+// language decision, stated in kernel-language.md §5.5.
 
-/// The files whose text can read `decl`'s name at its address, THE DECLARATION'S OWN
-/// FILE FIRST and the rest in [`scope_reading_files`]' order.
+/// The SHORT NAMES every spec operation in `kb` carries.
 ///
-/// OWN FILE FIRST IS ABOUT THE MESSAGE, not about cost. The refusal is earned by ANY
-/// reader (see [`check_rival_spec_operations`]) and names the one that earned it when
-/// that is not the declaration's own file — so trying the declaration's own file first
-/// means the ordinary single-file program never names a file at all, and a program that
-/// does name one names the same one every run.
-///
-/// NO ALLOCATION, and that is what keeps the pass off the quadratic its sibling sits on:
-/// this is asked once per declaration that passes the spelling gate, and a scope with
-/// M files would otherwise build and sort an M-element vector M times over.
-///
-/// Never empty for a scope that owns a declaration — `askers` is built from `decl_sites`
-/// itself — so the loop above cannot silently skip a declaration by iterating nothing.
-fn reading_files<'a>(
-    askers: &'a HashMap<ScopeId, Vec<SourceId>>,
-    decl: &'a DeclSite,
-) -> impl Iterator<Item = SourceId> + 'a {
-    let rest = askers
-        .get(&decl.scope)
-        .map(|v| v.as_slice())
-        .unwrap_or_default();
-    std::iter::once(decl.site.source).chain(
-        rest.iter()
-            .copied()
-            .filter(move |&f| f != decl.site.source),
-    )
-}
-
-/// Is `sym` a SPEC OPERATION that `declared` would rival — a member of a PARAMETRIC
-/// type, which is the only kind a `provides` clause can name?
-///
-/// See [`check_rival_spec_operations`] for why `has_kind(Operation)` comes first (the
-/// tier's constructors sit on parametric sorts) and why the parent test is
-/// [`crate::kb::typing::spec_op_parent_sort`] rather than a `declaring_scope` proxy.
-fn is_rivalled_spec_operation(kb: &KnowledgeBase, sym: Symbol, declared: Symbol) -> bool {
-    sym != declared
-        && kb.has_kind(sym, crate::intern::SymbolKind::Operation)
-        && crate::kb::typing::spec_op_parent_sort(kb, sym).is_some()
-}
-
-/// The SHORT NAMES every spec operation in `kb` carries — the gate
-/// [`check_rival_spec_operations`] runs before it walks a scope, and the population its
-/// refusal is drawn from.
-///
-/// A SPELLING TEST, and it is the rule rather than an approximation of it: this refusal
-/// is about one spelling denoting two symbols, so a declaration whose name no spec
-/// operation carries cannot be a rival however it resolves. Nothing escapes it on
-/// today's surface — a renaming import, the one way a symbol could be reached under a
-/// spelling that is not its own, is design-only (proposal 063 / WXHNY).
+/// ITS PRODUCTION READER IS GONE. This was `check_rival_spec_operations`' gate — the
+/// population that pass drew its refusal from — and WI-20260825-KD9SW deleted the pass
+/// (a minted operator names its target outright, so there is no tier entry left to
+/// capture). What remains is a QUERY over the KB that three tests still ask, each about
+/// which names are spec operations rather than about any refusal:
+/// `wi_vt8cf_division_tower_test`, `wi_1wbzt_syntax_category_test`, and the
+/// stdlib-less row that pins the set is empty without the library files. It is `pub` for
+/// them, and deliberately kept rather than inlined into one of them: the three ask the
+/// same question and a second spelling of it is the drift this file's helpers avoid.
 ///
 /// EMPTY IN A KB WITH NO STDLIB SOURCES, which is where the pass's whole "uniformly off"
 /// property comes from: `sort_is_parametric` reads the parent's `sort T = ?`
@@ -17792,8 +17364,11 @@ impl<'a> Loader<'a> {
                 if let Some(q_sym) = self.resolve_dotted_reported(name, span) {
                     return q_sym;
                 }
-                // WI-521: the implicit PRELUDE (`cons` / `some` / `eq` / `add` /
-                // `not` / …) resolves directly to its qualified home, replacing the
+                // WI-521: the implicit PRELUDE (`cons` / `some` / `not` / … —
+                // NOT `eq` / `add` and the other ten spec operations, which
+                // WI-20260825-KD9SW removed from the tier because a minted operator
+                // names its target outright) resolves directly to its qualified home,
+                // replacing the
                 // old `<global>` imports. This is a FALLBACK (we are already past
                 // scope resolution), so a user-written same-spelling name has won
                 // already; these names only catch a reference no scope defines.
@@ -29541,6 +29116,19 @@ mod wi888_connective_agreement_tests {
         }
     }
 
+    /// WI-20260825-KD9SW — the qualified name a minted functor names, whichever way it
+    /// names it. The twelve spec operations carry an ADDRESS
+    /// (`..anthill.prelude.PartialEq.eq`) and resolve through the dotted ladder; the
+    /// kernel primitives beside them (`unify`, `struct_eq`) are still SHORT and resolve
+    /// through the implicit tier. Both are "where does this functor point", and asking
+    /// it once is what lets these rows keep walking the whole family after half of it
+    /// stopped having a tier entry to look up.
+    fn minted_target(name: &str) -> Option<String> {
+        crate::intern::absolute_path_target(name)
+            .map(str::to_owned)
+            .or_else(|| implicit_qualified(name).map(str::to_owned))
+    }
+
     /// BACKWARD, and the row the ticket is about: `===` resolves, is reserved kernel
     /// vocabulary, and is NOT an equation connective on either side. Before WI-1090 the
     /// parse side said yes and the KB said no — so a `[simp]`-tagged `g(?x) === ?x`
@@ -29585,11 +29173,11 @@ mod wi888_connective_agreement_tests {
     fn every_defining_connective_is_an_equality_connective() {
         let kb = bootstrapped();
         for name in pratt::EQUALITY_FAMILY_FUNCTORS {
-            let qn = implicit_qualified(name).unwrap_or_else(|| {
-                panic!("`{name}` is minted by the desugar, so it must be reserved vocabulary")
+            let qn = minted_target(name).unwrap_or_else(|| {
+                panic!("`{name}` is minted by the desugar, so it must name a declaration")
             });
             let sym = kb
-                .try_resolve_symbol(qn)
+                .try_resolve_symbol(&qn)
                 .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
             assert!(
                 !pratt::is_equation_functor(name) || kb.is_equality_connective_functor(sym),
@@ -29613,10 +29201,13 @@ mod wi888_connective_agreement_tests {
     #[test]
     fn eq_is_an_equality_connective_that_does_not_define() {
         let kb = bootstrapped();
-        let qn = implicit_qualified(pratt::EQ_FUNCTOR)
-            .expect("`=` is reserved prelude vocabulary and must have an implicit target");
+        // KD9SW: `=` names `..anthill.prelude.PartialEq.eq` outright now, so its target
+        // comes off the ADDRESS rather than out of the implicit tier — which no longer
+        // carries it, and that is this ticket rather than a regression.
+        let qn = minted_target(pratt::EQ_FUNCTOR)
+            .expect("`=` is minted by the desugar and must name a declaration");
         let sym = kb
-            .try_resolve_symbol(qn)
+            .try_resolve_symbol(&qn)
             .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
         assert!(
             kb.is_equality_connective_functor(sym),

@@ -4,6 +4,8 @@
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ord, Int64}
   import anthill.prelude.Additive.{sub}
+  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
+  import anthill.prelude.PartialEq.{eq}
 
   -- WI-876: `String`'s ORDERING (lexicographic by code unit), declared here and
   -- backed by the host in `rustland/anthill-stl/anthill/string.anthill`'s

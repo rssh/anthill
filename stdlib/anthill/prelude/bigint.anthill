@@ -7,6 +7,9 @@
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
   import anthill.prelude.Additive.{sub}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{eq}
 
   -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`. See

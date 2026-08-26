@@ -781,6 +781,7 @@ fn m2_hof_inference_sort_and_map() {
     let src = r#"
 namespace test.m2_hof_inf
   import anthill.prelude.{List, Function, Int64, Bool}
+  import anthill.prelude.PartialOrd.{lt}
 
   operation insert_by(x: Int64, xs: List[T = Int64], lt: Function[(Int64, Int64), Bool]) -> List[T = Int64] =
     match xs

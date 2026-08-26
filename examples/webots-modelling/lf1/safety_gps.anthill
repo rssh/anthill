@@ -104,9 +104,15 @@ namespace anthill.examples.lf1.safety.gps
                       byte_size: ?bs,
                       packet_size: ?ps),
        KinematicAssumptions(control_period: ?tc),
-       ?prop  = ?r / ?c,
+       -- WI-20260825-KD9SW: `Float.div` NAMED, not a minted `/`. The `import
+       -- anthill.prelude.Float.{div}` above used to retarget the operator; an operator
+       -- names its spec op absolutely now, and the SMT emitter deliberately REFUSES that
+       -- spec op because it cannot tell Real `/` from integer `div` without the operand
+       -- sort (VT8CF's paragraph on `SMT_BUILTINS`). Naming the carrier is the repair
+       -- both that paragraph and kernel-language.md §5.5 prescribe.
+       ?prop  = Float.div(?r, ?c),
        ?bits  = ?ps * ?bs,
-       ?trans = ?bits / ?br,
+       ?trans = Float.div(?bits, ?br),
        ?tau   = ?prop + ?trans + ?tc
 
   -- =================================================================

@@ -36,6 +36,9 @@
 -- float order needs host support — see totalfloat.anthill).
 sort anthill.prelude.PartialOrd
   import anthill.prelude.{Int64, WeakOrd}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{eq}
 
   sort T = ?
   requires PartialEq[T]

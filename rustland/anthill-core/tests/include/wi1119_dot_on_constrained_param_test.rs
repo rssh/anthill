@@ -42,6 +42,9 @@ fn with_instances(ns: &str, body: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Function}}
+  -- WI-20260825-KD9SW: a WRITTEN bare spec-op name is brought in by import.
+  import anthill.prelude.Multiplicative.{{mul}}
+  import anthill.prelude.Additive.{{add}}
 {INSTANCES}
 {body}
 end

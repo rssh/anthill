@@ -113,6 +113,7 @@ fn rule_body_method_call_folds_and_evaluates() {
     // evaluates: `peeks(box(value:5), 5)` succeeds, `…(…, 99)` fails.
     let src = r#"
         namespace wi483.peek
+          import anthill.prelude.PartialEq.{eq}
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = ?b.value
@@ -168,6 +169,7 @@ fn rule_body_complex_method_call_runs_via_bridge_not_loud() {
     //   is FALSE (0 solutions, no spurious success) and `eq(6,6)` a definite TRUE.
     let src = r#"
         namespace wi483.complex
+          import anthill.prelude.PartialEq.{eq, neq}
           sort Box
             entity box(value: Int64)
             operation bump(b: Box) -> Int64 = ?b.value + 1

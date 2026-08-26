@@ -48,6 +48,7 @@ fn render_facts_for(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<String> {
 fn proof_record_is_emitted_with_strategy() {
     let src = r#"
         namespace test.proof_load
+          import anthill.prelude.PartialOrd.{gt}
           rule lower_violation(?x) :- gt(?x, 0)
           proof lower_violation
             by z3(timeout: 5000, logic: "LRA")
@@ -96,6 +97,7 @@ fn proof_with_no_strategy_is_open_obligation() {
 fn proof_with_query_keeps_text() {
     let src = r#"
         namespace test.proof_load_query
+          import anthill.prelude.PartialEq.{eq}
           rule add_comm(?a, ?b) :- eq(?a, ?b)
           proof add_comm
             by z3
@@ -138,6 +140,7 @@ fn structured_proof_body_loads_with_steps_and_conclude() {
     // cons-list of ProofStep terms and a ProofConcludeClause.
     let src = r#"
         namespace test.structured_proof
+          import anthill.prelude.PartialOrd.{gte}
           rule big_lemma: gte(?x, 0.0)
             :- gte(?x, 5.0)
 
@@ -196,6 +199,7 @@ fn structured_proof_without_concluding_clause_loads() {
     // term-encoding must succeed cleanly.
     let src = r#"
         namespace test.structured_no_conclude
+          import anthill.prelude.PartialOrd.{gte}
           rule lemma_x: gte(?x, 0.0)
             :- gte(?x, 5.0)
 

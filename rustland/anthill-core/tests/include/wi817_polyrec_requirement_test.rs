@@ -102,6 +102,9 @@ fn with_instances(ns: &str, body: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Function}}
+  import anthill.prelude.Additive.{{add, sub}}
+  import anthill.prelude.Multiplicative.{{mul}}
+  import anthill.prelude.PartialEq.{{eq}}
 {INSTANCES}
 {body}
 end
@@ -548,6 +551,9 @@ fn lambda_relay_chain_closure_and_hop_dicts_correct() {
         r#"
 namespace wi817.hops
   import anthill.prelude.{{Int64, Bool, Function}}
+  import anthill.prelude.Additive.{{add, sub}}
+  import anthill.prelude.Multiplicative.{{mul}}
+  import anthill.prelude.PartialEq.{{eq}}
 {INSTANCES}
   sort Pebble
     entity pebble
@@ -612,6 +618,9 @@ fn op_scoped_relay_chain_correct_via_value_direction() {
         r#"
 namespace wi817.ophops
   import anthill.prelude.{{Int64, Bool, Function}}
+  import anthill.prelude.Additive.{{add, sub}}
+  import anthill.prelude.Multiplicative.{{mul}}
+  import anthill.prelude.PartialEq.{{eq}}
 {INSTANCES}
   sort Pebble
     entity pebble
@@ -701,6 +710,8 @@ end
 namespace wi817.tdq
   import anthill.prelude.{Int64, Function}
   import wi817.tds.{Desc, Pebble}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
   sort QuietDesc
     fact Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 7
@@ -793,6 +804,8 @@ end
 namespace wi817.tdqp
   import anthill.prelude.{Int64, Function}
   import wi817.tdsp.{Desc, Pebble}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
   sort QuietDesc
     fact Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 7
@@ -856,6 +869,8 @@ fn different_sets_overlapping_dep_and_disjoint_dep_both_constructed() {
     let src = r#"
 namespace wi817.dsets
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
 
   sort Desc
     sort T = ?

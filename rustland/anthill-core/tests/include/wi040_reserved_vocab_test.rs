@@ -159,7 +159,15 @@ fn a_desugared_field_access_carries_its_address() {
 fn every_desugar_target_is_declared_by_the_standard_load() {
     use anthill_core::parse::desugar_target as dt;
     let kb = load_stdlib_kb();
-    let targets = [
+    // WI-20260825-KD9SW — THE TWELVE SPEC-OP ADDRESSES WALK HERE TOO. A minted operator
+    // names its target outright now, so `..anthill.prelude.Additive.add` has exactly the
+    // property this test exists for: a rename in the library surfaces at every USE site
+    // as "unknown functor" and never as a named orphan. `NEG_FUNCTOR` has no other
+    // coverage at all — a prefix `-` on a non-literal does not parse (WI-529), so no
+    // program can drive it and this row is the only thing that would catch a wrong
+    // address. Found by `/code-review`: the pratt-side doc claimed this test covered them
+    // while it walked `desugar_target`'s ten alone.
+    let targets: Vec<&str> = [
         dt::FIELD_ACCESS,
         dt::HO_APPLY,
         dt::DOT_APPLY,
@@ -170,7 +178,10 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
         dt::IF_EXPR,
         dt::LET_EXPR,
         dt::LAMBDA_EXPR,
-    ];
+    ]
+    .into_iter()
+    .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
+    .collect();
     let orphans: Vec<&str> = targets
         .iter()
         .copied()

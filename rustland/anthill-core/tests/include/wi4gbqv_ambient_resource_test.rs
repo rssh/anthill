@@ -518,6 +518,7 @@ fn a_holding_guard_still_refuses_a_placeless_argument() {
     let src = r#"
 namespace test.wi4gbqv.guard_holds
   import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+  import anthill.prelude.PartialEq.{eq}
 
   operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
 
@@ -548,6 +549,7 @@ fn a_refuted_guard_admits_the_same_placeless_argument() {
     let src = r#"
 namespace test.wi4gbqv.guard_refuted
   import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+  import anthill.prelude.PartialEq.{eq}
 
   operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
 

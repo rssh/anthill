@@ -150,6 +150,7 @@ fn wi762_computed_receiver_projects_through_the_lowered_record() {
 namespace test.wi762computed
 {REL}
   import anthill.prelude.Relation.{{where}}
+  import anthill.prelude.PartialEq.{{eq}}
   operation youngCols() -> List[(name: String, age: Int64)] effects Error =
     let filtered = person_row.where(lambda c -> eq(c.age, 25))
     let cols = filtered.(name, age)

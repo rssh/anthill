@@ -42,6 +42,9 @@ fn induction_with_base_and_step_proved_combines_to_proved() {
     }
     let src = r#"
         namespace test.induction.ok
+          import anthill.prelude.Additive.{add}
+          import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.PartialOrd.{gt, gte, lt, lte}
           entity Bound(lo: Int64, hi: Int64)
           fact Bound(lo: 0, hi: 10)
 
@@ -94,6 +97,8 @@ fn induction_with_failing_step_disproves() {
     // Step is satisfiable — the obligation has a counterexample.
     let src = r#"
         namespace test.induction.fail
+          import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.PartialOrd.{gt}
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 
@@ -138,6 +143,8 @@ fn induction_dispatches_three_positional_cases() {
     }
     let src = r#"
         namespace test.induction.multi
+          import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.PartialOrd.{gt}
           entity Cfg(scale: Int64)
           fact Cfg(scale: 5)
 

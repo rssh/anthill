@@ -87,6 +87,7 @@ fn nested_let_inside_branch_body_works() {
     let source = r#"
         namespace test.mb_nested
           import anthill.prelude.{Int64, Option}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation double_or_zero(o: Option[T = Int64]) -> Int64 =
               match o

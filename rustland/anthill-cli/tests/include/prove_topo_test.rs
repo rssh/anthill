@@ -37,6 +37,7 @@ fn cite_chain_discharges_in_dependency_order_not_alphabetical() {
     // zzz_lemma first.
     let src = r#"
         namespace test.topo
+          import anthill.prelude.PartialOrd.{gte}
 
           rule zzz_lemma: gte(?x, 3.0)
             :- gte(?x, 5.0)

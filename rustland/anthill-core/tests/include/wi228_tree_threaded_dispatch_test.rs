@@ -55,7 +55,9 @@ namespace test.wi228.pin_now_tree
     operation eq(x: List[T = A], y: List[T = A]) -> Bool = true
   end
   sort Driver
-    import anthill.prelude.Eq.{eq}
+    -- WI-20260825-KD9SW: imported HERE, not at namespace level: `sort EqList` declares
+    -- its own `eq`, and a namespace-level import would make that a 059 R4 capture.
+    import anthill.prelude.PartialEq.{eq}
     operation drive(x: List[T = Int64], y: List[T = Int64]) -> Bool = eq(x, y)
   end
 end

@@ -178,7 +178,11 @@ fn a_variable_head_is_exempt() {
 /// refused — even though it has no `rules_by_functor` entry.
 #[test]
 fn a_builtin_functor_is_exempt() {
-    let out = query(&["eq(1, 1)"]);
+    // WI-20260825-KD9SW — `-i` for the WRITTEN `eq`. A minted `=` names
+    // `..anthill.prelude.PartialEq.eq` outright and needs nothing; the implicit tier that
+    // used to answer a written `eq` in query scope is gone, and a query has no file to
+    // hold an import. This is the repair the refusal's own message prescribes.
+    let out = query(&["-i", "anthill.prelude.PartialEq.{eq}", "eq(1, 1)"]);
     assert_eq!(
         out.code, 0,
         "a builtin must resolve, not block; stderr:\n{}",

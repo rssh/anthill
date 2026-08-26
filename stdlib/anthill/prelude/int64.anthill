@@ -8,6 +8,9 @@ sort anthill.prelude.Int64
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
   -- import rather than by a global name — see the note in `ordered.anthill`.
   import anthill.prelude.Bool.{ite}
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
+  import anthill.prelude.PartialEq.{eq, neq}
 
   -- WI-876: `Int64`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map`. Body-less

@@ -737,6 +737,9 @@ fn parse_fact_with_meta() {
 #[test]
 fn parse_namespace_with_entity_and_operation() {
     let source = r#"namespace banking
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.PartialOrd.{gt}
   entity Account(id: AccountId, balance: Money)
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
@@ -870,6 +873,9 @@ fn load_fact_and_query_by_sort() {
 #[test]
 fn load_banking_namespace() {
     let source = r#"namespace banking
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.PartialOrd.{gt}
 
   sort AccountId = ?
 
@@ -3205,14 +3211,14 @@ fn fmt_ir_term(
 fn parse_multi_operator_chain() {
     // ?a + ?b * ?c → add(?a, mul(?b, ?c)): mul binds tighter than add
     let (terms, symbols, term) = parse_term_ir("?a + ?b * ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(?a, mul(?b, ?c))");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(?a, ..anthill.prelude.Multiplicative.mul(?b, ?c))");
 }
 
 #[test]
 fn parse_left_assoc_add() {
     // ?a + ?b + ?c → add(add(?a, ?b), ?c): left-associative
     let (terms, symbols, term) = parse_term_ir("?a + ?b + ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(add(?a, ?b), ?c)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(..anthill.prelude.Additive.add(?a, ?b), ?c)");
 }
 
 #[test]
@@ -3284,6 +3290,11 @@ fn parse_let_in_rule_head_is_rejected() {
 #[test]
 fn parse_prefix_not() {
     // add(!?a, ?b) → add(not(?a), ?b)
+    //
+    // WI-20260825-KD9SW — the functor stays SHORT here, and the contrast with
+    // `parse_prefix_in_infix` one row down is the whole point: this `add` is WRITTEN, so
+    // it is an ordinary name resolved in scope, while a minted `+` names
+    // `..anthill.prelude.Additive.add` outright. Same shape, two functors.
     let (terms, symbols, term) = parse_term_ir("add(!?a, ?b)");
     assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(not(?a), ?b)");
 }
@@ -3292,7 +3303,7 @@ fn parse_prefix_not() {
 fn parse_prefix_in_infix() {
     // !?a + ?b → add(not(?a), ?b): prefix binds tighter
     let (terms, symbols, term) = parse_term_ir("!?a + ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(not(?a), ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(not(?a), ?b)");
 }
 
 #[test]
@@ -3301,7 +3312,7 @@ fn parse_new_operators() {
     assert_eq!(fmt_ir_term(&terms, &symbols, term), "or(?a, ?b)");
 
     let (terms, symbols, term) = parse_term_ir("?a != ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "neq(?a, ?b)");
+    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.PartialEq.neq(?a, ?b)");
 }
 
 #[test]
@@ -3325,28 +3336,28 @@ fn parse_binary_arrow() {
 fn parse_existing_infix_unchanged() {
     // Verify backward compatibility: single-operator expressions produce same output
     let (t, s, h) = parse_term_ir("?a + ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "add(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Additive.add(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a * ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "mul(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Multiplicative.mul(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a = ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "eq(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialEq.eq(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a > ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "gt(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.gt(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a >= ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "gte(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.gte(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a < ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "lt(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.lt(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a <= ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "lte(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.lte(?a, ?b)");
 
     let (t, s, h) = parse_term_ir("?a - ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "sub(?a, ?b)");
+    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Additive.sub(?a, ?b)");
 }
 
 // ── Set literal tests ─────────────────────────────────────────
@@ -3549,7 +3560,7 @@ fn parse_field_access_in_infix() {
     let (terms, symbols, term) = parse_term_ir("?x.y = ?z");
     assert_eq!(
         fmt_ir_term(&terms, &symbols, term),
-        "eq(..anthill.reflect.Expr.dot_apply(?x, y), ?z)"
+        "..anthill.prelude.PartialEq.eq(..anthill.reflect.Expr.dot_apply(?x, y), ?z)"
     );
 }
 
@@ -4467,7 +4478,12 @@ fn parse_operation_with_simple_body() {
                 Term::Fn {
                     functor, pos_args, ..
                 } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "add");
+                    // KD9SW: a minted `+` names its target outright. Asserted in full
+                    // here, exactly as the `match_expr` row below does for 5W3RJ's.
+                    assert_eq!(
+                        parsed.symbols.local_name(*functor),
+                        anthill_core::parse::pratt::ADD_FUNCTOR
+                    );
                     assert_eq!(pos_args.len(), 2);
                 }
                 other => panic!("expected Fn term for body, got {:?}", other),
@@ -4948,7 +4964,11 @@ fn parse_operation_body_with_clauses() {
             assert!(op.body.is_some(), "should have a body");
             match parsed.terms.get(op.body.unwrap()) {
                 Term::Fn { functor, .. } => {
-                    assert_eq!(parsed.symbols.local_name(*functor), "div");
+                    // KD9SW: minted `/`, so the functor is the address.
+                    assert_eq!(
+                        parsed.symbols.local_name(*functor),
+                        anthill_core::parse::pratt::DIV_FUNCTOR
+                    );
                 }
                 other => panic!("expected div Fn, got {:?}", other),
             }
@@ -4980,7 +5000,11 @@ end
                     // First op body is add(x, x)
                     match parsed.terms.get(ob.entries[0].body.unwrap()) {
                         Term::Fn { functor, .. } => {
-                            assert_eq!(parsed.symbols.local_name(*functor), "add");
+                            // KD9SW: minted `+`, so the functor is the address.
+                            assert_eq!(
+                                parsed.symbols.local_name(*functor),
+                                anthill_core::parse::pratt::ADD_FUNCTOR
+                            );
                         }
                         other => panic!("expected add, got {:?}", other),
                     }
@@ -5090,6 +5114,7 @@ fn load_operation_with_if_body() {
     let mut kb = load_with_stdlib(
         r#"
 namespace test.expr
+  import anthill.prelude.PartialOrd.{gt}
   operation max(a: Int64, b: Int64) -> Int64 =
     if gt(a, b) then a else b
 end
@@ -5202,6 +5227,7 @@ fn load_operation_with_let_body() {
     let mut kb = load_with_stdlib(
         r#"
 namespace test.expr
+  import anthill.prelude.Additive.{add}
   operation double(x: Int64) -> Int64 =
     let y = x
     add(y, y)
@@ -5249,6 +5275,7 @@ fn load_operation_with_lambda_body() {
         r#"
 namespace test.expr
   import anthill.prelude.{Function, Int64}
+  import anthill.prelude.Additive.{add}
   operation make_inc() -> Function[Int64, Int64] =
     lambda x -> add(x, 1)
 end
@@ -5350,6 +5377,7 @@ fn load_operation_impl_fact_emitted() {
     let mut kb = load_with_stdlib(
         r#"
 namespace test.expr
+  import anthill.prelude.Additive.{add}
   operation incr(x: Int64) -> Int64 =
     add(x, 1)
 end

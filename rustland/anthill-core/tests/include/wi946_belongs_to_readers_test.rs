@@ -544,6 +544,9 @@ namespace wi946.unbackedeq.nested
     provides PartialEq[T = Crate]
   end
   sort Drv
+    -- WI-20260825-KD9SW: imported HERE, not at namespace level — the carrier sort above
+    -- declares its own `eq`, and a namespace import would make that a 059 R4 capture.
+    import anthill.prelude.PartialEq.{eq}
     operation same() -> Bool
     rule same() :- eq(Boxed(v: 1), Boxed(v: 2))
   end
@@ -560,6 +563,9 @@ namespace wi946.unbackedeq.eponymous
     provides PartialEq[T = Boxy]
   end
   sort Drv
+    -- WI-20260825-KD9SW: imported HERE, not at namespace level — the carrier sort above
+    -- declares its own `eq`, and a namespace import would make that a 059 R4 capture.
+    import anthill.prelude.PartialEq.{eq}
     operation same() -> Bool
     rule same() :- eq(Boxy(v: 1), Boxy(v: 2))
   end

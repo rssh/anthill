@@ -965,6 +965,7 @@ fn wi714_applied_correlated_columns_reject_contradiction() {
     let src = r#"
 namespace test.wi714corr
   import anthill.prelude.{String, Int64, List, Bool}
+  import anthill.prelude.PartialEq.{eq}
 
   -- ?x and ?y are forced to one type by `eq(?x, ?y)`.
   rule pair_eq(?x, ?y) :- eq(?x, ?y)
@@ -994,6 +995,7 @@ fn wi714_applied_unconstrained_column_accepts_and_narrows() {
     let ok_src = r#"
 namespace test.wi714poly
   import anthill.prelude.{String, Int64, List, Bool}
+  import anthill.prelude.PartialEq.{eq}
 
   rule rel(?x, ?y) :- eq(?x, ?y)
 
@@ -1014,6 +1016,7 @@ end
     let bad_src = r#"
 namespace test.wi714poly2
   import anthill.prelude.{String, Int64, List, Bool}
+  import anthill.prelude.PartialEq.{eq}
 
   rule rel(?x, ?y) :- eq(?x, ?y)
 

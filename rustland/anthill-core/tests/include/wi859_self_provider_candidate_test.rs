@@ -171,6 +171,7 @@ fn a_self_provider_is_a_candidate_of_its_own_group() {
 fn a_fact_completing_a_type_only_self_provision_still_answers() {
     let src = r#"namespace test.wi859.completion
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
 
   sort Pebble
     entity pebble(n: Int64)

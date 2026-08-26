@@ -26,6 +26,7 @@ use smallvec::SmallVec;
 const SRC: &str = r#"
     namespace test.wi616
       import anthill.prelude.{Int64, Eq, Option}
+      import anthill.prelude.PartialEq.{eq, neq}
       sort Tag
         entity red
         entity blue

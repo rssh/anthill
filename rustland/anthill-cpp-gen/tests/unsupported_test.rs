@@ -232,6 +232,7 @@ fn non_recursive_let_lambda_still_works() {
     let source = r#"
         namespace test.unsupported_ok
           import anthill.prelude.{Int64}
+          import anthill.prelude.Additive.{add}
           sort Calc
             operation lam(n: Int64) -> Int64 =
               let g = lambda x -> add(x, 1)

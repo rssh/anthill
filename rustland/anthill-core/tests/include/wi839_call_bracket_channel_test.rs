@@ -225,6 +225,7 @@ end
         r#"
 namespace test.wi839.rule_ref
   import anthill.prelude.{Int64, Relation}
+  import anthill.prelude.PartialEq.{eq}
   rule p(?x) :- eq(?x, 1)
   sort Driver
     operation main() -> Relation = p[Bogus = Int64](1)
@@ -238,6 +239,7 @@ end
         r#"
 namespace test.wi839.rule_ref_pos
   import anthill.prelude.{Int64, Relation}
+  import anthill.prelude.PartialEq.{eq}
   rule p(?x) :- eq(?x, 1)
   sort Driver
     operation main() -> Relation = p[Int64, Int64, Int64](1)
@@ -258,6 +260,7 @@ fn an_applied_rule_citation_without_a_bracket_still_loads() {
         r#"
 namespace test.wi839.rule_ref_ok
   import anthill.prelude.{Int64, Relation}
+  import anthill.prelude.PartialEq.{eq}
   rule p(?x) :- eq(?x, 1)
   sort Driver
     operation main() -> Relation = p(1)
@@ -388,6 +391,7 @@ fn a_rule_body_bracket_is_refused_as_not_supported_here() {
         r#"
 namespace test.wi839.body_nested
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
   operation plainp(n: Int64) -> Bool = true
   rule ok(?b) :- eq(?b, plainp[Bogus = Int64](1))
 end
@@ -429,6 +433,7 @@ fn a_fact_head_and_a_constraint_bracket_are_refused_too() {
         r#"
 namespace test.wi839.fact_head
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
   operation plainp(n: Int64) -> Bool = true
   rule ok(?b) :- eq(?b, true)
   fact ok(plainp[Bogus = Int64](1))
@@ -441,6 +446,7 @@ end
         r#"
 namespace test.wi839.constraint
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
   operation plainp(n: Int64) -> Bool = true
   rule p(?x) :- eq(?x, 1)
   constraint c
@@ -500,6 +506,7 @@ fn a_rule_head_with_a_concrete_binding_is_refused_with_head_specific_advice() {
         r#"
 namespace test.wi839.head_binding
   import anthill.prelude.{Int64}
+  import anthill.prelude.PartialEq.{eq}
   rule r[A = Int64](?x) :- eq(?x, 1)
 end
 "#,
@@ -520,6 +527,7 @@ fn a_rule_body_type_application_still_loads() {
 namespace test.wi839.type_app
   import anthill.prelude.{Cell, List, Int64, Bool, Modifiable}
   import anthill.reflect.{is_modifiable}
+  import anthill.prelude.PartialEq.{eq}
   rule modifiable_elem(?t) :- Modifiable[T = ?t]
   rule any_list(?t, ?b) :- eq(?b, is_modifiable(List[T = ?t]))
   rule cell_body(?b) :- eq(?b, is_modifiable(Cell[V = Int64]))
@@ -538,6 +546,7 @@ fn an_undeclared_param_in_a_rule_body_type_application_stays_loud() {
 namespace test.wi839.type_app_bad
   import anthill.prelude.{Cell, Int64, Bool}
   import anthill.reflect.{is_modifiable}
+  import anthill.prelude.PartialEq.{eq}
   rule bad(?x) :- eq(?x, is_modifiable(Cell[W = Int64]))
 end
 "#,

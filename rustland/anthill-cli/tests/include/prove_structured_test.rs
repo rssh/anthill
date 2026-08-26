@@ -43,6 +43,7 @@ fn structured_proof_two_steps_chain_to_parent_discharge() {
     // the parent rule's claim `?x >= 0`.
     let src = r#"
         namespace test.structured.chain
+          import anthill.prelude.PartialOrd.{gte}
 
           rule big_lemma: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -84,6 +85,7 @@ fn structured_proof_step_failure_aborts_chain() {
     // than reporting the parent rule as failed without context.
     let src = r#"
         namespace test.structured.fail
+          import anthill.prelude.PartialOrd.{gte}
 
           rule oops: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -121,6 +123,7 @@ fn structured_proof_with_trust_step_produces_metacompose_witness() {
     // round-trip through the dispatcher without panicking.
     let src = r#"
         namespace test.structured.trust
+          import anthill.prelude.PartialOrd.{gte}
 
           rule claim: gte(?x, 0.0)
             :- gte(?x, 5.0)
@@ -159,6 +162,7 @@ fn structured_proof_witness_sidecar_replays_through_check() {
     // confirms the proposal-031 claim that "Phase c is essentially free".
     let src = r#"
         namespace test.structured.replay
+          import anthill.prelude.PartialOrd.{gte}
 
           rule claim: gte(?x, 0.0)
             :- gte(?x, 5.0)

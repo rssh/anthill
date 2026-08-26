@@ -87,6 +87,7 @@ const TWO_EQ_GOOD: &str = r#"
 namespace test.wi9c2pz.two
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity src(s: String, n: Int64)
@@ -113,6 +114,7 @@ const TWO_EQ_SWAPPED: &str = r#"
 namespace test.wi9c2pz.twoswap
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity src(s: String, n: Int64)
@@ -182,6 +184,7 @@ fn wi9c2pz_the_two_columns_keep_their_own_types() {
 const EQ_PROPAGATES_STR: &str = r#"
 namespace test.wi9c2pz.propstr
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity parent(of: String, is: String)
@@ -204,6 +207,7 @@ end
 const EQ_PROPAGATES_INT: &str = r#"
 namespace test.wi9c2pz.propint
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity parent(of: String, is: String)
@@ -284,6 +288,7 @@ fn wi9c2pz_eq_does_not_propagate_into_an_int_column() {
 const EQ_PROPAGATES_TWO_CLAUSE: &str = r#"
 namespace test.wi9c2pz.proplub
   import anthill.prelude.{String, Int64, List}
+  import anthill.prelude.PartialEq.{eq}
 
   sort S
     entity parent(of: String, is: String)
@@ -329,6 +334,7 @@ namespace test.wi9c2pz.ch
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialOrd.{gt}
+  import anthill.prelude.PartialEq.{eq}
 
   sort G
     entity g(a: Int64, b: Int64, c: Int64)
@@ -351,6 +357,7 @@ namespace test.wi9c2pz.chainbad
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialOrd.{gt}
+  import anthill.prelude.PartialEq.{eq}
 
   sort G
     entity g(a: Int64, b: Int64, c: Int64)
@@ -418,6 +425,7 @@ fn wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to() {
 const MISTYPED_CALL: &str = r#"
 namespace test.wi9c2pz.mistyped
   import anthill.prelude.{String, Int64}
+  import anthill.prelude.PartialEq.{eq}
   sort S
     entity row(a: Int64, s: String)
   end
@@ -429,6 +437,7 @@ end
 const MISTYPED_LITERAL: &str = r#"
 namespace test.wi9c2pz.mislit
   import anthill.prelude.{String, Int64, Float}
+  import anthill.prelude.PartialEq.{eq}
   sort S
     entity holder(n: Int64, f: Float)
   end
@@ -441,6 +450,7 @@ end
 const MISTYPED_LITERAL_FIRST: &str = r#"
 namespace test.wi9c2pz.mislitfirst
   import anthill.prelude.{String, Int64}
+  import anthill.prelude.PartialEq.{eq}
   sort S
     entity scored(who: String, pts: Int64)
   end

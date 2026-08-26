@@ -837,6 +837,12 @@ end
 /// so the surrounding programs can keep interpolating `{INSTANCES}` inline.
 #[allow(dead_code)]
 pub const DESC_INSTANCES: &str = r#"
+  -- WI-20260825-KD9SW: `WrapDesc.describe` writes `add(mul(10, …), 2)` — WRITTEN names,
+  -- not minted operators — so this fragment brings them into scope itself rather than
+  -- leaning on every namespace that splices it. A minted `+`/`*` would need nothing.
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
+
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64

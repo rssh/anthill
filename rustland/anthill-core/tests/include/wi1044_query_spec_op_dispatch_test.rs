@@ -376,6 +376,8 @@ fn a_backtracked_receiver_reclassifies_per_carrier() {
         format!(
             r#"namespace test.wi1044.bt
   import anthill.prelude.Int64
+  -- WI-20260825-KD9SW: a WRITTEN bare `gt` names its operation by import.
+  import anthill.prelude.PartialOrd.{{gt}}
 
   sort Desc
     sort T = ?

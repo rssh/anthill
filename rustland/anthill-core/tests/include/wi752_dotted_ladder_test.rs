@@ -362,6 +362,7 @@ fn wi752_query_resolver_agrees_with_the_loader_on_a_dotted_prefix() {
     const SRC: &str = r#"
 namespace app.util
   import anthill.prelude.Int64
+  import anthill.prelude.PartialEq.{neq}
   operation f(b: Int64) -> Int64
     requires neq(b, 0)
     = b

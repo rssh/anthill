@@ -124,7 +124,7 @@ object SmtGen:
     if s.startsWith("var_") then s.drop(4).toIntOption else None
 
   /** Map anthill arithmetic functor QNs to SMT-LIB ops. */
-  private[smtgen] def mapArithOp(qn: String): Option[String] = qn match
+  private[smtgen] def mapArithOp(qn: String): Option[String] = stripAbsolute(qn) match
     // WI-20260825-1WBZT — the SYNTAX CATEGORY declares each of these now (`Additive`,
     // `Multiplicative`; `stdlib/anthill/prelude/arithmetic.anthill`), and `Numeric`
     // reaches them by `provides`. The FULLY-QUALIFIED arm is the only one the move could
@@ -148,11 +148,19 @@ object SmtGen:
     case "anthill.prelude.Multiplicative.mul" | "anthill.prelude.Numeric.mul" |
         "Numeric.mul" | "mul" =>
       Some("*")
-    case "anthill.prelude.Float.div"   | "Float.div"   | "div" => Some("/")
+    case "anthill.prelude.Divisible.div" | "anthill.prelude.Float.div" | "Float.div" | "div" => Some("/")
     case "anthill.prelude.Int64.div"     | "Int64.div"             => Some("div")
     case _ => None
 
-  private[smtgen] def mapUnaryOp(qn: String): Option[String] = qn match
+  /** WI-20260825-KD9SW — a MINTED operator carries an ADDRESS
+    * (`..anthill.prelude.Additive.add`), so every arm here would miss it. The marker is
+    * stripped ONCE rather than by adding a `..`-prefixed twin to each arm: these are the
+    * same names the arms already list, wearing the spelling `parse.Pratt` now mints.
+    * Rustland's `intern.absolutePathTarget` is the same projection. */
+  private[smtgen] def stripAbsolute(qn: String): String =
+    if qn.startsWith("..") then qn.drop(2) else qn
+
+  private[smtgen] def mapUnaryOp(qn: String): Option[String] = stripAbsolute(qn) match
     case "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs")
     case "anthill.prelude.Int64.abs" => Some("anthill_abs")
     case "anthill.prelude.Additive.neg" | "anthill.prelude.Numeric.neg" => Some("-")
@@ -160,11 +168,11 @@ object SmtGen:
     case "anthill.prelude.Int64.neg" | "Int64.neg" => Some("-")
     case _ => None
 
-  private[smtgen] def mapInequalityOp(qn: String): Option[String] = qn match
-    case "anthill.prelude.Ord.lte" | "Ord.lte" | "lte" => Some("<=")
-    case "anthill.prelude.Ord.lt"  | "Ord.lt"  | "lt"  => Some("<")
-    case "anthill.prelude.Ord.gte" | "Ord.gte" | "gte" => Some(">=")
-    case "anthill.prelude.Ord.gt"  | "Ord.gt"  | "gt"  => Some(">")
+  private[smtgen] def mapInequalityOp(qn: String): Option[String] = stripAbsolute(qn) match
+    case "anthill.prelude.PartialOrd.lte" | "anthill.prelude.Ord.lte" | "Ord.lte" | "lte" => Some("<=")
+    case "anthill.prelude.PartialOrd.lt"  | "anthill.prelude.Ord.lt"  | "Ord.lt"  | "lt"  => Some("<")
+    case "anthill.prelude.PartialOrd.gte" | "anthill.prelude.Ord.gte" | "Ord.gte" | "gte" => Some(">=")
+    case "anthill.prelude.PartialOrd.gt"  | "anthill.prelude.Ord.gt"  | "Ord.gt"  | "gt"  => Some(">")
     case _ => None
 
   /** Loader desugars `=` to `anthill.prelude.Eq.eq` in goal position;
@@ -172,8 +180,9 @@ object SmtGen:
     * construction.
     */
   private[smtgen] def isEqFunctor(kb: KnowledgeBase, sym: TermSymbol): Boolean =
-    val qn = kb.qualifiedNameOf(sym)
-    if qn == "=" || qn == "anthill.prelude.Eq.eq" then true
+    val qn = stripAbsolute(kb.qualifiedNameOf(sym))
+    if qn == "=" || qn == "anthill.prelude.Eq.eq" || qn == "anthill.prelude.PartialEq.eq"
+    then true
     else
       val short = kb.resolveSym(sym)
       short == "=" || short == "eq"

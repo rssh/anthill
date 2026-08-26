@@ -47,6 +47,8 @@ fn with_instances(ns: &str, body: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Function}}
+  import anthill.prelude.Additive.{{add}}
+  import anthill.prelude.Multiplicative.{{mul}}
 {INSTANCES}
 {body}
 end

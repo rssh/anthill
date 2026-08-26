@@ -26,6 +26,11 @@ namespace anthill.examples.lf1.follower_transponder
   import anthill.prelude.{Float, Int64, Unit, String, Option, Bool, List}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Float.{abs, neg}
+  -- WI-20260825-KD9SW: WRITTEN bare spec-operation names are imported now. A minted
+  -- operator (`+`, `<`, …) names its target outright and needs nothing; these call
+  -- the same operations by NAME, and the implicit tier that answered them is gone.
+  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.PartialOrd.{gt, lt, gte, lte}
   import anthill.examples.lf1.leader.{Pose, Controls}
 
 
