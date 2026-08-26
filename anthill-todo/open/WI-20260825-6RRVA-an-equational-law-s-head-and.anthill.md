@@ -40,3 +40,25 @@ WHAT THE CHECK MUST NOT DO, and this is why it needs a census rather than a one-
 
 CENSUS TO RUN FIRST: how many law heads / RHS terms across the stdlib, `anthill-stl`, the examples and the fixture suite name something unresolvable today? WI-20260825-1WBZT repaired the five it created (VectorSpace's laws now name `Additive.sub` / `Additive.zero` / `Multiplicative.one` / `Multiplicative.mul` / `Additive.add`) and pinned them through the GUARDED position instead — `wi_1wbzt_syntax_category_test::the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not` puts each address in a rule-body goal, where the live ones load (`Additive.zero` and `Multiplicative.one` reach "ambiguous dispatch of …", which is proof the name resolved) and every `Ring.*` one is refused as "names nothing". That proxy is what a real check would make unnecessary.
 
+### 2026-08-25T23:55:55Z — feedback — claude
+
+CENSUS RUN, AND THE CORPUS IS CLEAN — but the instrument that says so is incomplete, and that is the finding.
+
+MEASURED on the delivered tree, walking every Term-carried fact whose head functor is `eq` / `unify`, descending BOTH sides' ARGUMENT terms (skipping each side's own top-level functor, which a law head introduces by design):
+
+  190 equational heads scanned
+  0   unresolvable dotted functors in law argument positions
+
+So turning the check on would refuse nothing that ships today. That is the number the ticket asked for and it is the green light the body was waiting on.
+
+THE CONTROL SAYS THE WALK IS PARTIAL, which is why this is a note and not a delivery. Restoring the five dead `Ring.*` spellings WI-20260825-1WBZT had left in `algebra.VectorSpace`:
+
+  first cut (descend `Term::Fn` only)     -> 3 hits: Ring.add, Ring.mul, Ring.sub
+  plus a `Term::Ident | Term::Ref` arm    -> still MISSES Ring.zero and Ring.one
+
+The two it misses are exactly the NULLARY ones — `vec_scale(Ring.one, ?v) <=> ?v` puts `Ring.one` directly in the LHS's `pos_args`, so the walk visits that slot and does not report it. Adding the `Ident`/`Ref` arm was WI-1034's own lesson re-earned ("`functor_sym` MISSES `Ident`") and it was NOT sufficient: a nullary dotted reference takes some third carrier, or is interned under a name the `contains('.')` test does not see, and I did not establish which.
+
+DO NOT SHIP THE CHECK ON THIS WALK. A refusal built on a descent that silently skips the identities is the same defect one level up: it would report `Ring.mul` and stay quiet about `Ring.zero`, and the quiet half would read as "checked". Establish what carrier a nullary dotted reference takes FIRST — that is the one open question between here and a working check, and it is a much smaller question than the ticket body assumed.
+
+TWO THINGS THE BODY GOT RIGHT AND ONE IT DID NOT. The head/RHS asymmetry is real and both are silent (driven, unchanged). The "census first" instinct was right, and the census came back clean rather than large. But the body says the check "needs its own census rather than a one-line copy" as though the census were the obstacle — it is not; the descent rule is.
+

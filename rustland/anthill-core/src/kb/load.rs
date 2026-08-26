@@ -8477,13 +8477,11 @@ fn wire_provides_scope_parent(
         });
     if let ResolveResult::Found(sym) = resolved {
         if let Some(parent_scope) = parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
-            kb.symbols.add_parent(
-                scope,
-                ScopeInclusion {
-                    parent_scope,
-                    is_enclosing: false,
-                },
-            );
+            // WI-20260825-N2865 — `add_provides_parent`, not `add_parent`: the same
+            // inclusion, filed under an origin that says WHICH clause wrote it, so the
+            // resolver can stop the ENCLOSING chain below a conversion without stopping
+            // it below a `requires`. See `SymbolTable::add_provides_parent`.
+            kb.symbols.add_provides_parent(scope, parent_scope);
         }
     }
 }

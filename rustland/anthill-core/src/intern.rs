@@ -593,6 +593,26 @@ pub enum ImportOrigin {
     /// measured in `m460d_requires_reaches_spec_members_test`). Invisible until then
     /// only because the stdlib's specs declare no variants.
     Exposure,
+    /// WI-20260825-N2865 — a SPEC's `provides` clause, and nothing else: the CONVERSION
+    /// edge `Eq provides PartialEq` / `Numeric provides Additive` puts in the chain.
+    ///
+    /// A declaration property like [`Self::Declaration`] and visible exactly as widely;
+    /// filed separately because the ENCLOSING chain must not be re-entered below it. It
+    /// is not the ONLY such edge — a wildcard import is the other, and this reuses
+    /// WI-1089's stop rather than inventing one ([`Self::parent_edge_stops_enclosing`]
+    /// asks the two together, because two stopping writers on one edge must not cancel).
+    /// A conversion says "hold a `Numeric[T]`
+    /// and you can obtain an `Additive[T]`" — it says nothing about `Additive`'s
+    /// NEIGHBOURS, and it is crossed TRANSITIVELY, by a consumer that never wrote the
+    /// far sort's name.
+    ///
+    /// `requires` KEEPS THE ENCLOSING CHAIN and is deliberately NOT filed here: WI-1089
+    /// measured that `requires lib.Spec` must reach `lib`'s sibling `Sib`, and
+    /// `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`
+    /// is the row. That clause is written BY the author naming the target, which is the
+    /// difference. Driven: stopping the chain below EVERY non-enclosing edge fails
+    /// exactly that one row out of 5,724.
+    Provision,
 }
 
 /// WI-995 — how much of the import machinery a resolution may read.
@@ -1215,7 +1235,23 @@ impl SymbolTable {
                     // which is the exact failure it exists to catch. Every
                     // variant-bearing sort files one `Exposure` edge, so admitting it
                     // would have made the denominator ~30 on a load with zero imports.
-                    .any(|o| !matches!(o, ImportOrigin::Declaration | ImportOrigin::Exposure))
+                    // WI-20260825-N2865: `Provision` joins them, for the identical
+                    // reason and by the identical argument — a spec's `provides` is a
+                    // declaration property of the address, not a file's import. LEFT OUT
+                    // at first and found by `/code-review`: this `matches!` is a THIRD
+                    // reader of `ImportOrigin` that the compiler cannot flag, so the new
+                    // variant fell through the negation and was counted as an import
+                    // edge. MEASURED — the WI-995 audit's `parent_edges` went 0 -> 11 on
+                    // every corpus group, silently falsifying that file's own
+                    // "the corpus writes no wildcard imports, so this is legitimately 0".
+                    .any(|o| {
+                        !matches!(
+                            o,
+                            ImportOrigin::Declaration
+                                | ImportOrigin::Exposure
+                                | ImportOrigin::Provision
+                        )
+                    })
             })
             .count();
         (alias_entries, import_edges)
@@ -1347,9 +1383,15 @@ impl SymbolTable {
 
     fn origin_visible(&self, origin: ImportOrigin) -> bool {
         match origin {
+            // `Provision` sits with `Declaration` and `Exposure` (WI-20260825-N2865): a
+            // spec's `provides` is written on the DECLARATION, so it is visible to every
+            // asking file. It is a separate variant only so the enclosing-chain stop can
+            // tell a conversion edge from a `requires` one, which is a different question
+            // from this one.
             ImportOrigin::Builtin
             | ImportOrigin::Declaration
             | ImportOrigin::Exposure
+            | ImportOrigin::Provision
             | ImportOrigin::Invocation => true,
             ImportOrigin::File(f) => self.asking_file() == Some(f),
         }
@@ -1451,6 +1493,62 @@ impl SymbolTable {
                 is_enclosing: false,
             },
         );
+    }
+
+    /// WI-20260825-N2865 — [`Self::add_parent`] for a SPEC's `provides` CONVERSION edge.
+    /// One call site (`load::wire_provides_scope_parent`), for the same reason
+    /// [`Self::add_exposure_parent`] has one: the KIND of the edge is what the walk has
+    /// to ask about, and `is_enclosing` alone cannot say it — `requires`, `provides` and
+    /// the exposure link are all `is_enclosing: false`.
+    ///
+    /// The origin rides on the ORIGIN LIST rather than on [`ScopeInclusion`] because a
+    /// link can have two justifications and the inclusion list is a SET: a sort that both
+    /// `requires` and `provides` one spec is ONE edge with two writers, and
+    /// [`Self::parent_edge_is_provision_only`] is what asks whether the conversion is the
+    /// only one.
+    pub fn add_provides_parent(&mut self, scope: ScopeId, parent_scope: ScopeId) {
+        self.record_parent_origin(scope, parent_scope, ImportOrigin::Provision);
+        self.add_parent_raw(
+            scope,
+            ScopeInclusion {
+                parent_scope,
+                is_enclosing: false,
+            },
+        );
+    }
+
+    /// WI-20260825-N2865 — does EVERY writer of this edge stop the enclosing chain?
+    ///
+    /// TWO STOPPING KINDS, ONE PREDICATE, and that is not a tidy-up. Written as
+    /// `parent_edge_is_import_only(..) || parent_edge_is_provision_only(..)` — two
+    /// all-origins tests OR'd — an edge written by BOTH a wildcard import and a
+    /// `provides` satisfies neither, so two writers that each stop the chain ALONE
+    /// cancel each other. Driven, and found by `/code-review`: a `Base` with both
+    /// `provides Additive[T = T]` and `import anthill.prelude.Additive.*` brought back
+    /// the exact two `ambiguous symbol 'Base'` errors this fix removes. An origin list
+    /// is per `(scope, parent)`, so "one inclusion, two writers" is the normal case
+    /// here — `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`
+    /// is the same shape one clause over.
+    ///
+    /// `_ONLY`, on [`Self::parent_edge_is_import_only`]'s argument: a pair that is ALSO
+    /// a `requires` edge (or an enclosing one) keeps what those reach, because WI-1089
+    /// measured that a `requires` must still see the target's siblings. That residual is
+    /// deliberate and pinned — see
+    /// `wi_n2865_provision_edge_scope_test::a_requires_beside_a_provides_still_leaks`.
+    fn parent_edge_stops_enclosing(&self, scope: ScopeId, parent: ScopeId) -> bool {
+        self.import_parent_origin
+            .get(&(scope, parent))
+            .is_some_and(|origins| {
+                !origins.is_empty()
+                    && origins.iter().all(|o| {
+                        matches!(
+                            o,
+                            ImportOrigin::File(_)
+                                | ImportOrigin::Invocation
+                                | ImportOrigin::Provision
+                        )
+                    })
+            })
     }
 
     /// WI-M460D — is §8.6's variant exposure the edge's ONLY justification, and so the
@@ -2002,7 +2100,16 @@ impl SymbolTable {
             // list is per `(scope, parent)`, so a pair that is BOTH the enclosing edge
             // and an imported one answers `is_imported` and must not be stopped. The
             // predicate's doc carries the two programs that proved it.
-            let enclosing_below = if self.parent_edge_is_import_only(scope, parent_scope) {
+            // WI-20260825-N2865 adds the CONVERSION edge to the same stop, on WI-1089's
+            // own sentence read one clause over: `import a.b.C` opens `C` and not the
+            // `a.b` around it, and `Numeric provides Additive` opens `Additive` and not
+            // the `anthill.prelude` around IT. Without the stop, a consumer that merely
+            // `requires` the PROVIDING spec reaches through to `<global>`, and the
+            // providing spec's own NAME goes ambiguous against any same-named global —
+            // measured with `algebra.Ring providing anthill.prelude.Additive`, which
+            // turned a user's top-level `sort Ring` into seven load errors inside
+            // `algebra.anthill`.
+            let enclosing_below = if self.parent_edge_stops_enclosing(scope, parent_scope) {
                 EnclosingLinks::StoppedByImport
             } else {
                 enclosing

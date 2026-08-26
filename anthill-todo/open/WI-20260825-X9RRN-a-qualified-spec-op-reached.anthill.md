@@ -39,3 +39,31 @@ NOT A SILENT DEFECT and the repair is one word (`Numeric.add` -> `Additive.add`)
 
 SUBJECT MOVED, RECORDED: `vec3_ops_test::control_ring_now_loads_and_its_residual_failure_is_the_unbacked_provision` was the row pinning `Ring.add`'s "loads, then dies at eval with 'operation has no body'". Under 1WBZT it is refused at LOAD instead, so that row was rewritten to assert the new verdict and to attribute it HERE rather than to WI-944's unbacked `fact Ring[Float]`.
 
+### 2026-08-25T23:56:22Z — feedback — claude
+
+THE CAUSE IS LOCATED, and it says why this is not a small patch — measured rather than predicted, after WI-20260825-N2865's sibling defect turned out to BE one.
+
+`load::dotted_by_head` is a pure STRING JOIN with no scope walk at all:
+
+    kb.symbols.by_qualified_name.get(&format!("{head_qualified}.{tail}")).copied()
+
+So `Mid.b` asks for the literal key `probe.x92.Mid.b`. When `Mid` reaches `b` only through `provides Base[T = T]`, no such key exists and the path MISSES — there is no rung at which the provision chain could be consulted, which is why no narrowing or widening of an existing predicate reaches it.
+
+REPRODUCED ON PURE USER SORTS, so it is not a property of the prelude:
+
+  sort Base { sort T = ?  operation b(x: T) -> T = x }
+  sort Mid  { sort T = ?  provides Base[T = T] }                    -- declares nothing
+  sort User { operation viaMid(x: T) -> T = Mid.b(x) }
+    -> "type mismatch in Mid.b.apply: expected known operation or arrow-typed variable,
+        got unknown functor"
+
+…with or without a `requires Mid[T]` on `User`. And the CONTROL that pins the axis: the same file with `Base.b` DECLARED on `Base` and reached as `Base.b(x)` loads clean through BOTH a `requires` and a `provides` — so `Sort.member` works; what fails is `Sort.member` where the member is the PROVISION'S.
+
+WHY IT IS NOT INLINE, in one sentence: the fix is a NEW RUNG on the §8.6 ladder, and which rung is the decision this ticket exists to take. Three questions the patch cannot avoid answering, none of them settled anywhere today:
+
+  * Does the fallback follow `provides` ONLY, or `requires` too? Following `requires` is wrong — `requires` means "I need one", not "I have one to offer under my name", and it is exactly the shadow `Polynom.add` already warns about. Following `provides` only is now MECHANICALLY AVAILABLE for the first time: WI-20260825-N2865 added `ImportOrigin::Provision` and `parent_edge_is_provision_only`, so the two edge kinds are finally distinguishable. That is the one thing this ticket got cheaper.
+  * What happens when TWO provision paths reach two same-named members? `dotted_by_head` returns `Option<Symbol>` and has no ambiguity arm; a scope walk has one, and the two callers read the result differently.
+  * `dotted_by_head`'s own doc records that head-qualification ALREADY over-hits (WI-751's field case). A scope-walking fallback widens it again, and my memory of this codebase is that narrowing or widening a shared resolver set serves one reader and breaks another (WI-1090, WI-1095, WI-1098).
+
+SO THE CHEAP HALF IS THE OTHER ONE, and it needs no decision: the MESSAGE. "unknown functor" about `Eq.eq` / `Numeric.add` / `Field.div` is false — the operation exists, is backed, and answers under its declaring address. Whoever takes this should either add the rung or make the diagnostic name the declaring spec ("`Eq` reaches `eq` through `provides PartialEq`; write `PartialEq.eq`"), but not leave a defined name reported as unknown.
+

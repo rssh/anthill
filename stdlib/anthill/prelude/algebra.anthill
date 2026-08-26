@@ -82,26 +82,18 @@ namespace anthill.prelude.algebra
   -- Vec3 (in anthill.geometry) provides VectorSpace[V = Vec3, F = Float]
   -- via per-component implementations.
   sort VectorSpace
-    -- WI-20260825-1WBZT — THE IMPORT IS A WORKAROUND, and it is here rather than in a
-    -- ticket comment because it looks like a no-op: `Ring` is this sort's own SIBLING.
-    -- It stops a bare `Ring` below from going AMBIGUOUS against a user's top-level
-    -- `sort Ring` (`anthill-testcases/ring-polynom/ring.anthill` is one), which it began
-    -- doing the moment `Ring` gained a `provides` of a spec in ANOTHER namespace: a
-    -- `provides` edge is walked like a `requires` one and RE-ENTERS the target's
-    -- enclosing chain, so `VectorSpace -> requires Ring -> provides anthill.prelude.
-    -- Additive -> anthill.prelude -> <global>` puts the user's `Ring` in reach. MEASURED
-    -- as a general defect, not a property of this file: a `Base` providing a
-    -- same-namespace spec is fine, a `Base` providing one across namespaces makes its
-    -- own name ambiguous at every consumer that `requires` it. Filed as
-    -- WI-20260825-N2865; when that lands, this import can go.
-    import anthill.prelude.algebra.{Ring}
     -- The scalar-side categories the laws below name. WRITTEN OUT rather than left to the
     -- `requires Ring[F]` chain, because an import is a CHECKED position and the laws are
     -- not: measured on scaland, loading `algebra.anthill` without `arithmetic.anthill`
     -- makes this line say "unresolved name 'Additive' in scope 'anthill.prelude'", while
-    -- `Ring`'s own `provides Additive[T = T]` eight lines up says NOTHING — an unresolved
-    -- provision target degrades to an interned name. So this import is what turns "the
-    -- categories are in scope here" from an assumption into something the loader states.
+    -- `Ring`'s own `provides Additive[T = T]` says NOTHING — an unresolved provision
+    -- target degrades to an interned name. So this import is what turns "the categories
+    -- are in scope here" from an assumption into something the loader states.
+    --
+    -- A SIBLING `import anthill.prelude.algebra.{Ring}` STOOD HERE TOO and is gone:
+    -- `Ring` gaining a cross-namespace `provides` had made a bare `Ring` ambiguous
+    -- against a user's top-level `sort Ring`, and that was WI-20260825-N2865, fixed in
+    -- the resolver rather than worked around here.
     import anthill.prelude.{Additive, Multiplicative}
 
     sort V = ?

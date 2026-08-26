@@ -147,6 +147,12 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
                 // table, so it is rendered loudly rather than given a plausible
                 // spelling that would read as expected output in the report.
                 ImportOrigin::Exposure => format!("BUG:exposure-origin-in-alias→{target}"),
+                // WI-20260825-N2865 — the `provides` CONVERSION origin has exactly
+                // `Exposure`'s status here and gets exactly its treatment: it is a
+                // PARENT-EDGE origin, `add_provides_parent` is its only writer, and
+                // seeing it in the alias table would mean a leak between two tables.
+                // Loud rather than plausible, for the reason the line above states.
+                ImportOrigin::Provision => format!("BUG:provision-origin-in-alias→{target}"),
             })
             .collect();
         out.push_str(&format!("     `{name}` in `{scope}`: {}\n", w.join(", ")));

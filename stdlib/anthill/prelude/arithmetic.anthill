@@ -61,11 +61,15 @@
 --     WI-20260825-X9RRN. The MEMBER-IMPORT spelling
 --     (`import anthill.prelude.Numeric.{add}`) does resolve, and every corpus site
 --     written that way was untouched by this change.
---   * A `provides` ACROSS NAMESPACES leaks the provided sort's enclosing chain to every
---     consumer that `requires` the providing spec, so the providing spec's own NAME goes
---     ambiguous against a same-named global. `algebra.Ring` providing `anthill.prelude.
---     Additive` is the tree's only such edge; `VectorSpace` carries a one-line
---     sibling-import workaround with the measurement at it. WI-20260825-N2865.
+--   * A `provides` ACROSS NAMESPACES used to leak the provided sort's enclosing chain to
+--     every consumer that `requires` the providing spec, so the providing spec's own NAME
+--     went ambiguous against a same-named global. `algebra.Ring` providing
+--     `anthill.prelude.Additive` is the tree's first such edge and it turned a user's
+--     top-level `sort Ring` into seven load errors in `algebra.anthill`. FIXED under
+--     WI-20260825-N2865, in this same change: the conversion edge is filed as
+--     `ImportOrigin::Provision` and the enclosing chain stops below it, exactly as
+--     WI-1089 stops it below an import. `requires` is deliberately NOT stopped —
+--     `wi_n2865_provision_edge_scope_test` carries the three rows and the reason.
 
 -- Additive: the `+` and `-` category — an additive commutative monoid with inverses.
 --
