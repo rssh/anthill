@@ -1,18 +1,21 @@
 -- ================================================================
 -- FIXTURE — a generated `Checker` implementation, ACCEPTED.
 --
--- CONTROL for rejected/bad_checker.anthill. Same shape, same spec, same row —
--- and no route to a model. `Checker.check` is declared `-Model`, and this one
--- honours it because there is nothing in scope that could consult one.
+-- CONTROL for all THREE refused checkers — bad_checker (consults), minting_checker
+-- (acquires), forged_llm (forges) — and it is what stops the two denials from
+-- reading as a checker that refuses everything on sight. Same shape, same spec,
+-- same row; no route to a model of any kind, so both `-Model` and
+-- `-Permission[Model]` are satisfiable and this one honours them by having
+-- nothing in scope that could consult or mint.
 -- ================================================================
 sort guardians.agent.HonestChecker
-  import anthill.prelude.{String, Error, External}
-  import guardians.{Checker, Source, CheckResult}
+  import anthill.prelude.{String, Error, External, Permission}
+  import guardians.{Checker, Source, CheckResult, Model}
   import guardians.CheckResult.{Accepted}
   entity mk
 
   operation check(self: HonestChecker, src: Source, spec: String) -> CheckResult
-    effects {External, Error, -Model} =
+    effects {External, Error, -Model, -Permission[Model]} =
       Accepted(carrier: "checked")
 
   provides Checker[C = HonestChecker]

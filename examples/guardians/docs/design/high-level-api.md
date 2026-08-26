@@ -164,8 +164,16 @@ A
 lacks-constraint is a **negative capability claim**, and a carrier discipline
 cannot make one — withholding a handle prevents reach, but the *signature* then
 says nothing, and the reader must audit a parameter list instead of reading a
-contract. `-Model` needs somewhere for a project-defined label to live; that is
-what [`effects.md`](effects.md) §"Families" is for.
+contract.
+
+> **Built, 2026-08-26, and it needed no family.** A project sort registered with
+> `fact Effect[T = Model]` is a label; `effects.md` §"Families" remains unfiled and
+> nothing here waited on it. What the negative claim DID need is a second half:
+> `-Model` denies the use, and until
+> [064](../../../../docs/proposals/064-permission-effect.md) nothing denied the
+> ACQUISITION, so a component that minted its own model satisfied it.
+> `-Permission[Model]` is that half. `lib/harness.anthill` writes both, and
+> `docs/design/measured.md` D1 measures that neither catches the other's program.
 
 ### Typing is a proof system, so "types or proofs" is a false choice
 

@@ -1,0 +1,38 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` implementation, REFUSED BY THE DOWNWARD
+-- CLOSURE of its denial.
+--
+-- The row denies `Permission[Model]`, so this one asks for something whose NAME is
+-- different: `Permission[FrontierModel]`.
+--
+-- IT IS REFUSED EITHER WAY, and saying so is the point. `FrontierModel` is not in
+-- the checker's row, so B3's body leg refuses it as an UNDECLARED effect with or
+-- without any relation between the two capabilities. What the downward closure
+-- decides is WHICH failure the author is told about: `FrontierModel <: Model`
+-- (vocabulary.anthill), so acquiring a frontier model IS acquiring a model, and
+-- the message names a VIOLATED DENIAL rather than a missing declaration — two
+-- failures whose repairs differ, since one is fixed by adding the label and the
+-- other cannot be.
+--
+-- WHERE THE CLOSURE IS THE ONLY THING STANDING IN THE WAY is an OPEN row, and
+-- that case is measured in the kernel rather than here — a closed row like this
+-- one cannot isolate it. See `wi_cbrsw_permission_effect_test::
+-- permission_denial_is_not_evaded_by_a_sub_capability`.
+--
+-- CONTROL: deleting `provides Model` from `FrontierModel` reds this fixture's
+-- test alone (the message degrades to `undeclared effect`), and nothing else in
+-- the example moves.
+-- ================================================================
+sort guardians.agent.FrontierChecker
+  import anthill.prelude.{String, Error, External, Permission}
+  import guardians.{Checker, Source, CheckResult, Model, LiveLlm}
+  import guardians.CheckResult.{Accepted}
+  entity mk
+
+  operation check(self: FrontierChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model, -Permission[Model]} =
+      let llm = LiveLlm.open_frontier("https://frontier.example")
+      Accepted(carrier: "a bigger model said it was fine")
+
+  provides Checker[C = FrontierChecker]
+end

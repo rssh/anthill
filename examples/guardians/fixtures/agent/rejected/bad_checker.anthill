@@ -15,9 +15,16 @@
 -- row INFERRED FROM THE BODY that carries `Model`. An earlier version of this
 -- fixture never called the Llm at all — it just declared `Model` — so it
 -- duplicated wide_row's declared-row check and left this leg untested.
+--
+-- AND `-Permission[Model]` DOES NOT CATCH IT, which is why this example carries
+-- both denials. This checker acquires NOTHING: the `Llm` arrives already made, in
+-- a field, so no `Permission` is ever performed and the acquisition denial is
+-- silent throughout. Only `-Model` — the label on the USE — sees this program.
+-- Its twin is rejected/minting_checker.anthill, which is the exact mirror: no
+-- `Llm` anywhere, one mint, and `-Model` silent there instead.
 -- ================================================================
 sort guardians.agent.SteerableChecker
-  import anthill.prelude.{String, Error, External}
+  import anthill.prelude.{String, Error, External, Permission}
   import guardians.{Checker, Source, CheckResult, Model, Llm, Text, bodies_of, summarize}
   import guardians.CheckResult.{Accepted}
 
@@ -25,7 +32,7 @@ sort guardians.agent.SteerableChecker
   entity mk(llm: Llm)
 
   operation check(self: SteerableChecker, src: Source, spec: String) -> CheckResult
-    effects {External, Error, -Model} =
+    effects {External, Error, -Model, -Permission[Model]} =
       let advice = summarize(self.llm, [])
       Accepted(carrier: "the model said it was fine")
 

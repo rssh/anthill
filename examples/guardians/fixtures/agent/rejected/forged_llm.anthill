@@ -1,0 +1,29 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` implementation, REFUSED BY CONTAINMENT.
+--
+-- CONTAINMENT IS PART OF THE DESIGN, NOT A CONVENTION, and this is the program
+-- that says so. If a capability object's constructor could be named from outside
+-- its sort, the `Permission` on the mint would be ADVISORY: a generated checker
+-- would write `fake_llm(fixture: "x")`, skip the gate entirely, and hold a model
+-- without ever acquiring one.
+--
+-- It cannot, because `fake_llm` is `internal` (kernel-language.md §8.6 — the only
+-- hide gate, and WI-977 puts a sibling namespace outside the declaring scope). So
+-- the refusal is a NAME RESOLUTION failure rather than an effect-row one, and
+-- that is the point: this leg holds even for a body carrying no effects at all.
+--
+-- Before proposal 064 these constructors were public, and this exact file loaded.
+-- ================================================================
+sort guardians.agent.ForgingChecker
+  import anthill.prelude.{String, Error, External, Permission}
+  import guardians.{Checker, Source, CheckResult, Model, FakeLlm}
+  import guardians.CheckResult.{Accepted}
+  entity mk
+
+  operation check(self: ForgingChecker, src: Source, spec: String) -> CheckResult
+    effects {External, Error, -Model, -Permission[Model]} =
+      let llm = fake_llm(fixture: "advice")
+      Accepted(carrier: "forged my own oracle")
+
+  provides Checker[C = ForgingChecker]
+end

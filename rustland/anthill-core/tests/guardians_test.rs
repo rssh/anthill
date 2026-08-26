@@ -303,9 +303,11 @@ fn a_modify_target_the_spec_never_granted_is_refused_by_the_row() {
 
 #[test]
 fn honest_checker_is_accepted() {
-    // CONTROL for the next test. Same spec, same declared row including
-    // `-Model`, and no route to a model — so `-Model` is satisfiable and does
-    // not refuse every checker on sight.
+    // CONTROL for the FOUR refused checkers below. Same spec, same declared row
+    // including both denials, and no route to a model of any kind — so `-Model`
+    // and `-Permission[Model]` are jointly satisfiable and do not refuse every
+    // checker on sight. Without this, four refusals are consistent with a checker
+    // that rejects anything mentioning a model.
     let errs = errors_for("checker");
     assert!(errs.is_empty(), "agent/checker.anthill should load: {errs:#?}");
 }
@@ -332,6 +334,161 @@ fn model_consulting_checker_is_refused_by_lacks_model() {
     // and `denied effect` is a needle no other leg can produce — so this row is now
     // pinned against the declared-row test twice over.
     assert_refused("bad_checker", "got denied effect: Model");
+}
+
+#[test]
+fn the_legitimate_acquisition_path_is_accepted() {
+    // THE POSITIVE CONTROL FOR THE THREE REFUSALS BELOW, and the reason it is a
+    // test rather than a remark: without `open_round`, `Permission[Model]` would
+    // appear in this example ONLY inside `fixtures/agent/rejected/`, and a
+    // vocabulary that shows up exclusively in refused programs is
+    // indistinguishable from one that refuses everything.
+    //
+    // `guardians.open_round` mints the pipeline's `Llm` and declares
+    // `{Permission[Model], External, Model, Error}`; `guardians.attempt` is the
+    // same round with the capability already in hand and declares no
+    // `Permission`. That pair IS proposal 064's design — the label on the
+    // acquisition, nothing downstream — so asserting both resolve on a clean load
+    // is asserting the accepted shape, not merely that something loaded.
+    let kb = try_load_with_agent(None, register_pipeline)
+        .unwrap_or_else(|e| panic!("lib must load with the acquisition path: {e:#?}"));
+
+    // Read the DECLARED ROWS rather than asserting the names resolve. A symbol
+    // existing says nothing about where the label sits, and where it sits is the
+    // entire claim: an assertion that `open_round` merely LOADS would keep passing
+    // if someone moved `Permission[Model]` onto `attempt`, or onto `complete`, or
+    // dropped it altogether.
+    //
+    // ACCUMULATED PER NAME, NOT KEYED BY IT. `all_operation_effects` yields one
+    // entry PER FACT, and WI-1049 records that one operation symbol can carry
+    // several — `load_incremental` banks a second `OperationInfo` for a
+    // type-parameter-bearing op. Collecting into a map would silently keep the
+    // last, so a duplicate could decide the negative assertions below and this
+    // test would go quiet exactly where it is meant to be loud.
+    let mut rows: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (op, effects) in anthill_core::kb::op_info::all_operation_effects(&kb) {
+        let labels: Vec<String> = effects
+            .iter()
+            .map(|e| anthill_core::kb::typing::type_display_name_value(&kb, e))
+            .collect();
+        rows.entry(kb.qualified_name_of(op).to_string())
+            .or_default()
+            .extend(labels);
+    }
+    let row = |qn: &str| -> Vec<String> {
+        rows.get(qn)
+            .unwrap_or_else(|| panic!("{qn} has no OperationInfo row; have: {:?}", rows.keys()))
+            .clone()
+    };
+    // EXACT, not `contains("Permission") && contains("Model")`. That substring pair
+    // also matches `Permission[T = FrontierModel]`, so the positive assertion below
+    // would keep passing if the mint were re-gated on a SUB-capability — which is
+    // precisely the escalation `frontier_checker` exists to make visible.
+    let carries = |r: &[String], label: &str| r.iter().any(|e| e == label);
+
+    // THE MINT carries it …
+    assert!(
+        carries(&row("guardians.LiveLlm.open"), "Permission[T = Model]"),
+        "LiveLlm.open must carry exactly `Permission[T = Model]`; got: {:?}",
+        row("guardians.LiveLlm.open")
+    );
+    // … the round that ACQUIRES declares it, since its body reaches the mint …
+    assert!(
+        carries(&row("guardians.open_round"), "Permission[T = Model]"),
+        "open_round must declare exactly `Permission[T = Model]`; got: {:?}",
+        row("guardians.open_round")
+    );
+    // … and NOTHING DOWNSTREAM carries a Permission of ANY capability. This is the
+    // half that would rot silently: `attempt` and `complete` consume a capability
+    // they were handed, so the check already happened and the `Llm` in the
+    // signature is the evidence. Matched by PREFIX here — the claim is "no
+    // permission at all", so a narrower or wider one must fail it too.
+    for qn in [
+        "guardians.attempt",
+        "guardians.LiveLlm.complete",
+        "guardians.FakeLlm.complete",
+        "guardians.summarize",
+    ] {
+        assert!(
+            !row(qn).iter().any(|e| e.starts_with("Permission")),
+            "{qn} consumes a capability it was handed and must carry no Permission; got: {:?}",
+            row(qn)
+        );
+    }
+}
+
+#[test]
+fn minting_checker_is_refused_by_lacks_permission() {
+    // THE EXACT MIRROR of the test above, and the reason `Checker.check` carries
+    // TWO denials rather than one (proposal 064). `bad_checker` holds an `Llm` it
+    // was handed and CONSULTS it; this one holds none — its carrier is bare `mk`,
+    // so an audit of "what was this checker given" comes back empty — and MINTS
+    // one instead.
+    //
+    // NEITHER LABEL SEES THE OTHER'S PROGRAM, which is what makes this a test
+    // rather than a duplicate. Minting is not consulting, so `Model` is never
+    // performed here; consulting acquires nothing, so `Permission[Model]` is never
+    // performed over there. The needle names the label that actually fired.
+    //
+    // WHAT THE DENIAL ADDS IS THE DIAGNOSTIC, not the refusal, and measured.md D1
+    // records the measurement: deleting `-Permission[Model]` from spec, carrier
+    // and fixture leaves this program refused as `undeclared effect`, because a
+    // closed row already means "not incurred". What 064 bought here is that
+    // acquisition is an EFFECT AT ALL — before it, the constructors were public
+    // and construction carried nothing, so minting was unconstrained.
+    assert_refused("minting_checker", "denied effect: Permission[T = Model]");
+}
+
+#[test]
+fn a_forged_capability_constructor_is_refused_by_containment() {
+    // WITHOUT THIS, THE PERMISSION IS ADVISORY, and that is not hypothetical —
+    // it is what these fixtures could do before 064. A generated checker that can
+    // name `fake_llm` skips the gate entirely and holds a model without ever
+    // acquiring one, leaving `-Permission[Model]` true and useless.
+    //
+    // `internal` is what closes it (kernel-language.md §8.6 — the only hide gate;
+    // WI-977 puts a sibling namespace outside the declaring scope), so this
+    // refusal is a NAME RESOLUTION failure rather than an effect-row one. That is
+    // the point: it holds for a body carrying no effects at all, so it is
+    // independent of every row test in this file.
+    assert_refused(
+        "forged_llm",
+        "'fake_llm' is internal to 'guardians.FakeLlm'",
+    );
+}
+
+#[test]
+fn a_sub_capability_mint_is_refused_by_the_downward_closed_denial() {
+    // THE EVASION A NAME-EQUALITY CHECKER WOULD MISS. The row denies
+    // `Permission[Model]`, so this checker asks for something else —
+    // `Permission[FrontierModel]`. The two labels are not equal, and under
+    // equality alone this fixture LOADS.
+    //
+    // IT IS REFUSED EITHER WAY, and this row asserts the DIAGNOSTIC rather than the
+    // verdict. `FrontierModel` is not in the checker's row, so B3's body leg
+    // refuses it as an UNDECLARED effect whether or not the two capabilities are
+    // related. What the downward closure decides is which failure the author is
+    // told about — a violated denial, whose repair is not "add the label".
+    //
+    // CONTROL: deleting `provides Model` from `FrontierModel` reds this row alone,
+    // with the message degrading to `undeclared effect`. The case where the
+    // closure is the only thing standing in the way needs an OPEN row and is
+    // measured in the kernel:
+    // `wi_cbrsw_permission_effect_test::permission_denial_is_not_evaded_by_a_sub_capability`.
+    //
+    // THE MECHANISM IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE — the two run
+    // opposite ways. `fact Contravariant(sort: Permission, param: T)` is the
+    // SUBSUMPTION rule; the closure runs COVARIANTLY in the capability and needed
+    // its own kernel rule (`typing::permission_entails`).
+    //
+    // The needle names `FrontierModel` — the label the BODY performed — because a
+    // message naming only the denied `Model` would pass equally well against a
+    // checker that had refused the wrong program.
+    assert_refused(
+        "frontier_checker",
+        "denied effect: Permission[T = FrontierModel]",
+    );
 }
 
 // ── group: usefulness, which is where the fake earns its place ───
