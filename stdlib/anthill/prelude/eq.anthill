@@ -64,10 +64,19 @@ sort anthill.prelude.Eq
   -- BOTH FAILURES WERE THE SAME DEFECT, and it was not in this file. A spec's
   -- `provides` is a CONVERSION — "hold an `Eq[T]` and you can obtain a `PartialEq[T]`"
   -- — so it belongs in the chain, exactly where `requires` puts its entry, and NOT in
-  -- the table of what has which type. Filed correctly it brings the scope with it
-  -- (`Eq.eq` still resolves to the inherited `PartialEq.eq`, which proposal 004 wanted
-  -- for source compatibility) and it is never offered as a provider, so there is no
-  -- loop left to close. The clauses were never exclusive; one of them was misfiled.
+  -- the table of what has which type. Filed correctly it brings the scope with it and it
+  -- is never offered as a provider, so there is no loop left to close. The clauses were
+  -- never exclusive; one of them was misfiled.
+  --
+  -- `Eq.eq` RESOLVES TO THE INHERITED `PartialEq.eq` IN BOTH SPELLINGS, which is what
+  -- LIBRARY proposal 004 asked for ("keep `Eq.eq` resolving to the inherited
+  -- `PartialEq.eq` … so most call sites are source-compatible", its migration step 1 —
+  -- the tree has two 004s and this is not `docs/proposals/004-tuple-sorts.md`).
+  -- THIS COMMENT USED TO CLAIM IT FLATLY AND WAS HALF TRUE: the chain served the member
+  -- IMPORT (`import anthill.prelude.Eq.{eq}`), while the written-out address
+  -- `Eq.eq(a, b)` was "unknown functor" — that reading is a `by_qualified_name` string
+  -- join, and `anthill.prelude.Eq.eq` is not a key. WI-20260825-X9RRN gave the join a
+  -- rung that follows `provides`; spec §8.6, `load::dotted_by_provision`.
   --
   -- WHAT IT BUYS over `requires`: a carrier writing `provides Eq[X]` thereby provides
   -- `PartialEq[X]` — one `eq`, one equality — instead of writing both rows and being

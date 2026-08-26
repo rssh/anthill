@@ -417,12 +417,18 @@ end
 /// anthill.prelude.Eq.{{eq}}` reaches the inherited `PartialEq.eq` — so the ~43 sites in
 /// the corpus and the examples that write it were not touched by this change.
 ///
-/// THE OTHER SPELLING DOES NOT, and that asymmetry is recorded rather than left to be
-/// discovered: a QUALIFIED `Numeric.add(a, b)` in an operation body is "unknown functor".
-/// It is not new and it is not this ticket's — `Eq.eq(a, b)` and `Field.div(a, b)` have
-/// both been in that state since their declarations moved (WI-1110, WI-20260824-VT8CF) —
-/// but this ticket put two more addresses in the population, so it is pinned here and
-/// filed as WI-20260825-X9RRN.
+/// AND SO DOES THE OTHER SPELLING, SINCE WI-20260825-X9RRN. This half was written as a
+/// REFUSAL — a qualified `Numeric.add(a, b)` in an operation body was "unknown functor" —
+/// with the note that if it ever loaded, that ticket had landed and the row "should become
+/// the positive row it wants to be". It landed: `load::dotted_by_provision` gives the
+/// relative reading a rung that follows `provides`, so both spellings now reach the one
+/// declaration `Additive` owns.
+///
+/// IT IS DRIVEN TO A VALUE ON BOTH SIDES rather than merely loaded, and that is what keeps
+/// it a measurement of THIS ticket. Either spelling resolving is a claim about X9RRN's
+/// rung; both COMPUTING 7 off the same operand list is the claim about the split — that
+/// the declaration `Numeric` reaches by conversion is the one the host arithmetic is
+/// registered at.
 #[test]
 fn the_member_import_still_reaches_the_moved_declaration() {
     let via_import = r#"
@@ -442,17 +448,14 @@ end
     let via_qualified = r#"
 namespace test.wbzt.qualified
   import anthill.prelude.{Int64, Numeric}
-  operation drive(a: Int64, b: Int64) -> Int64 = Numeric.add(a, b)
+  operation drive() -> Int64 = Numeric.add(1, Numeric.mul(Numeric.sub(4, 2), 3))
 end
 "#;
-    let errs = try_load_kb_with(via_qualified)
-        .map(|_| Vec::new())
-        .unwrap_or_else(|e| e);
-    assert!(
-        errs.iter().any(|e| e.contains("Numeric.add") && e.contains("unknown functor")),
-        "RECORDING THE ASYMMETRY (WI-20260825-X9RRN): the qualified call does NOT walk \
-         the chain — if this now loads, that ticket landed and this half should become \
-         the positive row it wants to be; got {errs:?}"
+    assert_eq!(
+        drive(via_qualified, "test.wbzt.qualified.drive"),
+        "Int(7)",
+        "the QUALIFIED spelling must reach the same declaration the import does \
+         (WI-20260825-X9RRN) and compute the same 7"
     );
 }
 
@@ -556,9 +559,8 @@ end
     );
 }
 
-/// THE FIVE ADDRESSES `algebra.VectorSpace`'s LAWS NAME ARE LIVE, and the five they used
-/// to name are not — driven through the GUARDED position, because the position the laws
-/// actually sit in checks nothing.
+/// THE FIVE ADDRESSES `algebra.VectorSpace`'s LAWS NAME ARE LIVE — driven through the
+/// GUARDED position, because the position the laws actually sit in checks nothing.
 ///
 /// THIS ROW EXISTS BECAUSE THE CHANGE SHIPPED WRONG ONCE. `Ring` stopped declaring
 /// `add`/`sub`/`mul`/`zero`/`one`, and `VectorSpace`'s `vec_sub_def`, `vec_scale_identity`,
@@ -569,20 +571,32 @@ end
 /// `/code-review`; the missing guard is WI-20260825-6RRVA.
 ///
 /// SO THE ASSERTION IS MADE SOMEWHERE ELSE. A rule-body GOAL over the same name IS checked
-/// (WI-1034), so each address goes there instead:
+/// (WI-1034), so each address goes there instead.
 ///
-///   `Additive.add` / `.sub` / `Multiplicative.mul`   load
-///   `Additive.zero` / `Multiplicative.one`           "ambiguous dispatch of …" — which is
-///                                                    PROOF the name resolved: five
-///                                                    providers were found and a nullary
-///                                                    call cannot pick one
-///   every `Ring.*` spelling                          "names nothing"
+/// # What the `Ring.*` half means now, and why the control had to be replaced
 ///
-/// The `Ring.*` half is what makes it a measurement rather than a smoke test: without it
-/// the row passes on a tree where BOTH spellings resolve, which is exactly the state
-/// before the split — so it would not have caught the regression it exists for.
+/// This row used to assert that every `Ring.*` spelling "names nothing" — the half that
+/// made it a measurement, since without it the row also passes on the PRE-split tree where
+/// both spellings resolve. WI-20260825-X9RRN made `Ring.add` resolve again, through the
+/// `provides` chain, so that half is no longer true and no longer available as the
+/// control: the repair to `VectorSpace`'s laws is now a matter of naming the DECLARING
+/// spec rather than a correctness fix.
+///
+/// Two things replace it, and between them they hold both tickets:
+///
+///   * `Ring.zero` / `Multiplicative.one` and their `Additive` twins must report the SAME
+///     sentence, naming `anthill.prelude.Additive.zero` / `…Multiplicative.one`. A nullary
+///     spec op cannot select a provider, so the ambiguity spells the symbol the address
+///     landed on — which is how a resolved address is distinguished from a merely-loading
+///     one, and how "resolved to the declaration" is distinguished from "resolved to a
+///     `Ring`-owned copy". On the pre-split tree `Ring.zero` denoted its own symbol and
+///     `Additive` did not exist, so this fails there.
+///   * A SPELLING THAT NAMES NOTHING UNDER EITHER READING — `Ring.nope`, `Additive.nope`
+///     — must still be loud. That is the row's original job: keeping a live address
+///     distinguishable from a typo. Without it, widening the ladder to accept everything
+///     would pass every assertion above.
 #[test]
-fn the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not() {
+fn the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud() {
     // `?r = N(?a, ?a)` for the binary ones, `?r = N()` for the identities — the arity the
     // declaration gives, so an arity complaint cannot be mistaken for a naming one.
     let goal = |name: &str, nullary: bool| {
@@ -607,43 +621,52 @@ end
             .unwrap_or_else(|e| e)
     };
 
-    // The two BINARY category ops the laws name: the address resolves and the goal loads.
-    for name in ["Additive.add", "Additive.sub", "Multiplicative.mul"] {
+    // The BINARY ops the laws name, in both spellings: the address resolves and the goal
+    // loads. `Ring.*` joins this set under WI-20260825-X9RRN.
+    for name in [
+        "Additive.add",
+        "Additive.sub",
+        "Multiplicative.mul",
+        "Ring.add",
+        "Ring.sub",
+        "Ring.mul",
+    ] {
         assert!(
             errs_for(name, false).is_empty(),
-            "`{name}` is what `VectorSpace`'s laws must name — the goal position must \
-             accept it: {:?}",
+            "`{name}` must resolve — `Additive`/`Multiplicative` DECLARE these and `Ring` \
+             reaches them by `provides`; got {:?}",
             errs_for(name, false)
         );
     }
-    // The two IDENTITIES: a nullary call cannot select a provider, and the complaint NAMES
-    // the resolved operation — which is the proof the address is live. Asserting the
-    // sentence rather than "some error" is the point: "names nothing" would also be an
-    // error, and it is the opposite verdict.
-    for name in ["Additive.zero", "Multiplicative.one"] {
+    // The IDENTITIES, in both spellings: a nullary call cannot select a provider, and the
+    // complaint NAMES the resolved operation — which is the evidence that both addresses
+    // landed on the ONE declaration rather than on two.
+    for (name, declared_at) in [
+        ("Additive.zero", "anthill.prelude.Additive.zero"),
+        ("Ring.zero", "anthill.prelude.Additive.zero"),
+        ("Multiplicative.one", "anthill.prelude.Multiplicative.one"),
+        ("Ring.one", "anthill.prelude.Multiplicative.one"),
+    ] {
         let errs = errs_for(name, true);
         assert!(
-            errs.iter().any(|e| e.contains("ambiguous dispatch of")
-                && e.contains(&format!("anthill.prelude.{name}"))),
-            "`{name}` must RESOLVE — the nullary ambiguity names it, which is the \
-             evidence; got {errs:?}"
+            errs.iter()
+                .any(|e| e.contains("ambiguous dispatch of") && e.contains(declared_at)),
+            "`{name}` must denote `{declared_at}` — the nullary ambiguity is what spells \
+             the symbol, and it is the only position that distinguishes a resolved \
+             address from a loading one; got {errs:?}"
         );
     }
-    // …and the five `Ring.*` spellings the laws USED to carry name nothing at all.
-    for (name, nullary) in [
-        ("Ring.add", false),
-        ("Ring.sub", false),
-        ("Ring.mul", false),
-        ("Ring.zero", true),
-        ("Ring.one", true),
-    ] {
-        let errs = errs_for(name, nullary);
+    // …and a spelling that denotes NOTHING under either reading is still loud. Without
+    // this the assertions above are satisfied by a ladder that accepts anything.
+    for head in ["Ring", "Additive", "Multiplicative"] {
+        let name = format!("{head}.nope");
+        let errs = errs_for(&name, false);
         assert!(
             errs.iter()
-                .any(|e| e.contains(name) && e.contains("names nothing")),
-            "`{name}` must name NOTHING — `Ring` reaches its operations by `provides` and \
-             declares none, so a law still spelled this way is a typo the loader cannot \
-             see (WI-20260825-6RRVA); got {errs:?}"
+                .any(|e| e.contains(&name) && e.contains("names nothing")),
+            "`{name}` is declared by no spec and reached by no conversion, so the goal \
+             position must refuse it — this is what keeps a live address distinguishable \
+             from a typo (WI-20260825-6RRVA); got {errs:?}"
         );
     }
 }

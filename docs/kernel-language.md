@@ -3935,18 +3935,48 @@ reflection result sorts. It sits at the **bottom** of the ladder, which is what 
 user name shadow one without conflict: a local declaration or an explicit import is
 found first, so a user's own `add` wins and can never go *ambiguous* against it.
 
-**A member reached through a `provides` chain answers to an IMPORT and not to a QUALIFIED
-CALL**, and the asymmetry is a live gap rather than a rule (WI-20260825-X9RRN). A spec's
-`provides` is a conversion that brings the provided sort's scope with it, so
-`import anthill.prelude.Numeric.{add}` resolves to the inherited `Additive.add` — which is
-what proposal 004 wanted for source compatibility, and what keeps every such import in the
-corpus working. Writing the address out does **not**: `Numeric.add(a, b)` in an operation
-body is *"expected known operation or arrow-typed variable, got unknown functor"*, and in
-a rule-body goal *"names nothing"*. `Eq.eq(a, b)` and `Field.div(a, b)` have answered the
-same since their declarations moved (WI-1109/WI-1110, WI-20260824-VT8CF). The repair is to
-name the **declaring** spec — `Additive.add`, `PartialEq.eq`, `Divisible.div` — and a
-`requires` clause is the one thing that does make the members reachable bare, which is why
-`algebra.VectorSpace` can write them at all.
+**A member reached through a `provides` CONVERSION answers to its head's address**
+(WI-20260825-X9RRN). A spec's `provides` is a conversion — "hold a `Numeric[T]` and you
+can obtain an `Additive[T]`" — so what it converts to is the head's to offer under its own
+name: `Numeric.add(a, b)`, `Eq.eq(a, b)`, `Field.div(a, b)` and `Ring.add(a, b)` all
+resolve to the DECLARING spec's operation (`Additive.add`, `PartialEq.eq`,
+`Divisible.div`, `Additive.add`), and dispatch from there. This is the rung *below* the
+declared-member join, so a head that declares the name itself still answers with its own.
+It is what library proposal 004 asked for — "keep `Eq.eq` resolving to the inherited
+`PartialEq.eq` … so most call sites are source-compatible" — and until X9RRN it held for
+only ONE of the two spellings: `import anthill.prelude.Numeric.{add}` resolved and the
+written-out address was *"unknown functor"*.
+
+**A conversion is a clause about the sort's own parameters**, which is what makes it a
+claim about an abstract thing rather than about a value. `TotalFloat provides
+PartialEq[T = TotalFloat]` binds a concrete carrier, so it brings no names and
+`TotalFloat.neq` is not an address — the member import refuses it too. A hit the citing
+scope may not see is **refused**, reported as the forbidden `internal` access it is, and
+never re-read as a top-level path.
+
+**Exactly one edge kind is followed, and the two it is not are the point.** A `requires`
+is a demand, not an offer, so `Numeric.lt` names nothing even though `Numeric requires
+PartialOrd[T]`. That costs nothing, because what a requirement brings is reachable **bare**
+inside the requiring scope, which is where a requirement's contents belong — measured on a
+name the implicit prelude cannot rescue: with `Mid provides Base[T = T]`, a sort writing
+`requires Mid[T]` calls `Base`'s `zug(x)` bare, and writes `Mid.zug(x)` only because the
+`provides` is there. The enclosing namespace is not followed either: `Numeric.List` names
+nothing, `List` being a *sibling* of `Numeric`. Each hop asks the same qualified-name
+question the head asks, at the provided sort's own path, so a sort answers with what it
+declares and nothing it merely has in view. Two same-named members reached at one level
+are an **ambiguity**, reported with both candidates rather than settled by clause order.
+
+**The address's population is therefore a strict subset of the member import's**, and the
+difference is exactly those two edge kinds: `import anthill.prelude.Numeric.{lt}` and
+`…{List}` both resolve today, because a selective import resolves its name by a full scope
+walk in the base scope. That walk crossing `requires` and the enclosing chain is an
+over-hit of the import's own — the `Sort.{Sibling}` case is WI-751's shape one clause over
+— not a rule about what a conversion conveys.
+
+**A TYPE reference does not read this ladder at all.** `Mid.Inner` in type position is a
+type projection, answered by a separate check against the head's own members, so a nested
+sort reached through a conversion is refused there while `Mid.f()` resolves. Whether a
+value-level conversion should convey a nested sort is open (WI-20260826-XFTC7).
 
 **Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
 `if`, `let`, `\`, member access and the `[…]` / `{…}` / `(…)` literals are *desugared*:

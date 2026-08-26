@@ -1503,9 +1503,12 @@ impl SymbolTable {
     ///
     /// The origin rides on the ORIGIN LIST rather than on [`ScopeInclusion`] because a
     /// link can have two justifications and the inclusion list is a SET: a sort that both
-    /// `requires` and `provides` one spec is ONE edge with two writers, and
-    /// [`Self::parent_edge_is_provision_only`] is what asks whether the conversion is the
-    /// only one.
+    /// `requires` and `provides` one spec is ONE edge with two writers. The two readers of
+    /// that list ask OPPOSITE quantifiers over it, and each says why:
+    /// [`Self::parent_edge_stops_enclosing`] asks `all`, [`Self::provision_parents`] asks
+    /// `any`. (This line used to link `Self::parent_edge_is_provision_only`, which no
+    /// commit ever defined — WI-20260825-N2865's review replaced that first cut with the
+    /// `all`-quantified predicate above and left the reference behind.)
     pub fn add_provides_parent(&mut self, scope: ScopeId, parent_scope: ScopeId) {
         self.record_parent_origin(scope, parent_scope, ImportOrigin::Provision);
         self.add_parent_raw(
@@ -1515,6 +1518,56 @@ impl SymbolTable {
                 is_enclosing: false,
             },
         );
+    }
+
+    /// WI-20260825-X9RRN — the scopes `scope` OFFERS UNDER ITS OWN NAME, because it
+    /// `provides` them. The edges `load::dotted_by_provision` walks, and nothing else:
+    /// not `requires`, not the enclosing chain, not an import.
+    ///
+    /// ANY origin, not EVERY one, and the quantifier is this predicate's whole content.
+    /// [`Self::parent_edge_stops_enclosing`] asks `all` because STOPPING the enclosing
+    /// chain is a restriction every writer of the edge has to license — one writer that
+    /// does not stop it keeps its reach. Offering a member under the head's address is the
+    /// opposite shape: the `provides` clause is what says "this spec answers to that
+    /// name", and a `requires` written beside it withdraws nothing. `sort U { requires
+    /// Spec  provides Spec[T = T] }` is ONE edge with two origins — `add_parent_raw` dedups
+    /// on the whole [`ScopeInclusion`] — so `all` would drop exactly that case, which is
+    /// [`Self::parent_edge_is_import_only`]'s own two-writer note read the other way round.
+    ///
+    /// WHY NOT SIMPLY [`Self::resolve_in_scope`] AT THE HEAD'S SCOPE — the shape the
+    /// SELECTIVE-IMPORT path already uses (`load::process_imports`, strategy 2), which is
+    /// what makes `import anthill.prelude.Numeric.{add}` reach the inherited
+    /// `Additive.add`. Measured on the delivered tree, that walk answers two questions the
+    /// qualified reading must not:
+    ///
+    ///   `import anthill.prelude.Numeric.{List}` -> LOADS  (`List` is a SIBLING of
+    ///                                              `Numeric` in `anthill.prelude`; the
+    ///                                              enclosing chain is walked)
+    ///   `import anthill.prelude.Numeric.{lt}`   -> LOADS  (`lt` is `PartialOrd`'s, reached
+    ///                                              by `Numeric requires PartialOrd[T]`)
+    ///
+    /// Both are over-hits, and `Numeric.List` is the WI-751 shape one clause over. Copying
+    /// the walk would have made `Numeric.List(…)` a qualified call; the origin filter is
+    /// what keeps the rung to the members the head actually offers.
+    ///
+    /// A SET-VALUED ANSWER: the caller compares the hits rather than taking the first, so a
+    /// head reaching two same-named members reports [`ResolveResult::Ambiguous`]. The
+    /// duplicate an edge with two [`ScopeInclusion`] entries would yield (a parent that is
+    /// both the enclosing scope and a provision target) is deduped at the SYMBOL, where the
+    /// answer is.
+    pub fn provision_parents(&self, scope: ScopeId) -> SmallVec<[ScopeId; 2]> {
+        let Some(s) = self.scopes.get(&scope) else {
+            return SmallVec::new();
+        };
+        s.parents
+            .iter()
+            .map(|p| p.parent_scope)
+            .filter(|parent| {
+                self.import_parent_origin
+                    .get(&(scope, *parent))
+                    .is_some_and(|origins| origins.contains(&ImportOrigin::Provision))
+            })
+            .collect()
     }
 
     /// WI-20260825-N2865 — does EVERY writer of this edge stop the enclosing chain?

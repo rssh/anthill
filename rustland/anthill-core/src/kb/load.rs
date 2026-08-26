@@ -16303,6 +16303,14 @@ fn resolve_dotted_in_kb(
     // apply` for the unmarked one). "A path does not name a field" is a property of the
     // resolution, so it belongs where the resolution is decided.
     let not_a_field = |sym: &Symbol| !matches!(kb.kind_of(*sym), Some(SymbolKind::Field));
+    // BOTH GATES AS ONE PREDICATE, for the rung that has to apply them BEFORE counting
+    // (WI-20260825-X9RRN). Rung 1 yields at most one symbol, so it can filter afterwards;
+    // the provision rung yields a SET whose size is the answer, and an unusable candidate
+    // changes that size. Found by `/code-review`: returning the raw set made a program with
+    // exactly one VISIBLE answer report `ambiguous symbol 'Mid.b' … candidates ["lib.L.b",
+    // "lib.R.b"]` with `lib.L.b` internal — the reachable answer withheld, and a name the
+    // citing scope may not see printed in the diagnostic.
+    let admit = |sym: &Symbol| not_a_field(sym) && admits(sym);
     // WI-1075: `..a.b.c` — straight to the root, no head, no scope walk. Ahead of the
     // dotted-only split because `..top` asks the same question `..top.f` does; the
     // split below guards the RELATIVE reading, whose rung needs a head to qualify
@@ -16326,11 +16334,41 @@ fn resolve_dotted_in_kb(
         ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
         ResolveResult::NotFound => None,
     };
-    let Some(hit) = dotted_by_head(kb, head_sym, tail).filter(not_a_field) else {
-        // The relative reading MISSED. WI-1075: loud — re-reading the literal path text
-        // as a top-level qualified name here is the re-rooting the `..` spelling exists
-        // to replace.
-        return ResolveResult::NotFound;
+    let hit = match dotted_by_head(kb, head_sym, tail).filter(not_a_field) {
+        Some(hit) => hit,
+        // WI-20260825-X9RRN — THE PROVISION RUNG, and it is part of the RELATIVE reading
+        // rather than a new one: `Numeric.add` still means "member `add` of the head
+        // `Numeric`", the question is only which members `Numeric` HAS. A spec's
+        // `provides` is a CONVERSION, so the members of what it converts to are its own to
+        // offer — which is the reading `import anthill.prelude.Numeric.{add}` has always
+        // taken, and the asymmetry between the two spellings was the ticket.
+        //
+        // BELOW the declared-member join, never beside it: a head that declares the name
+        // itself answers with its own, unchanged (`wi_x9rrn…::rung_one_still_wins`). So
+        // this rung can only turn a MISS into an answer, which is why no existing
+        // resolution moves.
+        //
+        // A MISS HERE IS STILL LOUD, for WI-1075's reason: what follows a failed relative
+        // reading is nothing, not a re-rooting of the literal path text. THE `return` IS
+        // WHAT MAKES THAT TRUE, and it is not a shortcut — falling out of this arm into the
+        // tail below would hand an unusable provision hit to WI-752's absolute
+        // fall-through. Driven, and found by `/code-review`: with `lib.Base.zug` INTERNAL,
+        // `lib.Mid provides Base`, and an unrelated top-level `namespace Mid { operation
+        // zug }`, `Mid.zug(1)` in a third scope loaded clean and answered 999 — bound to
+        // the foreign namespace's operation. WI-752's fall-through exists for the WI-751
+        // COLLISION, where rung 1's string join lands on a stranger by coincidence; a
+        // conversion hit is deliberate, so a hit the citing scope may not see means the
+        // path is refused, not that some other reading should be tried.
+        //
+        // The `internal` DIAGNOSTIC survives the refusal, because it is asked for
+        // separately: `Loader::resolve_dotted_reported` re-reads with
+        // `DottedVisibility::Any`, where `admit` passes and the hidden symbol comes back to
+        // be reported as the forbidden access it is.
+        None => {
+            return head_sym
+                .map(|h| dotted_by_provision(kb, h, tail, &admit))
+                .unwrap_or(ResolveResult::NotFound);
+        }
     };
     if admits(&hit) {
         return ResolveResult::Found(hit);
@@ -16408,6 +16446,124 @@ fn dotted_by_head(kb: &KnowledgeBase, head_sym: Option<Symbol>, tail: &str) -> O
         .by_qualified_name
         .get(&format!("{head_qualified}.{tail}"))
         .copied()
+}
+
+/// §5.2's sort, and only that: a `provides` clause is written in a SORT body, so no other
+/// kind of head can offer a converted member. Spelled out beside
+/// [`REQUIRES_PARENT_ADMITS`] rather than shared with it — the two hold the same set for
+/// two different reasons, and a gate that borrows a neighbour's NAME instead of its
+/// question is how one of them silently acquires the other's population.
+const PROVISION_HEAD_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
+
+/// WI-20260825-X9RRN — THE PROVISION HALF of the relative reading: the member `head_sym`
+/// offers under its own name because it `provides` the sort that DECLARES it.
+///
+/// `Numeric` declares no `add` since WI-20260825-1WBZT; it reaches one through `provides
+/// Additive[T = T]`. `import anthill.prelude.Numeric.{add}` has always found it — the
+/// selective-import path resolves the short name IN the base scope, and
+/// `wire_provides_scope_parent` makes the provided sort a parent of it — while
+/// `Numeric.add(a, b)` written out was *"unknown functor"*, because [`dotted_by_head`] is
+/// a `by_qualified_name` join and `anthill.prelude.Numeric.add` is not a key. Same
+/// question, two answers; this is the missing rung.
+///
+/// # It is a JOIN PER PROVIDED SORT, not a scope walk
+///
+/// Each hop asks the same `by_qualified_name` question [`dotted_by_head`] asks, at the
+/// provided sort's own qualified name — so a provided sort answers with what IT declares,
+/// and nothing it merely has in view. The alternative — `resolve_in_scope(tail, head's
+/// scope)`, which is literally what the import path does — was measured and rejected:
+/// `import anthill.prelude.Numeric.{List}` and `…{lt}` BOTH load today, reaching a sibling
+/// of `Numeric` through the enclosing chain and a `PartialOrd` member through `requires`.
+/// Copying that walk would have made `Numeric.List` and `Numeric.lt` addresses.
+/// [`crate::intern::SymbolTable::provision_parents`] carries the two programs.
+///
+/// `requires` IS DELIBERATELY NOT FOLLOWED, and the reason is that it is already served
+/// somewhere better: measured, a sort writing `requires Mid[T]` reaches `Mid`'s provided
+/// `Base.zug` BARE (`zug(x)` loads), because the resolver's parent walk crosses both edge
+/// kinds. What `requires` means is "a caller hands me one", not "I have one to offer under
+/// my name", so `Numeric.lt` would be an address for a CONSTRAINT — and a nearby warning
+/// that this is the wrong direction is `Polynom.add`'s shadow (WI-751's note on
+/// [`dotted_by_head`]).
+///
+/// # Which candidates are counted
+///
+/// `admit` is the LADDER's own gate — `not_a_field` and the visibility policy — applied at
+/// COLLECTION rather than to the winner. Rung 1 can filter afterwards because it yields at
+/// most one symbol; here the number of hits IS the verdict, so a candidate the citing scope
+/// may not see would turn one usable answer into a reported ambiguity (found by
+/// `/code-review`, driven: one `internal` route and one public one reported `ambiguous
+/// symbol 'Mid.b' … ["lib.L.b", "lib.R.b"]` and withheld the reachable answer). Under
+/// [`DottedVisibility::Any`] the gate passes everything, which is what lets
+/// `Loader::resolve_dotted_reported` come back for the precise `internal` diagnostic.
+///
+/// # Depth, and what an AMBIGUITY means here
+///
+/// Level-by-level, NEAREST LEVEL FIRST, which is the "nearest declaration wins" a parent
+/// chain gets from `resolve_in_scope`: with `Top provides Mid` and `Mid provides Base` both
+/// declaring `zug`, `Top.zug` is `Mid`'s. Collecting every level instead would call that
+/// ambiguous. (The stdlib has no two-hop chain to exhibit it — `Eq provides PartialEq`,
+/// `Ord provides WeakOrd`, `Numeric provides Additive` and `Field provides Divisible` are
+/// one hop each, and `WeakOrd` reaches `PartialOrd` by `requires` — so the rule is driven
+/// on user sorts.)
+///
+/// Two hits AT ONE LEVEL are genuinely two answers and go back as
+/// [`ResolveResult::Ambiguous`], which the ladder already reports
+/// (`Loader::resolve_dotted_reported`). Such a head is the shape WI-20260825-EBMG8 exists
+/// to refuse at the DECLARATION, so the ambiguity here is a second line of defence, not the
+/// rule.
+///
+/// A DIAMOND IS NOT AN AMBIGUITY, and `visited` is what makes that true rather than a
+/// coincidence: two routes to ONE provided sort probe it once, so `Mid provides A`,
+/// `Mid provides B`, both providing `C`, answers `C`'s single declaration. That is the
+/// shape `algebra.anthill` records as the benign one — the base declares the operation
+/// once and both branches only provide — and reporting it as contested would refuse a
+/// program the library itself is built on. The same set guards a cyclic `provides` (a sort
+/// transitively providing itself), as `typing::sort_provides_reach` does, so the walk
+/// terminates.
+fn dotted_by_provision(
+    kb: &KnowledgeBase,
+    head_sym: Symbol,
+    tail: &str,
+    admit: &dyn Fn(&Symbol) -> bool,
+) -> ResolveResult {
+    let Some(scope) = parent_scope_of(kb, head_sym, PROVISION_HEAD_ADMITS) else {
+        return ResolveResult::NotFound;
+    };
+    let mut visited: std::collections::HashSet<ScopeId> = std::collections::HashSet::new();
+    visited.insert(scope);
+    let mut frontier: Vec<ScopeId> = kb.symbols.provision_parents(scope).into_vec();
+    while !frontier.is_empty() {
+        let mut hits: Vec<Symbol> = Vec::new();
+        let mut next: Vec<ScopeId> = Vec::new();
+        for provided in frontier {
+            if !visited.insert(provided) {
+                continue;
+            }
+            let qualified = kb.qualified_name_of(provided.owner());
+            if let Some(sym) = kb
+                .symbols
+                .by_qualified_name
+                .get(&format!("{qualified}.{tail}"))
+                .copied()
+                .filter(|s| admit(s))
+            {
+                hits.push(sym);
+            }
+            next.extend(kb.symbols.provision_parents(provided));
+        }
+        // Deduped at the SYMBOL: two `ScopeInclusion` entries can name one parent scope
+        // (an edge that is both the enclosing link and a provision), and two provided
+        // sorts can be one sort reached twice. Either way it is ONE answer.
+        hits.sort_by_key(|s| s.index());
+        hits.dedup();
+        match hits.len() {
+            0 => {}
+            1 => return ResolveResult::Found(hits[0]),
+            _ => return ResolveResult::Ambiguous(hits),
+        }
+        frontier = next;
+    }
+    ResolveResult::NotFound
 }
 
 /// The symbol whose OWN fully-qualified name is `path` (WI-751) — the ABSOLUTE reading,

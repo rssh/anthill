@@ -1407,3 +1407,6 @@ mod wi_gmg6n_metadata_slot_drift_test;
 
 #[path = "include/wi_spgbp_scoped_kb_test.rs"]
 mod wi_spgbp_scoped_kb_test;
+
+#[path = "include/wi_x9rrn_provided_member_address_test.rs"]
+mod wi_x9rrn_provided_member_address_test;

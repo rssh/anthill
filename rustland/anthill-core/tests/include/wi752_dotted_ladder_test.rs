@@ -11,7 +11,8 @@
 //! `remap_name` carried the ABSOLUTE rung and no head-qualified one.
 //!
 //! The ladder now lives ONCE, in `resolve_dotted_in_kb`:
-//!   1. head-qualification (SCOPE-RELATIVE), then
+//!   1. head-qualification (SCOPE-RELATIVE) — the head's DECLARED member, then the
+//!      member it offers by `provides` (WI-20260825-X9RRN), then
 //!   2. the absolute qualified name, guarded by `head_owns_path`.
 //!
 //! WI-1075 gave rung 2 its own SPELLING and retired the implicit reading: `a.b.c` is
@@ -94,6 +95,96 @@ end
         Value::Bool(b) => assert!(
             !b,
             "`util.rel` must bind the relation `app.util.rel`, whose extent is {{7}}"
+        ),
+        other => panic!("expected a Bool, got {other:?}"),
+    }
+}
+
+/// THE PROVISION HALF OF RUNG 1, in every position that reads the LADDER
+/// (WI-20260825-X9RRN). Same claim as the headline one spelling over: `Mid` DECLARES
+/// nothing, and `Mid.f` / `Mid.rel` reach `Base`'s through `provides Base[T = T]`.
+///
+/// THIS FILE IS WHERE THE ROW BELONGS, and the file's own header says why: it pins the
+/// ladder's UNIFORMITY, so that "a future rung added to one resolver and forgotten in the
+/// others fails here rather than shipping as the next WI-75x". The rung's SEMANTICS —
+/// which edge kinds it follows, what a second hit means, that rung 1 still wins — are
+/// `wi_x9rrn_provided_member_address_test`'s.
+///
+/// THE TYPE POSITION IS ABSENT FROM THIS ROW, AND THAT IS A FINDING RATHER THAN AN
+/// OMISSION. Written with `Mid.Inner` beside the two below, this row failed: a type
+/// reference does NOT reach the dotted ladder for a `Sort.Member` spelling — it is read as
+/// a TYPE PROJECTION by a separate check with its own member table, which reports "type
+/// 'app2.base.Mid' has no member 'Inner'" while the declared `Base.Inner` loads. So the
+/// same spelling still has two answers, one reader over, which is the shape this file
+/// exists to catch. It is NOT widened here: "what does this dotted NAME denote" and "does
+/// this TYPE have this member" are different questions, and whether a value-level
+/// conversion conveys a nested SORT is a claim the `provides` doc does not make.
+/// `wi_x9rrn_…::the_type_position_reads_a_different_table` pins the asymmetry with its
+/// control.
+///
+/// FAILS IF the provision rung is backed out: both positions report at once, which is the
+/// point — a rung reached by one position only would fail here in ONE of them.
+#[test]
+fn wi752_provided_member_resolves_in_every_position() {
+    const SRC: &str = r#"
+namespace app2.base
+  import anthill.prelude.{Int64, Bool}
+  sort Base
+    sort T = ?
+    sort Inner
+      entity inner(v: Int64)
+    end
+    operation f() -> Int64 = 41
+    -- A FACT-BACKED relation, like the headline row's: an `eq`-only body binds nothing,
+    -- so `rel` would drain empty and `isEmpty` could not tell a bound name from an
+    -- unbound one.
+    sort Q
+      entity q(row: Int64)
+    end
+    fact q(row: 7)
+    rule rel(?x) :- q(row: ?x)
+  end
+  sort Mid
+    sort T = ?
+    provides Base[T = T]
+  end
+end
+
+namespace app2
+  import anthill.prelude.{Int64, Bool}
+  import app2.base.{Mid}
+  -- TERM FUNCTOR position
+  operation callSite() -> Int64 effects Error = Mid.f()
+  -- RULE CITATION position
+  operation citeSite() -> Bool effects Error = Mid.rel.isEmpty
+end
+"#;
+    try_load_kb_with(SRC).unwrap_or_else(|errs| {
+        panic!(
+            "`Mid.f()` and `Mid.rel` are the SAME dotted spelling reached through the \
+             SAME `provides` edge — every position that reads the ladder must resolve it \
+             (WI-20260825-X9RRN); got:\n{}",
+            errs.join("\n")
+        )
+    });
+
+    let mut interp = interp_for(SRC);
+    match interp.call("app2.callSite", &[]).expect("`Mid.f()` must run") {
+        Value::Int(n) => assert_eq!(
+            n, 41,
+            "`Mid.f()` must reach `app2.base.Base.f` through the conversion"
+        ),
+        other => panic!("expected the helper's Int, got {other:?}"),
+    }
+    // The citation reaches a NON-empty relation — proof the name bound `Base.rel` rather
+    // than merely loading.
+    match interp
+        .call("app2.citeSite", &[])
+        .expect("`Mid.rel.isEmpty` must run")
+    {
+        Value::Bool(b) => assert!(
+            !b,
+            "`Mid.rel` must bind the relation `app2.base.Base.rel`, whose extent is {{7}}"
         ),
         other => panic!("expected a Bool, got {other:?}"),
     }

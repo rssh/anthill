@@ -112,7 +112,7 @@ namespace anthill.prelude.algebra
     -- `Ring.zero` / `Ring.one`, on the ground that "the same names are also in scope from
     -- `anthill.prelude.Numeric` and the resolver can't disambiguate without the prefix".
     -- That reason is GONE — the categories declare each short name ONCE, so there is
-    -- nothing left to disambiguate — and worse, those five addresses now name NOTHING:
+    -- nothing left to disambiguate — and at the time those five addresses named NOTHING:
     -- `Ring` reaches its operations by `provides` and declares none of them.
     --
     -- NOTHING CAUGHT IT, which is why this note is long. An equational law's head and RHS
@@ -122,8 +122,16 @@ namespace anthill.prelude.algebra
     -- a rule-body GOAL is two loud errors ("rule-body term `Ring.sub` names nothing")
     -- and in an operation body one ("unknown functor"); only the law position is silent.
     -- Filed as WI-20260825-6RRVA; `wi_1wbzt_syntax_category_test::
-    -- the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not` is the row that
+    -- the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud` is the row that
     -- pins these five through the guarded position instead.
+    --
+    -- `Ring.sub` RESOLVES AGAIN SINCE WI-20260825-X9RRN — to `Additive.sub`, through the
+    -- `provides` above — so the spelling below is now a CHOICE rather than a repair, and
+    -- the reason to keep it is that it names the sort that DECLARES each operation. That
+    -- is the same reason the import on the next line is written out: one address per
+    -- declaration is what the category split bought, and a law is the last place to spend
+    -- it. The row above still measures the difference, because it asserts which SYMBOL
+    -- each address lands on rather than that it loads.
     rule {
       vec_add_comm:        vec_add(?a, ?b) <=> vec_add(?b, ?a)
       vec_add_assoc:       vec_add(vec_add(?a, ?b), ?c) <=> vec_add(?a, vec_add(?b, ?c))

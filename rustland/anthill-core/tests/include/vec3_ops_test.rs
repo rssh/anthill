@@ -649,39 +649,47 @@ end
     }
 }
 
-/// THE TICKET'S CONTROL B, RE-MEASURED TWICE — and it says something different again.
+/// THE TICKET'S CONTROL B, RE-MEASURED THREE TIMES — and this time it ANSWERS.
 ///
 /// WI-942 filed `dbl[T](a: T) -> T requires Ring[T] = Ring.add(a, a)` as the construct
-/// refused where its `VectorSpace` twin passed. It then LOADED, and its CALL failed with
-/// "operation has no body: anthill.prelude.algebra.Ring.add"; the concrete twin
-/// (`dbl(a: Float) = Ring.add(a, a)`, no generics anywhere) failed IDENTICALLY, which is
-/// how the cause was attributed to `fact Ring[Float]` being an unbacked provision rather
-/// than to generic consumption. That is WI-944.
+/// refused where its `VectorSpace` twin passed. Its verdict has moved twice since, and
+/// each move was a different defect being removed underneath it:
 ///
-/// UNDER WI-20260825-1WBZT BOTH ROUTES ARE REFUSED AT LOAD INSTEAD, and the reason is
-/// NOT that `Ring[Float]` gained backing — it did not. `Ring` no longer DECLARES `add`:
-/// the syntax categories own it (`stdlib/anthill/prelude/arithmetic.anthill`) and `Ring`
-/// reaches it by `provides`, so the qualified address `Ring.add` resolves to nothing and
-/// the typer says "expected known operation or arrow-typed variable, got unknown
-/// functor". THAT is a different defect, filed as WI-20260825-X9RRN, and the third row
-/// below is what separates the two readings: `Additive.add(a, a)` over the same `Float`
-/// operands LOADS — so the operation exists, is backed, and is reachable; only the
-/// `Ring.` address is not.
+///   WI-942      loads, and the CALL dies "operation has no body:
+///               anthill.prelude.algebra.Ring.add". The concrete twin
+///               (`dbl(a: Float) = Ring.add(a, a)`, no generics) died IDENTICALLY, which
+///               is how the cause was attributed to the provision and not to generic
+///               consumption. Filed as WI-944.
+///   1WBZT       refused at LOAD — not because `fact Ring[Float]` gained backing but
+///               because `Ring` stopped DECLARING `add`: the syntax categories own it and
+///               `Ring` reaches it by `provides`, so the address named nothing.
+///   X9RRN       LOADS AND ANSWERS 5.0, both routes. `Ring.add` resolves THROUGH the
+///               `provides` chain to `anthill.prelude.Additive.add` — the same operation
+///               `Numeric` reaches — and `Float` backs that one.
 ///
-/// WHAT THIS ROW STILL MEASURES, and why it is not now a test of X9RRN's business:
-///   * THE AGREEMENT WI-942 asked for — generic and concrete behave IDENTICALLY. That
-///     was the ticket's question and it is still answered, one verdict later.
-///   * THAT WI-944 IS NOT DELIVERED. Its acceptance is "`Ring.add(2.5, 2.5)` at Float
-///     either answers 5.0 or is REFUSED AT LOAD naming the unbacked member". It is
-///     refused at load — and the message names no member and no provision, so the
-///     acceptance is met by accident and in the wrong words. When WI-944 or X9RRN lands,
-///     this row is what says which.
+/// SO WI-944 IS DISSOLVED RATHER THAN PATCHED, which is worth stating because its title
+/// is still a reasonable-sounding claim. "Nothing implements Ring's members at Float" was
+/// true of a `Ring` that DECLARED five members none of which Float supplied; the ticket's
+/// own diagnosis names that — "its arithmetic comes from `Numeric`, a DIFFERENT spec".
+/// After the split there is one `add`, so the two-specs premise is gone and there are no
+/// `Ring` members left to be unbacked. Its acceptance ("`Ring.add(2.5, 2.5)` at Float
+/// either answers 5.0 or is REFUSED AT LOAD naming the unbacked member") is met by the
+/// first branch, and its second finding — the message claiming to be unreachable — was
+/// answered separately by WI-1092.
 ///
-/// FAILS IF `Ring` regains its own `add` declaration: the two loads start succeeding and
-/// the first assertion fires. The `Additive` row passes either way BY DESIGN — it is the
-/// control that keeps "unknown functor" from being read as "the operation is missing".
+/// WHAT THIS ROW MEASURES NOW:
+///   * THE AGREEMENT WI-942 asked for — generic and concrete behave IDENTICALLY. That was
+///     the ticket's question, and it is still answered three verdicts later.
+///   * THAT THE ANSWER IS A VALUE. 5.0 rather than "it loads": WI-20260825-6RRVA is open
+///     because a name that denotes nothing can load, so loadability is not evidence that
+///     an address is live. A number computed off `Float`'s own `add` is.
+///
+/// FAILS IF the provision rung is backed out (both loads go back to "unknown functor"),
+/// and fails differently if `Ring` regains its own `add` declaration (the call dies with
+/// no body again, WI-942's verdict). The `Additive` row passes either way BY DESIGN — it
+/// is what keeps a failure here from being read as "Float cannot add".
 #[test]
-fn control_ring_now_loads_and_its_residual_failure_is_the_unbacked_provision() {
+fn control_ring_add_loads_and_answers_through_the_provision_chain() {
     let generic = r#"
 namespace test.wi942.ring.generic
   import anthill.prelude.algebra.{Ring}
@@ -699,23 +707,35 @@ namespace test.wi942.ring.concrete
   end
 end
 "#;
-    // THE AGREEMENT, now at LOAD: both routes are refused, and by the same sentence.
-    for (label, src) in [("generic", generic), ("concrete", concrete)] {
-        let errs = crate::common::try_load_kb_with(src)
-            .map(|_| Vec::new())
-            .unwrap_or_else(|e| e);
-        assert!(
-            errs.iter().any(|e| e.contains("Ring.add")
-                && e.contains("unknown functor")),
-            "{label}: `Ring.add` is reached only by `provides` since \
-             WI-20260825-1WBZT, so the qualified address names nothing and the load must \
-             say so — see WI-20260825-X9RRN; got: {errs:?}"
-        );
+    // THE AGREEMENT: both routes load, and both COMPUTE the same number.
+    for (label, src, entry) in [
+        ("generic", generic, "test.wi942.ring.generic.GR.dbl"),
+        ("concrete", concrete, "test.wi942.ring.concrete.CR.dbl"),
+    ] {
+        crate::common::try_load_kb_with(src)
+            .map(|_| ())
+            .unwrap_or_else(|errs| {
+                panic!(
+                    "{label}: `Ring.add` reaches `Additive.add` through `provides` \
+                     (WI-20260825-X9RRN), so this must load; got:\n{}",
+                    errs.join("\n")
+                )
+            });
+        let mut interp = crate::common::interp_for(src);
+        match interp.call(entry, &[Value::Float(2.5)]) {
+            Ok(Value::Float(f)) => assert_eq!(
+                f, 5.0,
+                "{label}: `Ring.add(2.5, 2.5)` must answer 5.0 off `Float`'s own \
+                 arithmetic — WI-944's acceptance, met by the first of its two branches"
+            ),
+            other => panic!(
+                "{label}: `Ring.add` must dispatch to Float's `add`; got {other:?}"
+            ),
+        }
     }
 
-    // THE SEPARATOR: the operation itself is fine. Same operands, the address that
-    // DECLARES `add`, and it loads — so "unknown functor" is about the `Ring.` prefix
-    // and not about `add` being missing or `Float` being unable to add.
+    // THE SEPARATOR, kept: the declaring address over the same operands. Without it a
+    // failure above reads as "Float cannot add" rather than as the `Ring.` prefix.
     let via_category = r#"
 namespace test.wi942.ring.category
   import anthill.prelude.{Float, Additive}
@@ -729,7 +749,7 @@ end
         .unwrap_or_else(|errs| {
             panic!(
                 "`Additive.add` over Float operands must LOAD — it is the declaring \
-                 address, and without this row the two refusals above read as \"Float \
+                 address, and without this row a failure above reads as \"Float \
                  cannot add\"; got:\n{}",
                 errs.join("\n")
             )

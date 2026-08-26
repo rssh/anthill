@@ -62,3 +62,15 @@ DO NOT SHIP THE CHECK ON THIS WALK. A refusal built on a descent that silently s
 
 TWO THINGS THE BODY GOT RIGHT AND ONE IT DID NOT. The head/RHS asymmetry is real and both are silent (driven, unchanged). The "census first" instinct was right, and the census came back clean rather than large. But the body says the check "needs its own census rather than a one-line copy" as though the census were the obstacle — it is not; the descent rule is.
 
+### 2026-08-26T05:46:43Z — feedback — user
+
+TWO CORRECTIONS TO THIS TICKET'S BODY, both from delivering WI-20260825-X9RRN, and the second changes what the census would find.
+
+1. THE TEST IT NAMES HAS BEEN RENAMED. `wi_1wbzt_syntax_category_test::the_scalar_side_law_addresses_are_live_and_the_ring_ones_are_not` is now `…::the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud`.
+
+2. THE `Ring.*` HALF OF ITS EVIDENCE IS NO LONGER TRUE, and it was the half this ticket quoted: "every `Ring.*` one is refused as 'names nothing'". Since X9RRN the relative reading has a rung that follows `provides`, so `Ring.add` / `.sub` / `.mul` resolve — to `Additive.add` / `.sub` / `Multiplicative.mul`, the ONE declaration — and `Ring.zero` / `Ring.one` reach "ambiguous dispatch of `anthill.prelude.Additive.zero`" exactly as their `Additive` spellings do.
+
+WHAT THAT COSTS THIS TICKET IS NOTHING, AND WHAT IT COSTS THE CENSUS IS REAL. The gap here is unchanged: an equational law's head and RHS are unchecked positions, `rule r: f(?a) <=> Bogus.nope(?a)` still loads clean, and the five addresses `VectorSpace`'s laws carried after 1WBZT still went unreported for as long as they were wrong. But the CENSUS this ticket asks for — "how many law heads / RHS terms across the tree name something unresolvable today" — must now be run against the POST-X9RRN resolver, because a name reached by conversion is no longer unresolvable. Running it against the old reading would count the whole `Ring.*` family as dead and report a number that is too large.
+
+The renamed row still stands as the proxy this ticket wants replaced, and it is a stronger one than before: it asserts which SYMBOL each address lands on (via the nullary "ambiguous dispatch of …", which spells the target) rather than that the goal loads, and it keeps a `Ring.nope` / `Additive.nope` row that must stay loud — so the proxy cannot be satisfied by a ladder that accepts everything.
+

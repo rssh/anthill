@@ -47,20 +47,29 @@
 -- `Eq`/`PartialEq` (WI-1109/WI-1110): `requires` + `provides` fails 1867 of 2849 tests
 -- with "construction is cyclic", `provides` alone under the wrong filing fails 32 with
 -- "unresolved import". Filed as a CONVERSION in the chain it is correct and brings the
--- SCOPE with it, which is why `algebra.VectorSpace` — which `requires Ring[F]` — still
--- writes `Ring.sub(Ring.zero, Ring.one)` in its laws and loads. What it buys over
--- `requires`: a carrier writes ONE row (`fact Numeric[T = C]`) instead of one per
--- category and cannot state them inconsistently.
+-- SCOPE with it. What it buys over `requires`: a carrier writes ONE row (`fact
+-- Numeric[T = C]`) instead of one per category and cannot state them inconsistently.
+--
+-- THIS PARAGRAPH ONCE OFFERED A PROOF THAT WAS NOT ONE, removed rather than quietly
+-- edited: "which is why `algebra.VectorSpace` — which `requires Ring[F]` — still writes
+-- `Ring.sub(Ring.zero, Ring.one)` in its laws and loads". It DID load, and that showed
+-- nothing — an equational law's head and RHS are UNCHECKED positions, so `Bogus.nope`
+-- loads there byte-identically (WI-20260825-6RRVA). Re-driven in a position that IS
+-- checked, a rule-body goal, those five `Ring.*` addresses named nothing at all, and
+-- `VectorSpace`'s laws were repaired to name the declaring specs. Since
+-- WI-20260825-X9RRN the qualified reading follows `provides`, so `Ring.sub` resolves
+-- again — but to `Additive.sub`, the ONE declaration, which is what the split was for.
 --
 -- TWO THINGS THE CHAIN DOES NOT CARRY, both measured and both pre-existing rather than
 -- introduced here, recorded so neither is rediscovered as a regression of this ticket:
 --   * A QUALIFIED CALL from a scope that merely IMPORTS the bundle — `Numeric.add(a, b)`
---     in an operation body — is "unknown functor". `Eq.eq(a, b)` and `Field.div(a, b)`
---     have answered the same since their own declarations moved (WI-1110,
---     WI-20260824-VT8CF); this ticket adds four addresses to that population.
---     WI-20260825-X9RRN. The MEMBER-IMPORT spelling
---     (`import anthill.prelude.Numeric.{add}`) does resolve, and every corpus site
---     written that way was untouched by this change.
+--     in an operation body — used to be "unknown functor", as `Eq.eq(a, b)` and
+--     `Field.div(a, b)` had been since their own declarations moved (WI-1110,
+--     WI-20260824-VT8CF); this ticket added four addresses to that population. FIXED
+--     under WI-20260825-X9RRN, which gave the relative reading a rung that follows
+--     `provides`, so both spellings reach the one declaration and `Numeric.add(1, 2)`
+--     answers 3. The MEMBER-IMPORT spelling always did resolve, and every corpus site
+--     written that way was untouched by either change.
 --   * A `provides` ACROSS NAMESPACES used to leak the provided sort's enclosing chain to
 --     every consumer that `requires` the providing spec, so the providing spec's own NAME
 --     went ambiguous against a same-named global. `algebra.Ring` providing
