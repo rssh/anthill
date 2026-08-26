@@ -6364,7 +6364,14 @@ fn check_bare_ref(
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     if kb.is_constructor_symbol(sym) {
-        return check_constructor_iter(kb, env, flow, sym, &[], &[], &[], &[], span, None, occ);
+        // WI-20260826-JSFHG: the caller's `expected` is THREADED, where this passed a hard
+        // `None`. A 0-ary constructor reached bare took no checking direction at all, so
+        // `takeRed(red)` classified at the parent while `takeRed(red())` — the same value,
+        // one pair of parentheses apart — classified at the variant. The applied spelling
+        // has always been given the hint; this is the bare one catching up, not a new
+        // channel.
+        let expected = expected.cloned();
+        return check_constructor_iter(kb, env, flow, sym, &[], &[], &[], &[], span, expected, occ);
     }
     // WI-275: a bare operation reference used where a function type is expected
     // denotes the operation as a first-class function value (eta-expansion) —
@@ -9086,6 +9093,7 @@ fn one_arg_hint(
     hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
+        .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
 }
 
 /// WI-275: the top-down hints for every argument of a call, positional then named.
@@ -9251,6 +9259,93 @@ fn type_slot_arg_hint(
         Some(pt.clone())
     } else {
         None
+    }
+}
+
+/// WI-20260826-JSFHG: the hint a slot declared with a VARIANT type — `Colour.red`,
+/// `Option.some[T = Int64]` — pushes down to a CONSTRUCTOR-application argument, so the
+/// application is classified at the constructor §8.2 says it belongs to rather than at
+/// the parent sort. The `expected → argument` direction of the same decision
+/// [`check_constructor_iter`] makes from its own `expected`, and it shares that decision's
+/// ONE predicate ([`type_head_names_an_entity`]) so the two cannot drift.
+///
+/// THE FOURTH HINT KIND, and confined the way its three siblings are: gated on the slot
+/// naming an entity AND on the argument being a constructor application
+/// ([`arg_is_constructor_application`]) — the only argument shape whose classification
+/// this changes. Every other argument keeps exactly the `hof_arg_hint` /
+/// `nested_call_arg_hint` / `type_slot_arg_hint` it has today.
+///
+/// ITS POPULATION ON EXISTING CODE IS EMPTY, which is the soundness argument and is
+/// measurable rather than asserted: before this ticket a slot declared with a variant type
+/// was UNSATISFIABLE — every constructor application typed at the parent, so the program
+/// did not load — so no loading program has such a slot for the hint to reach. What it can
+/// do is turn a refusal into an acceptance, never the reverse.
+fn variant_slot_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<&Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these two argument
+    // shapes can change reading here.
+    // The TUPLE test runs FIRST — see [`arg_is_tuple_literal`] for why the constructor test
+    // would otherwise swallow it, and for why list/set literals are excluded.
+    if arg_is_tuple_literal(kb, arg) {
+        return type_mentions_an_entity(kb, pt).then(|| pt.clone());
+    }
+    if arg_is_constructor_application(kb, arg) {
+        return type_head_names_an_entity(kb, pt).then(|| pt.clone());
+    }
+    None
+}
+
+/// WI-20260826-JSFHG: is this argument a CONSTRUCTOR APPLICATION — the two surface forms
+/// [`check_constructor_iter`] itself handles? The explicit `Expr::Constructor` (a field-
+/// named build, `red(v: 1)`) and an `Expr::Apply` whose functor is a registered
+/// constructor (the implicit form `check_apply_iter` routes there), and a BARE 0-ary
+/// reference, which [`check_bare_ref`] routes there with no arguments at all.
+///
+/// EACH ARM BORROWS ITS OWN DESTINATION'S PREDICATE rather than picking one for all three,
+/// because the two destinations do not ask the same question and this gate must agree with
+/// whichever one the argument actually reaches: the applied forms are keyed on
+/// [`KnowledgeBase::entity_field_types`], which is what `check_constructor_iter` reads to
+/// decide it has a constructor, and the bare form on
+/// [`KnowledgeBase::is_constructor_symbol`], which is what `check_bare_ref` reads. They
+/// differ exactly where it matters — a FIELDLESS `entity red` has no field-types entry, so
+/// the field-types predicate answers `false` for §8.2's own worked example. Measured: with
+/// one predicate at all three arms, `takeRed(red)` on a fieldless enum was still refused.
+///
+/// ALL THREE BARE SPELLINGS, and `VarRef` is the one that actually arrives — measured, a
+/// bare `red` in an argument loads as `Expr::VarRef`, so a `Ref | Ident` arm alone left the
+/// gate answering `false` on the very shape it was added for. [`arg_names_sort`] lists the
+/// same three for the same reason; a bare name's Expr variant is not decided by whether it
+/// turns out to name a constructor.
+fn arg_is_constructor_application(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    match &arg.kind {
+        NodeKind::Expr {
+            expr: Expr::Constructor { .. },
+            ..
+        } => true,
+        NodeKind::Expr {
+            expr: Expr::Apply { functor, .. },
+            ..
+        } => kb.entity_field_types(*functor).is_some(),
+        // A BARE 0-ARY REFERENCE (`takeRed(red)`), which [`check_bare_ref`] routes to
+        // `check_constructor_iter` with no arguments — so it IS an application here even
+        // though nothing is applied at the surface. Found by /code-review, and it is §8.2's
+        // OWN worked example (`sort Color { entity red; entity green; entity blue }`): the
+        // field-carrying spellings were the only ones the first cut reached, which made
+        // the fieldless enum — the shape the spec illustrates the feature with — the one
+        // shape still unable to inhabit its own variant type.
+        //
+        // A LOCAL BINDING OF THE SAME NAME COSTS NOTHING: `check_bare_ref` resolves
+        // `env.lookup_var` FIRST and returns the variable's type without reading
+        // `expected` at all, so a hint pushed at a shadowed name is inert.
+        NodeKind::Expr {
+            expr: Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym },
+            ..
+        } => kb.is_constructor_symbol(*sym),
+        _ => false,
     }
 }
 
@@ -10613,10 +10708,30 @@ fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| arg_names_sort(kb, a));
+            // WI-20260826-JSFHG: a CONSTRUCTOR argument needs the callee's declared param
+            // type as its hint ([`variant_slot_arg_hint`]), so the param lookup must fire
+            // for it too. `has_call_arg` sees only the `Expr::Apply` spelling; the
+            // field-named build `takeRed(red(v: 1))` is an `Expr::Constructor` and matched
+            // NONE of the three gates, so its slot type was never looked up and the hint
+            // was asked with `None`. The exact peer of `has_ctor_field` on the Constructor
+            // arm, and of what WI-206/707 added here for a sort-naming argument.
+            //
+            // WHAT ELSE THIS UNGATES IS NOTHING, and the argument is worth stating because
+            // widening a shared gate normally reaches every reader behind it: the calls
+            // newly looking `op_info` up are exactly those with a constructor argument and
+            // NO hof / call / sort-naming one, and each of the three older hints requires
+            // the argument shape whose absence defines that case — so on such a call they
+            // still answer `None` with a real `pt` in hand. Only `variant_slot_arg_hint`
+            // can fire here that could not before. (`inst` likewise: `known` is empty
+            // whenever `has_hof_arg` is false, and it is read only for a hof-shaped arg.)
+            let has_ctor_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| arg_is_constructor_application(kb, a));
             // WI-821: keep the WHOLE record — `known_arg_types_and_staged` reads
             // `type_params` besides `params`, and re-looking the record up there
             // would clone every field a second time per hof-bearing call.
-            let op_info = if has_hof_arg || has_call_arg || has_sort_arg {
+            let op_info = if has_hof_arg || has_call_arg || has_sort_arg || has_ctor_arg {
                 lookup_operation_info_full(kb, functor)
             } else {
                 None
@@ -10817,17 +10932,38 @@ fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| arg_names_sort(kb, a));
+            // WI-20260826-JSFHG: a CONSTRUCTOR field value needs the declared field type
+            // looked up too — `has_call_field` sees only the `Expr::Apply` spelling, so a
+            // field-named build (`hold(v: red(v: 1))`) took no hint at all without this.
+            // Same containment argument as `has_ctor_arg` on the Apply arm: the builds
+            // newly looking `field_types` up have no call / tuple / sort-naming field, and
+            // each older hint here is gated on exactly one of those shapes.
+            let has_ctor_field = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| arg_is_constructor_application(kb, a));
             let field_types: Option<Vec<(Symbol, Value)>> =
-                if has_call_field || has_tuple_field || has_sort_field {
+                if has_call_field || has_tuple_field || has_sort_field || has_ctor_field {
                     kb.entity_field_types(name).map(|ft| ft.to_vec())
                 } else {
                     None
                 };
+            // WI-20260826-JSFHG: when THIS build is itself a tuple literal, its components'
+            // declared types live in the expected TUPLE, not in `field_types` (the
+            // `TupleLiteral` entity declares none). See [`tuple_component_expected`].
+            let self_is_tuple_lit =
+                kb.qualified_name_of(name) == "anthill.reflect.TupleLiteral";
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
                     let field = field_types.as_ref().and_then(|fs| fs.get(i)).cloned();
+                    if self_is_tuple_lit {
+                        let label = crate::intern::positional_label(i);
+                        if let Some(h) = tuple_component_expected(kb, &expected, &label) {
+                            return Some(h);
+                        }
+                    }
                     if is_tuple_lit(kb, arg) {
                         if let Some((fs, _)) = &field {
                             if let Some(h) =
@@ -10842,11 +10978,20 @@ fn visit_type(
                     // operation param — the two slots read a sort identically.
                     nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                         .or_else(|| type_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
+                        .or_else(|| {
+                            variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
+                        })
                 })
                 .collect();
             let named_hints: Vec<Option<Value>> = named_args
                 .iter()
                 .map(|(fname, arg)| {
+                    if self_is_tuple_lit {
+                        let label = kb.local_name_of(*fname).to_string();
+                        if let Some(h) = tuple_component_expected(kb, &expected, &label) {
+                            return Some(h);
+                        }
+                    }
                     if is_tuple_lit(kb, arg) {
                         if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, &expected)
                         {
@@ -10860,6 +11005,7 @@ fn visit_type(
                     // WI-707: as above — a `Type`-declared field accepts a sort.
                     nested_call_arg_hint(kb, arg, ft.as_ref())
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
                 })
                 .collect();
             work.push(TypeWorkOp::Build(TypeBuildFrame::Constructor {
@@ -11965,6 +12111,66 @@ fn build_type(
                 }
             } else {
                 None
+            };
+            // WI-20260826-JSFHG — THE PARENT-SORT RUNG, for an ENTITY-typed receiver.
+            //
+            // A `Colour.red` value IS a `Colour` (§8.2), so a member declared on `Colour`
+            // is reachable through it — but the three rungs above search the receiver's own
+            // sort symbol, which for a variant type is the CONSTRUCTOR, and a constructor
+            // declares no operations. So `r.shout()` on `r: Colour.red` reported "no such
+            // member (dot dispatch)" while the named spelling `shout(r)` resolved and the
+            // widening `takeAny(r)` was accepted — one value, two answers, which is the
+            // position-dependence WI-752 exists to abolish. Found by /code-review: the
+            // mechanism predates this ticket, but making variant-typed values REACHABLE is
+            // what put values in front of it.
+            //
+            // PURELY ADDITIVE: it is consulted only where every rung above answered `None`,
+            // so no dot that resolves today can resolve differently.
+            //
+            // EXCEPT AGAINST THE RECEIVER'S OWN FIELD, which it must not steal. Where
+            // `op_sym` is `None` the frame falls through to field access, and an entity's
+            // own field is a MORE specific answer than a same-named operation on its
+            // parent; taking the parent's would make `r.v` mean something different on
+            // `Colour.red` than the field it names. So the rung stands down when the member
+            // names a field of the receiver entity, and the fall-through keeps it.
+            let op_sym = match (op_sym, recv_sort.and_then(|s| kb.strict_parent_sort(s))) {
+                (None, Some(parent)) => {
+                    let names_own_field = recv_sort
+                        .and_then(|s| kb.entity_field_types(s))
+                        .is_some_and(|fs| {
+                            fs.iter()
+                                .any(|(f, _)| short_name_of(kb.local_name_of(*f)) == short)
+                        });
+                    if names_own_field {
+                        None
+                    } else {
+                        let parent_term = kb.alloc(Term::Ref(parent));
+                        let mut found =
+                            super::load::find_operation_in_scope(kb, parent_term, &short);
+                        // The SAME dispatch decision rung 1 makes, asked at the parent, so
+                        // a member that backs a spec the parent provides is routed
+                        // identically whether it is reached through `Colour` or through
+                        // `Colour.red`.
+                        if let Some(own_member) = found {
+                            match dot_member_dispatch_decision(
+                                kb,
+                                parent,
+                                own_member,
+                                &short,
+                                dot_span,
+                            ) {
+                                Ok(DotMember::Take) => {}
+                                Ok(DotMember::DispatchByValue(spec_op)) => found = Some(spec_op),
+                                Err(e) => {
+                                    results.push(Err(e));
+                                    return;
+                                }
+                            }
+                        }
+                        found.or_else(|| find_spec_op_for_provided_sort(kb, parent, &short))
+                    }
+                }
+                (other, _) => other,
             };
             if let Some(op_sym) = op_sym {
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> =
@@ -38813,6 +39019,10 @@ fn check_constructor_iter(
     // declaration was refused `expected Crate[T = String], got Crate[T = Int64]`.
     let parent_sort = kb.sort_of_constructor(ctor_sym);
     let parent_type = kb.make_sort_ref(parent_sort.unwrap_or(ctor_sym));
+    // WI-20260826-JSFHG — read BEFORE `expected` is moved into the seed below.
+    let expected_names_an_entity = expected
+        .as_ref()
+        .is_some_and(|exp| type_head_names_an_entity(kb, exp));
 
     let field_types = match kb.entity_field_types(ctor_sym) {
         Some(ft) => ft.to_vec(),
@@ -38967,6 +39177,22 @@ fn check_constructor_iter(
     // contradicting hint does NOT overwrite a field-pinned param: that param already
     // holds a concrete type, so unifying it against the hint just fails and is ignored,
     // leaving the field type in the build (→ use-site rejection of the contradiction).
+    // WI-20260826-JSFHG — WHICH SORT THIS APPLICATION IS CLASSIFIED AT (§8.2). Both
+    // readings satisfy "a term classified `C₁` is also of sort `S`"; the CHECKING
+    // DIRECTION picks. An expected type naming a constructor gets the constructor, so a
+    // `Colour.red` parameter / return / field is satisfiable at all; everything else —
+    // including the two arms of an `if` joining at a declared `-> Colour` — keeps the
+    // parent, which is what lets sibling constructors join.
+    //
+    // THE EXPECTATION IS NOT ASSUMED: this names OUR OWN `ctor_sym`, never the head the
+    // hint carried, so `takeRed(blue(v: 1))` classifies at `blue` and is refused — and
+    // the diagnostic now names both variants instead of the parent of a value the
+    // compiler knew exactly.
+    let classify_sym = if expected_names_an_entity {
+        ctor_sym
+    } else {
+        parent_sort.unwrap_or(ctor_sym)
+    };
     if let Some(exp) = expected {
         unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
     }
@@ -38974,7 +39200,7 @@ fn check_constructor_iter(
     // WI-578 — build the parameterized result type via the shared finish tail, so this
     // occurrence-typer and the value-typer ([`constructor_value_type`]) produce the SAME
     // type from one source (no drift). The field-unified `subst` pinned the params above.
-    let ty = finish_constructor_type(kb, parent_sort, parent_type, &subst);
+    let ty = finish_constructor_type(kb, classify_sym, parent_sort, &subst);
     Ok(TypeResult {
         ty,
         env: env.clone(),
@@ -52803,6 +53029,131 @@ fn reconstruct_sort_params(
     param_bindings
 }
 
+/// WI-20260826-JSFHG — does this expected type's HEAD name a constructor (an entity),
+/// rather than a sort? The one question [`check_constructor_iter`] asks of its checking
+/// direction before deciding which symbol to classify the application at.
+///
+/// Reads the head form-agnostically ([`type_head`]) so a bare `Colour.red` and a
+/// parameterized `Option.some[T = Int64]` answer alike, and asks
+/// [`KnowledgeBase::strict_parent_sort`] — the STRICT one, so an eponymous entity
+/// (`sort Box { entity Box(..) }`), whose classification is already its own symbol, is
+/// not an entity for this purpose and takes the unchanged path.
+fn type_head_names_an_entity<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    let head = match type_head(kb, ty) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
+        _ => return false,
+    };
+    kb.strict_parent_sort(head).is_some()
+}
+
+/// WI-20260826-JSFHG — does a constructor name appear ANYWHERE in this type, at the head or
+/// nested inside a binding (`List[T = Colour.red]`)?
+///
+/// THE STRUCTURAL SIBLING of [`type_head_names_an_entity`], and the two have genuinely
+/// different owners in the same way [`type_head_is_callable`] and
+/// [`type_contains_callable`] do. The head question is the CLASSIFICATION's: what a
+/// constructor application is classified at is decided by the head of the type asked for,
+/// and nothing deeper. This one is the AGGREGATE-LITERAL hint's: `[red(v: 1)]` in a
+/// `List[T = Colour.red]` slot carries its variant one level down, so a head test would
+/// withhold the hint from exactly the shape it exists for.
+///
+/// Conservative on a carrier it cannot walk — a `Value::Node` (an arrow, a denoted) answers
+/// by its head alone. Withholding a hint there costs nothing: a hint is an inference aid,
+/// and a slot the walk cannot read is not a variant slot.
+fn type_mentions_an_entity(kb: &KnowledgeBase, v: &Value) -> bool {
+    if type_head_names_an_entity(kb, v) {
+        return true;
+    }
+    match v {
+        Value::Term { id, .. } => term_mentions_an_entity(kb, *id),
+        _ => false,
+    }
+}
+
+/// [`type_mentions_an_entity`] over a hash-consed type term — this node's head, else any
+/// argument's. The same spine [`term_contains_callable`] walks, for the same reason.
+fn term_mentions_an_entity(kb: &KnowledgeBase, tid: TermId) -> bool {
+    if type_head_names_an_entity(kb, &TermIdView(tid)) {
+        return true;
+    }
+    match kb.get_term(tid) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            let pos: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
+            let named: SmallVec<[TermId; 4]> = named_args.iter().map(|(_, a)| *a).collect();
+            pos.iter().any(|a| term_mentions_an_entity(kb, *a))
+                || named.iter().any(|a| term_mentions_an_entity(kb, *a))
+        }
+        _ => false,
+    }
+}
+
+/// WI-20260826-JSFHG — the hint one COMPONENT of a tuple literal takes from the tuple's own
+/// expected type, looked up by LABEL.
+///
+/// The named-tuple peer of the `element_hint` a `[…]` push derives from `expected`'s `T`:
+/// a tuple literal carries no constructor of its own, so its components' declared types are
+/// the expected tuple's fields and nothing else names them. Positional components are
+/// matched through [`crate::intern::positional_label`], the `_N` convention's owner, rather
+/// than by index — the expected tuple's field list is positional-then-named, so an index
+/// would silently pair a positional component with a named field once both are present.
+///
+/// GATED ON THE COMPONENT TYPE MENTIONING A CONSTRUCTOR, which keeps this hint's population
+/// the empty one every other part of this ticket rests on: a tuple type whose components
+/// are ordinary sorts pushes nothing and its components type exactly as they did.
+fn tuple_component_expected(
+    kb: &KnowledgeBase,
+    expected: &Option<Value>,
+    label: &str,
+) -> Option<Value> {
+    let exp = expected.as_ref()?;
+    let ty = named_tuple_fields(kb, exp)
+        .into_iter()
+        .find(|(s, _)| kb.local_name_of(*s) == label)
+        .map(|(_, t)| t)?;
+    type_mentions_an_entity(kb, &ty).then_some(ty)
+}
+
+/// WI-20260826-JSFHG — is this argument a TUPLE literal, whose components the checking
+/// direction reaches one level DOWN rather than at the head?
+///
+/// Its surface form is an `Expr::Constructor{TupleLiteral}` (the WI-462 shape), which
+/// [`arg_is_constructor_application`] also answers `true` for — so this MUST be asked first,
+/// or the tuple is judged by its own head (a `named_tuple`, never an entity) and takes no
+/// hint at all.
+///
+/// LIST AND SET LITERALS ARE DELIBERATELY NOT HERE, and the reason is a MEASURED fail-open
+/// rather than a scope decision. A first cut included them, and `takeReds([blue(v: 1)])`
+/// against a `List[T = Colour.red]` slot LOADED CLEAN: [`TypeBuildFrame::ListLit`] takes
+/// `element_hint` as the element type UNCONDITIONALLY and never consults what the elements
+/// actually typed as, so a hint there does not check the literal — it OVERWRITES it. That
+/// hole is general and predates this ticket (`operation mk() -> List[T = Int64] = ["x"]`
+/// loads), which is exactly why a hint must not be pushed into it: an unhinted list literal
+/// types from its elements and IS checked, so pushing the hint would trade a correct
+/// refusal for a silent accept. Filed as its own work item; until it is closed, a list of
+/// variants stays refused at an argument, which is the status quo ante.
+///
+/// The tuple path has no such hole — measured on the same shape,
+/// `takePair((a: blue(v: 1), b: 2))` is refused `expected (a: red, …), got (a: blue, …)`.
+fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    matches!(
+        &arg.kind,
+        NodeKind::Expr {
+            expr: Expr::Constructor { name, .. },
+            ..
+        } if kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
+    ) || matches!(
+        &arg.kind,
+        NodeKind::Expr {
+            expr: Expr::TupleLit { .. },
+            ..
+        }
+    )
+}
+
 /// WI-578 — the shared build-finish tail of constructor typing. Given the field-
 /// unified `subst` (its bindings pinned the parent sort's type-params), produce the
 /// constructor's result type-term: the bare `Ref(Sort)` when no param survives (an
@@ -52813,31 +53164,46 @@ fn reconstruct_sort_params(
 /// occurrence-typer and the value-typer build the SAME type from ONE source — a
 /// second, drifting notion of type is exactly what the typed-value substrate must
 /// avoid (`docs/design/constrained-term-substrate.md`).
+///
+/// WI-20260826-JSFHG — `classify_sym` is the symbol the result type is HEADED at, and it
+/// is the caller's decision rather than this function's: the value-typer, which has no
+/// checking direction to read, always passes the parent (`parent_sort.unwrap_or(ctor)`),
+/// while [`check_constructor_iter`] passes the CONSTRUCTOR when its `expected` names one
+/// (§8.2). `parent_sort` stays a separate argument because the PARAMS are always the
+/// parent's — a constructor declares none of its own — so `Option.some[T = Int64]` is
+/// this function building `some` over `Option`'s reconstructed `T`.
+///
+/// THE TWO TYPERS STILL BUILD FROM ONE SOURCE. They differ only where the occurrence
+/// typer has a hint the value typer structurally cannot have, which is the pre-existing
+/// shape of the WI-384 expected-seed below — not a second notion of what a constructor's
+/// type IS.
 fn finish_constructor_type(
     kb: &mut KnowledgeBase,
+    classify_sym: Symbol,
     parent_sort: Option<Symbol>,
-    parent_type: TermId,
     subst: &Substitution,
 ) -> Value {
+    let classify_type = kb.make_sort_ref(classify_sym);
     if subst.bindings.is_empty() {
-        return Value::term(parent_type);
+        return Value::term(classify_type);
     }
     // A symbol with no registered sort at all has nothing to walk; its own symbol
-    // is the type, so the simple `parent_type` sort_ref stands. WI-946: this arm
+    // is the type, so the simple `classify_type` sort_ref stands (which for this arm IS
+    // the constructor's own symbol — WI-20260826-JSFHG renamed the variable that used to
+    // be spelled `parent_type` here). WI-946: this arm
     // used to catch the free-standing / eponymous entity too, on the reasoning
     // that it has "no type params to discover" — false for an eponymous
     // PARAMETRIC sort (`sort Box { sort T = ?; entity Box(v: T) }`), whose params
     // are declared on the very symbol the entity shares. Both callers now pass
     // the TOTAL belongs-to, so that shape walks its own params here.
     let Some(parent_sym) = parent_sort else {
-        return Value::term(parent_type);
+        return Value::term(classify_type);
     };
     let param_bindings = reconstruct_sort_params(kb, parent_sym, subst);
     if param_bindings.is_empty() {
-        Value::term(parent_type)
+        Value::term(classify_type)
     } else {
-        let base = kb.make_sort_ref(parent_sym);
-        Value::term(kb.make_parameterized_type(base, &param_bindings))
+        Value::term(kb.make_parameterized_type(classify_type, &param_bindings))
     }
 }
 
@@ -52980,7 +53346,7 @@ fn constructor_value_type(
             unify_types(kb, &mut subst, child_ty, declared_type);
         }
     }
-    finish_constructor_type(kb, parent_sort, parent_type, &subst)
+    finish_constructor_type(kb, parent_sort.unwrap_or(ctor_sym), parent_sort, &subst)
 }
 
 /// WI-578 — the type-term of an anonymous aggregate (a tuple / `Unit`) from its

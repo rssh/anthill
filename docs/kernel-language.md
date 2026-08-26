@@ -3668,6 +3668,30 @@ sort Color {
 -- A query for sort Color matches terms of sort red, green, and blue.
 ```
 
+**Which sort a constructor application is classified at (WI-JSFHG).** "Each constructor name is a sort in its own right" is a claim about the type a term may have, and both readings of a constructor application satisfy the sentence above it — a term classified `C₁` is also of sort `S`. Which one the checker uses is decided by the **checking direction**: where the expected type at the position names a constructor, the application is classified at that constructor; everywhere else it is classified at the parent sort.
+
+```anthill
+operation takeRed(r: Colour.red) -> Int64 = r.v
+operation takeAny(c: Colour)     -> Int64 = c.v
+
+takeRed(red(v: 1))                                   -- classified `Colour.red`
+takeAny(red(v: 1))                                   -- classified `Colour`
+operation join(b: Bool) -> Colour = if b then red(v: 1) else blue(v: 2)
+                                                     -- both arms `Colour`, so they join
+```
+
+So a signature written with a variant type is **satisfiable**, which it was not before. The positions that admit one are a parameter, an operation return, an entity field, a named-tuple component, an annotated `let`, and a parametric variant (`Option.some[T = Int64]`); both constructor spellings reach them, including a **fieldless** constructor named bare (`takeRed(red)`, the spelling the example above is written in). A value so classified stays a variant onward — it satisfies the next variant-typed slot — and it still widens to the parent wherever one is asked for. The parent-classified reading is what lets two arms returning different constructors join at a return declared with the sort, so neither reading can be dropped in favour of the other.
+
+A **sibling** constructor is refused — `takeRed(blue(v: 1))` is classified at `blue`, its own constructor, not at the expectation — and the diagnostic names both variants rather than the parent.
+
+**Members reach through the variant.** A `Colour.red` receiver is a `Colour`, so `r.shout()` resolves an operation declared on `Colour`, exactly as the named `Colour.shout(r)` and the widening `takeAny(r)` do. The constructor's own **field** wins over a same-named operation on the parent: with `entity red(v: Int64)` beside `operation v(c: Colour)`, `r.v` is the field.
+
+Three positions do **not** yet admit a variant, and each has its own reason rather than being an omission:
+
+- an **inference** position has no expected type, so it keeps the parent — `let r = red(v: 1)` binds `r : Colour`, and `takeRed(r)` is then refused. Write the annotation where the variant type is wanted;
+- a **list or set literal** in an argument slot (`takeReds([red(v: 1)])`) is refused, deliberately: the element type of a *hinted* literal is taken from the hint without the elements being read, so admitting it here would replace a correct refusal with a silent accept. It is the hint that is unsound, not the refusal;
+- the automatic `some` **coercion** for an `Option`-typed field does not fire at an `Option.some`-typed one, so `holder(o: 5)` is refused where the field demands the variant.
+
 Entity subtyping does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not an entity. Only the constructor-of relationship creates entity subtyping.
 
 Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. Provider admissibility — a value whose sort *provides* a spec (`fact S[carrier]`) is usable where that spec is expected — is the demand/supply twin of refinement, handled by the sibling `provides()` rule in the same file. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)

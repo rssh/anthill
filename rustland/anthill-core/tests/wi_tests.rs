@@ -1413,3 +1413,6 @@ mod wi_x9rrn_provided_member_address_test;
 
 #[path = "include/wi_xftc7_provided_child_in_type_position_test.rs"]
 mod wi_xftc7_provided_child_in_type_position_test;
+
+#[path = "include/wi_jsfhg_variant_type_is_inhabited_test.rs"]
+mod wi_jsfhg_variant_type_is_inhabited_test;
