@@ -91,7 +91,9 @@ fn color_program(ns: &str, members: &str, rest: &str) -> String {
     format!(
         r#"
 namespace wi1125.{ns}
-  import anthill.prelude.{{Int64, Bool, Eq, PartialEq}}
+  -- `Effect` is for the `fact Effect[T = Boom]` that CONSUMER_SHAPES' tails carry;
+  -- this helper owns the import because it owns the namespace header (WI-20260823-VM3YB).
+  import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Effect}}
   import anthill.prelude.PartialEq.{{eq, neq}}
 
   sort Color
@@ -483,6 +485,8 @@ const CONSUMER_SHAPES: &[(&str, &str)] = &[
   sort Boom
     entity Bang
   end
+  -- WI-20260823-VM3YB: registers the label. Load-bearing.
+  fact Effect[T = Boom]
 "#,
     ),
     // 2 — `precondition_proved`. THE row this ticket owns: measured on HEAD BEFORE

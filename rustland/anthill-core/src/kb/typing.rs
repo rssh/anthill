@@ -32830,6 +32830,256 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
     errors
 }
 
+/// WI-20260823-VM3YB — AN EFFECT LABEL MUST NAME A REGISTERED EFFECT KIND.
+///
+/// `stdlib/anthill/prelude/effects.anthill` has stated the registration since it was
+/// written — "Effect kinds are registered via `fact Effect[T = Kind[?]]`" — and
+/// proposal 013 §"Effect checking is KB querying" says what it is FOR: "Unknown effect
+/// kind = missing fact". Nothing asked. An effect row could name any sort at all, so a
+/// MISSPELLED label was a silent NEW effect rather than an error, and the declaration
+/// that was supposed to admit it was inert everywhere it was written.
+///
+/// Labels stay OPEN (§5.5) — any sort may become an effect kind, the kernel fixes no
+/// list. What this pass adds is that becoming one is an ACT: the sort is registered,
+/// once, beside its declaration. Open-and-registered, not open-and-unchecked.
+///
+/// THE REGISTRATION HAS TWO SPELLINGS AND THIS READS THE ONE THEY SHARE. A namespace-
+/// level `fact Effect[T = K]` and a `provides Effect[T = K]` inside a sort both land as
+/// an `anthill.reflect.SortProvidesInfo` provision of `Effect` (`load_fact` →
+/// `maybe_emit_fact_provides_info`, `load_provides_clause`), so [`all_provisions`] sees
+/// both and the pass needs no second reader.
+///
+/// MEASURED, and the alternative is not merely redundant but WRONG. An `Effect`-headed
+/// CLAUSE walk (`rules_by_functor(Effect)`) finds the five bare registrations —
+/// `Suspension`, `Branch`, `External`, and guardians' `Model` / `Filesystem` — and
+/// misses `Modify` and `Error`, whose registrations are written `fact Effect[T =
+/// Modify[?]]`: the raw fact head carries that binding POSITIONALLY (`Fn{Modify, pos:[?]}`),
+/// which [`type_head`] reads as `Error`, not `Parameterized`. It is precisely
+/// `canonicalize_fact_binding_value` — on the provision path — that re-lowers a
+/// positional binding onto the base sort's declared params (WI-449). The provision leg
+/// is total over the corpus's 11 registrations; the clause leg covers 5.
+///
+/// WHAT IS JUDGED is a label that NAMES a kind — [`TypeHead::SortRef`] or
+/// [`TypeHead::Parameterized`], following any `sort X = Y` alias to what it names.
+/// Everything else is skipped because it names no kind to look up:
+///
+///   * EXEMPT while it is a HOLE: a sort's declared effect ROW PARAMETER. `effects
+///     Effect = ?` (WI-320) lowers to a type parameter, so `effects Effect` inside
+///     `PersistentCollection` heads as a `SortRef` to `PersistentCollection.Effect`.
+///     Seven are live in the prelude (`Function.E`, `Iterable.E`, `MappedStream.EF`/`ES`,
+///     …), all of them holes. A hole is a slot for a row, not a label — but a BOUND one
+///     (`effects E = Kind`, `sort X = Kind`) is a NAME for what it is bound to and IS
+///     judged; [`effect_label_kind`] carries that distinction and the two programs that
+///     forced it.
+///   * SKIPPED, having no name at all: the engine's own variables
+///     ([`TypeHead::FlexVar`] / [`TypeHead::Skolem`] — 21 in the prelude, the opened
+///     row params), and a receiver projection `s.E` ([`TypeHead::ExprCarried`] /
+///     [`TypeHead::RigidProjection`] — 11 in the prelude, `Stream.head` and its
+///     neighbours). Both are rows-in-waiting; whatever they ground to was judged where
+///     it was WRITTEN.
+///
+/// The atom wrappers peel first ([`peel_effect_atom`]), so a guarded (`Error[E] :- g`),
+/// an explicit-presence (`+K`) and a LACKS atom (`-Modify[x]`) are each judged on their
+/// label. A lacks constraint is included deliberately: a misspelled `-Cloak` constrains
+/// nothing and reads as though it did.
+///
+/// SCOPE — AN OPERATION'S OWN ROW ONLY, the same limit as its neighbour
+/// [`check_modify_targets`] and for the same measured reason: an effect row nested in a
+/// PARAMETER's arrow type (`handle(body: () -> Int64 @ {K, Rho})`) scopes differently and
+/// `all_operation_effects` does not reach it. `a_label_inside_a_parameters_arrow_row_is_
+/// not_checked` pins that, beside the Modify pass's own witness.
+///
+/// THE CORPUS WAS ALREADY CLEAN, which is why this could be switched on rather than
+/// staged. The ticket predicted the opposite — that `Clock`, `ConsoleOutput` and
+/// `ConsoleError` were unregistered and that turning the check on would refuse working
+/// programs — because it counted `fact Effect[…]` only, and those three are registered
+/// with `provides`. Census over every `.anthill` tree that loads (stdlib, both
+/// `examples/`, `anthill-testcases/`, `lf1`, `anthill-cpp-gen`, `anthill-stl`,
+/// `anthill-todo`): 437 declared row elements at the widest, ZERO unregistered.
+///
+/// A SECOND WALK OF EVERY `OperationInfo` FACT, beside [`check_modify_targets`]' — and
+/// affordable, measured rather than assumed, because `load_phase_inner` is on the
+/// load-time path WI-653 tuned. Debug CLI, stdlib + an empty namespace,
+/// `ANTHILL_LOAD_TIMING=1`, three runs: this mark is 0.98 / 1.11 / 1.17 ms against a
+/// `type_check_sorts` mark of 806 ms / 1.77 s / 1.01 s in the same loads — ~0.1%, and the
+/// same order as the neighbour it duplicates (0.67–0.81 ms). Sharing one walk would tie
+/// two passes that answer DIFFERENT questions of one row (is this target a place / is this
+/// label a kind) and report at different sites, which is the coupling `check_modify_targets`
+/// was deliberately not folded into `check_override_refinement` to avoid.
+///
+/// Load-blocking, on this ticket's own evidence: an unregistered label produces no
+/// runtime failure — it propagates, composes and discharges exactly like a registered
+/// one — so there is no later site to be loud at. Reported once per (operation, kind) for
+/// the same reason [`check_modify_targets`] is: `load_incremental` banks a second
+/// `OperationInfo` fact for a type-parameter-bearing operation (WI-1049), and one
+/// declaration must not read as two errors.
+///
+/// NOT THE OTHER HALF THIS TICKET FOUND. A `fact` whose functor RESOLVES TO NOTHING is
+/// still admitted silently — `fact Effect[T = K]` with `Effect` un-imported mints a bare
+/// global predicate and registers nothing, which is how the WI-698 fixture shipped a
+/// review cycle claiming a registration it never made. That is not an effects defect: it
+/// is `remap_name_str`'s bare-`intern` fallback being FINAL at a fact head, whose own
+/// comment already names `load_fact` as one of the two sites owing a refusal, and it is
+/// WI-20260821-RDGQC's first measured bullet. Left there. What this pass does supply is
+/// that the effects consequence is no longer invisible: the un-imported spelling now
+/// fails at the LABEL, loudly.
+pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    let Some(effect_sym) = kb.try_resolve_symbol("anthill.prelude.Effect") else {
+        // No prelude `Effect` — nothing in this KB can register a kind, so nothing can
+        // be measured against a registration either.
+        return Vec::new();
+    };
+    // `Effect`'s sole declared type parameter, read from the DECLARATION rather than
+    // spelled `"T"` here, so renaming it in effects.anthill moves both ends together.
+    //
+    // LOUD, unlike the guard above, and the two are not the same case. `Effect` is NOT
+    // pre-registered by `register_stdlib_scopes`, so an unresolvable name means a KB that
+    // never loaded the prelude — nothing there can name an effect either. Reaching HERE
+    // means `Effect` is declared and carries no type parameter, which no registration
+    // could bind: every `fact Effect[T = K]` in the tree would be malformed too. Returning
+    // empty would make this pass inert exactly the way the declaration it enforces used to
+    // be — the failure this ticket exists to end, re-created in the checker.
+    let Some(param) = kb
+        .type_params_of_sort(effect_sym)
+        .first()
+        .map(|n| kb.intern(n))
+    else {
+        return vec![super::load::LoadError::Other {
+            message: format!(
+                "`{}` declares no type parameter, so no `fact Effect[T = Kind]` can bind                  one and no effect kind can be registered — the effect-registration check                  cannot run. The prelude declares `sort Effect {{ sort T = ? }}`                  (`stdlib/anthill/prelude/effects.anthill`); this KB's `Effect` is not that                  sort.",
+                kb.qualified_name_of(effect_sym),
+            ),
+        }];
+    };
+    let label_key = kb.intern("label");
+    let registered = registered_effect_kinds(kb, effect_sym, param);
+    let mut errors = Vec::new();
+    let mut reported: HashSet<(Symbol, Symbol)> = HashSet::new();
+    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+        for e in &effects {
+            let label = peel_effect_atom(kb, e, label_key);
+            let Some(kind) = effect_label_kind(kb, &label) else {
+                continue;
+            };
+            if registered.contains(&kb.canonical_sort_sym(kind)) {
+                continue;
+            }
+            if !reported.insert((op_sym, kind)) {
+                continue;
+            }
+            // The repair names the kind by its SHORT name and says WHERE that spelling
+            // resolves — beside the declaration. Naming it short without the "where" sent
+            // the author of a sort-NESTED kind to a namespace-level line that does not
+            // load (`unresolved name 'Beep'`, plus a carrier-less provision error) and
+            // left the original refusal standing; naming it qualified would be advice
+            // about a spelling the binding slot does not take.
+            let short = kb.local_name_of(kind);
+            errors.push(super::load::LoadError::Other {
+                message: format!(
+                    "operation `{}` declares effect `{}`, but `{}` is not a REGISTERED \
+                     effect kind — nothing in the knowledge base says that sort is an \
+                     effect, so this row element names a label the kernel never admitted \
+                     and a misspelling of it would read as a new effect rather than as an \
+                     error. Effect labels are OPEN (kernel-language.md §5.5) — any sort \
+                     may be one — but becoming one is a declaration, written where `{}` is \
+                     in scope: `fact Effect[T = {}]` in the namespace that declares it, or \
+                     `provides Effect[T = {}]` inside the sort that declares it (proposal \
+                     013; `stdlib/anthill/prelude/effects.anthill`). If the label is a \
+                     typo, fix the spelling.",
+                    kb.qualified_name_of(op_sym),
+                    type_display_name_value(kb, &label),
+                    kb.qualified_name_of(kind),
+                    short,
+                    short,
+                    short,
+                ),
+            });
+        }
+    }
+    errors
+}
+
+/// WI-20260823-VM3YB — the SORT an effect-row label names, or `None` when the label
+/// names no kind to look up. See [`check_effect_registration`] for what each `None`
+/// covers and why.
+///
+/// AN ALIAS IS FOLLOWED, NOT EXEMPTED, and the difference is two programs. A declared
+/// `sort X = Y` is a NAME for `Y`, so the question "is this a registered kind" is asked of
+/// `Y`; only a chain bottoming out in a HOLE (`sort E = ?` — the row parameter WI-320's
+/// `effects E = ?` lowers to) names no kind, and it falls out at the `type_head` match
+/// because a variable is not a `SortRef`. The first cut instead exempted every
+/// `resolve_sort_alias` hit, which is wider than "row parameter" by exactly the bound
+/// cases, and MEASURED both of them loading clean with an unregistered `Boom` one
+/// indirection away: `sort Nope = Boom … effects Nope`, and `effects E = Boom … effects E`
+/// (a documented spelling — `effects-runtime.anthill:6`) whose bound was judged NOWHERE,
+/// since the declaration site is not walked either. Found by review, not by the corpus:
+/// the prelude's row parameters are all holes, so nothing in the tree exercised the
+/// distinction.
+///
+/// RESIDUE, recorded rather than fixed: a binding whose target is an effect ROW rather
+/// than a single label (`sort E = {A, B}`) heads as [`TypeHead::EffectsRows`] and its
+/// ELEMENTS go unjudged. No such declaration exists in the tree, and reaching them means
+/// exploding a row here — the same walk `explode_incurred_effect_row` owns — which is a
+/// widening this ticket has no population to measure.
+fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
+    let mut cur = label.clone();
+    // An alias chain is finite by construction; the bound is a backstop against a cyclic
+    // one, which is a malformed declaration this pass does not own a verdict for —
+    // withholding the refusal is the conservative answer there, not a silent skip of a
+    // case that could be judged.
+    for _ in 0..ALIAS_CHAIN_LIMIT {
+        let base = match type_head(kb, &cur) {
+            TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
+            _ => return None,
+        };
+        match resolve_sort_alias(kb, base) {
+            None => return Some(base),
+            Some(target) => cur = Value::term(target),
+        }
+    }
+    None
+}
+
+/// How many `sort X = Y` links [`effect_label_kind`] follows before giving up. Generous:
+/// the longest chain in the tree is one.
+const ALIAS_CHAIN_LIMIT: usize = 16;
+
+/// WI-20260823-VM3YB — every REGISTERED effect kind, as canonical sort symbols.
+///
+/// `param` is `Effect`'s declared type parameter; both registration spellings bind it,
+/// and both are instances of the ONE sort `Effect`, which is why the binding lookup runs
+/// in [`BindingKeyMatch::Label`] — the two producers key that slot differently (a
+/// `provides` clause with the resolved `Effect.T`, a `fact` with the bare written `T`).
+fn registered_effect_kinds(
+    kb: &KnowledgeBase,
+    effect_sym: Symbol,
+    param: Symbol,
+) -> HashSet<Symbol> {
+    let mut out: HashSet<Symbol> = HashSet::new();
+    for row in all_provisions(kb) {
+        if kb.canonical_sort_sym(row.spec) != kb.canonical_sort_sym(effect_sym) {
+            continue;
+        }
+        let Some((_, bindings)) = unwrap_spec_view(kb, row.spec_view) else {
+            continue;
+        };
+        let Some(binding) = binding_for_param(kb, &bindings, param, BindingKeyMatch::Label) else {
+            continue;
+        };
+        // The registration binds a KIND: `Modify[?]` registers `Modify`, `Branch`
+        // registers `Branch`. Read through the same classifier the labels are read
+        // through, so a shape that is a label on one side is a registration on the other.
+        if let Some(k) = match type_head(kb, &Value::term(*binding)) {
+            TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+            _ => None,
+        } {
+            out.insert(kb.canonical_sort_sym(k));
+        }
+    }
+    out
+}
+
+
 /// What stands in a `Modify`'s target slot. See [`classify_modify_target`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ModifyTarget {

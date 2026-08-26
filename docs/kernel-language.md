@@ -2370,6 +2370,34 @@ machinery that realises it.
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
+**An effect kind must be REGISTERED, and a row label that names an unregistered sort is
+refused at load** (WI-20260823-VM3YB). Labels stay open — the kernel fixes no list, any
+sort may become an effect kind — but becoming one is a declaration, written beside the
+sort in either of two spellings, which mean the same thing:
+
+```
+fact Effect[T = Kind]          -- at namespace level
+provides Effect[T = Kind]      -- inside the sort that declares Kind
+```
+
+Both land as one provision of `anthill.prelude.Effect`, and both are read at the same
+site. What is registered is the **kind**, not an application of it: `fact Effect[T =
+Modify[?]]` and `fact Effect[T = Modify]` register the same thing, since a label is judged
+on the sort it names — `Tag[T = Int64]` asks about `Tag`. The prelude writes the `[?]`
+form to say "for any target", and that reads well, but the argument is inert either way.
+
+Positions that name no kind are not judged: a sort's declared effect row parameter while
+it is still a **hole** (`effects E = ?`, and the `effects E` that uses it), a receiver
+projection (`s.E`), and a row variable the checker has opened. A **bound** alias is
+followed rather than exempted — `effects E = Kind`, like `sort X = Kind`, is a name for
+`Kind` and is judged as one. Registration is what makes a misspelled label an error rather
+than a silent new effect.
+
+The rule is enforced on an **operation's own row** only. A row nested in a *parameter's*
+arrow type (`handle(body: () -> X @ {K, Rho})`) is a different position, scoped to that
+arrow's binder, and is not reached — the same boundary §5.6's `Modify`-target rule
+records, and for the same reason: that position's population has not been measured.
+
 ### 5.6 Effect Semantics (State-Passing Interpretation)
 
 Effects give operations a precise execution semantics via a state-passing interpretation. An operation

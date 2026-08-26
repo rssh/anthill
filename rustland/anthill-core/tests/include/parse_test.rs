@@ -521,14 +521,24 @@ end
     // A ground effect label, by contrast, stays a Value::Term and its
     // OperationInfo fact stays a hash-consed (non-value) fact — confirming the
     // carrier is decided by the presence of a `denoted`, not blanket-applied.
+    //
+    // THE LABEL HERE IS THIS FIXTURE'S OWN `Error`, not `anthill.prelude.Error`: the
+    // namespace declares a nullary `sort Error` and imports only `Int64`, so `effects
+    // Error` names `test.wi342b.Error`. That shadow is what the label's SHAPE needs — a
+    // bare nullary sort ref, the simplest ground label there is — and it reads as the
+    // prelude's `Error` at a glance, which is why the registration below is spelled out
+    // rather than left to the reader. WI-20260823-VM3YB: an effect row's label must name
+    // a REGISTERED kind, and a locally-declared one registers locally. This fixture is the
+    // ONE place in the whole corpus that pass found unregistered.
     let kb_ground = load_with_stdlib(
         r#"
 namespace test.wi342b
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, Effect}
 
   sort Error
     entity err
   end
+  fact Effect[T = Error]
 
   operation may_fail(x: Int64) -> Int64
     effects Error

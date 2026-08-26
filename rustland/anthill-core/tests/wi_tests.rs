@@ -1407,3 +1407,6 @@ mod wi_gmg6n_metadata_slot_drift_test;
 
 #[path = "include/wi_spgbp_scoped_kb_test.rs"]
 mod wi_spgbp_scoped_kb_test;
+
+#[path = "include/wi_vm3yb_effect_registration_test.rs"]
+mod wi_vm3yb_effect_registration_test;

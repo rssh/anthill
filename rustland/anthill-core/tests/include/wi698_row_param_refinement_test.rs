@@ -201,11 +201,12 @@ namespace smoke.f_rw
   sort Reg
     entity mkReg
   end
-  -- Registered as an effect. NOT load-bearing — measured: removing it leaves this file
-  -- at 38/38, the loader not requiring an effect-row label to be registered. Kept as the
-  -- correct declaration. (An earlier draft wrote this fact with `Effect` MISSING from the
-  -- namespace's import list, where it registered a different, unresolved functor and did
-  -- nothing at all — silently, which is how the review caught it and not the suite.)
+  -- Registered as an effect. LOAD-BEARING since WI-20260823-VM3YB, in BOTH directions:
+  -- deleting the line fails this file, and so does dropping `Effect` from the import
+  -- list above — which is what an earlier draft actually shipped, where the head minted a
+  -- bare global predicate, registered nothing, and stayed silent through a whole review
+  -- cycle. The silent-fact half is still open (WI-20260821-RDGQC); what closed is that
+  -- its effects consequence now surfaces at the label.
   fact Effect[T = Reg]
 
   sort Mir2
