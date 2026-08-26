@@ -556,9 +556,13 @@ holds for every mailbox. An adversary gets no retry per request, because there
 is no per-request generation.
 
 **Nothing bespoke is trusted.** No verifier, no interpreter, no plan sort, no
-abstract interpreter. The check is the language's own type checker, and the
-policy that is genuinely runtime-dependent — the recipient allowlist — stays a
-denial evaluated inside the checked agent.
+abstract interpreter. The check is the language's own type checker — and since
+2026-08-26 that includes the recipient policy, which this paragraph used to hand
+to the runtime. `send_email` carries a CONDITIONAL `Permission[Outbox]`, demanded
+only where the recipient is external and decided at load from the argument at the
+call, so no generated agent can mail outside the organisation. An address the
+guard cannot decide is refused rather than deferred, so nothing is evaluated
+inside the checked agent at all. See `measured.md` D4.
 
 **The concealment payload gets an answer.** Flow 2's summarizer is a model too,
 with exactly the same exposure — so the fix cannot be "trust it more". It is to

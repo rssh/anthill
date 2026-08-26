@@ -270,6 +270,21 @@ here, and the first is the article's attack:
 allowlist depends on an address that exists only at run time; no tier above can
 decide it, and the honest design says so rather than pretending otherwise.
 
+> **Superseded in part, 2026-08-26.** Most of this residual turned out to be
+> typable after all, and the example now types it: `send_email` carries
+> `(Permission[Outbox] :- external_addr(to))` — a CONDITIONAL permission
+> (proposal 048 on 064's label), so the authority is demanded only where the
+> recipient is external, decided at LOAD from the argument at the call. Since
+> `Triage.run` grants no such authority, no generated triage can mail outside the
+> organisation. What is left for tier 3 is *narrower and differently shaped* than
+> this paragraph says: not "the allowlist", but the cases where the address is not
+> written inline at the call — a computed one, one read out of a message, even a
+> `let`-bound literal — all of which the guard leaves undecided and §5.5 therefore
+> REFUSES rather than defers. So the residual is not a runtime check inside the
+> agent; it is a class of programs the agent may not write, and a dynamic
+> recipient belongs to the trusted harness, which can hold the authority. Measured
+> in `measured.md` D4.
+
 ### What is still not provable, and where it now sits
 
 The three-way split still holds, but generation moves it. Safety and
@@ -373,7 +388,9 @@ namespace guardians.tools
   -- THROUGH an arbitrary chain of label-polymorphic transformations
   -- (measured, §8.1 runs 2 and 3).
   operation send_email(to: Address, body: Text[Trust = Public]) -> Unit
-    effects {External, Error}
+    effects {External, Error, (Permission[Outbox] :- external_addr(to))}
+  -- ^ the guarded half is 2026-08-26 (measured.md D4); the `Text[Public]`
+  --   parameter is what this section is about and is unchanged.
 
   -- The only route from Untrusted to Public, and it takes an unforgeable
   -- token as a PARAMETER rather than as a contract. `Approval` has no
@@ -678,7 +695,15 @@ question is the **residual** — what the types cannot discharge.
 
 *Recommendation: name it explicitly rather than let it blur.* The recipient
 allowlist depends on a runtime address, so `internal_domain(domain_of(?a))`
-cannot be typed away and becomes a runtime check inside the checked agent. The
+cannot be typed away and becomes a runtime check inside the checked agent.
+
+> **CORRECTED 2026-08-26 — it CAN be typed away, and is.** A guarded
+> `Permission[Outbox]` on `send_email` decides the recipient half at load
+> (`measured.md` D4). The recommendation stands as method — name the residual —
+> but this particular residual was smaller than it looked, and what remains of it
+> is not a runtime check: an address the guard cannot decide is REFUSED, not
+> deferred. The two-column report is still the right shape; this row moves from
+> the runtime column to the generation-time one. The
 article endorses exactly this ("static verification is often combined with
 runtime monitoring for residual checks"), and the honest version of the claim
 is a two-column report: which obligations the check discharged at generation

@@ -58,7 +58,7 @@ fn base_sources() -> Vec<String> {
 /// `fixtures/agent/rejected/`.
 fn agent_source(name: &str) -> String {
     let dir = guardians_dir().join("fixtures").join("agent");
-    let p = if name == "good" || name == "checker" {
+    let p = if name == "good" || name == "checker" || name == "internal_send" {
         dir.join(format!("{name}.anthill"))
     } else {
         dir.join("rejected").join(format!("{name}.anthill"))
@@ -299,6 +299,120 @@ fn a_modify_target_the_spec_never_granted_is_refused_by_the_row() {
     // `wide_row.anthill` is written with `Filesystem` precisely because of that —
     // see measured.md C9.
     assert_refused("wide_row_modify", "effects must not widen");
+}
+
+#[test]
+fn an_external_send_is_refused_by_the_conditional_permission() {
+    // THE ARTICLE'S POLICY, TARGET HALF, AS A LOAD-TIME REFUSAL. The policy reads
+    // "forbid data flow from fetch_email's result to the body parameter of
+    // send_email WITH AN EXTERNAL EMAIL ADDRESS AS THE TARGET". The FLOW half is
+    // `exfiltrating_agent_is_refused_by_the_label`; this is the TARGET half, and
+    // the two are independent — `outbox.anthill` mails a literal `Public` string,
+    // so nothing flows out of the mailbox and no label is violated.
+    //
+    // `send_email` demands `Permission[Outbox]` GUARDED on its recipient
+    // (proposal 048's conditional effects, on 064's label), so the authority is
+    // demanded only where the address is outside the organisation — decided at
+    // LOAD from the address written at the call. `Triage.run`'s spec row grants
+    // none, so an implementation can neither perform it (what fires here) nor
+    // declare it (a widening). NO generated triage can mail outside, and that is
+    // a property of the spec rather than of this agent.
+    assert_refused("outbox", "undeclared effect: Permission[T = Outbox]");
+}
+
+#[test]
+fn an_internal_send_needs_no_permission() {
+    // THE CONTROL FOR THE ROW ABOVE, and one token away from it:
+    // `boss@ourcorp.com` for `it@othercorp.com`. Without it, "no generated agent
+    // may send mail" would satisfy that refusal — a far weaker policy than the
+    // article's, and one this example would then be silently claiming.
+    //
+    // What makes it load is that the guard's negation is constructively proved at
+    // this call (the address is in the organisation), so the label is dropped and
+    // the unchanged `{External, Model, Error}` row suffices. That is the whole
+    // content of "conditional": the same operation, two call sites, two verdicts.
+    let errs = errors_for("internal_send");
+    assert!(
+        errs.is_empty(),
+        "agent/internal_send.anthill should load: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_recipient_computed_at_run_time_is_refused() {
+    // THE BOUNDARY OF THE CONDITIONAL PERMISSION, and the direction it fails in.
+    // `outbox.anthill` mails a LITERAL external address, so the guard is PROVED.
+    // This one mails an address `choose_recipient` returns, which no load pass can
+    // read, so the guard is neither proved nor refuted — and §5.5 keeps the effect
+    // on an undecided guard, which is the safe direction.
+    //
+    // THE RULE THAT FALLS OUT, and it is stricter than "no external mail": a
+    // generated agent may mail only an address the checker can prove INTERNAL at
+    // load. An address chosen at run time is an address chosen by whatever
+    // influenced the run — in this example, that includes the injected email.
+    //
+    // NO SOURCE-LEVEL CONTROL ISOLATES THIS ROW, and saying so is the honest
+    // statement rather than a missing one. Measured: dropping `Permission[Outbox]`
+    // from `send_email` greens this row AND
+    // `an_external_send_is_refused_by_the_conditional_permission`; dropping the
+    // guard reddens neither. What this row guards is the KERNEL's conservative
+    // direction on an undecided guard (`typing::refute_guard`, §5.5), which no
+    // edit to this example exercises — so it is a regression test for the language
+    // rule, sited here because this is where the example depends on it.
+    assert_refused("computed_recipient", "undeclared effect: Permission[T = Outbox]");
+}
+
+#[test]
+fn a_let_bound_internal_recipient_is_refused_too() {
+    // THE BOUNDARY, MEASURED RATHER THAN DESCRIBED. One respect apart from
+    // `internal_send.anthill`: the identical internal literal is `let`-bound
+    // instead of written inline. It is REFUSED.
+    //
+    // `refute_guard` proves the guard's negation over the local context, and a
+    // `let` deposits an equation SLD does not use to ground the goal — so the
+    // double negation flounders, the guard is undecided, and §5.5 keeps the
+    // effect. Sound (it errs toward demanding authority) but stricter than
+    // intended, since the bound value is statically known: a typer limit, not a
+    // policy decision.
+    //
+    // THIS ROW EXISTS BECAUSE THE DOCS WERE WRONG WITHOUT IT. An earlier draft
+    // stated the rule as "an address the checker can prove internal", which this
+    // program satisfies and is refused by. The operative rule is narrower —
+    // written LITERALLY, INLINE, at the call — and a claim that broad should not
+    // survive without a fixture that would catch it.
+    assert_refused(
+        "letbound_recipient",
+        "undeclared effect: Permission[T = Outbox]",
+    );
+}
+
+#[test]
+fn the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed() {
+    // WHICH DOMAIN IS "OURS" IS NOT THE LIBRARY'S TO SAY. `lib/vocabulary.anthill`
+    // DECLARES `in_org` (proposal 061) and asserts no row;
+    // `fixtures/mailbox.anthill` supplies it, exactly as it supplies the inbox and
+    // the address book. `safety.anthill` states the principle — the relation is
+    // the library's, the rows are a deployment's — and an earlier draft of this
+    // work broke it by hardcoding `ourcorp.com` in `lib/`.
+    //
+    // THE DEFAULT IS CLOSED, which is what makes the split safe rather than merely
+    // tidy: with no deployment loaded the relation is empty, EVERY address is
+    // external, and `internal_send.anthill` — which loads with the deployment
+    // present — is refused without it. An unconfigured organisation grants
+    // nothing.
+    let mut owned = lib_sources();
+    owned.push(agent_source("internal_send"));
+    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let errs = match common::try_load_kb_prepared_files(&refs, register_pipeline) {
+        Ok(_) => vec![],
+        Err(e) => e,
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("undeclared effect: Permission[T = Outbox]")),
+        "with no deployment loaded, even an internal recipient must demand the \
+         outbox authority; got: {errs:#?}"
+    );
 }
 
 #[test]

@@ -126,6 +126,22 @@ sort guardians.FrontierModel
   provides Model
 end
 
+-- THE OUTBOX CAPABILITY — the authority to mail OUTSIDE the organisation.
+--
+-- A capability, not an effect kind (like `FrontierModel` above, and unlike
+-- `Model` / `Filesystem`): it is only ever the argument of `Permission[…]`.
+--
+-- What makes it worth having is that the permission `send_email` demands is
+-- CONDITIONAL (proposal 048's guarded effects, on 064's label). The article
+-- states the policy as *"forbid data flow from fetch_email's result to the body
+-- parameter of send_email WITH AN EXTERNAL EMAIL ADDRESS AS THE TARGET"*, and
+-- the target half of that is a property of one argument at one call — exactly
+-- what a guard reads. So mailing a colleague needs no authority at all, and
+-- mailing outside needs `Permission[Outbox]`, decided at LOAD from the address
+-- the call actually passes.
+sort guardians.Outbox
+end
+
 -- A second project effect: touching the filesystem. Present so the row checks
 -- have a label to widen BY that is not `Modify`, and it stays after C9 was
 -- fixed: the two widenings travel DIFFERENT ARMS of one check — a named label
@@ -138,7 +154,8 @@ end
 namespace guardians
   import anthill.prelude.{String, List, Unit, Error, External, Effect}
   import guardians.TrustLevel.{Untrusted, Public}
-  import guardians.{Text, Message, Approval, Model, Filesystem}
+  import anthill.prelude.{Permission}
+  import guardians.{Text, Message, Approval, Model, Filesystem, Outbox}
 
   -- The two project effect KINDS. `FrontierModel` is deliberately absent: it is
   -- a CAPABILITY (an argument of `Permission[…]`) and never a bare row label, so
@@ -186,8 +203,60 @@ namespace guardians
   operation verdicts_of(msgs: List[T = Message[?t]]) -> List[T = Verdict]
 
   -- The sink. `Public` is FIXED, so nothing untrusted can reach it.
+  -- WHO THIS ADDRESS BELONGS TO — DECLARED here, ASSERTED nowhere in `lib/`.
+  -- Which domain is "ours" is a DEPLOYMENT's fact, not the library's, exactly as
+  -- `safety.anthill` says of `Checked` and `mailbox.anthill` says of the inbox:
+  -- the relation is the library's, the rows are a deployment's. The rows live in
+  -- `fixtures/mailbox.anthill`.
+  --
+  -- A bodyless `rule` is proposal 061's DECLARATION rather than a clause, so with
+  -- no deployment loaded this relation is empty and EVERY address is external —
+  -- which is the safe default: an unconfigured organisation grants nothing.
+  rule in_org(?a)
+  rule external_addr(?a) :- not(in_org(?a))
+
+  -- THE SINK, GATED ON ITS TARGET. `Permission[Outbox]` is demanded only when the
+  -- recipient is outside the organisation: at the call the argument is
+  -- substituted into the guard, and the label is dropped when the guard's
+  -- negation is constructively proved (§5.5). So
+  --
+  --   send_email(to: Address(local: "boss", domain: "ourcorp.com"), …)  nothing
+  --   send_email(to: Address(local: "it", domain: "othercorp.com"), …)  Permission[Outbox]
+  --   send_email(to: <anything not written inline>, …)                  Permission[Outbox]
+  --
+  -- THE RULE IS NARROWER THAN "PROVABLY INTERNAL", and stating it loosely was a
+  -- real error in an earlier draft of this comment. The guard is refuted only
+  -- where the checker can prove `in_org(to)` from the argument TERM AT THE CALL,
+  -- so the address must be written INLINE. Measured: the identical literal
+  -- let-bound one line earlier is REFUSED
+  -- (rejected/letbound_recipient.anthill) — `refute_guard` proves the negation
+  -- over Γ, and a `let` deposits an equation SLD does not use to ground the goal,
+  -- so the double negation flounders and §5.5 conservatively keeps the effect.
+  --
+  -- So the operative policy is: A GENERATED AGENT MAY MAIL ONLY AN ADDRESS
+  -- WRITTEN LITERALLY, INLINE, AT THE CALL — and matching a deployment's `in_org`
+  -- rows. Everything else (an external literal, a let-bound one, a computed
+  -- address, one read out of a message) needs an authority `Triage.run` never
+  -- grants. That is sound, and stricter than intended in the let-bound case,
+  -- which is a typer limit rather than a policy decision: the bound value IS
+  -- statically known. Worth a ticket; not worth pretending it is by design.
+  --
+  -- THE CONSEQUENCE FOR A GENERATED AGENT is the whole point: `Triage.run`'s spec
+  -- row grants no `Permission[Outbox]`, so an implementation can neither declare
+  -- one (a widening) nor perform one (an undeclared effect). No generated triage
+  -- can mail outside the organisation, and that is a property of the SPEC rather
+  -- than of any particular agent.
+  --
+  -- INDEPENDENT OF THE `Text[Trust]` LABEL, which the article's policy names in
+  -- the same sentence. The two halves are measured by two fixtures, neither of
+  -- which catches the other's program: `rejected/leak.anthill` violates the FLOW
+  -- (an `Untrusted` summary reaching a `Public` parameter) and
+  -- `rejected/outbox.anthill` violates the TARGET (a literal `Public` body, no
+  -- flow at all, external recipient). In `leak` the label error is reported and
+  -- the effect leg does not run, so it is NOT observably caught twice — the two
+  -- are independent by fixture rather than by double diagnosis.
   operation send_email(to: Address, body: Text[Public]) -> Unit
-    effects {External, Error}
+    effects {External, Error, (Permission[Outbox] :- external_addr(to))}
 
   -- Widening is always safe and needs no licence.
   operation widen(body: Text[Public]) -> Text[Untrusted]

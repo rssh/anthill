@@ -1,0 +1,35 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, ACCEPTED.
+--
+-- THE CONTROL FOR rejected/outbox.anthill, and one token away from it: the same
+-- program, mailing `boss@ourcorp.com` instead of `it@othercorp.com`.
+--
+-- It is the reason the refusal over there measures the RECIPIENT rather than
+-- mailing at all. `send_email`'s `Permission[Outbox]` is GUARDED on its target,
+-- so at this call the guard's negation is constructively proved — the address is
+-- in the organisation — and the label is dropped. The row `{External, Model,
+-- Error}` therefore suffices, unchanged from ./good.anthill, and no authority is
+-- demanded for mailing a colleague.
+--
+-- Without this file, "no generated agent may send mail" would satisfy every
+-- refusal in the suite, and that is a far weaker and far less useful policy than
+-- the one the article states.
+-- ================================================================
+sort guardians.agent.InternalSendTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Address, Text, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of, send_email}
+  import guardians.TrustLevel.{Public}
+  entity mk
+
+  operation run(self: InternalSendTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error} =
+      let msgs = fetch_mail(box)
+      let sent = send_email(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: text(raw: "routine compliance copy"))
+      Report(items:   verdicts_of(msgs),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = InternalSendTriage]
+end

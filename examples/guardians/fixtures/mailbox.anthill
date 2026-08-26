@@ -14,8 +14,15 @@
 namespace guardians
   import anthill.prelude.{String}
   import guardians.{MessageId, Address, Mailbox, Message, Text,
-                    InMailbox, KnownContact}
+                    InMailbox, KnownContact, in_org}
   import guardians.TrustLevel.{Untrusted}
+
+  -- WHICH DOMAIN IS OURS. A deployment fact, like everything else in this file:
+  -- `lib/vocabulary.anthill` DECLARES `in_org` and asserts no row, so an
+  -- unconfigured organisation treats every address as external and `send_email`
+  -- demands `Permission[Outbox]` for all of them. This line is what makes
+  -- `fixtures/agent/internal_send.anthill` load.
+  fact in_org(Address(local: ?, domain: "ourcorp.com"))
 
   -- The address book. m1/m2/m4 are known senders; m3 and m5 are not.
   fact KnownContact(address: Address(local: "founder", domain: "nextbigstartup.com"))
