@@ -22288,11 +22288,136 @@ impl<'a> Loader<'a> {
             // sort, `Enum.Entity`) is a legitimate qualified CHILD reference, not a
             // projection — resolve it directly (the literal-joined check below cannot
             // see it: `by_qualified_name` holds the FULLY-qualified spelling).
+            //
+            // WI-20260826-XFTC7 — AND THE SAME CHILD REACHED BY A `provides` CONVERSION.
+            // The join here is rung 1 of the dotted ladder written a second time, and it
+            // had rung 1's gap: `Mid provides Base[T = T]` with `Base` declaring `sort
+            // Inner` left `x: Mid.Inner` to fall past it into a RIGID PROJECTION, which
+            // the typer refused as "type 'Mid' has no member 'Inner'" — while `Mid.f()` in
+            // TERM position resolved through the conversion and `Base.Inner` in THIS
+            // position loaded. One spelling, three positions, two answers, which is the
+            // position-dependence WI-752 exists to abolish.
+            //
+            // IT IS NOT A TYPE-INHERITANCE CLAIM, and that is why it belongs here rather
+            // than in `project_type_member`. This branch's job — the comment above says so
+            // — is deciding that `Outer.Inner` is a qualified CHILD REFERENCE and not a
+            // projection at all: a question about what a NAME denotes, which the ladder
+            // already answers the same way everywhere else. Nothing is added to what a type
+            // HAS, and a name that denotes nothing still reaches the projection path below
+            // and is still refused there.
+            //
+            // [`dotted_by_provision`] is SHARED WITH THE LADDER deliberately, so the two
+            // readers cannot drift about which members a head offers — the drift that
+            // produced the ticket. That brings its rules with it: `provides` edges only
+            // (not `requires`, not the enclosing chain), nearest level first, a diamond is
+            // one answer, and a candidate is admitted BEFORE it is counted.
             let child_qn = format!("{sort_qn}.{member_name}");
-            if let Some(&child) = self.kb.symbols.by_qualified_name.get(&child_qn) {
+            let direct = self.kb.symbols.by_qualified_name.get(&child_qn).copied();
+            // ONE ADMISSION PREDICATE, ASKED OF BOTH READS — and it is the TYPE POSITION's
+            // own question, deliberately NOT the ladder's `not_a_field`.
+            //
+            // What leaves this arm is `make_sort_ref(child)`, so the child must be
+            // something that can BE a type. The ladder asks "may this name be denoted
+            // here", which is a different question, and borrowing it would be borrowing a
+            // neighbour's name instead of its predicate: measured, the symbol that reaches
+            // this arm from an operation parameter is `SymbolKind::Param`, which
+            // `not_a_field` admits. A POSITIVE gate settles both — `Field`, `Param` and
+            // `Operation` are all simply not types — and it subsumes the negative one, so
+            // there is one predicate here rather than a third copy of another.
+            //
+            // NEITHER GATE WAS ASKED BEFORE, and both holes were measured on the tree this
+            // arm started from, on the DECLARED join as much as through the conversion:
+            //
+            //   `internal sort Inner`, cited `Base.Inner` cross-namespace -> LOADED CLEAN
+            //   `operation Zero()`, cited `x: Base.Zero`                  -> LOADED CLEAN,
+            //       and the call site then said "expected Zero, got Int64" — a nonsense
+            //       type minted from an operation symbol, reported far from its cause.
+            //
+            // A TYPE PARAMETER IS ADMITTED, and that is not an accident of the gate: a
+            // sort's parameters register as `SymbolKind::Sort`, and `Base.E` reached
+            // through the head's own declaration (the `if` arm above) and `Mid.E` reached
+            // through the conversion behave identically at a call site — measured, both
+            // load and both accept an `Int64`. Refusing one would have introduced the very
+            // position-dependence this ticket removes.
+            let type_admissible = |kb: &KnowledgeBase, sym: Symbol| {
+                matches!(
+                    kb.kind_of(sym),
+                    Some(SymbolKind::Sort) | Some(SymbolKind::Entity)
+                )
+            };
+            let visible = |kb: &KnowledgeBase, sym: Symbol, scope: ScopeId| {
+                kb.symbols.internal_visible_from(sym, scope)
+            };
+            if let Some(child) = direct.filter(|c| type_admissible(self.kb, *c)) {
+                if visible(self.kb, child, self.current_scope) {
+                    return Some(node_occurrence::TypeChild::Ground(
+                        self.kb.make_sort_ref(child),
+                    ));
+                }
+                // FORBIDDEN, NOT ABSENT — the distinction the fall-through would lose. A
+                // hidden child that dropped through to the projection path was reported as
+                // "type 'Base' has no member 'Inner'", which tells the author their name
+                // denotes nothing when in fact it denotes something they may not see.
+                let joined = format!("{head_name}.{member_name}");
+                let picked = self.push_forbidden_internal(child, &joined, span.span);
                 return Some(node_occurrence::TypeChild::Ground(
-                    self.kb.make_sort_ref(child),
+                    self.kb.make_sort_ref(picked),
                 ));
+            }
+            let scope = self.current_scope;
+            let provided = {
+                let kb = &*self.kb;
+                let admit = |sym: &Symbol| type_admissible(kb, *sym) && visible(kb, *sym, scope);
+                dotted_by_provision(kb, head_sort_sym, member_name, &admit)
+            };
+            match provided {
+                ResolveResult::Found(child) => {
+                    return Some(node_occurrence::TypeChild::Ground(
+                        self.kb.make_sort_ref(child),
+                    ));
+                }
+                // Two provided sorts declaring one child. Reported by NAME rather than
+                // left to fall through, because the projection path's "has no member" is
+                // the opposite verdict: it says the name denotes nothing, and here it
+                // denotes two things.
+                ResolveResult::Ambiguous(candidates) => {
+                    let joined = format!("{head_name}.{member_name}");
+                    let picked = self.push_ambiguous_symbol(&joined, &candidates, span.span);
+                    return Some(node_occurrence::TypeChild::Ground(
+                        self.kb.make_sort_ref(picked),
+                    ));
+                }
+                ResolveResult::NotFound => {
+                    // The DIAGNOSTIC pass, exactly as `Loader::resolve_dotted_reported`
+                    // runs it: the strict read came up empty, so ask again admitting a
+                    // hidden hit. Split rather than folded into one permissive read for
+                    // the reason `dotted_by_provision`'s doc gives — a candidate the scope
+                    // cannot see must not be COUNTED, or one `internal` route beside one
+                    // visible route reports an ambiguity and withholds the usable answer.
+                    let hidden = {
+                        let kb = &*self.kb;
+                        let any = |sym: &Symbol| type_admissible(kb, *sym);
+                        match dotted_by_provision(kb, head_sort_sym, member_name, &any) {
+                            ResolveResult::Found(h) => Some(h),
+                            // TWO HIDDEN ROUTES ARE STILL FORBIDDEN, NOT ABSENT. Dropping
+                            // this arm sent the pair to the projection path, which reports
+                            // "has no member" — the one verdict this whole block exists to
+                            // avoid. Which candidate is named is immaterial: the scope can
+                            // reference none of them, so the ambiguity between them is
+                            // moot, and the walk's candidates are sorted and deduped so the
+                            // choice is deterministic.
+                            ResolveResult::Ambiguous(c) => c.first().copied(),
+                            ResolveResult::NotFound => None,
+                        }
+                    };
+                    if let Some(h) = hidden {
+                        let joined = format!("{head_name}.{member_name}");
+                        let picked = self.push_forbidden_internal(h, &joined, span.span);
+                        return Some(node_occurrence::TypeChild::Ground(
+                            self.kb.make_sort_ref(picked),
+                        ));
+                    }
+                }
             }
         }
         // A sort-headed dotted name that RESOLVES under its written spelling

@@ -100,30 +100,28 @@ end
     }
 }
 
-/// THE PROVISION HALF OF RUNG 1, in every position that reads the LADDER
-/// (WI-20260825-X9RRN). Same claim as the headline one spelling over: `Mid` DECLARES
-/// nothing, and `Mid.f` / `Mid.rel` reach `Base`'s through `provides Base[T = T]`.
+/// THE PROVISION HALF OF RUNG 1, in every position (WI-20260825-X9RRN, completed by
+/// WI-20260826-XFTC7). Same claim as the headline one spelling over: `Mid` DECLARES
+/// nothing, and `Mid.f` / `Mid.Inner` / `Mid.rel` reach `Base`'s through
+/// `provides Base[T = T]`.
 ///
 /// THIS FILE IS WHERE THE ROW BELONGS, and the file's own header says why: it pins the
 /// ladder's UNIFORMITY, so that "a future rung added to one resolver and forgotten in the
 /// others fails here rather than shipping as the next WI-75x". The rung's SEMANTICS —
 /// which edge kinds it follows, what a second hit means, that rung 1 still wins — are
-/// `wi_x9rrn_provided_member_address_test`'s.
+/// `wi_x9rrn_provided_member_address_test`'s and, for the type position,
+/// `wi_xftc7_provided_child_in_type_position_test`'s.
 ///
-/// THE TYPE POSITION IS ABSENT FROM THIS ROW, AND THAT IS A FINDING RATHER THAN AN
-/// OMISSION. Written with `Mid.Inner` beside the two below, this row failed: a type
-/// reference does NOT reach the dotted ladder for a `Sort.Member` spelling — it is read as
-/// a TYPE PROJECTION by a separate check with its own member table, which reports "type
-/// 'app2.base.Mid' has no member 'Inner'" while the declared `Base.Inner` loads. So the
-/// same spelling still has two answers, one reader over, which is the shape this file
-/// exists to catch. It is NOT widened here: "what does this dotted NAME denote" and "does
-/// this TYPE have this member" are different questions, and whether a value-level
-/// conversion conveys a nested SORT is a claim the `provides` doc does not make.
-/// `wi_x9rrn_…::the_type_position_reads_a_different_table` pins the asymmetry with its
-/// control.
+/// IT EARNED ITS KEEP IMMEDIATELY, which is the argument for writing a uniformity row at
+/// all. Added with the type position in it, this row FAILED while the other two passed:
+/// `load::try_rigid_type_projection` carries its own qualified-child join —
+/// `by_qualified_name.get("{sort_qn}.{member}")`, rung 1 written a second time — and it
+/// had rung 1's gap, so `x: Mid.Inner` fell through to a rigid projection and was refused
+/// as "type 'Mid' has no member 'Inner'". Nothing else in the suite could see it; the
+/// second reader was found by asking this file's question, not by reading the code.
 ///
-/// FAILS IF the provision rung is backed out: both positions report at once, which is the
-/// point — a rung reached by one position only would fail here in ONE of them.
+/// FAILS IF the provision rung is backed out — in whichever position lost it, which is
+/// precisely what a uniformity row is for.
 #[test]
 fn wi752_provided_member_resolves_in_every_position() {
     const SRC: &str = r#"
@@ -155,15 +153,17 @@ namespace app2
   import app2.base.{Mid}
   -- TERM FUNCTOR position
   operation callSite() -> Int64 effects Error = Mid.f()
+  -- TYPE REFERENCE position
+  operation typeSite(x: Mid.Inner) -> Int64 = 2
   -- RULE CITATION position
   operation citeSite() -> Bool effects Error = Mid.rel.isEmpty
 end
 "#;
     try_load_kb_with(SRC).unwrap_or_else(|errs| {
         panic!(
-            "`Mid.f()` and `Mid.rel` are the SAME dotted spelling reached through the \
-             SAME `provides` edge — every position that reads the ladder must resolve it \
-             (WI-20260825-X9RRN); got:\n{}",
+            "`Mid.f()`, `Mid.Inner` and `Mid.rel` are the SAME dotted spelling reached \
+             through the SAME `provides` edge — every position must resolve it \
+             (WI-20260825-X9RRN, WI-20260826-XFTC7); got:\n{}",
             errs.join("\n")
         )
     });

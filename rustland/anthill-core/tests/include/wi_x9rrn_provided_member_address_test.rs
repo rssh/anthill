@@ -29,6 +29,17 @@
 //! touched here — a different population, and a `Sort.{Sibling}` import is WI-751's shape
 //! one clause over rather than this ticket's.
 //!
+//! ## The residual this shipped with, and where it went
+//!
+//! A TYPE reference did not read this ladder: `Mid.Inner` was answered by
+//! `load::try_rigid_type_projection`'s own qualified-child join — rung 1 written a second
+//! time — so it fell through to a rigid projection and was refused as "type 'Mid' has no
+//! member 'Inner'" while `Mid.f()` resolved. Filed as WI-20260826-XFTC7 and closed there
+//! by giving that join the same `dotted_by_provision` hop, so the two readers share one
+//! definition of which members a head offers. Its rows are
+//! `wi_xftc7_provided_child_in_type_position_test`; the uniformity claim across all three
+//! positions is `wi752_dotted_ladder_test::wi752_provided_member_resolves_in_every_position`.
+//!
 //! ## The back-out these rows are stated against
 //!
 //! Delete the `None =>` arm of `resolve_dotted_in_kb`'s relative reading (the
@@ -394,65 +405,6 @@ end
         drive(src, "test.x9rrn.deep.deep"),
         "Int(141)",
         "`Top.far` is declared only on `Base`, two hops out; the walk must reach it"
-    );
-}
-
-/// THE RESIDUAL, PINNED WITH ITS CONTROL: a TYPE reference does not read this ladder.
-///
-/// `Mid.f()` in TERM position now resolves through the conversion; `Mid.Inner` in TYPE
-/// position does not, and the message says why — it is read as a TYPE PROJECTION by a
-/// separate check with its own member table ("type '…Mid' has no member 'Inner'"), never
-/// by `resolve_dotted_in_kb`. The DECLARED twin `Base.Inner` loads in the same position, so
-/// the difference is the conversion and not the spelling.
-///
-/// NOT WIDENED HERE, and the reason is that it is a different QUESTION rather than the same
-/// one at a second site. "What does this dotted NAME denote" is what the ladder answers; a
-/// type projection asks "does this TYPE have this member", and a spec's `provides` is
-/// documented as a value-level conversion — "hold a `Mid[T]` and you can obtain a
-/// `Base[T]`" — which says nothing about a nested SORT being reachable through it. Deciding
-/// that is a design question with its own population, and the type-member table is exactly
-/// where WI-751's field over-hit lived. Filed rather than absorbed.
-///
-/// BOTH HALVES ARE ASSERTED. Without the `Base.Inner` control, the refusal reads as "a
-/// nested sort is unnameable from outside", which is false; without the refusal, nothing
-/// records that the rung stops at the ladder's own readers.
-#[test]
-fn the_type_position_reads_a_different_table() {
-    let program = |head: &str| {
-        format!(
-            r#"
-namespace test.x9rrn.typepos
-  import anthill.prelude.{{Int64}}
-  sort Base
-    sort T = ?
-    sort Inner
-      entity inner(v: Int64)
-    end
-    operation f() -> Int64 = 41
-  end
-  sort Mid
-    sort T = ?
-    provides Base[T = T]
-  end
-  sort Use
-    operation g(x: {head}.Inner) -> Int64 = 2
-  end
-end
-"#
-        )
-    };
-    assert!(
-        errs_of(&program("Base")).is_empty(),
-        "THE CONTROL: a nested sort IS nameable in type position when the head \
-         declares it; got {:?}",
-        errs_of(&program("Base"))
-    );
-    let errs = errs_of(&program("Mid"));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("has no member 'Inner'")),
-        "the TYPE position reads a type-projection table, not the dotted ladder, so \
-         the conversion does not reach it — recorded rather than widened; got {errs:?}"
     );
 }
 

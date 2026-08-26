@@ -1410,3 +1410,6 @@ mod wi_spgbp_scoped_kb_test;
 
 #[path = "include/wi_x9rrn_provided_member_address_test.rs"]
 mod wi_x9rrn_provided_member_address_test;
+
+#[path = "include/wi_xftc7_provided_child_in_type_position_test.rs"]
+mod wi_xftc7_provided_child_in_type_position_test;

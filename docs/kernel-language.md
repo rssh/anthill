@@ -3973,10 +3973,19 @@ walk in the base scope. That walk crossing `requires` and the enclosing chain is
 over-hit of the import's own — the `Sort.{Sibling}` case is WI-751's shape one clause over
 — not a rule about what a conversion conveys.
 
-**A TYPE reference does not read this ladder at all.** `Mid.Inner` in type position is a
-type projection, answered by a separate check against the head's own members, so a nested
-sort reached through a conversion is refused there while `Mid.f()` resolves. Whether a
-value-level conversion should convey a nested sort is open (WI-20260826-XFTC7).
+**A TYPE reference reads it too** (WI-20260826-XFTC7), so `x: Mid.Inner` names the nested
+sort `Base` declares exactly as `Mid.f()` names its operation. The type position asks its
+own question first — is this a type PROJECTION (`P.Key`, `List.T`)? — and only a name that
+denotes nothing *as a type* reaches that path and is refused there. Which is why this is
+not a claim about what a type HAS: a qualified child reference is a NAME, and the head's
+own child still wins over a provided one.
+
+**What a qualified child may denote in type position is a sort or an entity**, on either
+reading. A member of some other kind is refused where it is written rather than minted
+into a type: `operation Zero()` on `Base` makes `x: Base.Zero` a load error, and so does
+the operation *parameter* an eponymous `sort Foo` / `operation Foo(X: …)` pair registers at
+`Foo.X`. Both used to load and surface as a nonsense type at whatever call site happened
+to be checked. A sort's type PARAMETERS are sorts and stay nameable through both readings.
 
 **Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
 `if`, `let`, `\`, member access and the `[…]` / `{…}` / `(…)` literals are *desugared*:
@@ -4051,6 +4060,15 @@ carrying a hidden member of the right name does not break an otherwise-valid
 `..` path. Only when *nothing* has a visible answer is the hidden one reported,
 as the (load-blocking) forbidden-internal access — a precise diagnostic that
 outranks the generic unresolved-name error it replaces.
+
+This binds the *qualified child reference* in type position too, which until
+WI-20260826-XFTC7 it did not: `x: Base.Inner` for an `internal` nested sort loaded
+clean from another namespace, because that reading carried its own
+`by_qualified_name` join with no gate. Both readings of a child — declared, and
+reached through a `provides` conversion — now report the forbidden access by name.
+Reporting it is the load-bearing half: a hidden child that merely fell through was
+answered by the type-projection path as *"type 'Base' has no member 'Inner'"*, which
+tells the author their name denotes nothing when it denotes something they may not see.
 
 **The ladder is position-independent.** The same readings, decided the same way,
 resolve a dotted name wherever one is written — a term functor, a type or sort
