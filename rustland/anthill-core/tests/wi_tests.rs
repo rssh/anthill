@@ -1387,6 +1387,9 @@ mod wi_fqc85_rule_declaration_test;
 #[path = "include/wi_j38je_boolean_goal_test.rs"]
 mod wi_j38je_boolean_goal_test;
 
+#[path = "include/wi_vpewk_host_op_operand_test.rs"]
+mod wi_vpewk_host_op_operand_test;
+
 #[path = "include/wi_rkmd4_type_var_param_slot_test.rs"]
 mod wi_rkmd4_type_var_param_slot_test;
 

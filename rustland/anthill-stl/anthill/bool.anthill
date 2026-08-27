@@ -3,6 +3,18 @@ namespace anthill.prelude
   provides Bool language rust
     artifact "rustland/anthill-stl/src/prelude/bool.rs"
     carrier { Bool: "bool" }
+    -- WI-20260826-VPEWK: the three host builtins `stdlib/anthill/prelude/bool.anthill`
+    -- declares ("every operation declared here is backed by a host builtin") named under
+    -- the spelling `is_interpreter_mapped_op` reads. They were registered ONLY by
+    -- hardcoded qualified name in `eval/builtins.rs`, which WI-884 records as a split
+    -- whose cost is that "the two halves are not equivalent to their READERS" — and the
+    -- reader that paid was the rule-body operand path: `and(true, true) = true` answered
+    -- NOTHING because the gate asks the mapping, not the interpreter's own registry.
+    operation_map {
+      and: "bool_and",
+      or: "bool_or",
+      not: "bool_not"
+    }
     -- WI-644 / proposal 004: Bool is lawful — PartialEq base + Eq marker.
     provides PartialEq[T = Bool]
     provides Eq[T = Bool]

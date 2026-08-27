@@ -3696,6 +3696,25 @@ impl HeadCheck {
             HeadCheck::BodiedOpCall => match head {
                 ViewHead::Functor {
                     functor: Some(f), ..
+                    // WI-20260826-VPEWK — BODY-ONLY, and the reason is measured rather
+                    // than assumed. This gate does NOT choose the split SUBJECT (that is
+                    // `op_call_as_occ`, which needs a body and is guarded there); its one
+                    // caller asks whether the *OTHER* operand is safe to compare
+                    // STRUCTURALLY. By that question a HOST call should count — it is a
+                    // computation, not data — and /code-review raised exactly that.
+                    //
+                    // WIDENING IT WAS TRIED AND BACKED OUT. It only ever DECLINES more,
+                    // so it is sound; the cost is completeness, and the cost is real:
+                    // `:- Colour.isRed(?c) = String.contains("abc","b")` went from 1
+                    // DEFINITE to a suspension, because OTHER holds a host call that
+                    // `reduce_operand` would have reduced before any structural compare.
+                    // The gate cannot currently tell "un-reduced and will stay so" from
+                    // "not yet reduced", which is the distinction it needs.
+                    //
+                    // So the hazard is left OPEN and pre-existing (a host call NESTED
+                    // inside OTHER, where nothing reduces it, can still be compared
+                    // structurally) rather than closed at the price of a live
+                    // regression. WI-20260827-XBHX3 owns it, with both measurements.
                 } if kb.builtins.get(f).is_none() && kb.op_body_node(*f).is_some() => {
                     HeadVerdict::Stop(true)
                 }
@@ -7397,6 +7416,44 @@ impl KnowledgeBase {
         // `OperationBodyMissing`.
         let body = match self.op_body_node(op) {
             Some(b) => Some(Rc::clone(b)),
+            // WI-20260826-VPEWK — a HOST-IMPLEMENTED op reduces HERE, at any depth and
+            // for every caller, because the bridge below can run it and the position
+            // it sits in changes nothing about that.
+            //
+            // The gate is [`KnowledgeBase::is_interpreter_mapped_op`], which is the
+            // SAME predicate the goal side already asks through
+            // [`Self::op_reducible_in_rule_body`] — not a second notion of
+            // "reducible". Before this, one call had two answers decided by POSITION:
+            // `:- Bool.and(true, true)` answered 1 (WI-20260822-J38JE widened the goal
+            // gate) while `:- Bool.and(true, true) = true` answered NOTHING, because
+            // this site asked `dispatch_body_less`, i.e. "a body and nothing else".
+            // J38JE fixed the goal position and the operand kept the old question.
+            //
+            // WHY THIS DOES NOT DELETE WHAT `dispatch_body_less` PROTECTS. That flag
+            // guards a body-less SPEC op at an operand — a term a RULE WROTE, which may
+            // be SYMBOLIC ALGEBRA rather than a computation; `anthill.prelude.Set`'s
+            // `insert` / `empty` are the case, and dispatching them would reduce DATA
+            // (the five wi616 regressions `is_unreduced_op_call` records, through the
+            // other door). This arm cannot reach them: `Set.insert` is registered in NO
+            // interpreter registry, so the predicate answers false for it and the flag's
+            // arm above still owns every op it owned before. MEASURED, same file:
+            // `:- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 1)` answers 1
+            // with this arm present, as it did without.
+            //
+            // NOT `op_is_interpretable`: its other leg is `op_has_runnable_body`, which
+            // asks the question this `match` has already answered `None` to. Naming the
+            // host registry directly says what admits the op, and is a `HashSet` hit —
+            // so it is asked FIRST, ahead of `body_less_dispatchable`'s
+            // `rules_by_functor_iter` + `lookup_spec_op_dispatch` walk.
+            //
+            // NO `depth == 0` GATE, unlike the flag's arm. That gate rests on "a depth-0
+            // bridge evaluates the WHOLE body including nested op-calls, so a nested
+            // call rides its enclosing op's single bridge" — a premise about a BODY, and
+            // a host op has none to ride. A host call nested inside a bodied op's body
+            // is reached by this function's own `depth + 1` recursion over the folded
+            // body, and gating it would put back exactly the asymmetry this ticket is
+            // about, one level in.
+            None if self.host_op_reducible_at_a_value(op) => None,
             None if dispatch_body_less && depth == 0 && self.body_less_dispatchable(op) => None,
             // WI-1037 — a `NeedsDict` callee is DISPATCHED, never folded, so a missing
             // body is not a bail for it either: the bridge below is the whole
@@ -7882,7 +7939,31 @@ impl KnowledgeBase {
         let Value::Node(occ) = v else { return false };
         match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => {
-                self.builtins.get(functor).is_none() && self.op_body_node(*functor).is_some()
+                // WI-20260826-VPEWK — the HOST leg, and it is admissible here where
+                // WI-1057's body-less one explicitly was not. That ticket kept
+                // `reduction_left_body_less_call` a SEPARATE predicate precisely
+                // because this one "also decides `eq`'s domain, where a body-less spec
+                // op may be symbolic ALGEBRA — measured, folding the two broke 5 wi616
+                // cases". A HOST-IMPLEMENTED op cannot be that: `is_interpreter_mapped_op`
+                // answers true only for an operation some `operation_map` clause binds
+                // to a host FUNCTION, which exists to compute. `Set.insert` — the named
+                // algebra case, and what the wi616 five are about — is mapped nowhere
+                // and is untouched by this leg.
+                //
+                // WITHOUT IT the reduction and the delay disagreed, and the gap was a
+                // WRONG ANSWER rather than a missing one. `reduce_op_value` now reduces
+                // a host call, so an UNGROUND one comes back un-reduced (the bridge
+                // declines a non-ground argument and `unwrap_or(v)` restores the call) —
+                // and this predicate, still asking for a body, called that bare `Apply`
+                // ordinary DATA. `eq` then compared the CALL to `true` structurally and
+                // decided FALSE. MEASURED: `rule ung(?b) :- Bool.and(?b, true) = true`
+                // answered `no solutions`, where the same rule over a BODIED op answers
+                // `1 conditional (residual goals undischarged)`. A reduction widened
+                // without its delay predicate is the WI-738 soundness floor knocked out
+                // from under exactly the calls the widening newly admits.
+                self.builtins.get(functor).is_none()
+                    && (self.op_body_node(*functor).is_some()
+                        || self.is_interpreter_mapped_op(*functor))
             }
             // WI-1040 — a WOVEN call (`apply_within(fn = …, requirements = [?d])`)
             // that came back un-rewritten is un-reduced BY CONSTRUCTION: the arm in
@@ -8017,9 +8098,29 @@ impl KnowledgeBase {
             // operand as its case-split subject and then bail at its own `_ =>
             // return None`, ABANDONING the WI-580 split that the other operand would
             // have served.
+            // WI-20260826-VPEWK — AND IT MUST HAVE A BODY, asked HERE rather than
+            // inherited from `is_unreduced_op_call`. That predicate gained a
+            // HOST-MAPPED leg, which is right for the DELAY question it answers for
+            // `eq` / `cmp` but wrong for this one, and the paragraph above is the
+            // proof: a host call has no body to unfold either, so admitting one
+            // reproduces WI-1040's defect exactly — `unfold_eq_operand` picks the host
+            // operand as its case-split subject, `folded_call_match` bails at its own
+            // `op_has_runnable_body`, and the split the OTHER operand would have served
+            // is abandoned.
+            //
+            // MEASURED, and the two rows differ only in operand ORDER:
+            //   `:- String.contains("abc","b") = Colour.isRed(?c)`  1 CONDITIONAL
+            //   `:- Colour.isRed(?c) = String.contains("abc","b")`  1 DEFINITE
+            // One equation, two verdicts, decided by which side was written first.
+            // Found by /code-review; the whole workspace is green either way, so no
+            // test in the suite could see it.
             Value::Node(o)
                 if self.is_unreduced_op_call(v)
-                    && matches!(o.as_expr(), Some(Expr::Apply { .. })) =>
+                    && matches!(
+                        o.as_expr(),
+                        Some(Expr::Apply { functor, .. })
+                            if self.op_body_node(*functor).is_some()
+                    ) =>
             {
                 Some(Rc::clone(o))
             }
@@ -8029,6 +8130,13 @@ impl KnowledgeBase {
                     Term::Fn { functor, .. } => *functor,
                     _ => return None,
                 };
+                // WI-20260826-VPEWK widened two OTHER readers of this same
+                // `op_body_node(..).is_some()` shape and deliberately not this one.
+                // The body is not a proxy here, it is the SUBJECT: this feeds
+                // [`Self::unfold_eq_operand`], which case-splits an unground operand
+                // into one continuation per `match` ARM of the callee's body. A
+                // host-implemented op has no arms to split on, so admitting one would
+                // hand that function a callee it cannot expand.
                 if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
                     Some(super::node_occurrence::materialize_from_handle(self, *id))
                 } else {
@@ -8088,6 +8196,55 @@ impl KnowledgeBase {
     /// rule-LESS (design §3.3 precedence — a hand-written clause still wins).
     fn op_reducible_in_rule_body(&self, f: Symbol) -> bool {
         self.op_body_node(f).is_some() || self.is_interpreter_mapped_op(f)
+    }
+
+    /// WI-20260826-VPEWK — may a VALUE position run `f`'s host implementation?
+    ///
+    /// [`KnowledgeBase::is_interpreter_mapped_op`] (this runtime has a function for it)
+    /// AND EFFECT-FREE, and the second clause is not symmetry for its own sake. The
+    /// GOAL side states it at [`Self::bare_bodied_bool_relation`] — "an effectful body
+    /// is not a logical relation, and the eval bridge's empty effect registry would
+    /// suspend on one anyway" — and the second half of that sentence is the part that
+    /// does NOT carry over to a host function. A bodied op RAISES its effect while the
+    /// bridge evaluates the body, so the bridge's `Err(_) => None` arm catches it
+    /// ("an unhandled effect (resolution must not perform effects)") and the call
+    /// residualizes. A HOST function raises nothing: it is opaque Rust that simply
+    /// runs, so its declared `effects` row is the only thing standing between a rule
+    /// body and a real side effect, and nothing downstream reads it.
+    ///
+    /// NOT A TOTAL GUARD, and saying so here rather than letting a reader assume it.
+    /// This predicate gates ONE arm of `reduce_op_value`'s body `match`; the
+    /// `needs_dict` arm beside it (`None if needs_dict && op_is_interpretable(..)`,
+    /// WI-1037) admits a host-mapped callee with NO effect test and reaches the same
+    /// `bridge_op_to_eval`. So a `requires`-carrying spec op whose dictionary selects
+    /// a host-mapped, effect-declaring member would still run its Rust here. Raised by
+    /// /code-review and NOT DRIVEN — assembling that fixture needs a provider whose
+    /// impl member is host-mapped — so it is recorded as a code-path reading, not a
+    /// measurement, and left to WI-20260827-NFXPZ, which has to settle the effect
+    /// policy for both arms at once rather than leave two gates disagreeing.
+    ///
+    /// MEASURED, which is why this is a clause and not a comment. A fixture sort
+    /// mapping two operations to the SAME host function, one declared pure and one
+    /// with `effects {Error}`, answered 1 for BOTH at a rule-body operand while this
+    /// gate read `is_interpreter_mapped_op` alone. The effect row was inert. With the
+    /// clause the pure one answers 1 and the effectful one residualizes.
+    ///
+    /// A missing signature is a DECLINE, as at the Bool gate: "no declaration" is not
+    /// "no effects", and an op the loader never scanned is not one to run.
+    ///
+    /// EMPTY, not "empty except `Error`", and that is the conservative half. USER
+    /// DIRECTION 2026-08-27: `Error` is a FAILURE CHANNEL rather than a state effect and
+    /// should probably be admitted ("handle error by erroring rule"). Left refused here
+    /// because what an erroring operand MEANS for SLD is undecided — fail the clause,
+    /// propagate a diagnostic, or residualize — and under a fail reading such an operand
+    /// inside `not(...)` SUCCEEDS, turning a host error into a positive answer.
+    /// WI-20260827-NFXPZ owns that decision; a `Modify[…]` row stays refused either way.
+    fn host_op_reducible_at_a_value(&self, f: Symbol) -> bool {
+        self.is_interpreter_mapped_op(f)
+            && self
+                .op_record(f)
+                .and_then(|r| r.signature.as_ref())
+                .is_some_and(|sig| sig.effects.is_empty())
     }
 
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the

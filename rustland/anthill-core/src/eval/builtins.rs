@@ -447,6 +447,20 @@ const HOST_FNS: &[(
     // to (the index unit, and the empty pattern).
     ("int_min_value", 0, int_min_value),
     ("int_max_value", 0, int_max_value),
+    // WI-20260826-VPEWK — `Bool`'s three under their MAPPED spelling, so that the
+    // readers of `is_interpreter_mapped_op` can see them. They keep their hardcoded
+    // `register_if_present` registration below as well, and that is deliberate: the
+    // mapping is declared in `rustland/anthill-stl/anthill/bool.anthill`, so a KB
+    // loaded from `stdlib/` ALONE has no `operation_map` clause to register from and
+    // would otherwise lose `and`/`or`/`not` entirely. `register_builtin` inserts, so
+    // the two registrations are the same function under the same symbol.
+    //
+    // This is WI-884's split closing for ONE sort, not the whole migration WI-880
+    // owns: the eight `String`/`Int64` hardcoded names above are still unmapped, and
+    // `String.concat("a", "b") = "ab"` still answers 0 at an operand for that reason.
+    ("bool_and", 2, bool_and),
+    ("bool_or", 2, bool_or),
+    ("bool_not", 1, bool_not),
     ("string_is_empty", 1, string_is_empty),
     ("string_contains", 2, string_contains),
     ("string_index_of", 2, string_index_of),

@@ -467,13 +467,17 @@ fn what_the_condition_reading_cannot_yet_reduce() {
     //  * A BOOL-RETURNING OPERATION CALL in goal position already evaluates, through
     //    WI-938's derived relational view at the operation's own arity — the reading
     //    item 1 settled, arriving by a mechanism this ticket did not write.
-    //  * A HOST-BACKED OPERATION does not reduce here either — `Bool.and` / `or` / `not`
-    //    are declared body-less in `prelude/bool.anthill` and their `<=>` laws are
-    //    untagged, so they are inert in SLD. Same root as the `const` row: a rule body
-    //    reduces a BODIED operation and a resolver BUILTIN, and nothing else
-    //    (WI-20260822-ZJZS7). That is why `a & b` in a goal is still refused rather than
-    //    admitted — a located error is the honest state of a reading the evaluator
-    //    cannot deliver, and it is checked by `wi1046`'s own suite, not here.
+    //  * A HOST-BACKED OPERATION now DOES reduce here — this bullet used to say the
+    //    opposite and both of its claims have since been falsified, so it is kept,
+    //    corrected, rather than deleted. It said (a) a rule body "reduces a BODIED
+    //    operation and a resolver BUILTIN, and nothing else", which stopped being true
+    //    in THIS TICKET'S OWN commit (`op_reducible_in_rule_body` gained the
+    //    `is_interpreter_mapped_op` supplier), and (b) that this "is why `a & b` in a
+    //    goal is still refused", which the same commit falsified by adding `push_and`
+    //    and DELETING WI-1046's refusal. The `pand` row below answers 1 as of
+    //    WI-20260826-VPEWK, which made `reduce_op_value` ask the same host question the
+    //    goal gate had been asking since J38JE — see that ticket's own suite for why
+    //    widening the entry gate alone was inert.
     //  * A NON-BOOL DOT PROJECTION (`:- b.n`) now answers 0 rather than 1: it routes to
     //    `eq(b.n, true)`, and an `Int64` is not `true`. Correct as logic — a non-Bool
     //    expression denotes no truth — but SILENT, where its siblings (a non-Bool
@@ -511,8 +515,10 @@ fn what_the_condition_reading_cannot_yet_reduce() {
     assert_eq!(answers(&mut kb, "j38jeh.pop2(1)"), 0, "…and is not vacuous");
     assert_eq!(
         answers(&mut kb, "j38jeh.pand(1)"),
-        0,
-        "a HOST-BACKED op does not reduce in a rule body: WI-20260822-ZJZS7"
+        1,
+        "a HOST-BACKED op DOES reduce in a rule body (WI-20260826-VPEWK). This \
+         assertion read `0` from J38JE until that ticket; it is the row \
+         WI-20260822-ZJZS7 measured, and flipping it is what closes that ticket"
     );
     assert_eq!(
         answers(&mut kb, "j38jeh.pandop(1)"),
