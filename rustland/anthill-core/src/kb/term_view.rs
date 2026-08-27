@@ -1791,6 +1791,78 @@ pub trait TermView {
     /// [`Self::head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
     /// the default suffices; the `TermId` / `Value` carriers keep a direct
     /// override that reads the carrier without a `head` round-trip.)
+    /// The LITERAL this view denotes, on whatever carrier it rides — `None` if it
+    /// denotes something else.
+    ///
+    /// WI-20260827-2YHZ3. Every scalar carrier already answers `ViewHead::Const`
+    /// here: a hash-consed `Term::Const`, a `Value::Node` occurrence whose expr is
+    /// `Expr::Const`, AND the native `Value::Int`/`Bool`/`Str`/`Float`/`BigInt`
+    /// variants (see this file's `impl TermView for Value`). So a consumer that asks
+    /// THIS question needs no carrier match and no conversion step ahead of it.
+    /// `Int64.add` used to match `Value::Int` alone and refused a column bound by a
+    /// rule-body builtin (`"Int64 and Node"`) AND one bound by a fact
+    /// (`"Int64 and Term"`) — the gap was never about occurrences; the numeric
+    /// surface could read neither handle.
+    ///
+    /// Clones the literal (`String`/`BigInt` are owned) — these are operand reads,
+    /// not hot structural walks; the structural walkers key off [`Self::head`]
+    /// directly. A borrowing variant is wanted before this reaches a hot filter
+    /// (`startsWith`/`endsWith` over a long stream) — noted on WI-20260827-3ZNBC.
+    ///
+    /// NAMED `literal_*`, NOT `as_*`, ON PURPOSE. `Value` carries inherent
+    /// `as_bool` / `as_int` / `as_str` accessors that read the NATIVE variant only,
+    /// and an inherent method wins over a trait method — so a `literal_bool` spelled
+    /// `as_bool` would silently resolve to the carrier-blind one at every `Value`
+    /// call site, which is precisely the failure this pair exists to remove. Two
+    /// spellings of one question are tolerable; two spellings that answer
+    /// DIFFERENTLY under the same name are not.
+    fn as_literal(&self, kb: &KnowledgeBase) -> Option<Literal> {
+        match self.head(kb) {
+            ViewHead::Const(lit) => Some(lit),
+            _ => None,
+        }
+    }
+
+    /// The `Bool` this view denotes, on any carrier. See [`Self::as_literal`].
+    fn literal_bool(&self, kb: &KnowledgeBase) -> Option<bool> {
+        match self.as_literal(kb)? {
+            Literal::Bool(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The `Int64` this view denotes, on any carrier. See [`Self::as_literal`].
+    fn literal_int64(&self, kb: &KnowledgeBase) -> Option<i64> {
+        match self.as_literal(kb)? {
+            Literal::Int(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// The `Float` this view denotes, on any carrier. See [`Self::as_literal`].
+    fn literal_f64(&self, kb: &KnowledgeBase) -> Option<f64> {
+        match self.as_literal(kb)? {
+            Literal::Float(f) => Some(f.into_inner()),
+            _ => None,
+        }
+    }
+
+    /// The `BigInt` this view denotes, on any carrier. See [`Self::as_literal`].
+    fn literal_big_int(&self, kb: &KnowledgeBase) -> Option<num_bigint::BigInt> {
+        match self.as_literal(kb)? {
+            Literal::BigInt(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The `String` this view denotes, on any carrier. See [`Self::as_literal`].
+    fn literal_string(&self, kb: &KnowledgeBase) -> Option<String> {
+        match self.as_literal(kb)? {
+            Literal::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
         match self.head(kb) {
             ViewHead::Var(var) => Some(var),

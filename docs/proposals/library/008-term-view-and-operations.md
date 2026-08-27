@@ -9,19 +9,28 @@ reflection facts.
 **Its largest finding is already fixed.** WI-880 migrated the whole
 `anthill.reflect` surface off hardcoded registration, so a rule can now read a
 term and the associated soundness gap is closed. What survives is smaller and is
-recorded below with what changed: a relational view that does not bind, a
-non-ground spec view that (correctly) suspends, an unowned resolver builtin, and
-the `Term`-vs-`Type` column typing.
+recorded below with what changed: a host op's relational view that answers
+nothing, a non-ground spec view that (correctly) suspends, and the
+`Term`-vs-`Type` column typing.
+
+**Corrected again 2026-08-27, and the correction is larger than what it leaves.**
+Both of §2's first two surviving items were read off `anthill query`'s answer
+line, which truncates a variable chain at ONE HOP (`resolve_as_value`, no walk),
+so a rule-head variable bound by a rule-body BUILTIN renders `?_` for an answer
+the resolver got right. `WI-20260827-2YHZ3` is re-aimed at that reader. **A rule
+body binds an operation's result, and `extract_sort_ref` binds too** — so this
+proposal's first consumer is writable today. §2(a), §2(c), §"First consumer" and
+open question 1 are rewritten below.
 
 **This proposal was rewritten once, and the first draft is worth recording
 because it was wrong in an instructive way.** It proposed adding a `TermView`
 sum type — `TermRepr` plus named arguments — on the premise that nothing could
 decompose a term-valued reflection field. That premise is false. Types are
 `anthill.prelude.Type`, `Type` already has a complete structural view
-(`TypeExtractor`), and `anthill.reflect.extract` is implemented. The real gap is
-narrower and sits somewhere else entirely: **that view is unreachable from a
-rule, and the one resolver builtin meant to bridge the gap does not bind its
-result.**
+(`TypeExtractor`), and `anthill.reflect.extract` is implemented. The real gap was
+narrower and sat somewhere else entirely: **that view is unreachable from a
+rule.** (The companion claim — that the one resolver builtin meant to bridge the
+gap does not bind its result — was itself a reading artifact; see §2(c).)
 
 ## What already exists, and works
 
@@ -88,22 +97,34 @@ So §"The gap"'s first item is closed, and the soundness hole with it.
 
 Three things, and only the first is squarely this proposal's.
 
-**(a) A rule body can TEST a result, not BIND one.** `WI-20260827-2YHZ3`. WI-880
-makes a host op REDUCE, and this is about what happens to what it returns —
-neither WI-880 nor VPEWK touched it. Measured with a bodied op and a host op side
-by side:
+**(a) A rule body DOES bind a result — the answer LINE truncated.**
+`WI-20260827-2YHZ3`, re-aimed 2026-08-27. This item was reported here as "a rule
+body can TEST a result, not BIND one", on a table read off `anthill query`. That
+reader stops at one hop (`resolve_as_value`), and a rule-head variable bound by a
+rule-body BUILTIN sits behind an uncompressed answer link, so it renders `?_`. Two
+readings of the same rows, the second with the reader reifying:
 
-| form in a rule body | bodied | host |
+| form in a rule body | bodied (reported → actual) | host (reported → actual) |
 |---|---|---|
 | `f(3) = 6` — test against a known value | 1 ✓ | 1 ✓ |
 | `f(3) <=> 6` — unify against a known value | 1 ✓ | — |
-| `f(3) <=> ?r` — unify into a free variable | 1, **unbound** | 1, **unbound** |
-| `f(3, ?r)` — relational view (WI-938) | 1, **unbound** | **0** |
+| `f(3) <=> ?r` — unify into a free variable | ~~unbound~~ → `?r = 6` | ~~unbound~~ → `?r = some(7)` |
+| `f(3, ?r)` — relational view (WI-938) | ~~unbound~~ → `?r = 6` | **0** |
 
-**An earlier draft of this proposal told the reader to write `extract(?v) <=> ?e`
-instead of the relational view. That is wrong** — it succeeds without binding too.
-Only the ground-test row works, and the unbound result then flows onward:
-`twice(3) <=> ?r, Int64.gt(?r, 5)` answers 1 DEFINITE.
+So `<=>` binds, and binds the REDUCED VALUE rather than the call term. **The
+earlier draft's advice to write `extract(?v) <=> ?e` instead of the relational
+view was right after all** — it was the reading of it that was wrong. And the
+"unbound result flows onward" alarm was a correct answer: `twice(3) <=> ?r,
+Int64.gt(?r, 5)` answers 1 because `?r` IS 6, while `Int64.gt(?r, 99)` answers 0.
+
+The minimal case has no operation in it (`rule k_u6(?x) :- ?x <=> 6` answers
+`?x = ?_`, while `k_u6(6)` answers true and `k_u6(7)` answers nothing), which is
+why the re-aimed ticket is about the reader and not about operations at all.
+
+**One cell survives, and WI-938 already owns it**: a host-mapped op's arity+1
+relational view (`term_as_int(7, ?r)`) answers 0 SOLUTIONS rather than delaying —
+WI-938's recorded follow-up, "a call whose args are NOT ground falls through
+silently (0 solutions) rather than DELAYING".
 
 **(b) A meta-predicate's argument need not be ground, and the bridge insists.**
 `WI-20260827-1ZG70`. Measured — the residual names it exactly:
@@ -121,9 +142,18 @@ still unusable on the population it was migrated for. **`SortProvidesInfo` itsel
 is not the problem** — it is an ordinary relation and enumerates fine; the
 suspension is entirely in the host call downstream of it.
 
-**(c) `extract_sort_ref` still succeeds without binding.** Unchanged by WI-880 —
-it is a resolver `BuiltinTag`, not a host registration, so neither that ticket nor
-VPEWK touches it. Still unowned. See open question 1.
+**(c) `extract_sort_ref` BINDS. This item was the same reading artifact as (a),
+and is withdrawn.** Measured 2026-08-27 with the reader reifying:
+
+```
+rule e(?s) :- SortProvidesInfo(sort_ref: ?c, spec: ?v), extract_sort_ref(?v, ?s)
+  ->  ?s = PartialEq / Eq / FiniteCollection / Iterable / Monad / Stream
+```
+
+Before the reader was fixed the same rule answered `?s = ?_` on every row while
+`nonvar(?s)` in the same body answered 1 CLEANLY — the two together are what
+identified the projection, not the resolution, as the loss. Open question 1 is
+answered and closed.
 
 ### 2b. A side effect worth knowing: guardians is no longer CLI-queryable
 
@@ -184,9 +214,11 @@ reason. Confirming that is phase 0.
 No new sum type, and no typeclass. Three changes, in dependency order.
 
 **A. Finish the rule-level bridge.** WI-880 did the large half. The rest is three
-tickets, and none of them is this proposal's to solve: `WI-20260827-2YHZ3` (a
-rule body cannot bind a result), `WI-20260827-1ZG70` (a meta-predicate's argument
-need not be ground), and `extract_sort_ref`'s unbound result, still unowned.
+tickets — now two, and neither is this proposal's to solve:
+`WI-20260827-2YHZ3` (an answer binding is read one hop and truncates) and
+`WI-20260827-1ZG70` (a meta-predicate's argument need not be ground).
+`extract_sort_ref`'s "unbound result" was the first of those wearing a disguise
+and is withdrawn.
 
 **B. Decide the rule-level surface deliberately.** The resolver's `BuiltinTag`
 list is what a rule may ask about a type, and it is currently an accident of
@@ -221,8 +253,16 @@ YET EMITTED BY THE TYPER" and awaits a "missing seam".
 **There is no missing seam.** The verdict is already in the KB as
 `SortProvidesInfo`, and its presence in a *loaded* KB is the certificate: a
 failed override-refinement check is a **load error**, so there is no KB to
-query. "It loaded" is the proof. Tier 1 is a rule nobody could write, and (A) is
-why.
+query. "It loaded" is the proof.
+
+**And tier 1 is writable today** — that was (A)'s last blocker and it was never
+real. `checked(?carrier, ?spec) :- SortProvidesInfo(sort_ref: ?carrier, spec:
+?view), extract_sort_ref(?view, ?spec)` binds `?spec` to the provision's base
+sort, and since `WI-20260827-2YHZ3` landed `anthill query` DISPLAYS that binding
+too (it answers `?spec = PartialEq / Eq / FiniteCollection / Iterable / Monad /
+Stream`). Note §2b still applies for its own, unrelated reason: a query over the
+`examples/guardians` KB whose goal bridges a host op panics on the test harness's
+`operation_map` entries, so exercise the rule from a Rust test there.
 
 ## Interaction with other proposals
 
@@ -244,13 +284,10 @@ why.
 
 ## Open questions
 
-1. **Why does the arity-2 `extract_sort_ref` goal succeed without binding?** This
-   one is NOT WI-880's — it is a resolver `BuiltinTag`, tier 3, so the hardcoded
-   decline does not explain it. Suspected: the relational view (WI-938) of the
-   arity-1 declaration (`operation extract_sort_ref(inst: Term) -> Symbol`)
-   shadows the arity-2 tag and resolves vacuously. Is the fix to declare it at
-   arity 2, to have the tag win, or to refuse the ambiguity at load? Unowned as
-   far as I can find.
+1. ~~**Why does the arity-2 `extract_sort_ref` goal succeed without binding?**~~
+   **ANSWERED and CLOSED 2026-08-27: it binds.** The goal was never the problem —
+   the ANSWER LINE was, and the suspected arity-1/arity-2 shadowing never
+   happened. See §2(c) and `WI-20260827-2YHZ3`.
 2. **Should `extract` become a resolver builtin too?** It would give rules the
    full view rather than the narrow one, at the cost of constructing a
    `TypeExtractor` value inside SLD. (B) is the decision this depends on.

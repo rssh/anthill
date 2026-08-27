@@ -1950,14 +1950,19 @@ impl Interpreter {
         }
         let mut named: Vec<(crate::intern::Symbol, Value)> = Vec::with_capacity(columns.len());
         for &(name, vid) in columns {
-            // Read the binding through `resolve_as_value` — the single canonical
-            // substitution reader (WI-348), which chases the PARENT frame chain. A
-            // plain `bindings` scan would miss a binding held in a parent frame and
-            // wrongly report the column unbound. The resolver binds a var to a
-            // hash-consed `Value::Term`; REIFY it to a native value (scalar const →
-            // scalar Value, constructor → entity) so the column reads as its element
-            // sort, not a raw Term handle — a `Relation[String]` yields `Value::Str`,
-            // a `Relation[Board]` an entity.
+            // Read the binding through `answer_binding` — the single canonical
+            // ANSWER reader (WI-20260827-2YHZ3), which chases the PARENT frame chain
+            // AND the uncompressed var links a builtin bind leaves behind. A plain
+            // `bindings` scan would miss a binding held in a parent frame; the bare
+            // `resolve_as_value` this used to call missed the other half, and missed
+            // it SILENTLY — a column bound by a rule-body builtin (`rule r(?x) :- ?x
+            // <=> 6`) came back `Value::Var`, i.e. reported unbound, and fell into
+            // the "genuinely binds nothing" arm below that the paragraph after this
+            // one describes. The resolver binds a var to a hash-consed `Value::Term`;
+            // REIFY it to a native value (scalar const → scalar Value, constructor →
+            // entity) so the column reads as its element sort, not a raw Term handle
+            // — a `Relation[String]` yields `Value::Str`, a `Relation[Board]` an
+            // entity.
             //
             // An unbound free var still carries as itself. Post-WI-737 this is no
             // longer the flounder path (that raised above) but the narrower DEFINITE-
@@ -1967,9 +1972,28 @@ impl Interpreter {
             // load time. Still a var in a typed column, so still a lie; but it is a
             // STATIC property of the rule, not an undecided search, so it wants a
             // load-time check rather than this drain-time gate. Not WI-737's scope.
-            let bound = match sol.subst.resolve_as_value(vid).cloned() {
-                Some(Value::Term { id, .. }) => crate::eval::builtins::term_to_value(self, id),
-                Some(v) => v,
+            // That arm is now reached ONLY by that static case — which is what makes
+            // a load-time check the right home for it.
+            //
+            // The column is MATERIALIZED into the interpreter's native value, on
+            // whatever carrier the answer was proved on — a `Value::Term` from a fact
+            // match, a `Value::Node` from a rule-body builtin (WI-246: a rule body's
+            // atoms ride as occurrences). `value_to_native` reads both through
+            // `TermView`, so one call covers them and an already-native carrier (an
+            // external extent row's `Value::Entity`) passes straight through.
+            //
+            // MEASURED, and it is why this conversion is still here rather than
+            // pushed into the consumers (WI-20260827-2YHZ3): removing it and letting
+            // the column carry its handle failed 76 tests across `wi730` / `wi731` /
+            // `wi733` / `wi741` / `wi_yqb1y`, because a relation row is read far
+            // beyond the builtins — Rust-side readers and assertions match
+            // `Value::Str` / `Value::Int` on the column directly. Giving every one of
+            // those a carrier-neutral arm is real work with a real payoff (the duty to
+            // convert is unenforced at every producer, which is how this drain came to
+            // hand `Int64.add` something it could not read); it is filed as
+            // WI-20260827-3ZNBC and is deliberately NOT this ticket.
+            let bound = match self.kb_mut().answer_binding(vid, &sol.subst) {
+                Some(v) => crate::eval::builtins::value_to_native(self, &v),
                 None => Value::Var(Var::Global(vid)),
             };
             named.push((name, bound));

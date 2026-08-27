@@ -1449,3 +1449,6 @@ mod wi_p1tpe_unfold_eq_semantic_test;
 
 #[path = "include/wi_ej5f5_bare_ctor_pattern_test.rs"]
 mod wi_ej5f5_bare_ctor_pattern_test;
+
+#[path = "include/wi_2yhz3_answer_binding_test.rs"]
+mod wi_2yhz3_answer_binding_test;

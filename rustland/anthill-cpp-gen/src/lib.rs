@@ -5484,11 +5484,23 @@ pub fn realizes_effect(
     let solutions = kb.resolve(&[goal], &ResolveConfig::default());
     // A floundered solution binds nothing and proves nothing — drop it rather
     // than read an unbound receiver out of it.
-    let mut receivers: Vec<String> = solutions
+    //
+    // WI-20260827-2YHZ3 — `answer_binding`, not a one-hop `resolve_as_value`: a
+    // receiver bound by a rule-body BUILTIN sits behind an uncompressed var link,
+    // and reading one hop hands `receiver_short_name` a `Var` it cannot name. That
+    // drops the row SILENTLY, which here is worse than elsewhere — the `receivers`
+    // list is the input to the "exactly one arm matched" assertion below, so a
+    // dropped row reads as "no arm matched" (`None`, i.e. this effect is not
+    // realizable) rather than as a read failure. Read in a separate pass because
+    // the read needs `&mut kb` and `receiver_short_name` needs `&kb`.
+    let bindings: Vec<Value> = solutions
         .iter()
         .filter(|s| s.residual.is_empty())
-        .filter_map(|s| s.subst.resolve_as_value(vid))
-        .filter_map(|v| receiver_short_name(kb, &v))
+        .filter_map(|s| kb.answer_binding(vid, &s.subst))
+        .collect();
+    let mut receivers: Vec<String> = bindings
+        .iter()
+        .filter_map(|v| receiver_short_name(kb, v))
         .collect();
     // Sort BEFORE dedup: `dedup` only drops ADJACENT repeats, and solution
     // order is not deterministic (the discrimination tree is HashMap-backed),

@@ -1,0 +1,19 @@
+namespace probe.wi2yhz3
+  import anthill.prelude.{Int64, Bool}
+
+  sort Box
+    entity B(v: Int64)
+  end
+
+  fact B(v: 6)
+
+  -- The minimal case: ONE goal, ONE builtin, no operation anywhere in it.
+  rule builtin_bound(?x) :- ?x <=> 6
+  -- The control: the compressed bind path, always readable at one hop.
+  rule fact_bound(?x)    :- B(v: ?x)
+  -- The deep case: `?x`'s own CHILD sits behind a second uncompressed link.
+  rule nested(?x)        :- ?x <=> B(v: ?y), ?y <=> 6
+  -- The HONEST unbound: `=` is a TEST that never binds (§8.3), so this suspends.
+  -- Its `?_` is the truth, and must survive the fix.
+  rule tested(?x)        :- ?x = 6
+end

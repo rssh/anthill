@@ -11,6 +11,7 @@ use anthill_core::fs_util;
 use anthill_core::intern::{ResolveResult, ScopeId, GLOBAL_SCOPE_NAME};
 use anthill_core::kb::load::{self, FileSourceResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
+use anthill_core::kb::term::VarId;
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
 use anthill_core::parse;
 use anthill_core::parse::error::ParseError;
@@ -1651,7 +1652,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             any_unknown = true;
                             continue;
                         }
-                        print_solutions(&kb, &solutions, qt, cap, stats.truncated);
+                        print_solutions(&mut kb, &solutions, qt, cap, stats.truncated);
                     }
                 }
 
@@ -2284,7 +2285,7 @@ fn print_program_clause_match_results(
 }
 
 fn print_solutions(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     solutions: &[Solution],
     query_term: anthill_core::kb::term::TermId,
     max: usize,
@@ -2301,7 +2302,6 @@ fn print_solutions(
         }
     };
 
-    let printer = TermPrinter::new(kb);
     let limit = if max == 0 {
         solutions.len()
     } else {
@@ -2318,18 +2318,31 @@ fn print_solutions(
     let query_vars = kb.collect_vars(query_term);
 
     for sol in &solutions[..limit] {
-        let bindings: Vec<String> = query_vars
+        // WI-20260827-2YHZ3 — read this solution's bindings, then print them.
+        // The two steps are separate statements rather than one expression
+        // because reading needs `&mut kb` while `TermPrinter` holds `&kb`; they
+        // stay INSIDE the per-solution loop so output still streams (a capped
+        // read of a large answer set prints its first line without materializing
+        // the rest).
+        //
+        // WI-348: read as a `Value` — narrowing to a term would drop a
+        // `Value::Node` binding (e.g. a `denoted` effect label). `answer_binding`,
+        // not `resolve_as_value`: a head var bound by a rule-body BUILTIN sits
+        // behind an uncompressed link, and a one-hop read renders it `?_` — an
+        // answer the resolver got right, printed as unbound.
+        let row: Vec<(VarId, anthill_core::eval::Value)> = query_vars
             .iter()
-            .filter_map(|vid| {
-                // WI-348: read the binding as a Value — narrowing it to a term
-                // would drop a `Value::Node` binding (e.g. a `denoted` effect label).
-                sol.subst.resolve_as_value(*vid).map(|val| {
-                    format!(
-                        "?{} = {}",
-                        kb.local_name_of(vid.name()),
-                        render_value(&printer, kb, val)
-                    )
-                })
+            .filter_map(|vid| kb.answer_binding(*vid, &sol.subst).map(|v| (*vid, v)))
+            .collect();
+        let printer = TermPrinter::new(&*kb);
+        let bindings: Vec<String> = row
+            .iter()
+            .map(|(vid, val)| {
+                format!(
+                    "?{} = {}",
+                    kb.local_name_of(vid.name()),
+                    render_value(&printer, kb, val)
+                )
             })
             .collect();
         // A floundered solution proved nothing — saying "true" would present

@@ -114,3 +114,6 @@ mod wi1044_query_supplier_tie_test;
 
 #[path = "include/wi987_domain_sentinel_test.rs"]
 mod wi987_domain_sentinel_test;
+
+#[path = "include/wi_2yhz3_answer_line_test.rs"]
+mod wi_2yhz3_answer_line_test;

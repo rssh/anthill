@@ -476,8 +476,16 @@ impl Default for ResolveConfig {
 
 /// A successful resolution result: variable bindings collected during proof.
 ///
-/// The substitution is always flat (path-compressed) — read a binding via
-/// `subst.resolve_as_value(vid)` directly, no `walk` needed.
+/// **READ A BINDING WITH [`KnowledgeBase::answer_binding`], never with a bare
+/// `subst.resolve_as_value(vid)`** (WI-20260827-2YHZ3). This doc used to promise
+/// that "the substitution is always flat (path-compressed) … no `walk` needed",
+/// and that was FALSE for every binding a BUILTIN made: the fact fast-path binds
+/// through `bind_compressed` (which re-points the answer link, so one hop lands on
+/// the value), while a builtin binds through `bind_waking` on the
+/// `SuccessWithBindings` merge, which does not compress — leaving `?a ↦ Var(F)`
+/// and `F ↦ 6` both standing. A one-hop read stopped at `Var(F)` and reported an
+/// answer var as unbound. `answer_binding` owns the correct read; its doc carries
+/// the mechanism and why a top-level chase is not enough either.
 ///
 /// `residual` holds the delayed goals that could not be resolved (e.g., a
 /// `nonvar(?x)` where `?x` was never bound by any other goal), carried

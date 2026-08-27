@@ -5197,7 +5197,43 @@ fn subst_var_leaf(
     // at the match, freeing the `&mut kb` call below.
     let t = match subst.resolve_as_value(vid) {
         None => return Rc::clone(occ), // unbound: keep the variable leaf
-        Some(Value::Node(o)) => return Rc::clone(o), // matched child: splice in place
+        // A matched child is spliced in — but SUBSTITUTED INTO FIRST, not spliced
+        // raw (WI-20260827-2YHZ3). This arm used to `return Rc::clone(o)`, which
+        // made σ-application stop after ONE Node→Node hop: for `?x <=> ?y, ?y <=>
+        // ?z, ?z <=> 6` — every link an occurrence, since a rule body's atoms ride
+        // as occurrences (WI-246) — applying σ to `?x` handed back `Var(?z)`, still
+        // a variable, and every reader downstream reported `?x` UNBOUND. The
+        // `Value::Term` arm below never had the gap: `apply_subst` is already a
+        // deep, fixpoint walk. So this was the one carrier where "apply σ" did not
+        // mean what it says, and the asymmetry is what hid it.
+        //
+        // TERMINATION IS STRUCTURAL, not argued. The occurs-checks at the bind sites
+        // (`unify_bind`, the `SuccessWithBindings` merge per WI-1017, the non-`Term`
+        // fact bind per WI-649) make σ acyclic, and an earlier draft of this arm
+        // rested on that plus a guard for the degenerate self-binding `vid ↦ Var(vid)`
+        // that `compose` can synthesize (`{z↦w} ∘ {w↦z}`). That argument does not
+        // cover the general cycle — `x ↦ Node(Var y)`, `y ↦ Node(Var x)`, or
+        // `x ↦ Node(f(… Var x …))` — and the cost of being wrong here is not a wrong
+        // answer but a STACK OVERFLOW on the resolver's per-step goal walk, since the
+        // old `return Rc::clone(o)` terminated unconditionally and this does not
+        // (found by /code-review). So the guard is the occurs-check itself: if the
+        // bound occurrence still mentions `vid` ANYWHERE, splice it in raw exactly as
+        // before rather than recursing into it. That covers the self-binding, the
+        // two-cycle, and the nested cycle with one question, and it is the same
+        // question `occurs_in_value` asks at the bind sites.
+        //
+        // Identity survives: `substitute_occurrence` returns `Rc::clone(occ)` when
+        // nothing changed, so a bound occurrence with no substitutable leaf comes
+        // back as the SAME `Rc` this arm used to return
+        // (`value_fact_full_resolver_search_binds_node_as_value` pins that with
+        // `Rc::ptr_eq`).
+        Some(Value::Node(o)) => {
+            let bound = Rc::clone(o);
+            if kb.occurs_in_value(vid, &Value::Node(Rc::clone(&bound)), subst) {
+                return bound;
+            }
+            return substitute_occurrence(kb, &bound, subst);
+        }
         Some(Value::Term { id: t, .. }) => *t,
         Some(other) => match scalar_value_expr(other) {
             Some(expr) => return NodeOccurrence::new_expr(expr, occ.span, occ.owner),

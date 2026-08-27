@@ -6429,6 +6429,45 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-20260827-2YHZ3 — read one ANSWER binding out of a
+    /// [`Solution`](crate::kb::resolve::Solution)'s substitution. `None` iff `var`
+    /// is bound by nothing at all; otherwise the binding with σ fully applied.
+    ///
+    /// **THE ONE-HOP READ IS WRONG, and it fails by TRUNCATING rather than by
+    /// erroring.** σ is NOT flat, so an answer var commonly sits behind an
+    /// uncompressed link: `?a ↦ Var(F)`, `F ↦ 6`. A bare
+    /// [`Substitution::resolve_as_value`](subst::Substitution::resolve_as_value)
+    /// returns `Var(F)` there — indistinguishable, to every caller, from an answer
+    /// that genuinely bound nothing. Which of the two you get depends on WHICH
+    /// PATH bound the var, and that is invisible at the read:
+    ///
+    ///   * A FACT match binds through `bind_compressed`, which re-points the
+    ///     existing answer link `?a ↦ Var(F)` at the value. One hop then suffices,
+    ///     and this is the common case — which is exactly why the truncation on the
+    ///     other path went unnoticed.
+    ///   * A BUILTIN binds through `bind_waking` on the resolver's
+    ///     `SuccessWithBindings` merge. No compression, so both links stand. Every
+    ///     `<=>`, every arithmetic relation, every resolver `BuiltinTag` lands here.
+    ///
+    /// So `rule k(?x) :- ?x <=> 6` proved `?x = 6` and REPORTED `?x` unbound, for
+    /// as long as its readers asked one hop. Resolution was never wrong: the ground
+    /// query `k(6)` answered true and `k(7)` answered nothing throughout, and a
+    /// CALLING rule saw the binding — only the projection onto the query was lost.
+    ///
+    /// Deep, not a top-level chase: a chase alone still reports `B(v: Var(G))` for
+    /// `?x <=> B(v: ?y), ?y <=> 6`. [`Self::reify_value`] is the existing owner of
+    /// both halves (its own doc states the true invariant — a chain "collapses even
+    /// when σ is not path-compressed") and preserves a non-`Term` carrier's
+    /// identity, so a `Value::Node` answer stays a `Value::Node`.
+    pub fn answer_binding(
+        &mut self,
+        var: VarId,
+        subst: &subst::Substitution,
+    ) -> Option<crate::eval::value::Value> {
+        let bound = subst.resolve_as_value(var)?.clone();
+        Some(self.reify_value(&bound, subst))
+    }
+
     /// WI-629: reify (fully σ-apply) the positional + named children of a compound
     /// value carrier (`Value::Entity`/`Tuple`). The child slices borrow from the
     /// caller's `&Value`, not from `self`, so the `&mut self` [`Self::reify_value`]
