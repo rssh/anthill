@@ -21,9 +21,12 @@ fn ref_term(kb: &mut KnowledgeBase, qualified: &str) -> TermId {
     kb.alloc(Term::Ref(sym))
 }
 
+/// WI-880 — THE FULL CLOSURE, `stdlib/` alone until then. The host bindings carry the
+/// `operation_map` clauses, so without them the reflection accessors are unimplemented
+/// and `contains`'s eval bridge — which reads `a.k` through `field_access` — dies
+/// `OperationBodyMissing`. Invisible while those were registered by hardcoded name.
 fn load_with(extra: &str) -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
     let mut parsed: Vec<_> = files
         .iter()

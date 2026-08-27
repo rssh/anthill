@@ -288,25 +288,40 @@ fn a_migrated_registration_is_visible_to_the_gate() {
          sibling in the same file answers. The separator is the registry, not the \
          sort, not the position, and not `String`"
     );
+    // WI-880 CLOSED THIS ROW, and it is the one this file said would stay open.
+    //
+    // It answered 0 with a residual — VPEWK's documented remainder: "`reduce_op_value`
+    // σ-walks each argument to a `Value` but does not REDUCE an argument that is itself
+    // an op-call, so the bridge sees a `Value::Node` and its ground check declines."
+    // Sound but incomplete.
+    //
+    // WI-880 made it reduce, and NOT as a widening for its own sake: migrating the
+    // reflection surface turned that incompleteness into a WRONG ANSWER, because an
+    // un-reduced call IS a term, so a `Term`-typed parameter passed the ground check and
+    // the host function ran ON THE CALL. Measured, `:- term_as_int(as_term(7)) = none()`
+    // answered 1 DEFINITE where the true value is `some(7)`. `reduce_op_value` now
+    // reduces a HOST callee's arguments before bridging, which fixes that and closes
+    // this row as a side effect — `and(not(false), true)` really is `true`.
     assert_eq!(
         answers(&mut kb, "vpewke.nest(1)"),
-        0,
-        "a host call in a host call's ARGUMENT is not reduced — the argument is \
-         σ-walked, never reduced, so the bridge's ground check declines and the call \
-         residualizes"
+        1,
+        "a host call in a host call's ARGUMENT REDUCES since WI-880 — `reduce_op_value` \
+         reduces a host callee's arguments before the bridge, so the ground check has a \
+         value to accept. It answered 0-with-a-residual before"
     );
-    assert!(
-        total(&mut kb, "vpewke.nest(1)") > 0,
-        "…and unlike `cat` it genuinely SUSPENDS — the residual is present. This is \
-         the row that makes the two remainders distinguishable rather than both \
-         reading as `0`"
+    assert_eq!(
+        total(&mut kb, "vpewke.nest(1)"),
+        1,
+        "…definitely, with no residual beside it. `answers` alone cannot tell a \
+         reduction from a suspension, which is why both are asserted"
     );
     assert_eq!(
         answers(&mut kb, "vpewke.deep(1)"),
         1,
-        "CONTROL: the same nesting through a BODIED op DOES reduce — \
-         `reduce_op_value` recurses over the folded body at `depth + 1`. So the row \
-         above is about argument reduction, not about depth"
+        "CONTROL: the same nesting through a BODIED op always did reduce — \
+         `reduce_op_value` recurses over the folded body at `depth + 1`. It passes \
+         EITHER WAY and is here to show the row above was about the ARGUMENT path \
+         specifically, which is the path WI-880 changed"
     );
 }
 

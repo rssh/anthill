@@ -67,10 +67,18 @@ pub fn rust_stl_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../anthill-stl/anthill")
 }
 
-/// Collect all .anthill files from stdlib + the Rust host bindings.
-/// Use this in place of `collect_anthill_files(&stdlib_dir())` for tests
-/// that depend on `fact Spec[Carrier]` records emitted by the rustland
-/// `provides Carrier language rust` blocks.
+/// Collect all .anthill files from stdlib + the Rust host bindings — the FULL library
+/// closure, and what a test that evaluates anything wants.
+///
+/// Use this in place of `collect_anthill_files(&stdlib_dir())`. The original reason was
+/// the `fact Spec[Carrier]` records the rustland `provides Carrier language rust` blocks
+/// emit; WI-880 made it much wider, because those blocks now also carry the
+/// `operation_map` clauses that register EVERY host implementation — the arithmetic, the
+/// String surface, and all 26 `anthill.reflect` accessors. A KB built from `stdlib/`
+/// alone has no `operation_map` to register from, so those operations are unimplemented
+/// and anything reaching the eval bridge dies `OperationBodyMissing`. Three fixtures were
+/// loading half the library and measuring half the language when the reflect family
+/// migrated; WI-1103 had already made the same call for `incremental_load_test`.
 #[allow(dead_code)]
 pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
     let mut files = collect_anthill_files(&stdlib_dir());

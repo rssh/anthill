@@ -1285,9 +1285,21 @@ mod tests {
     /// `anthill-core/tests/common/mod.rs`'s `STDLIB_PARSED` already uses.
     static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
         std::sync::LazyLock::new(|| {
-            let stdlib_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-            let files = collect_anthill_files(&stdlib_dir);
+            // WI-880 — THE FULL CLOSURE, and it was `stdlib/anthill` ALONE until then.
+            // `stdlib/` carries the language-agnostic declarations; the `provides …
+            // language rust` blocks that say WHICH HOST FUNCTION realizes each operation
+            // live in this crate's own `anthill/` tree, so a KB built from `stdlib/`
+            // alone has no `operation_map` to register from. Invisible while the reflect
+            // surface was registered by hardcoded qualified name in `eval/builtins.rs` —
+            // with it keyed per operation, `field_access` and `splitFirst`'s accessors
+            // are unimplemented here and both tests below died `OperationBodyMissing`.
+            // Same call `wi483_rule_body_method_eval_test` and WI-1103's
+            // `incremental_load_test` made: a fixture that loads half the library
+            // measures half the language.
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let mut files = collect_anthill_files(&root.join("../../stdlib/anthill"));
             assert!(!files.is_empty(), "stdlib empty");
+            files.extend(collect_anthill_files(&root.join("anthill")));
             files
                 .iter()
                 .map(|f| {

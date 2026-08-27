@@ -1,0 +1,82 @@
+-- Rust binding for anthill.reflect. Proposal 038 — host-specific realization lives
+-- separately from the language-agnostic declarations in stdlib/anthill/reflect/.
+--
+-- WI-880: the REFLECTION SURFACE, 26 operations that were registered by hardcoded
+-- qualified name in `eval/builtins.rs`. They answered correctly from an operation body
+-- and were INVISIBLE to every load-time and resolver-time reader of "is this operation
+-- host-backed", because those readers count an `operation_map` entry and not a
+-- hardcoded registration (WI-884's split).
+--
+-- THE CONSEQUENCE WAS NOT COSMETIC, and it is why this family is the one worth naming:
+-- kernel-language.md §5.2's hardcoded decline is DECIDED FALSE rather than suspended,
+-- so `not(term_field(?t, "x") = ?v)` answered 1 out of a call that never ran — a rule
+-- could conclude a POSITIVE fact from a term it never read. Since the whole accessor
+-- surface sat in that half, NO RULE COULD READ A TERM AT ALL. Measured on the guardians
+-- KB: `SortProvidesInfo(spec: ?v), extract(?v, ?e)` yielded no solutions against
+-- hundreds of provisions.
+--
+-- MOST OF THIS FAMILY HAS NO CARRIER, which is the one thing about it that is not like
+-- `Int64` or `String`: twenty of the twenty-six are declared at NAMESPACE level
+-- (`operation extract(t: Term) -> TypeExtractor` sits directly in `namespace
+-- anthill.reflect`, not in a sort). A binding block's target is ordinarily a carrier, and
+-- §8.7 says a namespace-level operation is not BACKING for a provision — that rule is
+-- about discharging `provides`, and it stands. What this block does is different and is
+-- what `operation_map` is actually for: saying which host function REALIZES a declared
+-- operation. DRIVEN before it was written — a namespace-level mapping registers, is seen
+-- by `is_host_mapped_op` / `is_interpreter_mapped_op`, dispatches from an operation body,
+-- and REDUCES as a rule-body goal (`wi880_reflect_mapping_test`).
+namespace anthill.reflect
+
+  -- The namespace-level accessors: the term view, the occurrence view, and the two
+  -- constructors. Every one of these is the host's — they read the engine's own term
+  -- store and occurrence graph, which no anthill body can reach.
+  provides anthill.reflect language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      -- Term -> its parts.
+      term_functor_name: "term_functor_name",
+      term_field: "term_field",
+      term_as_string: "term_as_string",
+      term_as_int: "term_as_int",
+      term_as_entity: "term_as_entity",
+      term_to_string: "term_to_string",
+      term_list_items: "term_list_items",
+      field_access: "reflect_field_access",
+      -- A `Type`'s structure, reified on demand (WI-361): the operation library
+      -- proposal 008 is written around, and the one whose absence from a rule made
+      -- `examples/guardians/lib/safety.anthill`'s tier 1 unwritable.
+      extract: "extract_type_builtin",
+      -- Value -> Term, and the term constructors.
+      as_term: "as_term",
+      fresh_var: "reflect_fresh_var",
+      make_fn: "reflect_make_fn",
+      make_apply: "reflect_make_apply",
+      replace_named_arg: "reflect_replace_named_arg",
+      unify: "reflect_unify",
+      -- The OCCURRENCE view (proposal 043.1): a term plus its identity and span.
+      occurrence_term: "reflect_occurrence_term",
+      occurrence_type: "reflect_occurrence_type",
+      sub_occurrences: "reflect_sub_occurrences",
+      sub_occurrence_labels: "reflect_sub_occurrence_labels",
+      is_modifiable: "reflect_is_modifiable"
+    }
+  end
+
+  -- `KB` and `Substitution` ARE carriers, so these six are the ordinary
+  -- carrier-owned shape — the same one `Int64` and `String` take.
+  provides KB language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      kb: "kb_ambient",
+      loaded: "kb_loaded",
+      execute: "kb_execute",
+      facts_of: "kb_facts_of",
+      stored_facts_of: "kb_stored_facts_of"
+    }
+  end
+
+  provides Substitution language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map { lookup: "subst_lookup" }
+  end
+end

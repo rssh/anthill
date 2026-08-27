@@ -354,8 +354,25 @@ namespace anthill.reflect
   operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
 
   -- ================================================================
-  -- Sort ↔ Term conversion (builtins)
+  -- Sort <-> Term conversion — DECLARED, AND BACKED BY NOTHING
   -- ================================================================
+  --
+  -- WI-880 migrated this namespace's other 26 operations off their hardcoded
+  -- registrations and onto `rustland/anthill-stl/anthill/reflect.anthill`'s
+  -- `operation_map`. These three were NOT part of that, and the difference is worth
+  -- stating rather than leaving to be rediscovered: there was no registration to move.
+  -- They have no host function in any registry, no body, and no `[simp]` equation, so
+  -- they run NOWHERE — not from a rule and not from an operation body either, where the
+  -- other 26 always did work. A call dies `OperationBodyMissing`.
+  --
+  -- The header above said "(builtins)", which was the claim this note corrects.
+  --
+  -- They also escape the load-time backing check, and legitimately: WI-880 narrowed that
+  -- check to a per-OPERATION question, but it walks PROVISIONS, and a namespace-level
+  -- operation discharges none — §8.7's "a namespace-level operation is not backing" is
+  -- the same rule seen from the other side. So nothing refuses them today.
+  -- `wi880_reflect_mapping_test` uses `sort_as_term` as its CONTROL for exactly this
+  -- reason: it is the one name in this namespace that must read as un-mapped.
 
   -- Convert a Type value to its Term representation
   operation sort_as_term(s: Type) -> Term

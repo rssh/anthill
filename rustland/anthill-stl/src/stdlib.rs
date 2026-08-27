@@ -363,6 +363,16 @@ pub static SOURCES: &[(&str, &str)] = &[
         "rustland/anthill-stl/geometry",
         include_str!("../anthill/geometry.anthill"),
     ),
+    // WI-880: the REFLECTION surface's `operation_map`. Same load-bearing shape the
+    // persistence note below describes, and with a wider blast radius: a bundle without
+    // this file has no `extract` / `term_field` / `as_term` / `make_fn` at all, because
+    // those registrations moved off the hardcoded list in `eval/builtins.rs` and onto
+    // this block. `anthill-todo` itself reflects over terms, so dropping it is not a
+    // library-only loss.
+    (
+        "rustland/anthill-stl/reflect",
+        include_str!("../anthill/reflect.anthill"),
+    ),
     // WI-931: this one also carries `operation_map`, which is what registers the
     // six storage operations with the interpreter — a bundle without it has no
     // `persist` / `retract` at all.

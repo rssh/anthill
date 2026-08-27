@@ -42,10 +42,7 @@ use smallvec::SmallVec;
 /// `incremental_load_test` and for the same reason — a fixture that loads half the
 /// library measures half the language.
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files: Vec<_> = [crate::common::stdlib_dir(), crate::common::rust_stl_dir()]
-        .iter()
-        .flat_map(|d| crate::common::collect_anthill_files(d))
-        .collect();
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

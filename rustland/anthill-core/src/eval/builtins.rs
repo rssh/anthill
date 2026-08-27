@@ -186,84 +186,6 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Relation.fix", relation_fix)?;
     register_if_present(interp, "anthill.prelude.Relation.rename", relation_rename)?;
 
-    register_if_present(interp, "anthill.reflect.KB.kb", kb_ambient)?;
-    register_if_present(interp, "anthill.reflect.KB.loaded", kb_loaded)?;
-    register_if_present(interp, "anthill.reflect.KB.execute", kb_execute)?;
-    register_if_present(interp, "anthill.reflect.KB.facts_of", kb_facts_of)?;
-    register_if_present(
-        interp,
-        "anthill.reflect.KB.stored_facts_of",
-        kb_stored_facts_of,
-    )?;
-    register_if_present(interp, "anthill.reflect.Substitution.lookup", subst_lookup)?;
-    register_if_present(interp, "anthill.reflect.unify", reflect_unify)?;
-    register_if_present(
-        interp,
-        "anthill.reflect.term_functor_name",
-        term_functor_name,
-    )?;
-    register_if_present(interp, "anthill.reflect.extract", extract_type_builtin)?;
-    register_if_present(interp, "anthill.reflect.term_field", term_field)?;
-    register_if_present(interp, "anthill.reflect.term_as_string", term_as_string)?;
-    register_if_present(interp, "anthill.reflect.term_as_int", term_as_int)?;
-    register_if_present(
-        interp,
-        "anthill.reflect.term_to_string",
-        reflect_term_to_string,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.term_list_items",
-        reflect_term_list_items,
-    )?;
-    register_if_present(interp, "anthill.reflect.term_as_entity", term_as_entity)?;
-    register_if_present(interp, "anthill.reflect.field_access", reflect_field_access)?;
-    register_if_present(interp, "anthill.reflect.as_term", as_term)?;
-    register_if_present(interp, "anthill.reflect.fresh_var", reflect_fresh_var)?;
-    register_if_present(interp, "anthill.reflect.make_fn", reflect_make_fn)?;
-    // WI-722 (043.1) — the occurrence-BUILD side of a compile-time macro. A
-    // per-shape occurrence builder returning a spliceable `NodeOccurrence` (not a
-    // `Term`, as `make_fn` does). Available wherever eval runs; a macro is the
-    // only caller (at compile time, via the `[simp]` fire hook).
-    register_if_present(interp, "anthill.reflect.make_apply", reflect_make_apply)?;
-    // WI-722 inc 2 (043.1) — the occurrence-READ side of a compile-time macro,
-    // the value-domain complement of the resolver's `occurrence_term` /
-    // `sub_occurrences` / `type_of` goal handlers (`kb/resolve.rs`). A macro reads
-    // its argument occurrences through these (structure via `occurrence_term`,
-    // children via `sub_occurrences`, the typer-stamped type via `occurrence_type`)
-    // and rebuilds through `make_apply`. Registered on the eval side (surface A) so
-    // the macro-eval path (`call_op_bridged`) dispatches them with `Value::Node`
-    // args untouched.
-    register_if_present(
-        interp,
-        "anthill.reflect.occurrence_term",
-        reflect_occurrence_term,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.sub_occurrences",
-        reflect_sub_occurrences,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.sub_occurrence_labels",
-        reflect_sub_occurrence_labels,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.occurrence_type",
-        reflect_occurrence_type,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.is_modifiable",
-        reflect_is_modifiable,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.reflect.replace_named_arg",
-        reflect_replace_named_arg,
-    )?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
 
     // Persistence (proposal 007) is NOT here — WI-931 moved its six operations to
@@ -502,6 +424,55 @@ const HOST_FNS: &[(
     // WI-1121 — the two primitives a content-derived id is minted from (§6.5).
     ("string_slug", 2, string_slug),
     ("string_digest_base32", 2, string_digest_base32),
+    // WI-880 — THE REFLECTION SURFACE, keyed through the same channel as everything
+    // else the host implements. These twenty-six were registered by hardcoded qualified
+    // name, which answered correctly from an operation body and was INVISIBLE to every
+    // reader of "is this operation host-backed" — so a rule could not read a term at
+    // all, and `not(...)` over an accessor answered 1 out of a call that never ran
+    // (kernel-language.md §5.2's decided-false decline). The binding block is
+    // `rustland/anthill-stl/anthill/reflect.anthill`; it also records why twenty of them
+    // take a NAMESPACE target rather than a carrier one.
+    ("term_functor_name", 1, term_functor_name),
+    ("term_field", 2, term_field),
+    ("term_as_string", 1, term_as_string),
+    ("term_as_int", 1, term_as_int),
+    ("term_as_entity", 1, term_as_entity),
+    ("term_to_string", 1, reflect_term_to_string),
+    ("term_list_items", 1, reflect_term_list_items),
+    ("reflect_field_access", 2, reflect_field_access),
+    ("extract_type_builtin", 1, extract_type_builtin),
+    ("as_term", 1, as_term),
+    ("reflect_fresh_var", 1, reflect_fresh_var),
+    ("reflect_make_fn", 2, reflect_make_fn),
+    // WI-722 (043.1) — the occurrence-BUILD side of a compile-time macro: a per-shape
+    // occurrence builder returning a spliceable `NodeOccurrence` (not a `Term`, as
+    // `make_fn` does). Available wherever eval runs; a macro is the only caller, at
+    // compile time via the `[simp]` fire hook.
+    ("reflect_make_apply", 3, reflect_make_apply),
+    ("reflect_replace_named_arg", 3, reflect_replace_named_arg),
+    ("reflect_unify", 3, reflect_unify),
+    // WI-722 (043.1) — the occurrence-READ side of a compile-time macro, the
+    // value-domain complement of the resolver's `occurrence_term` / `sub_occurrences` /
+    // `type_of` goal handlers (`kb/resolve.rs`). A macro reads its argument occurrences
+    // through these (structure via `occurrence_term`, children via `sub_occurrences`,
+    // the typer-stamped type via `occurrence_type`) and rebuilds through `make_apply`.
+    // Reached on the eval side (surface A) so the macro-eval path (`call_op_bridged`)
+    // dispatches them with `Value::Node` args untouched.
+    //
+    // WI-880 moved these two paragraphs here with the registrations they describe. Left
+    // where they were, they sat directly above `register_if_present("…Time.now")` and
+    // read as documentation of `Time.now` — found by /code-review.
+    ("reflect_occurrence_term", 1, reflect_occurrence_term),
+    ("reflect_occurrence_type", 1, reflect_occurrence_type),
+    ("reflect_sub_occurrences", 1, reflect_sub_occurrences),
+    ("reflect_sub_occurrence_labels", 1, reflect_sub_occurrence_labels),
+    ("reflect_is_modifiable", 1, reflect_is_modifiable),
+    ("kb_ambient", 0, kb_ambient),
+    ("kb_loaded", 1, kb_loaded),
+    ("kb_execute", 2, kb_execute),
+    ("kb_facts_of", 2, kb_facts_of),
+    ("kb_stored_facts_of", 2, kb_stored_facts_of),
+    ("subst_lookup", 2, subst_lookup),
     // WI-931 — PERSISTENCE (proposal 007), the first entries here that are keyed
     // to a SPEC rather than to a scalar carrier. Each takes the store as its
     // first argument and resolves THAT VALUE to its registered mirror, so one

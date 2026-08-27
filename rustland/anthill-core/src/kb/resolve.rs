@@ -7516,10 +7516,42 @@ impl KnowledgeBase {
         // fall back to the named arg `p`. A param with neither leaves the call
         // un-ground (residualizes), safe per the WI-483 leave-uninterpreted rule.
         let mut param_args: HashMap<Symbol, Value> = HashMap::new();
+        // WI-880 — REDUCE each argument for a HOST callee, do not merely σ-walk it.
+        //
+        // A σ-walk lowers a nested op-call to a `Value` that still IS the call, and for
+        // most callees that is harmless: the bridge's deep-ground check declines and the
+        // whole call comes back un-reduced, so the goal SUSPENDS (VPEWK's documented
+        // remainder). It is NOT harmless when the parameter is declared `Term`, because
+        // an un-reduced call is a perfectly good term — the ground check PASSES, the host
+        // function RUNS on the call itself, and it commits to a wrong value.
+        //
+        // MEASURED, and it is why this is scoped to the host arm rather than filed:
+        // migrating the reflection surface to `operation_map` (this ticket) turned
+        // `:- term_as_int(as_term(7)) = none()` from 0 solutions into **1 DEFINITE**,
+        // where the true value is `some(7)` — `term_as_int` ran on `Fn(as_term,[7])`,
+        // found no `Const::Int`, and answered `none()`. The `= some(7)` row is 0 both
+        // ways and cannot see this: it is the un-fired path and the wrong-value path
+        // agreeing by accident. Found by /code-review, which probed the complementary
+        // polarity.
+        //
+        // ONLY FOR A HOST CALLEE (`host_op_reducible_at_a_value`), and only its
+        // ARGUMENTS. The general case is deliberately untouched: a body-less SPEC op's
+        // operand may be symbolic ALGEBRA that must stay data (`Set.insert(Set.empty(),
+        // 1)` — the wi616 five), and `unfold_eq_operand`'s neighbouring gate has already
+        // MEASURED that widening reducibility on the case-split path costs completeness
+        // (WI-20260827-XBHX3). Neither is reached here: those callees are mapped in no
+        // interpreter registry, so the recursion below bails on them and returns the
+        // argument untouched.
+        let reduce_args = self.host_op_reducible_at_a_value(op);
         for (i, &p) in params.iter().enumerate() {
             let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
             match self.walk_arg(item, subst) {
                 Some(a) => {
+                    let a = if reduce_args && depth < FOLD_DEPTH_CAP {
+                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less)
+                    } else {
+                        a
+                    };
                     param_args.insert(p, a);
                 }
                 None => return v,
