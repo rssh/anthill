@@ -2,8 +2,16 @@
 
 ## Status
 
-Draft 2026-08-26. No driver WI yet. Found while trying to write
-`examples/guardians/lib/safety.anthill` as a rule over reflection facts.
+Draft 2026-08-26, **updated 2026-08-27 after `WI-880` landed**. No driver WI yet.
+Found while trying to write `examples/guardians/lib/safety.anthill` as a rule over
+reflection facts.
+
+**Its largest finding is already fixed.** WI-880 migrated the whole
+`anthill.reflect` surface off hardcoded registration, so a rule can now read a
+term and the associated soundness gap is closed. What survives is smaller and is
+recorded below with what changed: a relational view that does not bind, a
+non-ground spec view that (correctly) suspends, an unowned resolver builtin, and
+the `Term`-vs-`Type` column typing.
 
 **This proposal was rewritten once, and the first draft is worth recording
 because it was wrong in an instructive way.** It proposed adding a `TermView`
@@ -57,88 +65,77 @@ type, the reification operation, and an implementation of it.
 
 ## The gap
 
-### 1. `extract` is an eval builtin, so a rule cannot reach it
+### 1. Closed by WI-880 — a rule CAN now read a term
 
-Measured — this rule yields **no solutions** on a KB whose provisions number in
-the hundreds:
+**`WI-880` landed 2026-08-27** ("the reflection surface is host-mapped, and host
+arguments reduce"), migrating all 26 `anthill.reflect` operations off hardcoded
+registration onto `operation_map` — twenty of them through a binding block whose
+target is the NAMESPACE, since they have no carrier. Its own summary states the
+consequence this proposal reported: *"NO RULE COULD READ A TERM … `not(term_as_int(7)
+= some(7))` answered 1 DEFINITE — a positive conclusion drawn from a term the rule
+never read."*
+
+Confirmed live here:
+
+```
+  rule read(1) :- term_as_int(7) = some(7)        ->  1     (was 0, decided false)
+  rule bad(1)  :- not(term_as_int(7) = some(7))   ->  0     (was 1, unsound)
+```
+
+So §"The gap"'s first item is closed, and the soundness hole with it.
+
+### 2. What is left, measured after WI-880
+
+Three things, and only the first is squarely this proposal's.
+
+**(a) The value position works; the arity+1 relational view does not bind.** WI-880
+makes a host op reduce as an OPERAND. It must be written that way, and with `<=>`
+rather than `=`, since `=` is a test that never binds (WI-20260822-F0HHB):
 
 ```anthill
-  rule ext(?view, ?e)
-    :- SortProvidesInfo(sort_ref: ?c, spec: ?view), extract(?view, ?e)
+  extract(?v) <=> ?e        -- reduces
+  extract(?v, ?e)           -- WI-938's relational view: succeeds, ?e unbound
 ```
 
-`extract` is registered in `eval/builtins.rs`, which is the *evaluator's*
-registry. The resolver has its own, disjoint one — `BuiltinTag` in
-`kb/resolve.rs` — and `extract` is not in it. So a type's structure is reachable
-from an operation body and not from a rule body, and nothing says so.
+The second is the same shape as the resolver builtin below, and is what a reader
+reaches for first.
 
-### 2. The rule-level substitute exists, and does not bind
-
-The resolver's registry does carry a bridge, and its documented signature is
-right:
-
-```rust
-    /// `anthill.reflect.typing.extract_sort_ref(?inst, ?result)` — extract
-    /// functor as a nullary Fn (canonical sort-name shape) from
-    /// instantiation term.
-    ExtractSort,
-```
-
-Its implementation is right too: `builtin_extract_sort` reads the head
-carrier-neutrally, special-cases `SortView(name, …)` by taking the first
-positional child's head symbol, falls through to the functor itself for a bare
-`Ref`, and ends in `finish_result(target, ref_term)`. That is precisely the
-bare-vs-parameterized union above, handled.
-
-**But as a rule-body goal it succeeds without binding.** Measured:
-
-```anthill
-  rule checked(?carrier, ?spec)
-    :- SortProvidesInfo(sort_ref: ?carrier, spec: ?view),
-       extract_sort_ref(?view, ?spec)
-```
+**(b) Most `SortProvidesInfo.spec` views are NOT GROUND, so the bridge suspends.**
+Measured — the residual names it exactly:
 
 ```
-  ?c = BigInt, ?s = ?_
-  ?c = BigInt, ?s = ?_
-4 solution(s) shown — more exist, raise --max-results
+residual: unify(term_functor_name(SortView(Iterable,
+            E: EffectsRows(effects_expr: merge(left: open(tail: ?_),
+                                               right: open(tail: ?_))), …)), ?_)
 ```
 
-Genuine solutions, not residuals — the query reports no undischarged goals, and
-chaining `short_name(?spec, ?name)` afterwards then yields **no solutions at
-all**, confirming `?spec` is unbound rather than bound-and-unprintable.
+An effect row with open tails is not ground, and suspending is *correct*. But it
+means the consumer cannot simply walk every provision: a tier-1 rule has to
+tolerate a spec view it cannot decompose, or restrict itself to the ground ones.
+This is the real remaining obstacle for `safety.anthill`, and it was invisible
+while nothing could read a term at all.
 
-**THIS AREA HAS AN OWNER, AND IT IS NOT THE ONE THIS PROPOSAL FIRST NAMED.**
-`WI-20260822-ZJZS7` (*a host-backed operation does not reduce in a rule body*)
-**closed as delivered** by `WI-20260826-VPEWK` on 2026-08-27. Confirmed live in
-this tree: `:- Bool.and(true, true) = true` answers 1, and the `false` case
-answers 0. Neither of the two rows above moved.
+**(c) `extract_sort_ref` still succeeds without binding.** Unchanged by WI-880 —
+it is a resolver `BuiltinTag`, not a host registration, so neither that ticket nor
+VPEWK touches it. Still unowned. See open question 1.
 
-They did not move because VPEWK's gate is *interpreter-mapped* **and**
-effect-free, and "interpreter-mapped" is built from `operation_map` clauses —
-`Bool.{and,or,not}` were **migrated to `operation_map`** to qualify. Nothing in
-`anthill.reflect` has such a clause. `docs/kernel-language.md` §5.2 now states
-this as one of the three surviving declines, and states it as a soundness
-problem rather than an incompleteness:
+### 2b. A side effect worth knowing: guardians is no longer CLI-queryable
 
-> An operation whose host function is registered by **hardcoded name** rather
-> than by an `operation_map` clause is declined for neither reason but because
-> the gate cannot **see** it (WI-884's split) … and — unlike the two above — it
-> is *decided false* rather than suspended, so `not(…)` over it answers **1**.
-> That last is a soundness gap … and it closes when the remaining hardcoded
-> registrations migrate (**WI-880**).
+Now that reflect operations are host-mapped, bridging one builds an interpreter,
+which validates the whole binding block. `examples/guardians`' `operation_map`
+names host functions the *test harness* registers (`guardians_render_task` &c.),
+so any query over that example whose goal bridges a host op now panics:
 
-So **WI-880 owns it**, and the reflection surface is a family that ticket's
-acceptance does not currently name. Measured in this tree:
+```
+broken binding block: operation_map names host function "guardians_render_task"
+for guardians.FileHarness.render_task, which the rust runtime does not provide.
+```
 
-| tier | count | reachable from a rule? |
-|---|---|---|
-| registered by **hardcoded name** (`extract`, `term_field`, `term_as_entity`, `term_functor_name`, `make_fn`, `replace_named_arg`, `as_term`, …) | 29 | **no** — §5.2's hardcoded decline |
-| declared with **no implementation at all** (`sort_as_term`, `term_as_sort`, `can_be_sort`) | 3 | no — and not from an operation body either |
-| resolver `BuiltinTag` (`nonvar`, `ground`, `extract_sort_ref`, `resolve_sort_instantiation_param`, `qualified_name`, `short_name`, `is_entity_of`, `dispatch_carrier`, …) | — | yes |
-
-The consequence is sharper than "one operation is awkward": **no rule can read a
-term at all**, because the entire accessor surface is in tier 1.
+`anthill load examples/guardians` is unaffected (loading builds no interpreter),
+and the in-test path is unaffected (`register_pipeline` supplies them). The
+diagnostic is good — it says outright that it "may surface at a call that has
+nothing to do with" the named operation. Recorded because it changes how this
+proposal's consumer can be exercised: from the Rust test, not from `anthill query`.
 
 ### 3. `TermRepr` and `KB.reify` are dead
 
@@ -180,10 +177,12 @@ reason. Confirming that is phase 0.
 
 No new sum type, and no typeclass. Three changes, in dependency order.
 
-**A. Make the rule-level bridge bind.** Settle why an arity-2
-`extract_sort_ref` goal succeeds without binding, and fix it. Everything else
-here is cosmetic by comparison: this one line is the difference between
-`safety.anthill` being writable and not.
+**A. Finish the rule-level bridge.** WI-880 did the large half. What is left is
+(a) the arity+1 relational view of a host op not binding — write `f(x) <=> ?r`
+instead, or decide the relational view should work; (b) a non-ground spec view
+suspending, which is correct and needs the CONSUMER to accommodate rather than
+the library to change; and (c) `extract_sort_ref` succeeding unbound, which is
+unowned.
 
 **B. Decide the rule-level surface deliberately.** The resolver's `BuiltinTag`
 list is what a rule may ask about a type, and it is currently an accident of
@@ -262,10 +261,10 @@ why.
 ## Phasing
 
 0. **Confirm `SortView`'s status** — pre-WI-361 wrapper, or load-bearing?
-1. **(A)** — the rule-level bridge. Two halves with two owners: the tier-1
-   migration is **`WI-880`'s** (and would give rules `extract` itself), while
-   `extract_sort_ref`'s unbound result is unowned and is the cheaper of the two
-   — it alone unblocks the consumer.
+1. **(A)** — ~~the tier-1 migration~~ **DONE by `WI-880`, 2026-08-27.** What
+   remains of this phase is `extract_sort_ref`'s unbound result (unowned) and the
+   relational-view question; neither blocks a consumer written with `<=>` in
+   value position.
 2. **(B)** — document the two surfaces and the rule between them; delete
    `TermRepr` / `KB.reify` / `KB.reflect`.
 3. **(C)** — `Term` → `Type` on the reflection records.
