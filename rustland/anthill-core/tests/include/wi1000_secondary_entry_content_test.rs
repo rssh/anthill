@@ -4,12 +4,20 @@
 //!
 //! WHAT A SECONDARY ENTRY IS, and why the same text is two different things: 059's
 //! classification is `has_kind(X, Sort)` — an ADDRESS question, not a text one. The
-//! very same `namespace Utils { rule p(1) }` is an ordinary namespace whose rule is
-//! legal, until someone in another file declares `sort Utils` at that address and it
-//! becomes a secondary entry whose rule R3 refuses. That is uncomfortable and 059
-//! records it as such; here it is the CONTROL, driven by
+//! very same `namespace Utils { entity Thing(…) }` is an ordinary namespace whose
+//! content is legal, until someone in another file declares `sort Utils` at that
+//! address and it becomes a secondary entry whose entity R3 refuses. That is
+//! uncomfortable and 059 records it as such; here it is the CONTROL, driven by
 //! [`an_ordinary_namespace_keeps_its_content_rules`], which loads byte-identical
 //! entry text at an address no sort occupies and expects silence.
+//!
+//! THE RULE CLAUSE LEFT THIS FILE IN WI-1001. R3's blanket ban on rules was, in 059's
+//! own words, "the enforced rule, not the intended one" — the intended one admits a
+//! rule whose head INTRODUCES and whose predicate is written entirely in one entry.
+//! Both conditions became computable when WI-980/845G7 and WI-895 landed, and
+//! `wi1001_secondary_entry_rule_test` owns them, both sides. What is left here is
+//! `fact` (refused on the spec-claim DISCRIMINATOR, not on any rule ban) and
+//! `constraint` (refused because it has no head to introduce anything with).
 //!
 //! WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT — measured by deleting the
 //! sub-pass 1b block from `scan_definitions` and re-running, not predicted.
@@ -17,14 +25,16 @@
 //!   * [`a_fresh_bodyless_operation_is_refused`] — FAILS (loads clean). R4 clause 2.
 //!   * [`the_operation_rule_reaches_operation_block_sugar`] — FAILS on its refusing
 //!     row, the sugar half of the same rule.
-//!   * [`every_refused_production_is_refused`] — FAILS in all ten rows. The matrix
-//!     reports every row rather than panicking on the first, so "all ten" is a
+//!   * [`every_refused_production_is_refused`] — FAILS in all eight rows. The matrix
+//!     reports every row rather than panicking on the first, so "all eight" is a
 //!     measurement and not an inference from the row that happened to run.
 //!   * [`an_ordinary_namespace_keeps_its_content_rules`] — FAILS on its second half
-//!     (the entry expects six refusals and gets none); its first half, the ordinary
+//!     (the entry expects five refusals and gets none); its first half, the ordinary
 //!     namespace, passes either way and is the control.
 //!   * [`the_provides_block_interior_is_classified`] — FAILS on both refusing rows;
-//!     059's recursion rule.
+//!     059's recursion rule. Its `rule` row survived WI-1001's narrowing: the block's
+//!     clauses load into the SPEC's scope, so one written there is a clause of another
+//!     type's predicate whatever its head looks like.
 //!   * [`a_proof_reaches_only_its_own_entry`] / [`a_describe_reaches_only_its_own_entry`]
 //!     — FAIL on the foreign-target rows.
 //!   * [`a_type_parameter_is_refused_and_the_control_says_why`] — FAILS on the
@@ -354,16 +364,24 @@ namespace test.wi1000.entry
 end
 "#
     );
-    // Six refusals, one per declaration. The `describe p` row counts because an
-    // UNLABELED rule contributes no citation handle to the entry's declared-name set —
-    // it is not a thing a proof or a description can name either — so its target reads
-    // as foreign. See [`a_describe_reaches_only_its_own_entry`]'s last row for the
-    // case where the target IS recorded despite being refused itself.
+    // FIVE refusals, one per declaration — and the sixth line, `rule p(1) :- true`, is
+    // ADMITTED at BOTH addresses since WI-1001. That is the narrow rule working, not a
+    // hole: its head is fresh and this entry writes every clause of it, which is 059's
+    // "a definition of something new displaces nothing". So the rule is the one line of
+    // `body` this control no longer separates, and the separating row for a rule moved
+    // to `wi1001_secondary_entry_rule_test::an_ordinary_namespace_is_still_not_reached`,
+    // where the head JOINS instead of introducing.
+    //
+    // The `describe p` row counts because an UNLABELED rule contributes no citation
+    // handle to the entry's declared-name set — it is not a thing a proof or a
+    // description can name either — so its target reads as foreign. See
+    // [`a_describe_reaches_only_its_own_entry`]'s last row for the case where the target
+    // IS recorded despite being refused itself.
     assert_eq!(
         r3_errors(&entry).len(),
-        6,
-        "the identical text at a sort's address is a secondary entry, and each of its \
-         six declarations is refused; got {:#?}",
+        5,
+        "the identical text at a sort's address is a secondary entry, and five of its \
+         six declarations are refused; got {:#?}",
         r3_errors(&entry)
     );
 }
@@ -371,7 +389,14 @@ end
 // ── The two lists ───────────────────────────────────────────────────────────
 
 /// EVERY REFUSED PRODUCTION, one row each, every row reported. A matrix rather than
-/// nine tests so that backing the change out names all nine rather than the first.
+/// eight tests so that backing the change out names all eight rather than the first.
+///
+/// `rule` LEFT THIS LIST IN WI-1001. R3's rule clause is no longer a verdict on the
+/// PRODUCTION — 059's narrow rule asks about the head and about who owns the predicate
+/// — so a row here could only assert one arbitrary rule shape. Both of its matrices
+/// live in `wi1001_secondary_entry_rule_test`; the `constraint` row below stays,
+/// because a constraint has NO head and so can never meet the condition that admits a
+/// rule.
 #[test]
 fn every_refused_production_is_refused() {
     let rows: &[(&str, &str, &str)] = &[
@@ -386,8 +411,11 @@ fn every_refused_production_is_refused() {
             "    requires Show[T = Rec]",
             "`requires`",
         ),
-        ("rule", "    rule freshp(1) :- true", "`rule`"),
-        ("rule block", "    rule {\n      freshp(1)\n    }", "`rule`"),
+        // NO `rule` ROW — WI-1001 narrowed the blanket ban to 059's two conditions, so
+        // `rule` is no longer a production this list refuses. Its own matrices, both
+        // sides, are `wi1001_secondary_entry_rule_test`; what is refused there is a head
+        // that does not INTRODUCE or a predicate spread over two entries, neither of
+        // which is a question about the production.
         ("fact", "    fact freshq(2)", "`fact`"),
         (
             "constraint",

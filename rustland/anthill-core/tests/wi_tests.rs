@@ -1167,6 +1167,9 @@ mod wi939_one_definition_test;
 #[path = "include/wi1000_secondary_entry_content_test.rs"]
 mod wi1000_secondary_entry_content_test;
 
+#[path = "include/wi1001_secondary_entry_rule_test.rs"]
+mod wi1001_secondary_entry_rule_test;
+
 #[path = "include/wi1036_builtin_defaulted_dispatch_test.rs"]
 mod wi1036_builtin_defaulted_dispatch_test;
 #[path = "include/wi1040_require_clause_dictionary_test.rs"]

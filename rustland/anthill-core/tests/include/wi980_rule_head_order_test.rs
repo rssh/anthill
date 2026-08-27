@@ -67,6 +67,14 @@
 //! | a mutual-import cycle | two wildcard imports, and nothing names an owner |
 //! | a one-way wildcard import | one wildcard import, and the imported scope is the owner |
 //!
+//! THE SECONDARY-ENTRY SPELLING IS NOT A SEVENTH CHANNEL, and this ticket originally
+//! read it as one. A `namespace Rec` at `sort Rec`'s address declares into the SORT's
+//! own scope (059 R2), so its edge is the first channel's — the enclosing chain into a
+//! sort — and what differs is the TEXT, not the reach. It ran nowhere while 059 R3
+//! banned rules outright; WI-1001 narrowed that ban, and
+//! [`a_rule_in_a_secondary_entry_is_order_free`] now runs both orders of both arms
+//! through it.
+//!
 //! THE FOURTH CHANNEL IS WHY THE REACH IS ASKED OF THE RESOLVER AND NOT OF AN ADDRESS. A
 //! `requires` parent sits at no particular address, so any key derived from the qualified
 //! NAME answers it by text order — measured under the fixpoint, an attempt keyed on
@@ -987,28 +995,74 @@ fn a_head_that_binds_is_not_an_owner() {
 }
 
 #[test]
-fn a_rule_in_a_secondary_entry_is_still_refused() {
-    // WI-980 asks for the SECONDARY-ENTRY spelling as the second channel. It does not
-    // load: WI-1000 shipped 059 R3 after this ticket was written. Pinned here so the
-    // substitution ([`nested_namespace_rule_written_second`]) is recorded rather than
-    // silent — if R3's blanket ban is ever narrowed (WI-1001), this row fails and the
-    // spelling the ticket actually named becomes available as a fourth channel.
+fn a_rule_in_a_secondary_entry_is_order_free() {
+    // THE SPELLING THIS TICKET ASKED FOR, finally available. WI-980 named the 059
+    // secondary-entry block as a second channel of the order question and could not use
+    // it: WI-1000 shipped R3's blanket rule ban after this ticket was written, so the
+    // spelling did not load at all and the row could only PIN the refusal. WI-1001
+    // narrowed the ban to 059's two conditions, and the fresh-headed spelling below is
+    // admitted — so the channel runs.
     //
-    // PASSES EITHER WAY, BY DESIGN: sub-pass 1b refuses before sub-pass 3 runs at all.
-    // THE TWO HEADS CARRY DIFFERENT NAMES, deliberately. R3 refuses the `rule` whatever
-    // it is called; spelling both `p` would ALSO collide them (845G7) and this row would
-    // pin two refusals while claiming to pin one.
+    // BOTH ARMS, BOTH ORDERS, because a pair that agrees in only one order measures
+    // nothing. The enclosing `rule p(1)` moves from above the sort to below it and the
+    // program must not change.
+    //
+    // ARM 1 — DISTINCT NAMES: one program either way, the entry's clause at the SORT's
+    // address (WI-894 scoping) and the enclosing one at the namespace's.
+    for (label, order) in [
+        (
+            "enclosing head FIRST",
+            "  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n  end\n  \
+             namespace Rec\n    rule secondary(2) :- true\n  end\n",
+        ),
+        (
+            "enclosing head LAST",
+            "  sort Rec\n    entity rec(n: Int64)\n  end\n  namespace Rec\n    \
+             rule secondary(2) :- true\n  end\n  rule p(1) :- true\n",
+        ),
+    ] {
+        let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with(&format!(
+            "namespace wi980.sec\n{order}end\n"
+        )));
+        assert_eq!(clauses(&kb, "wi980.sec.Rec.secondary"), Some(1), "{label}");
+        assert_eq!(
+            clauses(&kb, "wi980.sec.secondary"),
+            None,
+            "{label}: the entry's head is scoped where it is WRITTEN — the sort"
+        );
+        assert_eq!(clauses(&kb, "wi980.sec.p"), Some(1), "{label}");
+        assert_eq!(clauses(&kb, "wi980.sec.Rec.p"), None, "{label}");
+        assert_eq!(answers(&mut kb, "wi980.sec.Rec.secondary(2)"), 1, "{label}");
+        assert_eq!(answers(&mut kb, "wi980.sec.p(1)"), 1, "{label}");
+    }
+    // ARM 2 — THE SAME NAME AT BOTH SCOPES, which is 845G7's refusal and not R3's: two
+    // scopes that can see each other may not both introduce one name, and a secondary
+    // entry's scope IS the sort's, so the pair is `wi980.sec2` and `wi980.sec2.Rec`
+    // exactly as the sort-body channel's is. The SAME verdict in both orders is the
+    // claim; a differing one is the defect this file exists for.
     for order in [
         "  rule p(1) :- true\n  sort Rec\n    entity rec(n: Int64)\n  end\n  \
-         namespace Rec\n    rule secondary(2) :- true\n  end\n",
+         namespace Rec\n    rule p(2) :- true\n  end\n",
         "  sort Rec\n    entity rec(n: Int64)\n  end\n  namespace Rec\n    \
-         rule secondary(2) :- true\n  end\n  rule p(1) :- true\n",
+         rule p(2) :- true\n  end\n  rule p(1) :- true\n",
     ] {
         crate::common::expect_load_errors(
-            crate::common::try_load_kb_with(&format!("namespace wi980.sec\n{order}end\n")),
-            &["`rule` is not allowed in a secondary entry of sort 'wi980.sec.Rec'"],
+            crate::common::try_load_kb_with(&format!("namespace wi980.sec2\n{order}end\n")),
+            &["the rule head `p` introduces that name at 2 scopes"],
         );
     }
+    // AND THE REMEDY 061 NAMES IS NOT AVAILABLE HERE, which is worth pinning rather than
+    // leaving for someone to discover: declaring `p` in the sort makes the entry's head
+    // DENOTE, and 059 R3 condition (1) refuses a secondary-entry rule whose head does
+    // not introduce. The repair for an entry is the one 059 gives — write the rule in
+    // the sort's own declaration.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(
+            "namespace wi980.sec3\n  sort Rec\n    entity rec(n: Int64)\n    rule p(?x)\n  \
+             end\n  namespace Rec\n    rule p(2) :- true\n  end\nend\n",
+        ),
+        &["`rule` is not allowed in a secondary entry of sort 'wi980.sec3.Rec'"],
+    );
 }
 
 #[test]

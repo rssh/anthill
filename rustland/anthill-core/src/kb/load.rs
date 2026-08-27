@@ -1124,6 +1124,11 @@ pub enum LoadError {
     /// same-entry proofs and `provides` claims are admitted, and everything else —
     /// starting with the constructs that would REDEFINE the type — is refused here.
     ///
+    /// A `rule` carries this variant too, but its verdict is NOT taken by
+    /// [`SecondaryEntryPass`]: 059's narrow rule (WI-1001) asks two whole-program
+    /// questions, so sub-pass 1b defers and [`judge_secondary_entry_rules`] raises
+    /// this error in sub-pass 3, through [`secondary_entry_rule_error`].
+    ///
     /// Span-bearing and [`LoadError::Located`]-wrapped, unlike its two neighbours
     /// above: one refused construct sits in exactly one file, so a file prefix names
     /// it exactly. (The sort it belongs to may be declared elsewhere; the message
@@ -1142,7 +1147,16 @@ pub enum LoadError {
         name: Option<String>,
         /// 059's own clause for the refusal — see [`secondary_entry_message`], which
         /// owns every other word of the rendering.
-        reason: &'static str,
+        ///
+        /// OWNED, not `&'static str`, since WI-1001: the narrow rule's refusals name
+        /// the PREDICATE and the other place a clause of it is written (another
+        /// file's entry, the main entry, the symbol the head landed on), and a
+        /// refusal that cannot say WHICH other site is the reason names a rule the
+        /// author must then hunt for. The static clauses hand their `&'static str`
+        /// through unchanged — [`SecondaryEntryPass::refuse`] takes `impl
+        /// Into<String>` — so this widens the channel without splitting the sentence
+        /// owner in two.
+        reason: String,
         span: Span,
     },
     /// WI-1000 — a `provides Spec[…]` CLAUSE written in a namespace that names no
@@ -4328,15 +4342,32 @@ pub fn scan_definitions_with_sources(
     // rather than through its cascade. Per file, because an entry is one FILE's text
     // at one address (059's Definitions) — so the pass's state is per file too, and
     // `finish` reports the verdicts that needed all of it.
+    //
+    // WI-1001 — WHAT IT CANNOT DECIDE, IT DEFERS. 059's narrow rule for a `rule` in a
+    // secondary entry asks two whole-program questions — does the head introduce in the
+    // FINISHED program, and does ONE entry own every clause of it — neither of which
+    // has an answer before sub-pass 2 has wired imports and sub-pass 3 has collected
+    // every file's heads. `entry_rules` carries them there; the verdict is
+    // [`judge_secondary_entry_rules`].
+    let mut entry_rules: Vec<SecondaryEntryRule> = Vec::new();
+    // WI-1001 — the `(file_idx, span.start)` of every fact 1b refuses in a secondary
+    // entry. Condition (2) counts a fact as a CLAUSE, and must not report one written in
+    // ANOTHER entry as "written in the main entry": the fact ban already reports that
+    // fact, and a second message naming the wrong place is worse than none.
+    let mut entry_facts: HashSet<(usize, u32)> = HashSet::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         let mut file_errors = Vec::new();
         let mut pass = SecondaryEntryPass {
             kb,
             parse_sym: &file.symbols,
+            parse_terms: &file.terms,
             errors: &mut file_errors,
+            file_idx,
             declared: HashMap::new(),
             targets: Vec::new(),
+            rules: &mut entry_rules,
+            facts: &mut entry_facts,
         };
         walk_scopes(&mut pass, &file.items, global);
         pass.finish();
@@ -4408,6 +4439,8 @@ pub fn scan_definitions_with_sources(
     // before the whole program is in hand, and the guarantee this pass offers is over
     // ONE scan's files.
     let mut heads: Vec<RuleHeadSite<'_>> = Vec::new();
+    // WI-1001 — see [`FactHeadSite`]. Collected on the same walk, kept in its own list.
+    let mut fact_heads: Vec<FactHeadSite<'_>> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-745 / WI-953: this pass reports now, so its errors are stamped with
@@ -4421,6 +4454,7 @@ pub fn scan_definitions_with_sources(
             parse_terms: &file.terms,
             file_idx,
             sites: &mut heads,
+            facts: &mut fact_heads,
             errors: &mut file_errors,
         };
         walk_scopes(&mut pass, &file.items, global);
@@ -4441,6 +4475,23 @@ pub fn scan_definitions_with_sources(
         })
         .collect();
     let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
+    // WI-1001 / 059 R3's NARROW RULE — the verdict on every rule sub-pass 1b deferred.
+    // HERE, because this is the first point at which both of 059's conditions have an
+    // answer: `denotes` is the ladder read against the finished name table, and `heads`
+    // is every clause of every predicate in the program. Before the refusals below, so
+    // that a rule R3 will not admit is reported as itself rather than through the
+    // collision or the missing declaration it goes on to cause.
+    let r3_refused = judge_secondary_entry_rules(
+        kb,
+        &heads,
+        &fact_heads,
+        &denotes,
+        &resolved,
+        &entry_rules,
+        &entry_facts,
+        files,
+        &mut errors,
+    );
     // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
     //
     // The ladder above answers one question — does the name resolve — for every head
@@ -4660,6 +4711,15 @@ pub fn scan_definitions_with_sources(
             // Measured before the suppression existed, on `wA`+`wB` in one file with `wA`
             // reopened in a second: two errors naming two different scopes.
             if collided.contains(&(owner, name)) {
+                continue;
+            }
+            // AND SO IS ONE 059 R3 REFUSED. WI-1001 — this message's repair is "declare
+            // it once, in the scope that owns it", and R3 refuses a declaration in a
+            // secondary entry (it is the spread across entries that condition (2)
+            // forbids). Printing both would prescribe a repair the other error refuses,
+            // for one fault. MEASURED before this suppression: two secondary entries in
+            // two files, each introducing `freshp`, reported R3's refusal AND this one.
+            if r3_refused.contains(&(owner, name)) {
                 continue;
             }
             // ONE error per predicate, located at its FIRST head — not one per head. The
@@ -7442,11 +7502,24 @@ struct DeferredTarget {
 struct SecondaryEntryPass<'a> {
     kb: &'a KnowledgeBase,
     parse_sym: &'a crate::intern::SymbolTable,
+    parse_terms: &'a SimpleTermStore,
     errors: &'a mut Vec<LoadError>,
+    /// WI-1001 — which file this walk is over. An entry is one FILE's text at one
+    /// address (059 Definitions), so a deferred rule carries it, and it is also the
+    /// key sub-pass 3 joins a [`SecondaryEntryRule`] to its [`RuleHeadSite`] on.
+    file_idx: usize,
     /// Per entry ADDRESS, the local names its blocks declare in THIS file.
     declared: HashMap<Symbol, HashSet<String>>,
     /// See [`DeferredTarget`].
     targets: Vec<DeferredTarget>,
+    /// WI-1001 — every rule written in a secondary entry, whose verdict this pass
+    /// cannot take. See [`SecondaryEntryRule`]. Shared across the per-file loop,
+    /// because 059's condition (2) is a question about the whole program.
+    rules: &'a mut Vec<SecondaryEntryRule>,
+    /// WI-1001 — `(file_idx, span.start)` of every fact this pass REFUSES in an entry.
+    /// The verdict is taken here (the fact ban); what sub-pass 3 needs is only that such
+    /// a fact is not attributed to the main entry by condition (2).
+    facts: &'a mut HashSet<(usize, u32)>,
 }
 
 impl ScopePass for SecondaryEntryPass<'_> {
@@ -7682,31 +7755,34 @@ impl SecondaryEntryPass<'_> {
                      qualified (`Show.show(x)`), which needs no clause",
                     r.span,
                 ),
-                Item::Rule(r) => self.refuse(
-                    sort,
-                    "rule",
-                    rule_label(self.parse_sym, r),
-                    RULE_REASON,
-                    r.span,
-                ),
+                // ── Deferred: 059's NARROW RULE (WI-1001) ────────────────────
+                //
+                // A RULE. Not refused, and not admitted, HERE: both of 059's
+                // conditions are whole-program questions this pass cannot ask. Whether
+                // the head INTRODUCES is the ladder's answer against the FINISHED name
+                // table, which sub-pass 2 (imports) has not yet built; whether ONE
+                // ENTRY OWNS THE PREDICATE needs every file's heads in hand. Collected
+                // here — this is the pass that knows the rule is in a secondary entry
+                // at all — and judged in sub-pass 3 by
+                // [`judge_secondary_entry_rules`].
+                Item::Rule(r) => self.defer_rule(address, sort, r),
                 Item::RuleBlock(rb) => {
                     for r in &rb.entries {
-                        self.refuse(
-                            sort,
-                            "rule",
-                            rule_label(self.parse_sym, r),
-                            RULE_REASON,
-                            r.span,
-                        );
+                        self.defer_rule(address, sort, r);
                     }
                 }
-                Item::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
+                Item::Fact(f) => {
+                    // Recorded before the refusal, and for a different reader: the ban
+                    // below is this pass's verdict, while WI-1001's condition (2) needs
+                    // to know the fact is an ENTRY's rather than the main entry's.
+                    self.facts.insert((self.file_idx, f.span.start));
+                    self.refuse(sort, "fact", None, FACT_REASON, f.span);
+                }
                 Item::Constraint(c) => self.refuse(
                     sort,
                     "constraint",
                     c.label.as_ref().map(|l| self.written_name(l)),
-                    "facts are rules, and a constraint is a rule with no head — the \
-                     rule ban reaches it",
+                    CONSTRAINT_REASON,
                     c.span,
                 ),
             }
@@ -7732,11 +7808,21 @@ impl SecondaryEntryPass<'_> {
                 | ProvidesItem::NamespaceMap(_)
                 | ProvidesItem::OperationMap(_)
                 | ProvidesItem::ConstMap(_) => {}
+                // REFUSED HERE WHATEVER ITS HEAD, and WI-1001's narrow rule does not
+                // reach it — the block's clauses are not written at this address at
+                // ALL. `load_provides_block` sets the domain and `current_scope` to the
+                // BLOCK'S SPEC (`provides Ord language anthill … end` loads its rules
+                // into `Ord`'s scope, not the entry's), so a clause here is a clause of
+                // ANOTHER type's predicate by construction — 059's condition (2), "one
+                // entry owns the predicate", can never hold for it. The two conditions
+                // are also unaskable of it: neither [`DefinePass`] nor
+                // [`RuleHeadCollectPass`] descends into a `provides` block, so such a
+                // rule is never a [`RuleHeadSite`] and has no ladder answer to read.
                 ProvidesItem::Rule(r) => self.refuse(
                     sort,
                     "rule",
                     rule_label(self.parse_sym, r),
-                    RULE_REASON,
+                    PROVIDES_BLOCK_RULE_REASON,
                     r.span,
                 ),
                 ProvidesItem::RuleBlock(rb) => {
@@ -7745,7 +7831,7 @@ impl SecondaryEntryPass<'_> {
                             sort,
                             "rule",
                             rule_label(self.parse_sym, r),
-                            RULE_REASON,
+                            PROVIDES_BLOCK_RULE_REASON,
                             r.span,
                         );
                     }
@@ -7772,6 +7858,9 @@ impl SecondaryEntryPass<'_> {
                 // and that population is exactly what the default-deny rule refuses.
                 // The corpus pays nothing — it contains no secondary entry, so no
                 // block sits inside one.
+                // NOT recorded in `facts`: a block's clauses load into the SPEC's
+                // scope, so this fact is never a clause of a predicate at THIS address
+                // and condition (2)'s census cannot reach it either way.
                 ProvidesItem::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
                 ProvidesItem::Proof(p) => {
                     self.defer_target(address, sort, "proof", &p.target, p.span)
@@ -7893,6 +7982,27 @@ impl SecondaryEntryPass<'_> {
         self.declared.entry(address).or_default().extend(names);
     }
 
+    /// WI-1001 — remember a rule written in a secondary entry, for
+    /// [`judge_secondary_entry_rules`].
+    ///
+    /// `is_declaration` is read HERE rather than there because it is a question about
+    /// the rule's own TEXT ([`rule_reading`], the single decider pass 1's mint shares),
+    /// and sub-pass 3 keeps no `&Rule`. It is the one verdict the narrow rule cannot
+    /// take off the head site alone: a 061 DECLARATION mints its own name in pass 1, so
+    /// its head DENOTES — to itself — and the ladder answer that means "someone else
+    /// already declared this" for a clause means the opposite for a declaration.
+    fn defer_rule(&mut self, address: Symbol, sort: &str, r: &Rule) {
+        self.rules.push(SecondaryEntryRule {
+            file_idx: self.file_idx,
+            address,
+            sort: sort.to_string(),
+            label: rule_label(self.parse_sym, r),
+            is_declaration: rule_reading(r, self.parse_sym, self.parse_terms)
+                == RuleReading::Declaration,
+            span: r.span,
+        });
+    }
+
     fn defer_target(
         &mut self,
         address: Symbol,
@@ -7997,41 +8107,120 @@ impl SecondaryEntryPass<'_> {
         sort: &str,
         construct: &'static str,
         name: Option<String>,
-        reason: &'static str,
+        reason: impl Into<String>,
         span: Span,
     ) {
         self.errors.push(LoadError::SecondaryEntryContent {
             sort: sort.to_string(),
             construct,
             name,
-            reason,
+            reason: reason.into(),
             span,
         });
     }
 }
 
-/// 059 R3's rule clause, shared by the four sites that can carry one (a `rule`, a
-/// `rule` block's entry, and both of those inside a `provides` block).
-///
-/// THE BLANKET BAN IS WHAT AN IMPLEMENTATION DOES TODAY, not the intended rule.
-/// 059's narrow rule admits a rule whose head INTRODUCES and whose predicate is owned
-/// by one entry. Both conditions were undecidable while a head's binding depended on
-/// text order (WI-980) and while a rule body could reference what resolves to nothing
-/// (WI-895); both are delivered, so WI-1001 can land the narrow rule.
-const RULE_REASON: &str = "the search over rules is NOT monotone, so a clause added \
-    here can make a statement that was true false — and every proof discharged from \
-    it was verified against a knowledge base that no longer exists. A rule about the \
-    type belongs in the type's own declaration";
+/// 059 R3's rule clause AS IT REACHES A `provides` BLOCK'S INTERIOR — the one rule
+/// site WI-1001's narrow rule does not reach, and the arm that raises it says why.
+const PROVIDES_BLOCK_RULE_REASON: &str = "a `provides Spec language L … end` block \
+    is a REALIZATION, and its clauses are loaded into the SPEC's scope rather than \
+    this entry's — so a rule written here is a clause of ANOTHER type's predicate, \
+    which is the one thing a secondary entry may never add. The search over rules is \
+    not monotone, so such a clause can make a statement that was true false, and \
+    every proof discharged from it was verified against a knowledge base that no \
+    longer exists. 059's narrow rule (a fresh head, owned by one entry) cannot admit \
+    it: the predicate is not this entry's to own";
 
-/// 059's fact ban, written as ONE clause because facts ARE rules: a fact is a rule
-/// with no body, so the rule ban already reaches it. Shared by the entry-level and
-/// the `provides`-block-interior sites.
-const FACT_REASON: &str = "facts are rules — a fact is a rule with no body, so the \
-    rule ban reaches it, and in a secondary entry a `fact Spec[X]` cannot be told \
-    from an ordinary fact over a parameterized data sort. A claim that THIS sort \
-    satisfies a spec is written `provides Spec[…]` here, which is a declaration and \
-    needs no discriminator; a claim about ANY OTHER carrier is not about this sort at \
-    all and belongs one level out, where `fact Spec[Carrier]` stays the spelling";
+/// 059's condition (1), REFUSED SIDE — the head does not introduce, so a goal that
+/// already exists is about it. Built rather than `const`, because the whole point of
+/// the sentence is to name what the head landed on.
+fn head_joins_reason(name: &str, landed_on: &str) -> String {
+    format!(
+        "the head `{name}` does not INTRODUCE — it resolves to {landed_on}, so this \
+         clause EXTENDS a predicate that already exists. The search over rules is not \
+         monotone, so a clause added here can make a statement that was true false, \
+         and every proof discharged from it was verified against a knowledge base \
+         that no longer exists. 059 R3 admits a rule in a secondary entry only when \
+         its head resolves to nothing in the finished program"
+    )
+}
+
+/// 059's condition (2), REFUSED SIDE — the predicate's clauses are spread over more
+/// than one entry, so it is assembled by parties that never agreed on it. `elsewhere`
+/// names where the other clauses are.
+fn predicate_spans_entries_reason(name: &str, elsewhere: &str) -> String {
+    format!(
+        "the predicate `{name}` is assembled from more than one entry: {elsewhere}. \
+         059 R3 admits a rule in a secondary entry only when EVERY clause of its head \
+         is written in that same entry — the main entry, or one file's text at that \
+         address — because two entries composing one predicate collide with nothing \
+         and agree about nothing. Two `namespace` blocks in ONE file are one entry and \
+         compose freely; a second file's is a second party"
+    )
+}
+
+/// 059's conditions, as they reach a head that introduces NO NAME AT ALL: a DOT rule
+/// or an OPERATOR rule (whose functor is the desugar's `dot_apply` / `add`), a
+/// QUALIFIED head (which references rather than introduces), or several heads at once.
+///
+/// Excluded by condition (1) rather than by a clause of their own, which 059 calls the
+/// sign the condition is the right one — and it is what keeps the `[simp]`-fires-in-
+/// the-typer hazard out: a desugared conclusion introduces nothing, so it can only ever
+/// be a clause of a predicate someone else owns.
+const HEAD_INTRODUCES_NOTHING_REASON: &str = "this head introduces no name at all — a \
+    DOT rule (`?x.m(?y)`) and an OPERATOR rule (`?a + ?b`) carry the desugar's own \
+    functor, a QUALIFIED head references an existing symbol, and a rule with several \
+    heads names no single predicate. So the clause joins a predicate written \
+    elsewhere, and the search over rules is not monotone: it can make a statement that \
+    was true false. 059 R3 admits a rule in a secondary entry only when its head \
+    INTRODUCES";
+
+/// 061's DECLARATION form, in a secondary entry. Refused, and the reason is 059's
+/// condition (2) rather than a new rule: a declaration exists precisely to let a
+/// predicate's clauses live in more than one file or scope, which is the spread
+/// condition (2) forbids here — and inside one entry the clauses declare the predicate
+/// themselves (061 §"auto-declaration stops at the file boundary").
+const RULE_DECLARATION_REASON: &str = "a body-less `rule` DECLARES a predicate (061), \
+    and a declaration is what lets clauses written in other files and other scopes land \
+    on it — exactly the spread 059 R3 forbids a secondary entry, whose rule must own \
+    every clause of its own head. Inside one entry a declaration buys nothing: the \
+    entry's own clauses auto-declare the predicate. Drop it, or declare the predicate \
+    in the sort's own declaration — where its clauses then belong too";
+
+/// 059's fact ban. Shared by the entry-level and the `provides`-block-interior sites.
+///
+/// WI-1001 MOVED THE WEIGHT ONTO THE DISCRIMINATOR, and the old first clause had to
+/// go: it read "facts are rules … so the rule ban reaches it", and there is no longer
+/// a rule ban for it to reach. Since 061 a `fact H` IS `rule H :- true`, so a fact
+/// with a FRESH head satisfies both of the narrow rule's conditions — what refuses it
+/// here is the second clause alone, which is about the SPELLING and not about the
+/// head: `maybe_emit_fact_provides_info` recognises a spec claim by SHAPE (a functor
+/// that is a sort with at least one type parameter), and that shape cannot be told
+/// from an ordinary fact over a parameterized DATA sort. Nothing is thereby
+/// unwritable: the rule spelling of the same assertion is admitted by the narrow rule,
+/// and the message says so.
+const FACT_REASON: &str = "in a secondary entry a `fact Spec[X]` cannot be told from \
+    an ordinary fact over a parameterized data sort — the claim is recognised by \
+    SHAPE, and default-deny refuses the spelling rather than guess. A claim that THIS \
+    sort satisfies a spec is written `provides Spec[…]` here, which is a declaration \
+    and needs no discriminator; a claim about ANY OTHER carrier is not about this sort \
+    at all and belongs one level out, where `fact Spec[Carrier]` stays the spelling. \
+    An ordinary assertion with a FRESH head is written as the rule it desugars to \
+    (`rule freshp(1) :- true`), which 059 R3's narrow rule admits";
+
+/// 059's constraint ban.
+///
+/// WI-1001 — ITS OLD REASON WAS THE RULE BAN ("a constraint is a rule with no head —
+/// the rule ban reaches it"), and the narrow rule is not a ban for it to borrow. The
+/// honest reason is the one that survives the narrowing: the narrow rule admits a rule
+/// because its head INTRODUCES something new, and a constraint HAS no head. It defines
+/// nothing, adds a whole-KB integrity guard, and can only ever take answers away —
+/// which is the non-monotonicity 059 refuses a secondary entry, in its strongest form.
+const CONSTRAINT_REASON: &str = "a constraint is a rule with NO HEAD: it introduces \
+    nothing and can only take answers away, so it can never satisfy the one condition \
+    that admits a rule here — that the head introduce a predicate no existing goal can \
+    be about. Its guard is over the whole knowledge base, which is a statement about \
+    the type's callers, not a member added to the type";
 
 /// WI-1000 — DOES THIS DECLARATION'S WRITTEN NAME PUT IT AT ANOTHER ADDRESS? A DOTTED
 /// name declares into the namespace its prefix names — `ensure_intermediate_namespaces`
@@ -8095,6 +8284,310 @@ fn rule_label(parse_sym: &crate::intern::SymbolTable, r: &Rule) -> Option<String
     r.label
         .as_ref()
         .map(|l| join_segments(parse_sym, &l.segments))
+}
+
+/// ONE RULE WRITTEN IN A SECONDARY ENTRY, waiting for 059 R3's NARROW RULE — WI-1001.
+///
+/// THE BLANKET BAN WAS NEVER THE INTENDED RULE. 059: "a rule is a definition, and a
+/// definition of something new displaces nothing — so a secondary entry may declare a
+/// rule exactly when both hold: (1) its head INTRODUCES … and (2) ONE ENTRY OWNS THE
+/// PREDICATE". Neither was computable when WI-1000 shipped: (1) had no stable answer
+/// while text order decided whether a head introduces (WI-980), and it was unsound
+/// while a rule body could reference what resolves to nothing (WI-895), so a
+/// pre-existing REFERENCE could exist with no DEFINITION for the head to be told apart
+/// from. Both are delivered.
+///
+/// COLLECTED IN SUB-PASS 1b, JUDGED IN SUB-PASS 3, and the split is not a schedule: 1b
+/// is the only pass that knows a rule sits in a secondary entry (an ADDRESS question —
+/// `has_kind(X, Sort)` — that the grammar cannot answer), and sub-pass 3 is the only
+/// place both conditions have answers. `(file_idx, span.start)` is the join key to the
+/// [`RuleHeadSite`] the same rule produces there.
+struct SecondaryEntryRule {
+    /// The file the entry's text is in. 059 individuates a secondary entry as one
+    /// FILE's text at one address, so this is half the entry's identity — and half the
+    /// join key.
+    file_idx: usize,
+    /// The entry's ADDRESS: the sort's symbol, the other half of its identity. Two
+    /// `namespace X` blocks in one file share it and are ONE entry.
+    address: Symbol,
+    /// The sort's qualified name, for the diagnostic.
+    sort: String,
+    /// The rule's citation label, where it has one.
+    label: Option<String>,
+    /// 061's DECLARATION reading — a body-less plain head. See
+    /// [`SecondaryEntryPass::defer_rule`] for why it is read at collection time.
+    is_declaration: bool,
+    span: Span,
+}
+
+/// A `fact`'s HEAD FUNCTOR, and where it is written — WI-1001's second census.
+///
+/// A FACT IS A CLAUSE, and condition (2) is about clauses. Since 061 `fact H` IS
+/// `rule H :- true`, so a fact in the main entry and a rule in a secondary entry compose
+/// ONE predicate — but a fact is not a [`RuleHeadSite`]: [`RuleHeadCollectPass`] reads
+/// `Item::Rule` and `Item::RuleBlock` only, deliberately, because a fact must not MINT
+/// (§5.3 "a fact head … is unscoped") and must not enter 061's multi-file report.
+///
+/// MEASURED BEFORE THIS EXISTED, and found by `/code-review` rather than by a failing
+/// row: `sort Rec { fact freshp(2); rule q(0) :- not freshp(1) }` beside `namespace Rec
+/// { rule freshp(1) :- true }` LOADED CLEAN with `Rec.freshp` holding **two** clauses,
+/// and `q(0)` answering **1 without the entry and 0 with it** — 059's worked harm
+/// verbatim, through the one route R3 exists to close, while the `rule` spelling of the
+/// identical main-entry clause was refused.
+///
+/// SO THE SITE SET IS TWO CENSUSES, not one, and they are kept apart rather than fused:
+/// only condition (2) reads this one.
+struct FactHeadSite<'f> {
+    file_idx: usize,
+    scope: ScopeId,
+    /// Borrowed from the FILE's parse-time symbol table, as [`RuleHeadSite::name`] is.
+    name: &'f str,
+    span: Span,
+}
+
+/// The name a `fact` head is ABOUT — the same shape questions
+/// [`rule_introduced_functor_name`] asks of a predicate head, and for the same reasons:
+/// a DESUGARED head carries the converter's own functor (`?x.m(?y)` → `dot_apply`), and
+/// a QUALIFIED one references a symbol elsewhere rather than naming this scope's.
+/// `None` for either, and for a head that is not an application at all.
+///
+/// NOT shared with `rule_introduced_functor_name` itself, which takes a `&Rule` and
+/// additionally decides the equation/predicate split: a fact has no body and no
+/// connective reading to make (`fact lhs === rhs` is refused at load, WI-1090), so the
+/// question here is strictly the functor's.
+fn fact_head_functor_name<'a>(
+    f: &Fact,
+    parse_sym: &'a crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+) -> Option<&'a str> {
+    if parse_terms.is_minted(f.term) {
+        return None;
+    }
+    let Term::Fn { functor, .. } = parse_terms.get(f.term) else {
+        return None;
+    };
+    let name = parse_sym.local_name(*functor);
+    (!name.contains('.')).then_some(name)
+}
+
+/// 059 R3's NARROW RULE — WI-1001. Judges every rule sub-pass 1b deferred, and returns
+/// the predicates it refused so the caller's 061 report does not print a second,
+/// differently-prescribed message about the same fault.
+///
+/// ONE MESSAGE PER PREDICATE, not per clause. The fault is the predicate — every clause
+/// of it has the same cause and the same repair — and this file's two neighbouring
+/// refusals already report that way ("ONE SUBJECT IS ONE MESSAGE", "ONE MISSING
+/// DECLARATION IS ONE MESSAGE"). Located at the EARLIEST member by (file, offset), so
+/// the line does not depend on the walk order.
+///
+/// THE THREE VERDICTS, IN THE ORDER A READER SHOULD GET THEM:
+///
+/// 1. A 061 DECLARATION anywhere in the group. Its head denotes — to the name IT minted
+///    in pass 1 — so without this arm it would be reported as "joins a predicate that
+///    already exists", which is the opposite of what it does.
+/// 2. Condition (1): the head DENOTES, so a goal that already exists can be about it.
+///    Read off the phase-2 ladder answers, which is what makes the verdict independent
+///    of the order the text is walked in (WI-980).
+/// 3. Condition (2): the predicate's heads are not all written in ONE entry. The sites
+///    are every head at the same `(scope, name)`, and a site is "this entry's" iff 1b
+///    deferred it from the same `(file_idx, address)`. A site 1b did NOT defer is in the
+///    sort's own declaration — the MAIN entry, which 059 makes its own group — since a
+///    head at a sort's scope is written either in that sort's body or in a `namespace`
+///    block at its address, and 1b sees every one of the latter.
+///
+/// A rule whose head is not a [`RuleHeadSite`] at all introduces NO NAME (a dot rule, an
+/// operator rule, a qualified head, several heads) and is refused per rule, since it has
+/// no predicate to group under.
+fn judge_secondary_entry_rules<'f>(
+    kb: &KnowledgeBase,
+    heads: &[RuleHeadSite<'f>],
+    fact_heads: &[FactHeadSite<'f>],
+    denotes: &[bool],
+    resolved: &[ResolveResult],
+    entry_rules: &[SecondaryEntryRule],
+    entry_facts: &HashSet<(usize, u32)>,
+    files: &[&ParsedFile],
+    errors: &mut Vec<LoadError>,
+) -> HashSet<(ScopeId, &'f str)> {
+    let mut refused: HashSet<(ScopeId, &'f str)> = HashSet::new();
+    if entry_rules.is_empty() {
+        return refused;
+    }
+    // THE JOIN KEY, both ways. A rule's span is its identity within its file, and both
+    // passes read it off the same `Rule`.
+    let head_at: HashMap<(usize, u32), usize> = heads
+        .iter()
+        .enumerate()
+        .map(|(i, h)| ((h.file_idx, h.span.start), i))
+        .collect();
+    let entry_at: HashMap<(usize, u32), usize> = entry_rules
+        .iter()
+        .enumerate()
+        .map(|(k, er)| ((er.file_idx, er.span.start), k))
+        .collect();
+
+    // Group the deferred rules by the PREDICATE their head is about.
+    let mut groups: HashMap<(ScopeId, &'f str), Vec<(usize, usize)>> = HashMap::new();
+    for (k, er) in entry_rules.iter().enumerate() {
+        match head_at.get(&(er.file_idx, er.span.start)) {
+            None => errors.push(
+                secondary_entry_rule_error(er, HEAD_INTRODUCES_NOTHING_REASON)
+                    .located_in(files[er.file_idx]),
+            ),
+            Some(&i) => groups
+                .entry((heads[i].scope, heads[i].name))
+                .or_default()
+                .push((k, i)),
+        }
+    }
+    // A DETERMINISTIC report order, so two refused predicates do not print in hash order.
+    let mut ordered: Vec<((ScopeId, &'f str), Vec<(usize, usize)>)> = groups.into_iter().collect();
+    ordered.sort_by_key(|(_, members)| {
+        members
+            .iter()
+            .map(|&(k, _)| (entry_rules[k].file_idx, entry_rules[k].span.start))
+            .min()
+            .expect("a group is created with at least one member")
+    });
+
+    for ((scope, name), members) in ordered {
+        let (first_k, _) = *members
+            .iter()
+            .min_by_key(|&&(k, _)| (entry_rules[k].file_idx, entry_rules[k].span.start))
+            .expect("a group is created with at least one member");
+        let er = &entry_rules[first_k];
+        // 1 — the DECLARATION form.
+        if let Some(&(k, _)) = members.iter().find(|&&(k, _)| entry_rules[k].is_declaration) {
+            errors.push(
+                secondary_entry_rule_error(&entry_rules[k], RULE_DECLARATION_REASON)
+                    .located_in(files[entry_rules[k].file_idx]),
+            );
+            refused.insert((scope, name));
+            continue;
+        }
+        // 2 — condition (1). Asked of EVERY member, not only the first: imports are
+        // file-local (WI-995), so two entries at one address in two files can get
+        // different ladder answers for one spelling, and the one that DENOTES is the
+        // one this condition is about.
+        if let Some(&(k, i)) = members.iter().find(|&&(_, i)| denotes[i]) {
+            let landed_on = match &resolved[i] {
+                ResolveResult::Found(sym) => format!("'{}'", kb.qualified_name_of(*sym)),
+                ResolveResult::Ambiguous(cands) => {
+                    let mut names: Vec<String> = cands
+                        .iter()
+                        .map(|s| format!("'{}'", kb.qualified_name_of(*s)))
+                        .collect();
+                    names.sort();
+                    format!("an ambiguity over {}", names.join(", "))
+                }
+                // Unreachable: `denotes` IS the negation of `NotFound`. Rendered rather
+                // than `unreachable!`d, because a loader must not abort on a shape it
+                // merely did not expect.
+                ResolveResult::NotFound => "a name that resolves elsewhere".to_string(),
+            };
+            errors.push(
+                secondary_entry_rule_error(&entry_rules[k], head_joins_reason(name, &landed_on))
+                    .located_in(files[entry_rules[k].file_idx]),
+            );
+            refused.insert((scope, name));
+            continue;
+        }
+        // 3 — condition (2). EVERY head at this (scope, name), whatever the ladder said
+        // about it — because the ladder answer is the mint DECISION and not the
+        // PLACEMENT, and it is the placement condition (2) is about.
+        //
+        // MEASURED, AND IT REFUTED THE OTHER READING. A `!denotes` filter looks right —
+        // "a head that resolved elsewhere is a clause of what it resolved to" — and is
+        // wrong: `load_rule` remaps the head's name in its scope at LOAD time, by which
+        // point another file's head has MINTED `(scope, name)` there, and a local symbol
+        // beats an import. Driven on three files (a library declaring `p`, a main entry
+        // importing it and writing `rule p(2)`, a secondary entry in a third file
+        // writing a fresh `rule p(3)`): the main entry's clause lands under `Rec.p`
+        // alongside the entry's — `Rec.p` holds 2, `lib.p` holds 1 — though its scan
+        // answer was `lib.p`. That divergence is WI-20260820-JR7BB, not this rule's to
+        // fix; what it settles here is that the two clauses really do end up in ONE
+        // predicate assembled from two entries, which is exactly what (2) refuses.
+        let mut in_main_entry = false;
+        let mut other_files: Vec<usize> = Vec::new();
+        for h in heads.iter().filter(|h| h.scope == scope && h.name == name) {
+            match entry_at.get(&(h.file_idx, h.span.start)) {
+                None => in_main_entry = true,
+                Some(&k) if entry_rules[k].file_idx != er.file_idx => {
+                    if !other_files.contains(&entry_rules[k].file_idx) {
+                        other_files.push(entry_rules[k].file_idx);
+                    }
+                }
+                // A head at THIS scope, written in THIS file, in a `namespace` block
+                // 1b classified: one scope is one address (WI-926), so it can only be
+                // this same entry. Asserted rather than assumed, since the whole
+                // condition rests on it.
+                Some(&k) => debug_assert_eq!(
+                    entry_rules[k].address, er.address,
+                    "one scope is one address: a head at this scope written in this file \
+                     can only be this entry's"
+                ),
+            }
+        }
+        // AND EVERY `fact` AT THAT SAME (scope, name), because a fact IS a clause — see
+        // [`FactHeadSite`] for the measurement that says a main-entry fact silently
+        // composes one predicate with an entry's rule. Only facts written AT this scope:
+        // a fact head is UNSCOPED (§5.3), so one in an ENCLOSING namespace falls to the
+        // bare intern and does not join — measured, `namespace demo { fact freshp(2) …
+        // namespace Rec { rule freshp(1) :- true } }` leaves `Rec.freshp` holding ONE
+        // clause and `Rec.freshp(2)` answering nothing.
+        for f in fact_heads
+            .iter()
+            .filter(|f| f.scope == scope && f.name == name)
+        {
+            if !entry_facts.contains(&(f.file_idx, f.span.start)) {
+                in_main_entry = true;
+            } else if f.file_idx != er.file_idx && !other_files.contains(&f.file_idx) {
+                other_files.push(f.file_idx);
+            }
+        }
+        if in_main_entry || !other_files.is_empty() {
+            let mut wheres: Vec<String> = Vec::new();
+            if in_main_entry {
+                // "the main entry" and not "`sort X`": the type's own declaration may
+                // be a `sort`, an `enum` or a free-standing `entity` (§6.3), and this
+                // pass reads the head's SCOPE rather than the keyword that opened it.
+                wheres.push(format!(
+                    "a clause is written in the main entry — the declaration of '{}' itself",
+                    er.sort
+                ));
+            }
+            other_files.sort_unstable();
+            for f in &other_files {
+                wheres.push(format!(
+                    "another entry at this address is in {}",
+                    files[*f]
+                        .path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| format!("<file {f}>"))
+                ));
+            }
+            errors.push(
+                secondary_entry_rule_error(er, predicate_spans_entries_reason(name, &wheres.join("; ")))
+                    .located_in(files[er.file_idx]),
+            );
+            refused.insert((scope, name));
+            continue;
+        }
+        // ADMITTED — 059's narrow rule, both conditions met. Nothing to say.
+    }
+    refused
+}
+
+/// One R3 rule refusal, so the three verdicts above cannot render it three ways.
+fn secondary_entry_rule_error(er: &SecondaryEntryRule, reason: impl Into<String>) -> LoadError {
+    LoadError::SecondaryEntryContent {
+        sort: er.sort.clone(),
+        construct: "rule",
+        name: er.label.clone(),
+        reason: reason.into(),
+        span: er.span,
+    }
 }
 
 // ── Sub-pass 2: requires + imports ─────────────────────────────────────────
@@ -8627,6 +9120,9 @@ struct RuleHeadCollectPass<'a, 'f> {
     parse_terms: &'f SimpleTermStore,
     file_idx: usize,
     sites: &'a mut Vec<RuleHeadSite<'f>>,
+    /// WI-1001 — a SECOND census, read by 059 R3's condition (2) and by nothing else.
+    /// See [`FactHeadSite`] for why a fact cannot join `sites`.
+    facts: &'a mut Vec<FactHeadSite<'f>>,
     errors: &'a mut Vec<LoadError>,
 }
 
@@ -8663,6 +9159,21 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
                     self.collect(rule, scope, prefix);
+                }
+            }
+            // WI-1001 — recorded, never MINTED. This pass's other output decides
+            // symbols and feeds 061's reports; a fact must reach neither (§5.3: a fact
+            // head is unscoped, and 061's multi-file rule is about rule heads). It is
+            // collected because a fact is a CLAUSE, which is what R3's condition (2)
+            // counts.
+            Item::Fact(f) => {
+                if let Some(name) = fact_head_functor_name(f, self.parse_sym, self.parse_terms) {
+                    self.facts.push(FactHeadSite {
+                        file_idx: self.file_idx,
+                        scope,
+                        name,
+                        span: f.span,
+                    });
                 }
             }
             _ => {}
@@ -28485,12 +28996,16 @@ rule at_the_top(1)
         let global = kb.global_scope();
         let mut errors = Vec::new();
         let mut sites = Vec::new();
+        // WI-1001's fact census rides the same walk; this row is about the DESCENT, so
+        // it collects into a vec it does not read.
+        let mut facts = Vec::new();
         let mut pass = RuleHeadCollectPass {
             kb: &kb,
             parse_sym: &file.symbols,
             parse_terms: &file.terms,
             file_idx: 0,
             sites: &mut sites,
+            facts: &mut facts,
             errors: &mut errors,
         };
         walk_scopes(&mut pass, &file.items, global);

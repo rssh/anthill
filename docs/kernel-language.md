@@ -1065,7 +1065,11 @@ admitted:
 | a `proof`, or a standalone `describe` | allowed **iff its target is declared in this same entry**. A proof writes its verdict back onto the target declaration and a `describe` writes a description onto it, so neither may reach a declaration another entry owns |
 | an `entity`, or a type-parameter binder (`sort T = ?`, `sort ?T`, `sort [T]`, `sort [F] { … }`) | **refused** — a constructor and a type parameter are the type's identity, and identity is declared once (§5.2, §6.3) |
 | a sort-level `requires` | **refused** — a requirement constrains every CALLER of the type's operations, and an entry may not add an obligation to a type's users. The qualified call `Spec.op(x)` needs no clause |
-| a `rule`, a `rule { … }` block, any `fact`, any `constraint` | **refused** — the search over rules is not monotone, so a clause added here can falsify a statement already proved. Facts are rules, so the ban reaches them. Every spec claim an entry can make is written `provides Spec[…]` — including one whose carrier is some OTHER sort, which is a witness claim and so genuinely about this sort (it supplies the dictionary). What the ban costs is only the `fact` SPELLING of those claims, not the claims; `fact Spec[Carrier]` one level out remains available and is the only spelling at an address no type occupies |
+| a `rule`, or a `rule { … }` block entry | **allowed iff BOTH: (1) its head INTRODUCES — the head resolves to nothing in the finished program (§8.6's ladder, asked before any head is minted) — and (2) ONE ENTRY OWNS THE PREDICATE, every clause of that name at that scope being written in this same entry — a `fact` counts, since `fact H` *is* `rule H :- true` (§6.1).** A definition of something new displaces nothing; a clause that JOINS an existing predicate is non-monotone and can falsify a statement already proved. Condition (1) also excludes, without a clause of its own, a dot rule and an operator rule (whose functor is the desugar's `dot_apply` / `add`), a qualified head, and a multi-head rule — none of which introduces anything, so no `[simp]` equation written here can ever rewrite a call the entry does not own. Two `namespace X` blocks in ONE file are ONE entry and compose freely |
+| a body-less `rule p(…)` — 061's predicate DECLARATION | **refused** — a declaration is what lets clauses in other files and other scopes land on one predicate, which is the spread condition (2) forbids an entry; inside one entry the clauses declare the predicate themselves |
+| a `rule` inside a `provides Spec language L … end` block | **refused whatever its head** — the block's clauses load into the SPEC's scope, not the entry's, so one written there is a clause of another type's predicate and condition (2) can never hold |
+| any `fact` | **refused** — a `fact Spec[X]` claim is recognised by SHAPE (a functor that is a sort with type parameters) and cannot be told from an ordinary fact over a parameterized DATA sort, so default-deny refuses the spelling rather than guess. Every spec claim an entry can make is written `provides Spec[…]` — including one whose carrier is some OTHER sort, which is a witness claim and so genuinely about this sort (it supplies the dictionary). `fact Spec[Carrier]` one level out remains available and is the only spelling at an address no type occupies. An ordinary assertion with a fresh head is written as the rule it desugars to, `rule h :- true`, which the row above admits |
+| any `constraint` | **refused** — a constraint has NO head: it introduces nothing and can only take answers away, so it can never meet the condition that admits a rule, and its guard is over the whole knowledge base rather than a member added to the type |
 
 An **entry** is individuated by file: all `namespace X` text at one address
 within one file is ONE secondary entry, and the same text in a second file is a
@@ -1081,10 +1085,22 @@ dotted spelling and the nested-`namespace` spelling of one declaration get one
 verdict. The exception is a dotted `sort <p>.T = ?`, which still registers `T` as
 a type parameter of the enclosing sort and so stays refused.
 
-The rule ban is wider than intended and deliberately so: a rule that *introduces*
-a fresh head owned by one entry is sound, but deciding "introduces" needs a head
-binding that does not depend on declaration order, which §5.3 does not yet
-guarantee.
+Both rule conditions are decided in the scan: (1) is the §8.6 ladder answer read
+before any head is minted, which is what makes it independent of declaration
+order (§5.3, proposal 061); (2) groups a predicate's clauses on `(scope, name)`
+and asks whether every one of them was written in this entry, the main entry
+counting as its own group. That census takes in **rule heads and `fact` heads
+alike** — a fact is a clause, so a `fact` in the main entry and a rule in a
+secondary entry compose one predicate, and counting only rule heads admitted
+exactly the non-monotone change the rule exists to refuse. A fact head is itself
+*unscoped* (§5.3), so only one written **at that scope** joins: one in an
+enclosing namespace does not, and is not counted. Neither was computable until those two answers existed, which is
+why an earlier implementation banned rules here outright.
+
+**What this does NOT close.** A rule extending a predicate declared elsewhere is
+non-monotone *wherever* it is written — an ordinary nested namespace does the
+same, and so does the sort's own body. What is closed is the route a secondary
+entry opens: adding a clause to a type whose declaration one does not own.
 
 **A `provides` clause names its PROVIDER by WHERE it is written, and its CARRIER
 by its bindings** — two questions, and the provision records both (WI-1069). The
@@ -1897,6 +1913,8 @@ The **file** is the unit for the second half for 059 §Definitions' own reason: 
 What the file rule removes is every **cross-file absorption**: a sibling file's head moving another file's clause, a mutual-import cycle picking an owner by file order, one pair at one address giving two different programs. Under 845G7 none of those is even representable — a head never moves — and what remains of them is the two refusals above.
 
 It is a **whole-program property**, and that is a real cost rather than an oversight: a predicate becomes "multi-file" when someone adds a second file, so an edit in one place can require a declaration somewhere else. This is the same discomfort 059 records for secondary entries — a namespace becomes a secondary entry because someone else declared a sort at its address — and it is recorded here rather than discovered.
+
+**Inside a SECONDARY ENTRY the two rules above are not the whole story** (§5.1, proposal 059 R3). A `namespace X` at the address of a sort declares into `X`'s own scope, so its rules would otherwise be ordinary clauses of `X`'s predicates. They are admitted only when the head **introduces** and when **one entry writes every clause** of it — and the declaration form is refused there outright, a declaration being exactly what lets clauses spread past one entry. Where R3 refuses a predicate, the multi-file report above is suppressed: its repair is the declaration R3 forbids, so printing both would prescribe a repair the other error refuses.
 
 **A declaration and an explicit path are what join scopes.** `demo { rule p(?x); rule p(1) :- true; sort Rec { rule p(2) :- true } }` is **one** predicate with two clauses, because `Rec`'s head reaches `p` through its lexical enclosing scope. Across a non-enclosing boundary, the corresponding opt-in is a named import of the declared predicate; `requires`, conversion-style `provides`, and wildcard import open whole scopes and are insufficient on their own (C666A, above). Wanting a separate predicate is §WI-896's case — declare it locally, or write it somewhere else. Without any declaration the pair is the visibility error, because nothing in the text says which of the two readings was meant. The **file** rule still applies on top: two files' clauses explicitly joined at one declared predicate are fine; two files' clauses at an *undeclared* one are not.
 
