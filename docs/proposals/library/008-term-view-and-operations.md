@@ -88,20 +88,25 @@ So §"The gap"'s first item is closed, and the soundness hole with it.
 
 Three things, and only the first is squarely this proposal's.
 
-**(a) The value position works; the arity+1 relational view does not bind.** WI-880
-makes a host op reduce as an OPERAND. It must be written that way, and with `<=>`
-rather than `=`, since `=` is a test that never binds (WI-20260822-F0HHB):
+**(a) A rule body can TEST a result, not BIND one.** `WI-20260827-2YHZ3`. WI-880
+makes a host op REDUCE, and this is about what happens to what it returns —
+neither WI-880 nor VPEWK touched it. Measured with a bodied op and a host op side
+by side:
 
-```anthill
-  extract(?v) <=> ?e        -- reduces
-  extract(?v, ?e)           -- WI-938's relational view: succeeds, ?e unbound
-```
+| form in a rule body | bodied | host |
+|---|---|---|
+| `f(3) = 6` — test against a known value | 1 ✓ | 1 ✓ |
+| `f(3) <=> 6` — unify against a known value | 1 ✓ | — |
+| `f(3) <=> ?r` — unify into a free variable | 1, **unbound** | 1, **unbound** |
+| `f(3, ?r)` — relational view (WI-938) | 1, **unbound** | **0** |
 
-The second is the same shape as the resolver builtin below, and is what a reader
-reaches for first.
+**An earlier draft of this proposal told the reader to write `extract(?v) <=> ?e`
+instead of the relational view. That is wrong** — it succeeds without binding too.
+Only the ground-test row works, and the unbound result then flows onward:
+`twice(3) <=> ?r, Int64.gt(?r, 5)` answers 1 DEFINITE.
 
-**(b) Most `SortProvidesInfo.spec` views are NOT GROUND, so the bridge suspends.**
-Measured — the residual names it exactly:
+**(b) A meta-predicate's argument need not be ground, and the bridge insists.**
+`WI-20260827-1ZG70`. Measured — the residual names it exactly:
 
 ```
 residual: unify(term_functor_name(SortView(Iterable,
@@ -109,11 +114,12 @@ residual: unify(term_functor_name(SortView(Iterable,
                                                right: open(tail: ?_))), …)), ?_)
 ```
 
-An effect row with open tails is not ground, and suspending is *correct*. But it
-means the consumer cannot simply walk every provision: a tier-1 rule has to
-tolerate a spec view it cannot decompose, or restrict itself to the ground ones.
-This is the real remaining obstacle for `safety.anthill`, and it was invisible
-while nothing could read a term at all.
+Suspending is right for `Int64.add` — a logic variable is not a number — and wrong
+here: the functor of `some(?x)` **is** `some`, whatever `?x` is, which is what a
+meta-predicate is for. So after WI-880 the surface is visible to the gate and
+still unusable on the population it was migrated for. **`SortProvidesInfo` itself
+is not the problem** — it is an ordinary relation and enumerates fine; the
+suspension is entirely in the host call downstream of it.
 
 **(c) `extract_sort_ref` still succeeds without binding.** Unchanged by WI-880 —
 it is a resolver `BuiltinTag`, not a host registration, so neither that ticket nor
@@ -177,12 +183,10 @@ reason. Confirming that is phase 0.
 
 No new sum type, and no typeclass. Three changes, in dependency order.
 
-**A. Finish the rule-level bridge.** WI-880 did the large half. What is left is
-(a) the arity+1 relational view of a host op not binding — write `f(x) <=> ?r`
-instead, or decide the relational view should work; (b) a non-ground spec view
-suspending, which is correct and needs the CONSUMER to accommodate rather than
-the library to change; and (c) `extract_sort_ref` succeeding unbound, which is
-unowned.
+**A. Finish the rule-level bridge.** WI-880 did the large half. The rest is three
+tickets, and none of them is this proposal's to solve: `WI-20260827-2YHZ3` (a
+rule body cannot bind a result), `WI-20260827-1ZG70` (a meta-predicate's argument
+need not be ground), and `extract_sort_ref`'s unbound result, still unowned.
 
 **B. Decide the rule-level surface deliberately.** The resolver's `BuiltinTag`
 list is what a rule may ask about a type, and it is currently an accident of
@@ -261,10 +265,10 @@ why.
 ## Phasing
 
 0. **Confirm `SortView`'s status** — pre-WI-361 wrapper, or load-bearing?
-1. **(A)** — ~~the tier-1 migration~~ **DONE by `WI-880`, 2026-08-27.** What
-   remains of this phase is `extract_sort_ref`'s unbound result (unowned) and the
-   relational-view question; neither blocks a consumer written with `<=>` in
-   value position.
+1. **(A)** — ~~the tier-1 migration~~ **DONE by `WI-880`, 2026-08-27.** The rest
+   is `WI-20260827-2YHZ3` + `WI-20260827-1ZG70` (+ `extract_sort_ref`, unowned).
+   The consumer needs BOTH: one decides whether the call runs, the other what
+   happens to its result.
 2. **(B)** — document the two surfaces and the rule between them; delete
    `TermRepr` / `KB.reify` / `KB.reflect`.
 3. **(C)** — `Term` → `Type` on the reflection records.
