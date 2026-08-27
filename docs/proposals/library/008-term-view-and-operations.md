@@ -108,32 +108,37 @@ Genuine solutions, not residuals — the query reports no undischarged goals, an
 chaining `short_name(?spec, ?name)` afterwards then yields **no solutions at
 all**, confirming `?spec` is unbound rather than bound-and-unprintable.
 
-**THIS AREA ALREADY HAS AN OWNER**, and it is
-`WI-20260822-ZJZS7` — *"a host-backed operation does not reduce in a rule body"*.
-That ticket states the split this proposal ran into, measured on `Bool.and`:
+**THIS AREA HAS AN OWNER, AND IT IS NOT THE ONE THIS PROPOSAL FIRST NAMED.**
+`WI-20260822-ZJZS7` (*a host-backed operation does not reduce in a rule body*)
+**closed as delivered** by `WI-20260826-VPEWK` on 2026-08-27. Confirmed live in
+this tree: `:- Bool.and(true, true) = true` answers 1, and the `false` case
+answers 0. Neither of the two rows above moved.
 
-> A rule body reduces (a) a resolver BUILTIN — `Int64.gt` has a `BuiltinTag`,
-> which is why both controls answer — and (b) a BODIED operation, through
-> `bare_bodied_bool_relation` / `reduce_op_value` and the SLD→eval bridge.
-> `Bool.and` is neither: `prelude/bool.anthill` declares `and`/`or`/`not`
-> body-less.
+They did not move because VPEWK's gate is *interpreter-mapped* **and**
+effect-free, and "interpreter-mapped" is built from `operation_map` clauses —
+`Bool.{and,or,not}` were **migrated to `operation_map`** to qualify. Nothing in
+`anthill.reflect` has such a clause. `docs/kernel-language.md` §5.2 now states
+this as one of the three surviving declines, and states it as a soundness
+problem rather than an incompleteness:
 
-`extract_sort_ref` is body-less *and* has a `BuiltinTag`, so by that split it
-should reduce — and it does not bind. So this is either a third row for ZJZS7's
-table or a defect in how the tag is reached. The suspicion worth testing first:
-the operation is *declared* at arity 1
-(`operation extract_sort_ref(inst: Term) -> Symbol` in
-`stdlib/anthill/reflect/typing.anthill`), so an arity-2 rule-body goal is
-WI-938's **relational view** of that declaration, which may resolve vacuously
-before the arity-2 tag is consulted. A body-less operation reached in a rule body
-is documented to leave the goal undecided rather than fail
-(kernel-language.md §"Equational rules"), and undecided-plus-succeeded is what
-the output looks like.
+> An operation whose host function is registered by **hardcoded name** rather
+> than by an `operation_map` clause is declined for neither reason but because
+> the gate cannot **see** it (WI-884's split) … and — unlike the two above — it
+> is *decided false* rather than suspended, so `not(…)` over it answers **1**.
+> That last is a soundness gap … and it closes when the remaining hardcoded
+> registrations migrate (**WI-880**).
 
-Either way the finding belongs to ZJZS7, not here: **this proposal should depend
-on it rather than restate it.** The neighbouring `WI-20260822-F0HHB` (*what
-should `=` mean in a rule body*) is the same family — a goal that suspends
-reading as a solution.
+So **WI-880 owns it**, and the reflection surface is a family that ticket's
+acceptance does not currently name. Measured in this tree:
+
+| tier | count | reachable from a rule? |
+|---|---|---|
+| registered by **hardcoded name** (`extract`, `term_field`, `term_as_entity`, `term_functor_name`, `make_fn`, `replace_named_arg`, `as_term`, …) | 29 | **no** — §5.2's hardcoded decline |
+| declared with **no implementation at all** (`sort_as_term`, `term_as_sort`, `can_be_sort`) | 3 | no — and not from an operation body either |
+| resolver `BuiltinTag` (`nonvar`, `ground`, `extract_sort_ref`, `resolve_sort_instantiation_param`, `qualified_name`, `short_name`, `is_entity_of`, `dispatch_carrier`, …) | — | yes |
+
+The consequence is sharper than "one operation is awkward": **no rule can read a
+term at all**, because the entire accessor surface is in tier 1.
 
 ### 3. `TermRepr` and `KB.reify` are dead
 
@@ -225,19 +230,24 @@ why.
 * WI-361 (representation convergence) is the decision this rests on — a `Type`
   IS an ordinary term, and `TypeExtractor` is its on-demand structure. Nothing
   here reopens it.
-* `WI-20260822-ZJZS7` — *a host-backed operation does not reduce in a rule body*
-  — owns the split behind (2), and this proposal **depends on** it: phase 1 is
-  that ticket's, not this one's. `WI-20260822-F0HHB` (*what should `=` mean in a
-  rule body*) is its neighbour, and both are about a goal that suspends being
-  indistinguishable from one that succeeded.
+* **`WI-880`** — migrate the remaining hardcoded host registrations — owns the
+  tier-1 decline, and this proposal **depends on** it. Its own feedback thread
+  (WI-884, 2026-07-30) already asks to widen its acceptance to cover
+  carrier-owned registrations; the `anthill.reflect` family is 29 more of them.
+* `WI-20260822-ZJZS7` closed as delivered by `WI-20260826-VPEWK`; that fix
+  covers `operation_map`-mapped host ops only. `WI-20260822-F0HHB` (*what should
+  `=` mean in a rule body*) remains the neighbour — a goal that suspends reading
+  as a solution.
 
 ## Open questions
 
-1. **Why does the arity-2 goal succeed?** Owned by `WI-20260822-ZJZS7` (see §2).
-   Suspected: the relational view of the arity-1 declaration shadows the arity-2
-   builtin tag. If so, is the fix to declare `extract_sort_ref` at arity 2, to
-   have the tag win, or to refuse the ambiguity at load? This proposal does not
-   answer it — it supplies one more measured row for that ticket.
+1. **Why does the arity-2 `extract_sort_ref` goal succeed without binding?** This
+   one is NOT WI-880's — it is a resolver `BuiltinTag`, tier 3, so the hardcoded
+   decline does not explain it. Suspected: the relational view (WI-938) of the
+   arity-1 declaration (`operation extract_sort_ref(inst: Term) -> Symbol`)
+   shadows the arity-2 tag and resolves vacuously. Is the fix to declare it at
+   arity 2, to have the tag win, or to refuse the ambiguity at load? Unowned as
+   far as I can find.
 2. **Should `extract` become a resolver builtin too?** It would give rules the
    full view rather than the narrow one, at the cost of constructing a
    `TypeExtractor` value inside SLD. (B) is the decision this depends on.
@@ -252,9 +262,10 @@ why.
 ## Phasing
 
 0. **Confirm `SortView`'s status** — pre-WI-361 wrapper, or load-bearing?
-1. **(A)** — make `extract_sort_ref` bind from a rule body. **This is
-   `WI-20260822-ZJZS7`'s**, not this proposal's; it unblocks the consumer on its
-   own, and nothing below can be done before it.
+1. **(A)** — the rule-level bridge. Two halves with two owners: the tier-1
+   migration is **`WI-880`'s** (and would give rules `extract` itself), while
+   `extract_sort_ref`'s unbound result is unowned and is the cheaper of the two
+   — it alone unblocks the consumer.
 2. **(B)** — document the two surfaces and the rule between them; delete
    `TermRepr` / `KB.reify` / `KB.reflect`.
 3. **(C)** — `Term` → `Type` on the reflection records.
