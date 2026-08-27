@@ -56,6 +56,23 @@ The `-Permission[Model]` in the row is the *contract*, not the mechanism: delete
 it and this fixture is still refused, as `undeclared effect` rather than `denied
 effect`. `docs/design/measured.md` D1 records exactly what each half buys.
 
+```
+rejected/outbox.anthill: run.effects (op-effects): expected declared:
+    [External, Model, Error], got undeclared effect: Permission[T = Outbox]
+```
+The article's policy has two halves — *"forbid data flow from `fetch_email`'s
+result to the `body` parameter of `send_email` **with an external email address as
+the target**"* — and this is the second one. The body it mails is a literal
+`Public` string, so nothing flows and no label is violated; it is refused because
+the recipient is outside the organisation. `send_email` demands
+`Permission[Outbox]` **guarded on its target**, so mailing a colleague needs no
+authority at all (`fixtures/agent/internal_send.anthill`, one token away, loads)
+and mailing outside needs an authority `Triage.run`'s spec never grants. **No
+generated triage can mail outside the organisation** — a property of the spec, not
+of any agent. The rule is precisely *an address written literally, inline, at the
+call*: anything the guard cannot decide — a computed address, or even a let-bound
+literal — is refused rather than deferred (`measured.md` D4).
+
 Beside them, `rejected/forged_llm.anthill` — which skips the gate entirely by
 naming the capability's `internal` constructor, and is refused before any effect
 is considered. That one is what makes the rest mean anything: without it a

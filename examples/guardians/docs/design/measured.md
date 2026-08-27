@@ -343,6 +343,99 @@ never used a gate.
 row the other two rest on, which is the reverse of how the group reads at first
 glance.
 
+## D4 · A permission can be CONDITIONAL, and the article's policy is one
+
+**Scenario.** The article states the policy as *"forbid data flow from
+`fetch_email`'s result as the source to the `body` parameter of `send_email` with
+an external email address as the target"*. That sentence has two halves, and they
+are checked by two independent mechanisms — neither of which catches the other's
+program.
+
+| half | mechanism | fixture |
+|---|---|---|
+| the FLOW (`fetch_email`'s result reaching `body`) | the `Text[Trust]` label (group A) | `rejected/leak.anthill` |
+| the TARGET (an external address) | a GUARDED `Permission[Outbox]` | `rejected/outbox.anthill` |
+
+**Flow.** `send_email` carries
+`effects {External, Error, (Permission[Outbox] :- external_addr(to))}` —
+proposal 048's conditional effects on 064's label. At a call the argument is
+substituted into the guard, and the label is dropped when the guard's negation is
+constructively proved (§5.5). `rejected/outbox.anthill` mails a LITERAL `Public`
+string to `it@othercorp.com`: nothing flows out of the mailbox, no label is
+violated, and it is refused anyway.
+
+**Fires** — `run.effects (op-effects): expected declared: [External, Model,
+Error], got undeclared effect: Permission[T = Outbox]`.
+
+THE PROPERTY IS THE SPEC'S, NOT THE AGENT'S, which is what makes it worth having:
+`Triage.run` grants no `Permission[Outbox]`, so an implementation can neither
+PERFORM one (what fires here) nor DECLARE one (a widening, group B). No generated
+triage can mail outside the organisation, whatever it does.
+
+**Control** — `fixtures/agent/internal_send.anthill`, ONE TOKEN away
+(`boss@ourcorp.com` for `it@othercorp.com`), which LOADS on the unchanged
+`{External, Model, Error}` row. Two further edits, each reddening exactly one row
+and measured:
+
+| edit | red |
+|---|---|
+| drop the guard (make the permission unconditional) | `an_internal_send_needs_no_permission` — that row alone |
+| drop `Permission[Outbox]` from `send_email` | `an_external_send_is_refused_by_the_conditional_permission` **and** `a_recipient_computed_at_run_time_is_refused` |
+
+So the guard and the permission are separately load-bearing: the first decides
+*when* authority is demanded, the second *that* it is. The second edit greens TWO
+rows and not one — an earlier draft of this table claimed "each reddening exactly
+one row", which was not run. In a record whose whole purpose is the control, an
+unmeasured control is the defect it exists to prevent.
+
+**If it did not fire,** the example would be enforcing "no generated agent may
+send mail", which is both weaker and far less useful than the policy the article
+states — and, being a refusal, would look identical in a suite with no control.
+
+**THE GUARD IS DECIDED AT LOAD, so an address the checker cannot read demands the
+authority too.** `rejected/computed_recipient.anthill` mails what
+`choose_recipient` returns; the guard is neither proved nor refuted, and §5.5
+keeps the effect on an undecided guard. Measured — same refusal, opposite route
+(proved guard vs undecided guard), which is why it is its own fixture: a change
+making an undecided guard DROP its effect would leave D4's first row green and
+this one red.
+
+**The rule is narrower than "provably internal", and stating it loosely was an
+error in an earlier draft of this entry.** The guard is refuted only where the
+checker can prove `in_org(to)` from the argument TERM AT THE CALL, so the address
+must be written INLINE. Measured: `rejected/letbound_recipient.anthill` is
+`internal_send.anthill` with the identical literal `let`-bound one line earlier,
+and it is REFUSED — `refute_guard` proves the negation over Γ, a `let` deposits an
+equation SLD does not use to ground the goal, the double negation flounders, and
+§5.5 keeps the effect. Sound (it errs toward demanding authority) but stricter
+than intended, since the bound value is statically known: a typer limit rather
+than a policy decision, and worth a ticket.
+
+So the operative rule is: **a generated agent may mail only an address written
+literally, inline, at the call** — and matching a deployment's `in_org` rows.
+Everything else needs an authority `Triage.run` never grants. A genuinely dynamic
+recipient belongs to the trusted harness, which can hold `Permission[Outbox]`
+where a generated agent cannot.
+
+**WHOSE FACT `in_org` IS.** `lib/vocabulary.anthill` DECLARES it (proposal 061)
+and asserts no row; `fixtures/mailbox.anthill` supplies it, like the inbox and the
+address book — `safety.anthill`'s principle, that the relation is the library's
+and the rows are a deployment's. The default is CLOSED: with no deployment
+loaded the relation is empty, every address is external, and even
+`internal_send.anthill` is refused. An unconfigured organisation grants nothing.
+Pinned by `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`.
+
+**WHY THIS IS NOT AN `ensures`,** which is where this design started. A
+postcondition would have been the obvious home for a safety statement, and it is
+the wrong one: `ensures` is ASSUMED at a call site, checked only for
+non-weakening at an override, and never proved from a body — and the evaluator
+does not check it either (measured: no postcondition check exists in
+`eval/`). A safety claim written there is a claim the implementation restates,
+not one the checker establishes. Moving the target half into the ROW makes it a
+refusal instead.
+
+---
+
 ---
 
 # Group C — what does not work

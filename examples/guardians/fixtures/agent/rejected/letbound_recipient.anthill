@@ -1,0 +1,43 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED THOUGH ITS RECIPIENT IS
+-- AN INTERNAL LITERAL.
+--
+-- THE BOUNDARY OF THE GUARD, and it is narrower than "provably internal". This
+-- file differs from ../internal_send.anthill in ONE respect: the identical
+-- address is `let`-bound one line before the call instead of written inline. It
+-- is refused.
+--
+-- WHY. `refute_guard` proves `not(external_addr(to))` over the local context,
+-- and a `let` deposits an equation that SLD does not use to ground the goal — so
+-- the double negation flounders, the guard is undecided, and §5.5 conservatively
+-- KEEPS the effect. The verdict is sound (it errs toward demanding authority)
+-- but stricter than intended: the bound value is statically known, so this is a
+-- typer limit rather than a policy decision.
+--
+-- IT IS A FIXTURE RATHER THAN A FOOTNOTE because the shape is the one a model
+-- most naturally emits, and because the diagnostic blames a missing authority
+-- rather than the binding — so a reader who has only ../internal_send.anthill
+-- would conclude the rule is "provably internal" and be wrong. Measured
+-- boundaries beat prose about them.
+--
+-- The operative rule is therefore: an address written LITERALLY, INLINE, at the
+-- call. See lib/vocabulary.anthill.
+-- ================================================================
+sort guardians.agent.LetBoundTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Address, Text, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of, send_email}
+  import guardians.TrustLevel.{Public}
+  entity mk
+
+  operation run(self: LetBoundTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error} =
+      let msgs = fetch_mail(box)
+      let boss = Address(local: "boss", domain: "ourcorp.com")
+      let sent = send_email(to: boss, body: text(raw: "routine compliance copy"))
+      Report(items:   verdicts_of(msgs),
+             summary: summarize(llm, bodies_of(msgs)))
+
+  provides Triage[C = LetBoundTriage]
+end

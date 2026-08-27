@@ -1,0 +1,49 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED BECAUSE THE GUARD
+-- CANNOT BE DECIDED.
+--
+-- THE BOUNDARY OF THE CONDITIONAL PERMISSION, and the reason it is a fixture
+-- rather than a footnote. `rejected/outbox.anthill` mails a LITERAL external
+-- address, so the guard is proved and the authority is demanded. This one mails
+-- an address it COMPUTES — `choose_recipient` returns an `Address` nobody can
+-- read at load — so the guard is neither proved nor refuted.
+--
+-- §5.5 resolves that conservatively: "a proven guard or an undecided/floundered
+-- guard conservatively KEEPS the effect". So the permission is demanded here
+-- too, and `Triage.run` grants none.
+--
+-- THE RULE THIS MAKES, stated positively: a generated agent may mail only an
+-- address written LITERALLY, INLINE, at the call. Anything else — an external
+-- literal, a computed address, an address read out of a message, and even a
+-- let-bound internal literal (rejected/letbound_recipient.anthill) — needs an
+-- authority the spec does not hand out. That is stricter than "no external
+-- mail", and for the computed case deliberately so: an address chosen at run
+-- time is an address chosen by whatever influenced the run, which in this example
+-- includes the injected email.
+--
+-- NOT ALL OF THE STRICTNESS IS DELIBERATE, and the sibling fixture says which
+-- part is not: a let-bound literal is statically known and is refused anyway, a
+-- typer limit rather than a policy decision.
+--
+-- The trusted harness is where a genuinely dynamic recipient belongs, because
+-- the harness can hold `Permission[Outbox]` and a generated agent cannot.
+-- ================================================================
+sort guardians.agent.ComputedRecipientTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Mailbox, Report, Address, Text, Model, Llm, summarize,
+                    fetch_mail, bodies_of, verdicts_of, send_email, choose_recipient}
+  import guardians.TrustLevel.{Public}
+  entity mk
+
+  operation run(self: ComputedRecipientTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, Model, Error} =
+      let msgs = fetch_mail(box)
+      let rep  = Report(items:   verdicts_of(msgs),
+                        summary: summarize(llm, bodies_of(msgs)))
+      let who  = choose_recipient(rep, box)
+      let sent = send_email(to: who, body: text(raw: "routine compliance copy"))
+      rep
+
+  provides Triage[C = ComputedRecipientTriage]
+end
