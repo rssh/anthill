@@ -4420,8 +4420,42 @@ constructors is instead a plain **variable binding** (`case x`) — so `case` on
 bare name is inherently ambiguous between "nullary constructor" and "binder", and
 only the scrutinee's constructor set decides. Because that set is known only from
 the scrutinee's *type*, this resolution happens during **type-checking**, not at
-load; the loader carries the pattern name unresolved (as a fresh binder symbol) and
-the typer binds it. It is a name **lookup** scoped to the scrutinee's constructors —
+load; the loader carries the pattern name unresolved (as a fresh binder symbol), and
+the typer **rewrites** each resolved one into a constructor pattern before the body
+is stored. The rewrite is what makes the two spellings one language rather than two
+(WI-20260827-EJ5F5). While the resolution was read only by the exhaustiveness check
+and the arm's Γ fact, everything that *runs* — the evaluator, `folded_call_match`'s
+case split, the C++ backend — still read the stored pattern, where a bare name was a
+binder: `case red -> 1` matched **everything**, every later arm was dead, the
+operation returned a wrong value, and no pass said so.
+
+**Nullary only, and at every depth.** A bare name denotes a constructor only when
+that constructor takes **no fields**. `case cons` over a `List` names one that takes
+two, so the written text is not a value, cannot be one arm of a case split, and stays
+a binder — hence a catch-all, which is also what the exhaustiveness check and the Γ
+fact read it as, so the three cannot disagree. Every position asks its **own** type,
+not just the outermost one: a nested `case some(red)` resolves `red` against the
+field's constructors exactly as the whole pattern resolves against the scrutinee's. A
+written annotation opts out — `case (red: C)` is a binder, and that is the repair when
+a binder's name collides with a constructor. The annotation answers the question for
+**every** reader at once, not just for the matcher: an annotated arm covers nothing, so
+the exhaustiveness check still counts the constructors it does not name, and its Γ carries
+no ground pattern fact. The rule belongs to the **`match` arm** alone: a `let` or `lambda`
+binder is irrefutable, so a bare name there binds whatever the surrounding scope calls its
+constructors.
+
+**The arm's own text follows the rewrite.** `case red -> red` means `case red() -> red()`:
+the body and the guard name the constructor, not a binding, because the arm no longer has
+one. This is a *consequence* of the rewrite rather than a separate rule, but it has to be
+stated because the loader gets there first — it puts an arm's written binder names into a
+local frame before any type exists, so the body's `red` was already pointed at a binder the
+rewrite then removes. The typer re-points those references as it rewrites the pattern. The
+parenthesized spelling never needed it (`case red() -> red` reads `red` through the
+ordinary scope order, since the loader opens no frame entry for a constructor pattern), and
+that is the point: without the re-pointing the two spellings would differ again, in the
+opposite direction.
+
+It is a name **lookup** scoped to the scrutinee's constructors —
 distinct from the general `resolve_in_scope` above (which ignores the scrutinee and
 could pick a different sort's same-named constructor) and from sort *identity*
 comparison. No ambiguity arises within one match: a sort's constructors have

@@ -2855,11 +2855,16 @@ fn resolve_pattern_ctor(
         .find(|&c| short_name_of(kb.qualified_name_of(c)) == want)
 }
 
-/// A `Var`-pattern name resolved to the constructor it names, or `None` if it is a plain
-/// binding (`case x`). Resolves against the scrutinee's constructor set by short name
-/// ([`resolve_pattern_ctor`]); failing that, a globally-known constructor symbol is taken
-/// as-is. Shared by [`collect_covered_entities`] (coverage) and [`pattern_match_value`]
-/// (the Γ pattern fact) so the two never drift on what counts as a nullary constructor.
+/// A `Var`-pattern name resolved to the NULLARY constructor it names, or `None` if it is
+/// a plain binding (`case x`). Resolves against the scrutinee's constructor set by short
+/// name ([`resolve_pattern_ctor`]); failing that, a globally-known constructor symbol is
+/// taken as-is; either way the arity gate below has the last word.
+///
+/// NOT called directly by the readers — they go through [`var_pattern_ctor`], which adds
+/// the `: T` gate. Three of them share it: [`collect_covered_entities`] (coverage),
+/// [`pattern_match_value`] (the Γ pattern fact) and [`match_arm_nullary_ctor`] (the
+/// WI-20260827-EJ5F5 rewrite that makes the arm actually MATCH the constructor), so none
+/// can drift on what counts as one.
 ///
 /// WI-946 examined the fallback below and left it: `name` is `load_pattern_var`'s
 /// FRESH BINDER SYMBOL (see [`resolve_pattern_ctor`]), never the entity's own, so
@@ -2874,10 +2879,59 @@ fn pattern_var_ctor_sym(
     name: Symbol,
     scrutinee_ctors: &[Symbol],
 ) -> Option<Symbol> {
-    if let Some(ctor) = resolve_pattern_ctor(kb, name, scrutinee_ctors) {
-        return Some(ctor);
-    }
-    (kb.is_constructor_symbol(name) || kb.strict_parent_sort(name).is_some()).then_some(name)
+    let candidate = resolve_pattern_ctor(kb, name, scrutinee_ctors).or_else(|| {
+        (kb.is_constructor_symbol(name) || kb.strict_parent_sort(name).is_some()).then_some(name)
+    })?;
+    // WI-20260827-EJ5F5: NULLARY only. A bare name is a constructor pattern exactly
+    // when the constructor it names needs no arguments to BE a value; `case cons` over
+    // a `List` names a constructor that takes two fields, so the written text is not a
+    // value and cannot be one arm of a case split. Before this gate all three readers
+    // took it for a covering pattern: exhaustiveness recorded `cons` as covered (while
+    // the arm in fact behaves as a catch-all binder, so every later arm was dead), and
+    // `pattern_match_value` put `eq(scrutinee, Ref(cons))` into the arm's Γ and
+    // `neq(scrutinee, Ref(cons))` into every later one — a ground claim about a symbol
+    // that denotes no value. Gated HERE rather than at each reader so the coverage,
+    // Γ and rewrite readers cannot drift on what a bare name means. The rewrite asks one
+    // question MORE ([`declares_a_nullary_entity`]) — see there for why that is a second
+    // question and not a second answer to this one.
+    takes_no_fields(kb, candidate).then_some(candidate)
+}
+
+/// A name that does not take arguments — the only kind a BARE name in a pattern can
+/// denote (see [`pattern_var_ctor_sym`]). PERMISSIVE by design: it asks only that the
+/// symbol is not KNOWN to take fields, so a symbol the KB declares nothing for answers
+/// TRUE. `register_declared_field_types` runs for EVERY entity (kb/load.rs, WI-936), so a
+/// declared nullary constructor is an EMPTY row and a fielded one can never read as
+/// nullary by being absent from the registry — the permissiveness reaches only names no
+/// declaration covers.
+///
+/// That is the right answer for the two readers that only NAME a constructor — coverage
+/// and the Γ pattern fact — and both are meaningful over a hand-built KB whose symbols
+/// were interned rather than declared. MEASURED: spelling this strictly fails
+/// `wi537_local_interpretation_test::match_nullary_ctor_arms_accumulate_negations`, whose
+/// `case red` stops carrying `eq(s, red)` so the later arms lose their negations. It is
+/// NOT the right answer for the rewrite, which is why the next predicate exists.
+fn takes_no_fields(kb: &KnowledgeBase, ctor: Symbol) -> bool {
+    kb.entity_field_types(ctor).is_none_or(|f| f.is_empty())
+}
+
+/// A DECLARED entity that takes no fields — [`takes_no_fields`] AND the declaration.
+///
+/// The extra condition the REWRITE needs, for a reason the other two readers have not
+/// got: it turns its answer into a `Pattern::Constructor` the matcher then tests
+/// STRUCTURALLY, and a name the KB declares no entity for has no structure to match, so
+/// the arm would never fire — silently. Naming a constructor and being able to MATCH one
+/// are two questions; only this one is about matching, which is why it is a second
+/// predicate rather than a stricter spelling of the first.
+///
+/// NO LOADED PROGRAM SEPARATES THE TWO, and it is said here rather than left to be
+/// rediscovered. The symbols that differ come from `pattern_var_ctor_sym`'s near-dead
+/// `strict_parent_sort` disjunct (a SORT name) and from a hand-built KB; WI-946 measured
+/// that disjunct unreachable from source — `name` is `load_pattern_var`'s FRESH BINDER
+/// SYMBOL, neither a constructor nor a sort. Written the strict way because this ticket
+/// changed the consequence of a wrong `true`, not because a row demands it.
+fn declares_a_nullary_entity(kb: &KnowledgeBase, ctor: Symbol) -> bool {
+    matches!(kb.entity_field_types(ctor), Some(f) if f.is_empty())
 }
 
 /// A local binder reference as a Γ `Value` — its WI-537 `var_ref(x)` term twin
@@ -2921,7 +2975,7 @@ fn pattern_match_value(
             // symbol, not the bare loaded `*name`, so it `Ref`-matches a resolved
             // reference). A binding `case x` → the binder's `var_ref(x)` twin, but
             // ONLY in `admit_binders` mode; for a negation it has no ground value.
-            match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
+            match var_pattern_ctor(kb, pattern, *name, scrutinee_ctors) {
                 Some(ctor) => Some(Value::term(kb.alloc(Term::Ref(ctor)))),
                 None => admit_binders.then(|| binder_ref_value(*name, pattern.span, pattern.owner)),
             }
@@ -6025,6 +6079,13 @@ enum TypeBuildFrame {
         /// type. In branch order. `reassemble_match` uses these instead of
         /// re-reading `occ`'s written patterns, which carry no labels.
         branch_patterns: Vec<Rc<NodeOccurrence>>,
+        /// WI-20260827-EJ5F5: each branch's guard with references to the binders the
+        /// constructor rewrite REMOVED re-pointed at those constructors, in branch order
+        /// (`None` where the arm has no guard). `reassemble_match` uses these instead of
+        /// re-reading `occ`'s written guards, for the same reason `branch_patterns` above
+        /// exists: the written form is not the one that was type-checked, and storing it
+        /// would leave a name the arm no longer binds to be read at eval.
+        branch_guards: Vec<Option<Rc<NodeOccurrence>>>,
         /// WI-287: the match's own expected type (the parent's hint).
         /// `Some` ⇒ checked mode (every branch must conform); `None` ⇒
         /// synthesis mode (result is the join — a common supertype — of
@@ -10546,12 +10607,24 @@ fn visit_type(
             // from the CONTEXT and the per-binder annotations are compared against its
             // components; this is the channel WI-794 measured as unchecked.
             let mut binder_errors = Vec::new();
+            let mut param_repoints: Vec<(Symbol, Symbol)> = Vec::new();
             let param = bind_and_label_pattern(
                 kb,
                 &mut lambda_env,
                 &param,
                 Some(param_type.clone()),
+                // WI-20260827-EJ5F5: a lambda parameter BINDS. `lambda red -> …` over a
+                // `C` must be a total function of `C`, so a name colliding with one of
+                // `C`'s constructors is still the binder the author wrote — and nothing
+                // is rewritten, so nothing has to be re-pointed. Asserted rather than
+                // asserted-in-a-comment: an empty sink is what makes discarding it safe.
+                PatternRole::Binder,
+                &mut param_repoints,
                 &mut binder_errors,
+            );
+            debug_assert!(
+                param_repoints.is_empty(),
+                "WI-20260827-EJ5F5: `PatternRole::Binder` must never rewrite",
             );
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
@@ -11372,6 +11445,9 @@ fn reassemble_match(
     occ: &Rc<NodeOccurrence>,
     scr_node: &Rc<NodeOccurrence>,
     branch_patterns: &[Rc<NodeOccurrence>],
+    // WI-20260827-EJ5F5: the re-pointed guards, in branch order. Handed in rather than
+    // re-read off `occ` for the same reason `branch_patterns` is.
+    branch_guards: &[Option<Rc<NodeOccurrence>>],
     branch_results: &[Result<TypeResult, TypeError>],
 ) -> Rc<NodeOccurrence> {
     let branches = match occ.as_expr() {
@@ -11385,9 +11461,15 @@ fn reassemble_match(
         branches.len(),
         "WI-803: one relabelled pattern per branch",
     );
-    for ((branch, pattern), r) in branches
+    debug_assert_eq!(
+        branch_guards.len(),
+        branches.len(),
+        "WI-20260827-EJ5F5: one re-pointed guard slot per branch",
+    );
+    for (((branch, pattern), guard), r) in branches
         .iter()
         .zip(branch_patterns.iter())
+        .zip(branch_guards.iter())
         .zip(branch_results.iter())
     {
         // WI-318: emit pattern in for_each_child order.
@@ -11395,8 +11477,13 @@ fn reassemble_match(
         children.push(Rc::clone(
             &r.as_ref().expect("reassemble_match: Ok body").node,
         ));
-        if let Some(g) = &branch.guard {
-            children.push(Rc::clone(g));
+        // WI-20260827-EJ5F5: `branch.guard` decides only WHETHER this arm has a guard
+        // slot — `for_each_child` emits one exactly when the written branch has one — and
+        // `branch_guards` decides WHAT goes in it.
+        if branch.guard.is_some() {
+            if let Some(g) = guard {
+                children.push(Rc::clone(g));
+            }
         }
     }
     super::simp_rewrite::reassemble(occ, &children)
@@ -12474,8 +12561,24 @@ fn build_type(
             // WI-803: the relabelled pattern replaces the written one in the
             // reassembled `Let` below, so a destructuring `let` over a permuted
             // value binds by label like every other binder list.
-            let pattern =
-                bind_and_label_pattern(kb, &mut ext_env, &pattern, bound_ty, &mut binder_errors);
+            // WI-20260827-EJ5F5: `PatternRole::Binder` — a `let` is irrefutable; a name
+            // colliding with one of the bound value's constructors still binds, so
+            // there is nothing to re-point either. Asserted, for the same reason the
+            // lambda site asserts it.
+            let mut let_repoints: Vec<(Symbol, Symbol)> = Vec::new();
+            let pattern = bind_and_label_pattern(
+                kb,
+                &mut ext_env,
+                &pattern,
+                bound_ty,
+                PatternRole::Binder,
+                &mut let_repoints,
+                &mut binder_errors,
+            );
+            debug_assert!(
+                let_repoints.is_empty(),
+                "WI-20260827-EJ5F5: `PatternRole::Binder` must never rewrite",
+            );
             if let Some(e) = binder_errors.into_iter().next() {
                 results.push(Err(e));
                 return;
@@ -12620,6 +12723,17 @@ fn build_type(
             let mut has_wildcard = false;
             // WI-803: relabelled branch patterns, in branch order.
             let mut branch_patterns: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(branches.len());
+            // WI-20260827-EJ5F5: each arm's body and guard with references to the binders
+            // the constructor rewrite REMOVED re-pointed at those constructors
+            // ([`repoint_arm_binders`]). Both must be carried, and for the same reason
+            // twice over: the body is what `push_visit` type-checks below, and the guard
+            // is what `reassemble_match` puts back into the stored tree — a guard checked
+            // in one spelling and stored in another would pass the load and then read an
+            // unbound name at eval. Same `Rc` as the written one on every arm that
+            // rewrote nothing, which is every arm in the corpus today.
+            let mut branch_bodies: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(branches.len());
+            let mut branch_guards: Vec<Option<Rc<NodeOccurrence>>> =
+                Vec::with_capacity(branches.len());
             // Constructors of the scrutinee sort. A bare `case red` parses as a
             // var_pattern (the name could be a binding or a nullary
             // constructor); recognizing it as a constructor needs the
@@ -12648,39 +12762,86 @@ fn build_type(
             // guard, so a contradicting annotation is the root cause of anything the
             // guard would go on to report.
             let mut binder_error: Option<TypeError> = None;
-            // WI-537 / proposal 050 `match` rule: the per-arm pattern fact +
-            // earlier-arm negations. Computed once over all arms (negations
-            // accumulate across earlier arms); the scrutinee value is the
-            // scrutinee occurrence, exactly as the `if`-fork uses its condition.
-            let scrutinee_value = Value::Node(Rc::clone(&scr_node));
-            let arm_inputs: Vec<(Rc<NodeOccurrence>, bool)> = branches
-                .iter()
-                .map(|b| (Rc::clone(&b.pattern), b.guard.is_some()))
-                .collect();
-            let arm_facts =
-                match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
-            for (branch, facts) in branches.iter().zip(arm_facts.into_iter()) {
-                // WI-511: coverage AND env-extension both read the Pattern
-                // occurrence directly — no `pattern_to_term` bridge.
-                collect_covered_entities(
-                    kb,
-                    &branch.pattern,
-                    &scrutinee_ctors,
-                    &mut covered_entities,
-                    &mut has_wildcard,
-                );
+            // WI-20260827-EJ5F5 — TWO PASSES, and the split is the point. EVERY reader of
+            // an arm pattern must read the one the rewrite produced, not the one the
+            // author wrote, or the resolution has two answers again. Coverage and the Γ
+            // facts used to run off `branch.pattern` while the matcher ran off the
+            // rewritten one, and the disagreement showed exactly where the rewrite is
+            // deepest: `case some(red)` stored `some(red())` yet emitted
+            // `eq(s, some(var_ref(red)))` — a `var_ref` at a binder that no longer
+            // exists — and gave later arms no `neq` although the arm had become ground.
+            // Reading the rewritten pattern also means nothing here has to re-derive the
+            // NESTED candidate set: `bind_and_label_pattern` already threaded each
+            // position's type (through the scrutinee's substitution, which a second
+            // derivation would have had to duplicate), and a rewritten sub-pattern is a
+            // plain `Pattern::Constructor` every reader already handles.
+            //
+            // PASS 1 — rewrite each arm's pattern, extend its env, and re-point its body
+            // and guard. Nothing here reads another arm.
+            let mut branch_env_types: Vec<TypingEnv> = Vec::with_capacity(branches.len());
+            for branch in branches.iter() {
                 let mut branch_env = (*outer_env).clone();
                 let mut branch_binder_errors = Vec::new();
-                branch_patterns.push(bind_and_label_pattern(
+                // The ONE refutable position — a bare name naming one of the scrutinee's
+                // own nullary constructors is rewritten to that constructor here, which
+                // is what makes the arm actually match it at run time and what lets
+                // `folded_call_match` see disjoint arms.
+                let mut repointed: Vec<(Symbol, Symbol)> = Vec::new();
+                let pattern = bind_and_label_pattern(
                     kb,
                     &mut branch_env,
                     &branch.pattern,
                     scr_ty.clone(),
+                    PatternRole::MatchArm,
+                    &mut repointed,
                     &mut branch_binder_errors,
-                ));
+                );
+                // WI-511: coverage reads the Pattern occurrence directly — no
+                // `pattern_to_term` bridge. WI-20260827-EJ5F5: and it reads the REWRITTEN
+                // one, so a resolved bare name reaches the `Constructor` arm rather than
+                // being resolved a second time here.
+                collect_covered_entities(
+                    kb,
+                    &pattern,
+                    &scrutinee_ctors,
+                    &mut covered_entities,
+                    &mut has_wildcard,
+                );
+                branch_patterns.push(pattern);
+                // The rewrite removed those binders, so the arm's own text has to stop
+                // naming them. Done HERE, before the guard is checked and before the body
+                // is pushed, so both are checked in the form they will be STORED in.
+                branch_bodies.push(repoint_arm_binders(&branch.body, &repointed));
+                branch_guards.push(
+                    branch
+                        .guard
+                        .as_ref()
+                        .map(|g| repoint_arm_binders(g, &repointed)),
+                );
                 if binder_error.is_none() {
                     binder_error = branch_binder_errors.into_iter().next();
                 }
+                branch_env_types.push(branch_env);
+            }
+            // WI-537 / proposal 050 `match` rule: the per-arm pattern fact +
+            // earlier-arm negations. Computed once over all arms (negations
+            // accumulate across earlier arms) — which is why it cannot live inside
+            // pass 1; the scrutinee value is the scrutinee occurrence, exactly as the
+            // `if`-fork uses its condition.
+            let scrutinee_value = Value::Node(Rc::clone(&scr_node));
+            let arm_inputs: Vec<(Rc<NodeOccurrence>, bool)> = branch_patterns
+                .iter()
+                .zip(branches.iter())
+                .map(|(p, b)| (Rc::clone(p), b.guard.is_some()))
+                .collect();
+            let arm_facts =
+                match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
+            // PASS 2 — the per-arm Γ and its guard, both of which need pass 1 finished.
+            for ((branch_env, branch_guard), facts) in branch_env_types
+                .into_iter()
+                .zip(branch_guards.iter())
+                .zip(arm_facts.into_iter())
+            {
                 // Arm Γ = the outer Γ + this arm's pattern fact + earlier-arm
                 // negations (+ the guard predicate below). `assume` is a set, so
                 // a fact `view_is_indexable` rejects (an `Opaque`-headed
@@ -12696,7 +12857,7 @@ fn build_type(
                 // condition); the visit catches real errors in the guard. Skip
                 // the visit when the scrutinee didn't type (pattern vars are then
                 // untyped → only cascading noise).
-                if let Some(g) = &branch.guard {
+                if let Some(g) = branch_guard {
                     if scr_ty.is_some() && guard_error.is_none() {
                         // WI-657(9): reuse the gate build_type already holds.
                         // WI-K88TN: under `arm_flow`, NOT an empty Γ. The arm's Γ is
@@ -12755,16 +12916,11 @@ fn build_type(
                 covered_entities,
                 has_wildcard,
                 branch_patterns,
+                branch_guards,
                 body_expected: body_expected.clone(),
             }));
-            for (branch, env) in branches.iter().zip(visit_envs.into_iter()).rev() {
-                push_visit(
-                    work,
-                    Rc::clone(&branch.body),
-                    env,
-                    body_expected.clone(),
-                    fuel,
-                );
+            for (body, env) in branch_bodies.iter().zip(visit_envs.into_iter()).rev() {
+                push_visit(work, Rc::clone(body), env, body_expected.clone(), fuel);
             }
         }
         TypeBuildFrame::MatchFinal {
@@ -12778,6 +12934,7 @@ fn build_type(
             covered_entities,
             has_wildcard,
             branch_patterns,
+            branch_guards,
             body_expected,
         } => {
             let drain_start = results.len() - branch_count;
@@ -12790,7 +12947,13 @@ fn build_type(
             // WI-283: reassemble the `Match` from the (rewritten) scrutinee
             // and branch bodies (guards re-read from `occ`, unchanged) before
             // `branch_results` is consumed below.
-            let node = reassemble_match(&occ, &scr_node, &branch_patterns, &branch_results);
+            let node = reassemble_match(
+                &occ,
+                &scr_node,
+                &branch_patterns,
+                &branch_guards,
+                &branch_results,
+            );
             let mut effects = scr_effects;
             // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
             // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
@@ -43208,6 +43371,155 @@ fn type_param_vid_in_sort(
     type_param_global_var(kb, declared)
 }
 
+/// WI-20260827-EJ5F5 — what a pattern is being asked to do, which decides whether a bare
+/// name in it is a CONSTRUCTOR or a BINDER.
+///
+/// The two are genuinely different questions and only the writing position separates
+/// them, since the kernel spells a pattern binder as a bare identifier (`pattern_var` in
+/// `grammar.js`) and spells a nullary constructor the same way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PatternRole {
+    /// A `match` arm — REFUTABLE, so a bare name that names one of the position's own
+    /// nullary constructors is that constructor (kernel-language.md, "Constructor
+    /// patterns resolve against the scrutinee, not the scope").
+    MatchArm,
+    /// A `let` or `lambda` binder — IRREFUTABLE by construction, so every bare name is a
+    /// binder however the surrounding scope spells its constructors. Rewriting one would
+    /// turn a total binding into a partial match that fails at run time.
+    Binder,
+}
+
+/// WI-20260827-EJ5F5 — re-point an arm's body / guard at the constructors the pattern
+/// rewrite resolved, replacing every reference to a binder the rewrite REMOVED.
+///
+/// WHY THIS IS NEEDED AT ALL, and why it is not the pattern's job: the LOADER pushes a
+/// `match_branch`'s written binder names onto its local-name frame before any type
+/// exists (`load.rs`'s `binder_syms` / `local_names_stack`), so an arm body's `red`
+/// inside `case red -> red` was already remapped to that binder's FRESH symbol. Rewriting
+/// the pattern removes the binding; without this the reference resolves to nothing and
+/// the program that used to load — wrongly, as a catch-all — stops loading. MEASURED:
+/// `11:21: type mismatch in red.name: expected resolved name, got unresolved`.
+///
+/// The substitution is the arm's own meaning, and it is exactly what the PARENTHESIZED
+/// spelling already gets for free: `case red() -> red` loads today and reads `red` as the
+/// constructor, because the loader pushes no frame entry for a `pattern_constructor`.
+/// Leaving the bare spelling to refuse would put a difference back between two spellings
+/// this ticket exists to make identical.
+///
+/// NO CAPTURE. Each binding site mints its OWN symbol (WI-550), so an inner
+/// `let red = …` / `lambda red -> …` inside the arm binds a DIFFERENT symbol and its
+/// references remap to that one; `dead` reaches only the references the loader pointed at
+/// the removed binder. A nested pattern is `NodeKind::Pattern`, whose `as_expr` is `None`,
+/// so the walk returns it untouched rather than rewriting a binder into a constructor.
+fn repoint_arm_binders(
+    node: &Rc<NodeOccurrence>,
+    pairs: &[(Symbol, Symbol)],
+) -> Rc<NodeOccurrence> {
+    if pairs.is_empty() {
+        return Rc::clone(node);
+    }
+    let Some(expr) = node.as_expr() else {
+        return Rc::clone(node);
+    };
+    let hit = |sym: Symbol| pairs.iter().find(|(dead, _)| *dead == sym).map(|(_, c)| *c);
+    // The three leaf spellings a body reference to a binder can arrive in — the same
+    // three `body_specialize::reduce` substitutes for an inlined parameter.
+    let leaf = match expr {
+        Expr::VarRef { name } => hit(*name).map(|c| Expr::VarRef { name: c }),
+        Expr::Ref(sym) => hit(*sym).map(Expr::Ref),
+        Expr::Ident(sym) => hit(*sym).map(Expr::Ident),
+        _ => None,
+    };
+    if let Some(e) = leaf {
+        return NodeOccurrence::new_expr(e, node.span, node.owner);
+    }
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+    crate::kb::node_occurrence::for_each_child(expr, |c| {
+        children.push(repoint_arm_binders(c, pairs))
+    });
+    let rebuilt = super::simp_rewrite::reassemble(node, &children);
+    // `red()` — the APPLIED spelling of the same reference. The loader saw the binder,
+    // not a constructor, so it built an `Apply` whose FUNCTOR is the binder symbol; the
+    // functor is not a child, so the walk above cannot reach it. Re-pointed after the
+    // rebuild so the arguments are already done. Driven by
+    // `an_arm_body_may_name_its_own_constructor`'s applied row.
+    //
+    // The other symbol-carrying `Expr` shapes are NOT reference positions for a binder
+    // and are deliberately left alone: `Constructor.name` and `TypeValue.head` are
+    // resolved declarations the loader only mints for a name it already resolved,
+    // `DotApply.name` is a member selected ON the receiver (which IS a child, so the
+    // walk reaches it), and every `*Within` form is post-elaboration — none can carry a
+    // binder symbol here, and none could be driven if it were written.
+    if let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        type_args,
+    }) = rebuilt.as_expr()
+    {
+        if let Some(ctor) = hit(*functor) {
+            return NodeOccurrence::new_expr(
+                Expr::Apply {
+                    functor: ctor,
+                    pos_args: pos_args.clone(),
+                    named_args: named_args.clone(),
+                    type_args: type_args.clone(),
+                },
+                rebuilt.span,
+                rebuilt.owner,
+            );
+        }
+    }
+    rebuilt
+}
+
+/// WI-20260827-EJ5F5 — the nullary constructor a `Pattern::Var` OCCURRENCE denotes, or
+/// `None` when it is an ordinary binder. The occurrence-level wrapper of
+/// [`pattern_var_ctor_sym`], and the one all three readers go through.
+///
+/// The `: T` gate lives HERE rather than at the rewrite because it is a property of what
+/// the name MEANS, not of what one reader does with it. When it sat at the rewrite alone,
+/// `case (red: C) -> …` was a catch-all at run time while `collect_covered_entities`
+/// recorded `red` as COVERED (so a genuinely non-exhaustive match reported nothing) and
+/// `pattern_match_value` put the ground `eq(s, Ref(red))` into an arm that runs for every
+/// OTHER constructor too — a false fact feeding guard and proof checking. An annotation is
+/// only ever written on a binder, so it answers the question for every reader at once.
+fn var_pattern_ctor(
+    kb: &KnowledgeBase,
+    pattern: &NodeOccurrence,
+    name: Symbol,
+    scrutinee_ctors: &[Symbol],
+) -> Option<Symbol> {
+    if pattern.pattern_type_ann().is_some() {
+        return None;
+    }
+    pattern_var_ctor_sym(kb, name, scrutinee_ctors)
+}
+
+/// The nullary constructor a bare `match`-arm name denotes at a position of type
+/// `position_type`, or `None` when it is an ordinary binder.
+///
+/// The candidate set is derived HERE from the position's own type, by the same two calls
+/// the enclosing `match` uses for its top-level scrutinee (`sort_functor_of_view` then
+/// [`sort_constructor_syms`]) — so a NESTED position (`case some(red)`, `case (red, n)`)
+/// asks the question of the type actually threaded to it, which is what makes the
+/// resolution uniform with depth instead of stopping at the arm's outermost pattern.
+fn match_arm_nullary_ctor(
+    kb: &KnowledgeBase,
+    pattern: &NodeOccurrence,
+    name: Symbol,
+    position_type: Option<&Value>,
+) -> Option<Symbol> {
+    let ctors: Vec<Symbol> = position_type
+        .and_then(|t| sort_functor_of_view(kb, t))
+        .map(|s| sort_constructor_syms(kb, s))
+        .unwrap_or_default();
+    // The rewrite asks one question MORE than the other two readers — see
+    // [`declares_a_nullary_entity`] for why that is a second question and not a second
+    // answer to the shared one.
+    var_pattern_ctor(kb, pattern, name, &ctors).filter(|c| declares_a_nullary_entity(kb, *c))
+}
+
 /// Bind a pattern's variables into `env`, AND record each tuple binder's component
 /// label on the pattern (WI-803). Named for both jobs: as `extend_env_from_pattern`
 /// it advertised only the first, so the second — whose result a caller must thread
@@ -43232,6 +43544,17 @@ fn bind_and_label_pattern(
     env: &mut TypingEnv,
     pattern: &Rc<NodeOccurrence>,
     scrutinee_type: Option<Value>,
+    // WI-20260827-EJ5F5: which QUESTION this pattern is being read as. Threaded
+    // unchanged into every sub-pattern — a `match` arm's whole pattern is refutable,
+    // so each position inside it is too.
+    role: PatternRole,
+    // WI-20260827-EJ5F5: every `(dead binder, constructor)` pair this call rewrote, at
+    // any depth. The caller MUST apply them to the arm's body and guard
+    // ([`repoint_arm_binders`]) — the loader captured the written name into the arm's
+    // local-name frame before any type was known, so a body reference to it is a
+    // `VarRef` at the now-removed binder's fresh symbol and resolves to nothing. Empty
+    // for `PatternRole::Binder`, which never rewrites.
+    repointed: &mut Vec<(Symbol, Symbol)>,
     // WI-794: contradictions between a binder's WRITTEN annotation and the type the
     // context threads into its slot. An out-param rather than a `Result` because
     // env-extension must CONTINUE past a bad binder — every other binder in the same
@@ -43247,6 +43570,40 @@ fn bind_and_label_pattern(
     let type_ann = pattern.pattern_type_ann();
     match pat {
         Pattern::Var { name } => {
+            // WI-20260827-EJ5F5: A BARE NAME THAT NAMES ONE OF THIS POSITION'S OWN
+            // NULLARY CONSTRUCTORS IS THAT CONSTRUCTOR, not a binder — the spec rule
+            // "Constructor patterns resolve against the scrutinee, not the scope", which
+            // until now the typer applied to EXHAUSTIVENESS and to the arm's Γ fact and
+            // to nothing that runs. The evaluator and `folded_call_match` read the stored
+            // `Pattern`, so a `Var` there bound the whole scrutinee: `case red -> 1` was a
+            // catch-all, every later arm was dead, and `pick(green())` answered 1.
+            //
+            // Rewriting HERE, rather than in the loader, is what the spec says and the
+            // only place it can be done: which constructors are in view is a property of
+            // the scrutinee's TYPE, which no load pass holds. The rewritten pattern
+            // reaches everything downstream because the typer is tree-producing —
+            // `MatchFinal` reassembles the match from `branch_patterns` and
+            // `set_op_body_node` writes the result back.
+            //
+            // A WRITTEN ANNOTATION opts out (`case (red: C) -> …`): `: T` is only ever
+            // written on a binder, so it is the author saying which of the two they meant,
+            // and it is the repair for a binder whose name collides with a constructor.
+            if role == PatternRole::MatchArm {
+                if let Some(ctor) =
+                    match_arm_nullary_ctor(kb, pattern, *name, scrutinee_type.as_ref())
+                {
+                    repointed.push((*name, ctor));
+                    return NodeOccurrence::new_pattern(
+                        Pattern::Constructor {
+                            name: ctor,
+                            pos_args: Vec::new(),
+                            named_args: Vec::new(),
+                        },
+                        pattern.span,
+                        pattern.owner,
+                    );
+                }
+            }
             // Bind the pattern var even when its type is unknown — a
             // pattern-bound name is in scope regardless. Without this,
             // tuple-destructuring lambda params (`lambda (a, b) -> ...`, whose
@@ -43417,7 +43774,9 @@ fn bind_and_label_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                rebuilt.push(bind_and_label_pattern(kb, env, sub_pat, field_type, errors));
+                rebuilt.push(bind_and_label_pattern(
+                    kb, env, sub_pat, field_type, role, repointed, errors,
+                ));
             }
             // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
             // NAME — order-independent, so robust to declaration order. The
@@ -43432,7 +43791,9 @@ fn bind_and_label_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                rebuilt.push(bind_and_label_pattern(kb, env, sub_pat, field_type, errors));
+                rebuilt.push(bind_and_label_pattern(
+                    kb, env, sub_pat, field_type, role, repointed, errors,
+                ));
             }
             // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
             // is carried across by the reassembler, since binding rewrites
@@ -43480,10 +43841,10 @@ fn bind_and_label_pattern(
                     .and_then(|f| f.get(i))
                     .map(|(_, v)| v.clone());
                 rebuilt.push(if aligned {
-                    bind_and_label_pattern(kb, env, sub_pat, comp, errors)
+                    bind_and_label_pattern(kb, env, sub_pat, comp, role, repointed, errors)
                 } else {
                     let mut misaligned = Vec::new();
-                    bind_and_label_pattern(kb, env, sub_pat, comp, &mut misaligned)
+                    bind_and_label_pattern(kb, env, sub_pat, comp, role, repointed, &mut misaligned)
                 });
             }
             // WI-803: the LABELS, recorded only when there is one component per
@@ -58771,7 +59132,7 @@ fn collect_covered_entities(
             // (also used to build the match-arm Γ pattern fact, so the two never
             // disagree on what is a nullary ctor). A name matching no constructor
             // is a catch-all binding.
-            match pattern_var_ctor_sym(kb, *name, scrutinee_ctors) {
+            match var_pattern_ctor(kb, pattern, *name, scrutinee_ctors) {
                 Some(ctor) => covered.push(ctor),
                 None => *has_wildcard = true,
             }

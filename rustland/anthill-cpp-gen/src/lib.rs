@@ -4516,12 +4516,15 @@ struct PatternBinding {
 
 /// Compile a pattern against `scrutinee` into a tag check + binding map.
 /// Recognised forms:
-/// - `Pattern.var_pattern{name: <Entity>}` — nullary constructor pattern.
-///   For Option's `none` (qn `anthill.prelude.Option.none`), uses
-///   `!s.has_value()`. Otherwise `std::holds_alternative<X>(s)`.
+/// - `Pattern.var_pattern{name}` — a BINDER, so a catch-all (no tag check) that
+///   declares `auto <name> = s;`. WI-20260827-EJ5F5: it used to read as a nullary
+///   constructor, which is what the typer's rewrite now settles before codegen sees
+///   the body — a bare name that names one arrives as `constructor_pattern`.
 /// - `Pattern.constructor_pattern{name, args}` — N-ary constructor with
-///   sub-patterns. For `Option.some(?w)` uses `s.has_value()` and binds
-///   `w → s.value()`. For other entities, binds each sub-`var_pattern`
+///   sub-patterns, and the NULLARY spelling too. For Option's `none` (qn
+///   `anthill.prelude.Option.none`) uses `!s.has_value()`, otherwise
+///   `std::holds_alternative<X>(s)`. For `Option.some(?w)` uses `s.has_value()` and
+///   binds `w → s.value()`. For other entities, binds each sub-`var_pattern`
 ///   to `std::get<Ctor>(s).<field_name>` in declaration order.
 /// - `Pattern.wildcard` — no tag check (None), no bindings.
 /// WI-318: Pattern-occurrence variant of `analyse_pattern`.
@@ -4543,12 +4546,44 @@ fn analyse_pattern_occ(
             tag_check: None,
             decls: Vec::new(),
         }),
-        Pattern::Var { name, .. } => {
-            let ctor_qn = kb.qualified_name_of(*name).to_string();
-            let tag = nullary_tag_check(&ctor_qn, scrutinee);
+        Pattern::Var { .. } => {
+            // WI-20260827-EJ5F5: a `Pattern::Var` reaching a MATCH ARM is a BINDER, and
+            // a binder arm is a CATCH-ALL that binds the scrutinee — exactly how
+            // `eval::pattern` reads it.
+            //
+            // This arm used to emit a nullary tag check instead, which was cpp-gen
+            // getting the ticket's defect WRONG IN THE OTHER DIRECTION: the interpreter
+            // read every bare `case` name as a binder, this read every one as a
+            // constructor, and the two agreed on nothing. A bare name that DOES name one
+            // of the scrutinee's own nullary constructors is now rewritten to
+            // `Pattern::Constructor` by the typer before the body is stored
+            // (kernel-language.md, "Constructor patterns resolve against the scrutinee"),
+            // so it reaches the arm below and this one sees only genuine binders — for
+            // which `std::holds_alternative<other>(s)` names a C++ type that does not
+            // exist. MEASURED: with this arm made a `panic!`, the whole cpp-gen suite
+            // (197 tests) stays green, so no fixture reached it once the rewrite landed.
+            //
+            // `tag_check: None` also puts a binder arm under the SAME "catch-all only
+            // allowed last" refusal a `case _` gets, which is the honest reading — a
+            // binder arm before another arm makes that arm dead.
+            //
+            // THE PRECONDITION, said plainly because it is now load-bearing and there is
+            // nothing here that could check it: this arm is correct because the body it
+            // reads WAS TYPE-CHECKED. On a body the typer never rewrote — a KB built
+            // through `load_kb_with_lenient`, whose discarded `Err` WI-966 made a named
+            // exception — a bare `case red` would still be a `Var` and would be compiled
+            // as a catch-all that kills every later arm. cpp-gen cannot tell the two
+            // apart (the binder symbol is fresh either way, so no predicate separates
+            // them), so this is a contract on the caller, not a check: emit only from a
+            // KB that finished loading.
+            let bind_name = pattern_var_name_occ(kb, occ)?;
             Ok(PatternInfo {
-                tag_check: Some(tag),
-                decls: Vec::new(),
+                tag_check: None,
+                decls: vec![PatternBinding {
+                    cpp_name: cpp_identifier(&bind_name),
+                    source_name: bind_name,
+                    access: scrutinee.to_string(),
+                }],
             })
         }
         Pattern::Constructor { name, pos_args, .. } => {
@@ -4565,7 +4600,7 @@ fn analyse_pattern_occ(
                         ),
                     });
                 }
-                let bind_name = pattern_var_name_occ(kb, &pos_args[0])?;
+                let bind_name = match_subpattern_name(kb, &ctor_qn, &pos_args[0])?;
                 return Ok(PatternInfo {
                     tag_check: Some(format!("{scrutinee}.has_value()")),
                     decls: vec![PatternBinding {
@@ -4606,7 +4641,7 @@ fn analyse_pattern_occ(
                 if matches!(sub_pat.as_pattern(), Some(Pattern::Wildcard)) {
                     continue;
                 }
-                let bind_name = pattern_var_name_occ(kb, sub_pat)?;
+                let bind_name = match_subpattern_name(kb, &ctor_qn, sub_pat)?;
                 let field_name = cpp_identifier(kb.local_name_of(*field_sym));
                 decls.push(PatternBinding {
                     cpp_name: cpp_identifier(&bind_name),
@@ -4625,16 +4660,42 @@ fn analyse_pattern_occ(
     }
 }
 
-/// Tag check for a nullary-constructor pattern. Special-cases Option.none.
-fn nullary_tag_check(ctor_qn: &str, scrutinee: &str) -> String {
-    if ctor_qn == "anthill.prelude.Option.none" || ctor_qn == "Option.none" {
-        return format!("!{scrutinee}.has_value()");
+/// WI-20260827-EJ5F5 — the bound name of a MATCH sub-pattern, or a refusal that names the
+/// match rather than a let/lambda.
+///
+/// cpp-gen lowers a constructor pattern's sub-patterns as plain bindings
+/// (`auto w = std::get<Ctor>(s).field;`), which has no spelling for a sub-pattern that is
+/// itself refutable — a nested constructor (`case some(red)`, `case cons(nil(), t)`) needs
+/// a nested tag check inside the arm's own, and cpp-gen has no form for one.
+///
+/// It is a REFUSAL and not a silent binding, and the wording is its own because
+/// `pattern_var_name_occ`'s says "let/lambda binder", which sends the author to the wrong
+/// line. The population reaching it GREW with this ticket, which is why it is separated
+/// now: the parenthesized `case some(red())` always came here, and the bare
+/// `case some(red)` used to arrive as a `Var` and be lowered as a binding that ignored the
+/// constructor entirely — the same silent wrong answer this ticket removes in the
+/// interpreter.
+fn match_subpattern_name(
+    kb: &KnowledgeBase,
+    ctor_qn: &str,
+    sub_pat: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+) -> Result<String, CppCodegenError> {
+    use anthill_core::kb::node_occurrence::Pattern;
+    match sub_pat.as_pattern() {
+        Some(Pattern::Var { .. }) => pattern_var_name_occ(kb, sub_pat),
+        Some(other) => Err(CppCodegenError {
+            message: format!(
+                "match pattern not yet supported in cpp-gen: a sub-pattern of \
+                 '{ctor_qn}' is {other:?}, and only a plain binder or `_` can be lowered \
+                 there (a nested pattern needs a nested tag check)"
+            ),
+        }),
+        None => Err(CppCodegenError {
+            message: format!(
+                "expected Pattern-kind occurrence in a sub-pattern of '{ctor_qn}' (WI-318)"
+            ),
+        }),
     }
-    let short = short_name_of(ctor_qn);
-    format!(
-        "std::holds_alternative<{}>({scrutinee})",
-        cpp_identifier(short)
-    )
 }
 
 /// Extract the bound name from a `Pattern.var_pattern(name: Ref(<n>), ...)`.
@@ -4673,6 +4734,11 @@ fn pattern_var_name(kb: &KnowledgeBase, pat: TermId) -> Result<String, CppCodege
 /// WI-318: Pattern-occurrence variant of `pattern_var_name`. Reads the
 /// bound name directly from `Pattern::Var`; other Pattern variants are
 /// not yet supported in let/lambda binder position by cpp-gen.
+///
+/// WI-20260827-EJ5F5 added a third caller, `analyse_pattern_occ`'s MATCH-ARM binder
+/// arm, which has already destructured `Pattern::Var` — so the two refusals below are
+/// unreachable from it, and the "let/lambda binder" wording still names every site that
+/// can reach them.
 fn pattern_var_name_occ(
     kb: &KnowledgeBase,
     occ: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
