@@ -9,10 +9,19 @@
 
 use crate::common::load_kb_bare;
 
-/// THE TICKET'S OWN MEASUREMENT. `and` is an implicit-prelude name
-/// (`anthill.prelude.Bool.and`) whose target is NOT loaded here, so no scope and no
-/// ladder rung gives it a meaning — which makes each sort's head an INTRODUCTION, one
-/// per sort.
+/// THE TICKET'S OWN MEASUREMENT. `and` names nothing in this KB — no scope and no ladder
+/// rung gives it a meaning — which makes each sort's head an INTRODUCTION, one per sort.
+///
+/// IT NO LONGER MEASURES THE TIER RUNG, and saying so is the point (WI-20260826-XED22,
+/// raised by `/code-review`). `and` WAS an implicit-prelude name whose target
+/// (`anthill.prelude.Bool.and`) was the only one of the 22 absent from a bare KB, which
+/// is what made this fixture able to separate "the ladder consulted the tier and the tier
+/// had no target" from "the name means nothing at all". `and` is not a tier entry now, so
+/// this row exercises an ordinary unknown name and is indistinguishable from one spelled
+/// `zzz`. It still measures WI-900's actual defect — two sorts' same-named heads must not
+/// collapse onto one global — and that is why it is kept rather than retired. NO NAME
+/// REMAINS that could restore the sharper reading: every surviving tier target is
+/// pre-declared in Rust and so present even with no stdlib.
 const TWO_SORTS_ONE_IMPLICIT_NAME: &str = r#"
 namespace wi900.probe
   sort A
@@ -63,24 +72,49 @@ fn a_stdlib_less_kb_does_not_collapse_two_sorts_onto_one_global() {
     );
 }
 
+/// The same two sorts on `cons`, for the OTHER direction below. It cannot share
+/// [`TWO_SORTS_ONE_IMPLICIT_NAME`] any more, and the reason is worth stating because it
+/// is the whole content of WI-20260826-XED22: the two directions need OPPOSITE things of
+/// the name, and after that ticket no single name gives both.
+///
+///   * the stdlib-less direction needs the tier target ABSENT from a bare KB;
+///   * this direction needs the name to be a TIER ENTRY at all.
+///
+/// `anthill.prelude.Bool.and` was the only entry in the whole table satisfying the first
+/// — MEASURED across all 22, every other target is pre-declared in Rust
+/// (`register_stdlib_scopes` / `register_builtin_tag`) and so present even with no stdlib.
+/// That is why the fixture above uses `and`, and it is why removing `and` from the tier
+/// strands THIS direction rather than that one. `cons` is an ordinary surviving entry and
+/// serves here: the rule is about the TIER, and the name was never the subject.
+const TWO_SORTS_ONE_TIER_NAME: &str = r#"
+namespace wi900.loaded
+  sort A
+    fact pa900(1)
+    rule cons(?x) :- pa900(?x)
+  end
+  sort B
+    fact pb900(2)
+    rule cons(?x) :- pb900(?x)
+  end
+end
+"#;
+
 /// THE OTHER DIRECTION OF THE SAME RULE, and the control that the fix did not simply
 /// invert the guard: when the implicit target IS loaded, the name already means
 /// something, so the head REFERENCES it and introduces nothing (WI-530's decision, which
 /// keeps a `[simp]` law about `List.cons` a law about `List.cons`).
-///
-/// Same fixture, full stdlib — the ONE input that distinguishes the two readings.
 #[test]
 fn a_loaded_implicit_target_is_referenced_not_introduced() {
-    let kb = crate::common::load_kb_with(TWO_SORTS_ONE_IMPLICIT_NAME);
-    for qn in ["wi900.probe.A.and", "wi900.probe.B.and"] {
+    let kb = crate::common::load_kb_with(TWO_SORTS_ONE_TIER_NAME);
+    for qn in ["wi900.loaded.A.cons", "wi900.loaded.B.cons"] {
         assert!(
             !kb.has_qualified_name(qn),
-            "`{qn}` must NOT be minted: with the stdlib loaded `and` resolves to \
-             `anthill.prelude.Bool.and`, so the head is a clause ABOUT it",
+            "`{qn}` must NOT be minted: with the stdlib loaded `cons` resolves to \
+             `anthill.prelude.List.cons`, so the head is a clause ABOUT it",
         );
     }
     assert!(
-        kb.has_qualified_name("anthill.prelude.Bool.and"),
+        kb.has_qualified_name("anthill.prelude.List.cons"),
         "control: the tier's target must actually be present, or the row above proves \
          nothing",
     );

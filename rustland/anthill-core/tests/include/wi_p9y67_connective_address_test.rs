@@ -249,6 +249,7 @@ fn a_data_slot_keeps_its_spelling_so_a_body_matches_a_fact() {
         r#"
 namespace p9y67.asym
   import anthill.prelude.{Int64}
+  import anthill.kernel.{not, or}
   sort Box
     entity boxed(v: Int64)
   end

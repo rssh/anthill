@@ -4841,9 +4841,13 @@ pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLitera
 /// go AMBIGUOUS against a user name — the failure mode the old flat
 /// `add_import(<global>, …)` had, which forced the WI-476 collision blocklist.
 ///
+/// `not` LEFT THIS LIST in WI-20260826-XED22 and the paragraph is kept for the history
+/// it carries about the NAMESPACE move, not as a description of the table. It used to sit
+/// directly above `kernel.or` / `.push_choice`; `or` left with it. What follows described
+/// the WI-20260820-MH90F move that put it in `anthill.kernel` at all:
 /// `not` → `anthill.kernel.not` since WI-20260820-MH90F, which moved it out of
 /// `anthill.reflect`: it was the one resolver primitive filed outside the
-/// resolver-primitive namespace, sitting in this very list directly above
+/// resolver-primitive namespace, once sitting in this very list directly above
 /// `kernel.or` / `.push_choice` / `.unify` / `.cut` while having `push_choice`'s
 /// exact shape. NO ALIAS was left behind, and nothing needed one: no source in the
 /// tree CALLS the qualified name — every NAF site writes the bare `not` this
@@ -4863,6 +4867,9 @@ pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLitera
 /// AN ENTRY THAT NAMES NOTHING IS NOT NECESSARILY SILENT, measured while moving `not`:
 /// point this one back at the retired `anthill.reflect.not` and the STDLIB STOPS
 /// LOADING with `UndefinedRuleBodyGoal { functor: "not" }` at `anthill.reflect.typing`.
+/// (That measurement was taken while `not` was still an entry; it left in
+/// WI-20260826-XED22. The guard below is unchanged and still covers the entries that
+/// remain — `push_choice` is the one the stdlib names in a goal position now.)
 /// The guard is WI-1034's rule-body-goal check, so what it covers is an entry the
 /// stdlib itself names in a GOAL position — `not` / `or` / `push_choice`. An entry
 /// reached only from value positions has no such backstop and a rename of one would go
@@ -4896,16 +4903,19 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     // because the tier entry is what carried it. Those sites name the operation by
     // import now — which is what §8.6 has always said brings a sort's members into
     // scope. The operator itself needs nothing.
-    // WI-529: `&`/word-`and` is value-only (no goal connective — conjunction is the
-    // comma, there is no kernel.and), so it resolves to the dispatched Bool op
-    // everywhere via this general fallback. `not`/`or` are position-directed instead
-    // (resolver primitives by default; Bool.not/Bool.or only inside an operation body,
+    // WI-20260826-XED22: `not` / `or` / `and` are NO LONGER HERE. The comment that stood
+    // at this spot was false in every clause by the time it was deleted — it said `&` is
+    // "value-only (no goal connective — conjunction is the comma, there is no
+    // kernel.and)", which WI-20260822-J38JE had already retired. All three names left the
+    // tier once WI-20260825-P9Y67 gave their OPERATORS addresses: a written `or(...)` /
+    // `and(...)` takes an import, and a written `not(...)` takes nothing because it is a
+    // PREFIX OPERATOR that never runs this ladder. Kept as a marker so the next reader
+    // does not re-add them on the strength of a neighbouring paragraph.
+    // (Historic, for the entries that remain; position-direction is
+    // §6.6's rule — resolver primitives by default; Bool.not/Bool.or only inside an operation body,
     // handled in remap_name_str via in_op_body_value).
-    "anthill.prelude.Bool.and",
     "anthill.prelude.BigInt.to_bigint",
     "anthill.prelude.BigInt.to_int",
-    "anthill.kernel.not", // logic operator `not` / `!` (NAF over a reified goal)
-    "anthill.kernel.or",  // logic operator `or` / `|`
     "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
     "anthill.kernel.unify", // structural-unification primitive (`<=>` / `let` lift it)
     "anthill.kernel.struct_eq", // structural identity test (`===`); proposal 051 / WI-615

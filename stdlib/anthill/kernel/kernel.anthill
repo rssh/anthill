@@ -42,9 +42,13 @@ namespace anthill.kernel
   -- for the substitution its own `-> Bool` does not return. Filing the primitive
   -- there put the one member of this namespace outside it.
   --
-  -- NO IMPORT NEEDED, and the header above means it: a bare `not` reaches this
-  -- declaration from every namespace through the implicit prelude (load.rs
-  -- `PRELUDE_QUALIFIED`), so application code never names `anthill.kernel` to negate.
+  -- NO IMPORT NEEDED, and the header above means it — though not for the reason this
+  -- comment used to give. A bare `not(x)` is the PREFIX OPERATOR (kernel-language.md
+  -- §6.6), minted with the address `..anthill.kernel.not`, so it reaches this declaration
+  -- without running the name ladder at all. It used to be credited to the implicit
+  -- prelude (load.rs `PRELUDE_QUALIFIED`); that entry left in WI-20260826-XED22 and
+  -- nothing changed, which is how the tier rung was found to have been dead. Application
+  -- code still never names `anthill.kernel` to negate.
   -- Two `rules.anthill` files did import it and both were retired when the move
   -- landed — an import here buys nothing and contradicts what this namespace is for.
   --

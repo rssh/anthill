@@ -295,6 +295,7 @@ fn an_operation_body_still_evaluates_the_value_operators() {
 fn a_data_slot_keeps_the_value_operators() {
     let src = "namespace test.wi1046.dataslot\n\
                \x20 import anthill.prelude.Bool\n\
+               \x20 import anthill.prelude.Bool.{and}\n\
                \x20 import anthill.prelude.PartialEq.{eq}\n\
                \x20 fact flag1046(true)\n\
                \x20 rule anded1046(?r) :- flag1046(?a), flag1046(?b), eq(?r, and(?a, ?b))\n\

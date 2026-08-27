@@ -129,6 +129,7 @@ fn the_four_cases_are_decided_by_resolution_not_by_the_label() {
 fn a_kernel_primitive_head_does_not_capture_the_scope() {
     const SRC: &str = r#"
 namespace wi896.orcapture
+  import anthill.kernel.{or}
   import anthill.prelude.{Int64}
   fact p896(1)
   fact q896(2)
@@ -151,6 +152,61 @@ end
         !kb.has_qualified_name("wi896.orcapture.or"),
         "…and the reason is that no `<ns>.or` was minted: the head RESOLVED",
     );
+}
+
+/// WI-20260826-XED22 — A USER'S OWN `or` IS AN ORDINARY PREDICATE, AND ITS WRONG-ARITY
+/// GOAL IS REFUSED LIKE ANY OTHER. The row that closes a silence, with the separating
+/// pair that found it.
+///
+/// The arity check was never missing. `goal_arg_slots` and `is_goal_conjunction` keyed on
+/// the resolved symbol's LOCAL NAME (`("or" | "and", 2)`), which a USER's `or` answers
+/// just as well as `anthill.kernel.or` — so a local arity-1 `or` was classified as the
+/// connective at arity 2, its arguments were read as GOALS, and the check never ran. The
+/// `pos_arity == 2` gate those tables carry stops a wrong-arity CONNECTIVE and cannot
+/// stop a right-arity WRONG SYMBOL.
+///
+/// THE PAIR IS THE MEASUREMENT: two identical programs differing only in the head's NAME.
+/// Before, `zz` was a load error and `or` answered 0 with exit 0; now both are the same
+/// error. Keyed on the symbol, a user's `or` is an ordinary predicate.
+///
+/// WHY IT MATTERS HERE. [`a_kernel_primitive_head_does_not_capture_the_scope`] above
+/// needs `import anthill.kernel.{or}` since XED22 took `or` out of the implicit tier, and
+/// without the import its fixture used to answer 0 SILENTLY — this ticket's own defect,
+/// re-created by its own migration. It is now a located error instead, so a scope that
+/// declares its own `or` and forgets the import is told so.
+#[test]
+fn a_user_or_head_gets_the_ordinary_wrong_arity_refusal() {
+    const USER_OR: &str = r#"
+namespace wi896.userarity
+  import anthill.prelude.{Int64}
+  fact p896(1)
+  fact q896(2)
+  rule or(?x) :- p896(?x)
+  rule reach(?x) :- or(p896(?x), q896(?x))
+end
+"#;
+    // The CONTROL: the same program with a name that was never special. It was already
+    // refused before this change and must stay refused — that is what says the row
+    // measures the KEYING and not the arity check itself.
+    const PLAIN: &str = r#"
+namespace wi896.plainarity
+  import anthill.prelude.{Int64}
+  fact p896(1)
+  fact q896(2)
+  rule zz(?x) :- p896(?x)
+  rule reach(?x) :- zz(p896(?x), q896(?x))
+end
+"#;
+    for (src, who) in [(USER_OR, "wi896.userarity.or"), (PLAIN, "wi896.plainarity.zz")] {
+        let errs = crate::common::try_load_kb_with(src)
+            .map(|_| Vec::new())
+            .unwrap_or_else(|e| e);
+        assert!(
+            errs.iter().any(|e| e.contains(who) && e.contains("1 positional")),
+            "a goal on `{who}` at arity 2 must be REFUSED naming it and the arity it can \
+             match; got {errs:?}"
+        );
+    }
 }
 
 /// THE OTHER HALF OF THE SAME COIN — what a user does when they want their own. The
@@ -245,6 +301,7 @@ fn a_clause_on_a_builtin_backed_name_is_inert_at_sld() {
     const SRC: &str = r#"
 namespace wi896.inert
   import anthill.prelude.{Int64}
+  import anthill.kernel.{or}
   fact p896(1)
   rule or(?a) :- p896(?a)
   rule or(?a, ?b) :- p896(?a), p896(?b)

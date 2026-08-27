@@ -153,6 +153,7 @@ fn two_sites_in_one_body_are_two_entries() {
     // stays wrong under any repair that keys by the sort or the operation instead.
     let src = r#"
 namespace test.wi873.twice
+  import anthill.prelude.Bool.{and}
   import anthill.prelude.{Bool, PartialEq}
   import anthill.prelude.PartialEq.{eq}
   sort Wi873Twice
@@ -218,6 +219,7 @@ fn a_simp_expansion_with_two_calls_is_two_entries() {
     let src = r#"
 namespace test.wi873.simp
   import anthill.prelude.{Bool, PartialEq}
+  import anthill.prelude.Bool.{and}
   import anthill.prelude.PartialEq.{eq}
   sort Wi873Simp
     sort T = ?

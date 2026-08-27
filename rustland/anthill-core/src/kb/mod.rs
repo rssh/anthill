@@ -1256,6 +1256,15 @@ pub struct KnowledgeBase {
     eq_connective_sym: Option<Symbol>,
     unify_connective_sym: Option<Symbol>,
 
+    /// WI-20260826-XED22 — the two GOAL CONNECTIVES (`anthill.kernel.or` / `.and`),
+    /// cached for the same reason and refreshed at the same place as the pair above:
+    /// [`Self::is_goal_connective`] is asked per goal node during load AND again in the
+    /// typer's rule-body walk, so a `by_qualified_name` lookup on a 19-char string there
+    /// is the cost WI-627 already removed once. `None` before the kernel loads — then no
+    /// functor is a connective, which is the right answer rather than a fallback.
+    or_connective_sym: Option<Symbol>,
+    and_connective_sym: Option<Symbol>,
+
     /// WI-657(6): the resolved `anthill.reflect.TupleLiteral` entity symbol, cached
     /// so the typer's `is_tuple_lit` (run per constructor argument during inference)
     /// compares a `Symbol` instead of the 27-char `qualified_name_of(..) ==
@@ -1740,6 +1749,8 @@ impl KnowledgeBase {
             has_dot_applies: false,
             simp_gate_cache: None,
             eq_connective_sym: None,
+            or_connective_sym: None,
+            and_connective_sym: None,
             unify_connective_sym: None,
             tuple_literal_sym: None,
             rigid_projection_formations: Vec::new(),
@@ -4034,8 +4045,20 @@ impl KnowledgeBase {
     /// the slot holds a `tuple(…)` conjunction WRAPPER rather than a single item. Empty
     /// for a plain predicate or a data constructor.
     ///
-    /// Recognised by local name where the connective is a kernel RULE (`or`, and the
-    /// quantifier markers) — `builtin_of` misses those — and by builtin tag otherwise.
+    /// Recognised by SYMBOL for the two goal connectives (`anthill.kernel.or` / `.and`,
+    /// kernel RULES that `builtin_of` misses — see [`Self::is_goal_connective`]), by
+    /// LOCAL NAME still for the quantifier markers, and by builtin tag otherwise.
+    ///
+    /// THE MARKERS ARE THE UNFIXED HALF, and the split is worth naming rather than
+    /// leaving as an inconsistency to rediscover. WI-20260826-XED22 moved the connectives
+    /// off the name match because a USER's own `or` answered it; `forall_in` / `some_in`
+    /// / `forall_impl` still carry that defect, DRIVEN — a user `rule forall_impl(?x)`
+    /// beside `forall_impl(a, b, c)` answers one bogus `?x = ?_` where the identical
+    /// program with the head renamed `zzz` is a load error. They could not move with the
+    /// connectives: those have qualified kernel declarations to compare against, while a
+    /// marker is minted `kb.intern("forall_impl")` — a bare symbol with no qualified
+    /// name — so keying it needs the markers to carry an identity first. Filed; do not
+    /// "fix" it by widening the name match.
     /// `and` IS HERE, and this doc said the opposite until WI-20260825-P9Y67 — it read
     /// "`and` is deliberately ABSENT: no kernel rule defines it, there is no
     /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and` … WI-1046
@@ -4045,9 +4068,10 @@ impl KnowledgeBase {
     /// false and the one an editor would act on — "refuses it" — is the furthest from
     /// the code. Left standing it sends the next reader to the wrong conclusion at the
     /// table that DECIDES the reading. Found by `/code-review`.
-    /// EVERY arm is gated on `pos_arity`, and that is not defensive. A connective is
-    /// recognised by NAME here (a kernel rule and the markers head no builtin), so
-    /// without the gate a USER predicate that merely shares the short name has its DATA
+    /// EVERY arm is gated on `pos_arity`, and that is not defensive — for the MARKER
+    /// arms, which are still name-keyed (above). A marker is recognised by NAME here (it
+    /// heads no builtin), so without the gate a USER predicate that merely shares the
+    /// short name has its DATA
     /// arguments classified as goals — and the loader (WI-1046) turns that
     /// classification into a load-blocking refusal. MEASURED: `fact or(true)` beside
     /// `rule r(?x) :- … or(?a & ?b), …` was REFUSED while the identical program with the
@@ -4103,7 +4127,13 @@ impl KnowledgeBase {
             // conjunctive PEER, added with `push_and` (WI-20260822-J38JE). Both are
             // rules over a primitive, so both are here rather than in the
             // `builtin_of` table below.
-            ("or" | "and", 2) => {
+            //
+            // BY SYMBOL, not by short name (WI-20260826-XED22). This arm read
+            // `("or" | "and", 2)` off `local_name_of`, which a USER's own `or` answers —
+            // so a local arity-1 `or` was read as the connective at arity 2 and its
+            // ARGUMENTS were classified as goals, which skipped the wrong-arity refusal
+            // an identically-shaped `zz` already got. See `is_goal_connective`.
+            _ if self.is_goal_connective(functor, pos_arity) => {
                 return SmallVec::from_slice(&[
                     slot(0, false, SlotReading::Proved),
                     slot(1, false, SlotReading::Proved),
@@ -4147,8 +4177,53 @@ impl KnowledgeBase {
     /// would have made `&` a quieter comma.
     pub(crate) fn is_goal_conjunction(&self, functor: Symbol, pos_arity: usize) -> bool {
         pos_arity == 2
-            && (self.local_name_of(functor) == "and"
+            && (self.kernel_connective_is(functor, "anthill.kernel.and")
                 || self.builtin_of(functor) == Some(crate::kb::resolve::BuiltinTag::PushAnd))
+    }
+
+    /// Is `functor` the KERNEL declaration named `qn`? A SYMBOL comparison, and the
+    /// distinction from `local_name_of(functor) == "and"` is the whole point
+    /// (WI-20260826-XED22): a USER's own `and` / `or` answers the short name too.
+    ///
+    /// `None` when the kernel target is not loaded (a prelude-less KB) — then no functor
+    /// is that connective, which is the right answer rather than a fallback.
+    ///
+    /// Reads the cached symbols rather than `by_qualified_name`: this is a per-goal-node
+    /// path (see [`Self::or_connective_sym`]). The cache is refreshed beside
+    /// `eq_connective_sym`, and it falls back to the lookup while unset so a KB that has
+    /// not reached the refresh behaves identically.
+    fn kernel_connective_is(&self, functor: Symbol, qn: &str) -> bool {
+        let cached = match qn {
+            "anthill.kernel.or" => self.or_connective_sym,
+            "anthill.kernel.and" => self.and_connective_sym,
+            _ => None,
+        };
+        match cached {
+            Some(sym) => sym == functor,
+            None => self.symbols.by_qualified_name.get(qn) == Some(&functor),
+        }
+    }
+
+    /// Is `functor` at `pos_arity` a GOAL CONNECTIVE — `anthill.kernel.or` or
+    /// `anthill.kernel.and`, the two rules over `push_choice` / `push_and`?
+    ///
+    /// KEYED ON THE SYMBOL, and it used to be keyed on the short name — which a user's
+    /// own predicate answers. MEASURED, two identical programs differing only in the
+    /// name of the head:
+    ///
+    ///   rule zz(?x) :- p(?x)   /  rule r(?x) :- zz(p(?x), q(?x))  -> LOAD ERROR,
+    ///       "expected a term a clause of `zz` can match (1 positional), got 2 positional"
+    ///   rule or(?x) :- p(?x)   /  rule r(?x) :- or(p(?x), q(?x))  -> 0 solutions, exit 0
+    ///
+    /// The arity check is not missing; it never ran, because the name match classified
+    /// the user's arity-1 `or` as the connective and read its ARGUMENTS as goals. The
+    /// gate above (`pos_arity == 2`) stops a wrong-arity connective and cannot stop a
+    /// right-arity WRONG SYMBOL. Keyed on the symbol, a user's `or` is an ordinary
+    /// predicate and gets the same loud refusal `zz` already gets.
+    pub(crate) fn is_goal_connective(&self, functor: Symbol, pos_arity: usize) -> bool {
+        pos_arity == 2
+            && (self.kernel_connective_is(functor, "anthill.kernel.or")
+                || self.kernel_connective_is(functor, "anthill.kernel.and"))
     }
 
     /// WI-1034 — the span a goal with no source location of its own is reported at,
@@ -6979,6 +7054,8 @@ impl KnowledgeBase {
         // WI-627 fixed.
         self.eq_connective_sym = self.try_resolve_symbol("anthill.prelude.PartialEq.eq");
         self.unify_connective_sym = self.try_resolve_symbol("anthill.kernel.unify");
+        self.or_connective_sym = self.try_resolve_symbol("anthill.kernel.or");
+        self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
     }
 
     /// WI-646 — the candidate equational rule ids for `[simp]`/`[unfold]` firing:

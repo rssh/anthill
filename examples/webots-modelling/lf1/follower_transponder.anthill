@@ -30,6 +30,7 @@ namespace anthill.examples.lf1.follower_transponder
   -- operator (`+`, `<`, …) names its target outright and needs nothing; these call
   -- the same operations by NAME, and the implicit tier that answered them is gone.
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.Bool.{and}
   import anthill.prelude.PartialOrd.{gt, lt, gte, lte}
   import anthill.examples.lf1.leader.{Pose, Controls}
 

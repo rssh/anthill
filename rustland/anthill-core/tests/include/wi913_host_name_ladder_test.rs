@@ -192,9 +192,16 @@ fn make_fn_still_resolves_a_qualified_functor() {
     );
 }
 
-/// FAILS PRE-FIX (`EvalError::Internal("make_apply: unknown symbol `not`")`).
+/// FAILS PRE-FIX (`EvalError::Internal("make_apply: unknown symbol `cons`")`).
 /// `make_apply` is `make_fn`'s occurrence-building twin (WI-722); it took the same
 /// absolute-only reading of the same kind of name.
+///
+/// THE NAME MOVED FROM `not` TO `cons` (WI-20260826-XED22) and the subject did not: this
+/// row is about a HOST passing a bare string and the tier answering it, so it needs the
+/// name to be a tier entry and nothing more. `not` stopped being one when
+/// WI-20260825-P9Y67 gave `!` an address and the written name lost its tier rung — there
+/// is no import to add here, because there is no source file. `cons` is an ordinary
+/// surviving entry.
 #[test]
 fn make_apply_resolves_an_implicit_tier_functor() {
     use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -217,7 +224,7 @@ fn make_apply_resolves_an_implicit_tier_functor() {
     let built = interp
         .call(
             "anthill.reflect.make_apply",
-            &[Value::Str("not".into()), args, from],
+            &[Value::Str("cons".into()), args, from],
         )
         .expect("make_apply accepts a bare implicit-tier name");
     let Value::Node(occ) = &built else {
@@ -225,7 +232,10 @@ fn make_apply_resolves_an_implicit_tier_functor() {
     };
     match occ.as_expr().expect("make_apply returns an expression node") {
         Expr::Apply { functor, .. } => {
-            assert_eq!(interp.kb().qualified_name_of(*functor), "anthill.kernel.not")
+            assert_eq!(
+                interp.kb().qualified_name_of(*functor),
+                "anthill.prelude.List.cons"
+            )
         }
         other => panic!("expected Expr::Apply, got {other:?}"),
     }

@@ -159,6 +159,7 @@ fn or_rule_succeeds_via_either_branch_with_facts() {
     // The derived `or` rule lifts push_choice to a regular head functor.
     let src = r#"
         namespace test.pc.or_rule
+          import anthill.kernel.{or}
           sort Tag
             entity t1
             entity t2
@@ -267,6 +268,7 @@ fn or_rule_handles_nested_disjunction() {
     // the `or` rule unfolding) and that all three leaf solutions surface.
     let src = r#"
         namespace test.pc.nested
+          import anthill.kernel.{or}
           sort Tag
             entity ta
             entity tb
@@ -318,6 +320,7 @@ fn or_rule_isolates_substitutions_across_branches() {
     // pinned to ta).
     let src = r#"
         namespace test.pc.isolate
+          import anthill.kernel.{or}
           sort Tag
             entity ta
             entity tb

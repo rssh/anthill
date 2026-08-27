@@ -126,11 +126,15 @@ pub const GTE_FUNCTOR: &str = "..anthill.prelude.PartialOrd.gte";
 /// being stored. Caught by `/code-review`; the lesson is recorded at the site in
 /// `kb::load` as well, because that is where the next attempt would be written.
 ///
-/// A WRITTEN BARE `not(...)` IS UNTOUCHED. These three keep their
-/// `kb::load::PRELUDE_QUALIFIED` entries where the twelve lost theirs: the
-/// stdlib writes bare `not(...)` in rule bodies throughout, and retiring the tier for
-/// them is a migration rather than a repair. So the split KD9SW drew holds here too —
-/// the operator is uncapturable, the written name is an ordinary name.
+/// THE TIER ENTRIES ARE GONE TOO (WI-20260826-XED22). This doc used to say the three
+/// KEEP their `kb::load::PRELUDE_QUALIFIED` entries because "the stdlib writes bare
+/// `not(...)` in rule bodies throughout" — measured, and that reason was wrong twice
+/// over. A written bare `or(...)` / `and(...)` now needs an import like any other name.
+/// A written `not(...)` needs NOTHING, and never did: `not` is a PREFIX OPERATOR
+/// (`prefix_entry`), so `not(x)` mints [`NOT_FUNCTOR`] and never runs the name ladder at
+/// all — its tier entry was already dead. So the split KD9SW drew still holds, with one
+/// name fewer on the written side than it looked: the operator is uncapturable, and the
+/// written spelling is an ordinary name wherever there IS one.
 pub const OR_FUNCTOR: &str = "..anthill.kernel.or";
 pub const AND_FUNCTOR: &str = "..anthill.kernel.and";
 pub const NOT_FUNCTOR: &str = "..anthill.kernel.not";

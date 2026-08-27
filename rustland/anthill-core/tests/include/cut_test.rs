@@ -152,6 +152,7 @@ fn outer_cut_prunes_inner_or() {
     // above the cut's barrier frame), so only the left branch `p` survives.
     let src = r#"
         namespace cuttest.distrans
+          import anthill.kernel.{or}
           sort Tag
             entity p1
             entity q1
@@ -186,6 +187,7 @@ fn inner_cut_is_opaque_to_outer_or() {
     // pruned) and the outer `or`'s `plain` branch still contributes.
     let src = r#"
         namespace cuttest.opaque
+          import anthill.kernel.{or}
           sort Tag
             entity o1
             entity o2
