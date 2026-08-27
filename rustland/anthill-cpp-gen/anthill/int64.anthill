@@ -54,7 +54,23 @@ namespace anthill.prelude
       mod: "[](int64_t l, int64_t r) { return ((l % r) + r) % r; }($1, $2)",
 
       to_float: "static_cast<double>($1)",
-      to_string: "std::to_string($1)"
+      to_string: "std::to_string($1)",
+
+      -- WI-880: the ARITHMETIC. `add`/`sub`/`mul` were SPEC operations
+      -- (`Additive`/`Multiplicative`) lowered by cpp-gen's `render_as_operator` table,
+      -- which is why they were not here: no carrier declared an `add` to hang a
+      -- mapping on. `Int64` declares all three now, and that table's own note said
+      -- these follow when it does. The operator table still holds the SPEC ops, so a
+      -- carrier that maps nothing keeps its lowering; `lower_node` asks `host_ops`
+      -- first, so this wins for `Int64`.
+      --
+      -- THE TWO HOSTS DIFFER AT THE BOUNDARY, and it is the `abs` note's shape one
+      -- more time: signed overflow is UNDEFINED in C++ where the rust host answers
+      -- `EvalError::Overflow`. Saying so in the SIGNATURE is a guarded `Error` row —
+      -- WI-882 again — and until then the divergence is recorded rather than hidden.
+      add: "($1 + $2)",
+      sub: "($1 - $2)",
+      mul: "($1 * $2)"
     }
 
     -- WI-644 / proposal 004: Int64 is lawful — partial bases + total markers.

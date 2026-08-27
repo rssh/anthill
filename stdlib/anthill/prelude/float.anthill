@@ -8,7 +8,12 @@ sort anthill.prelude.Float
   import anthill.prelude.algebra.{Ring}
   -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
   import anthill.prelude.PartialEq.{neq}
-  import anthill.prelude.Multiplicative.{mul}
+  -- WI-880 DELETED `import anthill.prelude.Multiplicative.{mul}` here. This sort now
+  -- DECLARES its own `mul` (below), which would have CAPTURED the imported name —
+  -- refused by 059 R4, and rightly: the two laws that write a bare `mul` (`tau`,
+  -- `neg`) have `Float` operands, so `Float.mul` is what they mean and what they now
+  -- reach. `int64.anthill` and `bigint.anthill` lost their `Additive.{add, sub}`
+  -- imports to the same rule, as `int64` lost `Ordered.{max}` to WI-876's.
 
   -- WI-876: `Float`'s comparison surface, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/float.anthill`'s `operation_map`, which names the
@@ -54,7 +59,9 @@ sort anthill.prelude.Float
   -- artifact's `f64` intrinsic — and before that clause existed they were body-less
   -- and backed by NOTHING: 24 of this sort's 32 declared operations died
   -- `OperationBodyMissing` at eval on a program that loaded clean, because a host
-  -- carrier is exempt from the load-time backing check wholesale (WI-880 narrows it).
+  -- carrier was exempt from the load-time backing check WHOLESALE. WI-880 narrowed that
+  -- to a per-OPERATION question, so a body-less operation no host realizes is refused at
+  -- load even here — the shape that hid these twenty-four cannot hide the next one.
   --
   -- `floor`/`ceil`/`round` are PARTIAL, and that is the one place the two carriers
   -- stop lining up: `Float` has NaN, ±Infinity and a range far past `Int64`, so
@@ -62,6 +69,16 @@ sort anthill.prelude.Float
   -- saturating silently; giving them a guarded `Error` effect row, which is what would
   -- say so in the SIGNATURE, is WI-882's shape.
   operation {
+    -- WI-880: `Float`'s ARITHMETIC. IEEE, so `add`/`sub`/`mul` SATURATE to an infinity
+    -- where `Int64`'s raise `Overflow` and `BigInt`'s cannot overflow at all — three
+    -- operations that shared one registration on `Additive.add` / `Multiplicative.mul`
+    -- and were told apart by testing the operands. Each is named per carrier now
+    -- (`float_add` / `float_sub` / `float_mul` in this carrier's `operation_map`), and
+    -- "Float's arithmetic is IEEE" sits beside "Float's order is IEEE" in the same
+    -- binding block rather than inside a shared builtin's match.
+    add(a: Float, b: Float) -> Float      -- +, IEEE
+    sub(a: Float, b: Float) -> Float      -- - (binary), IEEE
+    mul(a: Float, b: Float) -> Float      -- *, IEEE
     abs(a: Float) -> Float                -- |a|; clears the sign bit (abs(-0.0) = 0.0)
     neg(a: Float) -> Float                -- -a; flips the sign bit (neg(0.0) = -0.0)
     div(a: Float, b: Float) -> Float      -- IEEE division; also `/` infix

@@ -4288,11 +4288,14 @@ fn render_as_indexed_seq(fn_qn: &str, args: &[String]) -> Option<String> {
 /// table's first claim to hold only spec ops. Keeping half a carrier's operations in a
 /// Rust table and half in its binding was the divergence this ticket exists to end.
 ///
-/// What is left is genuinely NOT per-carrier: one lowering of `Additive.add` serves
-/// every carrier whose values are a C++ arithmetic type, and no carrier declares an
-/// `add` of its own to hang a mapping on. When WI-880 moves the spec-op families per
-/// carrier, these follow — and a carrier that maps its own already WINS, since
-/// `lower_node` asks `host_ops` first.
+/// What is left is the SPEC-OP LOWERING, and since WI-880 that is a genuine fallback
+/// rather than the only reading. `Int64` and `Float` now declare `add`/`sub`/`mul` of
+/// their own and map them in their cpp binding blocks, which is what this note
+/// predicted ("when WI-880 moves the spec-op families per carrier, these follow"), and
+/// a carrier that maps its own WINS because `lower_node` asks `host_ops` first. The
+/// entries below still serve a carrier that maps NOTHING — a user sort whose values are
+/// a C++ arithmetic type — which is the case one lowering of `Additive.add` genuinely
+/// covers for every such carrier at once.
 ///
 /// `Int64.mod` did not merely move, its lowering was CORRECTED: C++ `%` follows the
 /// DIVIDEND's sign while anthill's `mod` is documented always non-negative, so the old

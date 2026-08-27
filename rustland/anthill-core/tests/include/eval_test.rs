@@ -1948,7 +1948,13 @@ end
     let mut interp = interp_for(src);
     let err = interp.call("test.m3_int_overflow.main", &[]).unwrap_err();
     match err {
-        anthill_core::eval::EvalError::Overflow { op } => assert_eq!(op, "Numeric.add"),
+        // WI-880 — `Int64.add`, not `Numeric.add`. `+` still MINTS `Additive.add`; what
+        // changed is which implementation runs it. The host arithmetic used to be one
+        // function registered on the SPEC op that told the three carriers apart by
+        // testing its operands, so the only name it could put in this error was the
+        // spec's. It is keyed per carrier now (`int_add`, from `Int64`'s binding block),
+        // and the diagnostic names the operation that actually overflowed.
+        anthill_core::eval::EvalError::Overflow { op } => assert_eq!(op, "Int64.add"),
         other => panic!("expected Overflow, got {other:?}"),
     }
 }

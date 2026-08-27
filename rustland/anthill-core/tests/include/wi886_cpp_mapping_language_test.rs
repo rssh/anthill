@@ -33,15 +33,22 @@ use anthill_core::eval::Value;
 /// `carrier_override_op` selects `Box.max` as the carrier's own implementation, and
 /// eval looks it up in a builtin map that has nothing.
 ///
-/// WHY IT LOADS CLEAN is worth stating exactly, because the obvious answer is wrong:
-/// it is NOT that `op_is_executable`'s language-agnostic leg counts the cpp mapping as
-/// backing. `check_provider_operations` (`kb/typing.rs`) skips a HOST-realized carrier
+/// WHY IT LOADS CLEAN was worth stating exactly, because the obvious answer USED TO BE
+/// wrong and is now right. Until WI-880 it was NOT that `op_is_executable`'s
+/// language-agnostic leg counted the cpp mapping as backing:
+/// `check_provider_operations` (`kb/typing.rs`) skipped a HOST-realized carrier
 /// WHOLESALE, and it builds that set from `Implementation` facts with NO language
-/// filter — so the `provides Box language cpp` block alone exempts `Box`'s provisions
-/// from the backing check, for the rust build too. That is the coarse exemption WI-880
-/// is to retire; until then, attaching a cpp binding block to a carrier silently
-/// disables its rust-side `UnbackedProviderOperation` check, and this program is the
-/// first thing in the tree shaped to notice.
+/// filter — so the `provides Box language cpp` block alone exempted `Box`'s provisions
+/// from the backing check, for the rust build too, and this program was the first thing
+/// in the tree shaped to notice.
+///
+/// WI-880 RETIRED THAT EXEMPTION and asks the question per operation, so the reason is
+/// now the language-agnostic mapping leg after all — `Box.max` is realized in C++, the
+/// program says so, and a LOAD check asks whether an implementation is declared rather
+/// than whether this process can call it. The absence of a language filter is therefore
+/// still deliberate and now load-bearing rather than incidental: narrow it to rust and
+/// this fixture stops loading, while `the_two_predicates_split_by_language` below is
+/// what keeps EVAL reading the rust-only index.
 const CPP_ONLY_MEMBER: &str = r#"
 namespace wi886.cpponly
   import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}

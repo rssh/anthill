@@ -6,7 +6,6 @@
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
-  import anthill.prelude.Additive.{sub}
   -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{eq}
@@ -38,6 +37,28 @@ sort anthill.prelude.BigInt
     div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated quotient; partial: b ≠ 0
     mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- Euclidean remainder, never negative; partial: b ≠ 0
     rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+  }
+
+  -- WI-880: `BigInt`'s ARITHMETIC, host-backed and named in this carrier's
+  -- `operation_map` like everything else it declares. UNBOUNDED — these are the third
+  -- column of the overflow table that is the argument for keying the family per
+  -- carrier: `Int64`'s raise, `Float`'s saturate, and these cannot overflow, so one
+  -- registration on `Additive.add` was three operations under one name.
+  --
+  -- `neg` IS DECLARED HERE and was not before. It had no carrier-keyed implementation
+  -- at all — `numeric_neg` on the spec op covered `BigInt` by testing the operand —
+  -- so with that registration gone it needs its own, and a carrier that provides
+  -- `Additive` owes a `neg` (the load check demands it; `arithmetic.anthill` carries
+  -- the measurement).
+  --
+  -- The bare `sub` in `induction` below now means `BigInt.sub`, which is why the
+  -- `import anthill.prelude.Additive.{sub}` this sort carried is gone: these
+  -- declarations would have shadowed it.
+  operation {
+    add(a: BigInt, b: BigInt) -> BigInt   -- +, unbounded
+    sub(a: BigInt, b: BigInt) -> BigInt   -- - (binary), unbounded
+    mul(a: BigInt, b: BigInt) -> BigInt   -- *, unbounded
+    neg(a: BigInt) -> BigInt              -- - (prefix), unbounded
   }
 
   -- Conversion operations

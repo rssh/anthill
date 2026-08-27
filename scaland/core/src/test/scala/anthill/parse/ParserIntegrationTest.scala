@@ -881,7 +881,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     // `Float` does not provide, so before this there was no way to take the maximum
     // of two floats at all — and `Ord`'s `gte`-based derivation would have been
     // the wrong answer anyway (not commutative with a NaN operand).
-    assertEquals(opCount, 34, "Float should expose 34 operations")
+    // WI-880: + `add`/`sub`/`mul`, and for the reason WI-876 gave for the
+    // comparisons one paragraph up. They were registered on the `Additive` /
+    // `Multiplicative` SPEC ops, where ONE implementation served every carrier and
+    // told the three apart by TESTING ITS OPERANDS — and the three are genuinely
+    // different operations: `Float`'s SATURATE to an infinity, `Int64`'s RAISE on
+    // overflow, `BigInt`'s cannot overflow. `Float` declares its own so its binding's
+    // `operation_map` has something to key `float_add` to.
+    assertEquals(opCount, 37, "Float should expose 37 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
       "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
     assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,

@@ -13,7 +13,9 @@
 //!   * `:- Bool.and(true, true) = true` answered NOTHING, which the ticket diagnosed
 //!     as an OPERAND-vs-GOAL split. It is not that either. The separator is which
 //!     REGISTRY holds the host function — see the two rows in
-//!     `a_hardcoded_registration_is_still_invisible_to_the_gate` below.
+//!     `a_migrated_registration_is_visible_to_the_gate` below (named
+//!     `a_hardcoded_registration_is_still_invisible_to_the_gate` until WI-880 migrated
+//!     the eight it pinned; its rows now carry the flipped values).
 //!
 //! WHAT THE DEFECT ACTUALLY WAS. WI-20260822-J38JE widened the goal-side ENTRY gate
 //! (`op_reducible_in_rule_body` = a body OR `is_interpreter_mapped_op`) so a host op
@@ -35,10 +37,11 @@
 //!      (`goalT` AND `opT` both drop to 0 — the row that says the defect was never
 //!      operand-vs-goal), `an_unground_host_operand_suspends_rather_than_answering`
 //!      (`gnd` drops to 0), the `pure` row of the effect test, and
-//!      `a_hardcoded_registration_is_still_invisible_to_the_gate` — the last of those
-//!      NOT through its pin rows, which are about ops the arm never reaches and hold
-//!      either way, but through its `has` CONTROL row, the mapped sibling that must
-//!      answer. Measured: 5 of the 6 tests fail.
+//!      `a_migrated_registration_is_visible_to_the_gate` — which, when this control was
+//!      run, reached that file through its `has` CONTROL row alone (the mapped sibling
+//!      that must answer), its other rows being about ops the arm never reached. Since
+//!      WI-880 migrated those ops the whole test reaches the arm. Measured: 5 of the 6
+//!      tests fail.
 //!      PASSES EITHER WAY: `symbolic_algebra_at_an_operand_is_still_left_as_data`
 //!      ALONE, and by design — every row in it pins what the arm must NOT reach, so
 //!      there is nothing in it for a back-out to break. That is what makes it a
@@ -209,46 +212,40 @@ fn an_unground_host_operand_suspends_rather_than_answering() {
     );
 }
 
-/// WHAT IS STILL NOT REDUCED, pinned so that widening it is visible. Both are
-/// SUSPENSIONS, not wrong answers — the call is left un-reduced and the `eq` delays.
+/// THE UNSOUNDNESS THIS FILE PINNED IS GONE, AND WHAT REMAINS IS A SUSPENSION.
 ///
-///  * A HARDCODED-ONLY REGISTRATION. WI-884 split the host surface in two:
-///    `String.contains` is named by an `operation_map` clause, while
-///    `String.concat` / `length` / `startsWith` / … are registered by hardcoded
-///    qualified name in `eval/builtins.rs`. That comment states the cost itself —
-///    "`op_is_interpretable` counts a host MAPPING and not a hardcoded registration,
-///    so `String.contains` reads as backed and `String.concat` does not though one
-///    interpreter runs both" — and calls the case "unreached today". This is where it
-///    is reached. `anthill.prelude.Bool`'s three were in the hardcoded half too, and
-///    THIS ticket migrated them (they are the ticket's headline row); the remaining
-///    eight are WI-880's migration, recorded there.
-///  * A HOST CALL NESTED IN A HOST CALL'S ARGUMENT. `reduce_op_value` σ-walks each
-///    argument to a `Value` but does not REDUCE an argument that is itself an
-///    op-call, so the bridge sees a `Value::Node` and its ground check declines.
-///    (A host call nested in a BODIED op's body DOES reduce — that path recurses
-///    through `reduce_op_value` at `depth + 1` — which is the `deep` row.)
+/// VPEWK wrote this test "to FAIL when either lands, which is the intent", and WI-880
+/// landed the first: `String.concat` / `length` / `startsWith` / … are `operation_map`
+/// entries now, so `op_is_interpretable` sees them and they reduce. The rows below are
+/// the SAME rows with the flipped values, kept rather than deleted because the pairing
+/// is what says which of the two remainders moved.
 ///
-/// THEY ARE NOT THE SAME KIND OF REMAINDER, and an earlier draft of this doc said they
-/// were ("both are SUSPENSIONS, not wrong answers") — /code-review drove it and that was
-/// false for the first one. `answers(..) == 0` cannot tell a suspension from a decided
-/// FALSE, so each row below asserts `total` as well, which can:
+/// WHAT THE ROW USED TO SAY, and it was the whole reason WI-880 was a correctness item:
+/// WI-884 split the host surface in two, `String.contains` named by an `operation_map`
+/// clause and `String.concat` registered by hardcoded qualified name in
+/// `eval/builtins.rs`. `is_unreduced_op_call` did not recognize the hardcoded half, so
+/// `eq` compared the CALL to `"ab"` STRUCTURALLY and committed — `String.concat("a","b")
+/// = "ab"` was DECIDED FALSE, and `not(…)` over it answered **1 DEFINITE**, a positive
+/// answer out of a call that never ran. The WI-738 soundness floor, missing for this
+/// class. MEASURED both ways here: `cat` 0 -> 1, `ncat` 1 -> 0, `len` 0 -> 1.
 ///
-///   * the HARDCODED-only call is DECIDED FALSE. `is_unreduced_op_call` does not
-///     recognize it, so `eq` compares the CALL to `"ab"` structurally and commits. That
-///     is UNSOUND under negation, not merely incomplete — `not(String.concat("a","b") =
-///     "ab")` answers 1 DEFINITE, a positive answer out of a call that never ran. It is
-///     the WI-738 soundness floor missing for this class, and it is what makes WI-880's
-///     migration a correctness item rather than tidying.
-///   * the NESTED call really does SUSPEND — `1 conditional, residual
-///     eq(and(not(false), true), true)` — and its negation suspends too.
+/// WHAT IS STILL NOT REDUCED — A HOST CALL NESTED IN A HOST CALL'S ARGUMENT.
+/// `reduce_op_value` σ-walks each argument to a `Value` but does not REDUCE an argument
+/// that is itself an op-call, so the bridge sees a `Value::Node` and its ground check
+/// declines. (A host call nested in a BODIED op's body DOES reduce — that path recurses
+/// through `reduce_op_value` at `depth + 1` — which is the `deep` row.) This one is a
+/// SUSPENSION and always was: the residual is present (`total > 0`) and its negation
+/// suspends too, which is why every row asserts `total` beside `answers` — the two
+/// remainders were never the same kind, and an earlier draft of this doc said they were.
 ///
-/// PRE-EXISTING, NOT INTRODUCED HERE: before this ticket `Bool.and` was in the decided-
-/// false class too, and widening `is_unreduced_op_call` is exactly what moved the MAPPED
-/// ops out of it. The hardcoded ones stay behind because the gate cannot see them.
-///
-/// Written to FAIL when either lands, which is the intent.
+/// `has` IS STILL THE CONTROL and now passes for a reason it shares with its siblings
+/// rather than against them: it was the MAPPED sibling that answered while the hardcoded
+/// ones did not, and the separator it isolated — the REGISTRY, not the sort, not the
+/// position — is exactly what WI-880 removed by putting the whole surface in one
+/// registry. It keeps its row so a REGRESSION that un-migrated the eight would show up
+/// as the old split rather than as a uniform failure.
 #[test]
-fn a_hardcoded_registration_is_still_invisible_to_the_gate() {
+fn a_migrated_registration_is_visible_to_the_gate() {
     let mut kb = crate::common::load_kb_with(
         "namespace vpewke\n  import anthill.prelude.{Bool, String, Int64}\n  \
          operation inner() -> Bool = Bool.or(false, true)\n  \
@@ -261,25 +258,29 @@ fn a_hardcoded_registration_is_still_invisible_to_the_gate() {
     );
     assert_eq!(
         answers(&mut kb, "vpewke.cat(1)"),
-        0,
-        "`String.concat` is registered by HARDCODED NAME only, so \
-         `is_interpreter_mapped_op` does not see it (WI-884's split; WI-880 owns the \
-         migration). PASSES EITHER WAY — it is a pin on the remainder, not a control"
+        1,
+        "`String.concat` rides an `operation_map` clause since WI-880, so \
+         `is_interpreter_mapped_op` sees it and the call REDUCES. It answered 0 under \
+         WI-884's split — back the eight mappings out and this returns to 0"
     );
     assert_eq!(
         total(&mut kb, "vpewke.cat(1)"),
-        0,
-        "…and it is DECIDED FALSE, not suspended: no residual at all. `answers` alone \
-         cannot see this, which is why `total` is asserted beside it"
+        1,
+        "…the one answer is DEFINITE, with no residual beside it. The pairing is what \
+         separates 'reduced and true' from 'suspended', which `answers` alone cannot"
     );
     assert_eq!(
         answers(&mut kb, "vpewke.ncat(1)"),
-        1,
-        "THE COST OF THAT, stated rather than left implicit: negating a call that never \
-         ran yields a POSITIVE DEFINITE answer. This row is the unsoundness WI-880's \
-         migration removes; it must flip to 0 (or to a suspension) when that lands"
+        0,
+        "AND THE UNSOUNDNESS IS GONE. This row answered 1 DEFINITE — a positive answer \
+         out of a call that never ran, because `eq` compared the un-reduced CALL to \
+         \"ab\" structurally and committed. The call runs now, so its negation is false"
     );
-    assert_eq!(answers(&mut kb, "vpewke.len(1)"), 0, "…and so is `String.length`");
+    assert_eq!(
+        answers(&mut kb, "vpewke.len(1)"),
+        1,
+        "…and so does `String.length`, the second of the migrated eight"
+    );
     assert_eq!(
         answers(&mut kb, "vpewke.has(1)"),
         1,

@@ -13,10 +13,10 @@ namespace anthill.prelude
     --
     -- WI-881: and the ARITHMETIC below it. `Float` declared 32 operations and 8 ran;
     -- the rest were body-less with nothing behind them, so `sqrt(4.0)` died
-    -- `OperationBodyMissing` on a program that loaded clean — a host carrier is exempt
-    -- from the load-time backing check wholesale (`check_provider_operations`; WI-880
-    -- narrows it now that backing is knowable per operation). `recip` is absent from
-    -- this list ON PURPOSE: its equation in `stdlib/anthill/prelude/float.anthill` is
+    -- `OperationBodyMissing` on a program that loaded clean — a host carrier was exempt
+    -- from the load-time backing check WHOLESALE (`check_provider_operations`), which
+    -- WI-880 narrowed to a per-operation question now that backing is knowable per
+    -- operation. `recip` is absent from this list ON PURPOSE: its equation in `stdlib/anthill/prelude/float.anthill` is
     -- an exact definition and carries `[simp]`, so it inlines instead of dispatching.
     -- Every other declared operation is here.
     operation_map {
@@ -26,6 +26,13 @@ namespace anthill.prelude
       lte: "float_lte",
       max: "float_max",
       min: "float_min",
+      -- WI-880: the ARITHMETIC, IEEE — `add`/`sub`/`mul` SATURATE to an infinity
+      -- where `Int64`'s raise. Same argument as the comparisons two lines up: the
+      -- fact that Float's arithmetic is IEEE belongs in Float's binding, not in a
+      -- branch inside a builtin registered on the spec op for every carrier.
+      add: "float_add",
+      sub: "float_sub",
+      mul: "float_mul",
       abs: "float_abs",
       neg: "float_neg",
       floor: "float_floor",
@@ -48,7 +55,15 @@ namespace anthill.prelude
       log2: "float_log2",
       pi: "float_pi",
       e: "float_e",
-      tau: "float_tau"
+      tau: "float_tau",
+      -- WI-880: the four WI-881 could not add because they were already registered by
+      -- hardcoded qualified name in `eval/builtins.rs`. With those deleted, "every
+      -- other declared operation is here" above is true of the whole sort rather than
+      -- of the part WI-881 reached — `recip` stays the one deliberate absence.
+      div: "float_div",
+      isNaN: "float_is_nan",
+      isInfinite: "float_is_infinite",
+      isFinite: "float_is_finite"
     }
     -- WI-889: the three IEEE specials are `const`s, not operations, so they cannot ride
     -- `operation_map` (whose reader refuses a non-operation, WI-876). `const_map` is

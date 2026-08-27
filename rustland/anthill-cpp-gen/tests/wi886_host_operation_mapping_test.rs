@@ -369,10 +369,16 @@ fn the_cmath_include_comes_from_the_probe_table_exactly_once() {
 /// binding realizes for a carrier that also has a cpp binding block must be realized
 /// there too.
 ///
-/// Not the converse — cpp maps MORE (`Float.div`, `Int64.abs`, the IEEE predicates),
-/// because those are rust builtins registered by hardcoded qualified name rather than
-/// through a binding block. That asymmetry is WI-880's, and this test is worded so that
-/// closing it makes the check stricter without editing.
+/// Not the converse, and WI-880 CLOSED the asymmetry this paragraph used to describe:
+/// cpp mapped MORE (`Float.div`, `Int64.abs`, the IEEE predicates) only because those
+/// were rust builtins registered by hardcoded qualified name rather than through a
+/// binding block. They ride the rust binding now, as does the arithmetic family, so the
+/// check below became stricter with no edit here — which is what "worded so that closing
+/// it makes the check stricter without editing" was for. Two kinds of gap remain, and
+/// the check treats them differently because they ARE different: `BigInt` has no cpp
+/// binding block at all, so the carrier-level filter below excludes it wholesale; while
+/// `String` HAS one and deliberately omits two operations, which needs a name —
+/// `DELIBERATELY_UNREALIZED_IN_CPP`, and the reason is argued at the mapping site.
 ///
 /// IT ALSO EMITS, which no other test here can: the rest of this file runs on the
 /// harness's KB (stdlib directory + cpp bindings), while the CLI's cpp codegen builds
@@ -421,12 +427,44 @@ fn every_rust_realized_primitive_operation_is_realized_in_cpp() {
         "both binding sets must be loaded"
     );
 
-    // Carriers with a cpp binding block at all — a carrier with none (String, BigInt)
-    // is a known gap, not a drift, and its operations refuse loudly at codegen.
+    // Carriers with a cpp binding block at all — a carrier with none (`BigInt`) is a
+    // known gap, not a drift, and its operations refuse loudly at codegen.
     let cpp_carriers: std::collections::BTreeSet<String> = cpp
         .iter()
         .filter_map(|qn| qn.rsplit_once('.').map(|(c, _)| c.to_string()))
         .collect();
+
+    // A DELIBERATE ABSENCE inside a carrier that DOES have a block — the one shape the
+    // carrier-level filter above cannot express, and it needs a name rather than a
+    // silent pass. `string.anthill` in this directory argues both at length: full
+    // Unicode case mapping (rust's locale-independent `to_uppercase`, with multi-scalar
+    // expansions such as `ß` -> `SS`) has no C++17 standard-library realization, and an
+    // ASCII-only `std::toupper` would be exactly the silent non-ASCII divergence WI-884
+    // refused. They stay a LOUD codegen refusal naming themselves.
+    //
+    // WI-880 is what made this list necessary: `toUpper`/`toLower` were registered by
+    // hardcoded qualified name in `eval/builtins.rs` until then, so the rust side had no
+    // `operation_map` entry and this check never saw them. The migration did not create
+    // the divergence — it made an existing one visible, which is what the check is for.
+    //
+    // EACH ENTRY IS VERIFIED TO EXIST below, so the list cannot rot into naming an
+    // operation no host implements — which would silence a real drift.
+    const DELIBERATELY_UNREALIZED_IN_CPP: &[&str] = &[
+        "anthill.prelude.String.toUpper",
+        "anthill.prelude.String.toLower",
+    ];
+    for qn in DELIBERATELY_UNREALIZED_IN_CPP {
+        assert!(
+            rust.contains(*qn),
+            "{qn} is exempted from the cpp parity check but has no RUST mapping either \
+             — the exemption names nothing and would hide a real drift"
+        );
+        assert!(
+            !cpp.contains(*qn),
+            "{qn} IS realized in cpp now — drop it from \
+             DELIBERATELY_UNREALIZED_IN_CPP so the check covers it"
+        );
+    }
 
     let missing: Vec<&String> = rust
         .iter()
@@ -435,6 +473,7 @@ fn every_rust_realized_primitive_operation_is_realized_in_cpp() {
                 .is_some_and(|(carrier, _)| cpp_carriers.contains(carrier))
         })
         .filter(|qn| !cpp.contains(*qn))
+        .filter(|qn| !DELIBERATELY_UNREALIZED_IN_CPP.contains(&qn.as_str()))
         .collect();
     assert!(
         missing.is_empty(),

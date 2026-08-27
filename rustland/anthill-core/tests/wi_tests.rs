@@ -1431,3 +1431,6 @@ mod wi_vm3yb_effect_registration_test;
 
 #[path = "include/wi_cbrsw_permission_effect_test.rs"]
 mod wi_cbrsw_permission_effect_test;
+
+#[path = "include/wi880_arithmetic_mapping_test.rs"]
+mod wi880_arithmetic_mapping_test;

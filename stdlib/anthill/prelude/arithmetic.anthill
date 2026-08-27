@@ -114,24 +114,29 @@ sort anthill.prelude.Additive
   --
   -- The split of that table is NOT this file's doing and is not a property of the
   -- operations: `add` and `sub` carry RESOLVER BUILTINS (`BuiltinTag::Add` / `Sub`), and
-  -- the backing check reads a builtin as backing, so it demands nothing and the gap
-  -- surfaces at eval instead. That is WI-876's finding on `gt`/`lt`/`gte`/`lte`, still
-  -- live for arithmetic because WI-880 has not yet moved the arithmetic families into
-  -- each carrier's `operation_map` the way `operation_map { compare: … }` already holds
-  -- the order. It is why `Money * Money` over an `Additive`-only carrier still LOADS and
-  -- dies at run time ("type mismatch: expected matching Int, BigInt, or Float, got
-  -- Entity") — the categories remove the need to LIE, and the mask that hides an omission
-  -- is a separate defect one layer down.
+  -- the backing check reads a builtin as backing, so it demands nothing. WI-880 did NOT
+  -- change that table — the tags are the SLD registry's, which WI-879 owns — and it did
+  -- change what the two clean rows MEAN, which is the half that mattered. `omit add`
+  -- and `omit sub` used to load clean and then die at eval on the spec-op builtin's
+  -- operand test ("expected matching Int, BigInt, or Float, got Entity"): a LOUD load
+  -- error traded for a SILENT hole. There is no eval builtin on these four now, and
+  -- `sub` carries the default body below, so `omit sub` loads clean AND RUNS, while
+  -- `omit add` — the one operation nothing can derive — is the row still owed to
+  -- WI-879.
   --
-  -- `sub` THEREFORE HAS NO DEFAULT BODY, though `sub_def` below says it is derivable and
-  -- WI-876's shape is right there. Driven with the body written: the eval builtin
-  -- registered on this very spec op SHADOWS it, so a three-operation carrier loads clean
-  -- and `Money(700) - Money(25)` dies at run time with that same message — trading a LOUD
-  -- load error for a SILENT hole, which is the trade this ticket exists to undo. The body
-  -- belongs here the day the registration moves per carrier.
+  -- `sub` HAS THE DEFAULT BODY `sub_def` always stated, and until WI-880 it could not:
+  -- driven with the body written, the eval builtin registered on this very spec op
+  -- SHADOWED it, so the body was dead code and the failure was unchanged. With the
+  -- implementations keyed per carrier nothing shadows it, and a structural carrier that
+  -- writes `add` and `neg` gets `sub` for free. MEASURED both ways on the `Money`
+  -- carrier of `wi880_arithmetic_mapping_test`.
+  --
+  -- `neg` KEEPS NO DEFAULT, though `neg_def` states one: its derivation reads `sub`, so
+  -- writing both bodies makes each bottom out in the other. `neg` is the primitive of
+  -- the pair, and the loader already demands it.
   operation {
     add(a: T, b: T) -> T           -- +
-    sub(a: T, b: T) -> T           -- - (binary)
+    sub(a: T, b: T) -> T = add(a, neg(b))   -- - (binary); `sub_def`, derived
     neg(a: T) -> T                 -- - (prefix)
     zero() -> T                    -- additive identity
   }
@@ -144,8 +149,16 @@ sort anthill.prelude.Additive
     add_identity: add(?a, zero) <=> ?a
     -- The two ways `sub` and `neg` relate — both true in an abelian group, and NEITHER
     -- executable: a rule is not backing (WI-818), and these are untagged besides. They
-    -- are the specification a carrier's own `sub` and `neg` are proved against, and
-    -- `sub_def` is the derivation the note above says cannot yet be a body.
+    -- are the specification a carrier's own `sub` and `neg` are proved against.
+    --
+    -- `sub_def` IS ALSO `sub`'S DEFAULT BODY since WI-880 — written twice, in the two
+    -- positions that mean different things. Here it is the LAW, which a carrier's own
+    -- `sub` is proved against whether or not it is derived that way (the saturating
+    -- carrier of `wi880_arithmetic_mapping_test` is a member that does NOT satisfy it,
+    -- and the law is how that is visible). At the declaration it is the DERIVATION a
+    -- carrier that writes no `sub` inherits. `neg_def` has no such twin, and cannot:
+    -- its derivation reads `sub`, so writing both bodies makes each bottom out in the
+    -- other.
     sub_def:   sub(?a, ?b) <=> add(?a, neg(?b))
     neg_def:   neg(?a) <=> sub(zero, ?a)
   }

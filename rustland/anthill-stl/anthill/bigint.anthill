@@ -16,7 +16,18 @@ namespace anthill.prelude
       -- `provides EuclideanDomain[T = BigInt]` below.
       div: "bigint_div",
       mod: "bigint_mod",
-      rem: "bigint_rem"
+      rem: "bigint_rem",
+      -- WI-880: the ARITHMETIC, UNBOUNDED. No overflow arm — the column that makes
+      -- the per-carrier keying an argument rather than a tidy-up.
+      add: "bigint_add",
+      sub: "bigint_sub",
+      mul: "bigint_mul",
+      neg: "bigint_neg",
+      -- WI-880: the three CONVERSIONS, off the hardcoded list for the reason its
+      -- siblings went.
+      to_bigint: "bigint_to_bigint",
+      to_int: "bigint_to_int",
+      to_float: "bigint_to_float"
     }
     -- WI-644 / proposal 004: BigInt is lawful — partial bases + total markers.
     provides PartialEq[T = BigInt]

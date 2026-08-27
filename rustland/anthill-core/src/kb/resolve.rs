@@ -5554,6 +5554,15 @@ impl KnowledgeBase {
         // proved via its discrim-indexed `rule eq` clauses) still proves
         // relationally. The discriminator is the operation's own body: `Set.eq`
         // is a body-less `operation eq(...) -> Bool` backed by separate rules.
+        //
+        // WI-880 — THE BODY QUESTION, ASKED DELIBERATELY. The SLD twin of
+        // `eval/builtins.rs`'s `semantic_equal` gate; the full argument is there, and
+        // the two must move together. In one line: `op_is_executable` /
+        // `op_is_interpretable` ask "can the interpreter INVOKE it", and a host-mapped
+        // body-less `eq` would answer yes to that while falling into
+        // `prove_rule_predicate` below, which finds no clause and REFUTES — equal values
+        // reported unequal. Unreachable while `PartialEq.eq` is the one spec-op
+        // registration WI-880 kept and no carrier `eq` is mapped.
         if super::typing::op_has_runnable_body(self, target) {
             return match self.bridge_eq_op_to_eval(target, a, b) {
                 Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, positive),

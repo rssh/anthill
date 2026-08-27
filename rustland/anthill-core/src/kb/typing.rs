@@ -29829,9 +29829,34 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     };
     let effects_runtime = effects_runtime_sym(kb);
 
-    // Host-provided carriers (`Implementation.target` QNs). Their operations are
-    // backed by the host artifact, not an anthill body/rule, so the provision is
-    // skipped wholesale — the op-level peer of WI-343's `EffectsRuntime` skip.
+    // Host-realized carriers (`Implementation.target` QNs) — a carrier whose
+    // operations are implemented by a host artifact rather than by an anthill body.
+    //
+    // WI-880 — THIS IS NO LONGER A WHOLESALE SKIP, and the narrowing is the
+    // per-carrier version of the very defect WI-876 fixed per-spec-op. It used to
+    // read "it is a host carrier, so assume every operation is backed", which is a
+    // claim about the CARRIER answering a question asked about an OPERATION. Since
+    // WI-876 backing is knowable per operation, so the flag now only decides whether
+    // a SPEC-LEVEL `operation_map` counts (see [`op_backed`]'s `host_realized` leg);
+    // an operation this host realizes NOWHERE is refused like any other.
+    //
+    // MEASURED — before the narrowing, a `provides Widget3 language rust` carrier
+    // with body-less, UNMAPPED, unimplemented `compare`/`eq` plus `fact Ord[Widget3]`
+    // LOADED CLEAN, so `op_is_executable`'s host-mapping leg was correct by
+    // construction and reached by nothing. It is reached now:
+    // `wi880_arithmetic_mapping_test::a_host_carrier_still_owes_an_operation_no_host_realizes`.
+    //
+    // NO LANGUAGE FILTER, deliberately, and WI-886 is why the question has to be
+    // answered rather than inherited: `emit_implementation_fact` emits a row for
+    // EVERY `provides X language <L>` block, so a cpp-only binding puts `X` here for
+    // the rust build too. That is CORRECT for this check and wrong for eval, and the
+    // two now say so in the same vocabulary — a LOAD check asks "does the program
+    // declare an implementation", which a cpp mapping answers (matching
+    // [`op_is_executable`]'s language-agnostic `is_host_mapped_op`), while eval asks
+    // "can THIS runtime call it" and reads `is_interpreter_mapped_op`
+    // ([`op_is_interpretable`]). Before the narrowing the two legs of this one check
+    // disagreed about what "host-realized" means and nothing noticed, because the
+    // wholesale skip never consulted an operation at all.
     let mut host_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(impl_sym) = kb.try_resolve_symbol("anthill.realization.Implementation") {
         for rid in kb.rules_by_functor(impl_sym) {
@@ -29892,9 +29917,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             continue;
         }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
-        if host_targets.contains(&carrier_qn) {
-            continue;
-        }
+        let host_realized = host_targets.contains(&carrier_qn);
         let Some(spec_ops) = own_ops.get(&p.spec) else {
             continue;
         };
@@ -29905,7 +29928,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 .next()
                 .unwrap_or("")
                 .to_string();
-            if op_backed(kb, p.carrier, &carrier_qn, spec_op, &op_short) {
+            if op_backed(kb, p.carrier, &carrier_qn, spec_op, &op_short, host_realized) {
                 continue;
             }
             // WI-431: a retroactive INSTANCE FACT (`fact CpsMonad[F = Option,
@@ -31646,6 +31669,7 @@ fn op_backed(
     carrier_qn: &str,
     spec_op: Symbol,
     op_short: &str,
+    host_realized: bool,
 ) -> bool {
     // Candidate definition symbols: the spec op itself, the carrier's resolved
     // op (own override or inherited spec default, via `sort_ops`), and the
@@ -31698,13 +31722,38 @@ fn op_backed(
     // `anthill.realization.Implementation` fact, which
     // [`check_provider_operations`] consults before it ever reaches this function.
     let spec_op_canon = kb.canonical_sym(spec_op);
-    cands.iter().any(|&c| {
+    if cands.iter().any(|&c| {
         if kb.canonical_sym(c) == spec_op_canon {
             kb.is_builtin(c) || op_has_runnable_body(kb, c)
         } else {
             op_is_executable(kb, c)
         }
-    })
+    }) {
+        return true;
+    }
+    // WI-880 — the SPEC-LEVEL mapping, admitted for a HOST-REALIZED carrier and for
+    // no other. It is the leg the paragraph above refuses in general, and the two
+    // rules are not in tension: the objection there is that a flat mapping set has no
+    // carrier dimension, so counting it unconditionally certifies every carrier of the
+    // spec. `host_realized` IS that carrier dimension — an
+    // `anthill.realization.Implementation` fact naming this carrier, the program's own
+    // declaration that a host artifact realizes it — and the two claims compose
+    // exactly: the artifact realizes the carrier, the mapping says the operation has a
+    // host implementation, so this carrier's operation is implemented.
+    //
+    // THIS IS WHAT THE WHOLESALE SKIP USED TO DO, minus the part that was wrong. It is
+    // what keeps `anthill.persistence.filesystem.FileStore` loading: its six storage
+    // operations are genuinely polymorphic (one rust function per operation, resolving
+    // the store VALUE to its registered mirror), so `persistence.anthill` maps them
+    // once on the SPEC and there is no per-backend function to name — measured, the
+    // three filesystem backends are the whole population that needs this leg, and
+    // without it they lose `retract`/`update`/`retrieve`.
+    //
+    // `ZzNotAStore` STAYS REFUSED, which is the WI-931 measurement this must not undo:
+    // an arbitrary `entity ZzNotAStore(v: Int64)` claiming `fact
+    // NonMonotonicStore[ZzNotAStore]` has no `Implementation` fact, so `host_realized`
+    // is false and the spec mapping is not offered to it.
+    host_realized && kb.is_host_mapped_op(spec_op)
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.
@@ -61297,8 +61346,33 @@ fn dispatch_calls_in_occ(
                         errors.len(),
                         "a non-recursing shape reported nothing yet"
                     );
-                    if !undecidable_by_this_typer(&e) {
-                        errors.push(e);
+                    // LEAF BY LEAF, then RE-AGGREGATED — not `undecidable_by_this_typer`
+                    // asked of the whole error.
+                    //
+                    // WI-880 — this arm used to ask it of `e` itself, which matches only a
+                    // BARE exempt error. `collect_arg_errors` hands back one failing
+                    // argument's error unwrapped and TWO as a `Multiple`, so the exemption
+                    // held for one exempt argument and silently lapsed for two. That was
+                    // latent while the arithmetic ops had no default body: `?dx =
+                    // ?p1.position.x - ?p2.position.x` (`safety_common.anthill:277`, the
+                    // very site `undecidable_by_this_typer`'s doc names) reached the
+                    // BodyLessSpecOp arm, which flattens. Giving `Additive.sub` a default
+                    // body moves `-` to THIS arm ([`call_dispatch_shape`] routes a
+                    // defaulted spec op here), and the two unresolved receivers were
+                    // refused — 15 tests, the corpus among them.
+                    //
+                    // RE-AGGREGATED with `aggregate_errors` rather than pushed as leaves,
+                    // so this shape keeps pushing ONE report per call where it has one to
+                    // make: a lone survivor stays unwrapped (which is the case that always
+                    // worked) and several stay one `Multiple`, which is what
+                    // `already_reported` flattens for.
+                    let kept: Vec<TypeError> = e
+                        .flatten()
+                        .into_iter()
+                        .filter(|leaf| !undecidable_by_this_typer(leaf))
+                        .collect();
+                    if !kept.is_empty() {
+                        errors.push(aggregate_errors(kept));
                     }
                 }
                 // WI-1056 — the widening. WI-1043 admitted this shape for a dispatch

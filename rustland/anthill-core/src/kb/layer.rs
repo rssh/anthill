@@ -163,6 +163,7 @@ kb_scoped_fields!(
     host_mapped_ops,
     interpreter_mapped_ops,
     host_op_mappings,
+    host_op_registrations,
     host_const_mappings,
     default_providers,
     provides_clause_seen,
@@ -321,6 +322,22 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         host_mapped_ops: _,
         interpreter_mapped_ops: _,
         host_op_mappings: _,
+        // WI-880 — SCOPED, and it MUST be, because it is a memo of `host_op_mappings`
+        // directly above and that field is scoped. A memo is scoped exactly when the
+        // thing it caches is: leave it out and a discard rolls the mappings back to the
+        // base while the memo keeps the LAYER's derivation, which is a desync the
+        // per-interpreter re-derivation used to hide.
+        //
+        // FOUND BY /code-review, and the comment this replaced justified the omission
+        // with a claim that is FALSE: "a layer does not run the post-load pass". It
+        // does — `kb_loaded` reaches `load_incremental` -> `load_phase_inner` ->
+        // `build_host_op_mappings` -> `set_host_op_mappings`. The worst case is not a
+        // stale registration but a POISONED base: a layer whose `operation_map` names an
+        // unknown `host_fn` memoizes the refusal (the whole point of caching the `Err`),
+        // and after the discard every interpreter built over the base KB fails
+        // permanently for a mapping the base no longer has — defeating `kb_loaded`'s own
+        // contract that a failed `loaded` leaves the KB as it found it.
+        host_op_registrations: _,
         host_const_mappings: _,
         default_providers: _,
         provides_clause_seen: _,
@@ -419,6 +436,98 @@ end
     /// it is defined long before any layer exists.
     fn base_name_resolves(kb: &KnowledgeBase) -> bool {
         kb.try_resolve_symbol("anthill.prelude.Option.some").is_some()
+    }
+
+    /// A LAYER'S `operation_map` MUST NOT OUTLIVE THE LAYER — WI-880, found by
+    /// /code-review.
+    ///
+    /// `host_op_registrations` is a memo of `host_op_mappings`, which is scoped; the memo
+    /// was not, so a discard rolled the mappings back to the base while the memo kept the
+    /// LAYER's derivation. The per-interpreter re-derivation it replaced was self-healing,
+    /// which is why nothing noticed.
+    ///
+    /// THE POISONED-BASE SHAPE, driven here because it is the worst one and the only one
+    /// visible from outside: a binding block naming an unknown `host_fn` LOADS CLEAN —
+    /// `build_host_op_mappings` checks that the operation is declared, never that the key
+    /// resolves, because which functions a runtime exposes is only that runtime's to know
+    /// (kernel-language.md §10.2). The refusal lands when an interpreter is built, and it
+    /// is CACHED, so without the fix every later interpreter over the BASE KB fails
+    /// permanently for a mapping the base does not have — defeating the discard's own
+    /// contract.
+    ///
+    /// WHAT FAILS WHEN THE FIX IS BACKED OUT (drop `host_op_registrations` from
+    /// `kb_scoped_fields!`): the LAST assertion, and only it. Everything before the
+    /// restore passes either way — those lines exist to prove the layer's broken mapping
+    /// really did poison the memo, so that "the base is clean afterwards" is not vacuously
+    /// true of a memo that was never populated.
+    ///
+    /// `register_standard_builtins` IS THE PROBE, not a full evaluation: it is the one
+    /// step that reads the memo, and reading it is the whole question.
+    #[test]
+    fn wi880_a_discarded_layers_operation_map_does_not_poison_the_base() {
+        // A carrier declaring one body-less operation, mapped to a key `HOST_FNS` and the
+        // embedder registry both lack.
+        const BROKEN_BINDING: &str = r#"
+namespace wi880.layerpoison
+  sort Widget3
+    import anthill.prelude.{Int64}
+    entity widget3(id: Int64)
+    operation squish(a: Widget3) -> Int64
+  end
+
+  provides Widget3 language rust
+    artifact "rustland/anthill-stl/src/prelude/int.rs"
+    operation_map { squish: "no_such_host_function" }
+  end
+end
+"#;
+        let interp_builds = |kb: &mut KnowledgeBase| -> Result<(), String> {
+            // `Interpreter::new` MOVES the KB, so hand it a taken one and put it back —
+            // the same `mem::take` shape `run_in_bridge_interp` uses, and the reason the
+            // memo rides the KB at all.
+            let taken = std::mem::take(kb);
+            let mut interp = crate::eval::Interpreter::new(taken);
+            let verdict = crate::eval::builtins::register_standard_builtins(&mut interp)
+                .map_err(|e| format!("{e:?}"));
+            *kb = interp.into_kb();
+            verdict
+        };
+
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        assert!(
+            interp_builds(&mut kb).is_ok(),
+            "the base KB must build an interpreter before the layer — otherwise the \
+             assertion after the discard would hold for a reason that has nothing to \
+             do with the layer"
+        );
+
+        let snap = kb.snapshot_scoped();
+        let parsed = parse::parse(BROKEN_BINDING).expect("parse broken binding");
+        assert!(
+            load::load_incremental(&mut kb, &[&parsed], &NullResolver).is_ok(),
+            "an unknown `host_fn` is NOT a load error — the loader cannot know which \
+             functions a runtime exposes. If this starts failing the fixture no longer \
+             reaches the memo and the last assertion means nothing"
+        );
+        let err = interp_builds(&mut kb).expect_err(
+            "the layer's mapping names a function no registry has, so building an \
+             interpreter over the LAYER must refuse — and that refusal is what gets \
+             memoized",
+        );
+        assert!(
+            err.contains("no_such_host_function"),
+            "the refusal must name the key, or the memo below holds something else: {err}"
+        );
+
+        kb.restore_scoped(snap);
+
+        // THE ASSERTION. The base KB has no such mapping, so it must build interpreters
+        // again exactly as it did above.
+        assert!(
+            interp_builds(&mut kb).is_ok(),
+            "a discarded layer's `operation_map` must not survive in the registration \
+             memo — the base KB never named `no_such_host_function`"
+        );
     }
 
     /// WI-SPGBP — the headline: a discard makes a name the layer introduced

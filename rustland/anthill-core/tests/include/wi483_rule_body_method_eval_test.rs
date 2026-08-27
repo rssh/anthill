@@ -20,9 +20,32 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
 
+/// Load `extra` over the FULL library closure, keeping the loader's verdict instead of
+/// panicking on it — `rule_body_complex_method_call_runs_via_bridge_not_loud`'s first
+/// assertion is that a complex callee produces NO load error, so the errors have to be
+/// returned rather than asserted away.
+///
+/// WI-880 — THE FULL CLOSURE, and it was `stdlib_dir()` ALONE until this ticket.
+/// `stdlib/` carries the language-agnostic specs; the `provides <carrier> language rust`
+/// blocks that say WHICH HOST FUNCTION realizes each primitive operation live in
+/// `rustland/anthill-stl/anthill/`, so a KB built from `stdlib/` alone has no
+/// `operation_map` clause to register from and the primitives are unimplemented. That
+/// was invisible while the arithmetic was registered on its SPEC ops by hardcoded
+/// qualified name — `Additive.add` resolved in a stdlib-only KB, so `bump(b) = ?b.value
+/// + 1` evaluated through the bridge. With the family keyed per carrier it does not, and
+/// this fixture's `neq` went from DECIDING (0 solutions) to RESIDUALIZING (1), which is
+/// the incompleteness the file's own doc says the bridge removed.
+///
+/// MEASURED, holding the fixture fixed and varying only the directories: stdlib alone
+/// answers 1, stdlib + host bindings answers 0. The ordering family had already left
+/// this KB behind under WI-876 and nothing here reached it. Same call WI-1103 made for
+/// `incremental_load_test` and for the same reason — a fixture that loads half the
+/// library measures half the language.
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files: Vec<_> = [crate::common::stdlib_dir(), crate::common::rust_stl_dir()]
+        .iter()
+        .flat_map(|d| crate::common::collect_anthill_files(d))
+        .collect();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

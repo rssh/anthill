@@ -36,7 +36,19 @@ namespace anthill.prelude
       -- so both are the host's. The SEMANTICS each commits to are argued on the
       -- declarations there, as for the search / edit surface above.
       slug: "string_slug",
-      digestBase32: "string_digest_base32"
+      digestBase32: "string_digest_base32",
+      -- WI-880: the other EIGHT. WI-884 left these registered by hardcoded qualified
+      -- name in `eval/builtins.rs` — correct answers through a channel three readers
+      -- cannot see, so `String.contains` read as host-backed and `String.concat` did
+      -- not, though one interpreter runs both. `String`'s host surface is one list now.
+      concat: "string_concat",
+      length: "string_length",
+      startsWith: "string_starts_with",
+      endsWith: "string_ends_with",
+      substring: "string_substring",
+      toUpper: "string_to_upper",
+      toLower: "string_to_lower",
+      repeat: "string_repeat"
     }
     -- WI-644 / proposal 004: String is lawful — partial bases + total markers.
     provides PartialEq[T = String]

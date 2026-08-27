@@ -40,29 +40,44 @@ use super::{EvalError, Interpreter, Value};
 /// current KB (stdlib partially loaded, e.g. a minimal test harness) are
 /// skipped — every other error is propagated.
 pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
-    // WI-20260825-1WBZT: the OPERATOR'S OWN CATEGORY declares each of these now
-    // (`stdlib/anthill/prelude/arithmetic.anthill`); `Numeric` reaches them by
-    // `provides`. `register_if_present` skips a name that does not resolve, so a stale
-    // address here would be a SILENT loss of the host implementation rather than an
-    // error — the address must follow the declaration.
-    register_if_present(interp, "anthill.prelude.Additive.add", numeric_add)?;
-    register_if_present(interp, "anthill.prelude.Additive.sub", numeric_sub)?;
-    register_if_present(interp, "anthill.prelude.Additive.neg", numeric_neg)?;
-    register_if_present(interp, "anthill.prelude.Multiplicative.mul", numeric_mul)?;
-
-    register_if_present(interp, "anthill.prelude.Int64.neg", int_neg)?;
-    register_if_present(interp, "anthill.prelude.Int64.abs", int_abs)?;
-    register_if_present(interp, "anthill.prelude.Int64.mod", int_mod)?;
-    register_if_present(interp, "anthill.prelude.Int64.rem", int_rem)?;
-    register_if_present(interp, "anthill.prelude.Int64.div", int_div)?;
-    register_if_present(interp, "anthill.prelude.Int64.divExact", int_div)?;
-    register_if_present(interp, "anthill.prelude.Int64.sign", int_sign)?;
-
-    register_if_present(interp, "anthill.prelude.Float.div", float_div)?;
+    // WI-880 — `Additive.add`/`sub`/`neg` and `Multiplicative.mul` are NOT REGISTERED
+    // HERE. They were, keyed by the SPEC op, which is WI-876's defect A stated for the
+    // arithmetic family: one host-scalar implementation was the backing for every
+    // carrier that never wrote its own, and `op_backed`'s `kb.is_builtin` leg certified
+    // it as backed for all of them. Each carrier names its own in its binding block's
+    // `operation_map` (`int_add` / `float_add` / `bigint_add`, …); `Additive.sub` gains
+    // the DEFAULT BODY that `arithmetic.anthill`'s `sub_def` law always stated, which is
+    // what a structural carrier inherits now that nothing shadows it.
+    //
+    // WI-20260825-1WBZT put the declarations on the OPERATOR'S OWN CATEGORY
+    // (`stdlib/anthill/prelude/arithmetic.anthill`), which `Numeric` reaches by
+    // `provides`; that is the address the carriers' declarations now shadow per carrier.
 
     // WI-644 / proposal 004: eq/neq live on the PartialEq base (Eq is the lawful
     // marker). The semantic `eq`/`neq` are IEEE for Float operands (below),
     // structural otherwise.
+    //
+    // WI-880 — THE ONE SPEC-OP REGISTRATION THAT STAYS, and the ticket that removed the
+    // others is where the reason is argued. `builtin_eq` is not the defect shape its
+    // siblings were: it does not decide by testing its operands and then answer wrongly
+    // for a carrier it cannot handle — it DISPATCHES, through `semantic_equal`, to the
+    // head carrier's own `eq` before deciding anything structurally, which is exactly
+    // why `eq` already worked on a structural carrier when `compare` did not (WI-876's
+    // asymmetry).
+    //
+    // AND IT CANNOT SIMPLY BE RE-KEYED, which is the part that makes this a design and
+    // not a leftover. Equality fires from UNIFICATION as well as from a call — an `=`
+    // goal in a rule body reaches `sem_eq_dispatch` (kb/resolve.rs), where there is no
+    // call site and therefore no requirement dictionary to select a provider with
+    // (058 §3.7). A value-directed step has to exist for that path whatever the
+    // registration says, so keying `eq` per carrier would ADD a channel rather than
+    // replace one. It would also cost each scalar carrier a declared `eq` member, and
+    // every one of them imports `PartialEq.{eq}` for its own laws and constraints —
+    // which 059 R4 then refuses as a capture (measured on `Float.mul`, this ticket).
+    //
+    // A dispatching builtin is still a workaround for a missing key rather than a
+    // design, and WI-880's own note says so. What would retire it is a value-directed
+    // entry that is not spelled as a spec-op registration; nothing owns that yet.
     register_if_present(interp, "anthill.prelude.PartialEq.eq", builtin_eq)?;
     register_if_present(interp, "anthill.prelude.PartialEq.neq", builtin_neq)?;
     // WI-615 / proposal 051: `===` (structural identity) is a Bool-returning TEST
@@ -92,50 +107,25 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Bool.and", bool_and)?;
     register_if_present(interp, "anthill.prelude.Bool.or", bool_or)?;
 
-    // WI-884 — HALF OF `String`'S SURFACE IS REGISTERED HERE AND HALF IN ITS BINDING
-    // BLOCK, and a reader adding the next one has to know that. These eight are keyed
-    // by hardcoded qualified name; `contains`/`indexOf`/`replace`/`trim`/`split`/
-    // `isEmpty` are keyed by `rustland/anthill-stl/anthill/string.anthill`'s
-    // `operation_map`. Same for `Int64` (nine here, `minValue`/`maxValue` there).
+    // WI-884 FOUND HALF OF `String`'S AND `Int64`'S HOST SURFACE REGISTERED HERE BY
+    // HARDCODED QUALIFIED NAME AND HALF IN ITS BINDING BLOCK. WI-880 MIGRATED THE
+    // REST, and the whole block is gone: `concat`/`length`/`startsWith`/`endsWith`/
+    // `substring`/`toUpper`/`toLower`/`repeat`, `Int64`'s `abs`/`mod`/`rem`/`div`/
+    // `divExact`/`sign`/`to_float`/`to_string`, `Float`'s `div`/`isNaN`/`isInfinite`/
+    // `isFinite` and `BigInt`'s three conversions are all `operation_map` entries now.
     //
-    // NOT the WI-879/WI-880 defect, which is about an operation declared on a SPEC
-    // (`Numeric.add`, `Bool.not`) where one registration serves every carrier: these
-    // are the CARRIER's own operations, so the qualified name already keys them per
-    // carrier and they answer correctly. It is still a split with a cost, and the cost
-    // is that the two halves are not equivalent to their READERS —
-    // `op_is_interpretable` (kb/typing.rs) counts a host MAPPING and not a hardcoded
-    // registration, so `String.contains` reads as backed and `String.concat` does not
-    // though one interpreter runs both; `kb.host_op_mappings()`, which is what WI-886
-    // wants a second backend to consume, sees six of fourteen; and only the mapped
-    // half has its arity checked against the declaration. Unreached today because no
-    // spec declares `concat`, which is the same coincidence WI-876's review refused to
-    // rely on. Migrating the eight is recorded as feedback on WI-880 — whose acceptance
-    // is worded for SPEC ops and so does not currently claim them.
-    register_if_present(interp, "anthill.prelude.String.concat", string_concat)?;
-    register_if_present(interp, "anthill.prelude.String.length", string_length)?;
-    register_if_present(
-        interp,
-        "anthill.prelude.String.startsWith",
-        string_starts_with,
-    )?;
-    register_if_present(interp, "anthill.prelude.String.endsWith", string_ends_with)?;
-    register_if_present(interp, "anthill.prelude.String.substring", string_substring)?;
-    register_if_present(interp, "anthill.prelude.String.toUpper", string_to_upper)?;
-    register_if_present(interp, "anthill.prelude.String.toLower", string_to_lower)?;
-    register_if_present(interp, "anthill.prelude.String.repeat", string_repeat)?;
-
-    register_if_present(interp, "anthill.prelude.BigInt.to_bigint", bigint_to_bigint)?;
-    register_if_present(interp, "anthill.prelude.BigInt.to_int", bigint_to_int)?;
-    register_if_present(interp, "anthill.prelude.BigInt.to_float", bigint_to_float)?;
-    register_if_present(interp, "anthill.prelude.Int64.to_float", int_to_float)?;
-
-    register_if_present(interp, "anthill.prelude.Float.isNaN", float_is_nan)?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Float.isInfinite",
-        float_is_infinite,
-    )?;
-    register_if_present(interp, "anthill.prelude.Float.isFinite", float_is_finite)?;
+    // THESE WERE NEVER THE SPEC-OP DEFECT — they are the CARRIER's own operations, so
+    // the qualified name already keyed them per carrier and they answered correctly.
+    // The cost was that THE TWO HALVES WERE NOT EQUIVALENT TO THEIR READERS, and each
+    // of the three is closed by the move: `op_is_interpretable` (kb/typing.rs) counts
+    // a host MAPPING and not a hardcoded registration, so `String.contains` read as
+    // backed while `String.concat` did not though one interpreter ran both;
+    // `kb.host_op_mappings()` — what WI-886 wants a second backend to consume — saw
+    // six of `String`'s fourteen; and only the mapped half had its arity checked
+    // against the anthill declaration. kernel-language.md §8.7 recorded the first as a
+    // SOUNDNESS gap rather than an incompleteness: `:- String.concat("a", "b") = "ab"`
+    // answered 0 as a rule-body goal, DECIDED false rather than suspended, so `not(…)`
+    // over it answered 1.
 
     // WI-532 / proposal 039: special IEEE values exposed as host-supplied term-level
     // constants (`SymbolKind::Const`). WI-889 — these are NO LONGER keyed here by
@@ -275,7 +265,6 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
         reflect_replace_named_arg,
     )?;
     register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
-    register_if_present(interp, "anthill.prelude.Int64.to_string", int_to_string)?;
 
     // Persistence (proposal 007) is NOT here — WI-931 moved its six operations to
     // `HOST_FNS` + the `operation_map` clauses in
@@ -391,10 +380,23 @@ const HOST_FNS: &[(
     ("ordered_lte", 2, ordered_lte),
     ("ordered_max", 2, ordered_max),
     ("ordered_min", 2, ordered_min),
+    // WI-880 — THE ARITHMETIC FAMILY, one key per (carrier, operation). These are the
+    // entries that replaced the four spec-op registrations `register_standard_builtins`
+    // used to make; the section header above their definitions carries the measurement
+    // and the overflow table that is the argument for keying them apart.
+    ("int_add", 2, int_add),
+    ("int_sub", 2, int_sub),
+    ("int_mul", 2, int_mul),
+    ("int_neg", 1, int_neg),
+    ("float_add", 2, float_add),
+    ("float_sub", 2, float_sub),
+    ("float_mul", 2, float_mul),
+    ("bigint_add", 2, bigint_add),
+    ("bigint_sub", 2, bigint_sub),
+    ("bigint_mul", 2, bigint_mul),
+    ("bigint_neg", 1, bigint_neg),
     // WI-20260824-VT8CF — `BigInt`'s division with remainder, named by its own binding's
-    // `operation_map`. `Int64`'s three are registered by hardcoded qualified name
-    // instead (see `register_standard_builtins`); the split is WI-884's, not this
-    // ticket's, and the mapped spelling is the one WI-880 wants everything migrated to.
+    // `operation_map`.
     ("bigint_div", 2, bigint_div),
     ("bigint_mod", 2, bigint_mod),
     ("bigint_rem", 2, bigint_rem),
@@ -447,6 +449,36 @@ const HOST_FNS: &[(
     // to (the index unit, and the empty pattern).
     ("int_min_value", 0, int_min_value),
     ("int_max_value", 0, int_max_value),
+    // WI-880 — the CARRIER-OWNED surface WI-884 left registered by hardcoded qualified
+    // name. Nothing about these operations changed; they are keyed through the same
+    // channel as their siblings now, so a reader asking "what does the host implement
+    // for this carrier" gets one answer instead of two halves. See the deleted block
+    // in `register_standard_builtins` for the three readers that were split.
+    ("int_abs", 1, int_abs),
+    ("int_mod", 2, int_mod),
+    ("int_rem", 2, int_rem),
+    // `div` and `divExact` are ONE function under two names — `Int64.divExact` is a
+    // historical alias a stdlib rule rewrites to `div`, and the mapping says so
+    // outright where the two `register_if_present` lines said it by repetition.
+    ("int_div", 2, int_div),
+    ("int_sign", 1, int_sign),
+    ("int_to_float", 1, int_to_float),
+    ("int_to_string", 1, int_to_string),
+    ("float_div", 2, float_div),
+    ("float_is_nan", 1, float_is_nan),
+    ("float_is_infinite", 1, float_is_infinite),
+    ("float_is_finite", 1, float_is_finite),
+    ("bigint_to_bigint", 1, bigint_to_bigint),
+    ("bigint_to_int", 1, bigint_to_int),
+    ("bigint_to_float", 1, bigint_to_float),
+    ("string_concat", 2, string_concat),
+    ("string_length", 1, string_length),
+    ("string_starts_with", 2, string_starts_with),
+    ("string_ends_with", 2, string_ends_with),
+    ("string_substring", 3, string_substring),
+    ("string_to_upper", 1, string_to_upper),
+    ("string_to_lower", 1, string_to_lower),
+    ("string_repeat", 2, string_repeat),
     // WI-20260826-VPEWK — `Bool`'s three under their MAPPED spelling, so that the
     // readers of `is_interpreter_mapped_op` can see them. They keep their hardcoded
     // `register_if_present` registration below as well, and that is deliberate: the
@@ -536,42 +568,65 @@ use crate::kb::host_fns::{HostFn, HostFnImpl};
 /// Mappings for another host language are skipped — a `provides X language cpp`
 /// block names cpp functions, which this runtime is right not to know.
 fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
-    // Snapshot the cache before registering — `register_builtin_sym` mutates the
-    // interpreter. `kb.host_op_mappings()` is built once at load; this function runs
-    // for every fresh interpreter, including the one `run_in_bridge_interp` builds
-    // per bridged evaluation, so it must not re-walk the facts.
-    let mappings: Vec<crate::kb::load::HostOperationMapping> = interp
+    // WI-880 — DERIVED ONCE PER KB, not once per interpreter. This function runs for
+    // every fresh interpreter, and `run_in_bridge_interp` builds one per bridged
+    // evaluation; everything below the `register_on` calls is a pure function of the KB,
+    // so it belongs on the KB. See `KnowledgeBase::host_op_registrations`' field for the
+    // per-crossing cost it removes.
+    //
+    // The list is CLONED out before registering: `register_builtin_sym` needs
+    // `&mut Interpreter` and the cache is borrowed from `interp.kb()`. A `HostFn` clone
+    // is a `usize` plus a function pointer (or an `Arc::clone` for an embedder entry) —
+    // the three `String` clones, the key scan, the arity lookup and the `canonical_sym`
+    // hash that used to ride here are all gone.
+    let registrations: Vec<(crate::intern::Symbol, crate::kb::host_fns::HostFn)> = interp
         .kb()
-        .host_op_mappings()
-        .iter()
+        .host_op_registrations(|| build_host_op_registrations(interp.kb()))
+        .map_err(EvalError::Internal)?
+        .to_vec();
+    for (sym, host) in registrations {
+        host.register_on(interp, sym);
+    }
+    Ok(())
+}
+
+/// WI-880 — resolve every `operation_map` entry this runtime is responsible for to the
+/// `(Symbol, HostFn)` pairs an interpreter registers, refusing both failure modes.
+/// Memoized by [`KnowledgeBase::host_op_registrations`]; see that field for why.
+///
+/// A pure function of the KB, which is what makes memoizing it sound: the mappings, the
+/// two host-function registries and the declared arities are all fixed by the time
+/// `set_host_op_mappings` runs, and that call `seal`s the embedder table.
+fn build_host_op_registrations(
+    kb: &crate::kb::KnowledgeBase,
+) -> Result<Vec<(crate::intern::Symbol, crate::kb::host_fns::HostFn)>, String> {
+    let mut out = Vec::new();
+    for m in kb.host_op_mappings() {
         // WI-886 — the SAME constant `KnowledgeBase::is_interpreter_mapped_op`'s index
         // is built from. That predicate promises this pass registered the operation, so
         // the two filters must be one string.
-        .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
-        .cloned()
-        .collect();
-    for crate::kb::load::HostOperationMapping {
-        op, op_qn, host_fn, ..
-    } in mappings
-    {
-        let Some(host) = host_fn_by_key(interp.kb(), &host_fn) else {
+        if m.lang != crate::kb::load::INTERPRETER_LANG {
+            continue;
+        }
+        let Some(host) = host_fn_by_key(kb, &m.host_fn) else {
             // Loud, and it stops the whole interpreter — including the short-lived one
             // the resolver builds per bridged evaluation, so an unrelated `[simp]` fire
             // or `eq` dispatch reports this too. That breadth is deliberate: a binding
             // block naming a function the runtime does not have is broken for the whole
             // program, not for one call. The message says so, because the site it
             // surfaces at will often have nothing to do with the mapping.
-            return Err(EvalError::Internal(format!(
-                "broken binding block: operation_map names host function {host_fn:?} for \
-                 {op_qn}, which the rust runtime does not provide. No interpreter can be \
+            return Err(format!(
+                "broken binding block: operation_map names host function {:?} for \
+                 {}, which the rust runtime does not provide. No interpreter can be \
                  built for this program until the binding is fixed — this error may \
-                 surface at a call that has nothing to do with {op_qn}."
-            )));
+                 surface at a call that has nothing to do with {}.",
+                m.host_fn, m.op_qn, m.op_qn
+            ));
         };
         // `op` is `None` only when the loader already refused this mapping (the
         // operation is undeclared, or is not an operation at all), so the load errored
         // and nothing should be registered against it.
-        let Some(sym) = op else { continue };
+        let Some(sym) = m.op else { continue };
         // The declared operation and the host function must AGREE ON ARITY. Checked
         // at registration, which is the earliest point that knows both: the loader
         // knows the operation's arity but not another language's function set, and
@@ -579,34 +634,31 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
         //
         // Off the CACHED signature (WI-656) rather than `lookup_operation_info`, whose
         // record build clones every per-field `Vec` to be dropped after one `.len()` —
-        // the same reason `operation_is_declared` exists beside it. This runs per
-        // mapping for every fresh interpreter, including the short-lived one
-        // `run_in_bridge_interp` builds per bridged evaluation; the fact-scan fallback
-        // is kept for a KB whose signatures are not built yet, where the old reader
-        // would still have answered. WI-886 moved both tiers behind `declared_arity`,
-        // so cpp-gen's peer check of the same mappings asks the same question the same
-        // way — `op_record` being `pub(crate)`, it could not before.
-        let declared = crate::kb::op_info::declared_arity(interp.kb(), sym);
-        if let Some(n) = declared {
+        // the same reason `operation_is_declared` exists beside it. WI-886 moved both
+        // tiers behind `declared_arity`, so cpp-gen's peer check of the same mappings
+        // asks the same question the same way — `op_record` being `pub(crate)`, it
+        // could not before. The fact-scan fallback inside it is kept for a KB whose
+        // signatures are not built yet, where the old reader would still have answered.
+        if let Some(n) = crate::kb::op_info::declared_arity(kb, sym) {
             if n != host.arity {
-                return Err(EvalError::Internal(format!(
-                    "operation_map maps {op_qn} to {host_fn:?}, but {op_qn} takes {n} \
-                     argument(s) and {host_fn:?} takes {}",
-                    host.arity
-                )));
+                return Err(format!(
+                    "operation_map maps {} to {:?}, but {} takes {n} \
+                     argument(s) and {:?} takes {}",
+                    m.op_qn, m.host_fn, m.op_qn, m.host_fn, host.arity
+                ));
             }
         }
         // Under BOTH spellings, matching `set_host_op_mappings`' index: a qualified
         // name can be interned under several `Symbol`s, and eval's builtin lookup is a
         // RAW map hit, so whichever spelling reaches dispatch must find the same
         // implementation the predicate promised.
-        let canon = interp.kb().canonical_sym(sym);
-        host.register_on(interp, sym);
+        let canon = kb.canonical_sym(sym);
         if canon != sym {
-            host.register_on(interp, canon);
+            out.push((canon, host.clone()));
         }
+        out.push((sym, host));
     }
-    Ok(())
+    Ok(out)
 }
 
 /// WI-889 — register the per-carrier host VALUE SOURCES named by every loaded
@@ -826,71 +878,200 @@ fn type_mismatch(expected: &'static str, a: &Value, b: Option<&Value>) -> EvalEr
 // rather than silently wrapping. A spec-oriented language should fail
 // loud when a formal property is violated; callers that want wraparound
 // can opt in later via a dedicated `WrappingInt` sort.
+//
+// WI-880 — THESE FOUR ARE NO LONGER REGISTERED, and the per-carrier functions
+// below them are what replaced the registration. They remain as the shared
+// SEMANTICS the three carriers agree on, invoked through the carrier wrappers, so
+// that "Int64 addition is checked" is written once. What moved is only the KEY.
+//
+// WHY THE KEY WAS THE DEFECT. Registered on `anthill.prelude.Additive.add`, ONE
+// function was the implementation for every carrier that never wrote its own — and
+// the function then had to TEST ITS OPERANDS to discover which arithmetic it was
+// being asked for. That is a dispatch table written as a match, with no carrier
+// dimension anywhere a reader could see it: `op_backed`'s `kb.is_builtin` leg
+// certified `Additive.add` as backed for EVERY provider, and a structural carrier
+// that omitted an operation loaded clean and died here. MEASURED before the change,
+// on a `Money(cents: Int64)` carrier providing `Numeric` with its own `add`/`neg`/
+// `mul`/`zero`/`one` and no `sub`: `Additive.sub(cents(700), cents(25))` died
+// "expected matching Int, BigInt, or Float, got Entity" — the arm below.
+//
+// THE OVERFLOW COLUMN IS THE ARGUMENT MADE CONCRETE. `Int64.add` raises `Overflow`,
+// `Float.add` saturates to an infinity, `BigInt.add` cannot overflow at all: three
+// different operations under one name, chosen by an operand test. Each carrier now
+// names its own in its binding block's `operation_map`.
 
-fn numeric_add(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Numeric.add", args)?;
-    match (&a, &b) {
+/// WI-880 — `op` IS THE CALLER'S OWN NAME, not this function's.
+///
+/// These four are no longer registered against anything: their only callers are the
+/// per-carrier wrappers below, which is what "the key moved" means. So the label that
+/// reaches `EvalError::Overflow` has to come from the caller — otherwise an `Int64`
+/// overflow reports `op: "Numeric.add"`, naming a spec operation this ticket stopped
+/// implementing, in exactly the diagnostic the per-carrier split exists to sharpen.
+/// Found by /code-review; the section header below argued the refusal names its carrier
+/// and only the type-mismatch arm did.
+///
+/// `&'static str` because [`EvalError::Overflow`]'s field is one — the labels are all
+/// literals at the call sites, so this costs nothing.
+fn numeric_add(op: &'static str, a: &Value, b: &Value) -> Result<Value, EvalError> {
+    match (a, b) {
         (Value::Int(x), Value::Int(y)) => x
             .checked_add(*y)
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Numeric.add" }),
+            .ok_or(EvalError::Overflow { op }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x + y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
-        _ => Err(type_mismatch(
-            "matching Int, BigInt, or Float",
-            &a,
-            Some(&b),
-        )),
+        _ => Err(type_mismatch("matching Int, BigInt, or Float", a, Some(b))),
     }
 }
 
-fn numeric_sub(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Numeric.sub", args)?;
-    match (&a, &b) {
+/// `op` is the caller's — see [`numeric_add`].
+fn numeric_sub(op: &'static str, a: &Value, b: &Value) -> Result<Value, EvalError> {
+    match (a, b) {
         (Value::Int(x), Value::Int(y)) => x
             .checked_sub(*y)
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Numeric.sub" }),
+            .ok_or(EvalError::Overflow { op }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x - y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
-        _ => Err(type_mismatch(
-            "matching Int, BigInt, or Float",
-            &a,
-            Some(&b),
-        )),
+        _ => Err(type_mismatch("matching Int, BigInt, or Float", a, Some(b))),
     }
 }
 
-fn numeric_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("Numeric.mul", args)?;
-    match (&a, &b) {
+/// `op` is the caller's — see [`numeric_add`].
+fn numeric_mul(op: &'static str, a: &Value, b: &Value) -> Result<Value, EvalError> {
+    match (a, b) {
         (Value::Int(x), Value::Int(y)) => x
             .checked_mul(*y)
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Numeric.mul" }),
+            .ok_or(EvalError::Overflow { op }),
         (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(x * y)),
         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
-        _ => Err(type_mismatch(
-            "matching Int, BigInt, or Float",
-            &a,
-            Some(&b),
-        )),
+        _ => Err(type_mismatch("matching Int, BigInt, or Float", a, Some(b))),
     }
 }
 
 // WI-529: prefix `-` (`neg`) at the Numeric level — handles every Numeric carrier
 // (Int / BigInt / Float), mirroring numeric_add/sub/mul. Int64/Float keep their own
 // carrier `neg` builtins too (used when neg dispatches via the carrier override).
-fn numeric_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a] = expect_args::<1>("Numeric.neg", args)?;
+/// `op` is the caller's — see [`numeric_add`].
+fn numeric_neg(op: &'static str, a: &Value) -> Result<Value, EvalError> {
     match a {
         Value::Int(x) => x
             .checked_neg()
             .map(Value::Int)
-            .ok_or(EvalError::Overflow { op: "Numeric.neg" }),
+            .ok_or(EvalError::Overflow { op }),
         Value::BigInt(x) => Ok(Value::BigInt(-x)),
         Value::Float(x) => Ok(Value::Float(-x)),
-        other => Err(type_mismatch("Int, BigInt, or Float", &other, None)),
+        other => Err(type_mismatch("Int, BigInt, or Float", other, None)),
+    }
+}
+
+// ── the per-carrier arithmetic (WI-880) ─────────────────────────
+//
+// One wrapper per (carrier, operation), each NARROWED to its own carrier's values
+// and each named by that carrier's `operation_map`. The narrowing is the point and
+// not an accident of the refactor: `int_add` accepting only a pair of `Int`s is
+// what makes "this is `Int64`'s addition" a checkable claim rather than a comment.
+// A wrapper reached with foreign operands is a REFUSAL naming the carrier, where
+// the shared function's message could only name the union of the three.
+//
+// `neg` is not repeated here: `Int64.neg` and `Float.neg` were already carrier-keyed
+// (`int_neg` / `float_neg`), and `bigint_neg` is added below beside `BigInt`'s own
+// operations. `zero` / `one` stay unregistered in EITHER spelling — a nullary
+// operation has no operand to dispatch on, which is this module's header note and is
+// unchanged by moving the key.
+
+/// `Int64`'s addition — checked, so an overflow is `EvalError::Overflow` rather than
+/// a wrap. Named by `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map`.
+fn int_add(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Int64.add", args)?;
+    match (&a, &b) {
+        (Value::Int(_), Value::Int(_)) => numeric_add("Int64.add", &a, &b),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
+    }
+}
+
+/// `Int64`'s subtraction — checked. See [`int_add`].
+fn int_sub(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Int64.sub", args)?;
+    match (&a, &b) {
+        (Value::Int(_), Value::Int(_)) => numeric_sub("Int64.sub", &a, &b),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
+    }
+}
+
+/// `Int64`'s multiplication — checked. See [`int_add`].
+fn int_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Int64.mul", args)?;
+    match (&a, &b) {
+        (Value::Int(_), Value::Int(_)) => numeric_mul("Int64.mul", &a, &b),
+        _ => Err(type_mismatch("Int64", &a, Some(&b))),
+    }
+}
+
+/// `Float`'s addition — IEEE, so it SATURATES to an infinity where `Int64`'s raises.
+/// That difference is the reason the two are separate keys.
+fn float_add(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.add", args)?;
+    match (&a, &b) {
+        (Value::Float(_), Value::Float(_)) => numeric_add("Float.add", &a, &b),
+        _ => Err(type_mismatch("Float", &a, Some(&b))),
+    }
+}
+
+/// `Float`'s subtraction — IEEE. See [`float_add`].
+fn float_sub(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.sub", args)?;
+    match (&a, &b) {
+        (Value::Float(_), Value::Float(_)) => numeric_sub("Float.sub", &a, &b),
+        _ => Err(type_mismatch("Float", &a, Some(&b))),
+    }
+}
+
+/// `Float`'s multiplication — IEEE. See [`float_add`].
+fn float_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.mul", args)?;
+    match (&a, &b) {
+        (Value::Float(_), Value::Float(_)) => numeric_mul("Float.mul", &a, &b),
+        _ => Err(type_mismatch("Float", &a, Some(&b))),
+    }
+}
+
+/// `BigInt`'s addition — UNBOUNDED, so it has no overflow arm at all. The third
+/// column of the table in this section's header.
+fn bigint_add(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.add", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(_)) => numeric_add("BigInt.add", &a, &b),
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
+    }
+}
+
+/// `BigInt`'s subtraction — unbounded. See [`bigint_add`].
+fn bigint_sub(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.sub", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(_)) => numeric_sub("BigInt.sub", &a, &b),
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
+    }
+}
+
+/// `BigInt`'s multiplication — unbounded. See [`bigint_add`].
+fn bigint_mul(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("BigInt.mul", args)?;
+    match (&a, &b) {
+        (Value::BigInt(_), Value::BigInt(_)) => numeric_mul("BigInt.mul", &a, &b),
+        _ => Err(type_mismatch("BigInt", &a, Some(&b))),
+    }
+}
+
+/// `BigInt`'s negation — unbounded, so unlike [`int_neg`] it cannot fail on
+/// `i64::MIN`. `Int64` and `Float` already had their own; this completes the three.
+fn bigint_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a] = expect_args::<1>("BigInt.neg", args)?;
+    match &a {
+        Value::BigInt(_) => numeric_neg("BigInt.neg", &a),
+        _ => Err(type_mismatch("BigInt", &a, None)),
     }
 }
 
@@ -1197,6 +1378,22 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             // mid-trampoline (e.g. `List.member`'s inner `eq(head, x)`), where a
             // nested `run()` would corrupt the live activation stack. A body-less
             // rule-backed carrier op (`Set.eq`) still proves via the sub-resolution.
+            //
+            // WI-880 — THE BODY QUESTION, ASKED DELIBERATELY, not the executability one.
+            // The branch is "is this a Bool-valued FUNCTION to run, or a PREDICATE to
+            // prove", and only a body answers it. `op_is_executable` /
+            // `op_is_interpretable` answer "can the interpreter INVOKE it", which is a
+            // different question and would be the wrong one here: their host-mapping leg
+            // would be true for an `eq` no rule backs and no body defines.
+            //
+            // THAT DIVERGENCE IS NOT REACHABLE TODAY AND ITS BOUNDARY IS EXACT: no
+            // carrier's `eq` is `operation_map`ped anywhere in the tree, because
+            // `PartialEq.eq` is the ONE spec-op registration WI-880 kept (see
+            // `register_standard_builtins` for the argument). The day an `eq` IS
+            // host-mapped, a host-mapped-and-body-less one would take the `else` branch
+            // below, find no clauses, and Refute — EQUAL VALUES REPORTED UNEQUAL, which
+            // is the failure this whole function exists to prevent. Whoever maps an `eq`
+            // owns this line and its twin in `resolve.rs`'s `sem_eq_dispatch`.
             if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
                 return match i
                     .kb_mut()
@@ -6122,25 +6319,40 @@ mod tests {
 
     #[test]
     fn numeric_add_int() {
-        let r = numeric_add(&mut dummy(), &[Value::Int(2), Value::Int(3)]).unwrap();
+        let r = numeric_add("Int64.add", &Value::Int(2), &Value::Int(3)).unwrap();
         assert_eq!(r.as_int(), Some(5));
     }
 
     #[test]
     fn numeric_add_float() {
-        let r = numeric_add(&mut dummy(), &[Value::Float(1.5), Value::Float(2.25)]).unwrap();
+        let r = numeric_add("Float.add", &Value::Float(1.5), &Value::Float(2.25)).unwrap();
         assert!(matches!(r, Value::Float(v) if (v - 3.75).abs() < 1e-9));
     }
 
+    /// WI-880 — AND THE OVERFLOW NAMES THE CARRIER'S OPERATION, driven through the
+    /// wrapper rather than through the shared function, because the wrapper is what
+    /// supplies the label and the label is the subject.
+    ///
+    /// Found by /code-review: the wrappers delegated with no label, so an `Int64`
+    /// overflow reported `op: "Numeric.add"` — a spec operation this ticket stopped
+    /// implementing — in exactly the diagnostic the per-carrier split exists to sharpen.
+    /// The integration arm is
+    /// `wi880_arithmetic_mapping_test::the_three_carriers_disagree_at_the_boundary`,
+    /// which asserts the same name from the language side; this one is the unit-level
+    /// twin and is what fails first if the label is dropped again.
     #[test]
-    fn numeric_add_overflow_is_error() {
-        let err = numeric_add(&mut dummy(), &[Value::Int(i64::MAX), Value::Int(1)]).unwrap_err();
-        assert!(matches!(err, EvalError::Overflow { .. }));
+    fn numeric_add_overflow_is_error_and_names_the_carriers_operation() {
+        let err = int_add(&mut dummy(), &[Value::Int(i64::MAX), Value::Int(1)]).unwrap_err();
+        assert!(
+            matches!(err, EvalError::Overflow { op: "Int64.add" }),
+            "an Int64 overflow names Int64's own operation; got {err:?}"
+        );
     }
 
     #[test]
     fn numeric_add_mixed_type_shows_both_in_message() {
-        let err = numeric_add(&mut dummy(), &[Value::Int(1), Value::Float(2.0)]).unwrap_err();
+        let err =
+            numeric_add("Int64.add", &Value::Int(1), &Value::Float(2.0)).unwrap_err();
         match err {
             EvalError::TypeMismatch { got, .. } => {
                 assert!(
@@ -6244,9 +6456,12 @@ mod tests {
         assert_eq!(r.as_str(), Some("hi there"));
     }
 
+    /// WI-880 moved the subject from `numeric_add` to `int_add`: the shared arithmetic
+    /// takes its operands directly now (the label has to come from the caller), so the
+    /// per-carrier WRAPPER is the thing that counts arguments.
     #[test]
     fn arity_mismatch_carries_counts() {
-        let err = numeric_add(&mut dummy(), &[Value::Int(1)]).unwrap_err();
+        let err = int_add(&mut dummy(), &[Value::Int(1)]).unwrap_err();
         assert!(matches!(
             err,
             EvalError::ArityMismatch {

@@ -122,14 +122,21 @@ fn and_the_carrier_claims_nothing_else() {
 /// Two of the four are demanded and two are not, and the split is NOT a property of the
 /// operations: `add` and `sub` carry resolver builtins (`BuiltinTag::Add` / `Sub`) and
 /// the backing check reads a builtin as backing. That is WI-876's finding on
-/// `gt`/`lt`/`gte`/`lte`, still live for arithmetic until WI-880 moves the arithmetic
-/// families into each carrier's `operation_map`. Recorded here so the four-operation
-/// claim is not read as four load-time demands.
+/// `gt`/`lt`/`gte`/`lte`. Recorded here so the four-operation claim is not read as four
+/// load-time demands.
+///
+/// WI-880 DID NOT MOVE THIS TABLE and did change what two of its rows MEAN, which is
+/// worth separating. The resolver tags are the SLD registry's and WI-879 owns them, so
+/// `add` and `sub` still load clean when omitted. What changed is the consequence: the
+/// EVAL registrations moved per carrier and `Additive.sub` gained the default body
+/// `add(a, neg(b))`, so an omitted `sub` now RUNS (derived from the carrier's own `add`
+/// and `neg`) where it used to load clean and die at eval on the spec-op builtin's
+/// operand test. `add` is the row still owed to WI-879 — nothing can derive it.
 ///
 /// FAILS IF `Additive` gains or loses a bodyless member: the demanded set moves and this
-/// row names which. It is also what would catch a default body added to `sub` — the
-/// `sub` line would stay "loads" for the wrong reason, but `arithmetic.anthill`'s note
-/// says why that body cannot run yet.
+/// row names which. `sub`'s line is now "loads" for a REASON — see
+/// `wi880_arithmetic_mapping_test::the_additive_surface_works_from_add_and_neg`, which
+/// drives the derivation this row can only observe as an absence.
 #[test]
 fn the_loader_demands_the_two_operations_no_builtin_backs() {
     let carrier = |omit: &str| {

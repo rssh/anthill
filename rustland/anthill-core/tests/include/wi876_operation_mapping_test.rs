@@ -283,8 +283,21 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
         !kb.is_host_mapped_op(sym("anthill.prelude.WeakOrd.compare")),
         "the SPEC op carries no host implementation any more — that keying IS the defect",
     );
+    // THE CONTROL: an unmapped operation of a mapped carrier is not host-mapped —
+    // without it every assertion above would hold under an index that answered `true`
+    // for anything.
+    //
+    // WI-880 had to MOVE this row, and where it moved to is the informative part. It
+    // was `Int64.abs`, which the ticket migrated along with the rest of `Int64`'s
+    // hardcoded host surface — `Int64` now maps all twenty-one of its declared
+    // operations, so it has nothing left to be the control. `Float.recip` is the
+    // carrier-declared operation that is unmapped BY DESIGN rather than by omission:
+    // its equation in `stdlib/anthill/prelude/float.anthill` carries `[simp]`, so
+    // `recip(a)` is inlined to `div(1.0, a)` at load and never reaches a backend at
+    // all. Both binding blocks say so in the same words, which is what makes it a
+    // stable control instead of the next thing to be migrated.
     assert!(
-        !kb.is_host_mapped_op(sym("anthill.prelude.Int64.abs")),
+        !kb.is_host_mapped_op(sym("anthill.prelude.Float.recip")),
         "the control: an unmapped operation of a mapped carrier is not host-mapped",
     );
 }

@@ -59,6 +59,14 @@ namespace anthill.prelude
       max: "std::fmax($1, $2)",
       min: "std::fmin($1, $2)",
 
+      -- WI-880: the ARITHMETIC, which was lowered by cpp-gen's spec-op operator table
+      -- until `Float` declared `add`/`sub`/`mul` of its own to hang a mapping on. IEEE
+      -- `+`/`-`/`*` on a `double` saturate exactly as the rust host's do, so unlike
+      -- `Int64`'s the two hosts agree here.
+      add: "($1 + $2)",
+      sub: "($1 - $2)",
+      mul: "($1 * $2)",
+
       abs: "std::fabs($1)",
       neg: "(-$1)",
       div: "($1 / $2)",

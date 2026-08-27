@@ -1572,6 +1572,30 @@ pub struct KnowledgeBase {
     host_mapped_ops: std::collections::HashSet<Symbol>,
     interpreter_mapped_ops: std::collections::HashSet<Symbol>,
     host_op_mappings: Vec<load::HostOperationMapping>,
+    // WI-880 — the VALIDATED registration list derived from `host_op_mappings`: each
+    // mapping's `host_fn` key already resolved to its function and its arity already
+    // checked against the declaration, under BOTH spellings of the operation's symbol.
+    //
+    // WHY IT IS CACHED, and it is not a micro-optimisation. `register_operation_mappings`
+    // runs for EVERY fresh interpreter, and `run_in_bridge_interp` builds one per bridged
+    // evaluation — once per SLD goal whose operation must be evaluated, once per `[simp]`
+    // macro fire — where `register_standard_builtins` IS the entire startup cost, the KB
+    // being `mem::take`n with no parse and no load. Per crossing it cost, PER MAPPING:
+    // three `String` clones in the snapshot (of which `op_qn` and `host_fn` are read only
+    // inside the two error arms), a linear scan of the `HOST_FNS` key table, an arity
+    // lookup, and a `canonical_sym` qualified-name hash. WI-881 took the stdlib's mapping
+    // count from 25 to 50 and this ticket takes it past 60, so the multiplier grows with
+    // every carrier that stops being served by a spec-op registration.
+    //
+    // A `Result`, so a BROKEN binding block is diagnosed once and reported identically at
+    // every later crossing — the alternative caches nothing on the failing path and makes
+    // the error's cost depend on how often it is re-derived. The message is stored rather
+    // than the `EvalError` because building the error is the cheap half and `EvalError`
+    // is not `Clone`.
+    //
+    // INVALIDATED BY `set_host_op_mappings`, its sole producer's sole writer, so the
+    // cache cannot outlive the mappings it was derived from.
+    host_op_registrations: std::cell::OnceCell<Result<Vec<(Symbol, host_fns::HostFn)>, String>>,
     // WI-889 — bodyless `const`s a binding block gave a host value source
     // (`const_map`). Written by `load::build_host_const_mappings`. No membership
     // index alongside it, unlike `host_op_mappings`: a const is a value source read
@@ -1780,6 +1804,7 @@ impl KnowledgeBase {
             host_mapped_ops: std::collections::HashSet::new(),
             interpreter_mapped_ops: std::collections::HashSet::new(),
             host_op_mappings: Vec::new(),
+            host_op_registrations: std::cell::OnceCell::new(),
             host_const_mappings: Vec::new(),
             default_providers: None,
             provides_clause_seen: HashMap::new(),
@@ -9001,6 +9026,27 @@ impl KnowledgeBase {
             ("anthill.prelude.Float.lt", BuiltinTag::Lt),
             ("anthill.prelude.Float.gte", BuiltinTag::Gte),
             ("anthill.prelude.Float.lte", BuiltinTag::Lte),
+            // WI-880 — the ARITHMETIC, for the same reason and with the same shape.
+            // `Int64` / `Float` / `BigInt` each declare their own `add` / `sub` / `mul`
+            // now (the host implementation had to have a carrier to be keyed to), so a
+            // bare `add(?n, 1)` in a rule inside `sort Int64` means `Int64.add` and
+            // would otherwise stop computing in a rule-body query — WI-863's shape, and
+            // `int64.anthill`'s `induction` rule writes exactly that goal.
+            //
+            // `builtin_arith` is CARRIER-POLYMORPHIC and only these keys are not: one
+            // `BuiltinTag::Add` fills the Int, BigInt and Float slots. So the SLD engine
+            // will answer a float addition under `Int64.add`, which is the looseness
+            // `Int64.div` already carries three lines down and which WI-879 owns — these
+            // entries claim exactly what the spec-op entries below claim, no more.
+            ("anthill.prelude.Int64.add", BuiltinTag::Add),
+            ("anthill.prelude.Int64.sub", BuiltinTag::Sub),
+            ("anthill.prelude.Int64.mul", BuiltinTag::Mul),
+            ("anthill.prelude.BigInt.add", BuiltinTag::Add),
+            ("anthill.prelude.BigInt.sub", BuiltinTag::Sub),
+            ("anthill.prelude.BigInt.mul", BuiltinTag::Mul),
+            ("anthill.prelude.Float.add", BuiltinTag::Add),
+            ("anthill.prelude.Float.sub", BuiltinTag::Sub),
+            ("anthill.prelude.Float.mul", BuiltinTag::Mul),
         ] {
             self.register_builtin_tag(qn, tag);
         }
@@ -9207,6 +9253,33 @@ impl KnowledgeBase {
         &self.host_op_mappings
     }
 
+    /// WI-880 — the VALIDATED registration list for [`Self::host_op_mappings`], derived
+    /// ONCE per KB and handed to every interpreter built over it. See the field for the
+    /// measurement that motivates it.
+    ///
+    /// `build` owns the derivation because it is the RUNTIME's: resolving a `host_fn`
+    /// key needs `eval::builtins::HOST_FNS`, a closed table private to that module, and
+    /// checking the arity needs the host function's. This side owns only the lifetime —
+    /// the cell, and its invalidation by [`Self::set_host_op_mappings`].
+    ///
+    /// `build` runs AT MOST ONCE per KB, so it must be a pure function of the KB. It is:
+    /// the mappings, the two host-function registries and the operations' declared
+    /// arities are all fixed by the time the loader writes the mappings, and the
+    /// embedder table is `seal`ed in that same call.
+    ///
+    /// The error is returned by VALUE (a `String` the caller wraps) rather than borrowed,
+    /// so a caller holding `&mut Interpreter` can report it without keeping this borrow
+    /// alive across the registration loop.
+    pub(crate) fn host_op_registrations(
+        &self,
+        build: impl FnOnce() -> Result<Vec<(Symbol, host_fns::HostFn)>, String>,
+    ) -> Result<&[(Symbol, host_fns::HostFn)], String> {
+        match self.host_op_registrations.get_or_init(build) {
+            Ok(v) => Ok(v),
+            Err(msg) => Err(msg.clone()),
+        }
+    }
+
     /// WI-889 — the cached `const_map` entries, in load order. Read by the rust
     /// runtime's `register_const_mappings` (which registers the `lang == "rust"`
     /// value sources) and by cpp-gen's `HostConstTable` (which keeps the `lang ==
@@ -9241,6 +9314,10 @@ impl KnowledgeBase {
     /// registers `lang == "rust"` entries only, so a cpp mapping belongs in the
     /// program-wide index and NOT in the interpreter's.
     pub(crate) fn set_host_op_mappings(&mut self, mappings: Vec<load::HostOperationMapping>) {
+        // WI-880 — the validated registration list is derived from these, so it dies
+        // with them. `OnceCell::take` rather than a field assignment so that adding a
+        // field to this struct cannot silently skip the invalidation.
+        self.host_op_registrations.take();
         // WI-1122 — the loader has now decided which host_fn keys the program demands,
         // so the embedder's table can no longer grow: a later entry would not be seen by
         // interpreters load itself already built. Sealing here rather than at `load_all`

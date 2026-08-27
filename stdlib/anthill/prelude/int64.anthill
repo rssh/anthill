@@ -4,7 +4,6 @@
 -- — see proposal 038.
 sort anthill.prelude.Int64
   import anthill.prelude.{Eq, Ord, Numeric}
-  import anthill.prelude.Additive.{add, sub}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
   -- import rather than by a global name — see the note in `ordered.anthill`.
   import anthill.prelude.Bool.{ite}
@@ -15,8 +14,9 @@ sort anthill.prelude.Int64
   -- WI-876: `Int64`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map`. Body-less
   -- because the implementation is the host artifact's — the `LogicalStream.
-  -- splitFirst` shape, and what `check_provider_operations` already exempts a host
-  -- carrier for.
+  -- splitFirst` shape. Since WI-880 the mapping is what `check_provider_operations`
+  -- reads to accept it: the exemption is per OPERATION, so a body-less member with no
+  -- `operation_map` entry is refused even on a host carrier.
   --
   -- WHY DECLARED AT ALL, when `fact Ord[T = Int64]` alone used to do: the host
   -- implementation had nowhere to be KEYED, so it was registered on the SPEC op
@@ -45,8 +45,9 @@ sort anthill.prelude.Int64
   -- `operation_map`. Until then these were the only two of this sort's eighteen
   -- declared operations backed by NOTHING — both died `OperationBodyMissing` on a
   -- program that loaded clean, the shape WI-881 found twenty-four times over on
-  -- `Float`, and invisible for the same reason (a host carrier is exempt from the
-  -- load-time backing check wholesale; WI-880 narrows that).
+  -- `Float`, and invisible for the same reason (a host carrier was exempt from the
+  -- load-time backing check WHOLESALE — WI-880 narrowed it to a per-operation question,
+  -- so an unrealized body-less operation is a load error here now).
   --
   -- A HOST MAPPING AND NOT AN EQUATION, though `minValue() <=> ...` would be exact
   -- for a fixed carrier: a `[simp]` head is an APPLICATION, so it rewrites
@@ -58,6 +59,26 @@ sort anthill.prelude.Int64
 
   -- Every Int64 is within bounds
   constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)
+
+  -- WI-880: `Int64`'s ARITHMETIC, declared here for the same reason the ordering above
+  -- is — a host implementation has to have a carrier to be keyed to. `Additive.add` /
+  -- `sub` and `Multiplicative.mul` used to carry ONE registration that served every
+  -- carrier and tested its operands to find out which arithmetic it was implementing;
+  -- `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map` now names
+  -- `int_add` / `int_sub` / `int_mul`, and those are the CHECKED ones (an overflow
+  -- raises rather than wrapping — `Float`'s saturate and `BigInt`'s cannot overflow,
+  -- which is three operations that were sharing a name).
+  --
+  -- DECLARING THEM MOVES NAME RESOLUTION INSIDE THIS SORT, exactly as WI-876's
+  -- comparisons did: a bare `add` in a rule here now means `Int64.add`, not
+  -- `Additive.add`, so the `import anthill.prelude.Additive.{add, sub}` this sort used
+  -- to carry is gone — it would have been shadowed by these declarations, and a
+  -- shadowed import is a claim that reads as live.
+  operation {
+    add(a: Int64, b: Int64) -> Int64        -- +, checked
+    sub(a: Int64, b: Int64) -> Int64        -- - (binary), checked
+    mul(a: Int64, b: Int64) -> Int64        -- *, checked
+  }
 
   -- Operations beyond what Numeric provides
   operation {

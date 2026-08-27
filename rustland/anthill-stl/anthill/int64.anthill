@@ -20,7 +20,30 @@ namespace anthill.prelude
       -- WI-884: the two BOUNDS, `i64::MIN` / `i64::MAX`. Nothing to settle — the
       -- carrier above says `i64`, and these are its ends.
       minValue: "int_min_value",
-      maxValue: "int_max_value"
+      maxValue: "int_max_value",
+      -- WI-880: the ARITHMETIC. `Int64`'s three are the CHECKED ones — an overflow
+      -- raises `Overflow` rather than wrapping — which is a different operation from
+      -- `Float`'s saturating pair and from `BigInt`'s unbounded one. All three used to
+      -- be one registration on `anthill.prelude.Additive.add` that told them apart by
+      -- testing its operands; the carrier is the right place for that choice, and this
+      -- is it. `neg` moves here from the hardcoded `register_if_present` list for the
+      -- same reason its siblings did (WI-884's split, which this ticket closes).
+      add: "int_add",
+      sub: "int_sub",
+      mul: "int_mul",
+      neg: "int_neg",
+      -- WI-880: and the rest of `Int64`'s host surface, which WI-884 left registered by
+      -- hardcoded qualified name. `divExact` names the SAME function as `div` — it is a
+      -- historical alias a stdlib rule rewrites — which this list says outright where
+      -- two `register_if_present` lines said it by repetition.
+      abs: "int_abs",
+      mod: "int_mod",
+      rem: "int_rem",
+      div: "int_div",
+      divExact: "int_div",
+      sign: "int_sign",
+      to_float: "int_to_float",
+      to_string: "int_to_string"
     }
     -- WI-644 / proposal 004: Int64 is lawful — it provides the partial bases
     -- (PartialEq/PartialOrd) AND the total markers (Eq/Ord).
