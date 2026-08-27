@@ -3,9 +3,9 @@
 - id: WI-20260827-APXSS-wi-1001-s-condition-2-is-keyed
 - created: 2026-08-27T14:10:30Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-27T14:10:30Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-27T19:09:06Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

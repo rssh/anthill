@@ -4350,11 +4350,9 @@ pub fn scan_definitions_with_sources(
     // every file's heads. `entry_rules` carries them there; the verdict is
     // [`judge_secondary_entry_rules`].
     let mut entry_rules: Vec<SecondaryEntryRule> = Vec::new();
-    // WI-1001 — the `(file_idx, span.start)` of every fact 1b refuses in a secondary
-    // entry. Condition (2) counts a fact as a CLAUSE, and must not report one written in
-    // ANOTHER entry as "written in the main entry": the fact ban already reports that
-    // fact, and a second message naming the wrong place is worse than none.
-    let mut entry_facts: HashSet<(usize, u32)> = HashSet::new();
+    // WI-20260827-APXSS — the TEXT RANGE of every declaration of a type, which is how
+    // condition (2) tells whose entry a clause belongs to. See [`EntryTextRange`].
+    let mut entry_ranges: Vec<EntryTextRange> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         let mut file_errors = Vec::new();
@@ -4367,7 +4365,7 @@ pub fn scan_definitions_with_sources(
             declared: HashMap::new(),
             targets: Vec::new(),
             rules: &mut entry_rules,
-            facts: &mut entry_facts,
+            ranges: &mut entry_ranges,
         };
         walk_scopes(&mut pass, &file.items, global);
         pass.finish();
@@ -4439,8 +4437,8 @@ pub fn scan_definitions_with_sources(
     // before the whole program is in hand, and the guarantee this pass offers is over
     // ONE scan's files.
     let mut heads: Vec<RuleHeadSite<'_>> = Vec::new();
-    // WI-1001 — see [`FactHeadSite`]. Collected on the same walk, kept in its own list.
-    let mut fact_heads: Vec<FactHeadSite<'_>> = Vec::new();
+    // WI-1001 — see [`ClauseSite`]. Collected on the same walk, kept in its own list.
+    let mut clause_sites: Vec<ClauseSite<'_>> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-745 / WI-953: this pass reports now, so its errors are stamped with
@@ -4454,7 +4452,11 @@ pub fn scan_definitions_with_sources(
             parse_terms: &file.terms,
             file_idx,
             sites: &mut heads,
-            facts: &mut fact_heads,
+            clauses: &mut clause_sites,
+            // ONLY WHEN 059 R3 HAS SOMETHING TO JUDGE — the same condition
+            // `judge_secondary_entry_rules` returns on, settled by sub-pass 1b above.
+            // See `RuleHeadCollectPass::census_clauses`.
+            census_clauses: !entry_rules.is_empty(),
             errors: &mut file_errors,
         };
         walk_scopes(&mut pass, &file.items, global);
@@ -4475,23 +4477,6 @@ pub fn scan_definitions_with_sources(
         })
         .collect();
     let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
-    // WI-1001 / 059 R3's NARROW RULE — the verdict on every rule sub-pass 1b deferred.
-    // HERE, because this is the first point at which both of 059's conditions have an
-    // answer: `denotes` is the ladder read against the finished name table, and `heads`
-    // is every clause of every predicate in the program. Before the refusals below, so
-    // that a rule R3 will not admit is reported as itself rather than through the
-    // collision or the missing declaration it goes on to cause.
-    let r3_refused = judge_secondary_entry_rules(
-        kb,
-        &heads,
-        &fact_heads,
-        &denotes,
-        &resolved,
-        &entry_rules,
-        &entry_facts,
-        files,
-        &mut errors,
-    );
     // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
     //
     // The ladder above answers one question — does the name resolve — for every head
@@ -4654,6 +4639,75 @@ pub fn scan_definitions_with_sources(
         scan_rule_goal(kb, head);
     }
 
+    // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
+    // from sub-pass 3 are now in `by_qualified_name`, so a cross-namespace
+    // rule-predicate import resolves like any declared name. (Resolve by
+    // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
+    for p in pending {
+        kb.symbols.set_asking_file(Some(source_ids[p.file_idx]));
+        let origin = match attribution {
+            ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
+            ImportAttribution::Invocation => ImportOrigin::Invocation,
+        };
+        match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
+            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym, origin),
+            // WI-745: stamp with the file the import was written in (sub-pass 4
+            // runs outside the per-file loop, so `p` carries its own provenance).
+            None => errors.push(
+                LoadError::UnresolvedImport {
+                    path: p.qualified,
+                    span: p.span,
+                }
+                .located_in(files[p.file_idx]),
+            ),
+        }
+    }
+
+    // ── 059 R3's NARROW RULE, AND 061's MULTI-FILE REPORT — HERE, LAST ──────────
+    //
+    // WI-1001 / WI-20260827-APXSS. THE VERDICT ON EVERY RULE SUB-PASS 1b DEFERRED, and
+    // its position is load-bearing on BOTH sides:
+    //
+    //   * AFTER PHASE 3'S MINT, because condition (2) asks where every clause LANDS and
+    //     asks it through the loader's own name ladder — before the mint, the predicate
+    //     the entry is declaring does not exist for that ladder to find.
+    //   * AFTER SUB-PASS 4, because that ladder must read the import table the LOAD will
+    //     read, and sub-pass 4 is the last thing that writes it. MEASURED before the
+    //     move, and found by `/code-review`: `namespace Side { import demo.Rec.{freshp}
+    //     fact freshp(2) }` beside `namespace Rec { rule freshp(1) :- true }` LOADED
+    //     CLEAN with `Rec.freshp` holding two clauses, while the wildcard `import
+    //     demo.Rec.*` (wired in pass 2) and the qualified `fact Rec.freshp(2)` spellings
+    //     of the same clause were both refused. That is the pitfall the two checks below
+    //     already record — "AFTER SUB-PASS 4 … deferred predicate imports must be
+    //     visible before the verdict" — reached from the other side.
+    //
+    // SO CONDITION (2) IS NOT ORDER-FREE THE WAY CONDITION (1) IS, and the split is the
+    // point: (1) reads `denotes` / `resolved`, the PRE-mint answers phase 2 froze, which
+    // is what makes the introduce question independent of the order the text is walked
+    // in (WI-980); (2) is a question about the FINISHED table and is asked once it is
+    // finished.
+    //
+    // 061's report travels with it because it is keyed on `r3_refused`: its prescribed
+    // repair is a declaration, which R3 refuses a secondary entry, so printing both
+    // prescribes two repairs for one fault. Nothing 061's report reads changes down here
+    // — it takes `heads`, `denotes` and `collided`, all settled above — so for it the
+    // move is only a change in the ORDER of messages. Both used to run before the
+    // collision refusal, so that a rule R3 will not admit was reported as itself rather
+    // than through the collision it causes; that refusal still reports, one message
+    // earlier than before.
+    let r3_refused = judge_secondary_entry_rules(
+        kb,
+        &heads,
+        &clause_sites,
+        &denotes,
+        &resolved,
+        &entry_rules,
+        &entry_ranges,
+        files,
+        source_ids,
+        &mut errors,
+    );
+
     // PROPOSAL 061 — AUTO-DECLARATION STOPS AT THE FILE BOUNDARY.
     //
     // A predicate whose heads are all in ONE file is auto-declared by them, at the scope
@@ -4747,30 +4801,6 @@ pub fn scan_definitions_with_sources(
                 }
                 .located_in(files[heads[first].file_idx]),
             );
-        }
-    }
-
-    // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
-    // from sub-pass 3 are now in `by_qualified_name`, so a cross-namespace
-    // rule-predicate import resolves like any declared name. (Resolve by
-    // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
-    for p in pending {
-        kb.symbols.set_asking_file(Some(source_ids[p.file_idx]));
-        let origin = match attribution {
-            ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
-            ImportAttribution::Invocation => ImportOrigin::Invocation,
-        };
-        match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
-            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym, origin),
-            // WI-745: stamp with the file the import was written in (sub-pass 4
-            // runs outside the per-file loop, so `p` carries its own provenance).
-            None => errors.push(
-                LoadError::UnresolvedImport {
-                    path: p.qualified,
-                    span: p.span,
-                }
-                .located_in(files[p.file_idx]),
-            ),
         }
     }
 
@@ -6011,9 +6041,18 @@ fn non_defining_connective_head(
     })
 }
 
-/// The name a rule INTRODUCES — the name that must become a scoped symbol so a
-/// call site can name it and a sibling scope's same-spelled rule cannot silently
-/// merge with it (WI-894). `None` when the rule introduces nothing.
+/// ONE HEAD's SUBJECT AS WRITTEN — the local name of the node that head is about,
+/// DOTTED SPELLINGS INCLUDED. `None` when it is about no name of the source's own (a
+/// non-term head, a desugared subject).
+///
+/// TWO QUESTIONS ARE ASKED OF THIS ANSWER, and they part ways on two things.
+/// [`rule_introduced_functor_name`] asks which name the RULE introduces — a question
+/// about the whole rule, so [`subject_introduces`] adds the head COUNT and the
+/// qualified-spelling refusal. WI-20260827-APXSS's clause census asks where each head's
+/// clause LANDS, and asks it PER HEAD: a labeled multi-head rule fans out into one
+/// asserted rule per head (`load_rule`), so every one of them files a clause while the
+/// rule introduces nothing. Split so the SHAPE walk below has one owner and the two
+/// readers differ only in what they layer on top.
 ///
 /// WHICH NODE THE RULE IS ABOUT is the only thing the two kinds of head disagree
 /// on. A PREDICATE head is its own subject; an EQUATION's head functor is the
@@ -6047,23 +6086,21 @@ fn non_defining_connective_head(
 /// rule's, and `minted` (WI-618) is provenance carried rather than re-derived from a
 /// blocklist of accessor names. It is a shape question — whose functor is this — which
 /// is why it stays here while the ladder does not.
-fn rule_introduced_functor_name<'a>(
-    r: &Rule,
+fn head_subject_name<'a>(
+    head: &RuleHead,
+    bodyless: bool,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
 ) -> Option<(&'a str, RuleIntroduction)> {
-    if r.heads.len() != 1 {
-        return None;
-    }
-    let RuleHead::Term(tid) = &r.heads[0] else {
+    let RuleHead::Term(tid) = head else {
         return None;
     };
-    // §8.3: an equation is BODYLESS — asked through the one owner of that question
-    // ([`rule_body_is_empty_conjunction`]) rather than off `body.is_none()` directly, so
-    // that `rule f(?x) <=> ?x :- true` — the explicit spelling of the same empty body,
-    // which 061 makes `fact`'s desugaring — reads as the equation it is at THIS reader
-    // and at `load_rule`'s alike.
-    let equation_lhs = rule_body_is_empty_conjunction(r, parse_terms)
+    // §8.3: an equation is BODYLESS — a property of the RULE, so the caller asks it
+    // through the one owner of that question ([`rule_body_is_empty_conjunction`]) rather
+    // than off `body.is_none()` directly, so that `rule f(?x) <=> ?x :- true` — the
+    // explicit spelling of the same empty body, which 061 makes `fact`'s desugaring —
+    // reads as the equation it is at THIS reader and at `load_rule`'s alike.
+    let equation_lhs = bodyless
         .then(|| parse_equation_lhs(parse_sym, parse_terms, *tid))
         .flatten();
     // The SUBJECT of the head — the node whose functor the rule is about. For an
@@ -6098,23 +6135,56 @@ fn rule_introduced_functor_name<'a>(
     let Term::Fn { functor, .. } = parse_terms.get(subject) else {
         return None;
     };
-    let name = parse_sym.local_name(*functor);
-    // A QUALIFIED name REFERENCES an existing symbol; it never introduces one — a
-    // SPEC rule about the SPELLING (kernel-language.md §"A rule-introduced functor is
-    // scoped where it is written"), NOT a ladder tier, and deliberately stricter than
-    // `resolve_dotted_in_kb`: a dotted head that resolves to NOTHING still introduces
-    // nothing, whereas the ladder's dotted rung would simply miss and descend.
-    // `resolve_in_scope` matches SHORT names only, so it answers `NotFound` for
-    // `String.isEmpty` and the caller's check cannot see the reference. MEASURED: `rule
-    // String.isEmpty(?s) <=> true` defined a symbol whose SHORT name was literally
-    // `String.isEmpty`, which the loader's ladder then ranks ahead of the real target
-    // for the whole scope. This refusal is the ONLY thing that keeps a dotted head out
-    // of the mint guard; the guard itself no longer depends on it (WI-907 — it reads the
-    // whole ladder, whose dotted rung would answer such a name correctly).
-    if name.contains('.') {
-        return None;
-    }
-    Some((name, introduced_by))
+    Some((parse_sym.local_name(*functor), introduced_by))
+}
+
+/// The name a rule INTRODUCES — the name that must become a scoped symbol so a
+/// call site can name it and a sibling scope's same-spelled rule cannot silently
+/// merge with it (WI-894). `None` when the rule introduces nothing.
+///
+/// [`head_subject_name`]'s shape walk of the FIRST head, plus the two refusals that
+/// separate introducing from referencing:
+///
+/// A QUALIFIED name REFERENCES an existing symbol; it never introduces one — a
+/// SPEC rule about the SPELLING (kernel-language.md §"A rule-introduced functor is
+/// scoped where it is written"), NOT a ladder tier, and deliberately stricter than
+/// `resolve_dotted_in_kb`: a dotted head that resolves to NOTHING still introduces
+/// nothing, whereas the ladder's dotted rung would simply miss and descend.
+/// `resolve_in_scope` matches SHORT names only, so it answers `NotFound` for
+/// `String.isEmpty` and the caller's check cannot see the reference. MEASURED: `rule
+/// String.isEmpty(?s) <=> true` defined a symbol whose SHORT name was literally
+/// `String.isEmpty`, which the loader's ladder then ranks ahead of the real target
+/// for the whole scope. This refusal is the ONLY thing that keeps a dotted head out
+/// of the mint guard; the guard itself no longer depends on it (WI-907 — it reads the
+/// whole ladder, whose dotted rung would answer such a name correctly).
+///
+/// IT IS NOT A CENSUS OF CLAUSES, and WI-20260827-APXSS is the ticket that says so: a
+/// dotted head introduces nothing AND STILL LANDS A CLAUSE on whatever it references,
+/// and so does every head of a labeled MULTI-HEAD rule. Anything asking "which predicate
+/// does this clause belong to" must read [`head_subject_name`] PER HEAD and resolve it,
+/// never this.
+fn rule_introduced_functor_name<'a>(
+    r: &Rule,
+    parse_sym: &'a crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+) -> Option<(&'a str, RuleIntroduction)> {
+    let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
+    let (name, introduced_by) =
+        head_subject_name(r.heads.first()?, bodyless, parse_sym, parse_terms)?;
+    subject_introduces(name, r.heads.len()).then_some((name, introduced_by))
+}
+
+/// THE TWO REFUSALS THEMSELVES, so that a caller which already holds the subject
+/// ([`RuleHeadCollectPass::collect`], which needs it for the clause census anyway) can
+/// ask the question without walking the head's shape a second time — and cannot spell
+/// the answer differently.
+///
+/// A QUALIFIED spelling references rather than introduces — see
+/// [`rule_introduced_functor_name`]. SEVERAL HEADS name no single predicate, so the rule
+/// introduces nothing at all; each head still LANDS its own clause, which is the census
+/// [`ClauseSite`] takes and this one does not.
+fn subject_introduces(name: &str, head_count: usize) -> bool {
+    head_count == 1 && !name.contains('.')
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -7516,10 +7586,10 @@ struct SecondaryEntryPass<'a> {
     /// cannot take. See [`SecondaryEntryRule`]. Shared across the per-file loop,
     /// because 059's condition (2) is a question about the whole program.
     rules: &'a mut Vec<SecondaryEntryRule>,
-    /// WI-1001 — `(file_idx, span.start)` of every fact this pass REFUSES in an entry.
-    /// The verdict is taken here (the fact ban); what sub-pass 3 needs is only that such
-    /// a fact is not attributed to the main entry by condition (2).
-    facts: &'a mut HashSet<(usize, u32)>,
+    /// WI-20260827-APXSS — the TEXT RANGE of every declaration of a type this pass
+    /// walks past, main entry and secondary alike. See [`EntryTextRange`]. Shared across
+    /// the per-file loop for the same reason `rules` is.
+    ranges: &'a mut Vec<EntryTextRange>,
 }
 
 impl ScopePass for SecondaryEntryPass<'_> {
@@ -7547,6 +7617,24 @@ impl ScopePass for SecondaryEntryPass<'_> {
         // `has_kind`, not `primary_kind`, because the two declarations share one
         // symbol and which keyword happens to head its category list is source order
         // (WI-956/WI-979).
+        // WI-20260827-APXSS — this DECLARATION's text range, whenever the address is a
+        // type's: 059 individuates an entry as one FILE's TEXT at one address, so the
+        // range IS the entry, and every clause written anywhere inside it — including in
+        // a nested `sort`, which R3 admits and does not recurse into — belongs to it.
+        // Recorded for the type's OWN declaration too, since "is it the main entry's" is
+        // the same question asked of the other kind. See [`EntryTextRange`].
+        if self.kb.has_kind(sym, SymbolKind::Sort) {
+            let (span, is_main) = match site.decl {
+                ScopeDecl::Namespace(ns) => (ns.span, false),
+                ScopeDecl::Sort(sd) => (sd.span, true),
+            };
+            self.ranges.push(EntryTextRange {
+                file_idx: self.file_idx,
+                address: sym,
+                span,
+                is_main,
+            });
+        }
         if matches!(site.decl, ScopeDecl::Namespace(_)) {
             let name = self.kb.qualified_name_of(sym).to_string();
             if self.kb.has_kind(sym, SymbolKind::Sort) {
@@ -7771,13 +7859,12 @@ impl SecondaryEntryPass<'_> {
                         self.defer_rule(address, sort, r);
                     }
                 }
-                Item::Fact(f) => {
-                    // Recorded before the refusal, and for a different reader: the ban
-                    // below is this pass's verdict, while WI-1001's condition (2) needs
-                    // to know the fact is an ENTRY's rather than the main entry's.
-                    self.facts.insert((self.file_idx, f.span.start));
-                    self.refuse(sort, "fact", None, FACT_REASON, f.span);
-                }
+                // WI-1001's condition (2) also needs to know that such a fact is an
+                // ENTRY's rather than the main entry's — so it must not be attributed to
+                // the main entry by a second message. It reads that off the entry's TEXT
+                // RANGE ([`EntryTextRange`]), which covers this fact and every other
+                // clause of this entry's without a per-item table to keep in step.
+                Item::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
                 Item::Constraint(c) => self.refuse(
                     sort,
                     "constraint",
@@ -7858,9 +7945,9 @@ impl SecondaryEntryPass<'_> {
                 // and that population is exactly what the default-deny rule refuses.
                 // The corpus pays nothing — it contains no secondary entry, so no
                 // block sits inside one.
-                // NOT recorded in `facts`: a block's clauses load into the SPEC's
-                // scope, so this fact is never a clause of a predicate at THIS address
-                // and condition (2)'s census cannot reach it either way.
+                // A block's clauses load into the SPEC's scope, so this fact is never a
+                // clause of a predicate at THIS address and condition (2)'s census cannot
+                // reach it either way.
                 ProvidesItem::Fact(f) => self.refuse(sort, "fact", None, FACT_REASON, f.span),
                 ProvidesItem::Proof(p) => {
                     self.defer_target(address, sort, "proof", &p.target, p.span)
@@ -8320,42 +8407,124 @@ struct SecondaryEntryRule {
     span: Span,
 }
 
-/// A `fact`'s HEAD FUNCTOR, and where it is written — WI-1001's second census.
+/// ONE DECLARATION OF A TYPE, AS A TEXT RANGE — WI-20260827-APXSS.
+///
+/// 059 §Definitions individuates an entry as **one FILE's TEXT at one address**, so
+/// which entry a clause belongs to is a question about the text it is written in — and
+/// the range is the only instrument that answers it for EVERY clause at once. Recorded
+/// for BOTH kinds at one address: the type's own declaration (the MAIN entry) and every
+/// `namespace` block reopening it (a SECONDARY entry).
+///
+/// TWO READINGS IT REPLACED, EACH MEASURED WRONG:
+///
+///   * A PER-ITEM TABLE (WI-1001 kept one for facts) answers only for the items the
+///     classifier walked, and R3 deliberately does NOT recurse into a nested `sort`
+///     inside an entry — so `namespace Rec { rule freshp(1) :- true  sort Inner { fact
+///     freshp(2) } }`, both clauses in ONE entry and exactly what condition (2)
+///     requires, was REFUSED. Pinned by
+///     `wi_apxss_clause_landing_test::a_nested_sort_inside_the_entry_still_composes`.
+///   * A QUALIFIED-NAME PREFIX (`<pred>.`) reads any scope under the type's address as
+///     the type's own declaration, and an ordinary `namespace Rec.Helper` is not one —
+///     so a clause there was refused with "a clause is written in the main entry", which
+///     sends the author to a `sort` body containing nothing of the kind. Found by
+///     `/code-review`; pinned by
+///     [`a_namespace_under_the_types_address_is_not_its_declaration`].
+///
+/// READ BY ADDRESS, not by nesting: a clause inside `sort Rec { sort Inner { … } }` sits
+/// in TWO ranges, and the one that answers "whose entry is this" is the one at the
+/// PREDICATE's address. At most one range per (file, address) can contain a span, since
+/// a second declaration at one address is never nested inside the first.
+struct EntryTextRange {
+    file_idx: usize,
+    /// The type whose address this declaration is at.
+    address: Symbol,
+    /// The whole `sort … end` / `namespace … end` node, so every clause written under
+    /// it is inside.
+    span: Span,
+    /// The type's OWN declaration, rather than a `namespace` block reopening it.
+    is_main: bool,
+}
+
+/// **EVERY CLAUSE THE PROGRAM WRITES**, as the SUBJECT SPELLING it is written with and
+/// the scope it is written in — WI-1001's second census, re-keyed by
+/// WI-20260827-APXSS.
 ///
 /// A FACT IS A CLAUSE, and condition (2) is about clauses. Since 061 `fact H` IS
 /// `rule H :- true`, so a fact in the main entry and a rule in a secondary entry compose
 /// ONE predicate — but a fact is not a [`RuleHeadSite`]: [`RuleHeadCollectPass`] reads
-/// `Item::Rule` and `Item::RuleBlock` only, deliberately, because a fact must not MINT
-/// (§5.3 "a fact head … is unscoped") and must not enter 061's multi-file report.
+/// `Item::Rule` and `Item::RuleBlock` for its `sites`, deliberately, because a fact must
+/// not MINT (§5.3 "a fact head … is unscoped") and must not enter 061's multi-file
+/// report. So the site set is TWO censuses, not one, and they are kept apart rather than
+/// fused: only condition (2) reads this one.
 ///
-/// MEASURED BEFORE THIS EXISTED, and found by `/code-review` rather than by a failing
-/// row: `sort Rec { fact freshp(2); rule q(0) :- not freshp(1) }` beside `namespace Rec
-/// { rule freshp(1) :- true }` LOADED CLEAN with `Rec.freshp` holding **two** clauses,
-/// and `q(0)` answering **1 without the entry and 0 with it** — 059's worked harm
-/// verbatim, through the one route R3 exists to close, while the `rule` spelling of the
-/// identical main-entry clause was refused.
+/// MEASURED BEFORE IT EXISTED, and found by `/code-review` rather than by a failing row:
+/// `sort Rec { fact freshp(2); rule q(0) :- not freshp(1) }` beside `namespace Rec {
+/// rule freshp(1) :- true }` LOADED CLEAN with `Rec.freshp` holding **two** clauses, and
+/// `q(0)` answering **1 without the entry and 0 with it** — 059's worked harm verbatim,
+/// through the one route R3 exists to close, while the `rule` spelling of the identical
+/// main-entry clause was refused.
 ///
-/// SO THE SITE SET IS TWO CENSUSES, not one, and they are kept apart rather than fused:
-/// only condition (2) reads this one.
-struct FactHeadSite<'f> {
+/// ── WHY IT IS NOT THE "INTRODUCES" SITE SET (WI-20260827-APXSS) ──────────────
+///
+/// WI-1001 keyed condition (2) on `(scope, name)` drawn from the sites that INTRODUCE a
+/// name. Introducing and landing are TWO QUESTIONS, and three spellings answer them
+/// differently — each measured loading clean with `Rec.freshp` holding two clauses from
+/// two entries, which is the exact harm R3 exists to refuse:
+///
+///   * `fact Rec.freshp(2)` in the main entry — a QUALIFIED head introduces nothing, and
+///     lands its clause on what it references.
+///   * `rule Rec.freshp(2) :- true` in the main entry — the same, on the rule side. (The
+///     same spelling inside the SECONDARY entry was already refused, so only the main
+///     entry's side leaked: an ASYMMETRY, which is what says the two questions had been
+///     collapsed.)
+///   * `fact freshp(2)` in a sort nested INSIDE the main entry — a fact head is unscoped,
+///     so it resolves UP the chain to the entry's predicate. WI-1001's scope filter read
+///     `f.scope == scope` and argued only ENCLOSING scopes fall away; a DESCENDANT one
+///     does not.
+///
+/// AND A FOURTH THIS TICKET FOUND ON THE WAY, which no scope-keyed census can reach at
+/// all: a host `provides Rec language rust … rule freshp(2) :- true … end` block written
+/// in an ORDINARY NAMESPACE beside `Rec`. `load_provides_block` switches `current_scope`
+/// to the spec's base sort before loading the block's clauses, so the clause lands on
+/// `Rec.freshp` from text that is nowhere near it. MEASURED: it loaded CLEAN beside
+/// `namespace Rec { rule freshp(1) :- true }` with `Rec.freshp` holding two clauses from
+/// two parties. That is why a site carries BOTH scopes.
+///
+/// So the census carries the SUBJECT AS WRITTEN — dotted spellings kept — and condition
+/// (2) RESOLVES it from the scope the loader will resolve it in, which is the loader's
+/// own question asked with the loader's own ladder ([`resolve_name_in_kb`]) rather than
+/// a fourth re-derivation of where a name lands.
+struct ClauseSite<'f> {
     file_idx: usize,
-    scope: ScopeId,
-    /// Borrowed from the FILE's parse-time symbol table, as [`RuleHeadSite::name`] is.
-    name: &'f str,
+    /// The scope the subject RESOLVES from — which is where the clause lands, and which
+    /// is the scope the clause is written in for every form but one: a host `provides
+    /// Spec language L … end` block switches to the SPEC's scope before loading its
+    /// clauses, so a block's clause resolves somewhere its text is not.
+    resolves_in: ScopeId,
+    /// The scope the clause's TEXT sits in — what says whose entry it belongs to,
+    /// together with [`EntryTextRange`] and the span.
+    written_in: ScopeId,
+    /// The head's subject as written, DOTTED SPELLINGS KEPT. Borrowed from the FILE's
+    /// parse-time symbol table, as [`RuleHeadSite::name`] is.
+    subject: &'f str,
     span: Span,
 }
 
-/// The name a `fact` head is ABOUT — the same shape questions
-/// [`rule_introduced_functor_name`] asks of a predicate head, and for the same reasons:
-/// a DESUGARED head carries the converter's own functor (`?x.m(?y)` → `dot_apply`), and
-/// a QUALIFIED one references a symbol elsewhere rather than naming this scope's.
-/// `None` for either, and for a head that is not an application at all.
+/// The subject a `fact` head is ABOUT, AS WRITTEN — the same shape question
+/// [`head_subject_name`] asks of a predicate head, and for the same reason: a
+/// DESUGARED head carries the converter's own functor (`?x.m(?y)` → `dot_apply`), whose
+/// clause lands under THAT name and not under the source's. `None` for it, and for a
+/// head that is not an application at all.
 ///
-/// NOT shared with `rule_introduced_functor_name` itself, which takes a `&Rule` and
+/// A QUALIFIED spelling is KEPT (WI-20260827-APXSS). It introduces nothing — which is
+/// why [`rule_introduced_functor_name`] refuses one — but it lands a clause on whatever
+/// it references, and this census is about landing.
+///
+/// NOT shared with [`head_subject_name`] itself, which takes a `&RuleHead` and
 /// additionally decides the equation/predicate split: a fact has no body and no
 /// connective reading to make (`fact lhs === rhs` is refused at load, WI-1090), so the
 /// question here is strictly the functor's.
-fn fact_head_functor_name<'a>(
+fn fact_head_subject_name<'a>(
     f: &Fact,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -8366,8 +8535,7 @@ fn fact_head_functor_name<'a>(
     let Term::Fn { functor, .. } = parse_terms.get(f.term) else {
         return None;
     };
-    let name = parse_sym.local_name(*functor);
-    (!name.contains('.')).then_some(name)
+    Some(parse_sym.local_name(*functor))
 }
 
 /// 059 R3's NARROW RULE — WI-1001. Judges every rule sub-pass 1b deferred, and returns
@@ -8388,12 +8556,17 @@ fn fact_head_functor_name<'a>(
 /// 2. Condition (1): the head DENOTES, so a goal that already exists can be about it.
 ///    Read off the phase-2 ladder answers, which is what makes the verdict independent
 ///    of the order the text is walked in (WI-980).
-/// 3. Condition (2): the predicate's heads are not all written in ONE entry. The sites
-///    are every head at the same `(scope, name)`, and a site is "this entry's" iff 1b
-///    deferred it from the same `(file_idx, address)`. A site 1b did NOT defer is in the
-///    sort's own declaration — the MAIN entry, which 059 makes its own group — since a
-///    head at a sort's scope is written either in that sort's body or in a `namespace`
-///    block at its address, and 1b sees every one of the latter.
+/// 3. Condition (2): the predicate's clauses are not all written in ONE entry. TWO
+///    QUESTIONS, each with its own instrument (WI-20260827-APXSS):
+///    * WHICH CLAUSES ARE ITS OWN — every [`ClauseSite`] whose subject RESOLVES to this
+///      predicate from the scope it is written in, read with the loader's own ladder
+///      after the mint and after sub-pass 4. Not "every head at `(scope, name)`": that
+///      is the set of sites that INTRODUCE the name, and seven spellings land a clause
+///      while introducing nothing at it.
+///    * WHOSE ENTRY EACH ONE IS — the [`EntryTextRange`] at THIS address containing it:
+///      the type's own declaration is the MAIN entry, a `namespace` block reopening it
+///      is a secondary entry (this file's or another's), and a clause inside neither
+///      reached the predicate by naming it.
 ///
 /// A rule whose head is not a [`RuleHeadSite`] at all introduces NO NAME (a dot rule, an
 /// operator rule, a qualified head, several heads) and is refused per rule, since it has
@@ -8401,29 +8574,28 @@ fn fact_head_functor_name<'a>(
 fn judge_secondary_entry_rules<'f>(
     kb: &KnowledgeBase,
     heads: &[RuleHeadSite<'f>],
-    fact_heads: &[FactHeadSite<'f>],
+    clause_sites: &[ClauseSite<'f>],
     denotes: &[bool],
     resolved: &[ResolveResult],
     entry_rules: &[SecondaryEntryRule],
-    entry_facts: &HashSet<(usize, u32)>,
+    entry_ranges: &[EntryTextRange],
     files: &[&ParsedFile],
+    source_ids: &[SourceId],
     errors: &mut Vec<LoadError>,
 ) -> HashSet<(ScopeId, &'f str)> {
     let mut refused: HashSet<(ScopeId, &'f str)> = HashSet::new();
+    // NOTHING DEFERRED, NOTHING TO JUDGE — and `clause_sites` is EMPTY in this case by
+    // construction, because `RuleHeadCollectPass::census_clauses` is gated on this very
+    // condition. The two must stay one condition; see that field.
     if entry_rules.is_empty() {
         return refused;
     }
-    // THE JOIN KEY, both ways. A rule's span is its identity within its file, and both
-    // passes read it off the same `Rule`.
+    // THE JOIN KEY. A rule's span is its identity within its file, and both passes read
+    // it off the same `Rule`.
     let head_at: HashMap<(usize, u32), usize> = heads
         .iter()
         .enumerate()
         .map(|(i, h)| ((h.file_idx, h.span.start), i))
-        .collect();
-    let entry_at: HashMap<(usize, u32), usize> = entry_rules
-        .iter()
-        .enumerate()
-        .map(|(k, er)| ((er.file_idx, er.span.start), k))
         .collect();
 
     // Group the deferred rules by the PREDICATE their head is about.
@@ -8449,6 +8621,49 @@ fn judge_secondary_entry_rules<'f>(
             .min()
             .expect("a group is created with at least one member")
     });
+
+    // ── WHERE EVERY CLAUSE LANDS — WI-20260827-APXSS ─────────────────────────────
+    //
+    // CONDITION (2) IS ABOUT CLAUSES, so its census is of where a head's clause ENDS UP
+    // and NOT of the sites that INTRODUCE the name. WI-1001 keyed it on the latter, and
+    // three spellings answer the two questions differently — a qualified `fact`/`rule`
+    // head in the main entry, and a `fact` in a scope nested inside it. Each introduced
+    // nothing at the entry's `(scope, name)`, each landed a second clause on the
+    // predicate, and each loaded CLEAN. See [`ClauseSite`] for the three programs.
+    //
+    // ASKED WITH THE LOADER'S OWN LADDER. [`resolve_name_in_kb`] is the function
+    // `remap_name_str_inner` reaches for a head functor, so a clause is attributed to
+    // exactly the predicate `load_rule` / `load_fact` will file it under — a landing
+    // question answered by the one resolver that decides landings, not by a fourth
+    // re-derivation of scoping to drift from the three that exist.
+    //
+    // READ AFTER PHASE 3'S MINT, which is why this judge is called where it is: before
+    // the mint the entry's own predicate does not exist, so every one of these names
+    // resolves to nothing and the census would be empty. Condition (1) is unaffected —
+    // it reads the PRE-mint ladder answers phase 2 froze (`denotes` / `resolved`), which
+    // is what makes it order-free (WI-980).
+    //
+    // PRE-FILTERED ON THE LAST SEGMENT, because the resolve is the cost and this census
+    // is the program's whole clause count. A dotted subject lands under its last segment
+    // and a short one under itself, so a site whose last segment matches no candidate's
+    // name cannot land on one.
+    let wanted: HashSet<&str> = ordered.iter().map(|((_, name), _)| *name).collect();
+    let mut landed: HashMap<Symbol, Vec<usize>> = HashMap::new();
+    for (i, site) in clause_sites.iter().enumerate() {
+        if !wanted.contains(last_segment(site.subject)) {
+            continue;
+        }
+        // WI-995: imports are file-local, so the ladder answers on behalf of the file
+        // the CLAUSE is written in — not the entry's.
+        kb.symbols.set_asking_file(Some(source_ids[site.file_idx]));
+        // ONLY A `Found` LANDS. A subject that resolves to NOTHING falls to the bare
+        // intern (WI-476) — a global name, never this scope's predicate — and an
+        // AMBIGUOUS one is refused at its own reference position with the candidate set
+        // it needs; neither is a clause of the predicate this entry is declaring.
+        if let ResolveResult::Found(sym) = resolve_name_in_kb(kb, site.subject, site.resolves_in) {
+            landed.entry(sym).or_default().push(i);
+        }
+    }
 
     for ((scope, name), members) in ordered {
         let (first_k, _) = *members
@@ -8492,12 +8707,15 @@ fn judge_secondary_entry_rules<'f>(
             refused.insert((scope, name));
             continue;
         }
-        // 3 — condition (2). EVERY head at this (scope, name), whatever the ladder said
-        // about it — because the ladder answer is the mint DECISION and not the
-        // PLACEMENT, and it is the placement condition (2) is about.
+        // 3 — condition (2). EVERY CLAUSE THAT LANDS ON THIS PREDICATE — read off
+        // `landed`, whose key is what the LOADER's ladder says each head's subject
+        // resolves to from the scope it is written in. Not "every head at this
+        // `(scope, name)`": that is the set of sites that INTRODUCE the name, and a
+        // clause can land here while introducing nothing (WI-20260827-APXSS).
         //
-        // MEASURED, AND IT REFUTED THE OTHER READING. A `!denotes` filter looks right —
-        // "a head that resolved elsewhere is a clause of what it resolved to" — and is
+        // THE LADDER ANSWER PHASE 2 TOOK IS THE WRONG INSTRUMENT HERE, and this was
+        // MEASURED before either keying existed. A `!denotes` filter looks right — "a
+        // head that resolved elsewhere is a clause of what it resolved to" — and is
         // wrong: `load_rule` remaps the head's name in its scope at LOAD time, by which
         // point another file's head has MINTED `(scope, name)` there, and a local symbol
         // beats an import. Driven on three files (a library declaring `p`, a main entry
@@ -8505,47 +8723,71 @@ fn judge_secondary_entry_rules<'f>(
         // writing a fresh `rule p(3)`): the main entry's clause lands under `Rec.p`
         // alongside the entry's — `Rec.p` holds 2, `lib.p` holds 1 — though its scan
         // answer was `lib.p`. That divergence is WI-20260820-JR7BB, not this rule's to
-        // fix; what it settles here is that the two clauses really do end up in ONE
-        // predicate assembled from two entries, which is exactly what (2) refuses.
+        // fix. The POST-MINT resolve above reproduces the load's own verdict for it
+        // without knowing about it: local-before-import is `resolve_in_scope`'s own
+        // first rung, so the head resolves to `Rec.p` here exactly as it does there.
+        kb.symbols.set_asking_file(Some(source_ids[er.file_idx]));
+        let ResolveResult::Found(pred) = resolve_name_in_kb(kb, name, scope) else {
+            // UNREACHABLE, and FAIL-CLOSED rather than silent if it is ever reached.
+            // No member of this group denotes (condition (1) returned above), so phase 3
+            // minted `name` at `scope` for each of them and `resolve_in_scope`'s local
+            // rung finds it. If it does not, the head introduced nothing that exists —
+            // which is what this reason says — and R3's default is DENY, so the
+            // uncomputable condition must not read as met.
+            errors.push(
+                secondary_entry_rule_error(er, HEAD_INTRODUCES_NOTHING_REASON)
+                    .located_in(files[er.file_idx]),
+            );
+            refused.insert((scope, name));
+            continue;
+        };
+        // The predicate's own address, and everything nested UNDER it — the text that
+        // declares the type, once a secondary entry's range has been ruled out below.
         let mut in_main_entry = false;
         let mut other_files: Vec<usize> = Vec::new();
-        for h in heads.iter().filter(|h| h.scope == scope && h.name == name) {
-            match entry_at.get(&(h.file_idx, h.span.start)) {
-                None => in_main_entry = true,
-                Some(&k) if entry_rules[k].file_idx != er.file_idx => {
-                    if !other_files.contains(&entry_rules[k].file_idx) {
-                        other_files.push(entry_rules[k].file_idx);
+        let mut elsewhere: Vec<(usize, String)> = Vec::new();
+        for &i in landed.get(&pred).map(Vec::as_slice).unwrap_or_default() {
+            let site = &clause_sites[i];
+            // WHICH DECLARATION OF THIS TYPE IS IT WRITTEN IN. 059 individuates an entry
+            // as one FILE's TEXT at one address, so this is a range question asked at
+            // THIS address — see [`EntryTextRange`] for the two readings it replaced.
+            match entry_range_at(entry_ranges, site.file_idx, site.span, er.address) {
+                // THE MAIN ENTRY — the type's own declaration, including any `sort`
+                // nested inside it, whose unscoped fact head resolves UP to this
+                // predicate (the third of APXSS's rows).
+                Some(r) if r.is_main => in_main_entry = true,
+                // THIS SAME ENTRY: one file's text at this address, however many
+                // `namespace` blocks it is spelled in (059). It composes freely.
+                Some(r) if r.file_idx == er.file_idx => {}
+                // ANOTHER FILE'S ENTRY at this address.
+                Some(r) => {
+                    if !other_files.contains(&r.file_idx) {
+                        other_files.push(r.file_idx);
                     }
                 }
-                // A head at THIS scope, written in THIS file, in a `namespace` block
-                // 1b classified: one scope is one address (WI-926), so it can only be
-                // this same entry. Asserted rather than assumed, since the whole
-                // condition rests on it.
-                Some(&k) => debug_assert_eq!(
-                    entry_rules[k].address, er.address,
-                    "one scope is one address: a head at this scope written in this file \
-                     can only be this entry's"
-                ),
+                // WRITTEN OUTSIDE EVERY DECLARATION OF THIS TYPE — it reached the
+                // predicate by naming it (a qualified head, a host `provides` block, a
+                // selective import), and is reported as what it is.
+                //
+                // `written_in`, never `resolves_in`: a host `provides` block's clause
+                // RESOLVES in this very scope and its TEXT is elsewhere, so reading the
+                // resolution scope would report it as the type's own declaration.
+                None => {
+                    let at = format!("'{}'", kb.scope_display_name(site.written_in));
+                    if !elsewhere.iter().any(|(f, w)| *f == site.file_idx && *w == at) {
+                        elsewhere.push((site.file_idx, at));
+                    }
+                }
             }
         }
-        // AND EVERY `fact` AT THAT SAME (scope, name), because a fact IS a clause — see
-        // [`FactHeadSite`] for the measurement that says a main-entry fact silently
-        // composes one predicate with an entry's rule. Only facts written AT this scope:
-        // a fact head is UNSCOPED (§5.3), so one in an ENCLOSING namespace falls to the
-        // bare intern and does not join — measured, `namespace demo { fact freshp(2) …
-        // namespace Rec { rule freshp(1) :- true } }` leaves `Rec.freshp` holding ONE
-        // clause and `Rec.freshp(2)` answering nothing.
-        for f in fact_heads
-            .iter()
-            .filter(|f| f.scope == scope && f.name == name)
-        {
-            if !entry_facts.contains(&(f.file_idx, f.span.start)) {
-                in_main_entry = true;
-            } else if f.file_idx != er.file_idx && !other_files.contains(&f.file_idx) {
-                other_files.push(f.file_idx);
-            }
-        }
-        if in_main_entry || !other_files.is_empty() {
+        if in_main_entry || !other_files.is_empty() || !elsewhere.is_empty() {
+            let path_of = |f: usize| {
+                files[f]
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("<file {f}>"))
+            };
             let mut wheres: Vec<String> = Vec::new();
             if in_main_entry {
                 // "the main entry" and not "`sort X`": the type's own declaration may
@@ -8558,14 +8800,19 @@ fn judge_secondary_entry_rules<'f>(
             }
             other_files.sort_unstable();
             for f in &other_files {
-                wheres.push(format!(
-                    "another entry at this address is in {}",
-                    files[*f]
-                        .path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| format!("<file {f}>"))
-                ));
+                wheres.push(format!("another entry at this address is in {}", path_of(*f)));
+            }
+            elsewhere.sort();
+            for (f, at) in &elsewhere {
+                // The FILE only when it is not the entry's own, so a one-file program
+                // does not read "in <file 0>" for a clause three lines away.
+                match *f == er.file_idx {
+                    true => wheres.push(format!("a clause naming it is written at {at}")),
+                    false => wheres.push(format!(
+                        "a clause naming it is written at {at} in {}",
+                        path_of(*f)
+                    )),
+                }
             }
             errors.push(
                 secondary_entry_rule_error(er, predicate_spans_entries_reason(name, &wheres.join("; ")))
@@ -8577,6 +8824,27 @@ fn judge_secondary_entry_rules<'f>(
         // ADMITTED — 059's narrow rule, both conditions met. Nothing to say.
     }
     refused
+}
+
+/// The declaration OF `address` whose text a clause at `span` is written in — `None`
+/// when the clause is written outside every declaration of that type, which is what the
+/// "a clause naming it is written at …" verdict reports.
+///
+/// KEYED ON THE ADDRESS, not on nesting: a clause inside `sort Rec { sort Inner { … } }`
+/// is inside two declarations, and only the one at the predicate's own address answers
+/// whose entry it is.
+fn entry_range_at(
+    ranges: &[EntryTextRange],
+    file_idx: usize,
+    span: Span,
+    address: Symbol,
+) -> Option<&EntryTextRange> {
+    ranges.iter().find(|r| {
+        r.file_idx == file_idx
+            && r.address == address
+            && r.span.start <= span.start
+            && span.end <= r.span.end
+    })
 }
 
 /// One R3 rule refusal, so the three verdicts above cannot render it three ways.
@@ -9121,26 +9389,172 @@ struct RuleHeadCollectPass<'a, 'f> {
     file_idx: usize,
     sites: &'a mut Vec<RuleHeadSite<'f>>,
     /// WI-1001 — a SECOND census, read by 059 R3's condition (2) and by nothing else.
-    /// See [`FactHeadSite`] for why a fact cannot join `sites`.
-    facts: &'a mut Vec<FactHeadSite<'f>>,
+    /// See [`ClauseSite`] for why a fact cannot join `sites`, and for why this one keeps
+    /// the spellings `sites` drops.
+    clauses: &'a mut Vec<ClauseSite<'f>>,
+    /// COLLECT IT AT ALL? Its ONE reader ([`judge_secondary_entry_rules`]) returns
+    /// immediately when no rule was deferred from a secondary entry, and that is settled
+    /// by sub-pass 1b — which runs BEFORE this pass — so the whole census can be skipped
+    /// on the same condition. It is one entry per rule head, per fact and per host
+    /// `provides` clause in every file of the scan, plus a resolve per `provides` block,
+    /// and the shipped corpus contains no secondary entry at all.
+    ///
+    /// THE COUPLING IS THE COST. A SECOND reader with a different precondition would be
+    /// silently starved here, so the caller names this condition at the flag and the
+    /// judge names it at its early return; the two must stay one condition.
+    census_clauses: bool,
     errors: &'a mut Vec<LoadError>,
 }
 
 impl<'f> RuleHeadCollectPass<'_, 'f> {
     fn collect(&mut self, r: &Rule, scope: ScopeId, prefix: &str) {
         let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
-        let Some((name, introduced_by)) = rule_introduced_functor_name(r, parse_sym, parse_terms)
-        else {
+        // ONE SHAPE WALK, TWO CENSUSES — and the clause census is the wider on BOTH
+        // axes (WI-20260827-APXSS):
+        //
+        //  * PER HEAD, not per rule. A LABELED multi-head rule fans out into N asserted
+        //    rules, one per head (`load_rule`), so every head files its own clause —
+        //    while the RULE introduces nothing, having no single predicate to name.
+        //    MEASURED, and found by `/code-review`: `rule law: freshp(2), other(1) :-
+        //    true` in the main entry beside `namespace Rec { rule freshp(1) :- true }`
+        //    loaded CLEAN with `Rec.freshp` holding two clauses from two entries. Its
+        //    controls separate the axis from the label: the same clause written `rule
+        //    law: freshp(2) :- true` and `rule freshp(2) :- true` were both refused, and
+        //    an UNLABELED multi-head rule is refused by `load_rule` for its own reason.
+        //  * WHATEVER THE SPELLING. A qualified head references, and its clause goes to
+        //    what it references.
+        //
+        // So the wider answer is taken first, and the narrower is [`subject_introduces`]
+        // applied to it — which is exactly what `rule_introduced_functor_name` is.
+        let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
+        let head_count = r.heads.len();
+        for head in &r.heads {
+            let Some((subject, introduced_by)) =
+                head_subject_name(head, bodyless, parse_sym, parse_terms)
+            else {
+                continue;
+            };
+            // AN EQUATION IS NOT A CLAUSE OF ITS SUBJECT. Its stored clause is headed
+            // by the `eq`/`unify` CONNECTIVE ([`RuleIntroduction::Equation`]), so it
+            // indexes NOTHING under the subject's name and condition (2) — which counts
+            // clauses — must not see it. The 061 census one screen down filters the same
+            // way, for the same reason.
+            //
+            // MEASURED, and found by `/code-review`: `sort Rec { rule freshp(1) <=> 2 }`
+            // holds **0** clauses under `Rec.freshp` (a predicate clause holds 1), yet
+            // beside `namespace Rec { rule freshp(1) :- true }` the entry's rule was
+            // REFUSED. Condition (2) really did hold. THIS IS WIDER THAN WI-1001, whose
+            // `(scope, name)` census counted an equation subject too — and it is what the
+            // condition says: the name is co-owned (WI-898's kind SET), the PREDICATE is
+            // not. An equation subject landing on ANOTHER scope's predicate is refused
+            // separately (WI-20260821-D0EXD); one in its own scope is one author writing
+            // both roles.
+            if introduced_by == RuleIntroduction::Predicate {
+                self.clause(subject, r.span, scope, scope);
+            }
+            if !subject_introduces(subject, head_count) {
+                continue;
+            }
+            self.sites.push(RuleHeadSite {
+                file_idx: self.file_idx,
+                scope,
+                prefix: prefix.to_owned(),
+                name: subject,
+                introduced_by,
+                span: r.span,
+            });
+        }
+    }
+
+    /// Every head of one rule inside a host `provides` block, as clause sites resolving
+    /// in the SPEC's scope. PER HEAD for the same reason [`Self::collect`] is.
+    fn provides_clause(&mut self, r: &Rule, resolves_in: ScopeId, written_in: ScopeId) {
+        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
+        let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
+        for head in &r.heads {
+            // An EQUATION indexes under the connective here too — see [`Self::collect`].
+            if let Some((subject, RuleIntroduction::Predicate)) =
+                head_subject_name(head, bodyless, parse_sym, parse_terms)
+            {
+                self.clause(subject, r.span, resolves_in, written_in);
+            }
+        }
+    }
+
+    /// One [`ClauseSite`]. The two scopes coincide everywhere but inside a host
+    /// `provides` block — see [`Self::collect_provides_block`].
+    fn clause(&mut self, subject: &'f str, span: Span, resolves_in: ScopeId, written_in: ScopeId) {
+        if !self.census_clauses {
+            return;
+        }
+        self.clauses.push(ClauseSite {
+            file_idx: self.file_idx,
+            resolves_in,
+            written_in,
+            subject,
+            span,
+        });
+    }
+
+    /// WI-20260827-APXSS — A HOST BLOCK'S CLAUSES LAND IN THE **SPEC'S** SCOPE.
+    /// `load_provides_block` sets `current_scope` to the spec's BASE SORT before taking
+    /// its rules and facts through the ordinary `load_rule` / `load_fact` path, so a
+    /// clause written here files itself on that sort's predicate however far from it the
+    /// text sits. MEASURED — `namespace Side { provides Rec language rust … rule
+    /// freshp(2) :- true … end }` beside `namespace Rec { rule freshp(1) :- true }`
+    /// loaded CLEAN with `Rec.freshp` holding two clauses from two parties.
+    ///
+    /// CLAUSES ONLY, never a [`RuleHeadSite`]: no pass descends into a `provides` block,
+    /// and a head here must not mint (the name is the spec's) nor enter 061's multi-file
+    /// report. R3 already refuses a rule in a block written INSIDE a secondary entry,
+    /// for the mirror-image reason; this census is what lets condition (2) see one
+    /// written outside.
+    ///
+    /// THE SPEC'S SCOPE IS ASKED AS `load_provides_block` ASKS IT: the written name's
+    /// BASE (a parameterized spec lowers to an application, whose clauses still belong
+    /// to the base sort), resolved where the block is WRITTEN.
+    fn collect_provides_block(&mut self, pb: &ProvidesBlock, scope: ScopeId) {
+        // Ahead of the resolve, which is this pass's only per-block cost.
+        if !self.census_clauses {
+            return;
+        }
+        let base = type_expr_base_name(self.parse_sym, &pb.spec);
+        let ResolveResult::Found(spec) = resolve_name_in_kb(self.kb, &base, scope) else {
+            // The spec names nothing here, so `load_provides_block`'s own remap of the
+            // same name falls to the bare intern (WI-476) and the block's clauses land
+            // under a global symbol, never on a scoped predicate this census is about.
+            // The unresolved spec is the load's own diagnostic, not this pass's.
             return;
         };
-        self.sites.push(RuleHeadSite {
-            file_idx: self.file_idx,
-            scope,
-            prefix: prefix.to_owned(),
-            name,
-            introduced_by,
-            span: r.span,
-        });
+        let spec_scope = self.kb.symbols.scope_id(spec);
+        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
+        for item in &pb.items {
+            match item {
+                ProvidesItem::Rule(r) => self.provides_clause(r, spec_scope, scope),
+                ProvidesItem::RuleBlock(rb) => {
+                    for r in &rb.entries {
+                        self.provides_clause(r, spec_scope, scope);
+                    }
+                }
+                ProvidesItem::Fact(f) => {
+                    if let Some(subject) = fact_head_subject_name(f, parse_sym, parse_terms) {
+                        self.clause(subject, f.span, spec_scope, scope);
+                    }
+                }
+                // NOT CLAUSES, and each named rather than swept up: a nested
+                // `provides Spec[…]` and a `proof` record a provision and a verdict on a
+                // DECLARATION, and `artifact` / `carrier` / `namespace_map` /
+                // `operation_map` / `const_map` are the realization bindings themselves.
+                // None of them files a clause under a predicate's functor.
+                ProvidesItem::ProvidesClause(_)
+                | ProvidesItem::Proof(_)
+                | ProvidesItem::Artifact(_)
+                | ProvidesItem::Carrier(_)
+                | ProvidesItem::NamespaceMap(_)
+                | ProvidesItem::OperationMap(_)
+                | ProvidesItem::ConstMap(_) => {}
+            }
+        }
     }
 }
 
@@ -9167,16 +9581,44 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
             // collected because a fact is a CLAUSE, which is what R3's condition (2)
             // counts.
             Item::Fact(f) => {
-                if let Some(name) = fact_head_functor_name(f, self.parse_sym, self.parse_terms) {
-                    self.facts.push(FactHeadSite {
-                        file_idx: self.file_idx,
-                        scope,
-                        name,
-                        span: f.span,
-                    });
+                if let Some(subject) =
+                    fact_head_subject_name(f, self.parse_sym, self.parse_terms)
+                {
+                    self.clause(subject, f.span, scope, scope);
                 }
             }
-            _ => {}
+            // WI-20260827-APXSS — the one form whose clauses land somewhere its text is
+            // not. See [`Self::collect_provides_block`].
+            Item::ProvidesBlock(pb) => self.collect_provides_block(pb, scope),
+
+            // ── EVERY OTHER ITEM FILES NO CLAUSE UNDER A PREDICATE'S FUNCTOR ──
+            //
+            // ENUMERATED, not swept up by `_`, because this is a CENSUS: condition (2)
+            // is only as complete as the set of forms that can land a clause, and the
+            // `provides` block above was missed for exactly as long as a catch-all hid
+            // it. A new `Item` variant must fail to compile here and be classified.
+            //
+            // A `describe`, a `proof`, an `entity` and a `requires` DO assert facts —
+            // under the KERNEL's own functors (the description, the verdict, the
+            // constructor and its induction rules), never under a name a rule head
+            // introduces — so none is a clause of the predicate a secondary entry
+            // declares. An `operation` / `const` / `sort` alias DECLARES a name, which
+            // is condition (1)'s question and not this one; a `constraint` has no head
+            // at all; a `provides Spec[…]` clause records a provision.
+            Item::AbstractSort(_)
+            | Item::Operation(_)
+            | Item::Const(_)
+            | Item::RequiresDecl(_)
+            | Item::Entity(_)
+            | Item::Constraint(_)
+            | Item::OperationBlock(_)
+            | Item::Describe(_)
+            | Item::Proof(_)
+            | Item::ProvidesClause(_) => {}
+
+            // Never reach `at_item`: [`ScopeDecl::of`] classifies them as scope
+            // openers, so [`walk_scopes`] descends into them instead.
+            Item::Namespace(_) | Item::SortWithBody(_) => {}
         }
     }
 }
@@ -28996,16 +29438,17 @@ rule at_the_top(1)
         let global = kb.global_scope();
         let mut errors = Vec::new();
         let mut sites = Vec::new();
-        // WI-1001's fact census rides the same walk; this row is about the DESCENT, so
-        // it collects into a vec it does not read.
-        let mut facts = Vec::new();
+        // WI-1001's clause census rides the same walk; this row is about the DESCENT,
+        // so it collects into a vec it does not read.
+        let mut clause_sites = Vec::new();
         let mut pass = RuleHeadCollectPass {
             kb: &kb,
             parse_sym: &file.symbols,
             parse_terms: &file.terms,
             file_idx: 0,
             sites: &mut sites,
-            facts: &mut facts,
+            clauses: &mut clause_sites,
+            census_clauses: true,
             errors: &mut errors,
         };
         walk_scopes(&mut pass, &file.items, global);

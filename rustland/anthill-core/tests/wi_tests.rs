@@ -1167,6 +1167,9 @@ mod wi939_one_definition_test;
 #[path = "include/wi1000_secondary_entry_content_test.rs"]
 mod wi1000_secondary_entry_content_test;
 
+#[path = "include/wi_apxss_clause_landing_test.rs"]
+mod wi_apxss_clause_landing_test;
+
 #[path = "include/wi1001_secondary_entry_rule_test.rs"]
 mod wi1001_secondary_entry_rule_test;
 

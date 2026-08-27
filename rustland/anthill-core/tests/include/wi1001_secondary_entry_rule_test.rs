@@ -50,11 +50,19 @@
 //! assert the SENTENCE, so what they measure is that the verdict names its condition —
 //! which the WI-1000 ban did not, since it had only one reason for every rule.
 //!
-//! **B — THE FACT CENSUS.** In `judge_secondary_entry_rules`' condition (2), gate off
-//! the `fact_heads` loop. **Exactly 2 rows fail**, both of them the census's own:
-//! [`condition_2_counts_a_main_entry_fact_as_a_clause`] and
+//! **B — THE FACT CENSUS.** Gate off the `Item::Fact` arm of `RuleHeadCollectPass::-
+//! at_item`, so no fact enters the clause census. (Measured when the census was a
+//! separate `fact_heads` list gated in `judge_secondary_entry_rules` itself; the
+//! population the gate removes is the same one.) **Exactly 2 rows fail**, both of them
+//! the census's own: [`condition_2_counts_a_main_entry_fact_as_a_clause`] and
 //! [`the_fact_census_is_scoped_and_attributed`]. Nothing else moves, which is what says
 //! the census reaches the population it was added for and no other.
+//!
+//! WI-20260827-APXSS RE-KEYED THAT CENSUS, and the rows above are unmoved by it. It is
+//! no longer `(scope, name)` read off the sites that INTRODUCE a name — a clause can
+//! land on the predicate while introducing nothing at that key — but where each head's
+//! subject RESOLVES from the scope it is written in, and which entry's TEXT it is
+//! written in. `wi_apxss_clause_landing_test` owns that rule and its back-outs.
 //!
 //! ── PASS EITHER WAY, BY DESIGN — the controls ────────────────────────────────
 //!
