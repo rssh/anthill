@@ -1440,3 +1440,6 @@ mod wi880_arithmetic_mapping_test;
 
 #[path = "include/wi880_reflect_mapping_test.rs"]
 mod wi880_reflect_mapping_test;
+
+#[path = "include/wi_p1tpe_unfold_eq_semantic_test.rs"]
+mod wi_p1tpe_unfold_eq_semantic_test;

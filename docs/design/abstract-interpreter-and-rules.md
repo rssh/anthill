@@ -17,7 +17,34 @@ covers **structural** ops (relational `append(?a, ys) = zs` solves; `code(?c) = 
 a non-ground occurrence unfolds). Soundness gates in place: only DISJOINT constructor arms
 case-split (a catch-all needs earlier-arm negation guards — undecidable on an unground scrutinee →
 declined to a WI-519 residual, not over-generated); effectful / `requires`-carrying bodies are
-declined (not yet threaded); an op-call OTHER operand is declined.
+declined (not yet threaded); an op-call OTHER operand is declined; and — WI-20260827-P1TPE — an
+arm whose **residual reaches a carrier whose `eq` is not structural — a declared override, or
+WI-664's unshielded `Float` — where OTHER reaches one too**, declines the whole unfold, because the
+goal being expanded is `eq` (which *dispatches*, §8.3) while each arm asserts `unify` (which is
+structural by construction, 049's Invariant). Where those two disagree the arm FAILS, and when every
+arm does the goal is decided FALSE: `C.pick(?c) = ae(k: 1, tag: 9)` answered 0 solutions against a
+ground twin's 1 definite, for a carrier whose `eq` reads `k` and ignores `tag`. The key is the ARM'S
+RESIDUAL — the value `unify` is about to compare — and not the OTHER operand (whose structure hides
+the carrier behind an un-reduced call: `C.mk(red())`'s head is `mk`) nor the operation's declared
+RETURN TYPE (which has no children beyond its own bindings, so `-> Wrap` over a `wrap(v: AE)` entity
+reaches nothing). Reading structure is sound on the residual side specifically because ANF has
+already hoisted every op-call out of it into its own semantic `eq` goal, and `unify_values` delays
+on any un-reduced call it still meets — so a carrier the scan cannot see can only make the goal
+suspend, never wrongly refute. The second half (OTHER reaches an override too) is what keeps the
+**generator** shape working: `unify` can only wrongly refute where both sides are concrete, and
+against a flex operand it BINDS, so `C.pick(?c) = ?v` still enumerates both arms definitely. It
+costs one shape — `C.pick(?c) = ae(k: ?k, tag: 8)` was 1 definite and is now a suspension — and that
+answer set was 1 of 2, the other dropped structurally on the field the carrier's `eq` ignores. What
+it does NOT reach is an OTHER that is an **un-reduced call**, which reduces to a value neither half
+can see: `C.pick(?c) = C.mk(red())` is sound only because the op-call-OTHER decline above fires
+first, so whatever replaces that decline owes this one an "OTHER still carries an unevaluated
+computation" clause. The `Float` leg fails in the OPPOSITE and worse direction and is driven
+separately: `unify` reads two `nan`s as equal (`OrderedFloat` is reflexive) while IEEE `eq` does not,
+so `C.fnan(?c) = p(f: nan)` was answered **1 definite** where its ground twin is correctly refuted —
+a proof of a false equation rather than a dropped solution. Both legs are the predicates
+`sem_eq_values` itself consults before committing to a structural verdict, so the unfold and the
+builtin cannot disagree about which values need the semantic path; the price is that they are
+carrier-level, so a Float compare where structural and IEEE happen to agree is declined too.
 
 **`contains` (then spelled `member`) — the eq-vs-unification soundness fix, DELIVERED
 (2026-07-09).** Its `:-`

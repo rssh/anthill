@@ -5821,6 +5821,13 @@ impl KnowledgeBase {
     /// WI-616 — the σ-threaded reach scan ([`REACHES_EQ_OVERRIDE`]) whose every
     /// carrier (term / entity / tuple / occurrence, WI-685) reads through the ONE
     /// view-generic fold.
+    ///
+    /// TWO READERS, ONE QUESTION — "would a STRUCTURAL verdict over this value be the
+    /// wrong relation?". [`Self::sem_eq_values`] outcome 5 asks it of an `eq` OPERAND
+    /// and suspends; WI-20260827-P1TPE's decline in [`Self::unfold_eq_operand`] asks it
+    /// of a case-split ARM'S RESIDUAL, the value that arm's `unify` goal is about to
+    /// compare, and declines the whole unfold. Both are the same predicate on the same
+    /// carrier, so a change to what counts as an override moves both together.
     fn value_reaches_eq_override(&self, v: &Value, subst: &Substitution) -> bool {
         self.fold_gate(v, Some(subst), 0, REACHES_EQ_OVERRIDE)
     }
@@ -8613,6 +8620,17 @@ impl KnowledgeBase {
                 None,
             ))
         };
+        // WI-20260827-P1TPE — the OTHER half of the per-arm decline below, asked ONCE:
+        // it does not depend on `arm`, and inside the loop it re-folded `other` per arm.
+        // `has_eq_dispatch_entries` first, mirroring `sem_eq_values` outcome 3 — on a KB
+        // where no carrier overrides `eq` this is the only question that can be answered
+        // without a fold, and it is the common KB.
+        let other_can_meet_an_override =
+            self.has_eq_dispatch_entries() && self.value_reaches_eq_override(&other, subst);
+        // WI-664's leg of the same question, asked here too: an UNSHIELDED partial (Float)
+        // carrier is the OTHER way a structural verdict is the wrong relation, and
+        // `sem_eq_values` reaches for it one step BEFORE the override legs.
+        let other_reaches_partial_carrier = self.value_reaches_partial_carrier(&other);
         let mut cands = Vec::with_capacity(arms.len());
         for arm in arms {
             let mut rename: Vec<(Symbol, VarId)> = Vec::new();
@@ -8623,15 +8641,103 @@ impl KnowledgeBase {
             // re-walked back to a Node (the retired `materialize_from_handle`
             // round-trip).
             let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists)?;
+            // WI-20260827-P1TPE — THE ARM'S OWN RESIDUAL DECIDES WHETHER THIS UNFOLD IS
+            // THE RIGHT RELATION. The goal is `eq`, which DISPATCHES to the carrier's
+            // declared equality (kernel-language.md §8.3); `result_g` below asserts
+            // `unify`, which is structural by construction (049's Invariant at
+            // [`Self::builtin_unify`]: "carrier-agnostic and structural-only — it never
+            // dispatches"). Where the two disagree an arm whose residual is
+            // DECLARED-equal to OTHER but structurally different FAILS, and when every
+            // arm fails the goal is DECIDED FALSE — a dropped solution, and a definite
+            // refutation NAF concludes from.
+            //
+            // MEASURED before this decline, with NO call anywhere in the equation
+            // (`ae`'s `eq` reads field `k` and ignores field `tag`):
+            //   `C.pick(?c) = ae(k: 1, tag: 9)`     0 total, 0 definite  DECIDED FALSE
+            //   `C.pick(red()) = ae(k: 1, tag: 9)`  1 DEFINITE           the ground twin
+            //
+            // THE FIRST HALF IS THE RESIDUAL, and neither of the two obvious keys can
+            // replace it — both were prototyped and each left the defect live:
+            //   * OTHER's structure alone hides the carrier behind an un-reduced call —
+            //     `C.mk(red())`'s head is `mk`, and `AE` occurs nowhere in it;
+            //   * the operation's declared RETURN TYPE has no children beyond its own
+            //     bindings, so `-> Wrap` (a `wrap(v: AE)` entity) reaches nothing, and a
+            //     GENERIC `-> Option[T = A]` reaches only the bare parameter — both
+            //     measured DECIDING FALSE under that key.
+            // The residual is exactly what `unify` will compare, so nothing it will
+            // compare can be missing from it.
+            //
+            // AND A CALL HIDDEN INSIDE THE RESIDUAL COSTS NOTHING, which is what makes
+            // reading structure sound on THIS side: `anf_flatten` has already hoisted
+            // every op-call out of `result_occ` into its own `eq` goal (decided
+            // SEMANTICALLY), and `unify_values` returns `Delay` on any un-reduced call it
+            // still meets, at the top of every recursion level. So a carrier this scan
+            // cannot see can only make the goal SUSPEND, never wrongly refute.
+            //
+            // THE SECOND HALF (`other_can_meet_an_override`, hoisted above the loop) is
+            // not conservatism — `unify` can only wrongly REFUTE where BOTH sides are
+            // concrete; against a flex operand it BINDS. Without it the GENERATOR shape
+            // stops answering, MEASURED: `C.pick(?c) = ?v` and `C.fpick(?c) = wrap(v: ?v)`
+            // each went 2 DEFINITE (a complete answer set) to a suspension. Found by
+            // /code-review on the residual-only version.
+            //
+            // AND THE SAME QUESTION HAS A THIRD LEG, which `sem_eq_values` asks FIRST:
+            // WI-664's unshielded partial (`Float`) carrier, where a structural verdict is
+            // wrong in the OPPOSITE and worse direction — a definite PROOF rather than a
+            // dropped solution. MEASURED before this leg, ground vs unground again:
+            //   `C.pick(red()) = p(f: nan)`  0 total   correctly REFUTED (IEEE nan != nan)
+            //   `C.pick(?c)    = p(f: nan)`  1 DEFINITE `?c = red`         WRONG
+            // The per-arm `unify` reads `nan` as reflexive (`OrderedFloat`), so the arm
+            // succeeds and the goal is PROVED of a relation that is false. Found by
+            // /code-review; it is carrier-level, exactly as `sem_eq_values`'s own
+            // field-wise trigger is, so it also declines a Float compare where structural
+            // and IEEE happen to AGREE (`C.fplain(?c) = p(f: 2.5)`, 1 DEFINITE → suspension).
+            // That is the same over-approximation the sibling reader already makes, taken
+            // here so the two cannot disagree about which values need the semantic path.
+            //
+            // WHAT IT DOES NOT COVER, and this is the handover to WI-20260827-XBHX3
+            // rather than a gap left open: an OTHER that is an UN-REDUCED CALL reduces to
+            // a value this scan cannot see, so `C.pick(?c) = C.mk(red())` is invisible to
+            // BOTH halves. It is sound today only because the `value_has_bodied_op_call`
+            // gate ABOVE declines it first, for a reason that has nothing to do with
+            // equality. A disjunct here on that same predicate was written and REMOVED:
+            // that gate shadows it completely, so the clause was unreachable and could
+            // not be tested — /code-review proved it with an assert that never fired.
+            // When XBHX3 removes that gate, THIS is where the replacement belongs: an
+            // "OTHER still carries an unevaluated computation" test in
+            // `other_can_meet_an_override`, covering host calls as well as bodied ones.
+            // The row that measures it is pinned already —
+            // `wi_p1tpe_unfold_eq_semantic_test::the_masked_row_still_rests_on_its_neighbour`,
+            // which is (1, 0) today and (0, 0) with that gate neutralized.
+            //
+            // WHAT IT STILL COSTS, driven at
+            // `wi_p1tpe_unfold_eq_semantic_test::the_one_answer_the_decline_costs_was_half_an_answer_set`:
+            // `C.pick(?c) = ae(k: ?k, tag: 8)` was 1 DEFINITE and is now a suspension.
+            // That answer set was 1 of 2 — `?c = green, ?k = 2` holds under `aeq` and the
+            // structural `unify` dropped it on `tag` — so the trade is a silently
+            // incomplete DEFINITE set for a suspension that omits nothing.
+            let residual = Value::Node(Rc::clone(&result_occ));
+            if (other_can_meet_an_override
+                && self.value_reaches_eq_override(&residual, subst))
+                || (other_reaches_partial_carrier
+                    && self.value_reaches_partial_carrier(&residual))
+            {
+                return None;
+            }
             // WI-690 inc2: both `unify` goals ride as `Value::Node` occurrences —
             // the scrutinee / result / OTHER operands are used directly, with no
             // `occurrence_to_term` lowering. The residual/OTHER decomposition is
             // UNIFY, not `SemEq`: needed narrowing must BIND the fresh spine vars
             // (`SemEq` only compares and would delay on a flex operand). This is
-            // structural on the data spine (sound; for a custom-`Eq` ELEMENT type
-            // it is sound but may be incomplete — eq-variant solutions need element
-            // narrowing and stay WI-519 residual, per design §5). Element `eq`
-            // semantics live in the body's own `eq` calls (hoisted below as `SemEq`).
+            // structural on the data spine, which is why the decline above exists —
+            // WI-20260827-P1TPE: "sound but merely incomplete for a custom-`Eq`
+            // ELEMENT type" was the claim here before, and it was FALSE. A residual
+            // that reaches an overriding carrier does not stay a WI-519 residual, it
+            // FAILS structurally, and when every arm does the goal is decided FALSE.
+            // Such a residual no longer reaches this line. What remains structural is
+            // a spine whose every override is behind a var (which BINDS, never
+            // refutes) or behind a call (which DELAYS); element `eq` semantics live in
+            // the body's own `eq` calls, hoisted below as `SemEq`.
             let unify_g = mk_unify(
                 vec![Rc::clone(&scrutinee_occ), pattern_occ],
                 scrutinee_occ.span,
