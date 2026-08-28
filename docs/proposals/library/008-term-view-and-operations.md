@@ -173,6 +173,14 @@ diagnostic is good — it says outright that it "may surface at a call that has
 nothing to do with" the named operation. Recorded because it changes how this
 proposal's consumer can be exercised: from the Rust test, not from `anthill query`.
 
+**Owned by `WI-20260828-0ZG83`** since 2026-08-28, which re-measured it with a
+control (same goal, same binary; the only variable is whether
+`examples/guardians/lib` is on the load path) and adds one thing this section did
+not: it is a **panic**, not a diagnostic — `bridge_op_to_eval` has an error
+channel, so a malformed or unrunnable binding block should be reported, not
+crash the process. That much is repairable whichever way the lazy-vs-eager
+question is settled.
+
 ### 3. `TermRepr` and `KB.reify` are dead
 
 `KB.reify(kb: KB, t: Term) -> TermRepr` and `KB.reflect` have **no
