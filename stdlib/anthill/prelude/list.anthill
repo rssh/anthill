@@ -1,4 +1,4 @@
--- List: a parametric sort (T is the abstract sort parameter)
+{< A singly-linked list. `T` is the element type. >}
 enum anthill.prelude.List
   import anthill.prelude.PersistentCollection
   import anthill.prelude.Iterable
@@ -14,70 +14,53 @@ enum anthill.prelude.List
   import anthill.prelude.Additive.{add, sub}
   import anthill.prelude.PartialOrd.{gt}
 
-  sort T = ?                                           -- type parameter (abstract)
-  -- WI-562: only `contains` compares elements, so the `Eq` requirement is
-  -- OP-SCOPED on `contains` (WI-448) over an op-type-param — NOT a sort-level
-  -- `requires Eq[T]`. A blanket sort requires made `List[NonEq]` ill-formed for
-  -- EVERY spec-op dispatch through it (a carrier's sort-`requires` is correctly
-  -- threaded at every dispatch — diamond coherence), so `nth` on a
-  -- `List[Waypoint]` (Waypoint not Eq) in lf1 was rejected even though
-  -- `IndexedSeq.nth` never compares elements. The element-agnostic ops
-  -- (`length`, `nth`, `append`, the `IndexedSeq`/`Stream`/`Iterable`/
-  -- `PersistentCollection` provisions) and the concrete-index `eq(i, 0)` in
-  -- `nth` (`i : Int64`) need no element `Eq`.
-  entity nil                                         -- empty list
-  entity cons(head: T, tail: List)                   -- cons cell
+  {< The element type — an abstract sort parameter. >}
+  sort T = ?
+
+  {< The empty list. >}
+  entity nil
+  {< A cons cell: `head` prepended to `tail`. >}
+  entity cons(head: T, tail: List)
 
   operation length(l: List) -> Int64 =
     match l
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))
-  -- WI-580: the `<=>` law twins were the body's match arms restated verbatim.
-  -- Retired — the body is the single source: a ground `length(l)` folds via the
-  -- eval bridge, and a non-ground occurrence is served by the SLD one-step
-  -- body-unfold (docs/design/abstract-interpreter-and-rules.md §3.3).
 
-  -- contains: deterministic Bool. Named and ordered as `Map.contains(m, key)` /
-  -- `String.contains(s, sub)` are — CONTAINER FIRST, which is what makes
-  -- `l.contains(x)` dot-dispatch (§6.7 binds the receiver to the first
-  -- parameter). It was `member(x: T, l: List)` until WI-939's follow-up: one
-  -- name for one question across the containers, and the element-first order
-  -- silently cost dot dispatch.
-  -- The operation body is the single source of
-  -- truth; its RELATIONAL view (a bare `contains(l, x)` goal) is derived from the
-  -- body on demand — the resolver routes it to `eq(contains(l, x), true)`, so a
-  -- ground call decides via the eval bridge and an unground one suspends to a
-  -- WI-519 residual (docs/design/abstract-interpreter-and-rules.md §3.3/§5).
-  -- WI-580: the two Prolog-style `:-` twins were RETIRED — they branched on
-  -- `cons(head: ?x, …)` (structural UNIFICATION), diverging unsoundly from the
-  -- body's `eq(head, x)` (the declared `Eq`) for a type whose `eq` is not
-  -- structural equality (`eq(a, b)` true but `a ≠ b`). The body-derived form
-  -- uses the declared `Eq` by construction — the headline soundness fix.
-  -- WI-562: `contains` is the only List op that compares elements (`eq(head, x)`),
-  -- so it carries the `Eq[T]` requirement OP-SCOPED (WI-448) — not the whole
-  -- `List` sort. The element stays the SORT param `T` (so `contains` still
-  -- eta-expands to a function value normally); the op-scoped `requires Eq[T]`
-  -- licenses the body's abstract `eq` (the typer's op-requires coverage), while
-  -- a `List[NonEq]` stays well-formed for the element-agnostic ops (a sort-level
-  -- `requires Eq[T]` wrongly blocked `IndexedSeq.nth` on `List[Waypoint]`).
+  -- THE LIST COMES FIRST — the stdlib convention for any operation meant to be
+  -- dot-called. Stated here because `List` is where most readers meet it; the
+  -- other collections follow it without repeating the note.
+  -- The dot rewrite turns `l.contains(x)` into `apply(contains, [l, x])` — the
+  -- receiver is just the first argument (proposal 043 §6.6) — so an element-first
+  -- `contains(x, l)` cannot be dot-called at all. It was `member(x, l)` until that
+  -- cost was measured. Convention for the DOT FORM only: dispatch identifies a
+  -- receiver STRUCTURALLY, never by position (kernel-language.md §"The self-receiver
+  -- parameter", where `holds(x: T, b: Bag)` puts it second).
+  -- The body is the single source of truth; its RELATIONAL view (a bare
+  -- `contains(l, x)` goal) is derived from it on demand — the resolver routes it to
+  -- `eq(contains(l, x), true)`, so a ground call decides via the eval bridge and an
+  -- unground one suspends to a WI-519 residual
+  -- (docs/design/abstract-interpreter-and-rules.md §3.3/§5). Do NOT restate it as
+  -- `:-` twins branching on `cons(head: ?x, …)`: structural UNIFICATION diverges
+  -- unsoundly from the declared `eq` for a type whose `eq` is not structural
+  -- equality (`eq(a, b)` true but `a ≠ b`).
+  -- The `Eq[T]` requirement is OP-SCOPED (WI-448), NOT sort-level: `contains` is the
+  -- only List op that compares elements, and a sort-level `requires Eq[T]` makes
+  -- `List[NonEq]` ill-formed for every element-agnostic op (it wrongly blocked
+  -- `IndexedSeq.nth` on a `List[Waypoint]`).
   operation contains(l: List, x: T) -> Bool requires Eq[T] =
     match l
       case nil() -> false
       case cons(head, tail) -> if eq(head, x) then true else contains(tail, x)
 
-  -- append: concatenation. ?result is the concatenation of ?xs and ?ys.
+  {< Concatenation: the elements of `xs` followed by those of `ys`. >}
   operation append(xs: List, ys: List) -> List =
     match xs
       case nil() -> ys
       case cons(x, rest) -> cons(head: x, tail: append(rest, ys))
-  -- WI-580: the `<=>` law twins restated the body's match arms verbatim. Retired
-  -- — the body is the single source: a ground call folds via the eval bridge; a
-  -- non-ground occurrence (relational `append(?a, ys) = zs`) is served by the SLD
-  -- one-step body-unfold case-split (§3.3).
 
   -- foldLeft / foldRight (WI-585): List's OWN concrete eager folds. These back
-  -- the FiniteCollection default bodies (`List.foldLeft(collect(c), …)`), and are
-  -- the carriers that survive Phase C when the Stream/Iterable folds are removed.
+  -- the FiniteCollection default bodies (`List.foldLeft(collect(c), …)`).
   -- Decoupled callback row `EffP` (WI-441), paid by the caller; the element is the
   -- bare param projection `xs.T` (WI-376). Element-agnostic, so no `Eq` needed
   -- (cf. the WI-562 note). Recurses via `splitFirst` (NOT a direct `cons`
@@ -88,18 +71,21 @@ enum anthill.prelude.List
     match splitFirst(xs)
       case none() -> init
       case some(pair(h, t)) -> foldLeft(t, f(init, h), f)
+
   operation foldRight[Acc, EffP](xs: List, init: Acc, f: (x: xs.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects EffP =
     match splitFirst(xs)
       case none() -> init
       case some(pair(h, t)) -> f(h, foldRight(t, init, f))
 
-  -- reverse: standard in-order reversal via a tail accumulator. Element-agnostic
-  -- (no `Eq`), pure. Needed to give the eager `mapElems` forward (source) order.
-  operation reverse(xs: List) -> List[T = xs.T] =
-    let seed: List[T = xs.T] = nil
+  {< The elements of `xs` in reverse order. >}
+  -- Via a tail accumulator (`reverseOnto`). Element-agnostic (no `Eq`), pure.
+  -- Needed to give the eager `mapElems` forward (source) order.
+  operation reverse(xs: List) -> List[xs.T] =
+    let seed: List[xs.T] = nil
     reverseOnto(xs, seed)
+
   -- `internal` (WI-369): a tail-accumulator worker for `reverse` — not public API.
-  internal operation reverseOnto(xs: List, acc: List[T = xs.T]) -> List[T = xs.T] =
+  internal operation reverseOnto(xs: List, acc: List[xs.T]) -> List[xs.T] =
     match splitFirst(xs)
       case none() -> acc
       case some(pair(h, t)) -> reverseOnto(t, cons(head: h, tail: acc))
@@ -111,9 +97,8 @@ enum anthill.prelude.List
   -- (`MappedStreamFinite.collect = mapElems(collect(source), fn)`) or predicate
   -- (`FilteredStreamFinite.collect = filterElems(collect(source), pred)`) is
   -- applied EAGERLY to produce the mapped / filtered List. Decoupled callback row
-  -- `EffP` (WI-441), paid by the caller. Recurse via `splitFirst` (NOT a direct
-  -- `cons` destructure) so the tail threads its element type — a bare `cons` tail
-  -- is untyped `List` and would lose `xs.T` (cf. `foldLeft` / `foldRight` / `nth`).
+  -- `EffP` (WI-441), paid by the caller. Recurse via `splitFirst`, not a direct
+  -- `cons` destructure — see `foldLeft` above for why.
   --
   -- mapElems builds through a tail accumulator (`mapElemsOnto`) then `reverse`s to
   -- restore source order. The accumulator is REQUIRED, not just for tail-recursion:
@@ -121,20 +106,21 @@ enum anthill.prelude.List
   -- unconstrained — the sole callback arg cannot pin BOTH the polymorphic result
   -- `Dst` and the effect `EffP` at once (unlike `find`, whose `Bool` return leaves
   -- only `EffP`, or `foldRight`, whose `Acc` is pinned by `init`). The `acc :
-  -- List[T = Dst]` value arg pins `Dst`, so `EffP` infers from the named `f` — the
+  -- List[Dst]` value arg pins `Dst`, so `EffP` infers from the named `f` — the
   -- shape proven by `foldLeft`/`foldRight` (typed accumulator + named callback).
   -- `filterElems` keeps its element type (`Bool` callback), so it is `find`-shaped
   -- and needs no accumulator.
-  operation mapElems[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}) -> List[T = Dst] effects EffP =
-    let seed: List[T = Dst] = nil
+  operation mapElems[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}) -> List[Dst] effects EffP =
+    let seed: List[Dst] = nil
     reverse(mapElemsOnto(xs, f, seed))
+
   -- `internal` (WI-369): the tail-accumulator worker for `mapElems`. It builds the
   -- mapped list REVERSED (prepends onto `acc`); `mapElems` re-reverses. Not public.
-  internal operation mapElemsOnto[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}, acc: List[T = Dst]) -> List[T = Dst] effects EffP =
+  internal operation mapElemsOnto[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}, acc: List[Dst]) -> List[Dst] effects EffP =
     match splitFirst(xs)
       case none() -> acc
       case some(pair(h, t)) -> mapElemsOnto(t, f, cons(head: f(h), tail: acc))
-  operation filterElems[EffP](xs: List, p: (x: xs.T) -> Bool @ {EffP}) -> List[T = xs.T] effects EffP =
+  operation filterElems[EffP](xs: List, p: (x: xs.T) -> Bool @ {EffP}) -> List[xs.T] effects EffP =
     match splitFirst(xs)
       case none() -> nil
       case some(pair(h, t)) ->
@@ -174,32 +160,12 @@ enum anthill.prelude.List
   -- `foldLeft` / `foldRight`). `provides` (not `fact`) so the pure row `E = {}`
   -- lowers through the type-aware path, like the Stream provision above.
   provides FiniteCollection[C = List[T], Element = T, E = {}]
-  operation collect(l: List) -> List[T = l.T] = l
+  operation collect(l: List) -> List[l.T] = l
 
   -- List provides FiniteStream (WI-588): a list's tail is a list, so a List IS a
   -- finite lazy sequence; its `splitFirst` (below) returns a List tail, which
   -- satisfies FiniteStream's FINITE-tail `splitFirst` by covariant return.
-  -- (WI-599: the `finiteIterator` finite cursor is GONE — the thin finite
-  -- combinators wrap the bare carrier directly, so no `finiteIterator` indirection
-  -- is needed; a List already provides FiniteCollection, the source-field type.)
   provides FiniteStream[T, {}]
-  -- WI-495: the explicit `provides Iterable[C = List[T], Element = T, E = {}]`
-  -- clause is GONE — List's Iterable-ness is now DERIVED transitively from
-  -- `List provides Stream` (above) + `Stream provides Iterable` (stream.anthill).
-  -- The typer composes Iterable's `Element`/`E` through Stream (Element ← Stream.T
-  -- ← List.T; E ← Stream.E ← {}) via `transitive_provision_view`, and the
-  -- dot/value-directed dispatch of `Iterable.find/map/filter/size/isEmpty/fold`
-  -- on a List resolves through `find_spec_op_for_provided_sort`'s transitive
-  -- spec walk. So `xs.find(p)` / `xs.map(f)` on a `List` still type-check pure
-  -- and thread the element, with no per-carrier Iterable declaration.
-  --
-  -- WI-496: List's explicit `operation iterator(l: List) = l` is GONE too. A
-  -- body-less `Iterable.iterator` spec op called EXPLICITLY on a concrete `List`
-  -- (`iterator(xs)`) now resolves transitively — `List provides Stream` +
-  -- `Stream provides Iterable`, so `iterator(xs)` is `Stream.iterator(xs) = xs`
-  -- (the identity this op used to spell out). The typer leaves the call as the
-  -- spec op (its return type threads from the transitive provision view) and
-  -- eval's value-directed dispatch (WI-492) routes it to `Stream.iterator`.
 
   -- Stream primitive: peel the head and return the tail (itself a List, hence
   -- a Stream). `pair`-shaped (not Iteration's tuple `split`) so Stream's
@@ -211,7 +177,7 @@ enum anthill.prelude.List
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
-  operation splitFirst(xs: List) -> Option[Pair[A = xs.T, B = List[T = xs.T]]] =
+  operation splitFirst(xs: List) -> Option[Pair[A = xs.T, B = List[xs.T]]] =
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
@@ -230,6 +196,7 @@ enum anthill.prelude.List
     match headOption(xs)
       case none() -> Error.raise(empty_stream)
       case some(h) -> h
+
   operation headOption(xs: List) -> Option[xs.T] =
     match xs
       case nil() -> none
@@ -252,33 +219,26 @@ enum anthill.prelude.List
         if eq(i, 0) then some(h)
         else if gt(i, 0) then nth(rest, sub(i, 1))
         else none
-  rule nth(nil, ?_) <=> none
-  rule nth(cons(?h, ?_), 0) <=> some(?h)
-  rule nth(cons(?_, ?t), ?i) = nth(?t, sub(?i, 1)) :- gt(?i, 0)
 
-  -- PersistentCollection.insert for List: prepend element
+  {< PersistentCollection.insert for List: prepend `elem` onto `c`. >}
   operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)
-  rule insert(?c, ?elem) <=> cons(head: ?elem, tail: ?c)
 
-  -- PersistentCollection.empty for List
+  {< PersistentCollection.empty for List: the empty list. >}
   operation empty() -> List = nil
-  rule empty() <=> nil
 
   -- List satisfies Iteration (pure). Effect left unbound by design —
   -- grounded to {} at consumption (045 row model; WI-357 / WI-365).
   provides Iteration[List[T], T]
 
-  -- Iteration.split for List. Tuple-shaped `(xs.T, List[T = xs.T])` to conform to
+  -- Iteration.split for List. Tuple-shaped `(xs.T, List[xs.T])` to conform to
   -- Iteration's `split -> Option[(Element, Iterator)]` (cf. Stream's
   -- `splitFirst -> Option[Pair[…]]`, which is Pair-shaped). The bare receiver
   -- `xs: List` carries the element via the `xs.T` projection (WI-376); the
   -- destructured head `h` threads into the tuple literal `(h, t)` via the
   -- tuple-literal element threading (WI-462), so `split` on a `List[Int64]` types
   -- the head as `Int64` with no explicit `[Elem]` param.
-  operation split(xs: List) -> Option[(xs.T, List[T = xs.T])] =
+  operation split(xs: List) -> Option[(xs.T, List[xs.T])] =
     match xs
       case nil() -> none
       case cons(h, t) -> some((h, t))
-  rule split(cons(head: ?h, tail: ?t)) <=> some((?h, ?t))
-  rule split(nil) <=> none
 end
