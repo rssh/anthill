@@ -404,8 +404,35 @@ end
 ///
 /// Both spellings are driven because the guard walks a sort application's BINDINGS:
 /// `List` reaches the callable through a chain of entity types, `Option` directly.
+///
+/// WI-20260828-2TMB5 RE-SPELLED THE NESTED VALUE, from the bare operation name `sub2` to
+/// the literal `1`, and the row is renamed with it because what it pins genuinely changed.
+/// What this control needs is an argument typed `{List,Option}[T = Int64]` meeting a SLOT
+/// typed `[T = Function[A = X, B = Int64]]`, so that the structural withholding is what
+/// lets it past — the withholding is a property of the SLOT, which still nests a callable
+/// in a sort application exactly as before. `sub2` produced that `Int64` by being READ AS A
+/// ZERO-ARG CALL, the defect WI-20260828-2TMB5 removed, so the bare name is now refused at
+/// the reference and never reaches this comparison.
+///
+/// NO CALLABLE-VALUED SPELLING CAN REPLACE IT, which is why the row is renamed rather than
+/// rebuilt. The mismatch this control needs is a NON-arrow argument against an arrow slot,
+/// and after WI-20260828-2TMB5 no callable-valued expression produces one: an inline lambda
+/// types AS the arrow the slot wants, so no conflict arises (tried first, and REJECTED — it
+/// stayed green under the degraded guard, i.e. it would have looked like a control while
+/// measuring nothing), and a bare operation name is refused at the reference. The `Int64`
+/// came from the defect; with the defect gone, a literal is the honest way to write it.
+///
+/// MEASURED IN BOTH DIRECTIONS, because a re-spelled control that merely still passes is
+/// no control at all. With `type_contains_callable` degraded to a head-only test — the
+/// exact degradation this row exists to catch — the literal spelling FAILS with
+/// `expected List[T = Function[A = (_1: Int64, _2: Int64), B = Int64]], got List[T =
+/// Int64]`, character for character the diagnostic the `sub2` spelling produced under the
+/// same degradation. Restore the structural walk and it passes. An inline LAMBDA was tried
+/// first and REJECTED for the opposite reason: it types as the arrow the slot wants, so no
+/// conflict arises, and it stayed green under the degraded guard — it would have looked
+/// like a control while measuring nothing.
 #[test]
-fn a_callback_nested_in_a_sort_application_is_still_accepted() {
+fn a_callback_slot_nested_in_a_sort_application_still_withholds() {
     let program = |wrap: &str, arg: &str| {
         format!(
             r#"
@@ -419,11 +446,13 @@ end
 "#
         )
     };
-    for (wrap, arg) in [("List", "cons(sub2, nil())"), ("Option", "some(sub2)")] {
+    for (wrap, arg) in [("List", "cons(1, nil())"), ("Option", "some(1)")] {
         assert_eq!(
             eval_int(&program(wrap, arg), &format!("test.wi836.nested{wrap}.go")),
             1,
-            "a callable nested in a {wrap} binding must stay accepted",
+            "a slot whose {wrap} binding nests a callable must keep WITHHOLDING the \
+             comparison, so a non-arrow argument passes rather than being refused by a \
+             head-only test",
         );
     }
 }

@@ -233,7 +233,7 @@ fn control_a_conforming_polymorphic_call_still_loads_clean() {
 // is a `Function[A, B, E]` and the other an arrow states no agreed arity, so `A` admits
 // two readings (whole-argument vs spread) and a head disagreement is not decidable — that
 // arm is untouched. (2) A `Function` HEAD is withheld wherever the walk meets one, on
-// WI-836's measurement; `wi836…::a_callback_nested_in_a_sort_application_is_still_accepted`
+// WI-836's measurement; `wi836…::a_callback_slot_nested_in_a_sort_application_still_withholds`
 // is the program that pins why, and it is refused without the withholding. Note the
 // withholding is per NODE, not per type: a first cut dropped the whole check whenever a
 // callable appeared ANYWHERE in either side, which is an exclusion wider than WI-836's

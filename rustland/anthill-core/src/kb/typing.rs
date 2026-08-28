@@ -6530,7 +6530,165 @@ fn check_bare_ref(
             }
         }
     }
+    // WI-20260828-2TMB5 — THE ZERO-ARG-CALL READING BELOW IS A CALL, AND A CALL WITH NO
+    // ARGUMENTS IS WELL-FORMED ONLY FOR A NULLARY OPERATION. It was never gated on that, so
+    // a bare NON-nullary name in a slot the eta arm above declined — an ordinary value slot,
+    // or an arrow slot whose op has no runnable body — silently took the operation's RETURN
+    // type. `entity plain(v: Int64)` fed `plain(inc)` (where `inc(x: Int64) -> Int64`)
+    // loaded CLEAN: `inc` typed as `Int64`, which is exactly the declared field type, so the
+    // WI-385 field validation had nothing to object to. The applied spelling of the same
+    // reading, `plain(inc())`, is an arity error — the bare one skipped the arity check by
+    // never being routed through a call.
+    //
+    // THE SAME FALL-THROUGH, THE THIRD TIME. WI-1063 found it laundering an existential
+    // return (`takes_pure(mk)` clean where `takes_pure(mk())` was refused) and WI-1083 found
+    // it laundering a ∀ (`idp[A](x: A) -> A` typing as a bare flexible `?A` that unifies
+    // with anything). Both repaired the arm ABOVE so that fewer references reached this one.
+    // This repairs the arm ITSELF, which is what makes the rule hold on every path rather
+    // than on the paths the typer usually takes.
+    //
+    // A NON-NULLARY BARE NAME HAS EXACTLY ONE READING — the eta lift — because the other is
+    // an arity error. So take it here WITHOUT requiring an arrow-shaped `expected`: the arm
+    // above needs that arrow because a NULLARY op's two readings genuinely compete (`() ->
+    // ret` against `ret`, WI-700's `eta_shadows_return_type`), and nothing competes here.
+    // The ticket's program is then refused by the ORDINARY field check with the ordinary
+    // message — `expected Int64, got Int64 -> Int64` — the same one its inline-lambda twin
+    // `plain(lambda x -> x)` has always produced. No new refusal site and no new diagnostic
+    // for it: the fix is to hand the existing check the type the author actually wrote.
+    //
+    // AND THE POLYMORPHIC SLOT IS REFUSED TOO, which is the case worth naming because the
+    // first cut of this ticket accepted it. `some(sub2)` / `cons(sub2, nil())` reach this
+    // arm as well — no hint is computed for a field type that is not callable by head, so
+    // `expected` is `None` — and a slot that declares no arrow cannot pin one. See the
+    // refusal below for why lifting there is not an option.
+    //
+    // THAT ONE IS A LIMIT RATHER THAN A RULE, and WI-20260828-5NSZY carries it: the author
+    // DID pin an arrow, one level out (`o: Option[T = Function[…]]`), and it fails to reach
+    // the reference because `one_arg_hint` pushes a declared parameter type into a
+    // CONSTRUCTOR-APPLICATION argument only when that type names an ENTITY. The repair is to
+    // make the arrow arrive, never to lift without one.
+    //
+    // THE GATE SITS INSIDE THE ARM IT GUARDS, reading the operation record only once the
+    // consumer's own lookup has succeeded. [`lookup_operation_return_type`] and
+    // [`lookup_operation_info_full`] are two DIFFERENT readers of the `OperationInfo` facts
+    // — the first scans for one field, the second decodes a whole signature through a cache
+    // tier the first has not got. Gating OUTSIDE on the second would let any symbol the two
+    // disagree about fall straight through to the reading this repairs, which is the shape
+    // of fail-open being fixed here. A record the consumer can read a return type out of but
+    // no parameter list is not a case to guess at either: `params` is what decides which
+    // reading applies, so an unreadable one is a loud error rather than a silent default to
+    // either side.
     if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
+        let Some(op_info) = lookup_operation_info_full(kb, sym) else {
+            return Err(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
+                expected: format!(
+                    "a readable parameter list for `{}`, which decides whether a bare \
+                     reference to it is a zero-arg call or a function value",
+                    kb.qualified_name_of(sym)
+                ),
+                actual: "an `OperationInfo` record carrying a return type whose signature \
+                         could not be decoded"
+                    .to_string(),
+            });
+        };
+        if !op_info.params.is_empty() {
+            // NO CONTEXT-FREE LIFT. The eta reading needs an arrow to lift AGAINST, and
+            // reaching here means there is none: the WI-275 arm above returns whenever
+            // `expected` is an arrow AND the operation has a function-value form, and for a
+            // non-nullary operation its `eta_shadows_return_type` guard is `false` by
+            // construction. So either `expected` is not an arrow, or the operation has no
+            // function-value form — and in both cases there is nothing to lift against.
+            //
+            // LIFTING ANYWAY IS REFUTED, MEASURED, and this is the first cut of this ticket:
+            // it minted the arrow and pinned the dictionary against the operation's OWN
+            // arrow for want of anything better. Self-pinning imposes nothing, which is
+            // exactly the problem — `attach_eta_dispatch_dict` reads the expected arrow to
+            // pin BOTH the requirement dictionary and the argument-spread labels
+            // (`function_slot_spread_labels`, WI-1087), and an arrow unified with itself
+            // pins neither. `via_option(some(sub2))`, with `sub2(x, acc)` reaching an
+            // `Option[T = Function[A = (x: Int64, acc: Int64), …]]` field and applied to
+            // `(acc: 3, x: 10)`, returned **-7** where its arrow-slot twin `direct(sub2)`
+            // returned 7 — the labels went unpinned and eval spread by source order. On
+            // main the same program is a LOAD ERROR (`got Option[T = Int64]`), so the lift
+            // did not restore a capability; it turned a correct refusal into a silently
+            // wrong answer. A `requires`-carrying operation is the same defect one step
+            // louder: a dict-less `OpRef` escapes to a foreign apply frame and dies there,
+            // against WI-420's rule that a dict missing at mint is missing for good.
+            //
+            // SO THE REFERENCE DENOTES NOTHING HERE and says so. This is not a narrowing of
+            // the eta reading — every position that could lift before still lifts, through
+            // the arm above, which is the only one that has ever had an arrow to lift
+            // against.
+            // WI-1102 review: [`op_has_runnable_body`] rather than
+            // [`operation_as_function_value`], which answers the same question here — the
+            // record was read above, so the lift declines exactly when the body is missing
+            // — but answers it by MINTING: it opens the existential return, allocating a
+            // fresh skolem into the KB, and builds an arrow, all to be discarded. A
+            // diagnostic must not leave a skolem behind.
+            //
+            // AND THE TWO HALVES OF THE MESSAGE BRANCH TOGETHER. Computing `expected`
+            // independently of which case fired told the author of a body-less operation to
+            // find an arrow slot for it, when no arrow slot will ever accept it — the two
+            // halves render as one sentence (`expected …, got …`), so one condition has to
+            // write both.
+            let (expected_txt, actual_txt) = if op_has_runnable_body(kb, sym) {
+                (
+                    match expected {
+                        Some(e) => format!(
+                            "a value of type {}, this position declaring no arrow",
+                            type_display_name_value(kb, e)
+                        ),
+                        None => {
+                            "a slot declaring the arrow to lift this operation against".to_string()
+                        }
+                    },
+                    format!(
+                        "a bare reference to the {}-parameter operation `{}`, which denotes \
+                         it as a function value; this position supplies no function type to \
+                         lift it against, and the zero-arg-call reading belongs to a NULLARY \
+                         operation",
+                        op_info.params.len(),
+                        kb.qualified_name_of(sym)
+                    ),
+                )
+            } else {
+                (
+                    // The slot type is NAMED here even though no slot can accept this
+                    // operation, and `wi275_hof_inference_test::body_less_builtin_in_-
+                    // function_slot_is_rejected_not_crashed` asserts it: the author needs to
+                    // see which slot they were filling. What the wording must not do is
+                    // advise finding an arrow slot, since none exists — hence the clause
+                    // that follows it.
+                    match expected {
+                        Some(e) => format!(
+                            "a value of type {}, which no bare reference to this operation \
+                             can supply",
+                            type_display_name_value(kb, e)
+                        ),
+                        None => "an operation carrying an anthill body — the only kind with \
+                                 a function-value form, so that the typer's accepted set \
+                                 stays a subset of the evaluator's"
+                            .to_string(),
+                    },
+                    format!(
+                        "a bare reference to `{}`, which carries no body: a builtin, a spec \
+                         declaration, or an operation defined only by rule clauses. Write a \
+                         lambda that calls it instead",
+                        kb.qualified_name_of(sym)
+                    ),
+                )
+            };
+            return Err(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::OperationAsFunctionValue { op_name: sym },
+                expected: expected_txt,
+                actual: actual_txt,
+            });
+        }
         // WI-1063: this IS a call — the zero-arg-call reading of a bare operation name — so
         // its result opens the callee's existential return exactly as `mk()` does. Without it
         // the whole rule was bypassable by deleting two characters: `takes_pure(mk())` was
@@ -38148,7 +38306,7 @@ fn nominal_head_mismatch(
     // would be a back door to the refusal WI-836 measured as WRONG: `take[X](l: List[T =
     // Function[A = X, B = Int64]], w: X)` applied to `cons(sub2, nil())` reaches this
     // descent as `Function[A = ?X, B = Int64]` against `Int64`, and that program loads and
-    // evaluates (`wi836…::a_callback_nested_in_a_sort_application_is_still_accepted`).
+    // evaluates (`wi836…::a_callback_slot_nested_in_a_sort_application_still_withholds`).
     //
     // NOT the whole-type [`type_contains_callable`], which is the withholding the WI-836
     // retry itself uses and which would be an exclusion wider than its justification here:

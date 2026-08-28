@@ -1480,3 +1480,6 @@ mod wi_2yhz3_answer_binding_test;
 
 #[path = "include/wi_t2470_positional_ctor_in_op_body_test.rs"]
 mod wi_t2470_positional_ctor_in_op_body_test;
+
+#[path = "include/wi_2tmb5_bare_op_name_zero_arg_reading_test.rs"]
+mod wi_2tmb5_bare_op_name_zero_arg_reading_test;

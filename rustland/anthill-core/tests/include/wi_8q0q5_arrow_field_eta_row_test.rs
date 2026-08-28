@@ -31,11 +31,15 @@
 //! name is none of those. Measured alongside: with the gate neutralised, the only verdict
 //! in this file that changes is the defect row's.
 //!
-//! WHAT THIS FILE DOES NOT PIN, because it is a SEPARATE pre-existing hole: a bare
+//! WHAT THIS FILE DOES NOT PIN, because it was a SEPARATE pre-existing hole: a bare
 //! operation name supplied to a NON-callable field (`entity plain(v: Int64)` fed
-//! `plain(inc)`) loads CLEAN, and it does so identically with this change and with it
-//! backed out — so it is neither caused nor fixed here. Filed on its own; a row asserting
-//! today's acceptance would pin laxity as intended behaviour and go red on its repair.
+//! `plain(inc)`) loaded CLEAN, and did so identically with this change and with it backed
+//! out — so it was neither caused nor fixed here. Filed as WI-20260828-2TMB5 and since
+//! REPAIRED, at the zero-arg-call reading rather than at any hint: the hint chain this
+//! file widened is gated on `type_head_is_callable`, and `Int64` is not callable, so the
+//! argument reached `check_bare_ref` with no expected type at all. See
+//! `wi_2tmb5_bare_op_name_zero_arg_reading_test`. The rows below are unaffected — every
+//! one of them supplies an arrow-typed slot, which is the arm that already fired.
 //!
 //! HOW EACH ROW EARNS ITS PLACE. `entity_field_binds_the_ops_row` is the only row that
 //! FAILS when `arrow_slot_arg_hint` is backed out (measured). The three rows after it

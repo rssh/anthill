@@ -71,6 +71,15 @@
 //!
 //! ## What fails when each piece is backed out — DRIVEN, one revert each, whole suite per row
 //!
+//! WI-20260828-2TMB5 RE-MEASURED ROW 1, because that ticket repaired the fixture row 1
+//! credits: [`the_bare_nullary_name_and_the_eta_lift_open_it_too`]'s eta half writes an
+//! `apply_it(f: Function[…])` slot, and `PRE` did not import `Function`, so the slot was
+//! not an arrow and that half was riding the zero-arg-call refusal rather than the lift.
+//! The count is unchanged at **6** with the import in place. Both halves were also measured
+//! SEPARATELY — the shared `refusal` panics on the first, which would otherwise hide the
+//! second — and each loads clean on its own when the rule is backed out, so the eta half is
+//! load-bearing in its own right and now for the reason its name gives.
+//!
 //! | revert | cost |
 //! |---|---|
 //! | the whole rule (`unbound_return_var_openings` returns an empty map) | **6**: `wi1063_…::every_spelling_of_an_unbound_return_slot_opens`, plus this file's [`the_headline_a_named_row_variable_is_opened_at_the_consumer`], [`the_four_return_spellings_agree`], [`a_named_variable_only_in_the_return_is_opened_for_a_data_parameter_too`], [`the_bare_nullary_name_and_the_eta_lift_open_it_too`], [`the_tie_survives_the_opening`] |
@@ -97,8 +106,18 @@
 use crate::wi1012_static_supplier_tie_test::refusal;
 
 /// Every row below hands its producer's result to `takes_pure`, which demands the EMPTY row.
+///
+/// WI-20260828-2TMB5 ADDED `Function` TO THIS IMPORT, and it is a repair rather than a
+/// widening. [`the_bare_nullary_name_and_the_eta_lift_open_it_too`]'s eta half writes an
+/// `apply_it(f: Function[…])` parameter, and without the import that type did not resolve
+/// — so the slot the row calls an "eta slot" was not an arrow, the bare `widen_named`
+/// never reached the eta path at all, and the row was passing on the zero-arg-call
+/// reading's refusal instead. The load errors carried `unresolved name 'Function'`
+/// alongside the asserted one the whole time. With the import the row measures the lift it
+/// names. Every other row here is import-insensitive (none writes `Function`), and the
+/// whole file was re-run to confirm no verdict moved.
 const PRE: &str = "namespace test.wi1078.rows\n\
-    \x20 import anthill.prelude.{Int64, Stream, Error, List}\n\
+    \x20 import anthill.prelude.{Int64, Stream, Error, List, Function}\n\
     \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n";
 
 fn rows(decl: &str) -> String {
