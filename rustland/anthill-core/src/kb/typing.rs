@@ -16856,13 +16856,7 @@ fn check_apply_iter(
                     // pass-through below, so this only changes the abstract case.
                     // WI-653: carrier-aware coverage — the licensing `requires` must
                     // supply `spec_sort` OVER THE CALL'S CARRIER, not merely by symbol.
-                    // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
-                    // is DECLARED to resolve, so it must not be reported as a
-                    // missing-`requires`: the sort-level twin of WI-562's op-scoped licence.
-                    // Leave the call as the spec op for value-directed eval, exactly as that
-                    // licence does.
-                    if enclosing_requires_clause.is_some() {
-                    } else if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                    if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         // WI-1091: licensed by the enclosing op's own `requires` — and
                         // now DEFERRED to the slot that licence names, when the chain
                         // has one. See `defer_to_op_scoped_slot`.
@@ -16870,6 +16864,19 @@ fn check_apply_iter(
                             kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
                             enclosing_sort, pinned_spec,
                         );
+                    // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
+                    // is DECLARED to resolve, so it must not be reported as a
+                    // missing-`requires`: the sort-level twin of WI-562's op-scoped licence.
+                    // Leave the call as the spec op for value-directed eval, exactly as that
+                    // licence does.
+                    //
+                    // ORDER MATTERS, and it is the op-scoped licence that must come first:
+                    // the two read INDEPENDENT sources (`env.op_requires()` vs the enclosing
+                    // SORT's `direct_requires`), so a call both cover would otherwise skip
+                    // `defer_to_op_scoped_slot` and lose WI-1091's dictionary-slot
+                    // classification — the thing that makes an op-scoped slot's supply, and a
+                    // call-site `[Spec = Impl]` selection, reach the call at all.
+                    } else if enclosing_requires_clause.is_some() {
                     } else if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
                         // WI-387 FIX 3: the receiver carrier's provider fact may
@@ -17080,14 +17087,22 @@ fn check_apply_iter(
                     // `Unique` and keeps its impl effect-grounding (WI-365).
                     // WI-653: carrier-aware coverage (see the NoCandidates arm above).
                     // WI-590: as in the `NoCandidates` arm above — the enclosing SORT's
-                    // `requires` covers this receiver.
-                    if enclosing_requires_clause.is_some() {
-                    } else if op_requires_covers_call(kb, env, &subst, spec_sort) {
-                        // WI-1091: as in the `NoCandidates` arm above.
-                        defer_to_op_scoped_slot(
-                            kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
-                            enclosing_sort, pinned_spec,
-                        );
+                    // `requires` covers this receiver, with the op-scoped licence tried
+                    // FIRST for the same reason. UNLIKE that arm this one does not fall
+                    // through to a pass-through: reaching its end is `DispatchNoMatch`, so a
+                    // licence here must RETURN the spec-op result, exactly as the op-scoped
+                    // branch does.
+                    if op_requires_covers_call(kb, env, &subst, spec_sort)
+                        || enclosing_requires_clause.is_some()
+                    {
+                        // WI-1091: as in the `NoCandidates` arm above. Only the op-scoped
+                        // licence names a slot to defer to; the sort-level one does not.
+                        if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                            defer_to_op_scoped_slot(
+                                kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
+                                enclosing_sort, pinned_spec,
+                            );
+                        }
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
                             env: env.clone(),
@@ -34890,6 +34905,154 @@ fn provision_binds_param_to_carrier(
         .find(|view| binds_pvid_to_carrier(view))
 }
 
+/// WI-20260828-57MRM — the WITNESS sort whose provision of `spec_sort` dispatches at
+/// `carrier_sym`, if the provision comes from a witness rather than from the carrier's own
+/// `provides`. The same scan [`provision_binds_param_to_carrier`]'s witness arm makes,
+/// asked for the PROVIDER instead of the view — [`bind_spec_params_from_carrier_param`]
+/// needs it to know whose binder the view's variables belong to.
+fn witness_provider_for(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+) -> Option<Symbol> {
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    // The SAME iterator, filter and find-predicate `provision_binds_param_to_carrier`'s
+    // witness arm uses, so the two cannot select different witnesses when several provide
+    // `spec_sort` at this carrier — σ must come from the binder the VIEW came from.
+    // `provider != carrier` is the additivity guard: a provider that IS the carrier is the
+    // case that function's FIRST arm already answered, so reaching here means it declined.
+    provisions_of_spec(kb, spec_sort)
+        .filter(|(provider, spec_t, _)| {
+            kb.canonical_sort_sym(*provider) != carrier_canon
+                && witness_dispatch_carrier(kb, spec_sort, *provider, *spec_t) == Some(carrier_canon)
+        })
+        .find(|(_, _, view)| {
+            view.iter().any(|(sp_sym, sp_val)| {
+                type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
+                    && super::load::provides_spec_base_sym(kb, *sp_val)
+                        .map(|b| kb.canonical_sort_sym(b))
+                        == Some(carrier_canon)
+            })
+        })
+        .map(|(provider, _, _)| provider)
+}
+
+/// WI-20260828-57MRM — instantiate a WITNESS provision against the receiver: the σ that
+/// takes the witness sort's OWN parameters to the receiver's type-args.
+///
+/// A witness `fact` is a TEMPLATE over its own binder —
+/// `fact Box[C = Wrap[Source = S, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]` —
+/// and the head's other bindings (`Element`, `E`) are written in THAT binder's variables,
+/// not the carrier's. Reading them leaf-by-leaf against the CARRIER, as
+/// [`substitute_carrier_params`] does, is the wrong namespace; it only ever appeared to work
+/// when witness and carrier happened to spell a parameter the same way (MEASURED: rename the
+/// witness's row parameter and the binding leaks, with no other change).
+///
+/// The fact's CARRIER BINDING is the equation relating the two — match it against the
+/// receiver's type and every witness variable gets its value. This builds that σ.
+///
+/// TWO OCCURRENCE FORMS, and both must be recognized, because one parameter is spelled
+/// differently by position: in a type-argument slot it is a `Ref(parameter symbol)`
+/// (`Wrap[ES = ES]`), inside an effect ROW it is the bare `Var(Global(parameter vid))` the
+/// row's tail carries (`{ES, EF}` ⟹ `merge[open[tail = Var], open[tail = Var]]`). Keying σ
+/// on the witness's VarId covers both: a `Ref` is resolved to its parameter's vid first.
+///
+/// Returns EMPTY for an ordinary `provides`, whose carrier binding is a bare reference
+/// rather than an application — so the non-witness path is untouched.
+fn witness_instantiation(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier_sym: Symbol,
+    carrier_pvid: VarId,
+    view_bindings: &[(Symbol, TermId)],
+    recv_bindings: &[(VarId, TermId)],
+) -> Option<(Symbol, Vec<(Symbol, TermId)>, Vec<(VarId, TermId)>)> {
+    // CHEAP GATE FIRST — the carrier binding being an APPLICATION of the carrier is the
+    // witness signature (an ordinary `provides` writes a bare reference). Every ordinary
+    // dispatch answers here, before the provider scan below runs at all.
+    let (_, carrier_val) = view_bindings
+        .iter()
+        .find(|(p, _)| type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid))?;
+    let Term::Fn { functor, named_args, .. } = kb.get_term(*carrier_val).clone() else {
+        return None;
+    };
+    if kb.canonical_sort_sym(functor) != kb.canonical_sort_sym(carrier_sym) {
+        return None;
+    }
+    let witness = witness_provider_for(kb, spec_sort, carrier_pvid, carrier_sym)?;
+    // Read the witness's parameter table ONCE — the walk below visits every leaf of every
+    // head binding, and rebuilding it per leaf is the difference between one read and one
+    // per node.
+    let witness_params = sort_type_params_as_pairs(kb, witness).to_vec();
+    let subst: Vec<(VarId, TermId)> = named_args
+        .iter()
+        .filter_map(|(carrier_param, witness_occ)| {
+            let wvid = witness_param_vid_of_occurrence(kb, *witness_occ, witness, &witness_params)?;
+            let cvid = type_param_vid_in_sort(kb, carrier_sym, *carrier_param)?;
+            let arg = recv_bindings.iter().find(|e| e.0 == cvid)?.1;
+            Some((wvid, arg))
+        })
+        .collect();
+    (!subst.is_empty()).then_some((witness, witness_params, subst))
+}
+
+/// WI-20260828-57MRM — the WITNESS parameter a head occurrence denotes, in either spelling:
+/// the `Var(Global(vid))` a row tail carries, or the `Ref(symbol)` a type-argument slot
+/// writes. `None` for anything that is not one of `witness`'s own parameters (a concrete
+/// leaf such as `Int64`, or another sort's parameter), which therefore substitutes nothing.
+fn witness_param_vid_of_occurrence(
+    kb: &KnowledgeBase,
+    occ: TermId,
+    witness: Symbol,
+    witness_params: &[(Symbol, TermId)],
+) -> Option<VarId> {
+    let vid_of = |t: TermId| match kb.get_term(t) {
+        Term::Var(Var::Global(v)) => Some(*v),
+        _ => None,
+    };
+    match kb.get_term(occ) {
+        // A ROW tail: the parameter's own var, so membership is EXACT — no name involved.
+        Term::Var(Var::Global(v)) => witness_params
+            .iter()
+            .any(|(_, t)| vid_of(*t) == Some(*v))
+            .then(|| *v),
+        // A TYPE-ARGUMENT slot: the parameter's symbol, resolved through the sort's own
+        // registration. SYMBOL IDENTITY ONLY — never a short-name join. A head may write
+        // ANOTHER sort's parameters into the slots, and may PERMUTE them
+        // (`SomeAlgebra[T = X.S, S = X.T]`); joining on last segments would pair `X.S` with
+        // the witness's `S` and silently invert exactly that permutation, which is the
+        // cross-sort `T` collapse identity-keyed matching exists to prevent. A value that is
+        // not one of this witness's own parameters resolves to `None` and substitutes
+        // nothing, which is the correct answer for it.
+        Term::Ref(sym) => type_param_vid_in_sort(kb, witness, *sym),
+        _ => None,
+    }
+}
+
+/// WI-20260828-57MRM — apply [`witness_instantiation`]'s σ to one head binding, replacing
+/// each witness-parameter occurrence (in either spelling) by the receiver's type-arg.
+fn apply_witness_instantiation(
+    kb: &mut KnowledgeBase,
+    tid: TermId,
+    witness: Symbol,
+    witness_params: &[(Symbol, TermId)],
+    subst: &[(VarId, TermId)],
+) -> TermId {
+    if let Some(v) = witness_param_vid_of_occurrence(kb, tid, witness, witness_params) {
+        if let Some((_, bound)) = subst.iter().find(|(w, _)| *w == v) {
+            return *bound;
+        }
+    }
+    if matches!(kb.get_term(tid), Term::Fn { .. }) {
+        kb.map_fn_children(tid, |kb, child| {
+            apply_witness_instantiation(kb, child, witness, witness_params, subst)
+        })
+    } else {
+        tid
+    }
+}
+
 /// WI-492 — the specs a carrier sort DIRECTLY provides (base symbols), read
 /// from its carrier-keyed `SortProvidesInfo` facts. The transitive-provision
 /// hop set for [`transitive_carrier_for_param`] (a single carrier-keyed scan,
@@ -35542,6 +35705,15 @@ fn carrier_param_receiver(
 ///     because granting a licence on a basis that does not hold is a fail-open waiting for
 ///     its first reader; it is not, today, a wrong answer.
 ///
+///     LIMITATION, stated because it is a real divergence from [`carrier_param_receiver`],
+///     which derives the carrier from the PROVISION and so accepts a carrier declared in any
+///     position: this reads the carrier as the spec's FIRST type parameter, the convention
+///     every stdlib carrier-param spec follows (`sort C = ?` first). A spec that declared its
+///     carrier second would simply not be licensed here — fail-CLOSED, a missing licence and
+///     the loud diagnostic that goes with it, never a wrong binding. Widening it means
+///     deriving the carrier the way that function does, which is a bigger change than the
+///     convention has so far been worth.
+///
 ///  2. A VIEW RECEIVER MUST BE A SPEC VIEW. The receiver may be spelled as a view over the
 ///     param (`src : Iterable[C = S, …]`, what destructuring a spec-typed field yields), and
 ///     then the carrier is the view's own carrier binding. But `TypeExtractor::Parameterized`
@@ -35584,26 +35756,20 @@ fn enclosing_requires_licensing_clause(
         return None;
     };
     let carrier_pvid = *carrier_pvid;
-    let encl_rigid_by_sym: Vec<(Symbol, TermId)> = sort_type_params_as_pairs(kb, encl)
-        .iter()
-        .filter_map(|(psym, pty)| {
-            let Term::Var(Var::Global(v)) = kb.get_term(*pty) else {
-                return None;
-            };
-            rigids.iter().find(|(pv, _)| pv == v).map(|(_, r)| (*psym, *r))
-        })
-        .collect();
+    // A clause value resolved to the enclosing param's BODY RIGID. SYMBOL IDENTITY ONLY,
+    // via the sort's own registration — never a short-name join. A clause may write ANOTHER
+    // sort's parameters into the slots, and may PERMUTE them (`requires Alg[T = X.S, S = X.T]`);
+    // comparing last segments would pair `X.S` with the enclosing `S` and invert exactly that
+    // permutation. It matters twice over here: this same resolution decides BOTH whether the
+    // clause licenses the call and what each spec param binds to, so one false match would
+    // grant a licence and bind a wrong rigid together.
     let rigid_of = |kb: &KnowledgeBase, t: TermId| -> Option<TermId> {
-        match kb.get_term(t) {
-            Term::Ref(sym) => encl_rigid_by_sym
-                .iter()
-                .find(|(s, _)| {
-                    short_name_of(kb.local_name_of(*s)) == short_name_of(kb.local_name_of(*sym))
-                })
-                .map(|(_, r)| *r),
-            Term::Var(Var::Global(v)) => rigids.iter().find(|(pv, _)| pv == v).map(|(_, r)| *r),
-            _ => None,
-        }
+        let vid = match kb.get_term(t) {
+            Term::Ref(sym) => type_param_vid_in_sort(kb, encl, *sym)?,
+            Term::Var(Var::Global(v)) => *v,
+            _ => return None,
+        };
+        rigids.iter().find(|(pv, _)| *pv == vid).map(|(_, r)| *r)
     };
 
     // GATE 1 — the receiver is the parameter typed as the spec's CARRIER param.
@@ -35744,9 +35910,24 @@ fn bind_spec_params_from_carrier_param(
         }
         return any;
     }
+    // WI-20260828-57MRM — a WITNESS provision's head is a TEMPLATE over the witness sort's
+    // own binder, so INSTANTIATE it against the receiver before reading any binding. Empty
+    // for an ordinary `provides` (bare carrier reference, nothing to instantiate), so the
+    // non-witness path is unchanged.
+    let instantiation = witness_instantiation(
+        kb,
+        spec_sort,
+        carrier_sym,
+        carrier_pvid,
+        &view_bindings,
+        &recv_bindings,
+    );
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
+        // (the carrier-param skip below runs BEFORE any instantiation: for a witness that
+        // binding is the largest term in the head, and rewriting it would hash-cons a copy
+        // that is discarded on the very next line.)
         // The CARRIER param itself (`FiniteCollection.C`) is bound by ordinary
         // argument unification against the receiver, NOT from the provision: its
         // provider binding is the carrier-sort application (`C ↦ Map`, or the
@@ -35758,6 +35939,38 @@ fn bind_spec_params_from_carrier_param(
         if spec_vid == Some(carrier_pvid) {
             continue;
         }
+        // WI-20260828-57MRM — INSTANTIATE the witness's head binding against the receiver.
+        //
+        // The result is the receiver's own type-arg, so it must NOT then be run through the
+        // carrier-keyed classification below: that asks `typaram_ref_vid(value, carrier_sym)`,
+        // and a rewritten `Int64` is ref-shaped but is not a param OF THE CARRIER, so it
+        // would answer `None` and the binding would be DROPPED. MEASURED — a `String` was
+        // accepted where the witness pins `Element = Int64`, which the un-instantiated read
+        // had refused. A rewritten value that is GROUND is already the answer; bind it.
+        let carrier_value = match &instantiation {
+            Some((witness, witness_params, wsubst)) => {
+                let rewritten = apply_witness_instantiation(
+                    kb,
+                    carrier_value,
+                    *witness,
+                    witness_params,
+                    wsubst,
+                );
+                if rewritten != carrier_value && type_value_is_ground(kb, rewritten) {
+                    if let Some(spec_vid) = spec_vid {
+                        if subst.resolve_as_value(spec_vid).is_none()
+                            && !occurs_in(kb, spec_vid, rewritten)
+                        {
+                            subst.bind_term(kb, spec_vid, rewritten);
+                            any = true;
+                        }
+                    }
+                    continue;
+                }
+                rewritten
+            }
+            None => carrier_value,
+        };
         // WI-600: match the carrier-side value's type-param leaves by the CARRIER
         // sort's canonical `Var::Global` VarId (identity), not short name. The
         // ref-SHAPE gate (not "resolves to a carrier param") drives the branch: a

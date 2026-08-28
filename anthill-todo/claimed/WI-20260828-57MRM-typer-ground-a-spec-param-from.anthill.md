@@ -3,9 +3,9 @@
 - id: WI-20260828-57MRM-typer-ground-a-spec-param-from
 - created: 2026-08-28T06:39:24Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-28T06:39:24Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-08-28T06:41:28Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
