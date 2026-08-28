@@ -28251,11 +28251,12 @@ fn collect_provides_candidates(
 /// consulted where the demand said nothing. That also bounds the change: no dispatch
 /// whose head already pinned a parameter can resolve differently than before.
 ///
-/// ONLY WHEN THE CANDIDATE **IS** THE CARRIER. A goal reached through a provider CHAIN
-/// (`Relation provides LogicalStream provides Stream`, WI-714) resolves to an
-/// `impl_sort` one or more hops away from the receiver's own sort, whose parameters the
-/// receiver's arguments do not name — joining them there would bind one sort's
-/// parameters from another's arguments.
+/// ACROSS THE PROVIDER CHAIN AS WELL AS AT THE CARRIER ITSELF, through
+/// [`provision_path_subst`]. `collect_provides_candidates` accepts a candidate the carrier
+/// reaches only TRANSITIVELY (WI-714), so `impl_sort` can be a sort the receiver's type
+/// never mentions; there it is the carrier's PROVISION that connects them, composed per
+/// hop. At zero hops that walk is the identity and this is the receiver's arguments
+/// aligned to the carrier's parameters, which is the shape [`GoalCarrier`] exists for.
 ///
 /// JOINED BY SHORT NAME, which is exact here and nowhere else: both sides are parameters
 /// of ONE sort, and [`impl_param_symbols`] already resolves them from that sort's
@@ -28272,7 +28273,7 @@ fn collect_provides_candidates(
 /// reaches it through [`SortGoal::carrier`], which is where a self-receiver spec's
 /// carrier lives instead (WI-350). Two routes to one receiver, one rule.
 fn carrier_arg_impl_subst(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     goal: &SortGoal,
     impl_sort: Symbol,
     impl_params: &[Symbol],
@@ -28281,25 +28282,165 @@ fn carrier_arg_impl_subst(
     let Some(carrier) = goal.carrier.as_ref() else {
         return;
     };
-    if carrier.args.is_empty()
-        || kb.canonical_sort_sym(impl_sort) != kb.canonical_sort_sym(carrier.sort)
-    {
+    // The receiver's arguments re-keyed by the CARRIER SORT's own parameter symbols —
+    // the form [`substitute_impl_params_alloc`] matches, and the starting substitution of
+    // the walk below. At zero hops it IS the answer.
+    let carrier_params = impl_param_symbols(kb, carrier.sort);
+    let carrier_subst = align_by_short_name(kb, &carrier.args, &carrier_params);
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    let Some(path) = provision_path_subst(
+        kb,
+        carrier.sort,
+        &carrier_subst,
+        impl_sort,
+        &mut visited,
+    ) else {
         return;
-    }
-    for (written, value) in &carrier.args {
-        let short = short_name_of(kb.local_name_of(*written));
-        let Some(param) = impl_params
-            .iter()
-            .copied()
-            .find(|&p| short_name_of(kb.local_name_of(p)) == short)
-        else {
-            continue;
-        };
+    };
+    // RE-KEYED THROUGH `impl_params`, the caller's own parameter symbols, rather than
+    // trusting the walk's keys to have landed on the same ones. They are resolved from a
+    // qualified name at both ends, so today they agree — but `carrier.sort` is CANONICAL
+    // (`canonical_sort_sym`) where `impl_sort` is the raw `SortProvidesInfo.sort_ref`
+    // functor, and this file canonicalizes exactly because one qualified name can be
+    // interned under several `Symbol`s (WI-838/WI-864). A disagreement would be SILENT IN
+    // BOTH DIRECTIONS: the additivity test below would not see the head match's binding,
+    // so a duplicate key would be pushed, and `substitute_impl_params_alloc`'s `*k == s`
+    // would never match the `Ref` in the `requires` clause, so the fill would do nothing.
+    for (param, value) in align_by_short_name(kb, &path, impl_params) {
         if impl_subst.iter().any(|(k, _)| *k == param) {
             continue;
         }
-        impl_subst.push((param, *value));
+        impl_subst.push((param, value));
     }
+}
+
+/// WI-20260828-EKWDC — re-key `pairs` by the parameter symbols of one sort, joining on
+/// SHORT NAME. The written key of a type argument and the sort's own parameter symbol are
+/// two spellings of one parameter; see [`carrier_arg_impl_subst`] for why that join is
+/// exact within a sort and nowhere else. A key naming no parameter of the sort is
+/// dropped — it constrains nothing the substitution can reach.
+fn align_by_short_name(
+    kb: &KnowledgeBase,
+    pairs: &[(Symbol, TermId)],
+    params: &[Symbol],
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for (written, value) in pairs {
+        let short = short_name_of(kb.local_name_of(*written));
+        if let Some(param) = params
+            .iter()
+            .copied()
+            .find(|&p| short_name_of(kb.local_name_of(p)) == short)
+        {
+            out.push((param, *value));
+        }
+    }
+    out
+}
+
+/// WI-20260828-EKWDC (two-hop) — the substitution from `impl_sort`'s OWN type parameters
+/// to types in the RECEIVER's terms, following the `provides` chain from `from` to
+/// `impl_sort`.
+///
+/// AT ZERO HOPS this is the identity: `from` IS the sort whose provision head was
+/// matched, so its parameters are already the receiver's own and `from_subst` is the
+/// answer. That is the shape [`GoalCarrier`] was introduced for.
+///
+/// AT ONE OR MORE HOPS the receiver's arguments are NOT the answer, and this is the whole
+/// reason the walk exists. `collect_provides_candidates` accepts a candidate the carrier
+/// reaches only TRANSITIVELY (WI-714: `Relation provides LogicalStream provides Stream`),
+/// so `impl_sort` is a sort the receiver's type never mentions — `Chained[Out = Int64]`
+/// says nothing about `Mid.Src`. What connects them is the CARRIER'S PROVISION: `Chained
+/// provides Mid[Src = Heavy, Out = Out]` maps the intermediate's parameters to types
+/// written in the carrier's own parameter space, and instantiating THOSE at `from_subst`
+/// carries the receiver's arguments across the hop. Composed per hop, exactly as
+/// [`transitive_provision_view`] composes its own view, and recursive for the same reason:
+/// nothing bounds the chain at one edge.
+///
+/// MEASURED as the shape it exists for — one fixture, two carriers differing in whether
+/// the sort carrying the `requires` is the receiver's own or one hop away:
+///
+/// ```text
+/// sort Mid { sort Src = ?  sort Out = ?          -- constructor-less
+///   requires Tagger[T = Src]                     -- names Src
+///   provides Stream[T = Out, E = {}]             -- names Out, NOT Src
+///   operation splitFirst(m: Mid) -> ... }
+/// sort Chained { sort Out = ?  entity chained(item: Heavy, out: Out)
+///   provides Mid[Src = Heavy, Out = Out]  ... }
+/// ```
+///
+/// `Stream.splitFirst(chained(heavy(7), 42))` asked `Tagger[T = Mid.Src]` — the
+/// INTERMEDIATE's declaration parameter — and is now `Tagger[T = Heavy]`, read off the
+/// provision.
+///
+/// FIRST PATH WINS where several reach `impl_sort`, and the cycle guard is `visited`.
+/// Both are [`transitive_provision_view`]'s properties, held for its reasons: a carrier
+/// with two routes to one spec is a coherence question its own readers answer, not one to
+/// re-decide here.
+fn provision_path_subst(
+    kb: &mut KnowledgeBase,
+    from: Symbol,
+    from_subst: &[(Symbol, TermId)],
+    impl_sort: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    if same_sort_canonical(kb, from, impl_sort) {
+        return Some(SmallVec::from_slice(from_subst));
+    }
+    if visited.iter().any(|&v| same_sort_canonical(kb, v, from)) {
+        return None;
+    }
+    visited.push(from);
+    // THE DIRECT EDGE FIRST. `directly_provided_specs` returns provides-facts in
+    // assertion order, so a plain DFS would take whichever edge happens to come first —
+    // and where `from` reaches `impl_sort` BOTH directly and through an intermediate
+    // (`List provides Stream` beside `List provides FiniteStream provides Stream`, the
+    // very shape WI-714's fallback is written around), that means discharging
+    // `impl_sort`'s `requires` at what the INTERMEDIATE's provision binds rather than at
+    // what `from` itself wrote. `collect_provides_candidates`, this walk's only caller,
+    // states the preference one level up — "accept when the carrier IS the impl sort (the
+    // direct hot path) OR — only as a FALLBACK … when it TRANSITIVELY provides it" — and
+    // a walk that contradicted its own caller would bind a requirement to the wrong type
+    // with both arms naming a concrete sort, so nothing downstream could tell.
+    //
+    // NOT the same question as the "first path wins" note above, which is about two
+    // routes to one SPEC — a coherence matter its own readers answer. This is two routes
+    // to one PROVIDER SORT, which coherence does not refuse.
+    let mut edges = directly_provided_specs(kb, from);
+    if let Some(i) = edges
+        .iter()
+        .position(|&e| same_sort_canonical(kb, e, impl_sort))
+    {
+        edges.swap(0, i);
+    }
+    for intermediate in edges {
+        let Some(view) = provider_spec_view_bindings(kb, from, intermediate) else {
+            continue;
+        };
+        // `view` keys the INTERMEDIATE's parameters and writes their values in `from`'s
+        // parameter space; instantiate those values at `from_subst` so what crosses the
+        // hop is in the receiver's terms.
+        let inter_params = impl_param_symbols(kb, intermediate);
+        let mut inter_subst: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (key, value) in view {
+            let short = short_name_of(kb.local_name_of(key)).to_string();
+            let Some(param) = inter_params
+                .iter()
+                .copied()
+                .find(|&p| short_name_of(kb.local_name_of(p)) == short)
+            else {
+                continue;
+            };
+            let instantiated = substitute_impl_params_alloc(kb, value, from_subst);
+            inter_subst.push((param, instantiated));
+        }
+        if let Some(found) =
+            provision_path_subst(kb, intermediate, &inter_subst, impl_sort, visited)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,

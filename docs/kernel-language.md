@@ -1141,6 +1141,15 @@ Int64], …]`. Reading them off the declaration instead yields a sub-goal about 
 ground receiver is refused. The receiver's arguments **fill** rather than override: where
 the head did pin a parameter, the head's binding is what the goal demanded and stands.
 
+Where the carrier reaches the spec only **through a chain** (`Relation provides
+LogicalStream provides Stream`), the sort whose `requires` must be discharged is not the
+receiver's own, and its parameters are ones the receiver's type never mentions. There the
+connection is the carrier's **provision**: `X provides Mid[Src = Heavy, Out = Out]` maps
+the intermediate's parameters to types written in `X`'s own parameter space, and
+instantiating those at the receiver's arguments carries them across the hop — composed
+once per hop, first path winning where several reach the same provider. At zero hops that
+composition is the identity, so one rule covers both.
+
 **A CARRIER's `provides` and a SPEC's are two clauses with one keyword.** A carrier's is
 a fact about the world (`Int64 provides Ord[T = Int64]`, `Set provides Eq[T = Set]`,
 `Stream provides Iterable[C = Stream, …]`) and belongs in the searchable provider
