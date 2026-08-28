@@ -153,7 +153,26 @@ only the mirror, so it is named for that.
 ### 3.1 Layout: the extent binding
 
 Today's tracker declares its layout like this, and this is real, committed
-configuration — not a proposal:
+configuration — not a proposal. It is also what `anthill-todo init` scaffolds, so a
+new project starts here rather than migrating to it:
+
+```anthill
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.ItemPerFileStore(
+    root: ".",
+    status_field: "last_status_change.status",
+    id_field: "id",
+    ref_field: "workitem"),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, StoreFormat])
+```
+
+**The status field is a DOTTED PATH** (WI-K63ZV): an item's state is the last change
+made to it, so the value the directory mirrors sits inside that record. The store
+follows the path and learns nothing else about the shape.
+
+What this repo migrated *from* — and what a project declaring no binding at all is
+still read as — replaces the *store term*, not the mechanism:
 
 ```anthill
 fact anthill.persistence.ExtentBinding(
@@ -163,16 +182,6 @@ fact anthill.persistence.ExtentBinding(
       file: "workitems.anthill")),
   role: anthill.persistence.ExtentRole.mirror(),
   covers: [WorkItem, Feedback, Tag, StoreFormat])
-```
-
-Moving to the §4 layout replaces the *store term*, not the mechanism:
-
-```anthill
-fact anthill.persistence.ExtentBinding(
-  store: anthill.persistence.filesystem.ItemPerFileStore(
-    root: ".", status_field: "status", id_field: "id", ref_field: "workitem"),
-  role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat, MirrorEntry])
 ```
 
 `store` is a **`Term`, not a `Store`** — the binding names a backend to *build*, and
@@ -2284,6 +2293,16 @@ would be the silent skip this section exists to prevent.
 ```bash
 anthill-todo migrate --to item-per-file
 ```
+
+**A PROJECT CREATED TODAY NEEDS NONE OF THIS.** `init` scaffolds the item-per-file
+binding directly, so migration is for trackers that predate it. What `init` does *not*
+move is the DEFAULT binding — what a project declaring nothing is read as — which still
+names the single shared file. That half is pinned by the zero-config trackers already on
+disk, not by what a new project gets. Moving it would not *misread* them: this store
+refuses a shared file it finds, loudly, and names this command. It would break every one
+of them at once instead, demanding a migration nobody asked for. The cost of keeping the
+two apart is that a project which LOSES its binding would default to the single file and
+write a second store beside its item tree — refused at startup rather than allowed.
 
 **The spelling changed with the operation (WI-1118).** It was `--to
 github-coordinated` while this also created ~1110 issues; it now touches no forge,

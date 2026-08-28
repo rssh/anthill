@@ -47,6 +47,33 @@ anthill-todo -d "$PWD" graph                             # Show dependency graph
 anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
 ```
 
+### What a project looks like on disk
+
+`init` creates the configuration and nothing else:
+
+```
+anthill-todo/project.anthill        # project configuration, and which store holds the items
+anthill-todo/store_format.anthill   # the data format those items are written in
+```
+
+Each item is then **its own file**, in a directory named for its status:
+
+```
+anthill-todo/open/WI-20260817-K7M2Q-item-per-file-store.anthill.md
+anthill-todo/claimed/…
+anthill-todo/delivered/…
+```
+
+An item file is a MARKDOWN DOCUMENT — an `## Attributes` chapter of one line per
+field, then the prose fields as chapters — so it renders on GitHub and can be read
+and edited by hand. Changing an item's status MOVES its file between these
+directories; `anthill-todo fsck` checks the tree against the facts and reports what
+disagrees.
+
+An older project may instead hold every item in a single `anthill-todo/workitems.anthill`,
+and so does a project that declares no store binding. That layout keeps working —
+`anthill-todo migrate --to item-per-file` converts one to the layout above.
+
 ### Referring to a work item
 
 An item's id is MINTED FROM THE ITEM: `WI-<YYYYMMDD>-<5 characters>-<slug>`, e.g.

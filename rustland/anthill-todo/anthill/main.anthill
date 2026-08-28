@@ -4287,7 +4287,12 @@ namespace anthill.todo
           -- nothing before then keeps the bare spelling from returning.
           let _ = WorkItemStore.stamp_format(s, current_store_format())
           let _ = println(console(),
-            concat("migrated workitems.anthill (store format version ",
+            -- NAMES NO FILE. The stamp goes THROUGH the store, so where it lands is the
+            -- declared store's business: `workitems.anthill` on the single-file layout,
+            -- `store_format.anthill` on the item-per-file one that `init` now scaffolds.
+            -- Naming the first sent every new project's user looking for a file their
+            -- tracker does not have (found in review).
+            concat("migrated this project (store format version ",
               concat(to_string(current_store_format()), ")")))
           0
         case some(v) ->

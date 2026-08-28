@@ -37,9 +37,9 @@ fn init_honors_dir_flag_from_a_different_cwd() {
     assert!(
         target
             .path()
-            .join("anthill-todo/workitems.anthill")
+            .join("anthill-todo/store_format.anthill")
             .exists(),
-        "workitems.anthill missing under -d target"
+        "store_format.anthill missing under -d target"
     );
     assert!(
         target.path().join("anthill-todo/project.anthill").exists(),
@@ -194,7 +194,7 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        sub.join("anthill-todo/workitems.anthill").exists(),
+        sub.join("anthill-todo/store_format.anthill").exists(),
         "scaffold missing under the relative -d target"
     );
 

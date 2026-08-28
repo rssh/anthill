@@ -22,7 +22,7 @@ fn init_with_leading_dir_flag_scaffolds() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        tmp.path().join("anthill-todo/workitems.anthill").exists(),
+        tmp.path().join("anthill-todo/store_format.anthill").exists(),
         "scaffold missing"
     );
 }

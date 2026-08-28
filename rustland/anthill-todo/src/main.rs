@@ -145,8 +145,14 @@ fn collect_anthill_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Vec<String>>
 // ── Project directory discovery ──────────────────────────────────
 
 /// The files that mark a directory as an anthill-todo PROJECT. `init` writes
-/// `project.anthill`; every project accrues `workitems.anthill`. Either alone is
-/// proof (a pre-versioning project predates `project.anthill`).
+/// `project.anthill`; a project on the single-file layout accrues `workitems.anthill`.
+/// Either alone is proof (a pre-versioning project predates `project.anthill`).
+///
+/// AN ITEM-PER-FILE PROJECT IS MARKED BY THE FIRST ALONE, and that is why `init` writes
+/// `project.anthill` unconditionally: the item tree carries no file at a fixed name — its
+/// contents are one directory per status, all of them absent until something is filed —
+/// so a scaffold that leaned on the second marker would leave a fresh project
+/// undiscoverable until its first `add`.
 const PROJECT_MARKERS: [&str; 2] = ["project.anthill", "workitems.anthill"];
 
 /// Does this directory HOLD a project, as opposed to merely being NAMED
@@ -737,19 +743,21 @@ fn is_bundled_domain_or_rules(pf: &ParsedFile) -> bool {
 
 // ── Term helpers ────────────────────────────────────────────────
 
-// The data-format version `init` stamps a new project's workitems.anthill with
-// (`fact StoreFormat(version: N)`). MUST match the bundle's `current_store_format`
-// (main.anthill), which the anthill-side version check compares stamps against;
-// the `fresh init produces a clean project` test guards against divergence.
+// The data-format version `init` stamps a new project with (`fact StoreFormat(version:
+// N)`), written to `store_format.anthill` — the root file `ItemPerFileStore` files a
+// store-level row in. MUST match the bundle's `current_store_format` (main.anthill),
+// which the anthill-side version check compares stamps against; `fresh_init_project_loads_clean`
+// (cmd_version_stamp_test) guards against divergence — a fresh project reads as stale the
+// moment the two integers part.
 const CURRENT_STORE_FORMAT_VERSION: u32 = 1;
 
 // WI-505: `init` no longer scaffolds a per-project domain.anthill/rules.anthill.
 // The `anthill.stage0` domain and workflow rules ship bundled in the binary
 // (anthill_bundle.rs), version-locked with the logic that imports them, so a
 // fresh project carries no copy that could later drift out of sync with the
-// grammar or domain. The data-format stamp is likewise bundle-owned and
-// asserted from anthill via the store (WorkItemStore.stamp_format / `migrate`),
-// never text-written here.
+// grammar or domain. The data-format stamp is bundle-owned wherever there is a KB to
+// flush through the store (WorkItemStore.stamp_format / `migrate`); `init` is the one
+// place that text-writes it, because it runs before any project exists to load.
 
 /// All `(workitem, tag-name)` pairs from `anthill.stage0.Tag` facts.
 /// Tag names attached to a work item (sorted, deduped).
@@ -790,6 +798,25 @@ struct ProjectFile {
     /// The document structure, for an item document. `None` for a plain
     /// `.anthill` file, whose whole text is anthill source.
     document: Option<Document>,
+}
+
+/// The first ITEM file among the project's loaded files — the signal that this directory
+/// is on the item-per-file layout, whatever it declares.
+///
+/// A DOCUMENT IS CONCLUSIVE ANYWHERE; a plain `WI-NNN.anthill` counts only BELOW the
+/// root. The root is where every non-item file lives — `workitems.anthill`,
+/// `project.anthill`, `store_format.anthill`, `orphaned.anthill` — and all of them carry
+/// the plain suffix, so a root-level test would read a zero-config tracker as an item
+/// tree and refuse the very shape the default exists to serve. An item lives in a
+/// directory named for its status, so "below the root" is exactly the question.
+fn first_item_file<'a>(project_items: &'a [ProjectFile], store_root: &Path) -> Option<&'a Path> {
+    project_items.iter().map(|f| f.path.as_path()).find(|path| {
+        if fs_util::has_suffix(path, &[ITEM_DOCUMENT_SUFFIX]) {
+            return true;
+        }
+        path.parent().is_some_and(|parent| parent != store_root)
+            && fs_util::has_suffix(path, &PROJECT_FILE_SUFFIXES)
+    })
 }
 
 impl ProjectFile {
@@ -902,8 +929,12 @@ struct DeclaredStore {
 /// `workitems.anthill` — a zero-config tracker is a supported shape, and
 /// `setup_domainless_project` tests it — so refusing an absent binding would delete a
 /// documented capability, not tighten one. What matters is that there is one path from a
-/// binding to a store: `default_binding` builds the same declaration `init` scaffolds, and
-/// everything downstream cannot tell the two apart.
+/// binding to a store: `default_binding` builds a declaration of exactly the kind a
+/// project can write by hand, and everything downstream cannot tell the two apart.
+///
+/// IT IS NOT WHAT `init` SCAFFOLDS. A new project is item-per-file; the default describes
+/// the single shared file, because what it must keep matching is the trackers already
+/// written that way — see the note in [`run_init`].
 ///
 /// This is a default, not a fallback in the sense CLAUDE.md forbids: nothing failed and
 /// nothing is being hidden. A binding that is PRESENT and wrong is still loud.
@@ -932,7 +963,31 @@ fn build_declared_store(
 
     let binding = match bindings.len() {
         1 => bindings.into_iter().next().expect("length checked"),
-        0 => default_binding(interp)?,
+        0 => {
+            // AN ITEM TREE WITH NO BINDING IS A BROKEN PROJECT, NOT A ZERO-CONFIG ONE
+            // (found in review). `init` scaffolds the item-per-file binding while
+            // `default_binding` describes the single shared file, so the two no longer
+            // agree — and a project whose `ExtentBinding` is lost (a hand edit, a merge
+            // that drops it) would otherwise default to the single file and write a
+            // SECOND store beside the item tree it already has. MEASURED before this
+            // guard: `add` exited 0 and created `workitems.anthill` next to
+            // `open/WI-….anthill.md`, leaving the tracker split across two layouts with
+            // nothing said. That is the silent skip the asymmetry would have bought.
+            //
+            // The zero-config shape this defaults FOR is a directory of plain
+            // `workitems.anthill`, which holds no item files and so never trips this.
+            if let Some(item) = first_item_file(project_items, store_root) {
+                return Err(format!(
+                    "{} is an item file, so this project is on the item-per-file layout, \
+                     but it declares no `anthill.persistence.ExtentBinding`. Restore the \
+                     binding in project.anthill — `ItemPerFileStore`, as `anthill-todo \
+                     init` scaffolds it. Defaulting would write a second store into \
+                     workitems.anthill beside the items already here.",
+                    item.display()
+                ));
+            }
+            default_binding(interp)?
+        }
         n => {
             return Err(format!(
                 "this project declares {n} extent bindings; anthill-todo holds its work \
@@ -1112,11 +1167,7 @@ fn check_covers_every_retracted_functor(
     // spelling that is refused again, identically. `rewrite_binding` writes short
     // names for exactly this reason; so does this.
     let spell = |names: &[&str]| -> String {
-        names
-            .iter()
-            .map(|n| n.rsplit('.').next().unwrap_or(n))
-            .collect::<Vec<_>>()
-            .join(", ")
+        names.iter().copied().map(short_name).collect::<Vec<_>>().join(", ")
     };
     Err(format!(
         "this project's extent binding does not cover {}. anthill-todo RETRACTS rows of \
@@ -3567,8 +3618,13 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
     fs::rename(&temp, path).map_err(|e| format!("{} → {}: {e}", temp.display(), path.display()))
 }
 
-/// The `ExtentBinding` text a migrated project carries. Twin of the
-/// [`EXAMPLE_BINDING`] `init` scaffolds, for the other layout.
+/// The `ExtentBinding` text an item-per-file project carries — written by `init` for a
+/// new project and by `migrate --to item-per-file` for a converted one, so the two land
+/// on the same declaration rather than on two spellings of it.
+///
+/// `covers` is a parameter because the two callers know different things: `init` names
+/// every functor the bundle persists, while a migration carries across whatever the
+/// project already declared.
 fn item_per_file_binding(covers: &[&str]) -> String {
     format!(
         "fact anthill.persistence.ExtentBinding(\n  \
@@ -3673,13 +3729,17 @@ fn string_field(interp: &Interpreter, value: &Value, field: &str) -> Result<Stri
 }
 
 /// The binding a project that declares none is treated as having: an `IndexedFileStore`
-/// over `workitems.anthill` in the project directory, mirroring the four functors the
-/// bundle persists. Written as a VALUE rather than as a separate construction path, so a
+/// over `workitems.anthill` in the project directory, mirroring the functors the bundle
+/// persists. Written as a VALUE rather than as a separate construction path, so a
 /// defaulted project and a declaring one differ in exactly one thing — where the binding
 /// came from — and share every line after this.
 ///
-/// Its text twin is [`EXAMPLE_BINDING`], which `init` scaffolds; the two must agree, and
-/// `default_matches_the_scaffolded_binding` measures that they do.
+/// THIS IS NOT WHAT `init` SCAFFOLDS, and has not been since init moved to item-per-file.
+/// It is the layout a project that declares NOTHING is read as, so it is pinned by the
+/// trackers already written that way rather than by what a new one gets — see the note in
+/// [`run_init`] for why the two must not be unified.
+/// `default_matches_the_declared_single_file_binding` measures it against the spelled-out
+/// text of the same configuration.
 fn default_binding(
     interp: &mut Interpreter,
 ) -> Result<anthill_core::kb::extent::ExtentBindingDecl, String> {
@@ -3749,10 +3809,11 @@ fn default_binding(
 /// project with a mirror can hold one, so its coverage is required only there).
 /// `StoreFormat` is persisted and never retracted.
 ///
-/// ONE LIST, TWO READERS, deliberately: `default_binding` takes every name, and
-/// [`check_covers_every_retracted_functor`] takes the flagged ones. Kept apart they
+/// ONE LIST, THREE READERS, deliberately: `default_binding` takes every name,
+/// [`check_covers_every_retracted_functor`] takes the flagged ones, and [`run_init`]
+/// takes every name SHORTENED, for the `covers:` list it scaffolds. Kept apart they
 /// drift, and the drift is silent in the direction that matters — a functor added
-/// to the default while the guard still names three.
+/// to the default while the guard still names three, or while the scaffold does.
 const STORED_FUNCTORS: [(&str, Retracted); 5] = [
     ("anthill.stage0.WorkItem", Retracted::Yes),
     ("anthill.stage0.Feedback", Retracted::Yes),
@@ -3762,6 +3823,24 @@ const STORED_FUNCTORS: [(&str, Retracted); 5] = [
     ("anthill.stage0.MirrorEntry", Retracted::WhenMirrored),
     ("anthill.stage0.StoreFormat", Retracted::No),
 ];
+
+/// The name a `covers:` list spells for a qualified functor: its last segment.
+///
+/// ONE RULE, THREE CALLERS. A `covers:` entry is read in a scope where `Feedback`
+/// resolves and `anthill.stage0.Feedback` does not, so every writer of such a list owes
+/// the same shortening — [`run_init`] scaffolds one, [`check_covers_every_retracted_functor`]
+/// names the missing entries in its error, and `rewrite_binding` carries a project's own
+/// list across a migration (via `local_name_of`, since it starts from resolved symbols
+/// rather than text). Held apart, the three drifted silently: a wrong short name still
+/// parses, and only fails later at symbol resolution.
+///
+/// AN UNQUALIFIED NAME ANSWERS ITSELF, and that is the right answer rather than a missing
+/// guard: `covers:` wants the last segment, and a name with no dot already is one. What
+/// catches a malformed [`STORED_FUNCTORS`] entry is `default_binding`, which resolves the
+/// QUALIFIED form and fails loudly when it does not exist.
+fn short_name(qualified: &str) -> &str {
+    qualified.rsplit('.').next().unwrap_or(qualified)
+}
 
 /// Whether the bundle ever asks the store to remove a functor's rows — and, for
 /// one of them, whether that can happen in THIS project at all.
@@ -3807,26 +3886,6 @@ const DEFAULT_STORE_FILE: &str = "workitems.anthill";
 
 /// The per-checkout override of the project's `Mirror.access` (WI-1117).
 const MIRROR_ACCESS_ENV: &str = "ANTHILL_TODO_MIRROR";
-
-/// The `ExtentBinding` `init` scaffolds. Text twin of [`default_binding`].
-///
-/// IT NAMES `MirrorEntry` AND THIS REPO'S OWN `project.anthill` DOES NOT, which is
-/// a deliberate asymmetry rather than drift. A `covers` entry is resolved at
-/// startup, so naming a functor a given BINARY does not define is a hard refusal —
-/// which is why the declaration must never get ahead of the backend (design §14.1).
-/// A scaffold satisfies that BY CONSTRUCTION: the file is written by the same
-/// binary that has the functor. A checked-in `project.anthill` does not — it is
-/// pulled by checkouts whose `anthill-todo` is older, and every one of them stops
-/// working the moment it lands. MEASURED, on this repo: adding the entry to a
-/// tracker with no mirror bought nothing and broke every un-rebuilt binary.
-const EXAMPLE_BINDING: &str = "\
-fact anthill.persistence.ExtentBinding(
-  store: anthill.persistence.filesystem.IndexedFileStore(
-    root: \".\",
-    convention: anthill.persistence.filesystem.FileConvention.single_file(
-      file: \"workitems.anthill\")),
-  role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])";
 
 /// The qualified names of the backends this build provides.
 const INDEXED_FILE_STORE: &str = "anthill.persistence.filesystem.IndexedFileStore";
@@ -4059,6 +4118,22 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
             .to_string()
     });
 
+    // THE NAME GOES INTO A STRING LITERAL, and a project file that does not parse is only
+    // a WARNING — so a name carrying `"` or `\` would write a `project.anthill` whose
+    // `ExtentBinding` is silently dropped, and the project would run on the single-file
+    // default instead of the layout it was just scaffolded for (found in review; before
+    // the scaffold carried the layout this was cosmetic). Refused rather than escaped:
+    // the default name is a DIRECTORY BASENAME nobody chose for this purpose, so the
+    // honest answer is to say so and let the user name the project themselves.
+    if name.contains('"') || name.contains('\\') {
+        eprintln!(
+            "error: project name {name:?} cannot be written to project.anthill — a name \
+             carrying `\"` or `\\` would not parse, and the store binding under it would be \
+             silently dropped. Name the project explicitly: `anthill-todo init <name>`"
+        );
+        return runner::EXIT_RUNTIME;
+    }
+
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
 
     // No domain.anthill / rules.anthill: the standard anthill.stage0 domain and
@@ -4066,35 +4141,86 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     // has no per-project copy that could drift out of sync with the grammar.
 
     // The scaffold carries the store binding (WI-830) so a fresh project SHOWS its
-    // configuration rather than inheriting an invisible one. It is not required — a
-    // project without it gets `default_binding`, which this text must match — but a
-    // scaffolded default that nobody can see is a default nobody edits.
+    // configuration rather than inheriting an invisible one — and here it MUST, because
+    // it deliberately no longer agrees with [`default_binding`]. A project created today
+    // is ITEM-PER-FILE; a project that declares nothing is still read as the one shared
+    // file it was written in.
+    //
+    // THE DEFAULT DOES NOT FOLLOW THE SCAFFOLD, and that asymmetry is deliberate.
+    // `default_binding` answers for the zero-config trackers already on disk, every one
+    // of which holds its rows in `workitems.anthill`. Moving it in step with this would
+    // not silently misread them — MEASURED: the item-per-file store refuses a shared file
+    // it finds, exits 1, and names `migrate --to item-per-file`. It would break all of
+    // them at once instead, forcing a migration nobody asked for. So the scaffold moves
+    // and the default stays. `default_matches_the_declared_single_file_binding` measures
+    // the half that must not move; `init_scaffolds_the_item_per_file_layout` measures
+    // this one.
+    //
+    // THE COST OF THE ASYMMETRY IS PAID IN `build_declared_store`: with the two no longer
+    // equal, a project that LOSES its binding would default to the single file and write
+    // a second store beside its item tree. That is guarded there, not here.
+    //
+    // `covers` NAMES `MirrorEntry` AND THIS REPO'S OWN `project.anthill` DOES NOT, which
+    // is a deliberate asymmetry rather than drift. A `covers` entry is resolved at
+    // startup, so naming a functor a given BINARY does not define is a hard refusal —
+    // which is why the declaration must never get ahead of the backend (design §14.1).
+    // A scaffold satisfies that BY CONSTRUCTION: the file is written by the same binary
+    // that has the functor. A checked-in `project.anthill` does not — it is pulled by
+    // checkouts whose `anthill-todo` is older, and every one of them stops working the
+    // moment it lands. MEASURED, on this repo: adding the entry to a tracker with no
+    // mirror bought nothing and broke every un-rebuilt binary.
+    let covers: Vec<&str> = STORED_FUNCTORS
+        .iter()
+        .map(|(name, _)| short_name(name))
+        .collect();
     let project = format!(
         "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n\n\
          -- Which store holds these work items, and in which role (proposal 057).\n\
          -- `mirror`: every file here is loaded at startup and the KB answers reads, with\n\
          -- the store as the write-through durability leg. `root: \".\"` is this directory.\n\
-         {EXAMPLE_BINDING}\n"
+         -- One file per item, under a directory named for the item's status.\n\
+         {binding}\n",
+        binding = item_per_file_binding(&covers)
     );
-    fs::write(dir.join("project.anthill"), project).expect("write project.anthill");
-
-    let workitems =
-        format!("-- Work items\n\nfact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n\n");
-    fs::write(dir.join("workitems.anthill"), workitems).expect("write workitems.anthill");
+    // `StoreFormat` carries neither an id nor an item reference, so `ItemPerFileStore`
+    // files it at the root under its own snake_cased functor (`Route::StoreLevel`). This
+    // writes that same path directly: `init` has no loaded KB to flush through the store.
+    //
+    // THE STAMP FIRST AND THE MARKER LAST. `project.anthill` is a `PROJECT_MARKERS` entry
+    // and `store_format.anthill` is not, so this order makes an interrupted scaffold a
+    // directory that is not yet a project. The other order leaves a DISCOVERABLE project
+    // with no stamp: every later command warns "pre-versioning", while `init` refuses to
+    // run again over the directory it half-made (found in review).
+    let store_format = format!("fact StoreFormat(version: {CURRENT_STORE_FORMAT_VERSION})\n");
+    for (leaf, body) in [
+        ("store_format.anthill", store_format),
+        ("project.anthill", project),
+    ] {
+        // Loud, not a panic: the rest of this crate answers an I/O fault with
+        // `EXIT_RUNTIME`, and a half-written scaffold is exactly the state a user needs
+        // told about rather than shown a backtrace for.
+        if let Err(e) = fs::write(dir.join(leaf), body) {
+            eprintln!("error: cannot write {}: {e}", dir.join(leaf).display());
+            return runner::EXIT_RUNTIME;
+        }
+    }
 
     // The absolute path, not a bare `anthill-todo/`: a wrong-place write must be
     // visible in the output even when -d is right. The old message named no path
     // and so could not have revealed WI-748 even to someone staring at it.
     println!("created {} with:", dir.display());
-    println!("  project.anthill   — project configuration");
-    println!("  workitems.anthill — work items (empty)");
+    println!("  project.anthill      — project configuration");
+    println!("  store_format.anthill — the data format its items are written in");
+    println!("(each item lands in its own file, under a directory named for its status)");
     println!("(the anthill.stage0 domain + workflow rules ship bundled with anthill-todo)");
     0
 }
 
-// `migrate` is served by the anthill bundle (main.anthill `cmd_migrate`): it
-// stamps workitems.anthill with a `StoreFormat` fact THROUGH the store, so the
-// version-format logic stays in the bundle rather than host text-writing (WI-434).
+// `migrate` is served by the anthill bundle (main.anthill `cmd_migrate`): it stamps the
+// project with a `StoreFormat` fact THROUGH the store — so the file it lands in is
+// whichever one the declared store files a store-level row in (`workitems.anthill` on the
+// single-file layout, `store_format.anthill` on the item-per-file one) — keeping the
+// version-format logic in the bundle rather than host text-writing (WI-434).
 
 // ── Entry point ─────────────────────────────────────────────────
 

@@ -177,8 +177,14 @@ fn init_scaffolds_no_domain_or_rules() {
         "project.anthill missing"
     );
     assert!(
-        inner.join("workitems.anthill").exists(),
-        "workitems.anthill missing"
+        inner.join("store_format.anthill").exists(),
+        "store_format.anthill missing"
+    );
+    // The single shared file is what `init` STOPPED writing: a project created today is
+    // item-per-file, so a `workitems.anthill` here would mean the scaffold regressed.
+    assert!(
+        !inner.join("workitems.anthill").exists(),
+        "init must not scaffold the single-file layout any more"
     );
     // The drift-prone scaffolds are gone — the domain/rules ship bundled.
     assert!(

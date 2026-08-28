@@ -16,8 +16,14 @@
 //! WHAT FAILS WITHOUT THE CHANGE: `a_declared_binding_drives_the_real_store` and
 //! `a_declared_owner_role_is_refused` — neither the fact nor its handling exists, so the
 //! first sees its write land nowhere the declaration named and the second is not refused
-//! at all. `default_matches_the_scaffolded_binding` fails too: `init` scaffolded no
-//! binding to compare against.
+//! at all. `default_matches_the_declared_single_file_binding` fails too: there was no
+//! declared binding to compare the default against.
+//!
+//! SINCE THEN `init` HAS MOVED TO ITEM-PER-FILE, and the two halves parted. The scaffold
+//! is measured by `init_scaffolds_the_item_per_file_layout`; `default_binding` still
+//! describes the single shared file, because it is pinned by the zero-config trackers
+//! already on disk, and the twin test spells that text itself rather than asking `init`
+//! for it.
 //!
 //! TWO OF THESE CAME OUT OF REVIEW, and each pins a hole the first cut had:
 //! `a_lookalike_backend_name_is_refused` (the backend guard was a suffix match, so
@@ -60,6 +66,94 @@ fact anthill.persistence.ExtentBinding(
   role: anthill.persistence.ExtentRole.mirror(),
   covers: [WorkItem, Feedback, Tag, StoreFormat])
 "#;
+
+/// The single-file binding spelled out — the text twin of `main.rs`'s `default_binding`,
+/// down to the `covers` set, so `default_matches_the_declared_single_file_binding` compares
+/// two spellings of ONE configuration rather than two configurations.
+const DEFAULT_BINDING_AS_TEXT: &str = r#"fact Project(
+  name: "declared-default",
+  language: "rust",
+  build: "cargo",
+  tools: ["cargo-test"])
+
+fact anthill.persistence.ExtentBinding(
+  store: anthill.persistence.filesystem.IndexedFileStore(
+    root: ".",
+    convention: anthill.persistence.filesystem.FileConvention.single_file(
+      file: "workitems.anthill")),
+  role: anthill.persistence.ExtentRole.mirror(),
+  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])
+"#;
+
+/// WHAT `init` GIVES A NEW PROJECT: the item-per-file layout, driven end to end.
+///
+/// Not "the scaffolded text contains ItemPerFileStore" — that passes on a binding the
+/// running CLI cannot use. This adds an item through the freshly-scaffolded project and
+/// requires it to land as its own DOCUMENT under a directory named for its status, then
+/// reads it back through the CLI and checks the layout with `fsck`.
+///
+/// WHAT FAILS WITHOUT THE CHANGE: the `ItemPerFileStore` check on the scaffolded text
+/// (the old `init` wrote `IndexedFileStore`) and every assertion from the `open/` one
+/// down — the row went to `workitems.anthill`, and every new tracker started life on the
+/// layout `migrate --to item-per-file` exists to move it off. MEASURED, by stashing the
+/// `main.rs` change: this test is the only one in the file that fails.
+///
+/// WHAT PASSES EITHER WAY BY DESIGN: `init`'s own success and the `list` read-back. The
+/// old scaffold was a working project too — just the wrong layout — so neither
+/// distinguishes them.
+#[test]
+fn init_scaffolds_the_item_per_file_layout() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let init = Command::new(BIN)
+        .args(["-d", tmp.path().to_str().unwrap(), "init"])
+        .output()
+        .expect("run init");
+    assert!(init.status.success(), "init failed: {init:?}");
+
+    let inner = tmp.path().join("anthill-todo");
+    let config = fs::read_to_string(inner.join("project.anthill")).expect("read project.anthill");
+    assert!(
+        config.contains("ItemPerFileStore"),
+        "init scaffolds the item-per-file binding:\n{config}"
+    );
+
+    let out = run_in(tmp.path(), &["add", "layout probe", "--acceptance", "cargo-test"]);
+    assert!(out.status.success(), "add failed: {out:?}");
+    let id = added_id(&out);
+
+    let item = inner.join("open").join(format!("{id}.anthill.md"));
+    assert!(
+        item.exists(),
+        "the item is its own file under its status: {}",
+        item.display()
+    );
+    assert!(
+        !inner.join("workitems.anthill").exists(),
+        "and nothing wrote the single shared file"
+    );
+
+    // A DOCUMENT, not plain `fact` text (WI-1120) — the same encoding
+    // `migrate --to item-per-file` produces, so a new tracker and a converted one agree.
+    let body = fs::read_to_string(&item).expect("read the item file");
+    assert!(
+        body.contains("## Attributes") && body.contains("layout probe"),
+        "the item is an attribute document:\n{body}"
+    );
+
+    // The store the scaffold declared is the one the CLI runs on, and the tree it wrote
+    // is one `fsck` accepts — a scaffold that reads back but fails its own layout check
+    // would be a project that starts life needing a repair.
+    let out = run_in(tmp.path(), &["list"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("layout probe"),
+        "the freshly-scaffolded project reads its own write: {out:?}"
+    );
+    let out = run_in(tmp.path(), &["fsck"]);
+    assert!(
+        out.status.success(),
+        "fsck on a freshly-scaffolded project: {out:?}"
+    );
+}
 
 /// THE LOAD-BEARING ONE: a declared binding really is what the running CLI writes through.
 /// Driven end to end — add, then read back from the file the binding named, then delete
@@ -252,36 +346,42 @@ fn a_project_without_a_binding_still_works() {
     );
 }
 
-/// The scaffolded binding and the defaulted one must agree — they are the same
-/// configuration written twice, once as text for `init` and once as a value for the
-/// no-binding path, and nothing else ties them together.
+/// The single-file binding written as TEXT and the one built as a VALUE must agree —
+/// the same configuration spelled twice, with nothing else tying them together.
 ///
-/// Measured behaviourally rather than by comparing the two spellings: scaffold a project
-/// with `init`, then run the same commands against it and against a project with no
-/// config at all, and require the same on-disk outcome. `--acceptance` is passed to both
-/// so the rows differ only in what the STORE did, not in what the scaffolded `Project`
-/// fact supplies as a default acceptance set.
+/// THE TEXT SIDE IS NO LONGER `init`'s. A project created today is item-per-file
+/// (`init_scaffolds_the_item_per_file_layout`), while `default_binding` still describes
+/// the single shared file: it is pinned by the zero-config trackers already written that
+/// way, not by what a new project gets. Reinterpreting those would not misread them —
+/// the item-per-file store refuses a shared file loudly, naming `migrate` — it would
+/// break every one of them at once, forcing a migration nobody asked for. So this spells
+/// the text itself and measures the half that must not move.
+///
+/// Measured behaviourally rather than by comparing spellings: run the same command
+/// against a project that DECLARES the binding and one with no config at all, and require
+/// the same on-disk outcome. `--acceptance` is passed to both so the rows differ only in
+/// what the STORE did, not in what a `Project` fact supplies as a default acceptance set.
 #[test]
-fn default_matches_the_scaffolded_binding() {
-    let scaffolded = tempfile::tempdir().expect("tempdir");
-    let init = Command::new(BIN)
-        .args(["-d", scaffolded.path().to_str().unwrap(), "init"])
-        .output()
-        .expect("run init");
-    assert!(init.status.success(), "init failed: {init:?}");
+fn default_matches_the_declared_single_file_binding() {
+    let declared = tempfile::tempdir().expect("tempdir");
+    let declared_proj = setup_domainless_project(&declared, "");
+    fs::write(
+        declared_proj.join("anthill-todo/project.anthill"),
+        DEFAULT_BINDING_AS_TEXT,
+    )
+    .expect("write project config");
 
-    let config = fs::read_to_string(scaffolded.path().join("anthill-todo/project.anthill"))
-        .expect("read scaffolded project.anthill");
-    assert!(
-        config.contains("ExtentBinding"),
-        "init scaffolds the store binding:\n{config}"
-    );
-
-    let out = run_in(scaffolded.path(), &["add", "parity probe", "--acceptance", "cargo-test"]);
+    let out = run_in(&declared_proj, &["add", "parity probe", "--acceptance", "cargo-test"]);
     assert!(out.status.success(), "add failed: {out:?}");
-    let scaffolded_items =
-        fs::read_to_string(scaffolded.path().join("anthill-todo/workitems.anthill"))
-            .expect("read workitems");
+    let declared_items = fs::read_to_string(declared_proj.join("anthill-todo/workitems.anthill"))
+        .expect("read workitems");
+    // POSITIVELY, BEFORE COMPARING. `row_of` answers `<no row>` when it finds nothing, so
+    // two sides that both wrote nowhere would compare equal and pass green (found in
+    // review). This is the assertion that makes the comparison below mean something.
+    assert!(
+        declared_items.contains("parity probe"),
+        "the declared binding wrote the row at all:\n{declared_items}"
+    );
 
     let bare = tempfile::tempdir().expect("tempdir");
     let bare_proj = setup_domainless_project(&bare, "");
@@ -323,9 +423,13 @@ fn default_matches_the_scaffolded_binding() {
         out.push_str(rest);
         out
     };
+    assert!(
+        bare_items.contains("parity probe"),
+        "and so did the defaulted one:\n{bare_items}"
+    );
     assert_eq!(
-        row_of(&scaffolded_items),
+        row_of(&declared_items),
         row_of(&bare_items),
-        "the scaffolded binding and the default one produce the same write"
+        "the declared single-file binding and the default one produce the same write"
     );
 }
