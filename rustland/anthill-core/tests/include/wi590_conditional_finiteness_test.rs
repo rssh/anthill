@@ -26,17 +26,25 @@
 //! carrier in its signature rather than building one, and that is deliberate twice
 //! over.
 //!
-//! It keeps an UNRELATED inference gap out of the measurement. Building
-//! `mapped(src, fn)` INLINE and handing it straight to a spec op does not type-check:
-//! the construction's own sort params are grounded by nothing, so `FiniteCollection.
-//! collect(mapped(xs, inc))` reports `undeclared effect ??_` and `Stream.splitFirst`
-//! of the same expression reports `no impl matches per-call bindings`. It fails for a
-//! `List` source exactly as for `Nats`, so it would have reddened every row here for a
-//! reason that is not the witness. MEASURED, and the two ends bracket it: the same
-//! construction under a declared return that names the carrier is CLEAN, and the same
-//! witness consumer fed an already-typed carrier — what these rows do — is CLEAN. The
-//! stdlib never writes the failing shape; `xs.map(f)` goes through
-//! `FiniteCollection.map`, whose declared return pins every param.
+//! It kept an UNRELATED inference gap out of the measurement — TWO gaps, as it turned
+//! out, both since CLOSED, and the note stays because the reason for naming the carrier
+//! does. Building `mapped(src, fn)` INLINE and handing it straight to a spec op did not
+//! type-check: `FiniteCollection.collect(mapped(xs, inc))` reported `undeclared effect
+//! ??_` and `Stream.splitFirst` of the same expression reported `no impl matches
+//! per-call bindings`. It failed for a `List` source exactly as for `Nats`, so it would
+//! have reddened every row here for a reason that is not the witness. MEASURED then, and
+//! the two ends bracketed it: the same construction under a declared return that names
+//! the carrier was CLEAN, and the same witness consumer fed an already-typed carrier —
+//! what these rows do — was CLEAN. The stdlib never writes the failing shape; `xs.map(f)`
+//! goes through `FiniteCollection.map`, whose declared return pins every param.
+//!
+//! Both halves were then diagnosed and fixed, and each turned out to be its OWN
+//! mechanism rather than the one this header guessed at ("the construction's own sort
+//! params are grounded by nothing"): WI-20260828-BH1JZ was a carrier ARGUMENT that no
+//! reader projected into the spec-typed field, and WI-20260828-EKWDC was a carrier's
+//! `requires` instantiated in its DECLARATION scope instead of at the receiver. Their
+//! suites drive the inline spelling directly. Naming the carrier here is still what
+//! keeps these rows differing in one token.
 //!
 //! And it keeps `.map` out of it: `.map` on a `Nats` resolves `Iterable.map`, whose
 //! declared return is a bare `Stream`, so the refusal would then be "a Stream has no

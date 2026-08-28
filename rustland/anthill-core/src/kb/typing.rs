@@ -14570,12 +14570,12 @@ fn check_apply_iter(
         let carrier_bound = match self_recv_spec {
             Some(spec_sort) => {
                 match receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results) {
-                    ReceiverCarrier::Concrete(carrier_sym) => bind_spec_params_from_carrier(
+                    ReceiverCarrier::Concrete(recv) => bind_spec_params_from_carrier(
                         kb,
                         &mut subst,
                         &op,
                         spec_sort,
-                        carrier_sym,
+                        recv.sort,
                         named_args,
                         pos_results,
                         named_results,
@@ -15923,7 +15923,7 @@ fn check_apply_iter(
         // still closes `E` even when the element bound separately.)
         if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
             if let Some(spec_sort) = self_receiver_spec_sort(kb, &op, fn_sym) {
-                if let ReceiverCarrier::Concrete(carrier_sym) =
+                if let ReceiverCarrier::Concrete(recv) =
                     receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results)
                 {
                     if bind_spec_params_from_carrier(
@@ -15931,7 +15931,7 @@ fn check_apply_iter(
                         &mut subst,
                         &op,
                         spec_sort,
-                        carrier_sym,
+                        recv.sort,
                         named_args,
                         pos_results,
                         named_results,
@@ -15997,14 +15997,14 @@ fn check_apply_iter(
             // LOOKS authoritative.
             let recv_carrier =
                 receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
-            let carrier = statically_pinned_carrier(kb, recv_carrier, carrier_param_sym);
+            let carrier = statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym);
             // WI-1093: the SELF-RECEIVER half alone, which is what
             // `dispatch_spec_op_cached` discriminates on — the carrier-param shape rides
             // in the per-call `subst` instead, so passing it here would put it in the goal
             // TWICE. Same reading as the body-less block's `carrier_sym`, and named the
             // same way there.
-            let self_recv_carrier = statically_pinned_carrier(kb, recv_carrier, None);
-            if let Some(carrier_sym) = carrier {
+            let self_recv_carrier = statically_pinned_carrier(kb, &recv_carrier, None);
+            if let Some(carrier_sym) = carrier.as_ref().map(|c| c.sort) {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
                 // WI-1010: the impl may arrive by ANY of the three supply routes,
@@ -16180,7 +16180,7 @@ fn check_apply_iter(
                         spec_sort,
                         op_short_sym,
                         env.enclosing_requires(),
-                        self_recv_carrier,
+                        self_recv_carrier.clone(),
                         Some(&dispatch_sigma),
                         &selections,
                     );
@@ -16241,7 +16241,8 @@ fn check_apply_iter(
                     subst: &subst,
                     param_rigids: env.param_rigids(),
                 };
-                let goal = sort_goal_from_subst(kb, &subst, spec_sort, self_recv_carrier);
+                let goal =
+                    sort_goal_from_subst(kb, &subst, spec_sort, self_recv_carrier.clone());
                 let scope = ResolutionScope {
                     available_requires: env.enclosing_requires(),
                     sigma: Some(&dispatch_sigma),
@@ -16489,7 +16490,7 @@ fn check_apply_iter(
             // `List[Int]` as a `Stream` has `Stream.T = Int`) and re-walk the
             // return type so the element threads through and the dispatch goal
             // below is concrete.
-            if let ReceiverCarrier::Concrete(carrier_sym) = carrier {
+            if let ReceiverCarrier::Concrete(recv) = &carrier {
                 // WI-367: the spec params are usually already bound from this
                 // carrier before expected-seeding (the early pass keys on the
                 // op's PARENT sort), so this pass — keying on the dispatch-
@@ -16502,7 +16503,7 @@ fn check_apply_iter(
                     &mut subst,
                     &op,
                     spec_sort,
-                    carrier_sym,
+                    recv.sort,
                     named_args,
                     pos_results,
                     named_results,
@@ -16715,8 +16716,14 @@ fn check_apply_iter(
             // every qualified name in the KB. One evaluation per call site, shared with the
             // supplier-tie guard below. (The self-receiver arm passes `None` for the carrier
             // param, so it cannot reach the predicate at all.)
-            let carrier_sym = statically_pinned_carrier(kb, carrier, None);
-            let pinned_carrier = statically_pinned_carrier(kb, carrier, carrier_param_sym);
+            // WI-20260828-EKWDC: ONE ask, two readings — `dispatch_carrier` is what the
+            // goal is built from (sort AND the receiver's own arguments), `carrier_sym` its
+            // sort alone, for the readers that ask only about carrier identity. Derived and
+            // not re-asked, so the two cannot name different carriers.
+            let dispatch_carrier = statically_pinned_carrier(kb, &carrier, None);
+            let carrier_sym = dispatch_carrier.as_ref().map(|c| c.sort);
+            let pinned_carrier =
+                statically_pinned_carrier(kb, &carrier, carrier_param_sym).map(|c| c.sort);
             if matches!(&carrier_param_info, Some((.., true, _)))
                 || (carrier_param_sym.is_some() && pinned_carrier.is_none())
             {
@@ -16742,7 +16749,7 @@ fn check_apply_iter(
                 spec_sort,
                 op_short_sym,
                 enclosing_requires,
-                carrier_sym,
+                dispatch_carrier,
                 Some(&dispatch_sigma),
                 &selections,
             );
@@ -18546,14 +18553,20 @@ pub(crate) fn supplier_tie_repair(
 /// so the fallback runs exactly when the first arm is `NotApplicable`.
 fn statically_pinned_carrier(
     kb: &KnowledgeBase,
-    self_receiver: ReceiverCarrier,
+    self_receiver: &ReceiverCarrier,
     carrier_param: Option<Symbol>,
-) -> Option<Symbol> {
+) -> Option<GoalCarrier> {
     match self_receiver {
-        ReceiverCarrier::Concrete(c) => Some(c),
-        ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable => {
-            carrier_param.filter(|&c| !carrier_is_abstract_spec(kb, c))
-        }
+        // WI-20260828-EKWDC: the self-receiver form's arguments come with it — see
+        // [`GoalCarrier`].
+        ReceiverCarrier::Concrete(c) => Some(c.clone()),
+        ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable => carrier_param
+            .filter(|&c| !carrier_is_abstract_spec(kb, c))
+            // NO ARGUMENTS, and none are missing: the carrier-PARAM shape's carrier IS
+            // a spec binding, so whatever the receiver wrote at it is already
+            // `goal.bindings`' value for that param. Reading it a second time here
+            // would put it in the goal twice.
+            .map(GoalCarrier::bare),
     }
 }
 
@@ -25881,20 +25894,72 @@ fn collect_requires_matches(
 pub struct SortGoal {
     pub spec_sort: Symbol,
     pub bindings: SmallVec<[(Symbol, TermId); 2]>,
-    /// WI-350 — the receiver's concrete carrier sort, when the spec op
-    /// has a *self-receiver* parameter (one declared with the spec sort
-    /// itself, e.g. `head(s: Stream)`). For such specs the carrier is
-    /// NOT a type parameter (Stream's only param `T` is the element),
-    /// so the per-call `bindings` never pin which impl provides the op
-    /// — every impl's universally-quantified `fact Stream[T]` matches,
-    /// and a ≥2-impl spec would resolve `Ambiguous` for even a fully
-    /// concrete call. The carrier (the receiver argument's base sort —
+    /// WI-350 — the receiver's concrete carrier, when the spec op has a
+    /// *self-receiver* parameter (one declared with the spec sort itself, e.g.
+    /// `head(s: Stream)`). For such specs the carrier is NOT a type parameter
+    /// (Stream's only param `T` is the element), so the per-call `bindings` never
+    /// pin which impl provides the op — every impl's universally-quantified `fact
+    /// Stream[T]` matches, and a ≥2-impl spec would resolve `Ambiguous` for even a
+    /// fully concrete call. The carrier (the receiver argument's base sort —
     /// `List`, `LogicalStream`) discriminates: `collect_provides_candidates`
     /// keeps only candidates whose `impl_sort` equals it. `None` for
     /// the common type-parameter-carrier specs (`Eq`/`Numeric`/`Iterable`,
     /// where the carrier IS a binding and dispatch is already pinned) and
     /// for transitive sub-goals — those resolve by binding alone.
-    pub carrier: Option<Symbol>,
+    pub carrier: Option<GoalCarrier>,
+}
+
+/// WI-20260828-EKWDC — a dispatch goal's receiver carrier: its SORT, and the type
+/// ARGUMENTS the receiver's own type wrote at that sort.
+///
+/// THE SORT ALONE WAS NOT ENOUGH, and the gap is silent. A carrier's `requires`
+/// clause is written in the carrier's DECLARATION scope (`MappedStream requires
+/// Iterable[C = Source, Element = Src, E = ES]`), and
+/// [`candidate_provider_sub_goals`] instantiates it through the substitution the
+/// PROVISION HEAD matched. A head that does not mention a parameter therefore leaves
+/// it standing as a bare reference to the declaration's own param: `MappedStream
+/// provides Stream[T = T, E = {ES, EF}]` names neither `Source` nor `Src`, so
+/// `Stream.splitFirst(mapped(xs, inc))` asked for `Iterable[C = MappedStream.Source,
+/// …]` — a goal about a parameter rather than about the receiver — and no provider
+/// answers it. The receiver's type was FULLY GROUND at that point
+/// (`MappedStream[Source = List[T = Int64], Src = Int64, …]`, which WI-20260828-BH1JZ
+/// delivered); the dispatch simply could not see it, because a `Symbol` cannot carry
+/// it.
+///
+/// The arguments ride IN THE GOAL, not beside it, for the reason WI-350 put the sort
+/// there: the goal is the `resolve_cache` key. Two receivers of one carrier at
+/// different arguments (`MappedStream` over a `List` and over an infinite `ZNats`)
+/// now resolve their sub-goals differently, so sharing a memo entry would answer one
+/// with the other's dictionary.
+///
+/// `args` is EMPTY when the receiver's type is a bare sort reference, and for the
+/// carrier-PARAM shape (`describe(x: T)`), whose arguments are already the goal's own
+/// binding for that param — [`statically_pinned_carrier`] says so at the arm that
+/// builds one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GoalCarrier {
+    /// The carrier sort, canonical (`canonical_sort_sym`) — the candidate filter in
+    /// [`collect_provides_candidates`] compares it against a canonicalized
+    /// `impl_sort`.
+    pub sort: Symbol,
+    /// The receiver type's own arguments at `sort`, keyed by the parameter symbol the
+    /// TYPE wrote. Joined to the impl's parameters by LOCAL NAME at the one consumer
+    /// ([`carrier_arg_impl_subst`]) — within a single sort that join is exact, and it
+    /// is the same join [`impl_param_symbols`] already makes.
+    pub args: SmallVec<[(Symbol, TermId); 2]>,
+}
+
+impl GoalCarrier {
+    /// A carrier whose arguments this route cannot see — see the type's own doc for
+    /// the two callers that are in that position and why each is right. Public because
+    /// a suite that drives [`dispatch_spec_op_cached`] directly is in exactly that
+    /// position: it hands the dispatch a carrier symbol and no receiver value.
+    pub fn bare(sort: Symbol) -> Self {
+        GoalCarrier {
+            sort,
+            args: SmallVec::new(),
+        }
+    }
 }
 
 /// WI-350 — classification of a spec op's receiver at a call site,
@@ -25902,7 +25967,7 @@ pub struct SortGoal {
 /// the spec op's *self-receiver* parameter (the one declared with the
 /// spec sort itself, e.g. `head(s: Stream)`) and that argument's actual
 /// inferred type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ReceiverCarrier {
     /// No self-receiver parameter — the op's carrier arguments are typed
     /// with the spec's own type-parameter (`PartialEq.eq(a: T, b: T)`,
@@ -25921,7 +25986,12 @@ enum ReceiverCarrier {
     /// A self-receiver parameter exists and its argument has a concrete
     /// carrier sort (`s : List[Int]` → `List`). Dispatch keeps only the
     /// candidate whose `impl_sort` equals this carrier.
-    Concrete(Symbol),
+    ///
+    /// WI-20260828-EKWDC — carries the receiver's own type ARGUMENTS as well as its
+    /// sort. This is the one place they are read off the receiver argument, so it is
+    /// the one place that can record them; see [`GoalCarrier`] for what goes wrong
+    /// when only the sort travels.
+    Concrete(GoalCarrier),
 }
 
 /// Context for `resolve` — the `requires` entries already in scope
@@ -27857,7 +27927,8 @@ fn collect_provides_candidates(
     // candidate loop.
     let carrier_directly_provides = goal
         .carrier
-        .is_some_and(|c| provider_spec_view_bindings(kb, c, goal.spec_sort).is_some());
+        .as_ref()
+        .is_some_and(|c| provider_spec_view_bindings(kb, c.sort, goal.spec_sort).is_some());
 
     let mut out: Vec<Candidate> = Vec::new();
     for rid in candidates {
@@ -27982,7 +28053,7 @@ fn collect_provides_candidates(
         // `impl_sort` (a `SortProvidesInfo.sort_ref` functor) and the carrier
         // may be interned under different copies of the same logical sort —
         // the same normalization `sort_ops_lookup` applies to `impl_sort`.
-        if let Some(carrier) = goal.carrier {
+        if let Some(carrier) = goal.carrier.as_ref().map(|c| c.sort) {
             // WI-714 (proposal 052): accept the provider when the carrier IS the
             // impl sort (the direct hot path) OR — only as a FALLBACK, when the
             // carrier does not directly provide the spec — when it TRANSITIVELY
@@ -28069,6 +28140,10 @@ fn collect_provides_candidates(
         if !all_match {
             continue;
         }
+        // WI-20260828-EKWDC — AND THE RECEIVER'S OWN ARGUMENTS FILL WHAT THE PROVISION
+        // HEAD LEFT FREE. See [`carrier_arg_impl_subst`] for the rule and the shape it
+        // exists for.
+        carrier_arg_impl_subst(kb, goal, impl_sort, &impl_param_set, &mut impl_subst);
         let cand = Candidate {
             impl_sort,
             resolved_head_bindings,
@@ -28155,6 +28230,76 @@ fn collect_provides_candidates(
         }
     }
     out
+}
+
+/// WI-20260828-EKWDC — extend a candidate's impl-param substitution with the arguments
+/// the RECEIVER's own type wrote at that carrier.
+///
+/// `impl_subst` is what [`candidate_provider_sub_goals`] instantiates the carrier's
+/// `requires` chain through, and it is built by matching the PROVISION HEAD against the
+/// goal. A head names only the parameters the spec is about, so every other parameter of
+/// the carrier stays a bare reference into the carrier's own declaration — and
+/// `MappedStream requires Iterable[C = Source, Element = Src, E = ES]` mentions three
+/// parameters that `provides Stream[T = T, E = {ES, EF}]` does not write. The sub-goal
+/// that reached the resolver was therefore `Iterable[C = MappedStream.Source, …]`, which
+/// asks about a PARAMETER; nothing provides that, and `Stream.splitFirst(mapped(xs,
+/// inc))` was refused for a receiver whose type is fully ground.
+///
+/// ADDITIVE, NEVER OVERRIDING. Only a parameter the head match left unbound is filled.
+/// The head match is what the goal DEMANDED of this provision, so it stays the
+/// authority; a receiver argument is what the value happens to be, which can only be
+/// consulted where the demand said nothing. That also bounds the change: no dispatch
+/// whose head already pinned a parameter can resolve differently than before.
+///
+/// ONLY WHEN THE CANDIDATE **IS** THE CARRIER. A goal reached through a provider CHAIN
+/// (`Relation provides LogicalStream provides Stream`, WI-714) resolves to an
+/// `impl_sort` one or more hops away from the receiver's own sort, whose parameters the
+/// receiver's arguments do not name — joining them there would bind one sort's
+/// parameters from another's arguments.
+///
+/// JOINED BY SHORT NAME, which is exact here and nowhere else: both sides are parameters
+/// of ONE sort, and [`impl_param_symbols`] already resolves them from that sort's
+/// qualified name. (Across scopes it would not be — a `requires` clause and the spec it
+/// names mint different symbols for one parameter, which is why
+/// [`direct_requires`] compares local names and why `resolve_requires_bindings` re-keys.)
+///
+/// THE SAME RULE ALREADY EXISTS ONE ROUTE OVER, and is spelled the same way on purpose:
+/// [`match_candidate_against_goal`]'s arm (2.5) threads a per-call instance's type
+/// arguments into `impl_subst` "keyed by the impl sort's OWN type-params so the
+/// requires-chain resolves at the concrete element", for a self-representing carrier
+/// whose spec-view binding is a bare `Ref(impl_sort)` (`Set provides PartialEq[T = Set]`
+/// against a `Set[T = Int64]`). That arm reaches the receiver through a BINDING; this one
+/// reaches it through [`SortGoal::carrier`], which is where a self-receiver spec's
+/// carrier lives instead (WI-350). Two routes to one receiver, one rule.
+fn carrier_arg_impl_subst(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    impl_sort: Symbol,
+    impl_params: &[Symbol],
+    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+) {
+    let Some(carrier) = goal.carrier.as_ref() else {
+        return;
+    };
+    if carrier.args.is_empty()
+        || kb.canonical_sort_sym(impl_sort) != kb.canonical_sort_sym(carrier.sort)
+    {
+        return;
+    }
+    for (written, value) in &carrier.args {
+        let short = short_name_of(kb.local_name_of(*written));
+        let Some(param) = impl_params
+            .iter()
+            .copied()
+            .find(|&p| short_name_of(kb.local_name_of(p)) == short)
+        else {
+            continue;
+        };
+        if impl_subst.iter().any(|(k, _)| *k == param) {
+            continue;
+        }
+        impl_subst.push((param, *value));
+    }
 }
 
 /// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
@@ -34761,7 +34906,7 @@ pub fn sort_goal_from_subst(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
-    carrier: Option<Symbol>,
+    carrier: Option<GoalCarrier>,
 ) -> SortGoal {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
@@ -34802,6 +34947,26 @@ pub fn sort_goal_from_subst(
             None => {}
         }
     }
+    // WI-20260828-EKWDC — THE CARRIER'S ARGUMENTS ARE RESOLVED HERE, WITH THE BINDINGS,
+    // and that is the whole reason this walk is not left at the capture site. A binding
+    // above is read out of σ at THIS moment; a carrier argument was read off the receiver
+    // argument's `TypeResult.ty` back in [`receiver_carrier`], some 250 lines and one
+    // `bind_spec_params_from_carrier` earlier, so a parameter σ pinned in between would
+    // reach the provider's sub-goals as a bare variable. An under-constrained sub-goal
+    // does not build a WRONG dictionary — `dispatch_values_match` refuses a variable
+    // against a concrete candidate (WI-824) — but it does turn a resolvable goal into a
+    // refusal, which is the defect this ticket is about, one substitution later.
+    //
+    // `ground = true`, matching [`resolve_type_deep_value`]: this is a call-site resolve
+    // point, the same one `resolved_ret` is walked at.
+    let carrier = carrier.map(|c| GoalCarrier {
+        sort: c.sort,
+        args: c
+            .args
+            .iter()
+            .map(|(k, v)| (*k, walk_type_deep_g(kb, subst, *v, true)))
+            .collect(),
+    });
     SortGoal {
         spec_sort,
         bindings,
@@ -34851,7 +35016,13 @@ fn receiver_carrier(
                 .map(|r| &r.ty)
         });
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    match arg_ty.and_then(|v| carrier_sort_of_value(kb, v)) {
+    // WI-20260828-EKWDC: the receiver's TYPE rides beside its base sort through the
+    // match, because the `Concrete` arm now needs both. A `.and_then` that kept only the
+    // sort would leave the arm re-deriving `arg_ty` behind an `unwrap_or_default`, i.e. a
+    // silent empty-argument fallback on a path where the value is present by
+    // construction — `carrier_sort_of_value` read THIS value's head to produce `base`.
+    let carrier_base = arg_ty.and_then(|v| carrier_sort_of_value(kb, v));
+    match (arg_ty, carrier_base) {
         // A concrete carrier distinct from the spec sort itself, AND not itself
         // an abstract-interface spec. Store the canonical sort symbol so the
         // candidate filter (which canonicalizes `impl_sort`) compares
@@ -34870,16 +35041,69 @@ fn receiver_carrier(
         // dispatch shapes through the one notion. Concrete carriers (`List`/`Map`
         // — they HAVE constructors, so `carrier_is_abstract_spec` is false) stay
         // `Concrete` and dispatch as before.
-        Some(base)
+        (Some(ty), Some(base))
             if kb.canonical_sort_sym(base) != spec_canon && !carrier_is_abstract_spec(kb, base) =>
         {
-            ReceiverCarrier::Concrete(kb.canonical_sort_sym(base))
+            // WI-20260828-EKWDC: the receiver's own type ARGUMENTS ride along, read off
+            // the very value `base` was read from.
+            ReceiverCarrier::Concrete(GoalCarrier {
+                sort: kb.canonical_sort_sym(base),
+                args: receiver_type_args(kb, ty),
+            })
         }
         // Base == spec sort (abstract spec value), an abstract-interface carrier
         // distinct from the op's spec (WI-601), or unresolved type: no concrete
         // impl is pinnable.
         _ => ReceiverCarrier::Abstract,
     }
+}
+
+/// WI-20260828-EKWDC — the type ARGUMENTS a receiver's own type writes at its carrier
+/// sort, as the `TermId`s a [`GoalCarrier`] carries.
+///
+/// [`parametric_value_parts`] AND NOT [`extract_type`], for the reason
+/// [`carrier_arg_impl_subst`] gives about the rule itself: that is the reader
+/// [`match_candidate_against_goal`]'s arm (2.5) already asks this same question through,
+/// so "what are this instance's type arguments" has one owner across both routes to a
+/// receiver. It is also the cheaper walk — a `SmallVec` clone of the head's named args,
+/// where `extract_type` builds a `Vec<(Symbol, Value)>` and clones a `Value` per
+/// argument.
+///
+/// AND IT IS NOT A HOT PATH, which a review raised as a cost and a measurement settled
+/// the other way: **4 calls per full stdlib load** (counted, plus a source making one
+/// such call of its own). `receiver_carrier` reaches here only from its `Concrete` arm,
+/// and a self-receiver spec op on a STATICALLY CONCRETE carrier is the rare shape — every
+/// `Stream.splitFirst` over a `Stream`-typed value classifies `Abstract` first and never
+/// arrives. Timed as well, paired and alternating both arms in ONE process (min of 9,
+/// warmup dropped, debug): the distributions overlap completely and the arm that BUILDS
+/// the arguments had the lower minimum, i.e. the difference is under this box's noise
+/// floor for one unchanged binary. Two of the four `receiver_carrier` call sites keep
+/// only `.sort`; deferring the walk for them would buy 2 SmallVec clones per load and
+/// cost a second spelling of this question.
+///
+/// EMPTY for a bare sort reference (`s : List`, nothing written) and for every
+/// non-application carrier, which is the honest answer: the receiver said nothing about
+/// the carrier's parameters, so nothing is added to what the provision head already
+/// pinned.
+///
+/// EMPTY, TOO, FOR AN OCCURRENCE-CARRIED TYPE (a `Value::Node`, WI-477), and this is a
+/// stated gap rather than a silence — the WI-348 Phase C one [`SortGoal::bindings`]
+/// records from the other side. It is NOT asserted against the way that sibling's is:
+/// this walk sees EVERY named argument of a receiver's own type, and
+/// [`witness_sort_goal`] feeds it types read back off runtime values, so a `Value::Node`
+/// here is a shape the language admits and the `TermId`-keyed channel cannot carry — a
+/// `debug_assert` would turn that into a dev-build panic on a legal program. Dropping one
+/// argument leaves its parameter exactly as the provision head left it, which is the
+/// pre-WI-EKWDC behaviour for that parameter and a refusal downstream, never a wrong
+/// binding. (`witness_sort_goal` reaches the same verdict for its own bindings three
+/// lines on, through `type_value_as_term`.)
+fn receiver_type_args(kb: &KnowledgeBase, ty: &Value) -> SmallVec<[(Symbol, TermId); 2]> {
+    let Value::Term { id, .. } = ty else {
+        return SmallVec::new();
+    };
+    parametric_value_parts(kb, *id)
+        .map(|(_, args)| args)
+        .unwrap_or_default()
 }
 
 /// WI-350 — index of a spec op's *self-receiver* parameter: the first one
@@ -36881,7 +37105,7 @@ pub fn dispatch_spec_op_cached(
     spec_sort: Symbol,
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
-    carrier: Option<Symbol>,
+    carrier: Option<GoalCarrier>,
     disambig: Option<&SigmaCtx>,
     // WI-841 (058 §4.5): the call's explicit provider selections. Rides in the memo
     // KEY as well as into the resolution — a pin changes which impl a goal resolves
@@ -36940,10 +37164,18 @@ pub fn dispatch_spec_op_cached(
     // goal resolves to, so two sites that pin differently — or one that pins and one
     // that does not — must not share an entry. Whole list, not `is_some()`: unlike
     // `disambig`, its CONTENT decides the answer.
+    // WI-20260828-EKWDC: the CARRIER'S ARGUMENTS are held to the same test, because they
+    // are now part of what makes a goal ground. `carrier` used to be a `Symbol` — ground
+    // by construction — so `bindings` alone answered "has this goal anything for σ to
+    // chase"; an argument is a `TermId` off the receiver's inferred type and can be an
+    // unresolved var, which the paragraph above is precisely about. Reading only the
+    // bindings would leave a goal the memo treats as determined while its resolution
+    // still depends on σ.
     let cacheable = disambig.is_none()
         || goal
             .bindings
             .iter()
+            .chain(goal.carrier.iter().flat_map(|c| c.args.iter()))
             .all(|(_, v)| type_value_is_ground(kb, *v));
     let key = (
         op_short_sym,
@@ -56277,7 +56509,7 @@ fn witness_sort_goal(
     let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    let mut carrier: Option<Symbol> = None;
+    let mut carrier: Option<GoalCarrier> = None;
     for (i, (_pname, pty)) in rec.params.iter().enumerate() {
         if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
             continue;
@@ -56286,7 +56518,17 @@ fn witness_sort_goal(
             continue;
         };
         if self_representing {
-            carrier = carrier.or_else(|| sort_functor_of_view(kb, &arg_ty));
+            // WI-20260828-EKWDC: the carrier's own type ARGUMENTS come off the very
+            // value its sort was read from. This producer and the dispatch one
+            // ([`receiver_carrier`]) must build the SAME goal for one program — a
+            // carrier here that carried only its sort would instantiate the provider's
+            // `requires` chain in the declaration scope, which is the defect.
+            carrier = carrier.or_else(|| {
+                sort_functor_of_view(kb, &arg_ty).map(|sort| GoalCarrier {
+                    sort,
+                    args: receiver_type_args(kb, &arg_ty),
+                })
+            });
             continue;
         }
         // The parameter's declared type IS one of the spec's type-parameters

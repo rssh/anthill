@@ -721,6 +721,9 @@ mod wi_8q0q5_arrow_field_eta_row_test;
 #[path = "include/wi_bh1jz_carrier_arg_projection_test.rs"]
 mod wi_bh1jz_carrier_arg_projection_test;
 
+#[path = "include/wi_ekwdc_carrier_requires_instantiation_test.rs"]
+mod wi_ekwdc_carrier_requires_instantiation_test;
+
 #[path = "include/wi605_bare_arrow_lambda_test.rs"]
 mod wi605_bare_arrow_lambda_test;
 

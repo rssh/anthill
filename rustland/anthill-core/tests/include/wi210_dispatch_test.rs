@@ -10,7 +10,8 @@
 use anthill_core::kb::load::{self, LoadResult, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
-    find_unique_impl_op, lookup_spec_op_dispatch, type_check_expr, DispatchOutcome, TypingEnv,
+    find_unique_impl_op, lookup_spec_op_dispatch, type_check_expr, DispatchOutcome, GoalCarrier,
+    TypingEnv,
 };
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
@@ -533,7 +534,7 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
         spec_sort,
         op_short,
         &[],
-        Some(listbox_sym),
+        Some(GoalCarrier::bare(listbox_sym)),
         None,
         &[],
     );
@@ -695,7 +696,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         spec_sort,
         op_short,
         &[],
-        Some(logical_stream),
+        Some(GoalCarrier::bare(logical_stream)),
         None,
         &[],
     );

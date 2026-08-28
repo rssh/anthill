@@ -1128,6 +1128,19 @@ own **derived** row rather than by the caller. So a spec that forwards writes ON
 not a `requires` beside a `provides` — `Ord provides WeakOrd[T = T]` is the whole of
 `Ord`, and `WeakOrd`'s requirements reach the carrier through it.
 
+**"At the goal's bindings" means at the RECEIVER's own type arguments** (WI-20260828-EKWDC),
+and for a self-receiver spec that is not the same as at the provision's head. A
+`provides` head names only the parameters the target spec is about, so a chain entry
+constraining any *other* parameter of the carrier has nothing in the head to instantiate
+it: `MappedStream requires Iterable[C = Source, Element = Src, E = ES]` under `provides
+Stream[T = T, E = {ES, EF}]` names three parameters the head does not write. Those come
+from the type arguments the receiver's own type carries — a `Stream` op called on a
+`MappedStream[Source = List[T = Int64], Src = Int64, …]` resolves `Iterable[C = List[T =
+Int64], …]`. Reading them off the declaration instead yields a sub-goal about a
+*parameter* (`Iterable[C = MappedStream.Source]`), which nothing provides, so a fully
+ground receiver is refused. The receiver's arguments **fill** rather than override: where
+the head did pin a parameter, the head's binding is what the goal demanded and stands.
+
 **A CARRIER's `provides` and a SPEC's are two clauses with one keyword.** A carrier's is
 a fact about the world (`Int64 provides Ord[T = Int64]`, `Set provides Eq[T = Set]`,
 `Stream provides Iterable[C = Stream, …]`) and belongs in the searchable provider
