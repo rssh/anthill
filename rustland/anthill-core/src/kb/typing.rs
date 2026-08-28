@@ -9453,6 +9453,64 @@ fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     kb.kind_of(head) == Some(crate::intern::SymbolKind::Sort)
 }
 
+/// WI-20260828-8Q0Q5: is `arg` a BARE OPERATION NAME — the spelling that eta-lifts?
+///
+/// The sibling of [`arg_names_sort`], and deliberately NARROWER than it in one place: an
+/// `Expr::Apply` is excluded. `inc` is a name the reader may lift to a function value;
+/// `inc(x)` is a call and already carries its own type.
+fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    let head = match &arg.kind {
+        NodeKind::Expr {
+            expr: Expr::Ref(s) | Expr::Ident(s),
+            ..
+        } => *s,
+        NodeKind::Expr {
+            expr: Expr::VarRef { name },
+            ..
+        } => *name,
+        _ => return false,
+    };
+    kb.kind_of(head) == Some(crate::intern::SymbolKind::Operation)
+}
+
+/// WI-20260828-8Q0Q5: the hint an ARROW-typed constructor FIELD pushes down to a bare
+/// operation-name argument, so the name eta-lifts against the DECLARED arrow and the
+/// arrow's EFFECT ROW binds.
+///
+/// THE FIFTH HINT KIND. Without it the argument was typed with NO expected type at all:
+/// the surrounding arm looks `entity_field_types` up only when some argument is a call, a
+/// tuple, a sort name or a constructor application, and a bare name is none of those. So
+/// [`check_bare_ref`] had no arrow to lift against, the operation's declared row never met
+/// the field's row PARAMETER, and the row escaped the construction unbound — surfacing at
+/// the constructing operation as `undeclared effect ?_`.
+///
+/// MEASURED, and each row isolates one axis (`wi_8q0q5_arrow_field_eta_row_test`): the same
+/// eta-lifted operation into an OPERATION-PARAMETER arrow slot with the same row parameter
+/// was already clean — that path pushes its declared param type down — so this is the FIELD
+/// path and not eta-lift; an inline `lambda` in the same FIELD slot was already clean, so it
+/// is the bare-NAME reading and not the arrow.
+///
+/// GATED ON THE FIELD BEING CALLABLE BY HEAD, not on the argument alone: pushing an
+/// expected type where none was pushed before can only change a reading, so the hint is
+/// confined to the slot whose reading it is for. [`type_head_is_callable`] is the same
+/// question `validate_callback_effect_row` asks when it routes a slot, so the two cannot
+/// drift on what a callable is.
+fn arrow_slot_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    field_type: Option<&Value>,
+) -> Option<Value> {
+    let ft = field_type?;
+    if !arg_is_bare_operation_name(kb, arg) {
+        return None;
+    }
+    if type_head_is_callable(kb, ft) {
+        Some(ft.clone())
+    } else {
+        None
+    }
+}
+
 /// WI-462: the expected type a TUPLE-LITERAL constructor field value should receive — the
 /// `expected → field-value` push the constructor BUILD already performs via unify, surfaced
 /// here as a top-down hint. A tuple literal carries no constructor of its own, so the
@@ -11078,8 +11136,25 @@ fn visit_type(
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| arg_is_constructor_application(kb, a));
+            // WI-20260828-8Q0Q5: a BARE OPERATION NAME field needs the declared field type
+            // too — it is the shape [`arrow_slot_arg_hint`] reads, and none of the four
+            // gates above sees it (a bare name is not a call, a tuple, a sort name or a
+            // constructor application), so such a build took no hint at all. Same
+            // containment argument as its siblings: the builds newly looking `field_types`
+            // up have none of those four shapes, and every older hint here is gated on
+            // exactly one of them, so none of them can fire on a build that only just
+            // started computing the table.
+            let has_op_name_field = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| arg_is_bare_operation_name(kb, a));
             let field_types: Option<Vec<(Symbol, Value)>> =
-                if has_call_field || has_tuple_field || has_sort_field || has_ctor_field {
+                if has_call_field
+                    || has_tuple_field
+                    || has_sort_field
+                    || has_ctor_field
+                    || has_op_name_field
+                {
                     kb.entity_field_types(name).map(|ft| ft.to_vec())
                 } else {
                     None
@@ -11118,6 +11193,9 @@ fn visit_type(
                             variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                         })
                         .or_else(|| {
+                            arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
+                        })
+                        .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
                             variant_field_expected_from_ctor(kb, name, fs, &expected, arg)
                         })
@@ -11147,6 +11225,7 @@ fn visit_type(
                     nested_call_arg_hint(kb, arg, ft.as_ref())
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             variant_field_expected_from_ctor(kb, name, *fname, &expected, arg)
                         })

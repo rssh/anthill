@@ -24,15 +24,25 @@
 //! THE EXPERIMENT. Three rows over ONE fixture, differing in a single token — the
 //! `Source` argument of the `MappedStream` the probe is handed. The probe NAMES that
 //! carrier in its signature rather than building one, and that is deliberate twice
-//! over. It keeps construction-side threading out of the measurement (building
-//! `mapped(src, fn)` in a free operation leaks the source's access row for a `List`
-//! source just as it does for `Nats` — measured, so it would have reddened every row
-//! for a reason that is not the witness). And it keeps `.map` out of it: `.map` on a
-//! `Nats` resolves `Iterable.map`, whose declared return is a bare `Stream`, so the
-//! refusal would then be "a Stream has no collect" — a NEIGHBOURING mechanism that
-//! survives the witness being deleted. Naming the carrier puts the identical
-//! `MappedStream[Source = …]` in front of `collect` every time and leaves the
-//! witness's `requires` as the only thing that can differ.
+//! over.
+//!
+//! It keeps an UNRELATED inference gap out of the measurement. Building
+//! `mapped(src, fn)` INLINE and handing it straight to a spec op does not type-check:
+//! the construction's own sort params are grounded by nothing, so `FiniteCollection.
+//! collect(mapped(xs, inc))` reports `undeclared effect ??_` and `Stream.splitFirst`
+//! of the same expression reports `no impl matches per-call bindings`. It fails for a
+//! `List` source exactly as for `Nats`, so it would have reddened every row here for a
+//! reason that is not the witness. MEASURED, and the two ends bracket it: the same
+//! construction under a declared return that names the carrier is CLEAN, and the same
+//! witness consumer fed an already-typed carrier — what these rows do — is CLEAN. The
+//! stdlib never writes the failing shape; `xs.map(f)` goes through
+//! `FiniteCollection.map`, whose declared return pins every param.
+//!
+//! And it keeps `.map` out of it: `.map` on a `Nats` resolves `Iterable.map`, whose
+//! declared return is a bare `Stream`, so the refusal would then be "a Stream has no
+//! collect" — a NEIGHBOURING mechanism that survives the witness being deleted. Naming
+//! the carrier puts the identical `MappedStream[Source = …]` in front of `collect`
+//! every time and leaves the witness's `requires` as the only thing that can differ.
 //!
 //! CONTROLS, both RUN rather than reasoned about.
 //!
