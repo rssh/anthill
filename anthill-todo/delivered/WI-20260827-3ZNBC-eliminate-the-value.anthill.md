@@ -3,9 +3,9 @@
 - id: WI-20260827-3ZNBC-eliminate-the-value
 - created: 2026-08-27T14:59:27Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-27T14:59:27Z
+- status_at: 2026-08-28T12:26:24Z
 
 - acceptance: cargo-test
 
@@ -90,4 +90,43 @@ THE SET IS NOW CLOSED, which was the finding's substantive half: `int_neg`, `int
 `str_operand` RETURNS `Cow<'a, str>`, which also answers the review's allocation concern about `as_literal` cloning: a native `Value::Str` still BORROWS exactly as before, so a filter over a long stream allocates nothing new; only a handle carrier pays a clone, and that carrier could not be read at all previously. The concern therefore does NOT carry over to this ticket for the String surface.
 
 WHAT THIS TICKET STILL OWNS, unchanged: eliminating `Interpreter::materialize_value` / `value_to_native` and the Node->Term lowering at eval/mod.rs:801 — i.e. whether a relation ROW column is a native value or a handle the reader views through, which is WI-714's stated contract and the 76 tests that assert it. The builtin surface being carrier-neutral is a PREREQUISITE that is now in place, not part of the remaining work.
+
+### 2026-08-28T12:25:58Z — feedback — claude
+
+DELIVERED. The normalization is gone from both live paths and every reader now asks the carrier-neutral question instead.
+
+WHAT WENT. `Interpreter::materialize_value` (with the WI-685 Node->Term lowering that interned a term per bridged occurrence operand) and `builtins::term_to_value` are DELETED. The three bridge sites (`bridge_op_to_eval` x1, `bridge_eq_op_to_eval` x2) hand `call_op_bridged` the operands on the carrier the resolver proved them on; `materialize_solution` hands each column through unconverted.
+
+WHAT STAYED, and the line says why. `value_to_native` has exactly ONE caller left -- `materialize_entity`'s field conversion, i.e. `term_as_entity`, the reflect operation whose product IS a native entity for the anthill `case` that asked for it. Handing back an entity whose fields were still handles would leave the decode half-done and reintroduce the very incoherence this ticket removed. It is `fn` now, not `pub(crate)`.
+
+THE SENTENCE IS REWRITTEN, which the ticket said had to move with the readers. `materialize_solution`'s doc no longer says "REIFY it to a native value ... a `Relation[String]` yields `Value::Str`"; it states that a column is the bound value ON ITS OWN CARRIER and the reader asks `TermView::literal_*`. `docs/kernel-language.md` never stated the row's Rust-level carrier, so nothing moved there.
+
+MEASURED, AND THE NUMBER IS 95, NOT 76. Removing the conversions alone fails 95 tests: `wi_tests` 3588 passed / 91 failed, `builtin_tests` 2, `resolve_tests` 2. The earlier 76 measured the drain only; the bridge sites are the rest. Every one is green with the readers widened.
+
+THE SET, CLOSED. Each of these refused (or silently mis-answered) a value it could read:
+  * `eval/eval.rs` `runtime_carrier_sort` -- THE ONE THAT COST REAL THINKING. A handle that DENOTES a scalar named NO carrier: `value_functor` answers `None` for a `Const` head, so the value reached spec dispatch with no receiver sort and the goal RESIDUALIZED. `vec_scale(c: Float, v: Vec3) = Vec3(x: c * v.x, ...)` from a rule body is the witness, and `vec_sub` PASSING beside it is what localizes the case: a field read (`v.x`) is not what breaks, a BARE LITERAL operand is.
+  * `eval/eval.rs` `if`-condition -- `Value::as_bool` is the INHERENT accessor and sees `Value::Bool` alone (the trap WI-20260827-2YHZ3 recorded: an inherent method wins over a trait one, which is why the neutral reader is spelled `literal_bool`).
+  * `eval/pattern.rs` `constructor_sub_values` -- four carrier arms collapsed onto ONE `TermView` read, and an APPLIED occurrence now destructures. Its comment said declining one "costs nothing today"; it cost nothing only while the bridge normalized. Named args are canonicalized here because an occurrence holds a SOURCE-order slice where the record builders canonicalize -- without it `Vec3(y: 2, x: 1)` in a rule body would hand `x`'s sub-pattern the `y` component (the WI-788 family).
+  * `eval/pattern.rs` `literal_matches` -- `case "alice" ->` over a handle fell through to the NEXT ARM. A wrong branch taken silently, the worst shape a missing carrier arm has.
+  * `eval/map_arena.rs` `MapKey::try_from_value` -- a term-carried `"alice"` keyed as `MapKey::Term(tid)` and SPLIT from the native key, so `Map.get` answered `none()` for an entry `Map.put` had just stored. Merging them is the same rule WI-1015/WI-1023 already applied to a symbol's two carriers, applied to a literal's.
+  * `eval/builtins.rs` -- `float_val` (whose doc ALREADY claimed to mirror the resolver's carrier-neutral `value_f64` and did not); the three `Float` IEEE predicates; a new `int_operand` / `big_int_operand` beside the existing `str_operand`, used by `substring` / `repeat` / `slug` / `digestBase32` / `Dictionary.sub` / `Int64.to_string` / `to_float` / `to_bigint` / `to_int` / `bigint_neg`; `term_as_string` / `term_as_int`; the reflect name arguments and `field_access`'s selector; and `value_compare`'s dead native fallback deleted -- every pair it could still answer reads as `Const` above it, so its only REACHABLE arm was its own error.
+  * `anthill-stl/src/reflect/builtins.rs` -- `str_arg`, `option_string_arg`, `decode_literal_repr`'s payload.
+
+THE ONE BEHAVIOURAL DELTA, stated so it is not rediscovered as a bug. The reifier bottomed out in `materialize_entity`, which DEFAULTS a declared `Option[T]` field the fact leaves unsupplied to `none()` (the loader fills the slot with a synthetic Var so the discrim tree can index the fact uniformly). A handle-carried entity column keeps that Var. It fails LOUDLY -- `case some(v)` / `case none()` over a var matches neither and raises `MatchFailed` -- and no corpus path reaches it (no relation ranges over an entity with unsupplied optional fields). The defaulting is not lost, only no longer applied at the drain; if a column ever needs it, the honest home is the field READ, where it would serve every carrier at once. That is a capability, not part of this move. Recorded at `materialize_solution`'s doc.
+
+NO NEW TEST, ON INSTRUCTION AND ON EVIDENCE. The user's steer was "refactoring should ensure that old test works", and it does: 95 existing tests fail on a back-out and pass with the change, and NO EXPECTATION was edited -- a test that asserted `"alice"` still asserts `"alice"`, read through `common::scalar_str` instead of `matches!(_, Value::Str(_))`. Between them they already drive what the acceptance asked one test to do: a Term-carried operand (fact-matched columns -- wi714, wi727, wi741), a Node-carried one (rule-body occurrences -- vec3_ops, wi1096, wi625, push_choice) and a native one (host `interp.call` args -- wi1127's parameter channel), through bridged bodies and relation columns alike, all answering the same values.
+
+TWO ASSERTIONS DID CHANGE, and they are contract statements rather than expectations, so their prose moved with them: `map_arena`'s `both_symbol_carriers_key_one_map_slot` and `a_non_canonicalized_nullary_constructor_keys_as_its_name` each pinned "a term-carried literal keys as `MapKey::Term`" -- the split this ticket removes. They now pin the MERGE, and assert the native twin keys identically.
+
+CONTROLS. `term_as_entity`'s loud non-handle refusal (`other => Err(type_mismatch("Term", ...))`) is UNTOUCHED -- there is no dedicated `term_as_entity(5)` test in the corpus and none was added; wi260's two `returns_none_for_*` rows keep the `none()`-vs-error split. WI-625's own bridge coverage (26 rows) and every `eval_test` are green. Full workspace green via `rustland/scripts/test.sh`.
+
+/code-review (high) FOUND SEVEN, ALL FIXED, and two of them were the ticket's own defect reappearing one arm short:
+
+  1. `MapKey::try_from_value` keyed a term-carried entity by `TermId` and REFUSED the same entity on the occurrence carrier — so `Map.put(m, Board(1,2), v)` worked for a board proved by a fact match and hard-errored for one bound by a rule-body builtin. Closed by `MapKey::of_value_interning`, which every `Map` builtin now goes through: it interns the occurrence to the term it denotes (the same `occurrence_to_term` the resolver and `proof_verify` use). The intern is paid ONLY where the alternative was an error — natives, `Value::Term`s, literals and name occurrences all key without touching the store, so no `Map.get` that worked before now writes to it, which is the cost this ticket removed from the drain and is not reintroducing.
+  2. `option_string_arg` (anthill-stl) widened its INNER `str_arg` and left its outer scrutinee matching `Value::Entity` alone, so a rule-body-bound `some(…)` into `KB.sorts` failed on the exact carrier the inner read had just learned. Now one `TermView` read serves all three.
+  3. `relation_project_run`'s spec column name was the last native-variant string read in `eval/builtins.rs`. Widened.
+  4. `anthill-todo`'s `forge::string_field` hand-rolled `Value::Str` + `Value::Term(Const)` and missed the occurrence. Widened.
+  5. A REAL REGRESSION I INTRODUCED: routing `bigint_neg` through `big_int_operand` smuggled a SORT widening in with a carrier one — `big_int_operand` accepts an `Int64` because the CONVERSIONS always did, but `neg` refused one and must keep refusing, or `BigInt.neg(5)` answers `-5` where it used to raise. Now reads `literal_big_int` directly, with the distinction stated at the site.
+  6. THE OPTION DEFAULTING IS RESTORED rather than merely documented, and the review was right to push: "no corpus path reaches it" is a statement about this repo's fixtures, not about a user's KB. It now lives at the field READ (`absent_option_as_none`, called from both of `reflect_field_access`'s scans), which is where it should have been all along — `Value::Entity`, `Value::Term` and `Value::Node` receivers all answer `none()` for a declared-`Option[T]` field the value does not supply, where before only the entity did, and only because something upstream had filled it in. Both spellings of "does not supply" are handled: an ABSENT slot, and a PRESENT slot holding the loader's synthetic Var. A non-Option field is untouched in both directions — absent stays the loud "entity has no field", since widening that would turn a missing REQUIRED field into `none()`.
+  7. `constructor_sub_values` destructuring an APPLIED occurrence was challenged as "a loud failure became a silent wrong binding". MEASURED, and the premise does not hold: a `Value::Term` over `Vec3(add(1,2), 0.0, 0.0)` has ALWAYS destructured here and bound `x` to the un-reduced `add(1,2)` (the old `Term::Fn` arm handed each child back with no reduction), and the bridge's own normalizer agreed — `handle_to_native` returns a non-constructor application UNCHANGED. So the old rule was never "an un-reduced child does not bind"; it was "the occurrence carrier does not destructure", which is exactly the cross-carrier disagreement WI-1025's own comment calls a hazard. Kept, with that reasoning written at the site.
 
