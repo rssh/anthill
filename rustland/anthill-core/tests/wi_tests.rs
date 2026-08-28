@@ -699,6 +699,8 @@ mod wi612_abstract_stream_consumer_effect_test;
 #[path = "include/wi614_requires_dot_dispatch_test.rs"]
 mod wi614_requires_dot_dispatch_test;
 
+#[path = "include/rjx44_stream_iterator_row_test.rs"]
+mod rjx44_stream_iterator_row_test;
 #[path = "include/wi590_transitive_row_tail_test.rs"]
 mod wi590_transitive_row_tail_test;
 #[path = "include/wi57mrm_witness_instantiation_test.rs"]

@@ -106,7 +106,15 @@ sort anthill.prelude.Stream
   -- `Iterable.find/map` over a Stream threads the observation effect instead of
   -- leaking a fresh `?_`).
   provides Iterable[C = Stream, Element = T, E = E]
-  operation iterator(s: Stream) -> Stream = s
+  -- WI-20260828-RJX44: the RETURN must write the projections too, and for the same reason
+  -- the provision does. A bare `-> Stream` hands back a stream whose element and row are
+  -- UNWRITTEN, so a consumer that pays the row (`takeN`, `effects s.E`) has nothing to read
+  -- and leaks `?_` — on a plain `List`, on main. The identity body makes the projected form
+  -- exactly as true as the bare one; it just says more. `tail` and `splitFirst`'s `B` already
+  -- wrote them, so this was the one signature on the sort that dropped them. Nothing caught
+  -- it because the OTHER route to an iterator, `Iterable.iterator`, names the SPEC's params
+  -- and grounds by carrier-param binding, and because an ascribing call site pins the row.
+  operation iterator(s: Stream) -> Stream[T = s.T, E = s.E] = s
 
   -- Laws (derived from splitFirst). WI-818: laws are SPECIFICATION, not
   -- backing — the eval-side semantics (including the empty-case raises) live
