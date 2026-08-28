@@ -744,6 +744,19 @@ pub(crate) struct SymbolScopeSnapshot {
     asking_file_plus_one: u32,
 }
 
+impl SymbolScopeSnapshot {
+    /// WI-5XBBQ — `defs.len()` as it stood when this snapshot was taken.
+    ///
+    /// A symbol whose raw index is at or above it was MINTED by the layer. Sound for
+    /// the layer's whole life because `defs` is append-only under one:
+    /// [`SymbolTable::restore_scoped`] writes back a PREFIX and never truncates,
+    /// precisely so a layer-minted `Symbol` that rode out on a `Solution` still names
+    /// something.
+    pub(crate) fn defs_mark(&self) -> u32 {
+        self.defs_prefix.len() as u32
+    }
+}
+
 impl SymbolTable {
     /// WI-SPGBP — capture the scoped definition state (see [`SymbolScopeSnapshot`]).
     ///
@@ -2277,6 +2290,17 @@ impl SymbolTable {
     /// Get the full SymbolDef for a symbol.
     pub fn get(&self, sym: Symbol) -> &SymbolDef {
         &self.defs[sym.0 as usize]
+    }
+
+    /// WI-5XBBQ — how many symbols this table has minted; `Symbol::from_raw(i)` is a
+    /// valid index for every `i` below it.
+    ///
+    /// The table is append-only even under a discardable KB layer (see
+    /// [`SymbolScopeSnapshot`]), so this is a HIGH-WATER MARK: the difference between
+    /// two readings is exactly the set of symbols minted between them, which is what
+    /// makes the layer-delta question answerable at all.
+    pub fn symbol_count(&self) -> u32 {
+        self.defs.len() as u32
     }
 
     /// Check if a symbol is resolved (has kind, scope, qualified name).

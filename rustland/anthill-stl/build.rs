@@ -69,6 +69,13 @@ fn main() {
             "OperationInfo".into(),
             "FieldInfo".into(),
             "DescriptionInfo".into(),
+            // WI-5XBBQ — the two rows `KB.layer_symbols` / `KB.layer_clauses`
+            // return. Named here because `emit_only` is a CLOSURE the author
+            // states, not one the generator infers from the trait's signatures:
+            // omit them and the trait methods still generate, referring to types
+            // that do not exist.
+            "LayerSymbol".into(),
+            "LayerClause".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),

@@ -19,3 +19,11 @@ imbl = "7.0.0"
 
 [dev-dependencies]
 tempfile = "=3.14.0"
+# WI-5XBBQ — the guardians example's checker is anthill code that calls
+# `anthill.reflect.qualified_name`, which `anthill-stl`'s `register_reflect_builtins`
+# binds (WI-SPGBP wired it into `runner::register_runtime`). Without it the example's
+# own test would run against a SMALLER reflect surface than production does, and the
+# gate would die `OperationBodyMissing` on a name the CLI answers. A dev-dependency
+# cycle (stl depends on core's lib; core's TESTS depend on stl) is what Cargo supports
+# for exactly this.
+anthill-stl = { path = "../anthill-stl" }

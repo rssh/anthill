@@ -3,9 +3,9 @@
 - id: WI-20260824-5XBBQ-guardians-the-namespace-gate
 - created: 2026-08-24T09:06:49Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-24T09:06:49Z
+- status_at: 2026-08-28T19:24:56Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -104,3 +104,158 @@ A1, A2 and A3 above are each REFUSED, each diagnostic naming the offending claus
 CONTROLS, which is what keeps this from degrading into refuse-everything: `agent/good.anthill` still passes, and so does a candidate declaring only under `guardians.agent.` and asserting nothing. State at the site which tests fail when the change is backed out — the three refusals — and which pass either way by design — the taint and row tests (`leak`, `wide_row`, `wide_row_modify`, `bad_checker`, `minting`, `generate_from_content`), since none of them touches provenance. ADD a control the current suite lacks: a candidate that redeclares its own `mentions_all` in `guardians.agent` and restates the `ensures` against it, to measure whether contract refinement (WI-20260822-59CDQ) already binds the override's postcondition to the spec's — if it does not, that is a separate finding and is reported, not folded in.
 
 Full workspace green via rustland/scripts/test.sh.
+
+### DELIVERED
+
+`namespace_violations` and its `src.lines()` scan are GONE. The gate is
+`examples/guardians/lib/gate.anthill` — anthill, over a discardable layer — and the
+Rust side supplies exactly the two things this ticket said it would.
+
+**The three measurements the ticket asked for FIRST, and both changed a decision.**
+
+* **GAP 3 — 061 does NOT consult the base, so it is not a second line of defence.**
+  The A2 bare clause (`rule mentions_all(?r) :- omits_some(?r)`, no declaration) loads
+  in a layer with NO diagnostic; `guardians.mentions_all` goes from one clause to two.
+  On a flat load 061 refuses it loudly and tells the attacker to add a declaration; in a
+  layer it never fires. So the FIXTURE is the bare clause — the form that actually
+  reaches the KB under the design the checker uses — and the "supply the declaration"
+  trick the ticket described is not needed.
+* **The third channel is REACHABLE, and it is a fourth rule folded into G3.** A layer
+  can redeclare a name the base owns (`sort guardians.Triage`): it loads, the symbol is
+  the SAME, so the mint high-water mark never sees it, and it asserts no clause for G2
+  to catch. Measured consequence: a SECOND `OperationInfo` row for `Triage.run`, so the
+  reported row goes `[External, Model, Error]` →
+  `[External, Model, Error, External, Model, Error, Filesystem]`.
+* **It does NOT defeat the typer**, and that is why the budget is reported rather than
+  re-checked: a widening carrier is refused with the identical `effects must not widen`
+  message with and without the redeclaration, because the override-refinement pass
+  compares against the stored signature and not against the fact. What it defeats is a
+  naive READ of the budget — so `spec_budget` runs BEFORE `KB.loaded`.
+
+**What Rust supplies — the two items, and nothing else.**
+
+1. `KB.layer_symbols(kb) -> List[LayerSymbol]` and `KB.layer_clauses(kb) -> List[LayerClause]`,
+   over a `Value::Kb`. `LayerDelta` (in `eval::layer_arena`) records the symbol
+   high-water mark, the clause mark, and the layer's DECLARATION ledger at push time.
+   The ledger is the third-channel half and cannot be derived later: `decl_sites` is
+   PER-SCAN, so a second `loaded(…)` overwrites it. `LayerSymbol` carries BOTH flags —
+   `minted` (the layer created the symbol) and `declared` (the layer wrote a declaration
+   at it) — because neither implies the other: a rule head mints without declaring
+   (§8.6), a redeclaration declares without minting. Both readers REFUSE the ambient
+   `kb()` and a layer with a later one on top of it; the empty list is the one wrong
+   answer available, since it reads as "this candidate contributed nothing".
+2. `ClauseOrigin::{Source, Derived}` on `RuleEntry`, `Derived` at construction and
+   flipped by `mark_source_clause` at the three source sites (`load_fact`, `load_rule`,
+   the two constraint emitters). `ClauseKind` could not stand in: its own doc says
+   `Fact` covers "including loader-synthesized metadata facts". Without it G2 refuses
+   `good.anthill`, whose `provides Triage[C = GoodTriage]` makes the loader bank a
+   `SortProvidesInfo` row at a symbol the candidate did not declare.
+
+**The gate — G1/G2/G3 in `lib/gate.anthill`, in the order G3, G2, G1.** The order is
+load-bearing: G1 reads `SortProvidesInfo`, a relation the candidate can write, so it is
+believed only after G2 has refused a source-written clause at a reflect functor.
+
+**Two things the design met on the way, both recorded at their sites.**
+
+* A DOT on an `Iterable.find` callback's parameter does not resolve to a field:
+  `lambda ls -> ls.minted` survives the typer and dies at eval as
+  `unhandled Expr variant: DotApply`. It is the COMBINATOR and not the lambda — the same
+  dot on a `List.filterElems` callback works (`naming_violations` writes `ls.symbol`),
+  and `find` reaches its element through `List provides Stream provides Iterable` where
+  `filterElems` projects `xs.T` directly. A constructor PATTERN on the parameter needs no
+  such projection and binds where the dot cannot, so the gate uses `find` throughout and
+  hand-rolls no recursion. (First shipped AS recursion on the wrong diagnosis — that the
+  combinator itself could not be used — and corrected on review; re-measured after the
+  rebase onto the carrier-projection typer commits, where it still reproduces.) Filed as
+  WI-20260828-N2FHM: the gate carries the workaround, and a program that loads clean and
+  then dies on a host-level `Internal` is a defect in its own right.
+* Reading the spec out of a `SortProvidesInfo` row needs `reify`, not `extract` or
+  `term_field`. The loader writes `SortView(Triage, C = GoodTriage)`; the spec is the
+  wrapper's first POSITIONAL argument, `term_field` reads named arguments only, and
+  `extract` classifies the wrapper (`Parameterized(base: SortView, …)`) rather than
+  looking through it. `reify` answers `FnRepr(SortView, [FnRepr(Triage, [])])`.
+
+**A clause at an UNDECLARED name is refused, and that is the rule.** A `fact Note(...)`
+whose functor was never declared heads at a bare short-name intern with no qualified
+name, so it belongs to no namespace and containment cannot hold for it. Its control is
+one `entity Note(text: String)` away.
+
+**A4 — the verdict.** `Checker.check(self, src: Source, spec: Symbol)`: the spec is a
+REFERENCE. `Accepted(carrier: Symbol, spec: Symbol, budget: List[T = String])`, and
+`agent/good.anthill` yields `guardians.agent.GoodTriage`, `guardians.Triage`,
+`[External, Model, Error]`. The dead `lib_dir` field is gone from `file_harness` and
+`load_checker`. The four `Checker` fixtures return `Rejected` with a one-line reason —
+honest for bodies that perform no check, and they cannot name a carrier they never found.
+
+**CONTROLS — and the ticket's two control clauses conflict, so one had to give.** The
+ACCEPTANCE says "a candidate that loads clean and provides NOTHING is refused"; the
+CONTROLS list says "a candidate declaring only under `guardians.agent.` and asserting
+nothing" passes. For the one program that is both — `sort guardians.agent.PoliteTriage;
+entity mk` — those cannot both hold, and the acceptance is the one that names a defect
+(A4), so it wins: that program is now the FIXTURE for
+`a_candidate_that_provides_nothing_is_refused`.
+
+What replaced it is a stronger control, because the old one could not tell a working
+containment rule from one that refuses every clause: `a_candidate_may_declare_and_assert
+_freely_inside_its_own_namespace` declares under `guardians.agent.`, writes a `fact` AND
+a `rule` of its own, provides `Triage`, and is ACCEPTED. `good.anthill` still passes and
+now asserts the VERDICT rather than its success. The taint and row
+tests pass either way by design — none touches provenance — and
+`harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted` is the
+control for `hand_written_reflect_metadata_is_refused…`: without the provenance bit the
+first reds and the second passes for the wrong reason.
+
+**The extra control the ticket asked for, MEASURED and reported, not folded in.** A
+candidate that declares its own `guardians.agent.mentions_all` and restates the
+`ensures` against it is REFUSED by the typer:
+`'guardians.agent.ShadowTriage' overrides 'guardians.Triage.run' but does not refine it:
+it weakens the postcondition`. Contract refinement (WI-20260822-59CDQ) binds the
+override's `ensures` to the spec's predicate BY SYMBOL, so a same-named local cannot
+discharge it. No separate finding.
+
+**One thing did not move, and is stated rather than assumed.** `LoadChecker.check` stays
+a Rust host function, because anthill has NO handler surface — there is no `handle … with
+Error` and nothing in the stdlib installs one, so an anthill body cannot turn
+`KB.loaded`'s raise into `Rejected(diagnostics)`, and that conversion is what feeds the
+repair loop. The host function now does exactly three things: read the budget from the
+base, load into a layer (catching the `load_failed` payload as the verdict), and call
+`guardians.gate`. The POLICY is anthill; the technical binding is Rust.
+
+**`anthill-core` now dev-depends on `anthill-stl`.** `gate.anthill` calls
+`qualified_name`, which only `register_reflect_builtins` binds (WI-SPGBP wired it into
+`runner::register_runtime`), so without this the example's own test would run against a
+smaller reflect surface than the CLI has and the gate would die `OperationBodyMissing`.
+
+**GAP 1 stays open and stays downgraded**, exactly as the ticket left it: one candidate
+source, so `source {i}:` and a `line:col:` are actionable, and no `loaded` signature
+change was made.
+
+### REVIEW — what `/code-review` at high effort found, and one of them was real
+
+**A `⊥` DENIAL CRASHED THE GATE INSTEAD OF BEING REFUSED BY IT.** `load_rule` marks a
+denial `Source` deliberately (the span install skips it, and a denial is every bit as
+much a thing the source wrote), but `Term::Bottom` heads at NO symbol — so
+`layer_source_clauses` yielded `(None, …)` and the builtin raised an
+`EvalError::Internal`, which is not a `load_failed` payload and so never became a
+verdict. Three lines of candidate source (`rule ⊥ :- InMailbox(...)`) denied the checker
+an answer. My own comment asserting that shape was unreachable was the wrong half of the
+contradiction. `LayerClause.functor` is now `Option[T = Symbol]`: a denial is REPORTED
+with `none` and refused by the containment rule, because a clause a policy cannot see is
+a clause it cannot refuse — and a denial installed over the trusted base is exactly the
+kind a policy wants to refuse. Fixture: `a_denial_over_the_trusted_base_is_refused`,
+measured.md E7.
+
+The other three, each addressed at its site:
+
+* **Fact dedup can hand back a pre-layer `RuleId`**, so a source `fact` restating one the
+  base already holds marks a row BELOW the clause mark and never reaches G2. Recorded at
+  `mark_source_clause` rather than worked around: the dedup happened *because* the clause
+  was already there, so the layer added nothing to refuse, and a per-layer clause identity
+  distinct from `RuleId` would buy a refusal for a program that changed nothing.
+* **The declared-only loop skipped the `is_resolved` filter** the minted loop applies and
+  the doc promises. Fixed — an unresolved ledger entry would have been refused under its
+  bare intern name.
+* **`is_innermost` reads the LIVE stack**, which still holds a retired-but-unswept layer.
+  That is correct rather than approximate — a released layer stays APPLIED until the sweep
+  restores it — and the message now says so.
+

@@ -438,6 +438,202 @@ refusal instead.
 
 ---
 
+# Group E — the trust partition, as an analysis rather than a text scan (2026-08-28)
+
+Added by WI-20260824-5XBBQ, the hand-off WI-20260823-SPGBP named: a scoped load
+makes a candidate's contribution *distinguishable*, and a gate over what it
+DECLARED and ASSERTED is what turns that into a refusal.
+
+**What was there before, and why it had to be text.** The gate was
+`namespace_violations` in `guardians_test.rs`: a walk over `src.lines()` matching
+the prefixes `namespace `, `sort ` and `enum `. It read TEXT because that was the
+only moment provenance existed — the candidate was loaded as
+`try_load_kb_prepared_files(&[lib…, fixtures…, candidate])`, one flat list into
+one KB, after which nothing distinguished its declarations from the library's.
+
+Groups A–D are all about what a generated agent may DO. This group is about what
+it may SAY: every measurement below is a program that passes every check in
+A–D and then simply asserts what it wants to be true.
+
+Run through `rustland/target/debug/anthill load` over `lib/` + `fixtures/` + one
+candidate with `good.anthill` removed, and through
+`cargo test -p anthill-core --test guardians_test`. Baseline (lib + fixtures +
+good): `loaded: 2895 facts, 218 rules`.
+
+## E1 · The safety fact, forged about itself
+
+**Scenario.** `guardians.Checked` is tier 1 of `lib/safety.anthill` — the
+relation a safety claim cites, whose rows a real typer verdict would supply. A
+candidate declares a carrier under `guardians.agent.` and then reopens the
+trusted namespace to assert one about itself:
+
+```anthill
+    namespace guardians
+      fact Checked(carrier: "guardians.agent.ForgeTriage", spec: "guardians.Triage")
+    end
+```
+
+**Measured, before.** Loads at `2896 facts, 218 rules`, and
+`query --mode functor 'guardians.Checked'` goes from `0 result(s)` to the forged
+row. Type checking has nothing to say: the fact is well-formed.
+
+**Measured, now.** Refused —
+`the candidate asserts a fact at 'guardians.Checked', a name it did not declare`.
+The clause heads at a symbol the layer did not mint.
+
+**It is the LEAST severe of the three.** `agent_is_safe` also needs
+`ToolAlgebraSound`, which has no rows on purpose, so the forged claim was
+underivable regardless. E2 is the one that was live.
+
+## E2 · The concealment guarantee, inverted — and proposal 061 does not see it
+
+**Scenario.** `guardians.mentions_all` is the `ensures` on `Triage.run`, and
+`lib/spec.anthill`'s own comment calls it "exactly the CONCEALMENT half of the
+injection". Its trusted clause is `:- not(omits_some(?r))`. The candidate adds a
+second:
+
+```anthill
+    namespace guardians
+      rule mentions_all(?r)
+        :- omits_some(?r)
+    end
+```
+
+The postcondition then succeeds exactly when the report OMITS a message.
+
+**Measured — 061 protects a FLAT load and not a LAYERED one, and this decided the
+fixture.** On one flat load, proposal 061 refuses the bare clause loudly, naming
+both files — *and tells the attacker what to write*: supply
+`rule mentions_all(?)` as a declaration in the same file and it loads, at
+`2885 facts, 218 rules`, with two clauses under `mentions_all`. Under the layer
+the checker actually uses, 061 does not fire AT ALL: the bare clause above loads
+with no diagnostic and `mentions_all` goes from one clause to two. So 061 is a
+HYGIENE rule and never was a trust boundary, and the fixture is the bare form,
+because that is what reaches the KB under the design in use.
+
+**Measured, now.** Refused —
+`the candidate asserts a rule at 'guardians.mentions_all'`. The diagnostic names
+the predicate, where the text scan named a line number.
+
+## E3 · Hand-written reflect metadata, beside the loader's own
+
+**Scenario.** A candidate writes a reflect row by hand:
+
+```anthill
+    namespace guardians.agent
+      import anthill.reflect.{SortProvidesInfo}
+      fact SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)
+    end
+```
+
+**Measured, before.** Loads clean, and the functor then carries BOTH rows:
+
+```
+    SortProvidesInfo(sort_ref: LiarTriage, spec: SortView(Triage, C: LiarTriage))   -- loader
+    SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)                        -- candidate
+```
+
+indistinguishable in the clause store except by well-formedness.
+
+**THIS DECIDED THE SHAPE OF THE GATE.** A check phrased over reflect facts is
+reading a channel its own subject can write. Two things follow, and both are in
+the delivered design:
+
+* The layer delta is exposed as OPERATIONS (`KB.layer_symbols`,
+  `KB.layer_clauses`) rather than as emitted facts. They read engine-side marks
+  outside the clause store.
+* Clauses carry an ORIGIN (`ClauseOrigin::Source` / `Derived`), set by the loader
+  at the moment it asserts. Without it the containment rule refuses
+  `good.anthill`: its own `provides Triage[C = GoodTriage]` makes the loader bank
+  a `SortProvidesInfo` row at a symbol the candidate did not declare. A
+  name-based exemption ("head functor not under `anthill.reflect`") would be the
+  wrong shape and would re-open exactly this measurement.
+
+**Measured, now.** Refused —
+`the candidate asserts a fact at 'anthill.reflect.SortProvidesInfo'` — while the
+loader's row for `good.anthill` is admitted. The two assertions are each other's
+control.
+
+## E4 · The third channel: a redeclaration mints nothing
+
+**Scenario.** A layer can rewrite a declaration the BASE owns. Nothing is
+minted — the load re-enters the same symbol — and nothing is asserted, so neither
+the mint high-water mark nor the containment rule sees it:
+
+```anthill
+    sort guardians.Triage
+      sort C = ?
+      operation run(self: C, box: Mailbox, llm: Llm) -> Report
+        effects {External, Model, Error, Filesystem}
+    end
+```
+
+**Measured.** It loads. `guardians.Triage` keeps the same `Symbol`, and the load
+banks a SECOND `OperationInfo` row for `run`: the reported effects go from
+`[External, Model, Error]` to
+`[External, Model, Error, External, Model, Error, Filesystem]`.
+
+**What it does NOT buy, and this is why the effect budget is not re-checked.** A
+widening carrier is refused with the identical message
+(`effects must not widen`) with and without the redeclaration present — the
+override-refinement pass compares against the stored signature, not against the
+fact. So re-deriving the budget from `OperationInfo.effects` would be strictly
+WEAKER than what the load already does. The row appears in the verdict as
+REPORTED, read from the BASE before the layer is applied, and never as
+re-checked.
+
+**Measured, now.** Refused by the naming rule —
+`the candidate redeclares 'guardians.Triage'`. This is what `LayerSymbol.declared`
+exists for; the mint mark alone is blind to it.
+
+## E5 · What the accepted verdict says
+
+**Scenario.** Before this group, `guardians_check` returned
+`Accepted(carrier: "guardians.agent.Generated")` — a hardcoded string naming a
+sort no candidate ever declares — and its `spec: String` parameter was ignored
+entirely. The checker never learned what it had accepted, and a candidate that
+loaded clean while implementing NOTHING was Accepted.
+
+**Measured, now.** `spec` is a `Symbol` reference, and
+`agent/good.anthill` yields `Accepted(carrier: guardians.agent.GoodTriage,
+spec: guardians.Triage, budget: [External, Model, Error])`. A candidate that
+declares only under `guardians.agent.` and provides nothing is refused:
+`the candidate declares no carrier that provides 'guardians.Triage'`.
+
+## E7 · A denial over the trusted base — the clause with no head functor
+
+**Scenario.** `rule ⊥ :- InMailbox(box: ?b, message: ?m)` is a DENIAL: it asserts that
+its body must never hold. A candidate that installs one does not add a fact, it
+FORBIDS one, over a relation the trusted library owns.
+
+**Measured — it was a CRASH before it was a refusal, and review found it.** `Term::Bottom`
+heads at no symbol, so the delta reader raised an `EvalError::Internal` the checker had
+no way to turn into a verdict: three lines of candidate source denied the gate a verdict
+at all, rather than being refused by it.
+
+**Measured, now.** `LayerClause.functor` is an `Option` — a denial is REPORTED with
+`none`, because a clause a policy cannot see is a clause it cannot refuse — and the
+containment rule refuses it: `the candidate asserts a rule at a denial head (⊥)`.
+
+## E6 · A candidate's own `mentions_all` does not discharge the spec's
+
+**Scenario.** The narrower form of E2, asked once containment closes the wide
+one: the candidate declares its OWN `guardians.agent.mentions_all`, trivially
+true, and restates `ensures mentions_all(result)` so the override's postcondition
+names that one.
+
+**Measured.** REFUSED, by the typer rather than by the gate:
+`'guardians.agent.ShadowTriage' overrides 'guardians.Triage.run' but does not
+refine it: it weakens the postcondition`. Contract refinement
+(WI-20260822-59CDQ) binds the override's `ensures` to the spec's predicate BY
+SYMBOL, so a same-named local cannot discharge it. Recorded as a control rather
+than a finding — it passes with or without the gate, and it is here because the
+gate is what makes the narrow question the binding one.
+
+---
+
+---
+
 # Group C — what does not work
 
 ## C1 · Signature conformance · **closed by WI-20260822-1MAGR**
@@ -890,6 +1086,13 @@ the summarizer only ever sees Untrusted mailbox text.
 | B2 | declared row may not widen the spec's | ✅ fires |
 | B3 | body may not exceed its declaration | ✅ fires |
 | B4 | reshaped member does not evade B2 | ✅ fires |
+| E1 | forged safety fact about itself | ✅ fires |
+| E2 | concealment guarantee inverted by a second clause | ✅ fires |
+| E3 | hand-written reflect metadata, loader's own row admitted | ✅ fires |
+| E4 | redeclaring a trusted name (the third channel) | ✅ fires |
+| E5 | the verdict names the real carrier and the real row | ✅ fires |
+| E6 | a candidate's own `mentions_all` does not discharge the spec's | ✅ control |
+| E7 | a denial over the trusted base (no head functor) | ✅ fires |
 | C1 | signature conformance | ❌ **gap** (WI-935) |
 | C7 | sort mismatch vs a variable-containing type | ✅ **fixed** in `kb/typing.rs` |
 | C8 | a spec op with `ensures` had no provider | ✅ **fixed** in `kb/typing.rs` |

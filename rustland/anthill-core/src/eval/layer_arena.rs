@@ -31,12 +31,68 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::intern::Symbol;
 use crate::kb::layer::KbScopedSnapshot;
 use crate::kb::KnowledgeBase;
+
+/// WI-5XBBQ — WHAT A SCOPED LOAD CONTRIBUTED, recorded when the layer is pushed.
+///
+/// The gate a checker runs over an untrusted candidate asks two questions of the layer
+/// it loaded that candidate into — which names did it introduce, and which clauses did
+/// it assert — and both answers are DELTAS against the base. They are recorded here,
+/// at the one moment both ends are known, rather than derived later:
+///
+/// * The MARKS are just the pre-layer lengths of two append-only vectors, so they stay
+///   true for the layer's whole life.
+/// * `declared` cannot be derived later. `KnowledgeBase::decl_sites` is a PER-SCAN
+///   ledger — the next `load_incremental` clears it — so reading it after a second
+///   `loaded(…)` would answer about the wrong layer. Copying it at push time is what
+///   makes the answer this layer's.
+///
+/// IT IS NOT A FACT, and that is the point. A candidate can hand-write any reflect row
+/// (measured: `fact SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)` loads
+/// clean and sits beside the loader's own), so a gate reading a relation the candidate
+/// can also write is reading a channel its subject controls. These marks are Rust-side
+/// state outside the clause store, which is the whole reason they are the provenance
+/// channel rather than an emitted `SourceUnit`.
+pub(crate) struct LayerDelta {
+    /// `SymbolTable::defs.len()` immediately before the layer loaded. A symbol whose
+    /// raw index is at or above this was MINTED by the layer, and `defs` is append-only
+    /// under a layer (`SymbolScopeSnapshot` restores a PREFIX and never truncates), so
+    /// the test stays exact for as long as the layer lives.
+    symbol_mark: u32,
+    /// `KnowledgeBase::rules.len()` immediately before the layer loaded.
+    clause_mark: usize,
+    /// Every symbol the layer wrote a DECLARATION for, in declaration order, deduped.
+    ///
+    /// INCLUDES NAMES THE BASE ALREADY OWNED, and that is the reason it is kept
+    /// separately from the mint mark rather than derived from it. Measured on the
+    /// guardians example: a candidate can write `sort guardians.Triage` — the trusted
+    /// spec's own name — and the load re-enters the SAME symbol rather than minting a
+    /// second one, so the high-water mark never sees it. The declaration ledger does.
+    declared: Vec<Symbol>,
+}
+
+impl LayerDelta {
+    pub(crate) fn symbol_mark(&self) -> u32 {
+        self.symbol_mark
+    }
+
+    pub(crate) fn clause_mark(&self) -> usize {
+        self.clause_mark
+    }
+
+    pub(crate) fn declared(&self) -> &[Symbol] {
+        &self.declared
+    }
+}
 
 struct Slot {
     /// The state to restore when this layer is discarded; `None` once swept.
     snapshot: Option<KbScopedSnapshot>,
+    /// WI-5XBBQ — what the layer contributed. Kept past the sweep, unlike `snapshot`:
+    /// nothing reads it then, and dropping it would need a second `Option` to unwrap.
+    delta: LayerDelta,
     refcount: u32,
 }
 
@@ -85,11 +141,17 @@ impl LayerArenaRef {
     /// displaced. Keeping the two steps apart is deliberate: the load that makes a layer
     /// can FAIL, and a caller that has to restore its own snapshot on the failure path
     /// never registers a slot it would then have to unwind.
-    pub(crate) fn push(&self, snapshot: KbScopedSnapshot) -> KbHandle {
+    pub(crate) fn push(&self, snapshot: KbScopedSnapshot, declared: Vec<Symbol>) -> KbHandle {
         let mut arena = self.0.arena.borrow_mut();
         let raw = arena.slots.len() as u32;
+        let delta = LayerDelta {
+            symbol_mark: snapshot.symbol_mark(),
+            clause_mark: snapshot.clause_mark(),
+            declared,
+        };
         arena.slots.push(Slot {
             snapshot: Some(snapshot),
+            delta,
             refcount: 1,
         });
         arena.stack.push(raw);
@@ -180,6 +242,35 @@ impl LayerArenaRef {
     /// Live (unswept) layer count — the reader the refcount tests assert on.
     pub(crate) fn depth(&self) -> usize {
         self.0.arena.borrow().stack.len()
+    }
+
+    /// WI-5XBBQ — read one layer's [`LayerDelta`] under the arena borrow.
+    ///
+    /// Under a closure because the delta owns a `Vec` and every caller only reads it;
+    /// handing out a clone would copy the declaration list at each of the gate's
+    /// questions.
+    pub(crate) fn with_delta<R>(&self, handle: &KbHandle, f: impl FnOnce(&LayerDelta) -> R) -> R {
+        let arena = self.0.arena.borrow();
+        f(&arena.slots[handle.raw as usize].delta)
+    }
+
+    /// WI-5XBBQ — is `handle` the INNERMOST live layer?
+    ///
+    /// The gate's delta questions are answered against the KB AS IT STANDS, which is
+    /// every layer currently applied — the same fact `retain_innermost` is built on. So
+    /// a delta read for a layer with another one on top of it would report the outer
+    /// layer's marks against the inner layer's KB and quietly attribute the inner
+    /// layer's contributions to the outer one. The readers refuse that case rather than
+    /// answer it, and this is the test.
+    ///
+    /// IT READS THE LIVE STACK, WHICH STILL HOLDS A RETIRED-BUT-UNSWEPT LAYER, and that
+    /// is right rather than approximate: a released layer is still APPLIED to the
+    /// knowledge base until [`Self::sweep`] restores it, so the outer layer's marks
+    /// would be measured against a KB that still contains the inner one. What ends the
+    /// refusal is the sweep, not the release — which is why the message names discarding
+    /// rather than dropping.
+    pub(crate) fn is_innermost(&self, handle: &KbHandle) -> bool {
+        self.0.arena.borrow().stack.last() == Some(&handle.raw)
     }
 }
 

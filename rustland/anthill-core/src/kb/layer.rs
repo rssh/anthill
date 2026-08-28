@@ -210,6 +210,22 @@ kb_scoped_fields!(
     resolve_cache,
 );
 
+impl KbScopedSnapshot {
+    /// WI-5XBBQ — `SymbolTable::defs.len()` as it stood before the layer.
+    pub(crate) fn symbol_mark(&self) -> u32 {
+        self.symbols.defs_mark()
+    }
+
+    /// WI-5XBBQ — `KnowledgeBase::rules.len()` as it stood before the layer.
+    ///
+    /// Read off the snapshot's own clause vector, which is the pre-layer one: this is
+    /// the same mark [`KnowledgeBase::tombstone_layer_rules`] uses to decide which slots
+    /// the layer issued.
+    pub(crate) fn clause_mark(&self) -> usize {
+        self.kb.rules.len()
+    }
+}
+
 impl KnowledgeBase {
     /// WI-SPGBP — a `RuleId` a layer issued is NEVER REUSED.
     ///

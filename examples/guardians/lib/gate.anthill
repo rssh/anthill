@@ -1,0 +1,258 @@
+-- ================================================================
+-- guardians.gate — WHAT THE CANDIDATE CONTRIBUTED, ASKED POSITIVELY.
+--
+-- The checker loads the generated program into a DISCARDABLE LAYER over the
+-- trusted declarations (`KB.loaded`, WI-SPGBP) and then asks this file three
+-- questions about the layer. Everything here is policy; the two facts it reads
+-- — which names the layer introduced, and which clauses its SOURCE TEXT wrote —
+-- are engine-side marks (`KB.layer_symbols` / `KB.layer_clauses`).
+--
+-- WHY THE MARKS AND NOT A RELATION. A gate phrased over reflect FACTS reads a
+-- channel its own subject can write: measured, a candidate hand-writes
+--
+--     fact SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)
+--
+-- and it lands beside the row the loader banked for a real `provides`,
+-- structurally alike and equally believable. So the containment question is
+-- asked FIRST, off marks the candidate cannot reach, and only a candidate that
+-- passes it has its reflect rows believed.
+--
+-- THIS REPLACES A TEXT SCAN. The gate used to be `src.lines()` in the Rust
+-- host function, matching the prefixes `namespace `/`sort `/`enum `. It read
+-- lines because that was the only moment provenance existed — the candidate
+-- was loaded into the same KB as the library, after which nothing
+-- distinguished its declarations from anyone else's. A layer restores the
+-- distinction, so the check can be an analysis of what was LOADED.
+--
+-- WHAT IS DELIBERATELY NOT RE-ASKED, and saying so is the point: THE EFFECT
+-- BUDGET IS DISCHARGED BY THE LOAD, NOT BY THIS FILE. The typer's
+-- override-refinement pass already bounds the override's declared row by the
+-- spec's and the body's inferred row by its own declaration —
+-- `rejected/wide_row.anthill`, `wide_row_modify.anthill` and
+-- `bad_checker.anthill` are the three programs that show it firing. Re-deriving
+-- it here from `OperationInfo.effects` would be strictly WEAKER, because that
+-- fact is forgeable and the typer's comparison is not. The row therefore
+-- appears in the verdict as REPORTED — read from the BASE, before the layer is
+-- applied — and never as re-checked.
+-- ================================================================
+namespace guardians
+  import anthill.prelude.{String, List, Bool, Option}
+  import anthill.prelude.List.{nil, cons, mapElems, filterElems, append, headOption}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.String.{startsWith, concat}
+  import anthill.prelude.Bool.{and, not}
+  import anthill.prelude.Iterable.{find}
+  import anthill.reflect.{Symbol, Term, TermRepr, LayerSymbol, LayerClause, KB,
+                          SortProvidesInfo, qualified_name, term_to_string, term_field}
+  import anthill.reflect.TermRepr.{FnRepr, RefRepr}
+  import anthill.reflect.KB.{layer_symbols, layer_clauses, facts_of, reify}
+  import guardians.{CheckResult}
+  import guardians.CheckResult.{Accepted, Rejected}
+
+  -- ---- the namespace a generated program owns ----
+  --
+  -- The BARE namespace is admitted beside the dotted prefix, and it has to be:
+  -- declaring `sort guardians.agent.GoodTriage` mints the intermediate
+  -- namespace `guardians.agent` itself, whose name has no trailing dot. A
+  -- prefix test alone would refuse every well-formed candidate on the namespace
+  -- its own declaration created.
+  operation is_agent_name(name: String) -> Bool =
+    if name === "guardians.agent" then true else startsWith(name, "guardians.agent.")
+
+  -- ---- is this name the candidate's own? ----
+  --
+  -- Shared by G1 and G2. MINTED and not merely declared: a candidate that
+  -- REDECLARES a base name has not introduced it, and must not be able to claim
+  -- either a provision or a clause under it.
+  -- THE PARAMETER IS DESTRUCTURED RATHER THAN DOTTED, and that is not style. A dot
+  -- on an `Iterable.find` callback's parameter — `lambda ls -> ls.minted` — does not
+  -- resolve to a field: the projection survives the typer and dies at eval as
+  -- `unhandled Expr variant: DotApply`. MEASURED here, twice, and it is specific to
+  -- the combinator rather than to lambdas: the same dot on a `List.filterElems`
+  -- callback works (`naming_violations` below writes `ls.symbol`), and `find` reaches
+  -- its element type through `List provides Stream provides Iterable`, where
+  -- `filterElems` projects `xs.T` directly. A constructor pattern needs no such
+  -- projection, so it binds where the dot cannot.
+  --
+  -- Filed as WI-20260828-N2FHM. This is the WORKAROUND and not the fix: a program that
+  -- loads clean and then dies on a host-level `Internal` is the opposite of the loud
+  -- error the repo asks for, at both ends.
+  operation is_minted(layer: KB, s: Symbol) -> Bool =
+    match find(layer_symbols(layer),
+               lambda ls ->
+                 match ls
+                   case LayerSymbol(sym, m, _) -> and(m, sym === s))
+      case some(_) -> true
+      case none() -> false
+
+  -- ---- G2: CLAUSE CONTAINMENT ----
+  --
+  -- Every clause the candidate's SOURCE wrote must head at a name the candidate
+  -- itself introduced. One rule, and it refuses all three measured forgeries
+  -- with no name list and no spelling to enumerate:
+  --
+  --   `fact guardians.Checked(...)`               — the safety fact, about itself
+  --   `rule guardians.mentions_all(?r) :- ...`    — the concealment guarantee, inverted
+  --   `fact anthill.reflect.SortProvidesInfo(..)` — hand-written metadata
+  --
+  -- THE `rule` HALF IS NOT OPTIONAL. `mentions_all` is the `ensures` on
+  -- `Triage.run` and the tier-2 obligation the whole design says no type
+  -- expresses; a second clause for it makes the postcondition succeed exactly
+  -- when the report OMITS a message. It is the severe one, and it is a rule.
+  --
+  -- A DENIAL IS NEVER THE CANDIDATE'S. `rule ⊥ :- …` has no head functor at all — the
+  -- kernel's bottom interns no name — and what it does is not add a fact but FORBID
+  -- one, over whatever relation its body names, which here is the trusted library's.
+  operation clause_is_contained(layer: KB, c: LayerClause) -> Bool =
+    match c.functor
+      case none() -> false
+      case some(f) -> is_minted(layer, f)
+
+  operation clause_head_phrase(c: LayerClause) -> String =
+    match c.functor
+      case none() -> "a denial head (⊥), which is nobody's name"
+      case some(f) ->
+        concat(concat(concat("`", qualified_name(f)), "`"), ", a name it did not declare")
+
+  operation clause_diagnostic(c: LayerClause) -> String =
+    let form = if c.bodied then "rule" else "fact"
+    concat(
+      concat(
+        concat(concat(concat("the candidate asserts a ", form), " at "),
+               clause_head_phrase(c)),
+        " — a generated program may add clauses only at names of its own: "),
+      term_to_string(c.head))
+
+  -- A CLAUSE AT AN UNDECLARED NAME IS REFUSED, and that is the rule rather than an
+  -- accident of it. A `fact Note(...)` whose functor was never declared heads at a
+  -- BARE short-name intern — `Note`, with no qualified name — so it belongs to no
+  -- namespace and containment cannot hold for it: any other file interning the same
+  -- string shares the symbol, and its clauses join the candidate's. The candidate
+  -- introduced no such name, so `is_minted` is false and the diagnostic asks for the
+  -- one declaration that fixes it.
+  operation clause_violations(layer: KB) -> List[T = String] =
+    mapElems(
+      filterElems(layer_clauses(layer), lambda c -> not(clause_is_contained(layer, c))),
+      lambda c -> clause_diagnostic(c))
+
+  -- ---- G3: NAMING ----
+  --
+  -- Hygiene rather than security once G2 holds, and kept for the DIAGNOSTIC:
+  -- it names the declaration, where the deleted text scan named a line number.
+  --
+  -- IT ALSO CLOSES A CHANNEL NEITHER G1 NOR G2 SEES, and that channel was
+  -- measured rather than assumed. A layer can REDECLARE a name the base already
+  -- owns — `sort guardians.Triage`, the trusted spec — and the load re-enters
+  -- the SAME symbol instead of minting a second one, so the mint mark never
+  -- sees it and the redeclaration asserts no clause for G2 to catch. What it
+  -- does do is bank a second `OperationInfo` row for `Triage.run` carrying
+  -- whatever row the candidate wrote, which is exactly why this file reports the
+  -- budget from the base rather than reading it back out of the layer.
+  operation symbol_diagnostic(ls: LayerSymbol) -> String =
+    let verb = if ls.minted then "declares" else "redeclares"
+    concat(
+      concat(concat(concat("the candidate ", verb), " `"), qualified_name(ls.symbol)),
+      "` — a generated program may declare only under `guardians.agent.`")
+
+  operation naming_violations(layer: KB) -> List[T = String] =
+    mapElems(
+      filterElems(layer_symbols(layer),
+                  lambda ls -> not(is_agent_name(qualified_name(ls.symbol)))),
+      lambda ls -> symbol_diagnostic(ls))
+
+  -- ---- G1: PROVISION ----
+  --
+  -- Asked POSITIVELY, which is the whole shape of this gate: not "does the
+  -- candidate do anything forbidden" but "is there a carrier IT declared that
+  -- provides the spec it was asked for". A candidate that loads clean and
+  -- implements nothing must not be Accepted, and the carrier this finds is what
+  -- the verdict reports — replacing the constant the old checker returned, which
+  -- named a sort no candidate ever declares.
+  --
+  -- BELIEVED ONLY BECAUSE G2 PASSED. `SortProvidesInfo` is a reflect fact, and a
+  -- candidate can write one; the containment rule refuses a source-written
+  -- clause at `anthill.reflect.SortProvidesInfo` before this question is asked.
+  operation provision_carrier(layer: KB, spec: Symbol) -> Option[T = Symbol] =
+    match find(facts_of(layer, SortProvidesInfo),
+               lambda row -> is_own_provision(layer, row, spec))
+      case none() -> none()
+      case some(row) -> carrier_of_row(layer, row)
+
+  -- A row counts only when BOTH halves hold: it is a provision OF `spec`, and the
+  -- carrier providing it is one the candidate itself declared. The second half is
+  -- not decoration — without it a candidate could nominate a trusted sort's
+  -- existing provision as its own answer and be Accepted having written nothing.
+  operation is_own_provision(layer: KB, row: Term, spec: Symbol) -> Bool =
+    match spec_of_row(layer, row)
+      case none() -> false
+      case some(sv) ->
+        if not(sv === spec) then false
+        else
+          match carrier_of_row(layer, row)
+            case none() -> false
+            case some(c) -> is_minted(layer, c)
+
+  -- The spec a `SortProvidesInfo` row is about.
+  --
+  -- READ THROUGH `reify`, which is the one reader that reaches a POSITIONAL
+  -- argument. The loader writes the row's `spec` field in one of two shapes: a
+  -- parameterized provision wraps the spec in `SortView(Triage, C = GoodTriage)`,
+  -- where the spec is the wrapper's first POSITIONAL argument and the named
+  -- arguments are its bindings; an unparameterized one is the bare spec itself.
+  -- `term_field` reads named arguments only, and `extract` classifies the wrapper
+  -- (answering `Parameterized(base: SortView, …)`) rather than looking through it —
+  -- measured, both.
+  --
+  -- If the wrapper is ever renamed, this takes the second arm and G1 stops matching,
+  -- which reds the accepted-candidate control rather than passing something wrongly.
+  operation spec_of_row(layer: KB, row: Term) -> Option[T = Symbol] =
+    match term_field(row, "spec")
+      case none() -> none()
+      case some(sv) ->
+        match reify(layer, sv)
+          case RefRepr(n) -> some(n)
+          case FnRepr(n, args) ->
+            if qualified_name(n) === "anthill.reflect.SortView" then first_repr_name(args)
+            else some(n)
+          case _ -> none()
+
+  operation carrier_of_row(layer: KB, row: Term) -> Option[T = Symbol] =
+    match term_field(row, "sort_ref")
+      case none() -> none()
+      case some(t) -> repr_name(reify(layer, t))
+
+  operation first_repr_name(args: List[T = TermRepr]) -> Option[T = Symbol] =
+    match headOption(args)
+      case none() -> none()
+      case some(a) -> repr_name(a)
+
+  -- A nullary name reaches `reify` under either spelling — `RefRepr` for a
+  -- constructor, `FnRepr` with no arguments otherwise (the WI-436 / WI-511 canon).
+  -- Reading only one of them would work for sorts and silently fail for entities.
+  operation repr_name(r: TermRepr) -> Option[T = Symbol] =
+    match r
+      case RefRepr(n) -> some(n)
+      case FnRepr(n, _) -> some(n)
+      case _ -> none()
+
+  -- ---- the verdict ----
+  --
+  -- G3 then G2 then G1, and the order is not cosmetic: G1 reads a reflect
+  -- relation, and reading it is only sound once G2 has refused a candidate that
+  -- could have written one. `budget` is the spec's declared effect row, read
+  -- from the BASE by the caller BEFORE the layer was applied — a candidate must
+  -- not be able to restate the budget it is held to.
+  operation gate(layer: KB, spec: Symbol, budget: List[T = String]) -> CheckResult =
+    let violations = append(naming_violations(layer), clause_violations(layer))
+    match violations
+      case cons(_, _) -> Rejected(diagnostics: violations)
+      case nil() ->
+        match provision_carrier(layer, spec)
+          case none() ->
+            Rejected(diagnostics:
+              cons(head: concat(concat("the candidate declares no carrier that provides `",
+                                       qualified_name(spec)),
+                                "` — a program that implements nothing is not an implementation"),
+                   tail: nil))
+          case some(c) -> Accepted(carrier: c, spec: spec, budget: budget)
+end

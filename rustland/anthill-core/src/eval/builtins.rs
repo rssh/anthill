@@ -472,6 +472,12 @@ const HOST_FNS: &[(
     ("reflect_is_modifiable", 1, reflect_is_modifiable),
     ("kb_ambient", 0, kb_ambient),
     ("kb_loaded", 1, kb_loaded),
+    // WI-5XBBQ — the layer DELTA, as operations rather than as facts. A fact is a
+    // channel the loaded candidate can write (measured: it can hand-write any reflect
+    // row), so a gate reading a relation about its own subject reads a channel that
+    // subject controls. These read Rust-side marks outside the clause store.
+    ("kb_layer_symbols", 1, kb_layer_symbols),
+    ("kb_layer_clauses", 1, kb_layer_clauses),
     ("kb_execute", 2, kb_execute),
     ("kb_facts_of", 2, kb_facts_of),
     ("kb_stored_facts_of", 2, kb_stored_facts_of),
@@ -3955,7 +3961,11 @@ fn kb_loaded(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
             interp
                 .const_cache
                 .retain(|_, entry| matches!(entry, crate::eval::ConstCacheEntry::Forcing));
-            let handle = interp.layers.push(snapshot);
+            // WI-5XBBQ — the DECLARATION half of the layer delta, copied NOW. The
+            // ledger it reads is per-scan, so this is the only instant at which it
+            // still describes THIS load; see `declared_symbols_of_last_scan`.
+            let declared = interp.kb.declared_symbols_of_last_scan();
+            let handle = interp.layers.push(snapshot, declared);
             Ok(Value::Kb(handle))
         }
         Err(errors) => {
@@ -3971,6 +3981,175 @@ fn kb_loaded(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
             Err(interp.raise_load_failed(detail))
         }
     }
+}
+
+/// WI-5XBBQ — the `KB` argument of a layer-delta reader, as the LAYER it names.
+///
+/// Two refusals, both loud, because either would otherwise answer a plausible lie:
+///
+/// * `kb()` — the ambient sentinel — names no layer, so it has no delta. Answering the
+///   empty list there would report every candidate as having contributed nothing.
+/// * A layer with another layer applied ON TOP of it. The KB the delta is measured
+///   against is the one as it stands, which includes the inner layer, so an outer
+///   handle's marks would attribute the inner layer's symbols and clauses to the outer
+///   one. This is the same fact `LayerArenaRef::retain_innermost` is built on.
+fn expect_innermost_layer(
+    interp: &Interpreter,
+    arg: &Value,
+    op: &'static str,
+) -> Result<crate::eval::layer_arena::KbHandle, EvalError> {
+    let handle = match arg {
+        Value::Kb(h) => h.clone(),
+        other => {
+            return Err(EvalError::Internal(format!(
+                "KB.{op}: the layer delta is a question about a SCOPED LOAD, and `{}` names \
+                 no layer — pass the value `KB.loaded(sources)` returned",
+                other.type_name()
+            )))
+        }
+    };
+    if !interp.layers.is_innermost(&handle) {
+        return Err(EvalError::Internal(format!(
+            "KB.{op}: this layer is not the innermost one, and its delta would be measured \
+             against a knowledge base that still has a later layer applied — let the inner \
+             layer be DISCARDED first (releasing it is not enough: a released layer stays \
+             applied until the interpreter sweeps it)"
+        )));
+    }
+    Ok(handle)
+}
+
+/// WI-5XBBQ — `KB.layer_symbols(kb) -> List[LayerSymbol]`, the DEFINITION half of a
+/// scoped load's delta.
+///
+/// Two answers in one row, because neither subsumes the other and a gate needs both:
+///
+/// * `minted` — the layer created this symbol. The mint mark decides it, and the mark
+///   is exact because `SymbolTable::defs` is append-only under a layer.
+/// * `declared` — the layer wrote a `sort` / `enum` / `entity` / `operation` / `const` /
+///   type-parameter declaration at this name. MEASURED, and it is the reason this
+///   half exists: a scoped load can write `sort guardians.Triage` — a name the BASE
+///   owns — and the load re-enters the same symbol rather than minting a second, so
+///   `minted` is false and the mark alone never sees the redeclaration.
+///
+/// A symbol can be both (an ordinary new declaration), minted only (a predicate a
+/// `rule` head brought into existence — §8.6 says a rule head is resolved, not
+/// declared, so it has no declaration ledger entry), or declared only (the
+/// redeclaration above).
+///
+/// UNRESOLVED SYMBOLS ARE SKIPPED. A load interns strings that name nothing — a
+/// positional field label, a parse-time short name that never resolved — and they
+/// have no qualified name for a policy to read or a diagnostic to print.
+fn kb_layer_symbols(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [kb_arg] = expect_args::<1>("KB.layer_symbols", args)?;
+    let handle = expect_innermost_layer(interp, &kb_arg, "layer_symbols")?;
+    let (mark, declared) = interp
+        .layers
+        .with_delta(&handle, |d| (d.symbol_mark(), d.declared().to_vec()));
+    let declared_set: std::collections::HashSet<crate::intern::Symbol> =
+        declared.iter().copied().collect();
+
+    // Minted first, in mint order; then the redeclarations, which the mark cannot see.
+    let mut rows: Vec<(crate::intern::Symbol, bool, bool)> = Vec::new();
+    for raw in mark..interp.kb.symbols.symbol_count() {
+        let sym = crate::intern::Symbol::from_raw(raw);
+        if !interp.kb.symbols.is_resolved(sym) {
+            continue;
+        }
+        rows.push((sym, true, declared_set.contains(&sym)));
+    }
+    for sym in declared {
+        // The SAME `is_resolved` guard as the minted loop above, and it has to be the
+        // same one: a declaration ledger entry naming an unresolved symbol would fall
+        // back to its bare intern string in `qualified_name_of`, and the naming rule
+        // would then refuse a candidate citing a name that denotes nothing.
+        if sym.index() < mark && interp.kb.symbols.is_resolved(sym) {
+            rows.push((sym, false, true));
+        }
+    }
+
+    let ctor = require_symbol(interp, "anthill.reflect.LayerSymbol", "LayerSymbol")?;
+    let f_symbol = interp.kb_mut().intern("symbol");
+    let f_minted = interp.kb_mut().intern("minted");
+    let f_declared = interp.kb_mut().intern("declared");
+    let elements: Vec<Value> = rows
+        .into_iter()
+        .map(|(sym, minted, declared)| {
+            let name = interp.kb_mut().alloc(crate::kb::term::Term::Ref(sym));
+            Value::Entity {
+                functor: ctor,
+                pos: Vec::new().into(),
+                named: vec![
+                    (f_symbol, Value::term(name)),
+                    (f_minted, Value::Bool(minted)),
+                    (f_declared, Value::Bool(declared)),
+                ]
+                .into(),
+            }
+        })
+        .collect();
+    interp.build_list_value(elements, &[])
+}
+
+/// WI-5XBBQ — `KB.layer_clauses(kb) -> List[LayerClause]`, the ASSERTION half.
+///
+/// EVERY CLAUSE THE LAYER'S SOURCE TEXT WROTE, and nothing the loader derived — see
+/// [`crate::kb::ClauseOrigin`] for why the two must be told apart and why a
+/// head-namespace exemption cannot do it. Without the filter this answer would include
+/// the reflect metadata row the loader banks for an ordinary `provides` clause, and a
+/// containment rule over it would refuse every well-formed candidate.
+///
+/// Retracted slots are skipped: they include the TOMBSTONES an inner layer's discard
+/// left behind (`KnowledgeBase::tombstone_layer_rules`), which are not this layer's
+/// clauses in any sense a policy means.
+fn kb_layer_clauses(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [kb_arg] = expect_args::<1>("KB.layer_clauses", args)?;
+    let handle = expect_innermost_layer(interp, &kb_arg, "layer_clauses")?;
+    let mark = interp.layers.with_delta(&handle, |d| d.clause_mark());
+
+    let rows = interp.kb.layer_source_clauses(mark);
+
+    let ctor = require_symbol(interp, "anthill.reflect.LayerClause", "LayerClause")?;
+    let f_functor = interp.kb_mut().intern("functor");
+    let f_head = interp.kb_mut().intern("head");
+    let f_bodied = interp.kb_mut().intern("bodied");
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let f_value = interp.kb_mut().intern("value");
+    let mut elements = Vec::with_capacity(rows.len());
+    for (functor, head, bodied) in rows {
+        // A DENIAL — `rule ⊥ :- …` — heads at the kernel's bottom, which interns no
+        // symbol, so this really is `none` rather than a shape that cannot occur. It is
+        // REPORTED and not skipped: a clause a policy cannot see is a clause it cannot
+        // refuse, and a denial installed over the base by an untrusted program is
+        // exactly the kind a policy wants to refuse.
+        let functor = match functor {
+            Some(sym) => {
+                let name = interp.kb_mut().alloc(crate::kb::term::Term::Ref(sym));
+                Value::Entity {
+                    functor: some_sym,
+                    pos: Vec::new().into(),
+                    named: vec![(f_value, Value::term(name))].into(),
+                }
+            }
+            None => Value::Entity {
+                functor: none_sym,
+                pos: Vec::new().into(),
+                named: Vec::new().into(),
+            },
+        };
+        elements.push(Value::Entity {
+            functor: ctor,
+            pos: Vec::new().into(),
+            named: vec![
+                (f_functor, functor),
+                (f_head, head),
+                (f_bodied, Value::Bool(bodied)),
+            ]
+            .into(),
+        });
+    }
+    interp.build_list_value(elements, &[])
 }
 
 /// Read a `List[String]` argument STRICTLY.

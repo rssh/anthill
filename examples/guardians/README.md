@@ -94,6 +94,7 @@ declaration — acquiring a frontier model IS acquiring a model.
 | `lib/harness.anthill` | the generation loop as declarations: `generate` carries `Model`, `check` carries `-Model, -Permission[Model]` |
 | `lib/tasks.anthill` | `summarize` and `observe`, built on the one primitive rather than bound per task |
 | `lib/classify.anthill` | what counts as suspicious — rules in the KB, not a prompt |
+| `lib/gate.anthill` | the trust partition, as a policy: what the candidate DECLARED and what it ASSERTED, asked of a discardable layer |
 | `lib/safety.anthill` | where the tiers compose: types produce facts, proofs consume them |
 | `fixtures/*.anthill` | the article's inbox, including the injected email |
 | `fixtures/agent/good.anthill`, `checker.anthill` | generated implementations that pass — the controls |
@@ -123,11 +124,39 @@ Only the **usefulness** properties need an oracle, and there the fake answers
 from a fixture. That ordering is itself the claim: if a model had to run to test
 the security, the security would be statistical rather than checked.
 
+## What stops a candidate simply asserting it is safe
+
+Every refusal above is about what a generated agent may *do*. A separate question
+is what it may *say*: a program loaded into the same knowledge base as the trusted
+declarations can reopen `namespace guardians` and assert whatever it likes —
+including `Checked`, the very fact a safety claim would cite **about it**. Those
+facts are well-formed, so type checking has nothing to say about them.
+
+`lib/gate.anthill` is the answer, and it is a policy rather than a scan. The
+checker loads the candidate into a **discardable layer** over the trusted base
+(`KB.loaded`), and then asks the layer three questions:
+
+* **Provision.** Is there a carrier the candidate DECLARED that provides the spec
+  it was asked for? A program that implements nothing is not an implementation,
+  and the carrier this finds is what the verdict reports.
+* **Containment.** Does every clause the candidate's SOURCE wrote head at a name
+  the candidate introduced? One rule, and it refuses a forged `Checked`, a second
+  clause for the `mentions_all` postcondition, and a hand-written reflect row —
+  with no name list and no spelling enumerated.
+* **Naming.** Is every name it declared — or REDECLARED — under
+  `guardians.agent.`?
+
+The two facts it reads are engine-side marks, not relations: a candidate can
+hand-write any reflect fact, so a gate reading a relation about its own subject
+would be reading a channel that subject controls. `docs/design/measured.md`
+group E is the record, including the measurement that decided the shape.
+
 ## Honest state
 
 The checking half is real and measured. The generating half is not yet wired: the
 agents in `agent/` are hand-written stands-in for what a model would emit. The
-`Checked` relation in `safety.anthill` is a fixture — the typer already decides
-it on every load and currently discards the positive verdict. `docs/design/measured.md`
+`Checked` relation in `safety.anthill` is declared and asserted nowhere — the
+typer already decides it on every load and currently discards the positive
+verdict, which is the seam that would fill it. `docs/design/measured.md`
 records what was measured, what is missing, and the two defects found while
 building this — C7 and C8, both since fixed in `kb/typing.rs`.

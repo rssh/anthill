@@ -69,6 +69,8 @@ namespace anthill.reflect
     operation_map {
       kb: "kb_ambient",
       loaded: "kb_loaded",
+      layer_symbols: "kb_layer_symbols",
+      layer_clauses: "kb_layer_clauses",
       execute: "kb_execute",
       facts_of: "kb_facts_of",
       stored_facts_of: "kb_stored_facts_of"

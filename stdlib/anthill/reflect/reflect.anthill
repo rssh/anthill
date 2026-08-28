@@ -170,6 +170,40 @@ namespace anthill.reflect
   )
 
   -- ================================================================
+  -- WI-5XBBQ — THE DELTA OF A SCOPED LOAD (`KB.loaded`).
+  --
+  -- What a layer INTRODUCED and what it ASSERTED, read through the two
+  -- operations on `KB` below. A checker that loads an untrusted candidate into
+  -- a layer asks exactly these two questions of it, and the answers must not be
+  -- readable from the clause store: a candidate can hand-write any reflect row
+  -- (measured — `fact SortProvidesInfo(...)` lands beside the loader's own),
+  -- so a gate reading a RELATION about its own subject reads a channel that
+  -- subject controls. These are engine-side marks reported as VALUES.
+  -- ================================================================
+
+  -- A name the layer introduced or redeclared.
+  --
+  -- BOTH FLAGS, because neither implies the other. `minted` is the layer having
+  -- CREATED the symbol; `declared` is the layer having written a declaration at
+  -- it. A rule head brings a predicate into existence without declaring it
+  -- (§8.6), so it is minted and not declared; a load that rewrites an existing
+  -- name — `sort guardians.Triage` against a base that already has one — re-enters
+  -- the SAME symbol, so it is declared and not minted, and a check that read only
+  -- the mint mark would never see it.
+  entity LayerSymbol(symbol: Symbol, minted: Bool, declared: Bool)
+
+  -- A clause the layer's SOURCE TEXT wrote — a `fact`, a `rule` or a
+  -- `constraint`. The metadata rows the loader banks for the same files'
+  -- declarations are NOT here; that separation is what lets a containment rule
+  -- refuse a forged reflect fact while admitting the loader's own.
+  --
+  -- `functor` IS OPTIONAL because one written clause form has no head functor:
+  -- a DENIAL, `rule ⊥ :- …`, whose head is the kernel's bottom and interns no
+  -- name. It is reported rather than dropped — a clause a policy cannot see is
+  -- a clause it cannot refuse — and `none` is the honest answer for it.
+  entity LayerClause(functor: Option[T = Symbol], head: Term, bodied: Bool)
+
+  -- ================================================================
   -- Symbol operations (builtins)
   -- ================================================================
 
@@ -460,6 +494,15 @@ namespace anthill.reflect
     -- Bridge: opaque Term ↔ structural TermRepr
     operation reify(kb: KB, t: Term) -> TermRepr
     operation reflect(kb: KB, r: TermRepr) -> Term
+
+    -- WI-5XBBQ — WHAT A SCOPED LOAD CONTRIBUTED. Both take the value
+    -- `loaded(sources)` returned; the ambient `kb()` names no layer and is
+    -- refused, as is a layer with a later one applied on top of it (its delta
+    -- would be measured against a knowledge base the inner layer has changed).
+    --
+    -- OPERATIONS AND NOT FACTS, deliberately: see `LayerSymbol` above.
+    operation layer_symbols(kb: KB) -> List[T = LayerSymbol]
+    operation layer_clauses(kb: KB) -> List[T = LayerClause]
 
     -- Query operations (KB introspection)
     operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]

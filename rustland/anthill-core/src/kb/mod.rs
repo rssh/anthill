@@ -268,6 +268,38 @@ impl std::fmt::Display for ClauseKind {
     }
 }
 
+// ── Clause origin ───────────────────────────────────────────────
+
+/// WI-5XBBQ — WHO WROTE THIS CLAUSE: the source text, or the loader?
+///
+/// [`ClauseKind`] answers a different question and cannot stand in for this one. It
+/// records the SYNTACTIC FORM, and its own doc says so: `Fact` covers "a `fact` —
+/// **including loader-synthesized metadata facts**", `Rule` covers the equations
+/// `emit_operation_equation` derives. So every reflect row the loader banks for a
+/// `provides` clause is a `ClauseKind::Fact` indistinguishable from one a program
+/// typed out.
+///
+/// The distinction is load-bearing for a checker that loads UNTRUSTED source into a
+/// discardable layer and then asks what that source contributed
+/// (`examples/guardians/lib/gate.anthill`). Measured there: a candidate can hand-write
+/// `fact SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)` and it lands beside
+/// the loader's own row for a real `provides`, structurally alike and equally
+/// believable. A containment rule over the layer's clauses must refuse the first and
+/// admit the second, and NOTHING ELSE IN THE ROW SAYS WHICH IS WHICH.
+///
+/// The alternative — exempting clauses by head namespace ("not under `anthill.reflect`")
+/// — is the wrong shape and re-opens exactly the forgery it is meant to close: the
+/// candidate writes the reflect functor itself and is exempted by name.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ClauseOrigin {
+    /// A `fact`, `rule` or `constraint` item written in a loaded file.
+    Source,
+    /// Everything the loader derives: reflect metadata rows, subsort and provision
+    /// clauses, operation equations, flow clauses, and every clause a host built by
+    /// hand through the `assert_*` API.
+    Derived,
+}
+
 // ── Rule entry ──────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -353,6 +385,21 @@ struct RuleEntry {
     /// the loader right after assert (see `set_rule_head_span`), read by the
     /// typing.rs head-error paths.
     head_span: Option<crate::span::SourceSpan>,
+    /// WI-5XBBQ — [`ClauseOrigin`]: did the SOURCE TEXT write this clause, or did the
+    /// loader derive it?
+    ///
+    /// `Derived` at construction and flipped by [`KnowledgeBase::mark_source_clause`],
+    /// which the loader calls right after asserting a `fact` / `rule` / `constraint`
+    /// item — the same shape as `set_rule_head_span` directly above, and for the same
+    /// reason: the caller has the `RuleId` only after the assert.
+    ///
+    /// THE DEFAULT IS THE FAIL-LOUD DIRECTION. A derived clause mis-marked `Source` is
+    /// refused by the guardians gate's containment rule and reddens its `good.anthill`
+    /// control immediately; a source clause left `Derived` would be silently EXEMPT
+    /// from it. So the two source sites are the ones that must say, and everything
+    /// else — every host `assert_*` call, every loader emission — is `Derived` without
+    /// having to.
+    origin: ClauseOrigin,
 }
 
 /// Immutable, value-facing view of one loaded program clause.
@@ -2174,6 +2221,82 @@ impl KnowledgeBase {
         self.rules[id.index()].head_span.get_or_insert(span);
     }
 
+    /// WI-5XBBQ — record that this clause was WRITTEN IN THE SOURCE. See
+    /// [`ClauseOrigin`] for why the loader has to say so and what reads it.
+    ///
+    /// Called by `load_fact` / `load_rule` / the constraint path right after the
+    /// assert, on the same footing as [`Self::set_rule_head_span`] above. Not idempotent
+    /// in the other direction on purpose: a DERIVED clause a source item deduped onto
+    /// becomes `Source`, which is both true (the source did assert it) and the
+    /// fail-loud direction.
+    ///
+    /// DEDUP MEANS THE `RuleId` NEED NOT BE NEW, and a layer reader has to know it.
+    /// `assert_fact` hands back an EXISTING slot when `(term, clause_kind, domain)` all
+    /// match, so a scoped load whose `fact` restates one the BASE already holds marks a
+    /// row BELOW the layer's clause mark, and [`Self::layer_source_clauses`] does not
+    /// report it. That is not a hole in the answer, because it is not a hole in the KB:
+    /// the dedup happened precisely because the clause was already there, so the layer
+    /// added nothing for a containment rule to refuse. (Found by review; stated here
+    /// rather than worked around, because the alternative — a per-layer clause identity
+    /// distinct from `RuleId` — would buy a refusal for a program that changed nothing.)
+    pub fn mark_source_clause(&mut self, id: RuleId) {
+        self.rules[id.index()].origin = ClauseOrigin::Source;
+    }
+
+    /// WI-5XBBQ — who wrote this clause. See [`ClauseOrigin`].
+    pub fn clause_origin(&self, id: RuleId) -> ClauseOrigin {
+        self.rules[id.index()].origin
+    }
+
+    /// WI-5XBBQ — every clause stored at or after `mark` that the SOURCE TEXT wrote,
+    /// as `(head functor, head value, is bodied)`.
+    ///
+    /// `mark` is a layer's pre-load `rules.len()`, so this is exactly what one scoped
+    /// load's own files asserted. The [`ClauseOrigin::Derived`] rows in the same range —
+    /// every reflect metadata fact the loader banks for a declaration in those files —
+    /// are filtered out, and that filter is the whole point: they are structurally
+    /// indistinguishable from ones a program typed out.
+    ///
+    /// RETRACTED SLOTS ARE SKIPPED. Beyond ordinary `retract`, that range can hold the
+    /// TOMBSTONES an inner layer's discard left behind
+    /// ([`Self::tombstone_layer_rules`]), which are not this layer's clauses.
+    pub fn layer_source_clauses(
+        &self,
+        mark: usize,
+    ) -> Vec<(Option<Symbol>, crate::eval::value::Value, bool)> {
+        self.rules
+            .iter()
+            .skip(mark)
+            .filter(|e| !e.retracted && e.origin == ClauseOrigin::Source)
+            .map(|e| {
+                let functor = term_view::TermView::head(&e.head, self).functor_sym();
+                (functor, e.head.clone(), !e.body_nodes.is_empty())
+            })
+            .collect()
+    }
+
+    /// WI-5XBBQ — every symbol the LAST DEFINING SCAN wrote a declaration for, in
+    /// declaration order, deduped.
+    ///
+    /// "Last scan" is the whole caveat, and it is why the only caller reads this at the
+    /// one instant it means what it says: [`Self::decl_sites`] is cleared at the top of
+    /// every `scan_definitions_with_sources`, so a second load overwrites it. `kb_loaded`
+    /// copies the answer into the layer's `LayerDelta` the moment its own load returns,
+    /// and every later reader asks the delta instead.
+    ///
+    /// A RULE HEAD IS NOT A DECLARATION (§8.6 / WI-896): a predicate a `rule` brought
+    /// into existence has no entry here. It is still a symbol the load MINTED, so the
+    /// mint mark sees it — the two halves of "what did this load introduce" answer
+    /// different questions and neither subsumes the other.
+    pub fn declared_symbols_of_last_scan(&self) -> Vec<Symbol> {
+        let mut seen = std::collections::HashSet::new();
+        self.decl_sites
+            .iter()
+            .map(|d| d.sym)
+            .filter(|s| seen.insert(*s))
+            .collect()
+    }
+
     /// WI-251 — iterate every operation's `(symbol, body NodeOccurrence)`.
     /// Passes (e.g. `req_insertion::run`) that need to scan all bodies
     /// consume this; the iteration order is unspecified.
@@ -2789,6 +2912,8 @@ impl KnowledgeBase {
             // WI-472: set by `assert_fact_value` after this push, for a deduped
             // Node/Entity fact head. Every other head (rule, un-deduped, or a
             // `Value::Term` fact whose key is the head itself) leaves it `None`.
+            // WI-5XBBQ: DERIVED unless the loader says otherwise — see the field.
+            origin: ClauseOrigin::Derived,
         });
 
         self.by_domain.entry(domain).or_default().push(rule_id);

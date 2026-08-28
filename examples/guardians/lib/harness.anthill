@@ -40,8 +40,20 @@ end
 
 enum guardians.CheckResult
   import anthill.prelude.{String, List}
+  import anthill.reflect.{Symbol}
   -- The verdict a proof could cite (docs/design/high-level-api.md §4).
-  entity Accepted(carrier: String)
+  --
+  -- THREE REFERENCES AND A ROW, none of them a constant. `carrier` used to be
+  -- `String` and the checker filled it with the literal `"guardians.agent.Generated"`
+  -- — a sort no candidate ever declares, so the verdict named nothing and the
+  -- checker never learned what it had accepted. It is now the SYMBOL the gate
+  -- found: the carrier the candidate declared that provides `spec`.
+  --
+  -- `budget` is the spec's declared effect row, and it is REPORTED rather than
+  -- re-checked (see `gate.anthill`'s header). It is read from the BASE before the
+  -- candidate is loaded, because a candidate that redeclares the spec would
+  -- otherwise be restating the budget it is being held to.
+  entity Accepted(carrier: Symbol, spec: Symbol, budget: List[T = String])
   -- Prose, on purpose: a model repairs from a diagnostic better than from a
   -- structured record, and these are fed straight back as `feedback`.
   entity Rejected(diagnostics: List[T = String])
@@ -49,6 +61,7 @@ end
 
 sort guardians.Harness
   import anthill.prelude.{String, List, Error}
+  import anthill.reflect.{Symbol}
   import guardians.{Prompt, Source, Text, Model, Llm}
   import guardians.TrustLevel.{Public, Untrusted}
 
@@ -61,7 +74,7 @@ sort guardians.Harness
   -- Reading the KB rather than transcribing it is the point — a hand-written
   -- prompt goes stale against a changed signature SILENTLY, and the model then
   -- codes against an interface the checker will not accept.
-  operation render_task(self: C, spec: String, tools: List[T = String],
+  operation render_task(self: C, spec: Symbol, tools: List[T = String],
                         feedback: List[T = String]) -> Prompt[Public]
     effects {Error}
 
@@ -89,6 +102,7 @@ end
 
 sort guardians.Checker
   import anthill.prelude.{String, Error, External, Permission}
+  import anthill.reflect.{Symbol}
   import guardians.{Source, CheckResult, Model}
 
   sort C = ?
@@ -100,12 +114,13 @@ sort guardians.Checker
   -- steerable — it neither consults a model nor acquires the authority to, and
   -- the second half is downward-closed, so naming a narrower capability does not
   -- evade it (see the file header, and vocabulary.anthill).
-  operation check(self: C, src: Source, spec: String) -> CheckResult
+  operation check(self: C, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]}
 end
 
 namespace guardians
   import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.reflect.{Symbol}
   import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult, Model}
 
   -- ONE ROUND of the loop: render, complete, check. The repair loop is the
@@ -117,7 +132,7 @@ namespace guardians
   -- the evidence. So this row carries `Model` (it consults one, through
   -- `generate`) and no `Permission` at all.
   operation attempt(h: Harness, llm: Llm, chk: Checker,
-                    spec: String, tools: List[T = String],
+                    spec: Symbol, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
     effects {External, Model, Error} =
       let p = h.render_task(spec, tools, feedback)
@@ -136,7 +151,7 @@ namespace guardians
   -- them is the entire difference between using authority and obtaining it.
   operation open_round(h: Harness, chk: Checker,
                        endpoint: String, model: String,
-                       spec: String, tools: List[T = String],
+                       spec: Symbol, tools: List[T = String],
                        feedback: List[T = String]) -> CheckResult
     effects {Permission[Model], External, Model, Error} =
       let llm = LiveLlm.open(endpoint, model)
@@ -146,10 +161,11 @@ end
 -- Carriers.
 sort guardians.FileHarness
   import anthill.prelude.{String, List, Error}
+  import anthill.reflect.{Symbol}
   import guardians.{Harness, Prompt, Source, Text, Llm, Model}
   import guardians.TrustLevel.{Public, Untrusted}
-  entity file_harness(lib_dir: String)
-  operation render_task(self: FileHarness, spec: String, tools: List[T = String],
+  entity file_harness
+  operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
                         feedback: List[T = String]) -> Prompt[Public]
     effects {Error}
   operation generate(self: FileHarness, llm: Llm, p: Prompt[Public]) -> Source
@@ -159,9 +175,10 @@ end
 
 sort guardians.LoadChecker
   import anthill.prelude.{String, Error, External, Permission}
+  import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Model}
-  entity load_checker(lib_dir: String)
-  operation check(self: LoadChecker, src: Source, spec: String) -> CheckResult
+  entity load_checker
+  operation check(self: LoadChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]}
   provides Checker
 end

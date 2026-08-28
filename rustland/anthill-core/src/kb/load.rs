@@ -25135,6 +25135,11 @@ impl<'a> Loader<'a> {
         // later fact would misreport the earlier file's location.
         let head_span = self.source_span_of(f.term);
         self.kb.set_rule_head_span(rule_id, head_span);
+        // WI-5XBBQ — a `fact` item is SOURCE-WRITTEN. Unconditional, unlike the span
+        // above: provenance is not a diagnostic convenience, it is what lets a checker
+        // separate what a loaded candidate typed out from what the loader derived
+        // about it (`ClauseOrigin`).
+        self.kb.mark_source_clause(rule_id);
         self.fact_rule_ids.push(rule_id);
 
         // WI-210: when `fact Spec[bindings]` appears inside a sort body
@@ -26203,6 +26208,11 @@ impl<'a> Loader<'a> {
             if let Some(&span) = positive_head_spans.get(head_idx) {
                 self.kb.set_rule_head_span(rid, span);
             }
+            // WI-5XBBQ — a `rule` item is SOURCE-WRITTEN, and UNCONDITIONALLY so: the
+            // span install above skips a `⊥` denial head (it has no source term), and a
+            // denial is every bit as much a thing the source wrote. Riding provenance on
+            // the span would have made that one clause invisible to the guardians gate.
+            self.kb.mark_source_clause(rid);
             // WI-1129 (proposal 056 §2.3): install this head's variadic capture, so
             // `simp_rewrite::try_fire` folds a redex's leftover named arguments into
             // one record occurrence bound to that slot. A `⊥` denial head is not an
@@ -27210,8 +27220,15 @@ impl<'a> Loader<'a> {
             pos_args,
             named_args: SmallVec::new(),
         });
-        self.kb
+        // WI-5XBBQ — a `constraint` item is SOURCE-WRITTEN, like `fact` and `rule`.
+        // It heads at the kernel meta-name `Constraint`, which no candidate program
+        // can mint, so the guardians gate refuses one a loaded candidate writes — the
+        // right direction: an untrusted program must not install integrity guards on
+        // the base it is being checked against.
+        let rid = self
+            .kb
             .assert_fact(constraint_term, constraint_sort, domain, None);
+        self.kb.mark_source_clause(rid);
     }
 
     /// Store a queryable `Constraint(guard(<LogicalQuery>))` reflection fact for a
@@ -27230,8 +27247,11 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::from_elem(guard_term, 1),
             named_args: SmallVec::new(),
         });
-        self.kb
+        // WI-5XBBQ — source-written, for the reason at the denial form above.
+        let rid = self
+            .kb
             .assert_fact(constraint_term, constraint_sort, domain, None);
+        self.kb.mark_source_clause(rid);
     }
 
     /// Resolve a `LogicalQuery` constructor symbol (`pattern_query`, `conjunction`,

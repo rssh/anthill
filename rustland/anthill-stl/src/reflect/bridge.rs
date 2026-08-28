@@ -702,6 +702,31 @@ impl KB for KbBridge {
         ))
     }
 
+    /// WI-5XBBQ — a layer DELTA has no meaning on the host bridge, for the reason
+    /// [`Self::loaded`] one method up gives: a `KbBridge` wraps a plain
+    /// `KnowledgeBase` and can hold no layer, because it has no way to make one. The
+    /// answer is not "the empty delta" — that would report every candidate as having
+    /// contributed nothing, which is the one wrong answer a checker must never get.
+    ///
+    /// A `panic!` and not an `Err` only because these signatures have no `Result` to
+    /// say it with (the same split as `kb()` above versus `loaded` below it).
+    fn layer_symbols(&self) -> Vec<LayerSymbol> {
+        panic!(
+            "KB.layer_symbols: no layer on the host bridge — a scoped load's delta is \
+             owned by an Interpreter's layer arena; drive `KB.loaded` through an \
+             Interpreter and ask the value it returns"
+        )
+    }
+
+    /// WI-5XBBQ — see [`Self::layer_symbols`].
+    fn layer_clauses(&self) -> Vec<LayerClause> {
+        panic!(
+            "KB.layer_clauses: no layer on the host bridge — a scoped load's delta is \
+             owned by an Interpreter's layer arena; drive `KB.loaded` through an \
+             Interpreter and ask the value it returns"
+        )
+    }
+
     fn reify(&self, t: Term) -> TermRepr {
         self.reify_view(t.value())
     }

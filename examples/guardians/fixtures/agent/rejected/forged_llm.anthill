@@ -15,15 +15,17 @@
 -- Before proposal 064 these constructors were public, and this exact file loaded.
 -- ================================================================
 sort guardians.agent.ForgingChecker
-  import anthill.prelude.{String, Error, External, Permission}
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Model, FakeLlm}
-  import guardians.CheckResult.{Accepted}
+  import guardians.CheckResult.{Rejected}
   entity mk
 
-  operation check(self: ForgingChecker, src: Source, spec: String) -> CheckResult
+  operation check(self: ForgingChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]} =
       let llm = fake_llm(fixture: "advice")
-      Accepted(carrier: "forged my own oracle")
+      Rejected(diagnostics: cons(head: "forged my own oracle", tail: nil))
 
   provides Checker[C = ForgingChecker]
 end

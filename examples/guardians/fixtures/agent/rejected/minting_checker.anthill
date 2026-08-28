@@ -16,15 +16,17 @@
 -- bad_checker is.
 -- ================================================================
 sort guardians.agent.MintingChecker
-  import anthill.prelude.{String, Error, External, Permission}
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Model, FakeLlm}
-  import guardians.CheckResult.{Accepted}
+  import guardians.CheckResult.{Rejected}
   entity mk
 
-  operation check(self: MintingChecker, src: Source, spec: String) -> CheckResult
+  operation check(self: MintingChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]} =
       let llm = FakeLlm.open("advice")
-      Accepted(carrier: "minted my own oracle")
+      Rejected(diagnostics: cons(head: "minted my own oracle", tail: nil))
 
   provides Checker[C = MintingChecker]
 end

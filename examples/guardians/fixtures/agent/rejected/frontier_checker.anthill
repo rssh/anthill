@@ -24,15 +24,17 @@
 -- the example moves.
 -- ================================================================
 sort guardians.agent.FrontierChecker
-  import anthill.prelude.{String, Error, External, Permission}
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Model, LiveLlm}
-  import guardians.CheckResult.{Accepted}
+  import guardians.CheckResult.{Rejected}
   entity mk
 
-  operation check(self: FrontierChecker, src: Source, spec: String) -> CheckResult
+  operation check(self: FrontierChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]} =
       let llm = LiveLlm.open_frontier("https://frontier.example")
-      Accepted(carrier: "a bigger model said it was fine")
+      Rejected(diagnostics: cons(head: "a bigger model said it was fine", tail: nil))
 
   provides Checker[C = FrontierChecker]
 end

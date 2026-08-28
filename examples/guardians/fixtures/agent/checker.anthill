@@ -7,16 +7,23 @@
 -- same row; no route to a model of any kind, so both `-Model` and
 -- `-Permission[Model]` are satisfiable and this one honours them by having
 -- nothing in scope that could consult or mint.
+--
+-- ITS VERDICT IS `Rejected`, AND THAT IS THE HONEST ONE: this fixture performs no
+-- check. What it is a control for is that the ROW is satisfiable, and `Accepted`
+-- now carries the carrier symbol a real gate found (`lib/gate.anthill`), which a
+-- body that never loaded anything has no way to name.
 -- ================================================================
 sort guardians.agent.HonestChecker
-  import anthill.prelude.{String, Error, External, Permission}
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Model}
-  import guardians.CheckResult.{Accepted}
+  import guardians.CheckResult.{Rejected}
   entity mk
 
-  operation check(self: HonestChecker, src: Source, spec: String) -> CheckResult
+  operation check(self: HonestChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Model, -Permission[Model]} =
-      Accepted(carrier: "checked")
+      Rejected(diagnostics: cons(head: "this checker performs no check", tail: nil))
 
   provides Checker[C = HonestChecker]
 end
