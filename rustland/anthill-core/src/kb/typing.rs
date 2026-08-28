@@ -40507,14 +40507,81 @@ fn bare_spec_arg_provision_projection(
     // A bare receiver of a sort OTHER than the field's spec — an argument at the field's
     // own spec is [`bare_spec_arg_self_projection`]'s job, and answering it here too would
     // route the same shape through two readers.
-    let arg_sort = bare_receiver_sort(kb, &arg.ty, recv)?;
+    //
+    // WI-20260828-BH1JZ: WRITTEN TYPE ARGUMENTS COUNT TOO. [`bare_receiver_sort`] answers
+    // only for a receiver spelled bare (`b: DBox`) or materialized into all-self-
+    // projections (`List[T = xs.T]`); a receiver written `xs: List[T = Int64]` is a
+    // parameterized view with a CONCRETE argument and was declined, so the projection
+    // never ran for the commonest spelling there is. The σ below is unaffected by which
+    // spelling arrived — it maps each of `arg_sort`'s params to the RECEIVER's projection
+    // of that param (`xs.T`), which denotes the written argument just as well as an
+    // unwritten one. Widened HERE and not inside `bare_receiver_sort`, which
+    // [`bare_spec_arg_self_projection`] also reads and whose question is narrower.
+    let arg_sort = bare_receiver_sort(kb, &arg.ty, recv).or_else(|| {
+        // CONCRETE carriers only. A receiver whose sort is itself an abstract SPEC
+        // (`rest : Stream[T = …, E = …]`, the tail `MappedStream.splitFirst` re-wraps)
+        // has no carrier of its own to read a provision off; projecting through
+        // `Stream provides Iterable` would bind the field's `Source` to the SPEC
+        // `Stream` rather than to the tail's real carrier. MEASURED — without this
+        // clause the stdlib's own `mapped(rest, fn)` builds
+        // `MappedStream[Source = Stream, Src = rest.T, …]` and the file stops loading.
+        let base = sort_functor_of_view(kb, &arg.ty)?;
+        (!carrier_is_abstract_spec(kb, base)).then_some(base)
+    })?;
     if kb.canonical_sort_sym(arg_sort) == kb.canonical_sort_sym(field_base) {
         return None;
     }
     // The relating fact: `arg_sort provides field_base[…]`, in `arg_sort`'s own params.
-    let view = provider_spec_view_bindings(kb, arg_sort, field_base)?;
+    //
+    // WI-20260828-BH1JZ: DIRECT provision first, then the view COMPOSED through
+    // TRANSITIVE provision. `provider_spec_view_bindings` reads `provides` facts whose
+    // carrier IS `arg_sort`, so it finds an explicit `provides Iterable[…]` and misses
+    // `List`, whose Iterable-ness rides through `Stream` (`List provides Stream`,
+    // `Stream provides Iterable`) with no direct fact.
+    //
+    // THE MISS WAS SILENT, which is why it cost a whole investigation: the caller fell
+    // back to the raw `List[T = Int64]`, `unify_types` against `Iterable[C = ?_,
+    // Element = ?_, E = ?_]` answered TRUE while binding nothing useful, and the
+    // constructed carrier's params — INCLUDING the sibling arrow field's row — stayed
+    // free, surfacing far away as `undeclared effect ??_` on the constructing operation.
+    //
+    // [`transitive_provision_view`] already composes exactly this (its own doc names
+    // `List`'s Iterable-ness through `Stream` as the case it is for) and returns the
+    // SAME view shape — keyed by spec param, valued in the carrier's own params — which
+    // is what the σ below consumes. Its first branch is the direct one, so the `or_else`
+    // keeps the hot path off the walk rather than expressing a second policy.
+    let view = provider_spec_view_bindings(kb, arg_sort, field_base).or_else(|| {
+        let carrier_param = spec_carrier_param(kb, field_base)?;
+        let pvid = type_param_vid_in_sort(kb, field_base, carrier_param)?;
+        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+        transitive_provision_view(kb, field_base, pvid, arg_sort, &mut visited).map(|(v, _)| v)
+    })?;
     // σ: each of `arg_sort`'s parameters ↦ the receiver's projection of THAT parameter.
-    let recv_projections = receiver_param_projections(kb, arg_sort, recv);
+    //
+    // WI-20260828-BH1JZ: a WRITTEN type argument overrides the projection for its own
+    // parameter. `xs.T` and `Int64` denote the same thing for a receiver declared
+    // `xs: List[T = Int64]`, but only one of them SAYS so here: threading the projection
+    // left the sibling arrow field demanding `xs.T -> ?_` against the supplied
+    // `Int64 -> Int64`, a mismatch on two spellings of one type. Written arguments are
+    // read off the receiver's own type; a parameter it leaves unwritten keeps the
+    // projection, which is what a bare receiver supplies for every parameter.
+    let mut recv_projections = receiver_param_projections(kb, arg_sort, recv);
+    if let TypeExtractor::Parameterized {
+        bindings: recv_bindings,
+        ..
+    } = extract_type(kb, &arg.ty)
+    {
+        for (k, v) in &recv_bindings {
+            let Some(vid) = type_param_vid_in_sort(kb, arg_sort, *k) else {
+                continue;
+            };
+            let Value::Term { id, .. } = v else { continue };
+            match recv_projections.iter_mut().find(|(pv, _)| *pv == vid) {
+                Some(slot) => slot.1 = *id,
+                None => recv_projections.push((vid, *id)),
+            }
+        }
+    }
     let arg_param_syms: Vec<Symbol> = sort_type_params_as_pairs(kb, arg_sort)
         .iter()
         .map(|(p, _)| *p)
@@ -40523,10 +40590,29 @@ fn bare_spec_arg_provision_projection(
     let (span, owner) = (arg.node.span, arg.node.owner);
     let base_ref = kb.make_sort_ref(field_base);
     let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+    // WI-20260828-BH1JZ: the spec's CARRIER parameter is the receiver's own type, by
+    // definition, and must not be read off the provision. A self-referential provision
+    // writes the SPEC in that slot (`Stream provides Iterable[C = Stream, …]` — `C = Self`
+    // spelled with the sort's own name), and composing it through a hop substitutes the
+    // intermediate's PARAMS, not that self-reference, so it survives as the literal
+    // `Stream`. MEASURED: `mapped(xs, inc)` over a `List` inferred
+    // `MappedStream[Source = Stream, …]`, and the finiteness witness — gated on
+    // `requires FiniteCollection[C = S]` — then asked whether the SPEC `Stream` is a
+    // FiniteCollection and got no. Binding it to the receiver's type is right for a
+    // direct provision too, where the view already names exactly that carrier.
+    // Joined by VID and not by Symbol, for the same reason the provision join below is:
+    // the field's binding keys and the spec's own declaration are resolved in two scopes
+    // and can be two Symbols for one parameter.
+    let field_carrier_vid = spec_carrier_param(kb, field_base)
+        .and_then(|cp| type_param_vid_in_sort(kb, field_base, cp));
     for (field_key, _) in &bindings {
         // Identity join on the SPEC's own parameter — the field's binding keys and the
         // provision's are resolved in two scopes and can be two Symbols for one param.
         let key_vid = type_param_vid_in_sort(kb, field_base, *field_key)?;
+        if Some(key_vid) == field_carrier_vid {
+            proj_bindings.push((*field_key, arg.ty.clone()));
+            continue;
+        }
         let raw = view
             .iter()
             .find(|(sp, _)| type_param_vid_in_sort(kb, field_base, *sp) == Some(key_vid))
