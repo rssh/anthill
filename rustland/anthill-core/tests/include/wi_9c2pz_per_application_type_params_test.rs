@@ -248,10 +248,13 @@ fn wi9c2pz_eq_propagates_a_concrete_type_to_both_columns() {
     // dropped a column, which is the shape this ticket is about.
     match &rows[0] {
         Value::Tuple { pos, named } if pos.is_empty() && named.len() == 2 => {
-            let vals: Vec<&Value> = named.iter().map(|(_, v)| v).collect();
+            // WI-20260827-3ZNBC — read what each column DENOTES, not the variant.
+            let vals: Vec<Option<String>> = named
+                .iter()
+                .map(|(_, v)| crate::common::scalar_str(interp.kb(), v))
+                .collect();
             assert!(
-                matches!(vals[0], Value::Str(s) if s == "root")
-                    && matches!(vals[1], Value::Str(s) if s == "root"),
+                vals[0].as_deref() == Some("root") && vals[1].as_deref() == Some("root"),
                 "both columns carry the `String` the link propagates, got {named:?}"
             );
         }

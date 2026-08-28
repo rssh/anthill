@@ -124,12 +124,12 @@ end
 /// WI-20260818-YQB1Y — a one-column projection's rows are one-component named tuples, so
 /// both readers go through the shared STRICT column reader (which panics on any other row
 /// shape) rather than scanning a cons cell for the first `Str`/`Int` it can find.
-fn drain_strings(v: Value) -> Vec<String> {
-    crate::common::list_column_strings(&v)
+fn drain_strings(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<String> {
+    crate::common::list_column_strings(kb, &v)
 }
 
-fn drain_ints(v: Value) -> Vec<i64> {
-    crate::common::list_column_ints(&v)
+fn drain_ints(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<i64> {
+    crate::common::list_column_ints(kb, &v)
 }
 
 /// `rel.name` selects the `name` column, yielding `Relation[(name: String)]`.
@@ -139,7 +139,7 @@ fn wi714_project_single_column() {
     let r = interp
         .call("test.wi714project.names", &[])
         .expect("names runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "bob".to_string()]);
 }
@@ -153,7 +153,7 @@ fn wi714_project_distribute_dot_one_member() {
     let r = interp
         .call("test.wi714project.ages", &[])
         .expect("ages runs");
-    let mut got = drain_ints(r);
+    let mut got = drain_ints(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec![25, 30]);
 }
@@ -186,11 +186,14 @@ fn wi714_project_multi_column() {
         match (tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
                 rows += 1;
+                // WI-20260827-3ZNBC — read what the column DENOTES, not the variant.
                 for (_k, v) in fields.iter() {
-                    match v {
-                        Value::Str(s) => names.push(s.clone()),
-                        Value::Int(n) => ages.push(*n),
-                        other => panic!("unexpected projected-column value {other:?}"),
+                    if let Some(s) = crate::common::scalar_str(interp.kb(), v) {
+                        names.push(s);
+                    } else if let Some(n) = crate::common::scalar_int(interp.kb(), v) {
+                        ages.push(n);
+                    } else {
+                        panic!("unexpected projected-column value {v:?}");
                     }
                 }
                 cur = t;
@@ -256,7 +259,7 @@ fn wi714_project_after_where() {
     let r = interp
         .call("test.wi714project.youngNames", &[])
         .expect("youngNames runs");
-    let got = drain_strings(r);
+    let got = drain_strings(interp.kb(), r);
     assert_eq!(got, vec!["bob".to_string()], "only bob is 25");
 }
 
@@ -307,7 +310,7 @@ fn wi714_project_named_arg_head() {
     let r = interp
         .call("test.wi714project.namedNames", &[])
         .expect("namedNames runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "bob".to_string()]);
 }
@@ -321,7 +324,7 @@ fn wi714_project_preserves_bag_multiplicity() {
     let r = interp
         .call("test.wi714project.owners", &[])
         .expect("owners runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(
         got,

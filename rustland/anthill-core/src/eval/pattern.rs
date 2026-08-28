@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::{NodeOccurrence, Pattern};
-use crate::kb::term::{Literal, Term};
+use crate::kb::term::Literal;
 
 use super::value::{TupleComponents, Value};
 use super::Interpreter;
@@ -45,7 +45,7 @@ pub fn match_pattern(
         }
         Pattern::Wildcard => Some(SmallVec::new()),
         Pattern::Literal { value } => {
-            if literal_matches(value, scrutinee) {
+            if literal_matches(&interp.kb, value, scrutinee) {
                 Some(SmallVec::new())
             } else {
                 None
@@ -293,89 +293,99 @@ fn match_tuple_pattern(
 }
 
 /// Extract `(positional ++ named)` sub-values when the scrutinee carries the
-/// expected constructor functor. Constructor patterns are positional today,
-/// so named entity args are exposed after positionals in declaration order.
+/// expected constructor functor, in DECLARATION order — which is the order
+/// [`match_constructor_pattern`] indexes into for a named sub-pattern
+/// (`Box(v: some(x))` resolves `v` to its index in `entity_field_names`).
+///
+/// WI-20260827-3ZNBC — ONE READ FOR EVERY CARRIER. This used to be four arms
+/// (`Entity`, `Term`, `SymbolRef`, `Node`) and the `Node` one destructured only a
+/// NULLARY occurrence: an APPLIED one returned `None`, with a comment saying that was
+/// deliberate and "costs nothing today". It cost nothing while the SLD→eval bridge
+/// normalized every operand into a `Value::Entity` first. With that gone, a bridged
+/// body's `match c case Vec3(x, y, z) ->` receives the occurrence the rule body wrote
+/// and would have declined every arm — a `MatchFailed` raise, i.e. a
+/// residualized goal, for a scrutinee that plainly is that constructor.
+///
+/// THE REFUSAL'S STATED REASON DID NOT SURVIVE THE OTHER TWO CARRIERS, which is why
+/// removing it is a repair and not a loosening. It read: "its children are
+/// sub-occurrences, and binding them would make a `case` arm destructure reflect
+/// SYNTAX rather than data". But a `Value::Term` over `Vec3(add(1, 2), 0.0, 0.0)`
+/// has ALWAYS destructured here and bound `x` to the un-reduced `add(1, 2)` — the old
+/// `Term::Fn` arm handed each child back as `Value::term(child)` with no reduction —
+/// and the bridge's own normalizer agreed, since `handle_to_native` returns a
+/// non-constructor application UNCHANGED (`sort_of_constructor(add)` is `None`). So
+/// the rule was never "an un-reduced child does not bind"; it was "the occurrence
+/// carrier does not destructure", which is precisely the cross-carrier disagreement
+/// WI-1025's own comment three lines up calls a hazard: `value_functor` accepts a
+/// Node, so `MatchDispatch`'s pre-filter PROMISES the arm and the destructure then
+/// declined it. Reducing a child is not this function's job on any carrier; agreeing
+/// about which values destructure is.
+///
+/// Reading through [`TermView`] removes the four arms rather than adding a fifth:
+/// `Value::Entity`, `Value::Term`, `Value::SymbolRef` and `Value::Node` all present
+/// `ViewHead::Functor`/`Ref`, and their children read back as [`ViewItem`]s — the
+/// same collapse `reflect_field_access` made for the same reason.
+///
+/// NAMED ARGS ARE CANONICALIZED HERE, and that is the one thing the view does not
+/// give for free: the record builders run `canonicalize_record_named_args` on an
+/// entity and a `Term::Fn`, but an OCCURRENCE holds a fixed SOURCE-order slice
+/// (term_view.rs says so at the structural-key walk). Without this, `Vec3(y: 2, x: 1)`
+/// written in a rule body would hand `x`'s sub-pattern the `y` component — a
+/// wrong-typed binding on a clean load, the WI-788 family. Idempotent on the carriers
+/// that were already canonical, and correctly EXEMPT for an ordered product (a named
+/// tuple's source order is its identity).
 fn constructor_sub_values(
     kb: &crate::kb::KnowledgeBase,
     expected: Symbol,
     scrutinee: &Value,
 ) -> Option<Vec<Value>> {
+    use crate::kb::term_view::{TermView, ViewHead};
     // The same carrier-algebra cancellation `value_functor` applies, at the same
     // place: the `MatchDispatch` pre-filter reads that function, so a wrapper it
     // sees through and this one does not is an arm promised and then declined
     // (WI-1025).
     let scrutinee = scrutinee.carried();
-    match scrutinee {
-        Value::Entity {
-            functor,
-            pos,
-            named,
+    let (functor, pos_arity) = match scrutinee.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
             ..
-        } => {
-            if !functor_matches(kb, expected, *functor) {
-                return None;
-            }
-            let mut all: Vec<Value> = pos.to_vec();
-            all.extend(named.iter().map(|(_, v)| v.clone()));
-            Some(all)
-        }
-        Value::Term { id: tid, .. } => match kb.get_term(*tid) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => {
-                if !functor_matches(kb, expected, *functor) {
-                    return None;
-                }
-                let mut all: Vec<Value> = pos_args.iter().map(|t| Value::term(*t)).collect();
-                all.extend(named_args.iter().map(|(_, t)| Value::term(*t)));
-                Some(all)
-            }
-            // A 0-arg constructor stored as `Term::Ref` (WI-436/WI-511: the
-            // canonical nullary-constructor form) or reloaded as
-            // `Term::Ref`/`Term::Ident` (the printer renders a 0-arg shape as a
-            // bare identifier). Accept those so a `case nil()` arm matches both
-            // `cons("x", nil)` and the bare `nil`.
-            Term::Ref(sym) | Term::Ident(sym) => {
-                if !functor_matches(kb, expected, *sym) {
-                    return None;
-                }
-                Some(Vec::new())
-            }
-            _ => None,
-        },
-        // The nullary-constructor arm above, on the other TWO carriers of a name.
-        // Without them the head PROMISES the arm can match — `MatchDispatch`'s
-        // pre-filter reads `value_functor`, which accepts these carriers — and the
-        // destructure then declines, so the arm is skipped silently or the match
-        // fails outright. WI-1016 added `SymbolRef`; WI-1025 added the occurrence
-        // when `value_functor` began accepting it.
-        Value::SymbolRef(sym) => {
-            if !functor_matches(kb, expected, *sym) {
-                return None;
-            }
-            Some(Vec::new())
-        }
-        Value::Node(occ) => match occ.as_expr() {
-            Some(crate::kb::node_occurrence::Expr::Ref(sym))
-            | Some(crate::kb::node_occurrence::Expr::Ident(sym)) => {
-                if !functor_matches(kb, expected, *sym) {
-                    return None;
-                }
-                Some(Vec::new())
-            }
-            // An APPLIED occurrence is deliberately not destructured here: its
-            // children are sub-occurrences, and binding them would make a `case`
-            // arm destructure reflect SYNTAX rather than data — a capability, not
-            // a carrier fix. It costs nothing today, and that is measured rather
-            // than assumed: the pre-filter only ever SKIPS a branch whose functor
-            // differs, and such a branch reaches this `None` anyway, so the
-            // outcome is identical with or without the skip.
-            _ => None,
-        },
-        _ => None,
+        } => (f, pos_arity),
+        // A 0-arg constructor stored as `Term::Ref` (WI-436/WI-511: the canonical
+        // nullary-constructor form), reloaded as `Term::Ident` (the printer renders a
+        // 0-arg shape as a bare identifier), or carried as a `Value::SymbolRef`
+        // (WI-1016) / a `Ref`-headed occurrence (WI-1025). Accepting those is what
+        // lets a `case nil()` arm match both `cons("x", nil)` and the bare `nil`.
+        ViewHead::Ref(sym) | ViewHead::Ident(sym) => (sym, 0),
+        _ => return None,
+    };
+    if !functor_matches(kb, expected, functor) {
+        return None;
     }
+    let mut all: Vec<Value> = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        // A positional slot BELOW the arity the head announced that does not read
+        // back is a broken view, not an absent field — loud in debug, and no match
+        // rather than a silently SHORT sub-value list (which would slide every later
+        // argument down one slot). Same stance as `materialize_entity`'s walk.
+        let Some(arg) = scrutinee.pos_arg(kb, i) else {
+            debug_assert!(
+                false,
+                "constructor_sub_values: head announced {pos_arity} positional args \
+                 but slot {i} does not read back",
+            );
+            return None;
+        };
+        all.push(arg.to_value());
+    }
+    let mut named: Vec<(Symbol, Value)> = Vec::new();
+    for k in scrutinee.named_keys(kb) {
+        let arg = scrutinee.named_arg(kb, k)?;
+        named.push((k, arg.to_value()));
+    }
+    kb.canonicalize_record_named_args(functor, &mut named);
+    all.extend(named.into_iter().map(|(_, v)| v));
+    Some(all)
 }
 
 /// Compare a pattern-side constructor functor against a scrutinee functor.
@@ -405,12 +415,31 @@ pub(crate) fn functor_matches(
     !pattern_short.is_empty() && pattern_short == scrut_short
 }
 
-fn literal_matches(lit: &Literal, scrutinee: &Value) -> bool {
-    match (lit, scrutinee) {
-        (Literal::Int(a), Value::Int(b)) => *a == *b,
-        (Literal::Bool(a), Value::Bool(b)) => *a == *b,
-        (Literal::String(a), Value::Str(b)) => a == b,
-        (Literal::Float(a), Value::Float(b)) => a.into_inner() == *b,
+/// Does the scrutinee DENOTE the pattern's literal?
+///
+/// WI-20260827-3ZNBC — read through [`TermView::as_literal`], so `case "alice" ->`
+/// decides the same whether the value arrived native, hash-consed, or as an
+/// occurrence. The pairwise `(Literal, Value)` match this replaces saw the native
+/// variants ONLY, so a literal arm over a relation column or a bridged operand fell
+/// through to the next arm — a WRONG BRANCH TAKEN SILENTLY, not an error, which is
+/// the worst shape a missing carrier arm has.
+///
+/// FLOAT STAYS ON IEEE EQUALITY (`into_inner()` on both sides), deliberately: the
+/// pairwise version compared `a.into_inner() == *b`, so `case nan ->` never matched,
+/// and `OrderedFloat`'s own `==` — which `Literal: PartialEq` would give — is TOTAL
+/// (`nan == nan`). Reading through the view must not quietly flip that; the structural
+/// identity test `anthill.kernel.struct_eq` is where total float equality lives.
+fn literal_matches(kb: &crate::kb::KnowledgeBase, lit: &Literal, scrutinee: &Value) -> bool {
+    use crate::kb::term_view::TermView;
+    let Some(got) = scrutinee.as_literal(kb) else {
+        return false;
+    };
+    match (lit, &got) {
+        (Literal::Int(a), Literal::Int(b)) => a == b,
+        (Literal::BigInt(a), Literal::BigInt(b)) => a == b,
+        (Literal::Bool(a), Literal::Bool(b)) => a == b,
+        (Literal::String(a), Literal::String(b)) => a == b,
+        (Literal::Float(a), Literal::Float(b)) => a.into_inner() == b.into_inner(),
         _ => false,
     }
 }

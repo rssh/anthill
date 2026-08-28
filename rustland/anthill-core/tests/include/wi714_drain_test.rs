@@ -171,8 +171,11 @@ fn wi714_collected_set_answers_membership() {
         Value::Entity { named, .. } if !named.is_empty() => named[0].1.clone(),
         other => panic!("alice IS in the collected set → some(true), got {other:?}"),
     };
+    // WI-20260827-3ZNBC — `Value::as_bool` is the INHERENT accessor and sees the
+    // `Value::Bool` variant alone; the same `true` also arrives hash-consed or as an
+    // occurrence now that a relation column keeps its own carrier.
     assert_eq!(
-        payload.as_bool(),
+        crate::common::scalar_bool(interp.kb(), &payload),
         Some(true),
         "alice's entry in the collected set is `true`"
     );

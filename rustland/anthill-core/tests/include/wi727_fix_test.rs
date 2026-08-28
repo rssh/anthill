@@ -138,17 +138,17 @@ end
 /// A row is a one-component named tuple now, not a bare scalar, so this goes through the
 /// shared strict reader — which panics on any other row shape rather than hunting for the
 /// first `Str` among the fields.
-fn drain_strings(v: Value) -> Vec<String> {
-    crate::common::list_column_strings(&v)
+fn drain_strings(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<String> {
+    crate::common::list_column_strings(kb, &v)
 }
 
 /// The `Int64` twin of [`drain_strings`].
-fn drain_ints(v: Value) -> Vec<i64> {
-    crate::common::list_column_ints(&v)
+fn drain_ints(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<i64> {
+    crate::common::list_column_ints(kb, &v)
 }
 
 /// Walk a cons list of `(b, c)` tuple rows, collecting each row's two ints in field order.
-fn drain_int_pairs(v: Value) -> Vec<(i64, i64)> {
+fn drain_int_pairs(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Vec<(i64, i64)> {
     let mut out = Vec::new();
     let mut cur = v;
     while let Value::Entity { named, .. } = &cur {
@@ -165,12 +165,10 @@ fn drain_int_pairs(v: Value) -> Vec<(i64, i64)> {
         }
         match (tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
+                // WI-20260827-3ZNBC — read what each column DENOTES, not the variant.
                 let ints: Vec<i64> = fields
                     .iter()
-                    .filter_map(|(_k, v)| match v {
-                        Value::Int(n) => Some(*n),
-                        _ => None,
-                    })
+                    .filter_map(|(_k, v)| crate::common::scalar_int(kb, v))
                     .collect();
                 assert_eq!(ints.len(), 2, "each row is a (b, c) pair");
                 out.push((ints[0], ints[1]));
@@ -191,7 +189,7 @@ fn wi727_fix_restrict_and_drop_to_one_column() {
     let r = interp
         .call("test.wi727fix.names_at_30", &[])
         .expect("names_at_30 runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
 }
@@ -203,7 +201,7 @@ fn wi727_fix_restrict_other_column() {
     let r = interp
         .call("test.wi727fix.ages_of_alice", &[])
         .expect("ages_of_alice runs");
-    assert_eq!(drain_ints(r), vec![30]);
+    assert_eq!(drain_ints(interp.kb(), r), vec![30]);
 }
 
 /// fix over a NAMED-ARG-head relation drops the head-keyed column by name.
@@ -213,7 +211,7 @@ fn wi727_fix_named_arg_head() {
     let r = interp
         .call("test.wi727fix.named_head_at_30", &[])
         .expect("named_head_at_30 runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
 }
@@ -227,7 +225,7 @@ fn wi727_fix_mixed_prefix() {
     let r = interp
         .call("test.wi727fix.mixed_prefix_at_30", &[])
         .expect("mixed_prefix_at_30 runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
 }
@@ -276,7 +274,7 @@ fn wi727_fix_drop_one_of_three() {
     let r = interp
         .call("test.wi727fix.bc_where_a1", &[])
         .expect("bc_where_a1 runs");
-    let mut got = drain_int_pairs(r);
+    let mut got = drain_int_pairs(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec![(2, 3), (20, 30)]);
 }
@@ -289,7 +287,7 @@ fn wi727_fix_two_constants() {
     let r = interp
         .call("test.wi727fix.b_where_a1_c3", &[])
         .expect("b_where_a1_c3 runs");
-    assert_eq!(drain_ints(r), vec![2]);
+    assert_eq!(drain_ints(interp.kb(), r), vec![2]);
 }
 
 /// The fixed value need not be a LITERAL: an operation CALL's result restricts the column
@@ -302,7 +300,7 @@ fn wi727_fix_value_may_be_a_computed_expression() {
     let r = interp
         .call("test.wi727fix.names_at_computed", &[])
         .expect("names_at_computed runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
 }
@@ -316,7 +314,7 @@ fn wi727_fix_value_may_be_a_runtime_parameter() {
     let at30 = interp
         .call("test.wi727fix.names_at", &[Value::Int(30)])
         .expect("names_at(30) runs");
-    let mut got30 = drain_strings(at30);
+    let mut got30 = drain_strings(interp.kb(), at30);
     got30.sort();
     assert_eq!(got30, vec!["alice".to_string(), "carol".to_string()]);
 
@@ -324,7 +322,7 @@ fn wi727_fix_value_may_be_a_runtime_parameter() {
     let at25 = interp
         .call("test.wi727fix.names_at", &[Value::Int(25)])
         .expect("names_at(25) runs");
-    assert_eq!(drain_strings(at25), vec!["bob".to_string()]);
+    assert_eq!(drain_strings(interp.kb(), at25), vec!["bob".to_string()]);
 }
 
 /// The `let`-bound form — named by the doc alongside the op result and the parameter, so
@@ -338,7 +336,7 @@ fn wi727_fix_value_may_be_a_let_bound_value() {
     let r = interp
         .call("test.wi727fix.names_at_letbound", &[])
         .expect("names_at_letbound runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["alice".to_string(), "carol".to_string()]);
 }
@@ -374,7 +372,7 @@ end
     let r = interp
         .call("test.wi727fixpt.atOrigin", &[])
         .expect("atOrigin runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(
         got,
@@ -414,7 +412,7 @@ end
 "#;
     let mut interp = interp_for(src);
     let r = interp.call("test.wi727fixctor.reds", &[]).expect("reds runs");
-    let mut got = drain_strings(r);
+    let mut got = drain_strings(interp.kb(), r);
     got.sort();
     assert_eq!(got, vec!["a".to_string(), "c".to_string()]);
 }

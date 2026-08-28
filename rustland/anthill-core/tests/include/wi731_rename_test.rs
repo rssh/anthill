@@ -193,19 +193,24 @@ fn wi731_a_renamed_column_keeps_its_position() {
         .call("test.wi731.middle", &[])
         .unwrap_or_else(|e| panic!("middle: {e:?}"));
     let got = rows(&v);
+    let kb = interp.kb();
     assert_eq!(got.len(), 2, "expected both rows, got {v:?}");
     for row in &got {
         assert_eq!(row.len(), 3, "expected three columns, got {row:?}");
+        // WI-20260827-3ZNBC — a column is the bound value ON ITS OWN CARRIER, so the
+        // question is what each one DENOTES (`Int64` vs `String`), not which `Value`
+        // variant happens to carry it. That is also the sharper assertion: it is the
+        // sorts that pin which column is where.
         assert!(
-            matches!(row[0].1, Value::Int(_)),
+            crate::common::scalar_int(kb, &row[0].1).is_some(),
             "column 0 must still be `id`, got {row:?}"
         );
         assert!(
-            matches!(row[1].1, Value::Str(_)),
+            crate::common::scalar_str(kb, &row[1].1).is_some(),
             "the RENAMED column must stay in the middle, got {row:?}"
         );
         assert!(
-            matches!(row[2].1, Value::Int(_)),
+            crate::common::scalar_int(kb, &row[2].1).is_some(),
             "column 2 must still be `age`, got {row:?}"
         );
     }
@@ -256,12 +261,16 @@ fn wi731_a_swap_is_legal_and_stays_in_place() {
     let v = interp
         .call("test.wi731.swap", &[])
         .unwrap_or_else(|e| panic!("swap: {e:?}"));
-    for row in &rows(&v) {
+    let all = rows(&v);
+    let kb = interp.kb();
+    for row in &all {
         assert_eq!(row.len(), 3, "expected three columns, got {row:?}");
         // Position 1 held `name: String` and now answers to `age`; position 2 held
         // `age: Int64` and now answers to `name`. The VALUES did not move — only the keys.
+        // Read carrier-neutrally (WI-20260827-3ZNBC), as in the test above.
         assert!(
-            matches!(row[1].1, Value::Str(_)) && matches!(row[2].1, Value::Int(_)),
+            crate::common::scalar_str(kb, &row[1].1).is_some()
+                && crate::common::scalar_int(kb, &row[2].1).is_some(),
             "a swap re-keys in place; it must not move the values, got {row:?}"
         );
     }

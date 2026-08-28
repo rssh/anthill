@@ -326,7 +326,7 @@ fn wi741_a_spec_typed_column_drains_its_values() {
     let v = interp
         .call("test.wi741.generated.rows", &[])
         .expect("a spec-filtered column must drain");
-    let mut got = list_column_strings(&v);
+    let mut got = list_column_strings(interp.kb(), &v);
     got.sort();
     // `root` from the `eq`-filtered clause, `bart` from the `parent` clause.
     assert_eq!(got, vec!["bart".to_string(), "root".to_string()]);
@@ -349,7 +349,7 @@ fn wi741_a_single_clause_spec_typed_column_still_drains() {
     let v = interp
         .call("test.wi741.solo.rows", &[])
         .expect("a one-clause spec-typed relation must load and drain");
-    assert_eq!(list_column_strings(&v), vec!["root".to_string()]);
+    assert_eq!(list_column_strings(interp.kb(), &v), vec!["root".to_string()]);
 }
 
 // ── The guards that must survive ──────────────────────────────────────────

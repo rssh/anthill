@@ -71,16 +71,16 @@ fn wi729_sort_qualified_receiver_method_call_matches_let_bound() {
         .expect("the unfiltered relation runs");
 
     assert_eq!(
-        collect_int_list(&inline),
+        collect_int_list(interp.kb(), &inline),
         vec![2],
         "`Queen.find.where(c -> eq(c.row, 2))` keeps only row 2"
     );
     assert_eq!(
-        collect_int_list(&inline),
-        collect_int_list(&let_bound),
+        collect_int_list(interp.kb(), &inline),
+        collect_int_list(interp.kb(), &let_bound),
         "the inline spelling must evaluate exactly like `let q = Queen.find; q.where(λ)`"
     );
-    let mut unfiltered = collect_int_list(&all);
+    let mut unfiltered = collect_int_list(interp.kb(), &all);
     unfiltered.sort();
     assert_eq!(
         unfiltered,
@@ -128,7 +128,7 @@ end
         .call("test.wi729ns.use.aliceRows", &[])
         .expect("aliceRows drains the where-filtered bare-qualified relation");
     assert_eq!(
-        collect_named_rows(&r),
+        collect_named_rows(interp.kb(), &r),
         vec![("alice".to_string(), 30)],
         "the multi-segment prefix names the relation; `where` filters it to alice"
     );
@@ -305,21 +305,20 @@ end
 
 /// WI-20260818-YQB1Y — a one-column relation drains as one-component tuples, so the `Int64`
 /// is read out of the row's sole column rather than off a bare head.
-fn collect_int_list(v: &Value) -> Vec<i64> {
-    crate::common::list_column_ints(v)
+fn collect_int_list(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<i64> {
+    crate::common::list_column_ints(kb, v)
 }
 
-fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
+fn collect_named_rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<(String, i64)> {
     collect_list(v, |head| match head {
+        // WI-20260827-3ZNBC — read what each column DENOTES, not the variant.
         Value::Tuple { named, .. } => {
-            let name = named.iter().find_map(|(_, v)| match v {
-                Value::Str(s) => Some(s.clone()),
-                _ => None,
-            })?;
-            let age = named.iter().find_map(|(_, v)| match v {
-                Value::Int(n) => Some(*n),
-                _ => None,
-            })?;
+            let name = named
+                .iter()
+                .find_map(|(_, v)| crate::common::scalar_str(kb, v))?;
+            let age = named
+                .iter()
+                .find_map(|(_, v)| crate::common::scalar_int(kb, v))?;
             Some((name, age))
         }
         _ => None,

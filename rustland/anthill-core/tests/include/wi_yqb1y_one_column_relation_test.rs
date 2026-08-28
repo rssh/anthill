@@ -460,13 +460,14 @@ fn rows_of(interp: &Interpreter, v: &Value) -> Vec<Vec<String>> {
         .map(|row| match row {
             Value::Tuple { pos, named } if pos.is_empty() => named
                 .iter()
+                // WI-20260827-3ZNBC — read what the column DENOTES; a column keeps
+                // the carrier the search proved it on, so the variant match asked the
+                // wrong question ("unexpected column carrier" was, in fact, prophetic).
                 .map(|(k, val)| {
                     let key = interp.kb().local_name_of(*k).to_string();
-                    match val {
-                        Value::Str(s) => format!("{key}={s}"),
-                        Value::Int(n) => format!("{key}={n}"),
-                        other => panic!("unexpected column carrier {other:?}"),
-                    }
+                    let rendered = crate::common::scalar_display(interp.kb(), val)
+                        .unwrap_or_else(|| panic!("unexpected column carrier {val:?}"));
+                    format!("{key}={rendered}")
                 })
                 .collect(),
             other => panic!("expected a named-tuple row, got {other:?}"),

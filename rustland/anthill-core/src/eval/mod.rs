@@ -783,29 +783,6 @@ impl Interpreter {
         self.config.bridge_mode
     }
 
-    /// WI-625 gap 1: materialize a term-carried value into the interpreter's
-    /// NATIVE form — a `Value::Term(Ref/Fn ctor)` becomes a `Value::Entity`
-    /// (recursively), literals become scalars. The resolver hands the bridge its
-    /// operands as term carriers (`Value::Term`), but eval builtins like
-    /// `field_access` require a real `Value::Entity`; without this a bridged body
-    /// that reads a field errors with "receiver is not an entity (got Term)".
-    /// A non-term value (already native) passes through.
-    ///
-    /// WI-685: a `Value::Node` occurrence operand (a rule-body `eq`/`neq` operand,
-    /// which the resolver no longer collapses to a `Value::Term` before the bridge)
-    /// is lowered the same way — to a term, then to the native form — so a bridged
-    /// body reads a real `Value::Entity`, not an occurrence.
-    pub(crate) fn materialize_value(&mut self, v: Value) -> Value {
-        match v {
-            Value::Term { id, .. } => builtins::term_to_value(self, id),
-            Value::Node(occ) => {
-                let tid = crate::kb::node_occurrence::occurrence_to_term(&mut self.kb, &occ);
-                builtins::term_to_value(self, tid)
-            }
-            other => other,
-        }
-    }
-
     /// Variant of [`Self::call`] that lets the host supply real
     /// impl-rooted dictionaries for the entry op's `requires` chain,
     /// instead of [`Self::seed_entry_requirements`]'s self-referential
@@ -1899,10 +1876,47 @@ impl Interpreter {
     /// order; each column reads its bound value out of the answer substitution (a
     /// flat lookup by `VarId`, mirroring `Substitution.lookup`; an unbound free var
     /// carries as itself, a `Value::Var`). The row is a named-tuple `Value::Tuple`,
-    /// keyed by column name (order-faithful, §4.6), 1-COLLAPSED to the element value
-    /// for a single column and to `Value::Unit` for zero (a boolean/membership
-    /// relation — non-empty ⇔ provable). NotFound is just the empty stream, no
-    /// bespoke nil arm.
+    /// keyed by column name (order-faithful, §4.6) at EVERY arity ≥ 1 (WI-20260818-YQB1Y
+    /// dropped the 1-collapse — see the note at the `Value::Tuple` build below) and
+    /// `Value::Unit` for zero columns (a boolean/membership relation — non-empty ⇔
+    /// provable). NotFound is just the empty stream, no bespoke nil arm.
+    ///
+    /// WI-20260827-3ZNBC — A COLUMN IS THE BOUND VALUE ON ITS OWN CARRIER, and this
+    /// REPLACES WI-714's original sentence ("REIFY it to a native value … so the
+    /// column reads as its element sort, not a raw Term handle — a `Relation[String]`
+    /// yields `Value::Str`, a `Relation[Board]` an entity"). A column typed `String`
+    /// still DENOTES that string; what changed is that it may denote it as a
+    /// hash-consed `Value::Term`, a `Value::Node` occurrence, or a native `Value::Str`
+    /// — whichever the search proved it on — and the reader asks
+    /// [`TermView::literal_string`](crate::kb::term_view::TermView::literal_string)
+    /// (or `literal_int64` / `head` / `pos_arg` / …) rather than matching one variant.
+    ///
+    /// WHY, since the reification was cheap and the readers were not: the duty to
+    /// convert was UNENFORCED AT EVERY PRODUCER. Nothing made a new site that hands a
+    /// binding onward call the normalizer, and forgetting failed at RUNTIME with a
+    /// type error rather than at compile time — which is exactly how this drain came
+    /// to hand `Int64.add` a `Value::Term` it could not read (WI-20260827-2YHZ3).
+    /// Moving the read to the point of USE makes the consumer's own code the
+    /// enforcement: a reader that asks `literal_string` cannot be handed a carrier it
+    /// fails to understand, because the question it asks is the one every carrier
+    /// answers. The reification also interned a term per bridged occurrence operand —
+    /// a store write for a read, pinned for the KB's lifetime, and the occurrence's
+    /// span discarded.
+    ///
+    /// THE ONE SERVICE THAT WENT WITH IT, stated so it is not rediscovered as a bug:
+    /// the reifier bottomed out in `builtins::materialize_entity`, which DEFAULTS a
+    /// declared `Option[T]` field the fact leaves unsupplied to `none()` (the loader
+    /// fills such a slot with a synthetic `Var` so the discrim tree can index the fact
+    /// uniformly — `kb/load.rs`'s partial-named-arg expansion). A handle-carried entity
+    /// column keeps that `Var`, so `row.item.context` on an omitted optional field now
+    /// reads the var rather than `none()`. It fails LOUDLY — a `case some(v)`/`case
+    /// none()` over a var matches neither arm and raises `MatchFailed` — and no path
+    /// in the corpus reaches it (no relation ranges over an entity with unsupplied
+    /// optional fields). The defaulting is not lost, only no longer applied HERE: it
+    /// stays where it belongs, on `term_as_entity`, the reflect operation whose whole
+    /// job is Term → Entity. If a column ever needs it, the honest home is the field
+    /// READ (`reflect_field_access`), where it would serve every carrier at once —
+    /// that is a capability, not part of this move.
     ///
     /// WI-737 — a FLOUNDERED answer does not materialize: it RAISES. A `Relation[T]`
     /// promises rows of `T`, and `T` has no room for a third "undecided" outcome, so
@@ -1958,11 +1972,13 @@ impl Interpreter {
             // it SILENTLY — a column bound by a rule-body builtin (`rule r(?x) :- ?x
             // <=> 6`) came back `Value::Var`, i.e. reported unbound, and fell into
             // the "genuinely binds nothing" arm below that the paragraph after this
-            // one describes. The resolver binds a var to a hash-consed `Value::Term`;
-            // REIFY it to a native value (scalar const → scalar Value, constructor →
-            // entity) so the column reads as its element sort, not a raw Term handle
-            // — a `Relation[String]` yields `Value::Str`, a `Relation[Board]` an
-            // entity.
+            // one describes. The binding rides on WHATEVER CARRIER THE SEARCH PROVED
+            // IT ON — a hash-consed `Value::Term` from a fact match, a `Value::Node`
+            // occurrence from a rule-body builtin (WI-246: a rule body's atoms ride as
+            // occurrences), a native `Value::Entity` from an external extent row —
+            // and it is handed on unconverted. See this method's doc for why the
+            // column is a HANDLE the reader views through rather than a reified
+            // native value (WI-20260827-3ZNBC, replacing WI-714's contract).
             //
             // An unbound free var still carries as itself. Post-WI-737 this is no
             // longer the flounder path (that raised above) but the narrower DEFINITE-
@@ -1974,26 +1990,8 @@ impl Interpreter {
             // load-time check rather than this drain-time gate. Not WI-737's scope.
             // That arm is now reached ONLY by that static case — which is what makes
             // a load-time check the right home for it.
-            //
-            // The column is MATERIALIZED into the interpreter's native value, on
-            // whatever carrier the answer was proved on — a `Value::Term` from a fact
-            // match, a `Value::Node` from a rule-body builtin (WI-246: a rule body's
-            // atoms ride as occurrences). `value_to_native` reads both through
-            // `TermView`, so one call covers them and an already-native carrier (an
-            // external extent row's `Value::Entity`) passes straight through.
-            //
-            // MEASURED, and it is why this conversion is still here rather than
-            // pushed into the consumers (WI-20260827-2YHZ3): removing it and letting
-            // the column carry its handle failed 76 tests across `wi730` / `wi731` /
-            // `wi733` / `wi741` / `wi_yqb1y`, because a relation row is read far
-            // beyond the builtins — Rust-side readers and assertions match
-            // `Value::Str` / `Value::Int` on the column directly. Giving every one of
-            // those a carrier-neutral arm is real work with a real payoff (the duty to
-            // convert is unenforced at every producer, which is how this drain came to
-            // hand `Int64.add` something it could not read); it is filed as
-            // WI-20260827-3ZNBC and is deliberately NOT this ticket.
             let bound = match self.kb_mut().answer_binding(vid, &sol.subst) {
-                Some(v) => crate::eval::builtins::value_to_native(self, &v),
+                Some(v) => v,
                 None => Value::Var(Var::Global(vid)),
             };
             named.push((name, bound));

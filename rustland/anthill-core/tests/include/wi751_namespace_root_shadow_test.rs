@@ -460,19 +460,19 @@ end
     let got = interp
         .call("test.wi751label.citeWhole", &[])
         .expect("the dotted-label citation must run");
-    let rendered = format!("{got:?}");
-    // Match on rendered VALUES (`Int(7)`), never bare digits — the debug rendering also
-    // carries `Symbol(1002)`-style ids, so a digit search reports false leaks.
-    assert!(
-        rendered.contains("Int(7)"),
+    // WI-20260827-3ZNBC — READ THE COLUMNS, do not grep a Debug rendering. The
+    // rendering-based test worked only while a column was reified into a native
+    // `Value::Int`; a column now carries the value on whatever carrier the search
+    // proved it on and renders `Term { id: TermId(…) }`, so the substring search
+    // reported "no 7" AND "no leak" at once — a test that cannot fail the way it
+    // claims to. The shared column reader answers what each row DENOTES.
+    let got_rows = crate::common::list_column_ints(interp.kb(), &got);
+    assert_eq!(
+        got_rows,
+        vec![7],
         "`a.b` must be the relation labelled `a.b` (extent {{7}}) — a scope-local whole \
          name outranks BOTH dotted rungs, so neither relation `a` (extent {{1,2}}) nor \
-         the top-level `a.b` may win; got {rendered}"
-    );
-    assert!(
-        !rendered.contains("Int(1)") && !rendered.contains("Int(2)"),
-        "the citation leaked relation `a`'s extent — the rule PREFIX won over the whole \
-         name; got {rendered}"
+         the top-level `a.b` may win; got {got:?}"
     );
 }
 

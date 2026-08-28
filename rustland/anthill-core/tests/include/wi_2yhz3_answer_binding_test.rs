@@ -196,10 +196,17 @@ fn nested_binding_resolves_all_the_way_down() {
 /// THE OTHER SHAPE THE CARRIER MATCH BROKE. A column bound to a CONSTRUCTOR on
 /// the occurrence carrier failed in a different reader from the scalar one —
 /// `field_access: receiver is not an entity (got Node)`, where the scalar case
-/// died in `numeric_add`. Two readers, one cause: the interpreter's value
-/// operations take native values, so the handle has to become one at the drain.
-/// Both are green off the same `value_to_native` call, which is the evidence that
-/// it is the boundary and not a pair of special cases.
+/// died in `numeric_add`. Two readers, one cause, and this test says which cause:
+/// both READERS were missing an arm, not the drain missing a conversion.
+///
+/// This paragraph used to end "both are green off the same `value_to_native` call,
+/// which is the evidence that it is the boundary and not a pair of special cases",
+/// and that reading was WRONG — WI-20260827-3ZNBC measured it. They are green off
+/// `reflect_field_access` reading its receiver through `TermView` and `Int64.add`
+/// reading its operands through `TermView::literal_int64`; with those in place the
+/// drain's conversion had nothing left to fix and was removed, and this row stayed
+/// green through the removal. A conversion that every consumer can do without is not
+/// a boundary.
 #[test]
 fn a_constructor_column_on_the_occurrence_carrier_materializes() {
     let mut interp = interp_for(SRC);

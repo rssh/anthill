@@ -275,14 +275,20 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
 
 // ── Value helpers ──────────────────────────────────────────────
 
-fn str_arg(v: Value) -> Result<String, EvalError> {
-    match v {
-        Value::Str(s) => Ok(s),
-        other => Err(EvalError::TypeMismatch {
-            expected: "String",
-            got: other.type_name().to_string(),
-        }),
-    }
+/// The `String` a reflect argument DENOTES, on whatever carrier it rides.
+///
+/// WI-20260827-3ZNBC — `Value::Str` alone was the wrong question. A reflect name
+/// argument reaches these builtins from anthill code, so it arrives on whichever
+/// carrier the value was built on: a `Value::Term` for a name read out of a fact, a
+/// `Value::Node` for one bound in a rule body (WI-246). Asking
+/// [`TermView::literal_string`] is the same question with no carrier list to keep in
+/// step — the core-side `eval::builtins::str_operand` is its twin.
+fn str_arg(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Result<String, EvalError> {
+    use anthill_core::kb::term_view::TermView;
+    v.literal_string(kb).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "String",
+        got: v.type_name().to_string(),
+    })
 }
 
 /// The already-resolved functor symbol of a by-reference sort/entity argument
@@ -299,18 +305,51 @@ fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalEr
 }
 
 /// Unwrap `Option.some(value: s)` / `Option.none` → `Option<String>`.
-fn option_string_arg(v: Value) -> Result<Option<String>, EvalError> {
-    match v {
-        Value::Entity { named, .. } => {
-            if let Some((_, inner)) = named.into_iter().next() {
-                Ok(Some(str_arg(inner.clone())?))
+///
+/// WI-20260827-3ZNBC — READ THE OPTION THROUGH `TermView` TOO, not just the string
+/// inside it. Widening the inner [`str_arg`] and leaving the outer scrutinee matching
+/// `Value::Entity` alone stopped one level short: a `some(…)` bound in a rule body
+/// arrives as a `Value::Node`, and `KB.sorts` / `KB.descriptions` then failed
+/// "expected Option[String], got Node" on the very carrier the inner read had just
+/// been taught to accept (found by /code-review). `Value::Entity`, `Value::Term` and
+/// `Value::Node` all present `ViewHead::Functor` / `ViewHead::Ref`, so ONE read
+/// serves all three: a nullary head is `none()`, a head with one child is `some(x)`.
+fn option_string_arg(
+    kb: &anthill_core::kb::KnowledgeBase,
+    v: Value,
+) -> Result<Option<String>, EvalError> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        // `none()` — a nullary constructor, on whichever spelling its carrier uses
+        // (`ViewHead::Ref` is the canonical nullary form, WI-436/WI-511).
+        ViewHead::Ref(_)
+        | ViewHead::Functor {
+            pos_arity: 0,
+            named_arity: 0,
+            ..
+        } => Ok(None),
+        // `some(value: s)` — the payload rides positionally OR named, depending on
+        // which producer built it, exactly as the callers of this pair elsewhere note.
+        ViewHead::Functor { pos_arity, .. } => {
+            let inner = if pos_arity > 0 {
+                v.pos_arg(kb, 0).map(|c| c.to_value())
             } else {
-                Ok(None)
+                v.named_keys(kb)
+                    .first()
+                    .and_then(|k| v.named_arg(kb, *k))
+                    .map(|c| c.to_value())
+            };
+            match inner {
+                Some(inner) => Ok(Some(str_arg(kb, inner)?)),
+                None => Err(EvalError::TypeMismatch {
+                    expected: "Option[String]",
+                    got: v.type_name().to_string(),
+                }),
             }
         }
-        other => Err(EvalError::TypeMismatch {
+        _ => Err(EvalError::TypeMismatch {
             expected: "Option[String]",
-            got: other.type_name().to_string(),
+            got: v.type_name().to_string(),
         }),
     }
 }
@@ -377,7 +416,7 @@ fn kb_sorts(
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, ns] = expect_args::<2>("KB.sorts", args)?;
-    let namespace = option_string_arg(ns)?;
+    let namespace = option_string_arg(interp.kb(), ns)?;
     let kb = interp.kb_mut();
 
     let mut entries: Vec<Value> = Vec::new();
@@ -520,7 +559,7 @@ fn kb_descriptions(
     syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, target] = expect_args::<2>("KB.descriptions", args)?;
-    let target = option_string_arg(target)?;
+    let target = option_string_arg(interp.kb(), target)?;
     let kb = interp.kb_mut();
 
     // The reader yields `DescriptionInfo(target, content, index)` records; the index
@@ -681,7 +720,7 @@ impl reader::ReflectReader for ValueRepr<'_> {
         } else if functor == syms.var_repr {
             let name = lookup(syms.f_name)
                 .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
-            Ok(reader::ReflectShape::Var(str_arg(name)?))
+            Ok(reader::ReflectShape::Var(str_arg(kb, name)?))
         } else if functor == syms.ref_repr {
             let name = lookup(syms.f_name)
                 .ok_or_else(|| EvalError::Internal("RefRepr: missing `name`".into()))?;
@@ -730,46 +769,47 @@ fn decode_literal_repr(
             })
         }
     };
+    // WI-20260827-3ZNBC — the PAYLOAD reads through the carrier-neutral view, like
+    // the constructor above it (`Value::Entity`'s functor) already did. Which
+    // `LiteralRepr` constructor was written still decides which core `Literal` this
+    // is — that is the sort question and is unchanged — but a payload that an anthill
+    // rule bound (`int_lit(value: ?n)` over a fact-matched `?n`) rides as a
+    // `Value::Term` / `Value::Node`, and matching `Value::Int` refused it while
+    // plainly denoting an int. The `IntLiteral -> BigIntLiteral` widening below is a
+    // SORT widening and is kept as it was.
+    let mismatch = |expected: &'static str| EvalError::TypeMismatch {
+        expected,
+        got: lit_val.type_name().to_string(),
+    };
+    let denoted = {
+        use anthill_core::kb::term_view::TermView;
+        lit_val.as_literal(kb)
+    };
     if lit_ctor == syms.int_lit {
-        match lit_val {
-            Value::Int(n) => Ok(Literal::Int(n)),
-            other => Err(EvalError::TypeMismatch {
-                expected: "Int64",
-                got: other.type_name().to_string(),
-            }),
+        match denoted {
+            Some(Literal::Int(n)) => Ok(Literal::Int(n)),
+            _ => Err(mismatch("Int64")),
         }
     } else if lit_ctor == syms.bigint_lit {
-        match lit_val {
-            Value::BigInt(n) => Ok(Literal::BigInt(n)),
-            Value::Int(n) => Ok(Literal::BigInt(n.into())),
-            other => Err(EvalError::TypeMismatch {
-                expected: "BigInt",
-                got: other.type_name().to_string(),
-            }),
+        match denoted {
+            Some(Literal::BigInt(n)) => Ok(Literal::BigInt(n)),
+            Some(Literal::Int(n)) => Ok(Literal::BigInt(n.into())),
+            _ => Err(mismatch("BigInt")),
         }
     } else if lit_ctor == syms.float_lit {
-        match lit_val {
-            Value::Float(f) => Ok(Literal::Float(f.into())),
-            other => Err(EvalError::TypeMismatch {
-                expected: "Float",
-                got: other.type_name().to_string(),
-            }),
+        match denoted {
+            Some(Literal::Float(f)) => Ok(Literal::Float(f)),
+            _ => Err(mismatch("Float")),
         }
     } else if lit_ctor == syms.str_lit {
-        match lit_val {
-            Value::Str(s) => Ok(Literal::String(s)),
-            other => Err(EvalError::TypeMismatch {
-                expected: "String",
-                got: other.type_name().to_string(),
-            }),
+        match denoted {
+            Some(Literal::String(s)) => Ok(Literal::String(s)),
+            _ => Err(mismatch("String")),
         }
     } else if lit_ctor == syms.bool_lit {
-        match lit_val {
-            Value::Bool(b) => Ok(Literal::Bool(b)),
-            other => Err(EvalError::TypeMismatch {
-                expected: "Bool",
-                got: other.type_name().to_string(),
-            }),
+        match denoted {
+            Some(Literal::Bool(b)) => Ok(Literal::Bool(b)),
+            _ => Err(mismatch("Bool")),
         }
     } else {
         Err(EvalError::Internal(format!(
@@ -889,7 +929,7 @@ fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// WI-984 rule.
 fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [name] = expect_args::<1>("lookup_symbol", args)?;
-    let name_str = str_arg(name)?;
+    let name_str = str_arg(interp.kb(), name)?;
     let sym = resolve_host_name(interp, "lookup_symbol", &name_str)?;
     Ok(Value::term(interp.kb_mut().alloc(CoreTerm::Ref(sym))))
 }

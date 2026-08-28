@@ -7732,8 +7732,8 @@ impl KnowledgeBase {
     ///   non-ground operand returns `None` (the resolver delays), never runs.
     ///   (WI-685: `value_deep_ground` walks a `Value::Node` operand carrier-
     ///   neutrally — including nested Node children — so a genuinely ground
-    ///   occurrence reads as ground and `materialize_value` lowers it, rather than
-    ///   collapsing the occurrence to a `Term` before the check.)
+    ///   occurrence reads as ground on its own carrier, rather than being
+    ///   collapsed to a `Term` before the check.)
     /// - **requirement dicts are RESOLVED, not refused** — invoked via
     ///   [`Interpreter::call_op_bridged`], NOT the placeholder-seeding entry. WI-625
     ///   gap 3 stated this the other way ("only requirement-FREE ops decide"), and
@@ -7770,10 +7770,10 @@ impl KnowledgeBase {
     ) -> Option<Value> {
         // Reify + ground-gate each arg under σ, in declaration order (before
         // taking the KB — this needs σ, which the interpreter has not). `reify_value`
-        // applies σ; the arg then rides in its native carrier — a ground occurrence
+        // applies σ; the arg then rides in its own carrier — a ground occurrence
         // (`Value::Node(Ref(green))`) reads as ground through the carrier-neutral
-        // `value_deep_ground` (WI-685), so no collapse to a `Term` is needed and
-        // `materialize_value` below lowers any Node to the interpreter's form.
+        // `value_deep_ground` (WI-685), so no collapse to a `Term` is needed here or
+        // below.
         let mut args: Vec<Value> = Vec::with_capacity(params.len());
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
@@ -7782,17 +7782,19 @@ impl KnowledgeBase {
             }
             args.push(a);
         }
-        // Run the op in a bridge-mode scratch interpreter, materializing each
-        // term/occurrence operand into the interpreter's native form
-        // (`Value::Term(box(…))` / `Value::Node` → `Value::Entity`), else a body
-        // that reads a field errors with "receiver is not an entity".
-        let outcome = self.run_in_bridge_interp(|interp| {
-            let native: Vec<Value> = args
-                .into_iter()
-                .map(|a| interp.materialize_value(a))
-                .collect();
-            interp.call_op_bridged(op, &native)
-        })?;
+        // Run the op in a bridge-mode scratch interpreter, handing it each operand
+        // ON THE CARRIER THE RESOLVER PROVED IT ON — a `Value::Term` from a fact
+        // match, a `Value::Node` occurrence from a rule body, a native value from
+        // an extent row. WI-20260827-3ZNBC: this used to normalize every operand
+        // through `materialize_value` first, because a body that read a field
+        // errored "receiver is not an entity (got Term)". That error is gone —
+        // `reflect_field_access` reads its receiver through `TermView` and the
+        // scalar surface reads its operands through `TermView::literal_*`
+        // (WI-20260827-2YHZ3) — so the conversion had nothing left to fix, while
+        // still costing a term intern per bridged Node operand (pinned for the
+        // KB's lifetime, span discarded) and leaving the duty to convert
+        // UNENFORCED at every future bridge site.
+        let outcome = self.run_in_bridge_interp(|interp| interp.call_op_bridged(op, &args))?;
         match outcome {
             Ok(value) => Some(value),
             // The bridge-mode suspend signal (an undecided semantic compare):
@@ -7899,10 +7901,10 @@ impl KnowledgeBase {
         // the cap is a RESOURCE CUT (the eval analog of a depth-truncated search),
         // so mark it `truncated` — an eager NAF/guard consumer must see it, unlike a
         // clean bridge-mode suspend below.
+        // Operands ride on the carrier they were proved on — see the identical note
+        // in `bridge_op_to_eval` (WI-20260827-3ZNBC).
         let Some(outcome) = self.run_in_bridge_interp(|interp| {
-            let na = interp.materialize_value(a);
-            let nb = interp.materialize_value(b);
-            interp.call_op_bridged(target, &[na, nb])
+            interp.call_op_bridged(target, &[a, b])
         }) else {
             return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };

@@ -121,11 +121,16 @@ fn wi714_join_merged_schema_rows() {
         match (head_tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
                 row_count += 1;
+                // WI-20260827-3ZNBC — read what the column DENOTES, on whatever
+                // carrier it rides; the same string also arrives hash-consed or as
+                // an occurrence, and matching `Value::Str` asked which variant.
                 for (_k, v) in fields.iter() {
-                    match v {
-                        Value::Str(s) => strs.push(s.clone()),
-                        Value::Int(n) => ints.push(*n),
-                        other => panic!("unexpected merged-column value {other:?}"),
+                    if let Some(s) = crate::common::scalar_str(interp.kb(), v) {
+                        strs.push(s);
+                    } else if let Some(n) = crate::common::scalar_int(interp.kb(), v) {
+                        ints.push(n);
+                    } else {
+                        panic!("unexpected merged-column value {v:?}");
                     }
                 }
                 cur = t;

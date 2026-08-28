@@ -152,24 +152,24 @@ fn resolve_dir(root: &Path, dir: &str) -> PathBuf {
 /// A `String`-valued field of the target term, in either carrier a declaration
 /// can arrive in: a host-built `Value::Str` or the hash-consed literal a
 /// source-written fact carries.
+/// The `String` a mirror-target row field DENOTES, on whatever carrier it rides.
+///
+/// WI-20260827-3ZNBC — the hand-written carrier list (`Value::Str` and a
+/// `Value::Term` over `Term::Const(String)`) was missing the OCCURRENCE, which is the
+/// carrier a rule-body-bound value rides on (WI-246) and which a relation row column
+/// now keeps rather than being reified into a native scalar at the drain. Asking
+/// [`TermView::literal_string`] is the same question with no list to keep in step.
 fn string_field(interp: &Interpreter, value: &Value, field: &str) -> Result<String, EvalError> {
-    use anthill_core::kb::term::{Literal, Term, TermSource};
+    use anthill_core::kb::term_view::TermView;
     let found = interp
         .kb()
         .row_field(value, field)
         .ok_or_else(|| raised(format!("the mirror target carries no `{field}`")))?;
-    match found {
-        Value::Str(s) => Ok(s),
-        Value::Term { id, .. } => match interp.kb().term(id) {
-            Term::Const(Literal::String(s)) => Ok(s.clone()),
-            other => Err(raised(format!(
-                "the mirror target's `{field}` must be a string, got {other:?}"
-            ))),
-        },
-        other => Err(raised(format!(
-            "the mirror target's `{field}` must be a string, got {other:?}"
-        ))),
-    }
+    found.literal_string(interp.kb()).ok_or_else(|| {
+        raised(format!(
+            "the mirror target's `{field}` must be a string, got {found:?}"
+        ))
+    })
 }
 
 /// An entry handle, checked before it reaches a filesystem path or an argv slot.

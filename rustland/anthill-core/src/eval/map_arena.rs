@@ -19,7 +19,7 @@ use std::rc::Rc;
 use imbl::{HashMap as ImHashMap, Vector as ImVector};
 
 use crate::intern::Symbol;
-use crate::kb::term::{Term, TermId};
+use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::KnowledgeBase;
 
@@ -56,7 +56,14 @@ impl MapKey {
     /// `Dictionary.impl(d)`. This is the same rule `TermPrinter::write_symbol_ref`
     /// enforces for the printed spelling (WI-1015).
     ///
-    /// The rewrite COLLAPSES NOTHING that was not already one key: `Term::Ref` is
+    /// WI-20260827-3ZNBC APPLIES THAT RULE TO LITERALS, which ride on the same two
+    /// carriers for the same reason: a relation column keeps whatever carrier the
+    /// search proved it on, so `"alice"` reaches a map key as `Value::Str` from a
+    /// host call and as `Value::Term(Const(…))` from a fact match. Keying them apart
+    /// put one string in two slots and `Map.get` answered `none()` — see the arms
+    /// below, and the assertions that used to pin the split.
+    ///
+    /// The SYMBOL rewrite COLLAPSES NOTHING that was not already one key: `Term::Ref` is
     /// hash-consed, so there is exactly one `TermId` per symbol and `Term(t) ↔
     /// Ref(s)` is a bijection. Deliberately NOT routed through
     /// [`KnowledgeBase::value_symbol`], which is the right reader for "does this
@@ -68,7 +75,10 @@ impl MapKey {
     ///    overwrite the other's entry. This is the case that decides the reader.
     ///  - `Value::Node(Expr::Ref(s))` — not keyed at all: `None`, so `Map.put`
     ///    hard-errors. A REFUSAL, which is the right failure mode for a carrier
-    ///    whose occurrence identity a map key cannot represent.
+    ///    whose occurrence identity a map key cannot represent. (WI-20260827-3ZNBC
+    ///    keys a Const-headed occurrence, and ONLY that: a literal's identity is the
+    ///    literal, which a `MapKey` represents exactly. The refusal above is
+    ///    unchanged for every other occurrence.)
     ///
     /// THE `Term` ARM ASKS `ViewHead`, NOT `Term::Ref` (WI-1023) — "is this term a
     /// NAME", not "is it spelled `Ref`". `resolve_qualified_name_term` deliberately
@@ -95,19 +105,89 @@ impl MapKey {
             Value::Bool(b) => Some(MapKey::Bool(*b)),
             Value::Str(s) => Some(MapKey::Str(s.clone())),
             Value::SymbolRef(s) => Some(MapKey::Ref(*s)),
-            // A literal is never a name, and it is the common `Value::Term` key —
-            // so answer it off the term and skip `head`, which would build a
-            // `ViewHead::Const` by CLONING the `String`/`BigInt` payload only to
-            // drop it (WI-1023). Every other spelling asks the view.
-            Value::Term { id: tid, .. } if matches!(kb.get_term(*tid), Term::Const(_)) => {
-                Some(MapKey::Term(*tid))
-            }
-            Value::Term { id: tid, .. } => match v.head(kb) {
-                ViewHead::Ref(s) => Some(MapKey::Ref(s)),
-                _ => Some(MapKey::Term(*tid)),
+            // A HANDLE OVER A LITERAL KEYS AS THAT LITERAL (WI-20260827-3ZNBC), so
+            // `m.get("alice")` finds the entry a relation drain put under a
+            // `Value::Term(Const("alice"))`. This is a MERGE, and the right one: the
+            // two carriers DENOTE one string, and a map is keyed by what a key IS.
+            // It used to split — a term-carried literal took `MapKey::Term(tid)` —
+            // which was invisible while the drain reified every column into a native
+            // scalar, and became a silent `none()` from `Map.get` the moment a column
+            // kept its own carrier. Read off the TERM rather than through `head`,
+            // which would build a `ViewHead::Const` by cloning the payload for the
+            // Float/BigInt arms that do not use it (WI-1023).
+            //
+            // FLOAT AND BIGINT STAY ON `MapKey::Term`, and that is not an oversight:
+            // `MapKey` has no variant for either, so their NATIVE twins are refused
+            // outright (`None` below) — `Float` deliberately, since WI-644 refuses
+            // `Map[K = Float]` for want of lawful equality. The hash-consed `TermId`
+            // is a sound key for a term-carried one (one `TermId` per structurally
+            // equal const), so this keeps exactly the behaviour it had; the native/
+            // handle asymmetry for `BigInt` predates this and is untouched.
+            Value::Term { id: tid, .. } => match kb.get_term(*tid) {
+                Term::Const(Literal::Int(n)) => Some(MapKey::Int(*n)),
+                Term::Const(Literal::Bool(b)) => Some(MapKey::Bool(*b)),
+                Term::Const(Literal::String(s)) => Some(MapKey::Str(s.clone())),
+                Term::Const(_) => Some(MapKey::Term(*tid)),
+                _ => match v.head(kb) {
+                    ViewHead::Ref(s) => Some(MapKey::Ref(s)),
+                    _ => Some(MapKey::Term(*tid)),
+                },
+            },
+            // The occurrence carrier answers the SAME two questions the arms above do
+            // — "what literal is this" and "what name is this" — and gives the same
+            // key back, so one entity or one string addresses one slot however it was
+            // proved. What it CANNOT answer here is a structural non-literal: its
+            // identity is the term it denotes, and minting that needs `&mut kb` to
+            // intern. That case is not refused, it is HANDLED ONE LAYER OUT, by
+            // [`MapKey::of_value_interning`] — which every `Map` builtin goes through.
+            // `None` from here means "ask that one", not "no key exists".
+            Value::Node(_) => match v.head(kb) {
+                ViewHead::Const(Literal::Int(n)) => Some(MapKey::Int(n)),
+                ViewHead::Const(Literal::Bool(b)) => Some(MapKey::Bool(b)),
+                ViewHead::Const(Literal::String(s)) => Some(MapKey::Str(s)),
+                ViewHead::Ref(sym) => Some(MapKey::Ref(sym)),
+                _ => None,
             },
             _ => None,
         }
+    }
+
+    /// The key `v` addresses, INTERNING a structural occurrence if that is what it
+    /// takes — the entry point every `Map` builtin uses.
+    ///
+    /// WI-20260827-3ZNBC. [`Self::try_from_value`] answers off `&kb` alone and so
+    /// cannot key a `Value::Node` that denotes a CONSTRUCTOR APPLICATION: the key for
+    /// such a value is the term it denotes, and that term may not be interned yet.
+    /// Leaving it refused would have kept exactly the defect this ticket removes —
+    /// `Map.put(m, Board(1, 2), v)` succeeding for a board proved by a fact match
+    /// (`Value::Term` → `MapKey::Term`) and hard-erroring for the identical board
+    /// bound by a rule-body builtin (`Value::Node`), i.e. one program working or not
+    /// depending on how its value was carried. `occurrence_to_term` is the same
+    /// lowering the resolver and `proof_verify` already use for this carrier.
+    ///
+    /// THE INTERN IS PAID ONLY WHERE THE ALTERNATIVE WAS AN ERROR: a native, a
+    /// `Value::Term`, a literal or a name occurrence all key off `try_from_value`
+    /// above without touching the store, so no `Map.get` that worked before now
+    /// writes to it. (That is the cost this ticket removed from the relation drain,
+    /// and it is not being reintroduced on a path that had one.)
+    ///
+    /// A VAR-HEADED occurrence is still refused, and must be: an unbound logic
+    /// variable denotes nothing to key on, and `Value::Var` is refused above for the
+    /// same reason.
+    pub fn of_value_interning(kb: &mut KnowledgeBase, v: &Value) -> Option<Self> {
+        if let Some(k) = Self::try_from_value(kb, v) {
+            return Some(k);
+        }
+        let Value::Node(occ) = v.carried() else {
+            return None;
+        };
+        if matches!(v.head(kb), ViewHead::Var(_)) {
+            return None;
+        }
+        let occ = std::rc::Rc::clone(occ);
+        Some(MapKey::Term(crate::kb::node_occurrence::occurrence_to_term(
+            kb, &occ,
+        )))
     }
 
     /// The key back as a `Value` — what `Map.keys` / `Map.entries` hand out.
@@ -422,12 +502,23 @@ mod tests {
             "a key read back out of the map re-keys to itself",
         );
 
-        // A NON-`Ref` term is untouched — the canon is the symbol spelling only,
-        // not "every term becomes something else".
+        // A term-carried LITERAL keys as that literal, so it addresses the same slot
+        // its native twin does (WI-20260827-3ZNBC). This assertion used to read
+        // `Some(MapKey::Term(int_tid))` under the sentence "a NON-`Ref` term is
+        // untouched — the canon is the symbol spelling only"; that sentence was
+        // written when the relation drain reified every column, so no term-carried
+        // literal could reach a map key. A column keeps its own carrier now, and the
+        // split it described was `Map.get(m, 3)` answering `none()` for an entry
+        // `Map.put` had stored under the same 3.
         let int_tid = kb.alloc(Term::Const(crate::kb::term::Literal::Int(3)));
         assert_eq!(
             MapKey::try_from_value(&kb, &Value::term(int_tid)),
-            Some(MapKey::Term(int_tid)),
+            Some(MapKey::Int(3)),
+        );
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(int_tid)),
+            MapKey::try_from_value(&kb, &Value::Int(3)),
+            "a literal keys the same slot whichever carrier it arrived on",
         );
     }
 
@@ -514,12 +605,19 @@ mod tests {
             "a sort's nullary application and its bare Ref are not one name",
         );
 
-        // A `Term::Const` key takes the no-head fast path and must key identically
-        // to what the view would have said.
+        // A `Term::Const` key is read off the term (no `head`, so no payload clone)
+        // and must key identically to what the view would have said — which since
+        // WI-20260827-3ZNBC is the LITERAL, not the `TermId`, so it meets its native
+        // twin in one slot.
         let str_tid = kb.alloc(Term::Const(crate::kb::term::Literal::String("s".into())));
         assert_eq!(
             MapKey::try_from_value(&kb, &Value::term(str_tid)),
-            Some(MapKey::Term(str_tid)),
+            Some(MapKey::Str("s".into())),
+        );
+        assert_eq!(
+            MapKey::try_from_value(&kb, &Value::term(str_tid)),
+            MapKey::try_from_value(&kb, &Value::Str("s".into())),
+            "a string keys one slot on either carrier",
         );
     }
 }

@@ -107,17 +107,15 @@ fn collect_list<T>(v: &Value, head_of: impl Fn(&Value) -> Option<T>) -> Vec<T> {
 
 /// Decode `List[(c: String, e: String)]` — each element a 2-column named tuple,
 /// whose columns ride in head-declaration order (c, e).
-fn collect_pairs(v: &Value) -> Vec<(String, String)> {
+fn collect_pairs(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<(String, String)> {
     collect_list(v, |val| {
         let Value::Tuple { named: fields, .. } = val else {
             return None;
         };
+        // WI-20260827-3ZNBC — read what each column DENOTES, on whatever carrier.
         let cols: Vec<String> = fields
             .iter()
-            .filter_map(|(_, v)| match v {
-                Value::Str(s) => Some(s.clone()),
-                _ => None,
-            })
+            .filter_map(|(_, v)| crate::common::scalar_str(kb, v))
             .collect();
         assert_eq!(cols.len(), 2, "each row is the 2-column tuple (c, e)");
         Some((cols[0].clone(), cols[1].clone()))
@@ -126,8 +124,8 @@ fn collect_pairs(v: &Value) -> Vec<(String, String)> {
 
 /// Decode a one-column relation drain into its `String` column values. WI-20260818-YQB1Y:
 /// each row is the one-component tuple `(e: …)`, read through the shared STRICT reader.
-fn collect_strings(v: &Value) -> Vec<String> {
-    crate::common::list_column_strings(v)
+fn collect_strings(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
+    crate::common::list_column_strings(kb, v)
 }
 
 /// A recursive rule cited BY NAME is a `Relation[T]` that LOADS and enumerates the
@@ -140,7 +138,7 @@ fn wi714_recursive_relation_drains_transitive_closure() {
     let r = interp
         .call("test.wi714rec.closure", &[])
         .expect("a recursive rule cited by name must load and drain");
-    let mut got = collect_pairs(&r);
+    let mut got = collect_pairs(interp.kb(), &r);
     got.sort();
     let mut want = vec![
         ("bart".to_string(), "homer".to_string()),
@@ -195,7 +193,7 @@ fn wi714_recursive_column_types_from_the_base_clause() {
     let r = interp
         .call("test.wi714rec.ofAbe", &[])
         .expect("where over a recursion-typed column must type and run");
-    let mut got = collect_pairs(&r);
+    let mut got = collect_pairs(interp.kb(), &r);
     got.sort();
     let mut want = vec![
         ("bart".to_string(), "abe".to_string()),
@@ -242,7 +240,7 @@ fn wi714_recursive_relation_projects() {
     let r = interp
         .call("test.wi714rec.ancestors", &[])
         .expect("projection over a recursive relation must run");
-    let mut got = collect_strings(&r);
+    let mut got = collect_strings(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -279,7 +277,7 @@ end
     let r = interp
         .call("test.wi714mutual.closure", &[])
         .expect("a mutually recursive rule cited by name must load and drain");
-    let mut got = collect_pairs(&r);
+    let mut got = collect_pairs(interp.kb(), &r);
     got.sort();
     let mut want = vec![
         ("bart".to_string(), "homer".to_string()),

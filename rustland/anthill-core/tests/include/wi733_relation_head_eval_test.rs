@@ -500,10 +500,16 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
             panic!("`cons` must carry head+tail, got pos={pos:?} named={named:?}")
         };
         match head {
-            Value::Tuple { .. } => out.push(match crate::common::sole_column(&head) {
-                Value::Str(s) => s,
-                other => panic!("expected a String column in the row, got {other:?}"),
-            }),
+            // WI-20260827-3ZNBC — the column carries its string on whatever carrier the
+            // search proved it on, so read it through `scalar_str` like the single-row
+            // readers above already do.
+            Value::Tuple { .. } => {
+                let col = crate::common::sole_column(&head);
+                out.push(
+                    crate::common::scalar_str(interp.kb(), &col)
+                        .unwrap_or_else(|| panic!("expected a String column in the row, got {col:?}")),
+                );
+            }
             other => panic!("expected a one-column relation row, got {other:?}"),
         }
         cur = tail;

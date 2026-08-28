@@ -106,6 +106,9 @@ fn wi714_materializes_multi_column_named_tuple_rows() {
 
     let name_sym = interp.kb_mut().intern("name");
     let age_sym = interp.kb_mut().intern("age");
+    // WI-20260827-3ZNBC — a column is the bound value ON ITS OWN CARRIER, so each
+    // read asks what the column DENOTES rather than which `Value` variant holds it.
+    let kb = interp.kb();
     let mut got: Vec<(String, i64)> = rows
         .iter()
         .map(|r| {
@@ -116,17 +119,17 @@ fn wi714_materializes_multi_column_named_tuple_rows() {
             let name = named
                 .iter()
                 .find(|(k, _)| *k == name_sym)
-                .map(|(_, v)| match v {
-                    Value::Str(s) => s.clone(),
-                    o => panic!("name column not a String: {o:?}"),
+                .map(|(_, v)| {
+                    crate::common::scalar_str(kb, v)
+                        .unwrap_or_else(|| panic!("name column not a String: {v:?}"))
                 })
                 .expect("name column present");
             let age = named
                 .iter()
                 .find(|(k, _)| *k == age_sym)
-                .map(|(_, v)| match v {
-                    Value::Int(n) => *n,
-                    o => panic!("age column not an Int: {o:?}"),
+                .map(|(_, v)| {
+                    crate::common::scalar_int(kb, v)
+                        .unwrap_or_else(|| panic!("age column not an Int: {v:?}"))
                 })
                 .expect("age column present");
             (name, age)
@@ -159,9 +162,10 @@ fn wi714_single_free_var_materializes_as_a_one_column_row() {
     assert_eq!(columns.len(), 1, "one free var");
     let rows = materialized_rows(&mut interp, query, columns);
     assert_eq!(rows.len(), 1, "only alice is 30");
-    match crate::common::sole_column(&rows[0]) {
-        Value::Str(s) => assert_eq!(s, "alice", "the sole column carries the element"),
-        other => panic!("expected a String in the sole column, got {other:?}"),
+    let col = crate::common::sole_column(&rows[0]);
+    match crate::common::scalar_str(interp.kb(), &col) {
+        Some(s) => assert_eq!(s, "alice", "the sole column carries the element"),
+        None => panic!("expected a String in the sole column, got {col:?}"),
     }
 }
 

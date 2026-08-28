@@ -131,7 +131,7 @@ end
 /// Each drained row's columns joined by `/`, in schema order, sorted. Same shape the
 /// WI-730 condition tests read rows with: walk the `List` cons spine, each element the
 /// row's named tuple.
-fn rows(v: &Value) -> Vec<String> {
+fn rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = v.clone();
     while let Value::Entity { named, .. } = &cur {
@@ -152,11 +152,13 @@ fn rows(v: &Value) -> Vec<String> {
                 out.push(
                     fields
                         .iter()
-                        .map(|(_, x)| match x {
-                            Value::Str(s) => s.clone(),
-                            Value::Int(n) => n.to_string(),
-                            Value::BigInt(n) => n.to_string(),
-                            other => panic!("unexpected column value {other:?}"),
+                        // WI-20260827-3ZNBC: a column is the bound value ON ITS OWN
+                        // CARRIER, so read what it DENOTES rather than which `Value`
+                        // variant carries it — the same `String`/`Int64` a native
+                        // column held also arrives hash-consed or as an occurrence.
+                        .map(|(_, x)| {
+                            crate::common::scalar_display(kb, x)
+                                .unwrap_or_else(|| panic!("unexpected column value {x:?}"))
                         })
                         .collect::<Vec<_>>()
                         .join("/"),
@@ -174,7 +176,7 @@ fn drain(interp: &mut Interpreter, ns: &str, op: &str, args: &[Value]) -> Vec<St
     let v = interp
         .call(&format!("{ns}.{op}"), args)
         .unwrap_or_else(|e| panic!("{op} runs the filtered relation: {e:?}"));
-    rows(&v)
+    rows(interp.kb(), &v)
 }
 
 /// The control answer, from the control KB — the rows the LITERAL spelling selects.
@@ -341,7 +343,7 @@ end
     let got = interp
         .call("test.wi1127ok.good", &[])
         .expect("a call whose argument does not read the row is a capturable parameter");
-    assert_eq!(rows(&got), vec!["alice/30/30".to_string()]);
+    assert_eq!(rows(interp.kb(), &got), vec!["alice/30/30".to_string()]);
 
     let errs = match try_load_kb_with(ROW_DEP) {
         Err(e) => e,

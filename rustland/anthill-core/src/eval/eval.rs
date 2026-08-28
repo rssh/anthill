@@ -3218,7 +3218,24 @@ impl Interpreter {
                     then_branch,
                     else_branch,
                 } => {
-                    let chosen = match v.as_bool() {
+                    // WI-20260827-3ZNBC — the condition is read for WHAT IT DENOTES,
+                    // not which variant carries it. `Value::as_bool` is the INHERENT
+                    // accessor and sees `Value::Bool` alone, so an `if` over a
+                    // condition that arrived on a handle — a relation column typed
+                    // `Bool`, a bridged operand — died `TypeMismatch { expected:
+                    // "Bool", got: "Term" }` on a value that plainly denoted one.
+                    // (An inherent method WINS over a trait method, which is why the
+                    // neutral one is spelled `literal_bool` and not `as_bool`; a
+                    // trait `as_bool` would resolve silently back to this.)
+                    //
+                    // The `top` borrow is dropped before `self.kb` is read and the
+                    // frame re-acquired after — the same shape `AwaitState::LetBind`
+                    // below already uses to call `match_pattern(self, …)`.
+                    let cond = {
+                        use crate::kb::term_view::TermView;
+                        v.literal_bool(&self.kb)
+                    };
+                    let chosen = match cond {
                         Some(true) => then_branch,
                         Some(false) => else_branch,
                         None => {
@@ -3228,6 +3245,10 @@ impl Interpreter {
                             })
                         }
                     };
+                    let top = self
+                        .stack
+                        .top_mut()
+                        .expect("the frame awaiting a branch is still on the stack");
                     top.expr = chosen;
                     return Ok(StepOutcome::Continue);
                 }
@@ -4126,7 +4147,8 @@ fn spec_call_runtime_carrier(
 /// constructor's parent sort; HANDLE and SCALAR values carry no constructor
 /// functor, so each maps to a FIXED prelude sort (a stream cursor → `LogicalStream`,
 /// a `Map` → `Map`, a `Cell` → `Cell`, a closure / op-ref → `Function`, a boxed
-/// scalar → its primitive sort).
+/// scalar → its primitive sort, on the NATIVE variant or on a handle that denotes
+/// one — see the WI-20260827-3ZNBC row below the match).
 ///
 /// The match is EXHAUSTIVE over `Value` (mirrors [`Value::type_name`], no `_`
 /// arm) so a new variant must declare its carrier here rather than silently
@@ -4137,6 +4159,7 @@ fn spec_call_runtime_carrier(
 /// An OCCURRENCE is not in that list since WI-1044 — it reads through to the
 /// constructor route below, like the `Entity` / `Term` carriers of the same datum.
 pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    use crate::kb::term_view::{TermView, ViewHead};
     // WI-1044 — CANCEL THE CARRIER ALGEBRA FIRST, exactly as [`value_functor`] does
     // three lines into its own body, and for the same reason: an occurrence WRAPPING
     // another carrier (`Value::Node(Expr::Spliced(…))`) must answer what the wrapped
@@ -4209,6 +4232,37 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
     };
     if let Some(qn) = qualified {
         return kb.try_resolve_symbol(qn);
+    }
+    // WI-20260827-3ZNBC — A HANDLE THAT DENOTES A SCALAR NAMES THE SAME CARRIER ITS
+    // NATIVE TWIN DOES. The five scalar rows above key on the `Value` VARIANT, so a
+    // literal riding as a hash-consed `Value::Term` or a `Value::Node` occurrence
+    // named NO carrier: `value_functor` below answers `None` for a `Const` head (it
+    // asks "which constructor", and a literal has none), so the value reached dispatch
+    // with no receiver sort and died `UnknownOperation` / `OperationBodyMissing` — the
+    // WI-435 widening class this function's exhaustive match exists to close, reappearing
+    // one level down as a CARRIER gap rather than a variant gap.
+    //
+    // MEASURED as `vec3_ops_test::every_member_answers_relationally`: `vec_scale(c: Float,
+    // v: Vec3) = Vec3(x: c * v.x, …)` called from a rule body gets `c` as
+    // `Value::Node(Const(2.0))`, and `*` — a `Numeric` spec op — had no carrier to
+    // dispatch on, so the goal residualized. The bare literal is the case the field
+    // reads (`v.x`) do not cover, which is why `vec_sub` passed and `vec_scale` did not.
+    //
+    // Placed AFTER the variant rows so the native path costs no `head()` (which clones
+    // a `String`/`BigInt` payload), and GATED on the two handle carriers so the ENTITY
+    // dispatch path — the hot one — does not build a head here only to have
+    // `value_functor` build it again below. An `Entity` / `SymbolRef` cannot head as a
+    // `Const`, so the gate loses nothing.
+    if matches!(value, Value::Term { .. } | Value::Node(_)) {
+        if let ViewHead::Const(lit) = value.head(kb) {
+            return kb.try_resolve_symbol(match lit {
+                Literal::Int(_) => "anthill.prelude.Int64",
+                Literal::BigInt(_) => "anthill.prelude.BigInt",
+                Literal::Float(_) => "anthill.prelude.Float",
+                Literal::String(_) => "anthill.prelude.String",
+                Literal::Bool(_) => "anthill.prelude.Bool",
+            });
+        }
     }
     // Entity / Term: the carrier is the sort the constructor BELONGS TO — the
     // TOTAL [`KnowledgeBase::sort_of_constructor`], whose doc owns the strict-vs-

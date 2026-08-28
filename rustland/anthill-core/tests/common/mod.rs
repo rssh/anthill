@@ -735,14 +735,21 @@ pub fn sole_column(v: &eval::Value) -> eval::Value {
 }
 
 /// Walk a one-column relation drain into its `String` column values — [`list_heads`], then
-/// [`sole_column`] on each row, then a `Str` read. LOUD on any other shape.
+/// [`sole_column`] on each row, then a carrier-neutral string read. LOUD on any other shape.
+///
+/// WI-20260827-3ZNBC — the read goes through [`scalar_str`] and so needs a
+/// `&KnowledgeBase`. A relation column is the bound value ON ITS OWN CARRIER now
+/// (`materialize_solution`), so `Value::Str` names one of the three ways the same
+/// string arrives; matching it was asking which variant carried the answer, not what
+/// the answer was.
 #[allow(dead_code)]
-pub fn list_column_strings(v: &eval::Value) -> Vec<String> {
+pub fn list_column_strings(kb: &KnowledgeBase, v: &eval::Value) -> Vec<String> {
     cons_spine(v, "list_column_strings")
         .into_iter()
-        .map(|h| match sole_column(&h) {
-            eval::Value::Str(s) => s,
-            other => panic!("list_column_strings: expected a String column, got {other:?}"),
+        .map(|h| {
+            let col = sole_column(&h);
+            scalar_str(kb, &col)
+                .unwrap_or_else(|| panic!("list_column_strings: expected a String column, got {col:?}"))
         })
         .collect()
 }
@@ -750,12 +757,13 @@ pub fn list_column_strings(v: &eval::Value) -> Vec<String> {
 /// Walk a one-column relation drain into its `Int64` column values — the [`list_ints`] of
 /// [`list_column_strings`].
 #[allow(dead_code)]
-pub fn list_column_ints(v: &eval::Value) -> Vec<i64> {
+pub fn list_column_ints(kb: &KnowledgeBase, v: &eval::Value) -> Vec<i64> {
     cons_spine(v, "list_column_ints")
         .into_iter()
-        .map(|h| match sole_column(&h) {
-            eval::Value::Int(i) => i,
-            other => panic!("list_column_ints: expected an Int64 column, got {other:?}"),
+        .map(|h| {
+            let col = sole_column(&h);
+            scalar_int(kb, &col)
+                .unwrap_or_else(|| panic!("list_column_ints: expected an Int64 column, got {col:?}"))
         })
         .collect()
 }
@@ -841,6 +849,50 @@ pub fn scalar_str(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Const(Literal::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
+/// The `Int64` a value DENOTES, read through the carrier-neutral view — the integer
+/// peer of [`scalar_str`], and needed for the same reason (WI-20260827-3ZNBC): a
+/// relation row column carries its value on whatever carrier the search proved it on,
+/// so `matches!(col, Value::Int(_))` asks which VARIANT rather than which VALUE.
+#[allow(dead_code)]
+pub fn scalar_int(kb: &KnowledgeBase, v: &eval::Value) -> Option<i64> {
+    use anthill_core::kb::term::Literal;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Const(Literal::Int(n)) => Some(n),
+        _ => None,
+    }
+}
+
+/// The `Bool` a value DENOTES, read through the carrier-neutral view — the peer of
+/// [`scalar_str`] / [`scalar_int`], for the same reason (WI-20260827-3ZNBC).
+#[allow(dead_code)]
+pub fn scalar_bool(kb: &KnowledgeBase, v: &eval::Value) -> Option<bool> {
+    use anthill_core::kb::term::Literal;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Const(Literal::Bool(b)) => Some(b),
+        _ => None,
+    }
+}
+
+/// ANY scalar a value denotes, rendered — for the suites that join a row's columns into
+/// one comparable string and do not care which scalar sort each column is. LOUD (`None`)
+/// on a non-literal, so a column that is not a scalar at all still fails its assertion
+/// rather than reading as an empty field.
+#[allow(dead_code)]
+pub fn scalar_display(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
+    use anthill_core::kb::term::Literal;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Const(Literal::String(s)) => Some(s),
+        ViewHead::Const(Literal::Int(n)) => Some(n.to_string()),
+        ViewHead::Const(Literal::BigInt(n)) => Some(n.to_string()),
+        ViewHead::Const(Literal::Float(f)) => Some(f.into_inner().to_string()),
+        ViewHead::Const(Literal::Bool(b)) => Some(b.to_string()),
         _ => None,
     }
 }

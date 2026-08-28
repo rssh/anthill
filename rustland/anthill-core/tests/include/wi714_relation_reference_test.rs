@@ -143,12 +143,13 @@ fn wi714_bare_rule_reference_split_first() {
         Value::Entity { named, .. } if !named.is_empty() => named[0].1.clone(),
         other => panic!("expected some(name), got {other:?}"),
     };
-    match crate::common::sole_column(&inner) {
-        Value::Str(s) => assert!(
+    let col = crate::common::sole_column(&inner);
+    match crate::common::scalar_str(interp.kb(), &col) {
+        Some(s) => assert!(
             s == "alice" || s == "bob",
             "splitFirst materializes a person name in its `name` column, got {s:?}"
         ),
-        other => panic!("expected a String `name` column, got {other:?}"),
+        None => panic!("expected a String `name` column, got {col:?}"),
     }
 }
 
@@ -160,7 +161,7 @@ fn wi714_bare_rule_reference_drains_via_takeN() {
     let r = interp
         .call("test.wi714ref.allNames", &[])
         .expect("allNames() drains the relation via takeN");
-    let mut got = crate::common::list_column_strings(&r);
+    let mut got = crate::common::list_column_strings(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -178,6 +179,7 @@ fn wi714_multi_column_rows_are_named_tuples() {
         .call("test.wi714ref.allRows", &[])
         .expect("allRows() drains the 2-column relation");
     // Walk the cons list; each element is a `Value::Tuple { named: [(name,…),(age,…)] }`.
+    let kb = interp.kb();
     let mut rows: Vec<(String, i64)> = Vec::new();
     let mut cur = r;
     while let Value::Entity { named, .. } = &cur {
@@ -195,14 +197,13 @@ fn wi714_multi_column_rows_are_named_tuples() {
         }
         match (head_tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
-                let name = fields.iter().find_map(|(_, v)| match v {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                });
-                let age = fields.iter().find_map(|(_, v)| match v {
-                    Value::Int(n) => Some(*n),
-                    _ => None,
-                });
+                // WI-20260827-3ZNBC — read what each column DENOTES, not the variant.
+                let name = fields
+                    .iter()
+                    .find_map(|(_, v)| crate::common::scalar_str(kb, v));
+                let age = fields
+                    .iter()
+                    .find_map(|(_, v)| crate::common::scalar_int(kb, v));
                 rows.push((name.expect("name col"), age.expect("age col")));
                 cur = t;
             }
@@ -363,7 +364,7 @@ fn wi714_union_combines_solutions() {
     let r = interp
         .call("test.wi714ref.unionNames", &[])
         .expect("union(alice_name, bob_name).takeN");
-    let mut got = collect_string_list(&r);
+    let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -380,7 +381,7 @@ fn wi714_union_is_a_bag() {
     let r = interp
         .call("test.wi714ref.unionBag", &[])
         .expect("union(alice_name, alice_name).takeN");
-    let got = collect_string_list(&r);
+    let got = collect_string_list(interp.kb(), &r);
     assert_eq!(
         got,
         vec!["alice".to_string(), "alice".to_string()],
@@ -533,7 +534,7 @@ fn wi714_nonlinear_head_var_is_single_column() {
     let r = interp
         .call("test.wi714edge.twins", &[])
         .expect("twins() drains the nonlinear relation");
-    let mut got = collect_string_list(&r);
+    let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -550,7 +551,7 @@ fn wi714_uniform_multiclause_unions_solutions() {
     let r = interp
         .call("test.wi714edge.anyNames", &[])
         .expect("anyNames() drains the two-clause relation");
-    let mut got = collect_string_list(&r);
+    let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -703,7 +704,7 @@ fn wi714_applied_positional_binding_narrows_schema() {
     let r = interp
         .call("test.wi714applied.alicesAges", &[])
         .expect("alicesAges drains the partially-bound relation");
-    let mut got = collect_int_list(&r);
+    let mut got = collect_int_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -721,7 +722,7 @@ fn wi714_applied_named_binding_narrows_schema() {
     let r = interp
         .call("test.wi714applied.namesAged30", &[])
         .expect("namesAged30 drains the named-bound relation");
-    let mut got = collect_string_list(&r);
+    let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -738,7 +739,7 @@ fn wi714_applied_binding_from_local() {
     let r = interp
         .call("test.wi714applied.agesOf", &[Value::Str("bob".into())])
         .expect("agesOf drains the relation bound to a local");
-    let got = collect_int_list(&r);
+    let got = collect_int_list(interp.kb(), &r);
     assert_eq!(got, vec![25], "the local's value binds the name column");
 }
 
@@ -857,7 +858,7 @@ end
         .call("test.wi714q.use.bobsAges", &[])
         .expect("bobsAges runs the qualified-applied relation");
     assert_eq!(
-        collect_int_list(&r),
+        collect_int_list(interp.kb(), &r),
         vec![25],
         "a qualified `ns.rule(args)` binds and narrows exactly like the unqualified form"
     );
@@ -1078,7 +1079,7 @@ end
     let r = interp
         .call("test.wi714bq.use.rows", &[])
         .expect("rows() drains the bare-qualified relation");
-    let mut rows = collect_named_rows(&r);
+    let mut rows = collect_named_rows(interp.kb(), &r);
     rows.sort();
     assert_eq!(
         rows,
@@ -1119,7 +1120,7 @@ end
     let bare = interp
         .call("test.wi714bqsort.bareRows", &[])
         .expect("bareRows drains the sort-scoped bare relation");
-    let mut got = collect_int_list(&bare);
+    let mut got = collect_int_list(interp.kb(), &bare);
     got.sort();
     assert_eq!(
         got,
@@ -1129,7 +1130,7 @@ end
     let applied = interp
         .call("test.wi714bqsort.appliedRows", &[])
         .expect("appliedRows drains the sort-scoped applied relation");
-    let mut got2 = collect_int_list(&applied);
+    let mut got2 = collect_int_list(interp.kb(), &applied);
     got2.sort();
     assert_eq!(
         got2,
@@ -1206,7 +1207,7 @@ end
         let r = interp
             .call(&format!("test.wi714label.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op} runs the labeled relation: {e:?}"));
-        let mut got = collect_string_list(&r);
+        let mut got = collect_string_list(interp.kb(), &r);
         got.sort();
         assert_eq!(
             got,
@@ -1248,7 +1249,7 @@ end
     let r = interp
         .call("test.wi714lm.everyName", &[])
         .expect("everyName drains the labeled same-functor relation");
-    let mut got = collect_string_list(&r);
+    let mut got = collect_string_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -1348,7 +1349,7 @@ end
     let r = interp
         .call("test.wi714xsort.q2Rows", &[])
         .expect("q2Rows drains the relation whose clause calls a cross-sort rule");
-    let mut got = collect_int_list(&r);
+    let mut got = collect_int_list(interp.kb(), &r);
     got.sort();
     assert_eq!(
         got,
@@ -1359,7 +1360,7 @@ end
 
 /// Decode a `List[(name: String, age: Int64)]` (cons chain of named tuples) into
 /// `(String, i64)` pairs — the multi-column-row shape.
-fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
+fn collect_named_rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<(String, i64)> {
     let mut rows: Vec<(String, i64)> = Vec::new();
     let mut cur = v.clone();
     while let Value::Entity { named, .. } = &cur {
@@ -1377,14 +1378,13 @@ fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
         }
         match (head_tuple, tail) {
             (Some(Value::Tuple { named: fields, .. }), Some(t)) => {
-                let name = fields.iter().find_map(|(_, v)| match v {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                });
-                let age = fields.iter().find_map(|(_, v)| match v {
-                    Value::Int(n) => Some(*n),
-                    _ => None,
-                });
+                // WI-20260827-3ZNBC — read what each column DENOTES, not the variant.
+                let name = fields
+                    .iter()
+                    .find_map(|(_, v)| crate::common::scalar_str(kb, v));
+                let age = fields
+                    .iter()
+                    .find_map(|(_, v)| crate::common::scalar_int(kb, v));
                 rows.push((name.expect("name col"), age.expect("age col")));
                 cur = t;
             }
@@ -1399,11 +1399,11 @@ fn collect_named_rows(v: &Value) -> Vec<(String, i64)> {
 /// shared strict column readers, which panic on any other row shape: a lenient
 /// "find the Int/Str among the fields" walk would keep passing if a fixture started draining
 /// a two-column relation and silently report its first column.
-fn collect_int_list(v: &Value) -> Vec<i64> {
-    crate::common::list_column_ints(v)
+fn collect_int_list(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<i64> {
+    crate::common::list_column_ints(kb, v)
 }
 
 /// The `String` twin of [`collect_int_list`].
-fn collect_string_list(v: &Value) -> Vec<String> {
-    crate::common::list_column_strings(v)
+fn collect_string_list(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
+    crate::common::list_column_strings(kb, v)
 }

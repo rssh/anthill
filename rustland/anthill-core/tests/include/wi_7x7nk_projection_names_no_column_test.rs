@@ -290,7 +290,7 @@ fn x7nk_a_projection_that_does_name_columns_still_projects() {
     let one = interp
         .call("test.x7nk.one", &[])
         .unwrap_or_else(|e| panic!("one: {e:?}"));
-    assert_eq!(crate::common::list_column_strings(&one), vec!["alice"]);
+    assert_eq!(crate::common::list_column_strings(interp.kb(), &one), vec!["alice"]);
     let two = interp
         .call("test.x7nk.two", &[])
         .unwrap_or_else(|e| panic!("two: {e:?}"));
@@ -304,8 +304,12 @@ fn x7nk_a_projection_that_does_name_columns_still_projects() {
     for row in &rows {
         match row {
             Value::Tuple { pos, named } if pos.is_empty() && named.len() == 2 => {
+                // WI-20260827-3ZNBC — ask what each column DENOTES (`String` vs
+                // `Int64`), not which `Value` variant carries it. That is also the
+                // sharper reading: the component SORTS are what this pins.
                 assert!(
-                    matches!(&named[0].1, Value::Str(_)) && matches!(&named[1].1, Value::Int(_)),
+                    crate::common::scalar_str(interp.kb(), &named[0].1).is_some()
+                        && crate::common::scalar_int(interp.kb(), &named[1].1).is_some(),
                     "expected a (String, Int64) row, got {row:?}"
                 );
             }

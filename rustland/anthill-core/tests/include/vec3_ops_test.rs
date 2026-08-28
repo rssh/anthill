@@ -31,10 +31,18 @@
 //!
 //! CONTROL DISCIPLINE for the three resolver fixes, each MEASURED during
 //! development by observing the failure the fix removes:
-//!  - WI-937 (`term_to_value` → `sort_of_constructor`): before it, every rule-body
-//!    route aborted `bridge_op_to_eval: field_access: receiver is not an entity`.
+//!  - WI-937 (the entity materializer's `sort_of_constructor` read, then spelled
+//!    `term_to_value` and now `handle_to_native`'s `TryFn` arm — WI-20260827-3ZNBC
+//!    deleted the wrapper): before it, every rule-body route aborted
+//!    `bridge_op_to_eval: field_access: receiver is not an entity`.
 //!    `the_four_members_evaluate` passes either way — it calls the interpreter
 //!    directly — which is why that test is kept separate.
+//!  - WI-20260827-3ZNBC (`runtime_carrier_sort` answering for a handle that DENOTES
+//!    a scalar): with the SLD→eval bridge no longer normalizing its operands, back
+//!    this one out and `every_member_answers_relationally` fails on `scale_r` ALONE
+//!    — `vec_scale`'s BARE `Float` literal operand reaches spec dispatch with no
+//!    receiver sort, while `sub_r`, whose operands are all field reads, still
+//!    passes. That split is what localizes the case to a bare literal.
 //!  - WI-938 (the arity+1 → `unify` routing): before it, the two relational tests
 //!    answered 0 solutions and LOADED CLEAN.
 //!  - WI-941 (the nullary fold): with WI-937+938 in place but this one backed out,

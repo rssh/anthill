@@ -102,7 +102,7 @@ end
 
 /// The `(name, age)` (or merged) columns of each drained row, as `a/b/…` strings, in
 /// drain order. Walks the `List` cons spine; each element is the row's named tuple.
-fn rows(v: &Value) -> Vec<String> {
+fn rows(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = v.clone();
     while let Value::Entity { named, .. } = &cur {
@@ -123,10 +123,11 @@ fn rows(v: &Value) -> Vec<String> {
                 out.push(
                     fields
                         .iter()
-                        .map(|(_, x)| match x {
-                            Value::Str(s) => s.clone(),
-                            Value::Int(n) => n.to_string(),
-                            other => panic!("unexpected column value {other:?}"),
+                        // WI-20260827-3ZNBC: a column is the bound value ON ITS OWN
+                        // CARRIER — read what it DENOTES, not which variant carries it.
+                        .map(|(_, x)| {
+                            crate::common::scalar_display(kb, x)
+                                .unwrap_or_else(|| panic!("unexpected column value {x:?}"))
                         })
                         .collect::<Vec<_>>()
                         .join("/"),
@@ -143,7 +144,7 @@ fn drain(interp: &mut Interpreter, op: &str) -> Vec<String> {
     let v = interp
         .call(&format!("test.wi730.{op}"), &[])
         .unwrap_or_else(|e| panic!("{op} runs the filtered relation: {e:?}"));
-    let mut r = rows(&v);
+    let mut r = rows(interp.kb(), &v);
     r.sort();
     r
 }

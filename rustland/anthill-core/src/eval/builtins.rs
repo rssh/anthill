@@ -729,15 +729,17 @@ where
 fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term_view::{TermView, ViewHead};
     let [receiver, field] = expect_args::<2>("anthill.reflect.field_access", args)?;
-    let field_name = match &field {
-        Value::Str(s) => s.clone(),
-        other => {
-            return Err(EvalError::Internal(format!(
+    // The SELECTOR reads carrier-neutrally too (WI-20260827-3ZNBC): the typer
+    // splices it as a literal today, but `make_apply`-built reflect calls can hand
+    // this a term-carried name, and a selector is a string on every carrier.
+    let field_name = str_operand(interp.kb(), &field)
+        .map_err(|_| {
+            EvalError::Internal(format!(
                 "field_access: field name must be a string, got {}",
-                other.type_name()
-            )))
-        }
-    };
+                field.type_name()
+            ))
+        })?
+        .into_owned();
     // WI-20260827-2YHZ3 — READ THE RECEIVER THROUGH `TermView`, so this one arm
     // serves every carrier an entity can arrive on. It used to match
     // `Value::Entity` alone and refuse the rest, which made `row.x.v` die
@@ -763,10 +765,11 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 let full = interp.kb().local_name_of(sym);
                 let short = full.rsplit('.').next().unwrap_or(full);
                 if short == field_name.as_str() {
-                    return Ok(receiver
+                    let val = receiver
                         .named_arg(interp.kb(), sym)
                         .map(|c| c.to_value())
-                        .expect("a key from `named_keys` reads back"));
+                        .expect("a key from `named_keys` reads back");
+                    return absent_option_as_none(interp, *functor, field_name.as_str(), Some(val));
                 }
             }
             // A field supplied POSITIONALLY (`box(42)`, not `box(value: 42)`):
@@ -794,18 +797,18 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                         continue;
                     }
                     if short == field_name.as_str() {
-                        if let Some(val) = receiver.pos_arg(interp.kb(), pos_cursor) {
-                            return Ok(val.to_value());
-                        }
-                        break;
+                        let val = receiver.pos_arg(interp.kb(), pos_cursor).map(|v| v.to_value());
+                        return absent_option_as_none(
+                            interp,
+                            *functor,
+                            field_name.as_str(),
+                            val,
+                        );
                     }
                     pos_cursor += 1;
                 }
             }
-            Err(EvalError::Internal(format!(
-                "field_access: entity has no field '{}'",
-                field_name
-            )))
+            absent_option_as_none(interp, *functor, field_name.as_str(), None)
         }
         // WI-638: a NAMED-TUPLE component projection (`(x: A, y: B).x`, or the
         // positional `t._1`). The typer resolved the component against the tuple
@@ -833,6 +836,69 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             other.type_name()
         ))),
     }
+}
+
+/// A DECLARED `Option[T]` field the value does not actually supply reads as `none()`.
+///
+/// WI-20260827-3ZNBC — this used to live one layer away and only on one carrier.
+/// `materialize_entity` did it while REIFYING a term into a `Value::Entity`, so a
+/// relation column over an entity arrived with its optional slots already filled and
+/// `row.item.context` answered `none()`. With the drain handing the column through on
+/// its own carrier the reification is gone, and without this the same read answers the
+/// loader's synthetic Var — which matches neither `case some(v)` nor `case none()` and
+/// raises `MatchFailed`, i.e. the same program stops working depending on how its
+/// value was proved. Moving the defaulting to the READ is what makes it carrier-blind:
+/// `Value::Entity`, `Value::Term` and `Value::Node` receivers now all answer `none()`,
+/// where before only the first did (and only because something else had filled it in).
+///
+/// TWO SPELLINGS OF "does not supply it", both from the loader's own encoding:
+///  * the slot is ABSENT (`supplied` is `None`) — a hand-built or partial value; and
+///  * the slot is PRESENT but holds a VAR. On-disk facts omit optional named args, and
+///    `kb/load.rs`'s partial-named-arg expansion fills the gap with a fresh var so the
+///    discrim tree can index the fact uniformly. Those are semantically absent, which
+///    is exactly the rule `materialize_entity` states at its own Var arm.
+///
+/// A field that is NOT declared `Option[T]` is untouched in both directions: absent
+/// stays the loud "entity has no field" error, and a var-valued slot is handed back as
+/// the var it is. Widening that would turn a missing REQUIRED field into `none()`,
+/// which is the silent-wrong-answer this function exists to avoid, not to create.
+fn absent_option_as_none(
+    interp: &mut Interpreter,
+    functor: crate::intern::Symbol,
+    field_name: &str,
+    supplied: Option<Value>,
+) -> Result<Value, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    let is_absent = match &supplied {
+        None => true,
+        Some(v) => matches!(v.head(interp.kb()), ViewHead::Var(_)),
+    };
+    if is_absent {
+        // Keyed by SHORT name, as the two scans above are: `entity_field_types` holds
+        // the declared field symbols, which may be qualified.
+        let declared_option = interp
+            .kb
+            .entity_field_types(functor)
+            .map(|fields| fields.to_vec())
+            .into_iter()
+            .flatten()
+            .find(|(fname, _)| {
+                let full = interp.kb().local_name_of(*fname);
+                full.rsplit('.').next().unwrap_or(full) == field_name
+            })
+            .is_some_and(|(_, ftype)| crate::kb::typing::is_option_type(interp.kb(), &ftype));
+        if declared_option {
+            let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+            return Ok(Value::Entity {
+                functor: none_sym,
+                pos: Vec::new().into(),
+                named: Vec::new().into(),
+            });
+        }
+    }
+    supplied.ok_or_else(|| {
+        EvalError::Internal(format!("field_access: entity has no field '{field_name}'"))
+    })
 }
 
 // ── argument helpers ────────────────────────────────────────────
@@ -1076,12 +1142,24 @@ fn bigint_mul(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
 
 /// `BigInt`'s negation — unbounded, so unlike [`int_neg`] it cannot fail on
 /// `i64::MIN`. `Int64` and `Float` already had their own; this completes the three.
-fn bigint_neg(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn bigint_neg(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("BigInt.neg", args)?;
-    match &a {
-        Value::BigInt(_) => numeric_neg("BigInt.neg", &a),
-        _ => Err(type_mismatch("BigInt", &a, None)),
-    }
+    // Operand read through `TermView::literal_big_int` — the carrier-neutral question,
+    // so the read IS the guard. This was the last unary member of the sort still
+    // matching `Value::BigInt` by variant, beside an `add`/`sub`/`mul` that had been
+    // widened (WI-20260827-2YHZ3 / -3ZNBC).
+    //
+    // NOT `big_int_operand`, which additionally accepts an `Int64` — that widening is
+    // a SORT one and belongs to the CONVERSIONS (`to_bigint` / `to_int` / `to_float`),
+    // which have always taken either. `neg` refused an `Int64` before this ticket and
+    // still does: smuggling a sort widening in with a carrier widening would make
+    // `BigInt.neg(5)` answer `-5` where it used to raise (found by /code-review).
+    let x = {
+        use crate::kb::term_view::TermView;
+        a.literal_big_int(i.kb())
+            .ok_or_else(|| type_mismatch("BigInt", &a, None))?
+    };
+    numeric_neg("BigInt.neg", &Value::BigInt(x))
 }
 
 // ── Int-specific ────────────────────────────────────────────────
@@ -1288,22 +1366,26 @@ fn float_ieee_eq(i: &Interpreter, a: &Value, b: &Value) -> Option<bool> {
     }
 }
 
-/// The raw `f64` of a Float `Value` — an unboxed `Value::Float` OR a `Literal::Float`
-/// inside a `Value::Term` (a reflected / stored-structure operand). Mirrors the
-/// resolver's `value_f64` so eval and resolver agree on which operands are floats —
-/// otherwise a Term-wrapped float would slip past the IEEE path and read `nan == nan`
-/// structurally (via `OrderedFloat`), or make ordering raise a spurious type error.
+/// The raw `f64` a Float operand DENOTES, on whatever carrier it rides — an unboxed
+/// `Value::Float`, a `Literal::Float` inside a hash-consed `Value::Term`, or one
+/// inside a `Value::Node` occurrence. Mirrors the resolver's `value_f64` so eval and
+/// resolver agree on which operands are floats — otherwise a handle-wrapped float
+/// would slip past the IEEE path and read `nan == nan` structurally (via
+/// `OrderedFloat`), or make ordering raise a spurious type error.
+///
+/// WI-20260827-3ZNBC — THE OCCURRENCE CARRIER IS THE HALF THIS WAS MISSING while its
+/// doc already claimed the mirror. `value_f64` gained it in WI-685; this kept a
+/// hand-rolled two-arm match, so once the SLD→eval bridge stopped normalizing its
+/// operands, `Vec3(x: a.x + b.x, …)` inside a bridged `vec_add` read its field off a
+/// rule-body occurrence, got `Value::Node(Const(1.0))`, and `Float.add` refused —
+/// the whole goal RESIDUALIZED rather than erroring, which is how a missing carrier
+/// arm hides. One [`TermView::literal_f64`] call is the entire mirror, and asking the
+/// carrier-neutral question is what keeps the two from drifting apart again.
+/// (Control: `vec3_ops_test::every_member_answers_relationally` and
+/// `::the_imported_short_name_answers_through_the_derived_view` fail without it.)
 fn float_val(i: &Interpreter, v: &Value) -> Option<f64> {
-    match v {
-        Value::Float(f) => Some(*f),
-        Value::Term { id, .. } => match i.kb().get_term(*id) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::Float(f)) => {
-                Some(f.into_inner())
-            }
-            _ => None,
-        },
-        _ => None,
-    }
+    use crate::kb::term_view::TermView;
+    v.literal_f64(i.kb())
 }
 
 /// `anthill.kernel.struct_eq` (`===`) — the TOTAL, carrier-agnostic STRUCTURAL
@@ -1579,22 +1661,26 @@ fn value_compare(
     // every `gt`/`gte`/`lt`/`lte`, which is why leaving it on the native match
     // while widening `add`/`sub`/`mul` was the incoherence /code-review named:
     // `Int64.add(handle, 1)` succeeded where `Int64.gt(handle, 1)` refused.
-    if let (Some(la), Some(lb)) = (a.as_literal(kb), b.as_literal(kb)) {
-        match (la, lb) {
-            (Literal::Int(x), Literal::Int(y)) => return Ok(x.cmp(&y)),
-            (Literal::BigInt(x), Literal::BigInt(y)) => return Ok(x.cmp(&y)),
-            (Literal::Float(x), Literal::Float(y)) => return Ok(x.into_inner().total_cmp(&y.into_inner())),
-            (Literal::Bool(x), Literal::Bool(y)) => return Ok(x.cmp(&y)),
-            (Literal::String(x), Literal::String(y)) => return Ok(x.cmp(&y)),
-            _ => {}
-        }
-    }
-    Ok(match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        (Value::BigInt(x), Value::BigInt(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
-        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
-        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+    // ONE reader, not two. WI-20260827-2YHZ3 added the `as_literal` pair above a
+    // native `match (a, b)` fallback and left the fallback in place; every pair it
+    // could still answer — two `Value::Int`s, two `Value::Str`s — reads as
+    // `ViewHead::Const` up here, so the only arm it could ever REACH was its own
+    // error (WI-20260827-3ZNBC). Two spellings of one comparison is how the halves
+    // drift apart, which is the defect this function was widened to remove.
+    let (Some(la), Some(lb)) = (a.as_literal(kb), b.as_literal(kb)) else {
+        return Err(EvalError::TypeMismatch {
+            expected: "Ord scalars of matching type",
+            got: format!("{} and {}", a.type_name(), b.type_name()),
+        });
+    };
+    Ok(match (la, lb) {
+        (Literal::Int(x), Literal::Int(y)) => x.cmp(&y),
+        (Literal::BigInt(x), Literal::BigInt(y)) => x.cmp(&y),
+        (Literal::Float(x), Literal::Float(y)) => x.into_inner().total_cmp(&y.into_inner()),
+        (Literal::Bool(x), Literal::Bool(y)) => x.cmp(&y),
+        (Literal::String(x), Literal::String(y)) => x.cmp(&y),
+        // MISMATCHED literal sorts, e.g. `compare(1, "a")`. Same refusal as a
+        // non-literal operand — an `Ord` comparison across sorts has no answer.
         _ => {
             return Err(EvalError::TypeMismatch {
                 expected: "Ord scalars of matching type",
@@ -1765,26 +1851,17 @@ fn string_concat(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 
 // ── BigInt conversions ─────────────────────────────────────────
 
-fn bigint_to_bigint(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn bigint_to_bigint(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("BigInt.to_bigint", args)?;
-    match a {
-        Value::Int(n) => Ok(Value::BigInt(num_bigint::BigInt::from(n))),
-        Value::BigInt(n) => Ok(Value::BigInt(n)),
-        other => Err(type_mismatch("Int or BigInt", &other, None)),
-    }
+    Ok(Value::BigInt(big_int_operand(i.kb(), &a, "Int or BigInt")?))
 }
 
 /// BigInt → Option[Int]. Produces `some(n)` if the BigInt fits in i64,
 /// `none` otherwise. Relies on `anthill.prelude.List.some` / `.none`
 /// being loaded in the KB's symbol table.
 fn bigint_to_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use num_bigint::ToBigInt;
     let [a] = expect_args::<1>("BigInt.to_int", args)?;
-    let n = match a {
-        Value::BigInt(n) => n,
-        Value::Int(n) => n.to_bigint().unwrap(),
-        other => return Err(type_mismatch("BigInt", &other, None)),
-    };
+    let n = big_int_operand(interp.kb(), &a, "BigInt")?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.fields.value;
@@ -1806,28 +1883,23 @@ fn bigint_to_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 
 // ── Float IEEE predicates ──────────────────────────────────────
 
-fn float_is_nan(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+// Read through `float_operand` like every other `Float` host function
+// (WI-20260827-3ZNBC): the three predicates were the only members of the sort
+// still matching `Value::Float` by variant, so `Float.add(handle, 1.0)` decided
+// while `Float.isNaN(handle)` refused the same operand.
+fn float_is_nan(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Float.isNaN", args)?;
-    match a {
-        Value::Float(x) => Ok(Value::Bool(x.is_nan())),
-        other => Err(type_mismatch("Float", &other, None)),
-    }
+    Ok(Value::Bool(float_operand(i, &a)?.is_nan()))
 }
 
-fn float_is_infinite(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn float_is_infinite(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Float.isInfinite", args)?;
-    match a {
-        Value::Float(x) => Ok(Value::Bool(x.is_infinite())),
-        other => Err(type_mismatch("Float", &other, None)),
-    }
+    Ok(Value::Bool(float_operand(i, &a)?.is_infinite()))
 }
 
-fn float_is_finite(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn float_is_finite(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Float.isFinite", args)?;
-    match a {
-        Value::Float(x) => Ok(Value::Bool(x.is_finite())),
-        other => Err(type_mismatch("Float", &other, None)),
-    }
+    Ok(Value::Bool(float_operand(i, &a)?.is_finite()))
 }
 
 // ── Float IEEE arithmetic (WI-881) ─────────────────────────────
@@ -1990,12 +2062,9 @@ nullary_const! { Value::Float;
 
 /// Int → Float. Exact for |n| < 2^53; rounds to nearest representable
 /// double for larger magnitudes (standard IEEE conversion).
-fn int_to_float(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn int_to_float(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("Int64.to_float", args)?;
-    match a {
-        Value::Int(n) => Ok(Value::Float(n as f64)),
-        other => Err(type_mismatch("Int64", &other, None)),
-    }
+    Ok(Value::Float(int_operand(i.kb(), &a)? as f64))
 }
 
 /// BigInt → Float. Lossy for values beyond f64 precision; saturates to
@@ -2003,13 +2072,9 @@ fn int_to_float(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 /// Implementation goes via decimal string: num_bigint's Display produces a
 /// canonical integer form, and Rust's f64 parser rounds to nearest and
 /// returns Infinity on overflow.
-fn bigint_to_float(_i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn bigint_to_float(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a] = expect_args::<1>("BigInt.to_float", args)?;
-    let s = match a {
-        Value::BigInt(n) => n.to_string(),
-        Value::Int(n) => n.to_string(),
-        other => return Err(type_mismatch("BigInt or Int", &other, None)),
-    };
+    let s = big_int_operand(i.kb(), &a, "BigInt or Int")?.to_string();
     let f: f64 = s.parse().unwrap_or(f64::INFINITY);
     Ok(Value::Float(f))
 }
@@ -2082,12 +2147,8 @@ fn string_to_lower(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 fn string_substring(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, start, end] = expect_args::<3>("String.substring", args)?;
     let s = str_operand(i.kb(), &s)?.to_string();
-    let start = start
-        .as_int()
-        .ok_or_else(|| type_mismatch("Int64", &start, None))?;
-    let end = end
-        .as_int()
-        .ok_or_else(|| type_mismatch("Int64", &end, None))?;
+    let start = int_operand(i.kb(), &start)?;
+    let end = int_operand(i.kb(), &end)?;
     let n = s.chars().count() as i64;
     let lo = start.max(0).min(n) as usize;
     let hi = end.max(0).min(n) as usize;
@@ -2108,7 +2169,7 @@ fn string_substring(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 fn string_repeat(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, n] = expect_args::<2>("String.repeat", args)?;
     let s = str_operand(i.kb(), &s)?.to_string();
-    let n = n.as_int().ok_or_else(|| type_mismatch("Int64", &n, None))?;
+    let n = int_operand(i.kb(), &n)?;
     if n <= 0 {
         return Ok(Value::Str(String::new()));
     }
@@ -2167,6 +2228,41 @@ fn str_operand<'a>(
     v.literal_string(kb)
         .map(std::borrow::Cow::Owned)
         .ok_or_else(|| type_mismatch("String", v, None))
+}
+
+/// An `Int64` operand, on any carrier — [`str_operand`]'s integer peer, and the
+/// reader every builtin that CONSUMES an integer goes through.
+///
+/// WI-20260827-3ZNBC. There was no such reader, so the sites that consume an int
+/// beside a string — `String.substring`'s bounds, `repeat`'s count, `slug`'s cap,
+/// `digestBase32`'s width, `Dictionary.sub`'s index — read the string through
+/// `str_operand` and the integer through the INHERENT `Value::as_int`, which sees
+/// the native variant alone. So one operand of one call decided carrier-neutrally
+/// and the next refused, which is the half-widened set /code-review named on
+/// WI-20260827-2YHZ3 reappearing one layer out. No clone to weigh here (`i64` is
+/// `Copy`), so unlike `str_operand` there is no native fast path to keep.
+fn int_operand(kb: &crate::kb::KnowledgeBase, v: &Value) -> Result<i64, EvalError> {
+    use crate::kb::term_view::TermView;
+    v.literal_int64(kb)
+        .ok_or_else(|| type_mismatch("Int64", v, None))
+}
+
+/// A `BigInt` operand, on any carrier. Accepts an `Int64` too — the `BigInt`
+/// conversions have always widened an `Int` operand, and that is a SORT question
+/// (`Int64` embeds in `BigInt`) independent of the carrier one this reader answers.
+/// Borrows nothing: `BigInt` is owned either way.
+fn big_int_operand(
+    kb: &crate::kb::KnowledgeBase,
+    v: &Value,
+    expected: &'static str,
+) -> Result<num_bigint::BigInt, EvalError> {
+    use crate::kb::term::Literal;
+    use crate::kb::term_view::TermView;
+    match v.as_literal(kb) {
+        Some(Literal::BigInt(b)) => Ok(b),
+        Some(Literal::Int(n)) => Ok(num_bigint::BigInt::from(n)),
+        _ => Err(type_mismatch(expected, v, None)),
+    }
 }
 
 fn string_contains(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
@@ -2230,9 +2326,7 @@ fn string_trim(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> 
 fn string_slug(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, cap] = expect_args::<2>("String.slug", args)?;
     let s = str_operand(i.kb(), &s)?;
-    let Value::Int(cap) = cap else {
-        return Err(type_mismatch("Int64", &cap, None));
-    };
+    let cap = int_operand(i.kb(), &cap)?;
     Ok(Value::Str(slug(s.as_ref(), cap)))
 }
 
@@ -2302,9 +2396,7 @@ const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 fn string_digest_base32(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, chars] = expect_args::<2>("String.digestBase32", args)?;
     let s = str_operand(i.kb(), &s)?;
-    let Value::Int(chars) = chars else {
-        return Err(type_mismatch("Int64", &chars, None));
-    };
+    let chars = int_operand(i.kb(), &chars)?;
     // 12 characters is 60 bits, the most a `u64` digest can render without
     // padding the top with a constant — which would look like width the answer
     // does not have. Refused rather than clamped: a caller asking for 16 is
@@ -3181,15 +3273,16 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let mut projected: Vec<(crate::intern::Symbol, crate::kb::term::VarId)> =
         Vec::with_capacity(pairs.len());
     for (result_key, source) in pairs.iter() {
-        let source_name = match source {
-            Value::Str(s) => s.as_str(),
-            other => {
-                return Err(EvalError::TypeMismatch {
-                    expected: "a source column name (String) in the projection spec",
-                    got: other.type_name().to_string(),
-                })
-            }
-        };
+        // The source NAME reads carrier-neutrally (WI-20260827-3ZNBC), like every
+        // other string read in this file. The typer splices this spec with native
+        // `Value::Str` entries today, so nothing drives the other carriers — but a
+        // name is a string on all of them, and this was the one native-variant string
+        // read left after the pass (found by /code-review).
+        let source_name = str_operand(interp.kb(), source).map_err(|_| EvalError::TypeMismatch {
+            expected: "a source column name (String) in the projection spec",
+            got: source.type_name().to_string(),
+        })?;
+        let source_name = source_name.as_ref();
         // Resolve the source name to its canonical interned `Symbol`, then match `r`'s column
         // by SYMBOL equality — a column's name symbol is the canonical intern-map entry for
         // its short name (`rule_head_var_slots` names positional columns by the head var's
@@ -3904,10 +3997,7 @@ fn expect_string_list(interp: &Interpreter, arg: &Value) -> Result<Vec<String>, 
         }
         let head = named_child(interp, &cell, "head")
             .ok_or_else(|| type_mismatch("List[String]", arg, None))?;
-        match head {
-            Value::Str(s) => out.push(s),
-            other => return Err(type_mismatch("String", &other, None)),
-        }
+        out.push(str_operand(interp.kb(), &head)?.into_owned());
         cell = named_child(interp, &cell, "tail")
             .ok_or_else(|| type_mismatch("List[String]", arg, None))?;
     }
@@ -4283,10 +4373,7 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Term { id: t, .. } => *t,
         other => return Err(type_mismatch("Term", other, None)),
     };
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
+    let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
@@ -4362,22 +4449,25 @@ fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<V
 }
 
 /// `anthill.reflect.term_as_string(t: Term) -> Option[String]`.
-/// Returns `some(s)` when the term is exactly `Const(StringLiteral(_))`;
-/// otherwise none(). Used to extract id/description/agent fields after
-/// drilling into a fact via `term_field`.
+/// Returns `some(s)` when the argument DENOTES a string literal — on any carrier:
+/// a hash-consed `Term::Const(String)`, a `Value::Node` occurrence of one, or a
+/// native `Value::Str`; otherwise `none()`. Used to extract id/description/agent
+/// fields after drilling into a fact via `term_field`.
+///
+/// WI-20260827-3ZNBC: the carrier list used to be written out by hand and was
+/// missing the OCCURRENCE, which is the carrier a rule-body-bound answer rides on
+/// (WI-246) — so the one reflect operation whose whole job is "read the string this
+/// term denotes" answered `none()` for a term that plainly denoted one. Asking
+/// [`TermView::literal_string`] is the same question with no list to keep in step.
 fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_as_string", args)?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
 
-    let s: Option<String> = match &arg {
-        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::String(s)) => Some(s.clone()),
-            _ => None,
-        },
-        Value::Str(s) => Some(s.clone()),
-        _ => None,
+    let s: Option<String> = {
+        use crate::kb::term_view::TermView;
+        arg.literal_string(&interp.kb)
     };
 
     Ok(match s {
@@ -4395,23 +4485,19 @@ fn term_as_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 }
 
 /// `anthill.reflect.term_as_int(t: Term) -> Option[Int64]`.
-/// Returns `some(i)` when the term is exactly `Const(IntLiteral(_))` (or an
-/// `Int` value carrier); otherwise `none()`. The int-literal partner to
-/// `term_as_string`, with the identical carrier handling — used to read a
-/// numeric field (e.g. a `StoreFormat` version) after `term_field`.
+/// Returns `some(i)` when the argument DENOTES an int literal, on any carrier;
+/// otherwise `none()`. The int-literal partner to `term_as_string`, with the
+/// identical carrier handling (see there) — used to read a numeric field (e.g. a
+/// `StoreFormat` version) after `term_field`.
 fn term_as_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_as_int", args)?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
 
-    let i: Option<i64> = match &arg {
-        Value::Term { id: tid, .. } => match interp.kb.get_term(*tid) {
-            crate::kb::term::Term::Const(crate::kb::term::Literal::Int(i)) => Some(*i),
-            _ => None,
-        },
-        Value::Int(i) => Some(*i),
-        _ => None,
+    let i: Option<i64> = {
+        use crate::kb::term_view::TermView;
+        arg.literal_int64(&interp.kb)
     };
 
     Ok(match i {
@@ -4616,37 +4702,38 @@ fn materialize_entity(interp: &mut Interpreter, v: &Value) -> Option<Value> {
     })
 }
 
-pub(crate) fn term_to_value(interp: &mut Interpreter, tid: crate::kb::term::TermId) -> Value {
-    value_to_native(interp, &Value::term(tid))
-}
-
-/// Materialize a KB HANDLE into the interpreter's native value — the body of
-/// [`term_to_value`], widened off the `TermId` carrier.
+/// Materialize a KB HANDLE into the interpreter's native value.
 ///
-/// **NOT A BOUNDARY, and an earlier draft of this ticket wrongly made it one.**
-/// WI-20260827-2YHZ3 first normalized every relation column through here, on the
-/// premise that the interpreter's value operations are native-only "and are not
-/// meant to be" carrier-neutral. That premise was false in both halves: reflect
-/// `Term` values already flow through anthill code as `Value::Term`, and the
-/// operations that refused a handle — `Int64.add`, `field_access` — were simply
-/// MISSING AN ARM. They read their operands through `TermView` now
-/// ([`TermView::literal_int64`] and its siblings, `reflect_field_access`), so nothing
-/// normalizes a column and
-/// this function is not on that path at all.
+/// **NOT A BOUNDARY, and two earlier drafts of this family wrongly made it one.**
+/// WI-20260827-2YHZ3 normalized every relation column through here, and the SLD→eval
+/// bridge normalized every operand, both on the premise that the interpreter's value
+/// operations are native-only "and are not meant to be" carrier-neutral. That premise
+/// was false in both halves: reflect `Term` values already flow through anthill code
+/// as `Value::Term`, and the operations that refused a handle — `Int64.add`,
+/// `field_access` — were simply MISSING AN ARM. They read their operands through
+/// `TermView` now ([`TermView::literal_int64`] and its siblings,
+/// `reflect_field_access`), so WI-20260827-3ZNBC removed both normalizations and this
+/// function is on neither path.
 ///
-/// What it remains is the reader for callers that genuinely hold a `TermId` and
-/// want a native value — `term_to_value`'s existing callers, and this file's own
-/// entity materialization. Every question it asks — is this a literal, a
-/// constructor application, a bare constructor, a variable — goes through
-/// [`TermView::head`], so it answers the same for a `Value::Term` and a
-/// `Value::Node`. That is what let `term_as_entity` stop refusing an occurrence
-/// while its own doc claimed to accept one.
+/// THE ONE CALLER LEFT is [`materialize_entity`], converting a decoded entity's
+/// FIELDS — and it is here because that function's product is a `Value::Entity`,
+/// i.e. a value whose whole point is to be pattern-matched natively by the anthill
+/// `case` that asked for it. `term_as_entity` is the reflect operation whose job IS
+/// Term → Entity; handing back an entity whose fields were still handles would make
+/// the decode half-done, and would reintroduce exactly the incoherence
+/// WI-20260827-3ZNBC set out to remove — a field read answering native or handle
+/// depending on how the receiver arrived.
+///
+/// Every question it asks — is this a literal, a constructor application, a bare
+/// constructor, a variable — goes through [`TermView::head`], so it answers the same
+/// for a `Value::Term` and a `Value::Node`. That is what let `term_as_entity` stop
+/// refusing an occurrence while its own doc claimed to accept one.
 ///
 /// An ALREADY-NATIVE value is returned untouched — not an optimization: an
 /// external extent row binds a `Value::Entity` the resolver never built from a
 /// term, and re-materializing it would re-run the Option-field defaulting over an
 /// entity that is already complete.
-pub(crate) fn value_to_native(interp: &mut Interpreter, v: &Value) -> Value {
+fn value_to_native(interp: &mut Interpreter, v: &Value) -> Value {
     match v {
         Value::Term { .. } | Value::Node(_) => handle_to_native(interp, v),
         already_native => already_native.clone(),
@@ -4733,10 +4820,7 @@ fn handle_to_native(interp: &mut Interpreter, v: &Value) -> Value {
 /// construction. WI-182 / proposal 026: the missing piece for cmd_next.
 fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [name_arg] = expect_args::<1>("fresh_var", args)?;
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
+    let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let sym = interp.kb.intern(&name);
     let vid = interp.kb.fresh_var(sym);
     let tid = interp
@@ -4832,10 +4916,7 @@ fn reflect_cons_to_vec<T>(
 fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term::{Term, TermId};
     let [name_arg, args_arg] = expect_args::<2>("make_fn", args)?;
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
+    let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_fn", &name)?;
 
     let pos_vec: Vec<TermId> =
@@ -4874,10 +4955,7 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     use crate::kb::node_occurrence::{Expr, NodeOccurrence};
     use std::rc::Rc;
     let [name_arg, args_arg, from_arg] = expect_args::<3>("make_apply", args)?;
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
+    let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_apply", &name)?;
 
     // Reuse each argument occurrence in place (identity + span preserved). A
@@ -5076,10 +5154,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
         Value::Term { id: t, .. } => *t,
         other => return Err(type_mismatch("Term", other, None)),
     };
-    let name = match &name_arg {
-        Value::Str(s) => s.clone(),
-        other => return Err(type_mismatch("String", other, None)),
-    };
+    let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let new_val_tid = interp
         .kb
         .alloc_from_value(&value_arg)
@@ -5125,12 +5200,9 @@ fn time_now(_interp: &mut Interpreter, _args: &[Value]) -> Result<Value, EvalErr
 /// `anthill.prelude.Int64.to_string(n: Int64) -> String`. Decimal repr, no
 /// padding. Negative numbers carry a leading `-`. The CLI port uses this
 /// for `"180 work item(s):"` and per-status counts.
-fn int_to_string(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn int_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("Int64.to_string", args)?;
-    match arg {
-        Value::Int(n) => Ok(Value::Str(n.to_string())),
-        other => Err(type_mismatch("Int64", &other, None)),
-    }
+    Ok(Value::Str(int_operand(interp.kb(), &arg)?.to_string()))
 }
 
 /// `anthill.reflect.KB.facts_of(kb: KB, functor: String) -> List[Term]`.
@@ -5243,10 +5315,7 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Substitution(h) => h,
         other => return Err(type_mismatch("Substitution", &other, None)),
     };
-    let name = match &name_val {
-        Value::Str(s) => s.clone(),
-        _ => return Err(type_mismatch("String", &name_val, None)),
-    };
+    let name = str_operand(interp.kb(), &name_val)?.into_owned();
 
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
@@ -5354,10 +5423,7 @@ fn dict_arity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// bounds.
 fn dict_sub(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d, idx] = expect_args::<2>("Dictionary.sub", args)?;
-    let i = match &idx {
-        Value::Int(n) => *n,
-        other => return Err(type_mismatch("Int64", other, None)),
-    };
+    let i = int_operand(interp.kb(), &idx)?;
     let dict = expect_dictionary(interp, &d)?;
     let sub = usize::try_from(i)
         .ok()
@@ -5658,15 +5724,22 @@ fn option_none(none_sym: crate::intern::Symbol) -> Value {
 /// One owner for the four `Map` builtins, which all ask the same question and
 /// used to spell it two different ways (one `ok_or_else`, three four-line
 /// `match`es). WI-1016 had to thread a `&KnowledgeBase` through every one of
-/// them — `try_from_value` canonicalizes the two carriers of a symbol — which is
+/// them — the reader canonicalizes the two carriers of a symbol — which is
 /// the second time this sequence was edited in lockstep.
+///
+/// WI-20260827-3ZNBC took the `&mut`, so a structural OCCURRENCE key can be interned
+/// to the term it denotes and address the SAME slot its `Value::Term` twin does. See
+/// [`MapKey::of_value_interning`](super::map_arena::MapKey::of_value_interning) for
+/// why that is not a store write on any path that used to work.
 fn map_key(
-    kb: &crate::kb::KnowledgeBase,
+    kb: &mut crate::kb::KnowledgeBase,
     v: &Value,
 ) -> Result<super::map_arena::MapKey, EvalError> {
-    super::map_arena::MapKey::try_from_value(kb, v).ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Map key (Int / Bool / String / Symbol / Term)",
-        got: v.type_name().to_string(),
+    super::map_arena::MapKey::of_value_interning(kb, v).ok_or_else(|| {
+        EvalError::TypeMismatch {
+            expected: "Map key (Int / Bool / String / Symbol / Term)",
+            got: v.type_name().to_string(),
+        }
     })
 }
 
@@ -5682,7 +5755,7 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    let key = map_key(&mut interp.kb, &k_arg)?;
     let mut body = interp.maps.clone_body(&handle);
     body.insert(key, v_arg);
     let new_handle = interp.alloc_map(body);
@@ -5698,7 +5771,7 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    let key = map_key(&mut interp.kb, &k_arg)?;
     let found: Option<Value> = interp.maps.with_body(&handle, |b| b.get(&key).cloned());
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
@@ -5712,7 +5785,7 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    let key = map_key(&mut interp.kb, &k_arg)?;
     let present = interp.maps.with_body(&handle, |b| b.contains_key(&key));
     Ok(Value::Bool(present))
 }
@@ -5723,7 +5796,7 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&interp.kb, &k_arg)?;
+    let key = map_key(&mut interp.kb, &k_arg)?;
     let mut body = interp.maps.clone_body(&handle);
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion
@@ -6109,15 +6182,18 @@ fn persistence_monotonicity(interp: &mut Interpreter, args: &[Value]) -> Result<
         // the carrier error below: `TypeMismatch { expected: "Symbol (functor)",
         // got: "String" }` was the single exit for both, so a misspelled functor
         // was reported as a wrong-KIND value when the value was exactly right.
-        None => match &functor_val {
-            Value::Str(name) => {
-                let name = name.clone();
+        // On ANY carrier (WI-20260827-3ZNBC): a name is a string whether it rides
+        // native, hash-consed, or as an occurrence, and `head().functor_sym()` above
+        // already answered carrier-neutrally for the non-string spelling.
+        None => match str_operand(interp.kb(), &functor_val) {
+            Ok(name) => {
+                let name = name.into_owned();
                 resolve_host_name(interp, "monotonicity", &name)?
             }
-            other => {
+            Err(_) => {
                 return Err(EvalError::TypeMismatch {
                     expected: "Symbol (functor)",
-                    got: other.type_name().to_string(),
+                    got: functor_val.type_name().to_string(),
                 })
             }
         },
