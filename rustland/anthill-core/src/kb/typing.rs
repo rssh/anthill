@@ -36080,6 +36080,29 @@ fn substitute_carrier_params(
             return *bound;
         }
     }
+    // (1b) WI-590 — the same leaf in its OTHER SPELLING. A carrier parameter is a
+    //      `Ref(symbol)` in a type-argument slot but the bare `Var(Global(vid))` a row TAIL
+    //      carries (`{ES}` lowers to `open[tail = Var]`, the tail anonymous — its name is
+    //      `_`). `typaram_ref_vid` reads only the first, so a row-valued provision binding
+    //      walked to its leaves and substituted NOTHING, stayed non-ground, and the spec's
+    //      row leaked `?_`.
+    //
+    //      No name is involved here and none should be: `recv_bindings` is keyed by the
+    //      carrier's own param VarIds and VarIds are unique, so matching the tail's vid
+    //      against them is exact.
+    //
+    //      MEASURED on a two-hop provision (`Wrap provides Str`, `Str provides Iter`, call
+    //      `Iter.iter(w)`): composition already produced the right thing — the view's
+    //      `Element` came out as `Wrap.T` and the row's tails as Wrap's OWN param vars — and
+    //      only this read was missing. It went unnoticed while every route to such a call
+    //      arrived with the intermediate's static type, which is a ONE-hop provision whose
+    //      binding is a plain `Ref`.
+    if let Term::Var(Var::Global(v)) = kb.get_term(tid) {
+        let v = *v;
+        if let Some((_, bound)) = recv_bindings.iter().find(|e| e.0 == v) {
+            return *bound;
+        }
+    }
     // (2) Any other compound: recurse into children, preserving the functor. The
     //     `matches!` discriminant drops the immutable borrow before the `&mut` rebuild.
     if matches!(kb.get_term(tid), Term::Fn { .. }) {
