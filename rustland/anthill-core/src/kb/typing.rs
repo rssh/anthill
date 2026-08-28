@@ -14465,7 +14465,12 @@ fn check_apply_iter(
         // carrier-param classification declined. ONE lookup: the binder below and both
         // refusal arms read this, so the licence and the binding cannot disagree, and the
         // scan runs at most once per call.
-        let enclosing_requires_clause = if carrier_param_info.is_none() {
+        // `self_recv_spec.is_some()` FORCES `carrier_param_info` to None above, so testing
+        // that alone would derive the licence from a carrier-param-typed parameter while
+        // dispatch runs on the SELF receiver — suppressing the diagnostic for a receiver the
+        // licence never examined (caught by review).
+        let enclosing_requires_clause = if self_recv_spec.is_none() && carrier_param_info.is_none()
+        {
             enclosing_requires_licensing_clause(
                 kb,
                 env,
@@ -34980,6 +34985,26 @@ fn witness_instantiation(
     if kb.canonical_sort_sym(functor) != kb.canonical_sort_sym(carrier_sym) {
         return None;
     }
+    // …but the APPLICATION shape does NOT by itself mean a witness: an ordinary `provides`
+    // may write its carrier applied too (`List provides FiniteCollection[C = List[T], …]`,
+    // `MutableStack[T]`). `provision_binds_param_to_carrier` PREFERS the carrier's own
+    // provides when it qualifies, and that head is written in the CARRIER's parameters, so
+    // building σ from a witness's binder and applying it there would substitute across two
+    // different binders — the very defect this function exists to prevent. Mirror that
+    // function's arm order: if the carrier's own provides qualifies, the view came from it.
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    let own_provides_qualifies = provider_spec_view_bindings(kb, carrier_sym, spec_sort)
+        .is_some_and(|view| {
+            view.iter().any(|(sp_sym, sp_val)| {
+                type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(carrier_pvid)
+                    && super::load::provides_spec_base_sym(kb, *sp_val)
+                        .map(|b| kb.canonical_sort_sym(b))
+                        == Some(carrier_canon)
+            })
+        });
+    if own_provides_qualifies {
+        return None;
+    }
     let witness = witness_provider_for(kb, spec_sort, carrier_pvid, carrier_sym)?;
     // Read the witness's parameter table ONCE — the walk below visits every leaf of every
     // head binding, and rebuilding it per leaf is the difference between one read and one
@@ -35017,15 +35042,21 @@ fn witness_param_vid_of_occurrence(
             .iter()
             .any(|(_, t)| vid_of(*t) == Some(*v))
             .then(|| *v),
-        // A TYPE-ARGUMENT slot: the parameter's symbol, resolved through the sort's own
-        // registration. SYMBOL IDENTITY ONLY — never a short-name join. A head may write
+        // A TYPE-ARGUMENT slot: the parameter's symbol, matched against the witness's own
+        // declared parameters by SYMBOL IDENTITY. Deliberately NOT `type_param_vid_in_sort`,
+        // which resolves a symbol by its LOCAL NAME in the owner's scope — that is a name
+        // join, and it is exactly the hazard this paragraph excludes; using it here would
+        // make the guarantee below asserted rather than true (caught by review). A head may write
         // ANOTHER sort's parameters into the slots, and may PERMUTE them
         // (`SomeAlgebra[T = X.S, S = X.T]`); joining on last segments would pair `X.S` with
         // the witness's `S` and silently invert exactly that permutation, which is the
         // cross-sort `T` collapse identity-keyed matching exists to prevent. A value that is
         // not one of this witness's own parameters resolves to `None` and substitutes
         // nothing, which is the correct answer for it.
-        Term::Ref(sym) => type_param_vid_in_sort(kb, witness, *sym),
+        Term::Ref(sym) => witness_params
+            .iter()
+            .find(|(p, _)| *p == *sym)
+            .and_then(|(_, t)| vid_of(*t)),
         _ => None,
     }
 }
@@ -35763,9 +35794,19 @@ fn enclosing_requires_licensing_clause(
     // permutation. It matters twice over here: this same resolution decides BOTH whether the
     // clause licenses the call and what each spec param binds to, so one false match would
     // grant a licence and bind a wrong rigid together.
+    let encl_params = sort_type_params_as_pairs(kb, encl).to_vec();
     let rigid_of = |kb: &KnowledgeBase, t: TermId| -> Option<TermId> {
         let vid = match kb.get_term(t) {
-            Term::Ref(sym) => type_param_vid_in_sort(kb, encl, *sym)?,
+            // SYMBOL IDENTITY, against the enclosing sort's own declared parameters.
+            // NOT `type_param_vid_in_sort`, which resolves a symbol by its LOCAL NAME in
+            // the owner's scope — a name join, and the very hazard this comment claims to
+            // exclude. Identity is what makes the exclusion true rather than asserted.
+            Term::Ref(sym) => encl_params.iter().find(|(p, _)| *p == *sym).and_then(
+                |(_, pty)| match kb.get_term(*pty) {
+                    Term::Var(Var::Global(v)) => Some(*v),
+                    _ => None,
+                },
+            )?,
             Term::Var(Var::Global(v)) => *v,
             _ => return None,
         };

@@ -203,3 +203,71 @@ end
         "a String must NOT be accepted where the witness pins Element = Int64"
     );
 }
+
+/// A WITNESS PARAMETER IS MATCHED BY SYMBOL IDENTITY, NEVER BY NAME — and this is the test
+/// that separates the two, because everything else in this file passes under either rule.
+///
+/// Building σ means asking, of each value written in the fact's carrier slots, "is this one of
+/// the WITNESS's own parameters, and which?". The obvious resolver, `type_param_vid_in_sort`,
+/// answers it by taking the written symbol's LOCAL NAME and looking that name up in the
+/// witness's scope — so identity is discarded and only spelling survives. Any symbol spelled
+/// like a witness parameter is then adopted as one.
+///
+/// Here the sort `lnm.B` and the witness's parameter `B` share a name and nothing else. The
+/// head writes the SORT in the carrier's `A` slot and the PARAMETER in its `B` slot. Under a
+/// name join the `A` slot also resolves to the parameter, σ binds `B` to `lnm.B`, and
+/// `Element = B` comes out as `lnm.B` — so `drive`, which correctly returns `Int64`, is
+/// REFUSED with `expected Int64, got B`. Under identity the `A` slot resolves to nothing (it
+/// is not a witness parameter), `B` binds from its own slot, and the program loads.
+///
+/// MEASURED both ways on this fixture. It is also the general hazard behind a PERMUTED head
+/// (`Alg[T = X.S, S = X.T]`), where a name join pairs `X.S` with the witness's `S` and
+/// silently inverts the permutation; that shape is harder to write in one fixture, and this
+/// one exercises the same resolver.
+#[test]
+fn witness_params_match_by_symbol_identity_not_by_name() {
+    let src = r#"
+namespace lnm
+  import anthill.prelude.{Int64}
+
+  -- A SORT whose name collides with the witness parameter below, and nothing more.
+  sort B
+    entity b_val
+  end
+
+  sort Box
+    sort C = ?
+    sort Element = ?
+    operation get(c: C) -> Element
+    operation getAgain(c: C) -> Element = get(c)
+  end
+
+  sort Wrap
+    sort A = ?
+    sort B = ?
+    entity wrap(a: A, b: B)
+  end
+
+  sort WrapBox
+    import lnm.{Box, Wrap}
+    import lnm.Wrap.{wrap}
+    sort B = ?
+    -- `A` gets the SORT `lnm.B`; `B` gets the PARAMETER `B`. Only identity tells them apart.
+    provides Box[C = Wrap[A = lnm.B, B = B], Element = B]
+    operation get(w: Wrap[A = lnm.B, B = B]) -> B = match w
+      case wrap(_, b) -> b
+  end
+
+  operation drive(w: Wrap[A = lnm.B, B = Int64]) -> Int64 =
+    Box.getAgain(w)
+end
+"#;
+    if let Err(errs) = crate::common::try_load_kb_with(src) {
+        panic!(
+            "a witness parameter must be matched by SYMBOL, not by name — a sort merely spelled \
+             like one must not be adopted as it; got {} error(s):\n{}",
+            errs.len(),
+            errs.join("\n")
+        );
+    }
+}
