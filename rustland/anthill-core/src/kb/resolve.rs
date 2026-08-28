@@ -7020,13 +7020,24 @@ impl KnowledgeBase {
                 // stays an occurrence rather than being flattened into the store.
                 return obj.named_arg(self, key).map(|item| item.to_value());
             }
-            // POSITIONAL spelling. A runtime `Value::Entity` keeps unnamed args
-            // in `pos` — `finish_constructor` does not desugar, so `Point(42)`
-            // rides as `Entity{Point, pos:[42], named:[]}` — where the
-            // `Value::Term` twin was desugared to named by `alloc_from_value`.
-            // Reading only `named` here made the receiver's CARRIER decide
-            // whether its own field was reachable, which is the bug this
-            // function was rewritten to stop making.
+            // POSITIONAL spelling. A `Value::Entity` may keep unnamed args in `pos`,
+            // and reading only `named` here made the receiver's CARRIER decide whether
+            // its own field was reachable — the bug this function was rewritten to stop
+            // making.
+            //
+            // WHAT REACHES IT, restated because the original reason no longer holds:
+            // this used to cite `finish_constructor`, which "does not desugar, so
+            // `Point(42)` rides as `Entity{Point, pos:[42], named:[]}`".
+            // WI-20260827-T2470 made it desugar, so an EVALUATED constructor
+            // application no longer arrives here positionally. The branch is
+            // nonetheless LIVE — a `Value::Entity` is also built directly in Rust, by a
+            // host builtin or a bridge, with no obligation to spell its args named.
+            // MEASURED by neutralizing this branch and running the whole `anthill-core`
+            // suite (5399 tests): EXACTLY ONE goes red,
+            // `field_access_projects_a_value_carried_entity_receiver` below, which
+            // hand-builds `Point(7)`. So the branch has one witness and no other, and
+            // that witness is a unit test rather than a program — said plainly here
+            // rather than left to be rediscovered.
             //
             // Through `positional_to_named_plan`, the same owner `alloc_from_value`
             // desugars with, so both carriers agree by construction rather than by
@@ -8929,6 +8940,65 @@ impl KnowledgeBase {
                 let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
                     named.push((*fs, self.anf_flatten(a, rename, hoists)?));
+                }
+                // WI-20260827-T2470 — DESUGAR POSITIONAL → NAMED, the same canonical
+                // entity form [`Self::fresh_pattern_occ`] builds on the PATTERN side of
+                // this very unfold. The residual rides as a `Value::Node` into an
+                // `unify(residual, OTHER)` goal, and `unify_concrete` fail-fasts on a
+                // positional/named ARITY mismatch before comparing anything — so an arm
+                // body `case red() -> some(x)` built `Fn{some, pos:[x], named:[]}`
+                // against an OTHER that every other producer spells
+                // `Fn{some, pos:[], named:[value: x]}`, every arm failed, and the goal
+                // was DECIDED FALSE. The eval twin of this is `finish_constructor`,
+                // which reaches the GROUND call; this arm is what reaches the UNGROUND
+                // case-split (`gm` in `wi_t2470_positional_ctor_in_op_body_test`).
+                //
+                // Through `positional_to_named_plan` + `canonicalize_record_named_args`
+                // — the shared owners — rather than `fresh_pattern_occ`'s open-coded
+                // `fields.get(i)` + `sort_by_key(index)`, so a MIXED
+                // `esome(1, other: 2)` follows the rank-among-NOT-named rule and a
+                // multi-field entity lands in DECLARED field order. `Skip` covers the
+                // reflect FORM meta-ctors (`from_projection`'s `TupleLiteral` among
+                // them) and any functor with no declared schema, so those keep the
+                // positional shape that IS their encoding.
+                //
+                // OverArity is a BROKEN INVARIANT, not one of the body forms this
+                // unfold declines. It still returns `None`, because the signature has no
+                // error channel and `None` is the established decline — but a bare
+                // `None` here is INDISTINGUISHABLE from "an `if`/`let` I don't handle
+                // yet", and it aborts the whole unfold for EVERY arm, so a single
+                // malformed arm would silently take the entire case-split to a
+                // suspension while its ground twin errors BY NAME from
+                // `finish_constructor`'s `EvalError::OverArityConstructor`. So assert it
+                // loudly in debug/test builds and residualize in release — the same
+                // loud-over-silent split `bridge_op_to_eval` makes for an
+                // evaluator-INTERNAL error a few thousand lines up, and for the same
+                // reason. The loader already refuses this shape at load time, so
+                // reaching it means a runtime-built term.
+                if !pos.is_empty() {
+                    let named_syms: SmallVec<[Symbol; 2]> =
+                        named.iter().map(|(s, _)| *s).collect();
+                    match self.positional_to_named_plan(name, &named_syms, pos.len()) {
+                        PositionalPlan::Skip => {}
+                        PositionalPlan::Assign(fields) => {
+                            for (i, pv) in std::mem::take(&mut pos).into_iter().enumerate() {
+                                named.push((fields[i], pv));
+                            }
+                            self.canonicalize_record_named_args(name, &mut named);
+                        }
+                        PositionalPlan::OverArity { declared, unfilled } => {
+                            debug_assert!(
+                                false,
+                                "anf_flatten: constructor `{}` given {} positional \
+                                 argument(s) but has {} unfilled field(s) (declares: {})",
+                                self.local_name_of(name),
+                                pos.len(),
+                                unfilled,
+                                self.render_field_list(&declared),
+                            );
+                            return None;
+                        }
+                    }
                 }
                 // Emit `Expr::Ref(name)` for a nullary constructor so its occurrence
                 // presents the canonical bare-`Ref` form (matching the former Term
@@ -12876,11 +12946,16 @@ mod tests {
             ),
         }
 
-        // …and the same entity in its POSITIONAL spelling — what
-        // `finish_constructor` actually builds for `Point(42)`, since it does not
-        // desugar. CONTROL: reading only `named_keys` (the first version of this
-        // migration) answers 0 here while the block above still passes, i.e. the
-        // receiver's carrier decided whether its own field was reachable.
+        // …and the same entity in its POSITIONAL spelling, hand-built here as a host
+        // builtin or a bridge builds one. (The comment used to justify the shape by
+        // naming a producer — "what `finish_constructor` actually builds for
+        // `Point(42)`, since it does not desugar". WI-20260827-T2470 made that path
+        // desugar, so the producer no longer produces it; the hand-built value, which
+        // is what this test always used, is the justification that survives, and this
+        // test is now the branch's ONLY witness — see `project_field`.) CONTROL:
+        // reading only `named_keys` (the first version of this migration) answers 0
+        // here while the block above still passes, i.e. the receiver's carrier decided
+        // whether its own field was reachable.
         let result2 = kb.fresh_var(result_sym);
         let positional = Value::Entity {
             functor: point,

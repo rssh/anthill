@@ -14,6 +14,7 @@ use smallvec::SmallVec;
 use crate::intern::{is_positional_label_at, Symbol};
 use crate::kb::call_form::{classify_application, CallForm};
 use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern};
+use crate::kb::resolve::PositionalPlan;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
@@ -3621,9 +3622,80 @@ impl Interpreter {
         &mut self,
         ctor_sym: Symbol,
         is_tuple_literal: bool,
-        pos: Vec<Value>,
+        mut pos: Vec<Value>,
         mut named: Vec<(Symbol, Value)>,
     ) -> Result<StepOutcome, EvalError> {
+        // WI-20260827-T2470 — DESUGAR POSITIONAL → NAMED for a declared entity. There
+        // are SIX boundaries where user-written positional constructor arguments cross
+        // into a value whose SHAPE IS ITS IDENTITY; four already did this and cite
+        // WI-500/WI-433 for it — the loader's fact/rule path
+        // (`convert_term_with_expected`), the loader's QUERY path, the runtime
+        // value→term lowerings (`alloc_from_value`, `value_to_term`), and the case-arm
+        // PATTERN path (`fresh_pattern_occ`). THIS one and `anf_flatten` (the unfold's
+        // arm-BODY residual, `kb/resolve.rs`) did not. So an operation body's `some(x)`
+        // evaluated to `Entity{some, pos:[x], named:[]}` where every other producer
+        // builds `Entity{some, pos:[], named:[value: x]}` — and the four consumers that
+        // key on literal shape (`unify_concrete`'s arity fail-fast,
+        // `sem_eq_values`/`views_structurally_equal`, the discrimination tree's
+        // `DiscrimKey`, hash-consing) then read the two as different values. The
+        // operation answered NOTHING, and since that is a REFUTATION rather than a
+        // suspension, NAF over it PROVED the falsehood.
+        //
+        // It must run BEFORE `canonicalize_record_named_args` below, which sorts
+        // `named` into declared-field order: args promoted out of `pos` afterwards
+        // would sit unsorted at the tail and re-diverge from the canonical form.
+        //
+        // WHAT THIS DOES NOT DO, said here because the sentence above claims agreement
+        // with the loader and this is where that claim stops: the loader's canonical
+        // form is this desugar PLUS the absent-field expansion (`load.rs`; a rule body's
+        // `two(a: 1)` indexes as `two(a: 1, b: ?)`, and WI-716 fills an absent OPTIONAL
+        // field with `none()` in a value position). This site does only the desugar, so
+        // an UNDER-APPLIED constructor still keeps a smaller `named_arity` than its
+        // loader-canonical twin and `unify_concrete`'s `na != nb` fail-fast decides it
+        // FALSE. MEASURED, and it is a DIFFERENT axis from this ticket: the NAMED
+        // spelling `two(a: 1)` answers nothing too, and it never enters this block at
+        // all (`pos` is empty). WI-20260827-XFB56 owns it.
+        //
+        // Through `positional_to_named_plan` — the same owner `alloc_from_value` and
+        // `value_to_term` desugar with, so all three agree by construction rather than
+        // by three copies of the rank-among-not-named rule. It is also what keeps the
+        // LITERAL forms below untouched: `ListLiteral` / `SetLiteral` / `TupleLiteral`
+        // are reflect FORM meta-ctors, whose positional shape IS the encoding, and the
+        // plan Skips them (as it does any functor with no declared field schema).
+        // `a_tuple_and_a_list_literal_keep_their_positional_shape` is the control that
+        // measures that, since a tuple's positional order is its identity.
+        if !pos.is_empty() {
+            let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
+            match self
+                .kb
+                .positional_to_named_plan(ctor_sym, &named_syms, pos.len())
+            {
+                PositionalPlan::Skip => {}
+                PositionalPlan::Assign(fields) => {
+                    for (i, pv) in std::mem::take(&mut pos).into_iter().enumerate() {
+                        named.push((fields[i], pv));
+                    }
+                }
+                // NO TEST DRIVES THIS ARM, and the reason is a neighbouring gate rather
+                // than an omission: the LOADER already refuses an over-arity positional
+                // constructor ("constructor 'two' given 3 positional argument(s) but has
+                // 2 unfilled field(s)" — MEASURED), so no source program reaches it. It
+                // is a loud error rather than a silent `Skip` for the reason its two
+                // siblings (`alloc_from_value`, `value_to_term`) raise
+                // `LowerError::OverArityConstructor`, which no test drives either:
+                // leaving the surplus in `pos` would build an entity that matches
+                // nothing anywhere, which is the exact failure mode this ticket is
+                // about. Reaching it means a broken invariant, and it should say so.
+                PositionalPlan::OverArity { declared, unfilled } => {
+                    return Err(EvalError::OverArityConstructor {
+                        functor: self.kb.local_name_of(ctor_sym).to_string(),
+                        given: pos.len(),
+                        unfilled,
+                        declared: self.kb.render_field_list(&declared),
+                    });
+                }
+            }
+        }
         // Shared with the Term-side builders (WI-299): `KnowledgeBase::canonicalize_record_named_args`
         // is generic over the arg value type, so Value- and Term-carried entities
         // canonicalize to the SAME declared-field order (else they'd hash-cons /

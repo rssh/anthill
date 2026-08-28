@@ -3,9 +3,9 @@
 - id: WI-20260827-T2470-a-positional-constructor
 - created: 2026-08-27T14:09:45Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-27T14:09:45Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-08-27T21:23:00Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

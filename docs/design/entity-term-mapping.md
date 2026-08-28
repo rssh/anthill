@@ -80,9 +80,29 @@ two cases:
   the desugar (`is_reflect_form_functor` / the `anthill.reflect.*` namespace). This
   is the one *entity* that stays positional.
 
-So non-empty `pos_args` ⟺ the functor is one of those two, or a pre-canonical /
-runtime-built value before lowering. Over-arity positional on a registered entity
-is a `LowerError`, never stored.
+So non-empty `pos_args` ⟺ the functor is one of those two, or a runtime-built value
+that has not been through a canonicalizing producer. Over-arity positional on a
+registered entity is a `LowerError`, never stored.
+
+**"Before lowering" was doing too much work here, and WI-20260827-T2470 is what it
+hid.** The sentence above used to end "or a *pre-canonical* / runtime-built value
+before lowering", which reads as though a positional entity is always on its way to
+Rule 1 and will be canonicalized there. An **evaluated** entity is not: an operation
+body's `some(x)` produced a `Value::Entity` that was compared, unified, and indexed
+*as it stood* — `finish_constructor` did not desugar — so `Fn{some, pos:[x]}` met the
+`Fn{some, named:[value: x]}` every other producer builds and the four consumers that
+key on literal shape (`unify_concrete`'s arity fail-fast,
+`sem_eq_values`/`views_structurally_equal`, `DiscrimKey`, hash-consing) read them as
+different values. The operation answered nothing, definitely, so NAF over it proved
+the falsehood. `Option.optionPure` (`= some(a)`) and `Option.optionMap`
+(`some(f(x))`) were both this spelling, along with 47 more sites in `stdlib/anthill`.
+
+The obligation is therefore on **every producer of a value whose shape is its
+identity**, not only on the `Value → Term` lowering — Rules 1 and 6 together, and
+Rule 6 is the one that was missing. A **reader**-side fix was rejected: the four
+consumers above are independent, so teaching each that `f(1)` and `f(x: 1)` denote
+one value is four places to drift, where normalizing at the writer states the
+rank-among-not-named rule once (`positional_to_named_plan`).
 
 ## 3. Value positions vs pattern positions
 
@@ -117,7 +137,7 @@ for each head, and cleared by `convert_arg_value` when recursing into a reflect
 `Term`-typed field. The expansion at `load.rs:6969` reads it; `convert_query_term`
 (`:5314`) always var-fills.
 
-## 4. The five rules
+## 4. The six rules
 
 **1 — Lower (Value → Term).** `alloc_from_value` · `kb/execute.rs:273`.
 Recurse into fields → desugar positional→named in decl order (WI-500) → sort named
@@ -158,6 +178,32 @@ A field's declared type is `parameterized(base: sort_ref(Option), …)`, not a b
 `anthill.prelude.Option`). Carrier-neutral (`TermView`). This is the gate that
 makes Rules 2 and 3 default optionals correctly.
 
+**6 — Build (source → Value / occurrence).** `finish_constructor` ·
+`eval/eval.rs` + `anf_flatten` · `kb/resolve.rs` (WI-20260827-T2470).
+A constructor APPLICATION written in an operation body is canonicalized where it is
+built, not where it is later lowered — same `positional_to_named_plan`, same
+rank-among-NOT-named rule, so a mixed `two(2, a: 1)` puts 2 in `b`. Two sites because
+two paths reach a body: `finish_constructor` for every call the evaluator reduces,
+`anf_flatten` for the arm-body residual the WI-580 unfold builds when the scrutinee is
+unground (that one rides as a `Value::Node` into a `unify` goal and is never reified,
+so Rule 1 never sees it). Both `Skip` the two exceptions §2 lists. The PATTERN twin of
+`anf_flatten` — `fresh_pattern_occ`, same file — already did this, with its own
+open-coded copy of the rank rule; that copy gets the MIXED spelling wrong and is
+WI-20260827-1F0QP.
+
+> **This rule implements Rule 1's desugar and NOT Rule 3's fill, and that is a gap
+> rather than a design.** The loader's canonical form for a declared entity is the
+> positional→named desugar **plus** the absent-field expansion — so a rule body's
+> `two(a: 1)` indexes as `two(a: 1, b: ?)`, and (WI-716) an absent *optional* field in a
+> value position becomes `none()`. This rule does only the first half, so an
+> **under-applied** constructor in an operation body keeps a smaller `named_arity` than
+> its loader-canonical twin and `unify_concrete`'s `na != nb` fail-fast decides the
+> equation FALSE. MEASURED: `operation f() -> Two = two(1)` and `operation g() -> Two =
+> two(a: 1)` both answer nothing, the NAMED one included — so the gap is orthogonal to
+> the positional axis and pre-dates WI-20260827-T2470. **WI-20260827-XFB56** owns it, and
+> owns deciding what an operation body should build for an absent *required* field,
+> which is not the same question the loader answers for a pattern.
+
 ## 5. Worked example — `WorkItem` round trip
 
 `entity WorkItem(id, description?, context?, acceptance, depends_on?, generates?,
@@ -189,9 +235,10 @@ absent optional is `none()` at storage, so there is no injected var to strip.
 | 3 fill absent fields | `kb/load.rs:6969` (fact) + `:5314` (query) |
 | 4 nullary `Ref` form | `kb/mod.rs:1063` · `KB::alloc`; printer `persistence/print.rs:706` |
 | 5 Option detection | `kb/typing.rs:14202` · `is_option_type` |
+| 6 build (source → Value) | `eval/eval.rs` · `finish_constructor`; `kb/resolve.rs` · `anf_flatten` |
 
 Lines drift; the code tags `WI-500`, `WI-511`, `WI-436`, `WI-433`, `WI-342`,
-`WI-477`, `WI-391`, `WI-109` are stable anchors.
+`WI-477`, `WI-391`, `WI-109`, `WI-20260827-T2470` are stable anchors.
 
 ## See also
 

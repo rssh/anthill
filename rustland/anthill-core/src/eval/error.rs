@@ -34,6 +34,24 @@ pub enum EvalError {
     Overflow {
         op: &'static str,
     },
+    /// WI-20260827-T2470 — a constructor APPLICATION in an evaluated body gives more
+    /// positional arguments than the entity has unfilled fields. The eval twin of
+    /// [`crate::kb::execute::LowerError::OverArityConstructor`], raised from
+    /// `finish_constructor`'s positional→named desugar for the same reason that one
+    /// exists: leaving the surplus in `pos` would build an entity that silently never
+    /// matches the canonical named form anywhere (the loud-error principle). Its own
+    /// variant rather than [`EvalError::ArityMismatch`], whose `op` is a `&'static str`
+    /// and so cannot name the offending constructor.
+    ///
+    /// Unreached by any test, and by any source program: the loader refuses the same
+    /// shape at load time, so this is the broken-invariant backstop its two siblings
+    /// are. See the raise site for the measurement.
+    OverArityConstructor {
+        functor: String,
+        given: usize,
+        unfilled: usize,
+        declared: String,
+    },
     DepthExceeded {
         cap: usize,
     },
@@ -241,6 +259,16 @@ impl std::fmt::Display for EvalError {
                 write!(f, "{op}: expected {expected} args, got {got}")
             }
             EvalError::Overflow { op } => write!(f, "{op}: integer overflow"),
+            EvalError::OverArityConstructor {
+                functor,
+                given,
+                unfilled,
+                declared,
+            } => write!(
+                f,
+                "constructor '{functor}' given {given} positional argument(s) but has \
+                 {unfilled} unfilled field(s) (declares: {declared})",
+            ),
             EvalError::DepthExceeded { cap } => {
                 write!(f, "activation stack depth exceeded cap of {cap}")
             }

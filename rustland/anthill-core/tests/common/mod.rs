@@ -760,12 +760,104 @@ pub fn list_column_ints(v: &eval::Value) -> Vec<i64> {
         .collect()
 }
 
+/// The FUNCTOR SYMBOL of an entity value, whatever CARRIER it rides on.
+///
+/// Through [`TermView`] rather than a `Value::Entity` match, for the reason
+/// [`entity_field`] spells out. A NULLARY constructor reads as `ViewHead::Ref` and not
+/// as an empty `Functor` (WI-436/WI-511), so both spellings must be accepted or `nil` /
+/// `none` answer `None` here while `some(1)` answers a symbol.
+#[allow(dead_code)]
+pub fn entity_functor(
+    kb: &KnowledgeBase,
+    v: &eval::Value,
+) -> Option<anthill_core::intern::Symbol> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(s), ..
+        }
+        | ViewHead::Ref(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// An entity's field BY DECLARED NAME, whatever CARRIER the entity rides on — the
+/// test-side twin of `project_field` (`kb/resolve.rs`).
+///
+/// THROUGH [`TermView`], AND NOT BY MATCHING `Value::Entity`, which is the whole point.
+/// One entity reaches a test on any of three carriers — `Value::Entity`, a hash-consed
+/// `Value::Term(TermId)`, and a `Value::Node(occurrence)` — and an enum match reads the
+/// first and panics on the other two, so the RECEIVER'S CARRIER decides whether its own
+/// field is reachable. That is exactly the bug `project_field` was rewritten to stop
+/// making, and hand-rolled `Value::Entity { pos, .. }` readers in the test tree had
+/// re-created it: `cli_parse_test` and `wi733_relation_head_eval_test` each carried
+/// their own copy, and both broke on WI-20260827-T2470 for that reason.
+///
+/// NAME FIRST, THEN THE POSITIONAL RANK, for the reason `project_field` asks both. A
+/// canonical entity carries its args NAMED — every producer desugars positional→named
+/// through `positional_to_named_plan` (WI-500/WI-433/WI-20260827-T2470) — but a
+/// `Value::Entity` built directly in Rust by a host builtin or a bridge has no such
+/// obligation and may still spell them positionally. `pos_rank` is the field's index in
+/// the DECLARATION, which is the order the positional spelling fills.
+///
+/// LOUD when neither channel has the field: a silently-`None` field read is what turned
+/// this ticket's regression into "the assert compares against nothing".
+#[allow(dead_code)]
+pub fn entity_field(
+    kb: &KnowledgeBase,
+    v: &eval::Value,
+    name: &str,
+    pos_rank: usize,
+) -> eval::Value {
+    use anthill_core::kb::term_view::TermView;
+    if let Some(sym) = v
+        .named_keys(kb)
+        .into_iter()
+        .find(|s| kb.local_name_of(*s) == name)
+    {
+        if let Some(item) = v.named_arg(kb, sym) {
+            return item.to_value();
+        }
+    }
+    v.pos_arg(kb, pos_rank)
+        .map(|item| item.to_value())
+        .unwrap_or_else(|| panic!("entity_field: no field `{name}` and no pos[{pos_rank}] on {v:?}"))
+}
+
+/// A SCALAR read through the carrier-neutral view: `ViewHead::Const`.
+///
+/// SAME REASON AS [`entity_field`], one level down. `Value::as_str` / `as_bool` answer
+/// only the `Value::Str` / `Value::Bool` carrier, so a test built on them lets the
+/// carrier decide whether a string is a string — and the same literal also arrives as a
+/// hash-consed `Value::Term` over `Term::Const(Literal::String)` and as a `Value::Node`
+/// over `Expr::Const`. `TermView::head` maps all three onto one `ViewHead::Const`, which
+/// is what the resolver's own comparisons read.
+///
+/// `None` for a non-literal head and for a literal of the wrong TYPE — the caller
+/// asserts, so a wrong-typed value must not read as absent-but-fine.
+#[allow(dead_code)]
+pub fn scalar_str(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
+    use anthill_core::kb::term::Literal;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Const(Literal::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
 /// The shared cons-spine walk behind [`list_heads`] and [`list_ints`].
 ///
-/// Handles BOTH carriers a cons cell arrives in — `build_list_value` emits NAMED
-/// head/tail while `classify_ctor_arg` pushes POSITIONALLY (eval.rs) — because
-/// reading only one of them made a positionally-built list walk out as an EMPTY
-/// vector, silently and with the doc claiming the opposite (WI-733 review).
+/// Handles BOTH carriers a cons cell arrives in, because reading only one of them made a
+/// positionally-built list walk out as an EMPTY vector, silently and with the doc
+/// claiming the opposite (WI-733 review).
+///
+/// WHICH PRODUCER STILL BUILDS THE POSITIONAL ONE, restated because the original answer
+/// expired: this used to say "`build_list_value` emits NAMED head/tail while
+/// `classify_ctor_arg` pushes POSITIONALLY (eval.rs)". WI-20260827-T2470 made
+/// `finish_constructor` desugar positional→named for every declared entity, and
+/// `List.cons` is one — so a source-written `cons(x, nil)` now reaches here NAMED too,
+/// and the positional arm is left for a cons cell built directly in Rust. The dual read
+/// stays: which carrier arrives is still not this walker's to assume.
 ///
 /// LOUD on a shape that is neither: a silent `break` here reads as "the list
 /// ended" and turns a malformed value into a short answer, which is what the

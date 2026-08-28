@@ -155,7 +155,12 @@ fn wi733_relation_head_evaluates() {
     let mut interp = interp_for(SRC);
     let got = interp.call("test.wi733.oneHead", &[]);
     assert!(
-        matches!(&got.as_ref().map(crate::common::sole_column), Ok(Value::Str(s)) if s == "alice"),
+        got.as_ref()
+            .ok()
+            .map(crate::common::sole_column)
+            .and_then(|c| crate::common::scalar_str(interp.kb(), &c))
+            .as_deref()
+            == Some("alice"),
         "`.head` on a one-solution relation yields the row; got {got:?}"
     );
 }
@@ -295,7 +300,12 @@ end
     let mut i1 = interp_for(src);
     let got = i1.call("test.wi733lazy.firstReach", &[]);
     assert!(
-        matches!(&got.as_ref().map(crate::common::sole_column), Ok(Value::Str(s)) if s == "b"),
+        got.as_ref()
+            .ok()
+            .map(crate::common::sole_column)
+            .and_then(|c| crate::common::scalar_str(i1.kb(), &c))
+            .as_deref()
+            == Some("b"),
         "`.head` on an unbounded relation returns its first solution; got {got:?}"
     );
 
@@ -428,13 +438,28 @@ fn entity_functor_is(interp: &mut Interpreter, r: &Result<Value, EvalError>, qn:
 /// `some((name: "alice"))`, not `some("alice")`.
 fn some_string(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Option<String> {
     match r {
-        Ok(Value::Entity { functor, pos, .. })
-            if interp.kb().qualified_name_of(*functor) == "anthill.prelude.Option.some" =>
-        {
-            match pos.first().map(crate::common::sole_column) {
-                Some(Value::Str(s)) => Some(s),
-                _ => None,
+        Ok(v) => {
+            // WI-20260827-T2470: read `some`'s payload through the CARRIER-NEUTRAL
+            // `common::entity_field`, not as `pos.first()`. `some(x)` written in an
+            // operation body used to evaluate to `Entity{some, pos:[x]}` — the
+            // un-canonicalized shape that ticket removes — so a `pos`-only read silently
+            // answered `None` and this test failed at its assert. Matching
+            // `Value::Entity` would fix that row and keep the deeper fault: the same
+            // `some` also rides as a `Value::Term` or a `Value::Node`, so the enum match
+            // lets the receiver's CARRIER decide whether its own field is reachable. The
+            // functor is read through the view for the same reason, and the leaf String
+            // through `scalar_str`.
+            let sym = crate::common::entity_functor(interp.kb(), v)?;
+            if interp.kb().qualified_name_of(sym) != "anthill.prelude.Option.some" {
+                return None;
             }
+            let col = crate::common::sole_column(&crate::common::entity_field(
+                interp.kb(),
+                v,
+                "value",
+                0,
+            ));
+            crate::common::scalar_str(interp.kb(), &col)
         }
         _ => None,
     }

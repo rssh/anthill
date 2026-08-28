@@ -1452,3 +1452,6 @@ mod wi_ej5f5_bare_ctor_pattern_test;
 
 #[path = "include/wi_2yhz3_answer_binding_test.rs"]
 mod wi_2yhz3_answer_binding_test;
+
+#[path = "include/wi_t2470_positional_ctor_in_op_body_test.rs"]
+mod wi_t2470_positional_ctor_in_op_body_test;
