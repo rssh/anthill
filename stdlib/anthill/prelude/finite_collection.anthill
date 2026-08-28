@@ -15,8 +15,9 @@
 -- over a finite source stays consumable) is Phase B (WI-588).
 sort anthill.prelude.FiniteCollection
   import anthill.prelude.{Iterable, List, Int64, Bool, Modify}
-  import anthill.prelude.FiniteMappedStream.{fmapped}
-  import anthill.prelude.FiniteFilteredStream.{ffiltered}
+  import anthill.prelude.{MappedStream, FilteredStream}
+  import anthill.prelude.MappedStream.{mapped}
+  import anthill.prelude.FilteredStream.{filtered}
 
   sort C = ?                          -- carrier (the collection)
   sort Element = ?
@@ -50,26 +51,34 @@ sort anthill.prelude.FiniteCollection
     List.foldRight(collect(c), init, f)
 
   -- Finite-preserving `map` / `filter` (WI-599 THIN design). UNLIKE
-  -- `Iterable.map`/`filter` (→ lazy maybe-infinite `Stream`), these RETURN a
-  -- `FiniteCollection`, so a pipeline over a finite source stays consumable:
+  -- `Iterable.map`/`filter`, whose DECLARED return is a maybe-infinite `Stream`,
+  -- these return the combinator carrier with its SOURCE SORT still in the type, so
+  -- a pipeline over a finite source stays consumable:
   -- `xs.map(f).size()` keeps type-checking once the eager consumers move off
   -- `Stream` (Phase C). They live HERE (not on `FiniteStream`) so a finite-but-
   -- non-stream carrier — a `Map` — gets them too.
   --
-  -- THIN: wrap the BARE carrier `c` directly (`fmapped(c, f)` / `ffiltered(c, p)`)
+  -- THIN: wrap the BARE carrier `c` directly (`mapped(c, f)` / `filtered(c, p)`)
   -- — no `finiteIterator` indirection. The combinator's `source` field is typed
-  -- `FiniteCollection[C = SrcC, …]`, and the carrier value `c : C` PROVIDES
-  -- FiniteCollection, so the source carrier + access effect thread off `c`'s own
-  -- provision (WI-599 gap-1 `carrier_arg_provision_projection`). The result carrier
-  -- is spelled explicitly (`FiniteMappedStream[SrcC = C, …]`) so the provision the
-  -- returned value is admissible under is pinned. `-Modify[x]` lacks forbid mutating
+  -- `Iterable[C = Source, …]`, and the carrier value `c : C` PROVIDES Iterable, so
+  -- the source carrier + access effect thread off `c`'s own provision (WI-599 gap-1
+  -- `carrier_arg_provision_projection`). Wrapping `c` and NOT `iterator(c)` is what
+  -- keeps the source's SORT in the type for the finiteness witness to read; the
+  -- eager-snapshot reading stays on `Iterable.map`, which does call `iterator(c)`.
+  --
+  -- The return is the BARE CARRIER, not the `FiniteCollection[C = …]` view: the view
+  -- spelling does not load (the value's `EF` is an OPEN row from the `-Modify[x]`
+  -- lack, and no source spelling produces that form — measured, WI-590). The bare
+  -- carrier is what the witness in finite_combinators.anthill keys its provision on,
+  -- so `.size()` / `.collect()` / a further `.map` all resolve on the result.
+  -- `-Modify[x]` lacks forbid mutating
   -- the element under test (re-walkable lazy view, WI-440); decoupled rows (WI-441):
   -- result access row is the UNION `{E, EffP}`, paid on consume.
   operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
-    -> FiniteCollection[C = FiniteMappedStream[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP], Element = Dst, E = {E, EffP}] =
-    fmapped(c, f)
+    -> MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP] =
+    mapped(c, f)
 
   operation filter[EffP](c: C, p: (x: Element) -> Bool @ {EffP, -Modify[x]})
-    -> FiniteCollection[C = FiniteFilteredStream[SrcC = C, T = Element, ES = E, EF = EffP], Element = Element, E = {E, EffP}] =
-    ffiltered(c, p)
+    -> FilteredStream[Source = C, T = Element, ES = E, EF = EffP] =
+    filtered(c, p)
 end

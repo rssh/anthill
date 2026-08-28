@@ -137,8 +137,9 @@ namespace test.wi439.boxcoll
       case cons(a, cons(b, _)) -> a * 10 + b
       case _ -> 0
 
-  -- `filter` over the non-Stream BoxColl resolves FiniteCollection.filter
-  -- (FiniteFilteredStream), then FiniteCollection.collect materializes it.
+  -- `filter` over the non-Stream BoxColl resolves FiniteCollection.filter (a
+  -- `filtered` carrier over BoxColl), then FiniteCollection.collect — supplied for
+  -- it by the FilteredStreamFinite witness — materializes it.
   operation kept() -> Int64 = encode2(collect(filter(boxed([1, 2, 3, 4]), is_big)))
 end
 "#;

@@ -76,9 +76,10 @@ sort anthill.prelude.Map
 
   -- WI-599: the `finiteIterator` finite cursor is GONE. The thin finite
   -- combinators wrap the bare carrier directly (Map.map / Map.filter, inherited
-  -- from FiniteCollection, are `fmapped(m, f)` / `ffiltered(m, p)`), so no
-  -- `finiteIterator` indirection is needed — a Map already provides
-  -- FiniteCollection, the combinator source-field type.
+  -- from FiniteCollection, are `mapped(m, f)` / `filtered(m, p)`), so no
+  -- `finiteIterator` indirection is needed — a Map provides Iterable, the
+  -- combinator source-field type, and provides FiniteCollection, which is what the
+  -- combinator's finiteness witness requires of the source (WI-590).
 
   -- Construction
   operation empty() -> Map

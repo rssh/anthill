@@ -2,13 +2,20 @@
 //! primitive (`collect`) must DISPATCH on a value whose STATIC type is an
 //! abstract spec that PROVIDES + DEFINES it.
 //!
-//! `xs.map(f)` / `xs.filter(p)` return the abstract `FiniteStream` (the finite
-//! combinators' declared return). `FiniteStream provides FiniteCollection` AND
-//! defines its own `collect` (the well-founded drain). Before WI-598, a DIRECT
-//! `collect(xs.map(f))` raised `FiniteCollection.collect.dispatch: no impl
+//! WHEN THIS WAS WRITTEN, `xs.map(f)` / `xs.filter(p)` returned the abstract
+//! `FiniteStream` — the finite combinators' declared return. `FiniteStream provides
+//! FiniteCollection` AND defines its own `collect` (the well-founded drain). A
+//! DIRECT `collect(xs.map(f))` raised `FiniteCollection.collect.dispatch: no impl
 //! matches per-call bindings` — so a finite dot-chain could only be consumed via
 //! the DEFAULTED ops (`size` / `foldLeft`, whose bodies call `collect` on the
 //! spec's own `C` param through WI-365 self-typing). This pins the DIRECT form.
+//!
+//! WI-590 changed what those chains RETURN — the concrete `mapped`/`filtered`
+//! carrier, whose `collect` comes from a finiteness witness — so these rows no
+//! longer reach through an abstract-spec receiver. They still pin the DIRECT form
+//! end to end, which is the acceptance; the abstract-`FiniteStream` receiver the
+//! deferral was written for now arrives from a declared `FiniteStream` return
+//! (`anthill.realization.Dictionary.ops`) rather than from `map`/`filter`.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -22,7 +29,8 @@ fn run_int(interp: &mut Interpreter, op: &str) -> i64 {
     }
 }
 
-/// Direct `collect` on the abstract-`FiniteStream` result of a finite dot-chain
+/// Direct `collect` on the finite dot-chain's result (an abstract `FiniteStream`
+/// when written, the concrete combinator carrier since WI-590)
 /// type-checks and EVALs: `collect(map([1,2,3,4], inc))` materializes `[2,3,4,5]`
 /// (length 4), `collect(filter([1,2,3,4], is_big))` materializes `[3,4]` (2).
 #[test]
@@ -51,8 +59,8 @@ end
 }
 
 /// The NATURAL dot-chain form the ticket motivates: `xs.map(f).collect()`. The
-/// `.collect()` member dispatches by short name on the abstract-`FiniteStream`
-/// receiver and must land on `FiniteCollection.collect` (whose access effect is
+/// `.collect()` member dispatches by short name on the chain's receiver and must
+/// land on `FiniteCollection.collect` (whose access effect is
 /// the sort-param `E`, which grounds), NOT `Stream.collect` (whose `s.E`
 /// projection effect does not ground through the 2-hop transitive provision) —
 /// so the fully-dotted pipeline stays consumable end to end.

@@ -57,13 +57,19 @@ sort anthill.prelude.Iterable
   -- folds there. `find` / `isEmpty` stay: neither reaches the end.
 
   -- map PRODUCES a stream, so it returns the lazy `mapped` carrier over the
-  -- iterator (admissible as a Stream — MappedStream provides Stream).
+  -- receiver (admissible as a Stream — MappedStream provides Stream). WI-590: the
+  -- carrier wraps `c` DIRECTLY, not `iterator(c)` — its source field is typed on
+  -- `Iterable`, so the source's own sort stays in the type and the finiteness
+  -- witness has something to condition on. The DECLARED return stays a bare
+  -- `Stream`: refining it to the carrier would let `Iterable.iterator` on the result
+  -- compose transitively and leak the row (measured, wi492's
+  -- `lazy_map_iterator_count`).
   operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]}) -> Stream[Dst, {E, EffP}] =
     mapped(iterator(c), f)
 
   -- filter PRODUCES a stream, so it returns the lazy `filtered` carrier over
-  -- the iterator (WI-439; admissible as a Stream — FilteredStream provides
-  -- Stream).
+  -- the receiver (WI-439; admissible as a Stream — FilteredStream provides
+  -- Stream). Wraps `c` directly and keeps the bare `Stream` return — cf. `map`.
   operation filter[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Stream[Element, {E, EffP}] =
     filtered(iterator(c), pred)
 end

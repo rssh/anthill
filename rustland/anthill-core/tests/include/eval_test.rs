@@ -1256,9 +1256,10 @@ end
 #[test]
 fn wi413_lazy_filter_skips_via_self_recursion() {
     // WI-413 / WI-410 / WI-599: the finite `FiniteCollection.filter` drops elements
-    // end-to-end. WI-599 (thin design) makes `filter` return a `FiniteFilteredStream`
-    // that provides `FiniteCollection` — its `collect` EAGERLY materializes the source
-    // then filters the List (`filterElems(collect(source), pred)`), so a dropped
+    // end-to-end. WI-599 (thin design) makes `filter` return the `filtered` carrier,
+    // for which the WI-590 witness supplies `FiniteCollection` — that `collect`
+    // EAGERLY materializes the source then filters the List
+    // (`filterElems(collect(source), pred)`), so a dropped
     // element is simply absent from the collected List (the eager successor to the old
     // lazy `splitFirst` skip-via-self-recursion). `foldLeft` is the FiniteCollection
     // default over that `collect`. The predicate is a named op (eta-lifted, WI-275);
@@ -1268,9 +1269,9 @@ namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
   import anthill.prelude.List.{nil, cons}
   -- Phase C (WI-589) + WI-599: the eager consumers live on FiniteCollection. The
-  -- finite `FiniteCollection.filter` (→ FiniteFilteredStream, provides
-  -- FiniteCollection) replaces the lazy `FilteredStream.filter` (→ bare Stream, no
-  -- longer collect/fold-able). Its `collect` EAGERLY filters the materialized source
+  -- finite `FiniteCollection.filter` (→ a `filtered` carrier the WI-590 witness
+  -- gives FiniteCollection) replaces the lazy `FilteredStream.filter` (→ bare
+  -- Stream, no longer collect/fold-able). Its `collect` EAGERLY filters the materialized source
   -- (`filterElems(collect(source), pred)`), so dropped elements are absent from the
   -- collected List — pinning the same drop behaviour on the finite carrier.
   import anthill.prelude.FiniteCollection.{collect, foldLeft, filter}

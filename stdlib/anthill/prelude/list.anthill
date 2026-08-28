@@ -108,8 +108,8 @@ enum anthill.prelude.List
   -- returning a `List` (unlike the lazy `Iterable.map`/`filter`, which return a
   -- `Stream`). They back the THIN finite combinators' `collect` — once a
   -- combinator's source is materialized (`collect(source) : List`), the transform
-  -- (`FiniteMappedStream.collect = mapElems(collect(source), fn)`) or predicate
-  -- (`FiniteFilteredStream.collect = filterElems(collect(source), pred)`) is
+  -- (`MappedStreamFinite.collect = mapElems(collect(source), fn)`) or predicate
+  -- (`FilteredStreamFinite.collect = filterElems(collect(source), pred)`) is
   -- applied EAGERLY to produce the mapped / filtered List. Decoupled callback row
   -- `EffP` (WI-441), paid by the caller. Recurse via `splitFirst` (NOT a direct
   -- `cons` destructure) so the tail threads its element type — a bare `cons` tail

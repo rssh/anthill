@@ -672,19 +672,20 @@ refused.
 - **A sort with constructors** *is* the carrier, so a requirement on it can only be over some
   other parameter and can never be an is-a claim. It produces **no `extends`**, decided from
   the shape without consulting the rule above — exact, not an approximation.
-  `finite_combinators.anthill` writes
+  `combinators.anthill` writes
 
   ```
-  requires FiniteCollection[C = SrcC, Element = Src, E = ES]
-  entity fmapped(source: FiniteCollection[C = SrcC, Element = Src, E = ES], fn: …)
-  provides FiniteCollection[C = FiniteMappedStream, Element = T, E = {ES, EF}]
+  requires Iterable[C = Source, Element = Src, E = ES]
+  entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: …)
+  provides Stream[T = T, E = {ES, EF}]
   ```
 
-  where the `requires` constrains the *source* carrier `SrcC` and the sort's claim about
-  itself is the `provides`, three lines below. An `extends` built from the first is an is-a
+  where the `requires` constrains the *source* carrier `Source` and the sort's claim about
+  itself is the `provides` below it. An `extends` built from the first is an is-a
   claim about the wrong carrier — and, inheriting members no signature-only emission can
   define, produces `class Fmapped needs to be abstract, since it has 9 unimplemented
-  members`.
+  members` (the symptom was measured on `finite_combinators.anthill`'s `FiniteMappedStream`,
+  which wrote this same shape until WI-590 folded it into the one carrier).
 
 - **A sort without constructors** gets the supertrait for each requirement over its carrier
   and **none** for the rest. `trait Ord[T] extends Eq[T], PartialOrd[T]` and

@@ -1,13 +1,16 @@
 //! WI-588 (finiteness Phase B, proposal library/003): finite-preserving
 //! `map` / `filter` on `FiniteCollection`, returning a `FiniteStream`.
 //!
-//! UNLIKE `Iterable.map`/`filter` (→ lazy maybe-infinite `Stream`), the finite
-//! versions return a `FiniteStream`, so a pipeline over a finite source stays
-//! consumable: `xs.map(f).size()` keeps type-checking once the eager consumers
-//! move off `Stream` (Phase C). They live on `FiniteCollection` so a finite-but-
-//! NON-stream carrier — a `Map` — gets them too. The thin body wraps the finite
-//! cursor (`finiteIterator`, the finite dual of `iterator`) in the finite carrier
-//! (`fmapped`/`ffiltered`); the recursive carrier re-wrap is the WI-594 case.
+//! UNLIKE `Iterable.map`/`filter`, whose DECLARED return is a maybe-infinite
+//! `Stream`, the finite versions return the combinator carrier with its SOURCE
+//! SORT still in the type — so a pipeline over a finite source stays consumable:
+//! `xs.map(f).size()` keeps type-checking once the eager consumers move off
+//! `Stream` (Phase C). They live on `FiniteCollection` so a finite-but-NON-stream
+//! carrier — a `Map` — gets them too. The thin body wraps the carrier directly
+//! (`mapped`/`filtered`, WI-599: no `finiteIterator` indirection), and WI-590
+//! (Phase D) made that the ONE carrier: its finiteness is the conditional
+//! provision of a witness sort, not a second carrier. The recursive carrier
+//! re-wrap is the WI-594 case.
 
 use anthill_core::eval::{Interpreter, Value};
 

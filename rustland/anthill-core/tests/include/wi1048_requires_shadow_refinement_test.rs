@@ -74,7 +74,7 @@ fn refined_return_type_shadow_is_silent() {
     // same name, same arity, same parameter type (after σ maps `RSpec.C` to
     // `RCarrier`), DIFFERENT return type. The two can never be confused at a
     // call site — annotating the expected type makes the choice observable as a
-    // loud type error (driven below in `finite_map_refuses_a_stream_return`).
+    // loud type error (driven below in `iterable_map_refuses_the_mapped_carrier`).
     //
     // BACKED OUT: this test FAILS — the short-name-only predicate warns here.
     let src = r#"
@@ -337,7 +337,7 @@ fn differing_param_type_shadow_is_silent() {
 
 // ── the stdlib's behaviour is already right (the premise, re-measured) ──
 //
-// These two drive the shape the lint was firing on. They are the evidence that
+// These rows drive the shape the lint was firing on. They are the evidence that
 // silencing the warning silences a FALSE POSITIVE rather than hiding a real
 // problem — and they pass BOTH with and without the change, by design: the
 // point is that dispatch and the typer were never wrong here.
@@ -348,17 +348,82 @@ fn stdlib_plus_source_errors(extra: &str) -> Vec<String> {
     load_stdlib_with(extra).err().unwrap_or_default()
 }
 
+/// The CONTESTED call resolves the finite op — pinned POSITIVELY, by the
+/// concrete carrier only that op returns.
 #[test]
-fn finite_map_refuses_a_stream_return() {
+fn finite_map_returns_the_mapped_carrier() {
     // `List` provides BOTH `FiniteCollection` (explicitly) and `Iterable`
     // (transitively via `Stream`, WI-495), so `xs.map(f)` is genuinely
     // contested. Dispatch picks the MORE SPECIFIC `FiniteCollection.map`,
-    // deterministically — and annotating the return type makes that choice
-    // observable as a LOUD type error naming BOTH types. There is no silent
-    // wrong answer behind the warning WI-346 was printing.
+    // deterministically, and annotating the return type makes that choice
+    // observable. There is no silent wrong answer behind the warning WI-346 was
+    // printing.
+    //
+    // WI-590 MOVED WHICH ANNOTATION SEPARATES THE TWO, and the move is the whole
+    // reason this row is written positively. Before the finite combinators were
+    // consolidated, `FiniteCollection.map` returned the `FiniteCollection[C = …]`
+    // spec VIEW, which is not admissible where a `Stream` is expected — so a
+    // `-> Stream[…]` annotation WAS the loud error, and that is what this test
+    // asserted. It now returns the bare `MappedStream` carrier, which
+    // `provides Stream`, so a `Stream` annotation is satisfied by BOTH outcomes
+    // and separates nothing (measured, and pinned below in
+    // `finite_map_result_is_admissible_as_a_stream`). The concrete carrier
+    // separates them in the other direction instead: `Iterable.map` returns a
+    // bare `Stream`, which is NOT a `MappedStream`, so the same annotation is a
+    // loud error there — the control immediately below.
     let errs = stdlib_plus_source_errors(
         r#"
         namespace wi1048.row_a
+          import anthill.prelude.{List, Int64, MappedStream}
+          operation probe(xs: List[T = Int64])
+            -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}] =
+            xs.map(lambda x -> x)
+        end
+    "#,
+    );
+    assert!(
+        errs.is_empty(),
+        "the contested `xs.map(f)` must resolve `FiniteCollection.map`, whose \
+         return is exactly this carrier; got: {errs:?}"
+    );
+}
+
+/// CONTROL for the row above — the annotation is a genuine discriminator, not a
+/// type both candidates satisfy. Same annotation, and the ONLY change is that the
+/// call is written qualified as `Iterable.map`, forcing the loser.
+#[test]
+fn iterable_map_refuses_the_mapped_carrier() {
+    let errs = stdlib_plus_source_errors(
+        r#"
+        namespace wi1048.row_a_control
+          import anthill.prelude.{List, Int64, MappedStream, Iterable}
+          operation probe(xs: List[T = Int64])
+            -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}] =
+            Iterable.map(xs, lambda x -> x)
+        end
+    "#,
+    );
+    // `"got Stream["` and not `"Stream["`: `"MappedStream["` ENDS in `"Stream["`,
+    // so the bare substring is satisfied by the expected side alone and would
+    // assert nothing about what was produced.
+    assert!(
+        errs.iter().any(|e| e.contains("type mismatch")
+            && e.contains("expected MappedStream[")
+            && e.contains("got Stream[")),
+        "expected a type mismatch naming both the expected MappedStream carrier \
+         and the bare Stream `Iterable.map` actually produced; got: {errs:?}"
+    );
+}
+
+/// WHY the `-> Stream[…]` refusal this file used to assert is gone: the finite
+/// map result is a carrier that PROVIDES Stream, so the annotation is satisfied.
+/// Pinned so a return spelling that reintroduced the erasure would be visible
+/// here rather than only as a lost capability elsewhere.
+#[test]
+fn finite_map_result_is_admissible_as_a_stream() {
+    let errs = stdlib_plus_source_errors(
+        r#"
+        namespace wi1048.row_a_stream
           import anthill.prelude.{List, Int64, Stream}
           operation probe(xs: List[T = Int64]) -> Stream[T = Int64, E = {}] =
             xs.map(lambda x -> x)
@@ -366,11 +431,9 @@ fn finite_map_refuses_a_stream_return() {
     "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains("type mismatch")
-            && e.contains("Stream[")
-            && e.contains("FiniteCollection[")),
-        "expected a type mismatch naming both the expected Stream and the \
-         FiniteCollection dispatch actually produced; got: {errs:?}"
+        errs.is_empty(),
+        "`MappedStream provides Stream`, so the finite map result widens to a \
+         Stream at the annotation; got: {errs:?}"
     );
 }
 

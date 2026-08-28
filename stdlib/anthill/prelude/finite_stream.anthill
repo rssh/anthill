@@ -47,6 +47,7 @@ sort anthill.prelude.FiniteStream
   -- WI-599: the `finiteIterator` FiniteCollection cursor is GONE (a FiniteStream
   -- was its own identity cursor). The thin finite combinators wrap the bare carrier
   -- directly, so `FiniteCollection.map`/`filter` on a FiniteStream are
-  -- `fmapped(s, f)` / `ffiltered(s, p)` — a FiniteStream already provides
-  -- FiniteCollection, the combinator source-field type.
+  -- `mapped(s, f)` / `filtered(s, p)` — a FiniteStream provides Iterable (through
+  -- Stream), which is the combinator source-field type, and provides
+  -- FiniteCollection, which is what the combinator's finiteness witness requires.
 end

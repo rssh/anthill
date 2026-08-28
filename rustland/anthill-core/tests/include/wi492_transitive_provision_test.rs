@@ -5,25 +5,29 @@
 //! provides Iterable`). POST-WI-588 (finiteness Phase B) the chains below now
 //! resolve `.map`/`.filter` on a `List` to `FiniteCollection.map`/`filter` (List
 //! provides FiniteCollection at provision-graph depth 1, beating Iterable at
-//! depth 2), producing the FINITE carriers `FiniteMappedStream` /
-//! `FiniteFilteredStream`. So these tests now exercise the SAME transitive-
-//! provision machinery on the finite path: an op resolved on a finite combinator
-//! value through its `FiniteStream → FiniteCollection` / `Stream → Iterable`
-//! provision chain.
+//! depth 2).
 //!
-//!   * `.filter(p).map(f)` — `.map` on a `FiniteFilteredStream` value resolves
-//!     `FiniteCollection.map` (the carrier provides FiniteCollection directly).
-//!   * `.map(f).size()`    — `.size` on a `FiniteMappedStream` value resolves
-//!     `FiniteCollection.size` (the carrier's FiniteCollection provision).
+//! WI-590 (Phase D) made that the SAME carrier: there is one `MappedStream` /
+//! `FilteredStream`, and its finiteness is CONDITIONAL — the witness sorts
+//! `MappedStreamFinite` / `FilteredStreamFinite` provide `FiniteCollection` for a
+//! `MappedStream[Source = S, …]` exactly when `S` itself is a FiniteCollection.
+//! So these tests exercise the transitive-provision machinery on a value whose
+//! FiniteCollection-ness arrives through a witness while its Iterable-ness still
+//! arrives through `Stream → Iterable`:
 //!
-//! WI-599 (thin design): the combinators now provide `FiniteCollection` + `Iterable`
-//! directly (not `FiniteStream`), and `.map`/`.filter` return `FiniteCollection`.
-//! Iterable-ONLY members (`find`/`isEmpty`) resolve on that result via WI-614:
-//! dot-dispatch traverses `FiniteCollection requires Iterable`, so `xs.map(f).find(p)`
-//! / `xs.filter(p).isEmpty()` type-check and evaluate directly (no `collect`-to-`List`
-//! materialization first — that was the pre-WI-614 workaround). The lazy
-//! `mapped`/`filtered` carriers are still reached on a genuinely-infinite bare
-//! `Stream`, where `FiniteCollection` does not apply.
+//!   * `.filter(p).map(f)` — `.map` on a `FilteredStream` over a `List` resolves
+//!     `FiniteCollection.map` (the witness supplies FiniteCollection for it).
+//!   * `.map(f).size()`    — `.size` on a `MappedStream` over a `List` resolves
+//!     `FiniteCollection.size` through that same witness provision.
+//!
+//! WI-599 (thin design): `.map`/`.filter` wrap the bare carrier directly, with no
+//! `finiteIterator` indirection. Iterable-ONLY members (`find`/`isEmpty`) resolve
+//! on the result via WI-614: dot-dispatch traverses `FiniteCollection requires
+//! Iterable`, so `xs.map(f).find(p)` / `xs.filter(p).isEmpty()` type-check and
+//! evaluate directly (no `collect`-to-`List` materialization first — that was the
+//! pre-WI-614 workaround). The same carriers are still reached over a genuinely-
+//! infinite bare `Stream`, where the witness's `requires` is unsatisfied and
+//! `FiniteCollection` therefore does not apply.
 
 use anthill_core::eval::Value;
 
@@ -45,11 +49,11 @@ namespace wi492.transitive
   operation is_huge(n: Int64) -> Bool = n > 9
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
 
-  -- LAZY-carrier coverage (post-WI-588 the dot-dispatch chains above go FINITE,
-  -- so the lazy MappedStream's transitive provision would otherwise be untested):
-  -- a QUALIFIED `Iterable.map` forces the lazy `mapped` carrier (it returns a bare
-  -- Stream), then a QUALIFIED `Iterable.iterator` resolves on that MappedStream
-  -- value TRANSITIVELY (MappedStream → Stream → Iterable, the original WI-492 path —
+  -- BARE-STREAM coverage (the dot-dispatch chains above go FINITE, so the erased
+  -- reading of a MappedStream would otherwise be untested): a QUALIFIED
+  -- `Iterable.map` declares a bare `Stream` return, which ERASES the source sort and
+  -- with it the witness's finiteness gate, then a QUALIFIED `Iterable.iterator`
+  -- resolves on that value TRANSITIVELY (Stream → Iterable, the original WI-492 path —
   -- `iterator` is the very op WI-492 was written for). The produced bare Stream is
   -- maybe-infinite, so it is counted SOUNDLY by a BOUNDED `takeN` then `length` —
   -- the unsound eager `Iterable.size` consumer the test used here was removed in
@@ -57,33 +61,34 @@ namespace wi492.transitive
   operation lazy_map_iterator_count(xs: List[T = Int64]) -> Int64 =
     length(takeN(Iterable.iterator(Iterable.map(xs, inc)), 1000))
 
-  -- filter THEN map: `.filter` → FiniteCollection.filter (FiniteFilteredStream),
-  -- then `.map` over that finite value resolves FiniteCollection.map transitively
-  -- (FiniteFilteredStream → FiniteStream → FiniteCollection).
+  -- filter THEN map: `.filter` → FiniteCollection.filter (a FilteredStream over the
+  -- List), then `.map` over that value resolves FiniteCollection.map because the
+  -- FilteredStreamFinite witness supplies FiniteCollection for it (its source, the
+  -- List, is finite).
   -- [1,2,3,4] -filter(>2)-> [3,4] -map(+1)-> [4,5] -foldLeft sum-> 9.
   operation filter_then_map_sum(xs: List[T = Int64]) -> Int64 =
     foldLeft(xs.filter(is_big).map(inc), 0, addp)
 
-  -- map THEN size: `.map` → FiniteCollection.map (FiniteMappedStream), then
-  -- `.size` resolves FiniteCollection.size transitively (FiniteMappedStream →
-  -- FiniteStream → FiniteCollection — List → FiniteStream → size).
+  -- map THEN size: `.map` → FiniteCollection.map (a MappedStream over the List),
+  -- then `.size` resolves the FiniteCollection default over the `collect` the
+  -- MappedStreamFinite witness supplies.
   -- [1,2,3,4] -map(+1)-> [2,3,4,5], size = 4.
   operation map_then_size(xs: List[T = Int64]) -> Int64 =
     xs.map(inc).size()
 
-  -- map THEN find (WI-614): the WI-599 thin `.map` returns a `FiniteCollection`
-  -- (consume view). `find` is Iterable-ONLY, and `FiniteCollection requires
-  -- Iterable`, so dot-dispatch resolves `.find` DIRECTLY on the FiniteCollection
-  -- map-result by traversing the requires graph (no `collect`-to-`List` first —
+  -- map THEN find (WI-614): the WI-599 thin `.map` returns the bare carrier, whose
+  -- FiniteCollection-ness is the witness's. `find` is Iterable-ONLY, and
+  -- `FiniteCollection requires Iterable`, so dot-dispatch resolves `.find` DIRECTLY
+  -- on the map-result by traversing the requires graph (no `collect`-to-`List` first —
   -- that workaround was WI-614's motivation). [1,2,3,4] -map(+1)-> [2,3,4,5], first > 2 is 3.
   operation map_then_find(xs: List[T = Int64]) -> Int64 =
     match xs.map(inc).find(is_big)
       case some(v) -> v
       case none() -> 0 - 1
 
-  -- filter THEN isEmpty (WI-614): same requires-traversal — the thin `.filter`
-  -- returns a `FiniteCollection`, and `isEmpty` is Iterable-only, reached via
-  -- `FiniteCollection requires Iterable` without a `collect`-first materialization.
+  -- filter THEN isEmpty (WI-614): same requires-traversal — `isEmpty` is
+  -- Iterable-only, reached from the filter-result's FiniteCollection witness via
+  -- `FiniteCollection requires Iterable`, with no `collect`-first materialization.
   -- [1,2,3,4] -filter(>9)-> [] empty.
   operation filter_then_is_empty(xs: List[T = Int64]) -> Bool =
     xs.filter(is_huge).isEmpty()
@@ -144,11 +149,11 @@ fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
     );
 }
 
-/// The LAZY carrier's transitive provision (the original WI-492 path), preserved
-/// after WI-588 routed the dot chains to the finite carriers: a qualified
-/// `Iterable.map` yields a lazy `MappedStream`, and a qualified `Iterable.iterator`
-/// on it resolves through MappedStream → Stream → Iterable — the canonical WI-492
-/// op. The produced bare Stream is counted soundly by a bounded `takeN` + `length`
+/// The ERASED reading's transitive provision (the original WI-492 path), preserved
+/// after WI-588 routed the dot chains to the finite dispatch: a qualified
+/// `Iterable.map` declares a bare `Stream` return, and a qualified
+/// `Iterable.iterator` on it resolves through Stream → Iterable — the canonical
+/// WI-492 op. The produced bare Stream is counted soundly by a bounded `takeN` + `length`
 /// (the original eager `Iterable.size` consumer was removed in Phase C / WI-589 as
 /// unsound on a maybe-infinite stream).
 #[test]

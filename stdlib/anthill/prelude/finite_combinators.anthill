@@ -1,39 +1,53 @@
--- Finiteness-preserving lazy combinators (proposal library/003): the finite
--- twins of `combinators.anthill`'s MappedStream / FilteredStream.
+-- Finiteness WITNESSES for the lazy combinators (proposal library/003, WI-590).
 --
--- WI-599 THIN design. `Iterable.map` / `filter` return a lazy `Stream`
--- (MappedStream / FilteredStream) — correct for a maybe-infinite source, but the
--- result ERASES the source's finiteness, so `xs.map(f).size()` over a finite `xs`
--- stops type-checking once the eager consumers move to FiniteCollection (Phase C).
--- The fix keeps finiteness IN THE TYPE: `FiniteCollection.map` / `filter` return a
--- `FiniteCollection`, realized by these carriers whose `source` field is itself a
--- `FiniteCollection` — so `FiniteCollection.map(c, f) = fmapped(c, f)` wraps the
--- BARE carrier directly (no `finiteIterator` indirection; the field's
--- `FiniteCollection` type IS the finiteness proof, threaded off the carrier's own
--- provision — WI-599 gap-1 `carrier_arg_provision_projection`).
+-- These sorts carry no data. They are the CONDITIONAL INSTANCES that say
 --
--- Providing `FiniteCollection` pulls in its `requires Iterable`, so each carrier
--- provides BOTH:
---   * FiniteCollection via `collect` — EAGER: materialize the source
---     (`collect(source)`) then map / filter it as a List (`mapElems` / `filterElems`).
---     The inner `collect(source)` threads its access effect off the abstract
---     `FiniteCollection` source (WI-609 reflexive carrier-param result effect).
---   * Iterable via `iterator` — LAZY: delegate to the source's iterator wrapped in
---     the plain `mapped` / `filtered` Stream carrier. The inner `iterator(source)`
---     grounds off the abstract `FiniteCollection` source (WI-608 requires-view).
+--     a mapped stream is finite WHEN ITS SOURCE IS
 --
--- The sort-level `requires FiniteCollection[C = SrcC, …]` discharges the abstract
--- `collect(source)` / (transitively) `iterator(source)` dispatch (WI-599 gap-2); it
--- must be SORT-level, not on the overriding ops (an override may not strengthen a
--- spec-op precondition — WI-347).
-sort anthill.prelude.FiniteMappedStream
-  import anthill.prelude.{FiniteCollection, Iterable, Stream, List, Function, Modify}
+-- over the ONE lazy carrier in `combinators.anthill`, in place of a second,
+-- structurally-identical FINITE twin carrier.
+--
+-- Before WI-590 this file held `FiniteMappedStream` / `FiniteFilteredStream`: full
+-- carriers with their own entity, their own `collect` and their own `iterator`,
+-- duplicating MappedStream / FilteredStream in everything but the source field's
+-- type. `Iterable.map` built one, `FiniteCollection.map` the other, and a value
+-- could not cross between them. What FORCED the duplication was ERASURE:
+-- `mapped`'s source field was typed `Stream[Src, ES]`, so a mapped stream's type
+-- did not record WHICH carrier the source was and no rule could condition on it.
+-- WI-590 threads that sort as `MappedStream.Source`, which is exactly the handle a
+-- witness needs: the `provides` below keys FiniteCollection on
+-- `MappedStream[Source = S, …]` and the sort-level `requires FiniteCollection[C = S,
+-- …]` GATES it on S's own finiteness. A mapped stream over a `List` provides
+-- FiniteCollection; one over an infinite generator does not, so `collect` on it is
+-- a load error rather than a diverging program. (EqList is the precedent: one
+-- carrier, a witness sort supplying the conditional provision.)
+--
+-- Two consequences, and they are what shrank the file to a third of its size:
+--
+--   * NO `provides Iterable`. `FiniteCollection requires Iterable[C = C, …]`, and
+--     the witness's carrier `MappedStream` already provides Iterable TRANSITIVELY
+--     (`provides Stream`, and `Stream provides Iterable` — WI-492). The
+--     provider-requires check reads the witness's carrier through its BASE SORT to
+--     see that (one of the two typer fixes WI-590 landed first, pinned by
+--     wi590_witness_param_carrier_test), so no `iterator` needs restating here.
+--   * NO lazy `iterator` override. The old twins defined one only to route
+--     `iterator` back onto the plain lazy carrier; that carrier IS the carrier now,
+--     so its own `splitFirst` already serves.
+--
+-- `collect` (the finiteness PRIMITIVE) is the one thing a witness must supply, and
+-- it stays EAGER: materialize the source, then map / filter it as a List. The inner
+-- `collect(src)` is an abstract dispatch on `src : S` — a bare sort param, whose
+-- `Element`/`E` are grounded by the sort-level `requires FiniteCollection[C = S, …]`
+-- (the WI-590 typer capability `bind_spec_params_from_enclosing_requires`; without
+-- it the row leaks and the op reports an undeclared effect). It must be SORT-level,
+-- not on the op: an override may not strengthen a spec-op precondition (WI-347).
+sort anthill.prelude.MappedStreamFinite
+  import anthill.prelude.{FiniteCollection, MappedStream, List, Function}
   import anthill.prelude.FiniteCollection.{collect}
-  import anthill.prelude.Iterable.{iterator}
   import anthill.prelude.MappedStream.{mapped}
   import anthill.prelude.List.{mapElems}
 
-  sort SrcC = ?                          -- source carrier (the wrapped collection)
+  sort S = ?                             -- the SOURCE carrier — what finiteness is keyed on
   sort Src = ?                           -- source element
   sort T = ?                             -- mapped element (fn's result)
   -- WI-441 decoupled rows (cf. MappedStream): source access row + transform row;
@@ -41,67 +55,39 @@ sort anthill.prelude.FiniteMappedStream
   effects ES = ?
   effects EF = ?
 
-  -- The field is a `FiniteCollection` (not a `FiniteStream`) — THIS is the thin
-  -- design: the bare carrier is wrapped directly. Plain `{EF}` row on the arrow:
-  -- the `-Modify[x]` lacks live on the public sig (FiniteCollection.map), enforced
-  -- at the call site.
-  requires FiniteCollection[C = SrcC, Element = Src, E = ES]
-  entity fmapped(source: FiniteCollection[C = SrcC, Element = Src, E = ES], fn: (Src) -> T @ {EF})
+  requires FiniteCollection[C = S, Element = Src, E = ES]
 
-  provides FiniteCollection[C = FiniteMappedStream, Element = T, E = {ES, EF}]
-  provides Iterable[C = FiniteMappedStream, Element = T, E = {ES, EF}]
+  -- THE WITNESS — read it as the conditional instance it is: GIVEN the `requires`
+  -- above, a MappedStream whose Source is S provides FiniteCollection.
+  provides FiniteCollection[C = MappedStream[Source = S, Src = Src, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
 
-  -- FiniteCollection primitive: EAGER. Materialize the source then map `fn` over
-  -- the resulting List. `collect(src)` threads its access effect ES off the
-  -- abstract FiniteCollection source (WI-609); `mapElems(…, fn)` pays EF.
-  operation collect[SrcCc, Srcc, Tt, ESs, EFf](
-      m: FiniteMappedStream[SrcC = SrcCc, Src = Srcc, T = Tt, ES = ESs, EF = EFf])
-    -> List[T = Tt] effects {ESs, EFf} =
+  -- EAGER: materialize the source, then map `fn` over the resulting List.
+  -- `collect(src)` pays the source's access row ES; `mapElems(…, fn)` pays EF.
+  operation collect(m: MappedStream[Source = S, Src = Src, T = T, ES = ES, EF = EF])
+    -> List[T = T] effects {ES, EF} =
     match m
-      case fmapped(src, fn) -> mapElems(collect(src), fn)
-
-  -- Iterable primitive: LAZY. Delegate to the source's iterator, wrapped in the
-  -- plain lazy `mapped` Stream carrier. `iterator(src)` grounds its Element/E off
-  -- the abstract FiniteCollection source (WI-608).
-  operation iterator[SrcCc, Srcc, Tt, ESs, EFf](
-      m: FiniteMappedStream[SrcC = SrcCc, Src = Srcc, T = Tt, ES = ESs, EF = EFf])
-    -> Stream[T = Tt, E = {ESs, EFf}] =
-    match m
-      case fmapped(src, fn) -> mapped(iterator(src), fn)
+      case mapped(src, fn) -> mapElems(collect(src), fn)
 end
 
--- The finite sibling of FilteredStream. A kept element is returned VERBATIM, so
--- the source element type IS the result element type (`T` on both sides).
-sort anthill.prelude.FiniteFilteredStream
-  import anthill.prelude.{FiniteCollection, Iterable, Stream, List, Function, Bool, Modify}
+-- The filter witness. A kept element is returned VERBATIM, so the source element
+-- type IS the result element type (`T` on both sides) — cf. FilteredStream.
+sort anthill.prelude.FilteredStreamFinite
+  import anthill.prelude.{FiniteCollection, FilteredStream, List, Function, Bool}
   import anthill.prelude.FiniteCollection.{collect}
-  import anthill.prelude.Iterable.{iterator}
   import anthill.prelude.FilteredStream.{filtered}
   import anthill.prelude.List.{filterElems}
 
-  sort SrcC = ?                          -- source carrier
+  sort S = ?                             -- the SOURCE carrier
   sort T = ?                             -- element (kept verbatim, so src = result)
   effects ES = ?
   effects EF = ?
 
-  requires FiniteCollection[C = SrcC, Element = T, E = ES]
-  entity ffiltered(source: FiniteCollection[C = SrcC, Element = T, E = ES], pred: (T) -> Bool @ {EF})
+  requires FiniteCollection[C = S, Element = T, E = ES]
 
-  provides FiniteCollection[C = FiniteFilteredStream, Element = T, E = {ES, EF}]
-  provides Iterable[C = FiniteFilteredStream, Element = T, E = {ES, EF}]
+  provides FiniteCollection[C = FilteredStream[Source = S, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
 
-  -- FiniteCollection primitive: EAGER. Materialize then filter the List by `pred`.
-  operation collect[SrcCc, Tt, ESs, EFf](
-      f: FiniteFilteredStream[SrcC = SrcCc, T = Tt, ES = ESs, EF = EFf])
-    -> List[T = Tt] effects {ESs, EFf} =
+  operation collect(f: FilteredStream[Source = S, T = T, ES = ES, EF = EF])
+    -> List[T = T] effects {ES, EF} =
     match f
-      case ffiltered(src, pred) -> filterElems(collect(src), pred)
-
-  -- Iterable primitive: LAZY. Delegate to the source's iterator, wrapped in the
-  -- plain lazy `filtered` Stream carrier.
-  operation iterator[SrcCc, Tt, ESs, EFf](
-      f: FiniteFilteredStream[SrcC = SrcCc, T = Tt, ES = ESs, EF = EFf])
-    -> Stream[T = Tt, E = {ESs, EFf}] =
-    match f
-      case ffiltered(src, pred) -> filtered(iterator(src), pred)
+      case filtered(src, pred) -> filterElems(collect(src), pred)
 end

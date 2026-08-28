@@ -2,9 +2,9 @@
 //! value flows into a carrier's spec-typed field.
 //!
 //! Surfaced by WI-588 (finiteness Phase B). The finite-preserving combinator
-//! `FiniteStream.map(s, f) = fmapped(s, f)` wants to wrap a stream-typed value in
+//! `map(s, f) = mapped(s, f)` wants to wrap a stream-typed value in
 //! a carrier whose `source` field is the spec, exactly like the lazy
-//! `MappedStream.map`. But when a BARE spec-typed receiver flows into such a field
+//! `Iterable.map`. But when a BARE spec-typed receiver flows into such a field
 //! (and the carrier's element comes from a SECOND field, the transform), the typer
 //! threads the source ELEMENT into the field and LEAVES THE EFFECT ROW UNBOUND.
 //! The provided spec row is then ungrounded, so the declared return is rejected.

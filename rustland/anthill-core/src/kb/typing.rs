@@ -16625,7 +16625,7 @@ fn check_apply_iter(
             // FiniteStream impl and then recurses into `FiniteStream provides Stream
             // → Stream requires EffectsRuntime[E]`, unsatisfiable at the abstract
             // access row `E` → the same spurious `DispatchNoMatch`. The runtime value
-            // is some concrete provider (a `FiniteMappedStream`), so defer to eval's
+            // is some concrete provider (a `List`), so defer to eval's
             // value-directed dispatch exactly as the abstract self-receiver arm
             // (`carrier == Abstract`) above does — the carrier-param analogue of it.
             //
@@ -34785,7 +34785,7 @@ fn receiver_carrier(
         // `provides Stream → Stream requires EffectsRuntime[E]`, unsatisfiable at
         // the abstract access row `E` → a spurious `DispatchNoMatch` /
         // `MissingRequiresForSpecOp`. The runtime value is some concrete provider
-        // (a `FiniteMappedStream`), so classify it `Abstract` and defer to eval's
+        // (a `List`), so classify it `Abstract` and defer to eval's
         // value-directed dispatch, exactly the deferral the carrier-param path
         // already takes via `carrier_is_abstract_spec` (WI-598) — funnelling both
         // dispatch shapes through the one notion. Concrete carriers (`List`/`Map`
@@ -40206,7 +40206,7 @@ fn field_arg_type(
 /// groundness gate to skip whatever needed a rebuild; once a skolem counts as ground
 /// ([`type_value_is_ground`]) that skip is gone, and a raw `c : ?C` is refused against the
 /// very field the inference loop just threaded it into (`FiniteCollection.map`'s
-/// `fmapped(c, f)`, measured). Trying the raw type first keeps every value that conformed
+/// `mapped(c, f)`, measured). Trying the raw type first keeps every value that conformed
 /// before conforming; the rebuild only rescues one the raw reading cannot express.
 ///
 /// The retry runs on a CLONED subst committed only on success, so a failed first attempt
@@ -40245,15 +40245,15 @@ fn validate_field_arg(
 
 /// WI-599 — a CARRIER-PARAM-spec constructor field fed a carrier VALUE that
 /// PROVIDES that spec. The THIN finite-combinator case: `FiniteCollection.map(c,
-/// f) = fmapped(c, f)`, where `fmapped`'s `source` field is typed
-/// `FiniteCollection[C = SrcC, Element = Src, E = ES]` and the argument `c` has
-/// the carrier-param type `C` — NOT the spec `FiniteCollection` itself.
+/// f) = mapped(c, f)`, where `mapped`'s `source` field is typed
+/// `Iterable[C = Source, Element = Src, E = ES]` (WI-590) and the argument `c` has
+/// the carrier-param type `C` — NOT the spec itself.
 ///
 /// [`bare_spec_arg_self_projection`] (WI-594) threads a bare spec receiver whose
 /// argument type IS the field's spec base (`s : Stream` into `Stream[…]`) via the
 /// receiver's self-projection `s.T` / `s.E`. Here the argument's type is a
 /// DIFFERENT sort (the carrier param) that merely PROVIDES the spec, so that check
-/// fails and the field's params (`SrcC`, `Src`, `ES`) leak as `??_` — the source
+/// fails and the field's params (`Source`, `Src`, `ES`) leak as `??_` — the source
 /// carrier and its access effect never thread (only the element pins, through the
 /// sibling `fn`'s `(x: Src)`).
 ///
@@ -40699,7 +40699,7 @@ fn check_constructor_iter(
     // skipped here regardless". That was true only while a RIGID counted as
     // non-ground. Once a skolem is ground ([`type_value_is_ground`]), the raw `c : ?C`
     // reaches the check and is refused against the very field the inference loop had
-    // just threaded it into — `FiniteCollection.map`'s `fmapped(c, f)`, measured. One
+    // just threaded it into — `FiniteCollection.map`'s `mapped(c, f)`, measured. One
     // spelling for both loops is the fix: a rebuild good enough to INFER from is the
     // one to JUDGE against.
     let mut field_type_errors: Vec<TypeError> = Vec::new();

@@ -4,9 +4,10 @@
 //! WI-594 threads a bare spec receiver `s : Stream` into a field typed with that
 //! SAME spec (`source: Stream[Src, ES]`) via the receiver's self-projection. The
 //! THIN finite `map` the user preferred for WI-588 wraps the bare CARRIER value
-//! directly — `FiniteCollection.map(c, f) = fmapped(c, f)` — where `c` has the
+//! directly — `FiniteCollection.map(c, f) = mapped(c, f)` — where `c` has the
 //! carrier-param type `C` (a sort that merely PROVIDES the spec) and the combinator's
-//! `source` field is typed with the spec (`FiniteCollection[C = SrcC, …]`). The
+//! `source` field is typed with a spec (`Iterable[C = Source, …]` in the stdlib since
+//! WI-590; the fixture below writes the same shape over its own `Coll`). The
 //! carrier param `C`/`C2` is NOT the spec base, so WI-594's self-projection does not
 //! fire and the field's source carrier + access effect leak as `??_`.
 //!

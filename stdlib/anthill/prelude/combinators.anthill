@@ -3,7 +3,7 @@
 -- Unlike the eager consumers on `Stream` (collect / takeN / foldLeft /
 -- foldRight / find, which fold the stream down to a value), `map` PRODUCES a
 -- new stream, so it is a lazy carrier: a small entity that wraps the source
--- stream plus the transform and PROVIDES Stream by defining `splitFirst` over
+-- COLLECTION plus the transform and PROVIDES Stream by defining `splitFirst` over
 -- the source. The carrier's output element param is named `T` and its effect
 -- `E` — matching Stream's own param names so the `provides Stream[T, E]`
 -- provision conforms (a divergent name like `Dst`/`Eff` loses the
@@ -13,13 +13,29 @@
 -- is returned VERBATIM (unlike `map`'s `fn(h)`, whose output type comes from the
 -- transform's return), so the source head's element type must thread through
 -- `splitFirst`'s destructured `Pair` (WI-356 / WI-357), AND a dropped element is
--- skipped by SELF-RECURSING on the reconstructed carrier — whose incurred effect
--- must thread too (WI-413). Both now work via the explicit `[Elem, Eff]` params.
+-- skipped by RECURSING on the reconstructed carrier — whose incurred effect
+-- must thread too (WI-413). Both work off the sort's own params; the skip goes
+-- through `Stream.splitFirst` rather than a static self-call, because since WI-590
+-- the reconstructed carrier wraps the source's TAIL and so has a different
+-- `Source` than the receiver (see the operation's own note).
 sort anthill.prelude.MappedStream
-  import anthill.prelude.{Stream, Function, Option, Pair, Modify}
+  import anthill.prelude.{Stream, Iterable, Function, Option, Pair, Modify}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
 
+  -- WI-590: the SOURCE's own sort, KEPT IN THE TYPE. The field used to be typed
+  -- `Stream[Src, ES]`, which ERASED which carrier the source was — and with it every
+  -- property of that carrier, finiteness included. That erasure is the only reason a
+  -- separate finite twin carrier had to exist: nothing could condition on the source.
+  -- Threading `Source` gives a WITNESS the handle it needs to say "a mapped stream is
+  -- finite WHEN its source is" (`MappedStreamFinite`, finite_combinators.anthill).
+  --
+  -- The field is typed on the `Iterable` SPEC VIEW rather than left a bare `Source`
+  -- because `Src` and `ES` appear in no other field: a bare param would leave both
+  -- unbound at every construction and the provided `Stream[E = {ES, EF}]` row would leak.
+  -- `Iterable` and not `Stream` because Stream is SELF-RECEIVER and cannot name WHICH
+  -- carrier it is, while everything mappable provides Iterable.
+  sort Source = ?
   sort Src = ?
   sort T = ?
   -- WI-441 decoupled rows: the SOURCE's observation row and the TRANSFORM's
@@ -32,7 +48,9 @@ sort anthill.prelude.MappedStream
   -- on the PUBLIC signatures (map / Iterable.map), where the WI-440 call-site
   -- check enforces it — an entity FIELD has no registered binder places
   -- (the WI-341 arrow-binder context is operation-param scoped).
-  entity mapped(source: Stream[Src, ES], fn: (Src) -> T @ {EF})
+  requires Iterable[C = Source, Element = Src, E = ES]
+
+  entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {EF})
 
   provides Stream[T = T, E = {ES, EF}]
 
@@ -40,24 +58,29 @@ sort anthill.prelude.MappedStream
   -- provides Stream` (above) and `Stream provides Iterable` (stream.anthill),
   -- so the engine resolves `Iterable` ops on a `mapped(…)` value through Stream
   -- (its `iterator(s) = s` is the genuine impl). No explicit `provides Iterable`
-  -- + identity `iterator` is needed here: the `xs.map(f).filter(p)` chain
-  -- dispatches `.filter` via `Iterable.filter`, whose `iterator(c)` on the lazy
-  -- carrier now resolves to `Stream.iterator` via transitive provision.
+  -- + identity `iterator` is needed here: in the `xs.map(f).filter(p)` chain the
+  -- `.filter` hop's own `iterator(c)` over this lazy carrier resolves to
+  -- `Stream.iterator` via transitive provision.
 
   -- Stream primitive for a mapped stream: peel the source's head, apply the
   -- transform, and re-wrap the source's tail so the result stays lazy. The
   -- output element type comes from `fn`'s return `B = T`, so it threads even
   -- though the bound `h`'s own type does not (cf. the filter note above).
   --
-  -- The inner `splitFirst(src)` is the BARE spec op: `src` is the abstract source
-  -- `Stream`, so (WI-411) the unqualified call value-dispatches on `src`'s real
-  -- carrier rather than self-dispatching to this `MappedStream.splitFirst`. The
-  -- typer redirects an unqualified self-named spec-op call to the spec op when the
-  -- receiver is not the enclosing carrier; a concrete receiver pins statically.
-  operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = MappedStream]] effects {ES, EF} =
+  -- WI-590: the peel is `Stream.splitFirst(Iterable.iterator(src))`, both QUALIFIED —
+  -- `src` is an abstract `Iterable` view, so it must be turned into a Stream first, and an
+  -- unqualified call has no concrete receiver carrier for WI-411's redirect to key on. On a
+  -- `Stream` source `iterator` is the identity, and the re-wrapped TAIL is itself a Stream,
+  -- so every peel after the first takes that path.
+  --
+  -- The tail is a bare `Stream`, exactly what `Stream.splitFirst` promises. It also states
+  -- the truth: the tail wraps the SOURCE's tail, so its `Source` is that tail's sort, NOT
+  -- this carrier's — a `MappedStream[Source = Source]` tail would make the witness read
+  -- finiteness off the wrong sort.
+  operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
     match m
       case mapped(src, fn) ->
-        match splitFirst(src)
+        match Stream.splitFirst(Iterable.iterator(src))
           case none() -> none
           case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
 
@@ -72,23 +95,27 @@ end
 -- The sibling of `map`. A filtered stream wraps the source plus a predicate and
 -- PROVIDES Stream by defining `splitFirst`: advance the source until a KEPT
 -- element (`pred(h)` true), returning it + the filtered tail; SKIP a dropped
--- element by SELF-RECURSING on the reconstructed `filtered(rest, pred)`.
+-- element by RECURSING on the reconstructed `filtered(rest, pred)`.
 --
 -- Two threadings the eager `find` / lazy `map` did not exercise together (WI-413):
 --   * the kept head `h` is returned VERBATIM, so the source element type must
 --     thread through `splitFirst`'s destructured `Pair` (WI-356 / WI-357), and
---   * the SELF-RECURSION re-incurs the carrier's effect, which must close to the
+--   * the SKIP RECURSION re-incurs the carrier's effect, which must close to the
 --     declared row rather than leak an unresolved `??_`.
--- Both work because `splitFirst` declares its OWN `[Elem, Eff]` params bound from
--- the receiver `FilteredStream[T = Elem, E = Eff]` (the same shape the eager
--- combinators use): the destructure threads the element/effect in (the field-type
--- deep-walk), and the recursive call's `Eff` binds from its reconstructed
--- argument by ordinary op-type-param unification — so it closes to `Eff`.
+-- Both work off the sort's OWN params (`T`, `ES`, `EF`): the destructure threads
+-- the element and the source row in through the field-type deep-walk, and the
+-- reconstructed carrier's row closes to `{ES, EF}` by ordinary unification. The
+-- skip is `Stream.splitFirst(filtered(rest, pred))` and NOT a static self-call —
+-- since WI-590 the reconstruction wraps the SOURCE'S TAIL, whose sort differs from
+-- the receiver's `Source`, so the value no longer has the receiver's own type;
+-- dispatching through `Stream` lands back here on that value's own instance.
 sort anthill.prelude.FilteredStream
-  import anthill.prelude.{Stream, Function, Option, Pair, Bool, Modify}
+  import anthill.prelude.{Stream, Iterable, Function, Option, Pair, Bool, Modify}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Pair.{pair}
 
+  -- WI-590: the source's own sort, kept in the type — cf. the MappedStream note.
+  sort Source = ?
   sort T = ?
   -- WI-441 decoupled rows (cf. MappedStream): source row + pred row, the
   -- provided Stream's row is their union.
@@ -96,7 +123,9 @@ sort anthill.prelude.FilteredStream
   effects EF = ?
 
   -- Plain `{EF}` row — cf. the `mapped` field note (lacks on public sigs).
-  entity filtered(source: Stream[T, ES], pred: (T) -> Bool @ {EF})
+  requires Iterable[C = Source, Element = T, E = ES]
+
+  entity filtered(source: Iterable[C = Source, Element = T, E = ES], pred: (T) -> Bool @ {EF})
 
   provides Stream[T = T, E = {ES, EF}]
 
@@ -105,20 +134,20 @@ sort anthill.prelude.FilteredStream
   -- `iterator` on a `filtered(…)` value resolves to `Stream.iterator` through
   -- transitive provision; no explicit `provides Iterable` + identity `iterator`.
 
-  -- Both inner calls are the BARE spec op (WI-411): the source peel `splitFirst(src)`
-  -- has the abstract source `Stream` as receiver, so it value-dispatches on `src`'s
-  -- real carrier; the RECURSIVE `splitFirst(filtered(rest, pred))` has the concrete
-  -- enclosing carrier as receiver, so the typer keeps it a STATIC self-dispatch back
-  -- here (the receiver type already singles out this impl) — which is what drops the
-  -- next element and threads the carrier effect (WI-413).
-  operation splitFirst[Elem, EffS, EffP](f: FilteredStream[T = Elem, ES = EffS, EF = EffP]) -> Option[Pair[A = Elem, B = FilteredStream[T = Elem, ES = EffS, EF = EffP]]] effects {EffS, EffP} =
+  -- WI-590: the source peel is qualified (cf. MappedStream). The SKIP recursion is
+  -- `Stream.splitFirst(filtered(rest, pred))`, a spec dispatch where it used to be a static
+  -- self-call: the reconstructed carrier wraps the source's TAIL, so its `Source` differs
+  -- and the value no longer has the receiver's own type. Dispatching through `Stream` lands
+  -- back here on that value's own instance, which drops the next element and threads the
+  -- carrier effect (WI-413).
+  operation splitFirst(f: FilteredStream) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
     match f
       case filtered(src, pred) ->
-        match splitFirst(src)
+        match Stream.splitFirst(Iterable.iterator(src))
           case none() -> none
           case some(pair(h, rest)) ->
             if pred(h) then some(pair(h, filtered(rest, pred)))
-            else splitFirst(filtered(rest, pred))
+            else Stream.splitFirst(filtered(rest, pred))
 
   -- filter constructor: the lazy filtered stream is admissible wherever a
   -- Stream[S, {EffS, EffP}] is expected (it provides Stream).

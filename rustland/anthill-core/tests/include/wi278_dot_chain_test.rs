@@ -9,14 +9,15 @@
 //!   1. dispatches `map`/`filter` with NO import of the operation. POST-WI-588
 //!      (finiteness Phase B): on a `List` these now resolve to
 //!      `FiniteCollection.map`/`filter` (List provides FiniteCollection at
-//!      provision-graph depth 1, beating `Iterable` at depth 2), producing the
-//!      FINITE carriers `FiniteMappedStream` / `FiniteFilteredStream`. (Before
-//!      Phase B they resolved to the lazy `Iterable.map` → `mapped`/`filtered`;
-//!      the lazy carriers are still reached on a genuinely-infinite bare Stream.)
+//!      provision-graph depth 1, beating `Iterable` at depth 2). WI-590 (Phase D)
+//!      made both routes build the SAME `mapped`/`filtered` carrier; what the
+//!      finite route adds is the carrier's SOURCE SORT in the type, which is what
+//!      the finiteness witness reads. Over a genuinely-infinite bare Stream that
+//!      witness's `requires` is unsatisfied, so the same carrier is Iterable-only.
 //!   2. INFERS the method's type parameters (`map`'s `Dst` from the callback,
 //!      the receiver's element type from the receiver) — proposal 043 §6.6;
-//!   3. EVALUATES: the dispatched chain runs through the real finite
-//!      `fmapped` / `ffiltered` carriers and produces the right elements.
+//!   3. EVALUATES: the dispatched chain runs through the real `mapped` /
+//!      `filtered` carriers and produces the right elements.
 //!
 //! Regression context: the chain originally type-failed not in the dot path
 //! but in the effect-row algebra — the lazy combinators' result row
@@ -145,12 +146,12 @@ const EVAL_SRC: &str = r#"
 namespace wi278.eval
   import anthill.prelude.{List, Int64, Stream, Bool}
   import anthill.prelude.List.{nil, cons}
-  -- WI-588: `.map`/`.filter` on a List now produce FINITE carriers
-  -- (FiniteMappedStream/FiniteFilteredStream), so the chain is a FiniteStream.
-  -- Consume it via FiniteCollection's `collect`/`foldLeft` (effect = the sort
-  -- param `E`, grounded by the provision) rather than Stream's (effect = the
-  -- projection `s.E`, which does not ground through the 2-hop transitive provision
-  -- FiniteFilteredStream → FiniteStream → Stream).
+  -- WI-588/WI-590: `.map`/`.filter` on a List resolve the FINITE ops, so the chain
+  -- is a `filtered`/`mapped` carrier whose FiniteCollection-ness comes from the
+  -- witness. Consume it via FiniteCollection's `collect`/`foldLeft` (effect = the
+  -- sort param `E`, grounded by the provision) rather than Stream's (effect = the
+  -- projection `s.E`, which does not ground through the transitive provision
+  -- FilteredStream → Stream).
   import anthill.prelude.FiniteCollection.{foldLeft}
 
   operation inc(n: Int64) -> Int64 = n + 1

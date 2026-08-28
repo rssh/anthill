@@ -763,15 +763,15 @@ class BootstrapTest extends munit.FunSuite:
     // THE CORPUS INSTANCE, asserted on its emitted TEXT here; the closure COMPILE
     // is WI-1065's test below. When these files entered the tree, `requires` ->
     // `extends` (§2.7) turned out to be unsound in two shapes neither of which is
-    // about effects: `FiniteMappedStream` is a DATA sort that `requires` an
-    // algebra, so its enum case inherited nine abstract members (WI-1064), and
+    // about effects: `MappedStream` is a DATA sort that `requires` a walk over its
+    // SOURCE, so its enum case inherited abstract members (WI-1064), and
     // `FiniteCollection.map` SHADOWS `Iterable.map` with a different return type —
     // distinct operations per kernel §8.7, which Scala's one override group cannot
     // hold (WI-1065). Both are since fixed, which is why the corpus header below
     // carries NO supertrait where the non-shadowing fixture above keeps one.
     //
     // What IS this ticket's, and is asserted: the arities. The nested
-    // `FiniteMappedStream[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
+    // `MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
     // written with five arguments, of which `ES = E` is a sort effect parameter and
     // `EF = EffP` is an operation type parameter this signature only ever uses
     // inside a row — three survive, matching the three the emission declares.
@@ -785,12 +785,15 @@ class BootstrapTest extends munit.FunSuite:
     // stopped pinning.
     assert(src.contains("def map[Dst](c: C, f: (Element) => Dst)" +
       "(using _root_.anthill.prelude.Iterable[C, Element]): " +
-      "FiniteCollection[_root_.anthill.prelude.FiniteMappedStream[C, Element, Dst], Dst]"),
+      "_root_.anthill.prelude.MappedStream[C, Element, Dst]"),
       s"an operation's row-only type parameter must erase like a sort's:\n$src")
-    val fmapped = gen(parseStdlib("anthill/prelude/finite_combinators.anthill"))
+    // The DECLARING file is combinators.anthill since WI-590 folded the finite twin
+    // carriers away: `finite_combinators.anthill` now holds only the finiteness
+    // WITNESSES, and the carrier this signature applies is `MappedStream`.
+    val mapped = gen(parseStdlib("anthill/prelude/combinators.anthill"))
       .head.contents
-    assert(fmapped.contains("enum FiniteMappedStream[SrcC, Src, T]"),
-      s"the three surviving arguments must be the three the declaration emits:\n$fmapped")
+    assert(mapped.contains("enum MappedStream[Source, Src, T]"),
+      s"the three surviving arguments must be the three the declaration emits:\n$mapped")
   }
 
   test("WI-1062: an effect parameter written where a TYPE belongs is refused") {
@@ -1575,13 +1578,22 @@ class BootstrapTest extends munit.FunSuite:
       s"the supertrait control must be unchanged:\n$ord")
     assert(!ord.contains("using"),
       s"a supertrait requirement must not ALSO be passed as a dictionary:\n$ord")
-    // The data shape's control, for the same partition: `FiniteMappedStream`'s
+    // The data shape's control, for the same partition: `MappedStream`'s
     // requirement is discharged by the constructor FIELD typed by it (WI-1064), which
     // is a stronger position than a context parameter — it constrains the constructed
     // value — so its `<Sort>Ops` operations stay bare too.
-    val fmapped = preludeClosure("finite_combinators").head.contents
-    assert(!fmapped.contains("using"),
-      s"a field-discharged requirement must not also be a dictionary:\n$fmapped")
+    //
+    // READ FROM combinators.anthill, and the move is WI-590's: this control used to
+    // read finite_combinators.anthill, whose `FiniteMappedStream` carried exactly this
+    // shape. That file now holds the finiteness WITNESSES, which declare no
+    // constructor at all — so their `requires FiniteCollection[C = S, …]` has no field
+    // to ride on and correctly BECOMES the dictionary (`trait MappedStreamFinite[S,
+    // Src, T]: def collect(…)(using FiniteCollection[S, Src])`, measured). Pointing
+    // this control at the file that still has the field keeps it a control instead of
+    // silently inverting into an assertion about the other arm.
+    val mapped = preludeClosure("combinators").head.contents
+    assert(!mapped.contains("using"),
+      s"a field-discharged requirement must not also be a dictionary:\n$mapped")
   }
 
   test("WI-1055: the enclosing sort written with the WRONG number of arguments is refused") {
@@ -1690,7 +1702,8 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1064: the RECORD shape takes the same arm as the sum — eponymy is not a loophole") {
     // THE ARM NO OTHER TEST REACHES. `shapeOf` keys eponymy on the ANTHILL name, so
     // every other fixture here (`Wrapper`/`wrapped`, `Boxed`/`boxed`) and BOTH corpus
-    // sorts (`FiniteMappedStream`/`fmapped`) classify as `Sum` — the lowercase-entity
+    // sorts (`MappedStream`/`mapped`, `FilteredStream`/`filtered`) classify as `Sum`
+    // — the lowercase-entity
     // form is stdlib's convention. The `Record` branch of `requiresMapping` was
     // therefore dead to the suite, and every pre-existing Record test (Vec3,
     // TotalFloat, Box, Acct) declares no `requires`, so it short-circuits at
@@ -1835,31 +1848,38 @@ class BootstrapTest extends munit.FunSuite:
       s"refusal must be located: ${err.getMessage}")
   }
 
-  test("WI-1064 CORPUS: finite_combinators.anthill emits no `extends`, and still names it") {
+  test("WI-1064 CORPUS: combinators.anthill emits no `extends`, and still names it") {
     // THE MEASURED INSTANCE, on emitted TEXT rather than compiled, for the reason
     // the fixture test states. Both sorts, because both carried the defect.
     //
-    // The `requires FiniteCollection[C = SrcC, …]` these two write sits two lines
-    // above a `provides FiniteCollection[C = FiniteMappedStream, …]` — the sort's
-    // actual claim about itself, which Bootstrap reads nothing of (`emitSort` has
-    // no `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
+    // READ FROM combinators.anthill SINCE WI-590. The instance that carried the
+    // defect was finite_combinators.anthill's `FiniteMappedStream`, a data sort whose
+    // `requires` was over its SOURCE parameter; WI-590 folded that twin carrier into
+    // the one `MappedStream`, which now writes the same `requires`-over-the-source
+    // beside the field that carries it. The defect's shape moved files; it did not
+    // stop existing, so the corpus assertion follows it rather than being retired.
     //
-    // `_root_`-ANCHORED SINCE WI-1060, and only the spelling changed: `FiniteCollection`
-    // used to reach [[Placement.Ambient]], which qualifies with the DECLARING file's
-    // package and so happened to be right here; it is now placed by
-    // finite_collection.anthill's own declaration, which is also what checks the two
-    // arguments against the two that declaration emits.
+    // The `requires Iterable[C = Source, …]` these two write sits beside the `entity`
+    // field typed by it, while the sort's actual claim about itself is the `provides
+    // Stream[…]` below — which Bootstrap reads nothing of (`emitSort` has no
+    // `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
     //
-    // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum
-    // FiniteMappedStream[SrcC, Src, T] extends anthill.prelude.FiniteCollection[
-    // SrcC, Src]:`, whose measured consequence was `class Fmapped needs to be
-    // abstract, since it has 9 unimplemented members`.
-    val files = preludeClosure("finite_combinators")
+    // `_root_`-ANCHORED SINCE WI-1060, and only the spelling changed: the required
+    // spec used to reach [[Placement.Ambient]], which qualifies with the DECLARING
+    // file's package and so happened to be right here; it is now placed by
+    // iterable.anthill's own declaration, which is also what checks the two arguments
+    // against the two that declaration emits.
+    //
+    // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum MappedStream[Source,
+    // Src, T] extends anthill.prelude.Iterable[Source, Src]:`, whose measured
+    // consequence (on the pre-WI-590 spelling of the same shape) was `class Fmapped
+    // needs to be abstract, since it has 9 unimplemented members`.
+    val files = preludeClosure("combinators")
     Seq(
-      ("FiniteMappedStream", "enum FiniteMappedStream[SrcC, Src, T]:",
-        "case Fmapped(source: _root_.anthill.prelude.FiniteCollection[SrcC, Src],"),
-      ("FiniteFilteredStream", "enum FiniteFilteredStream[SrcC, T]:",
-        "case Ffiltered(source: _root_.anthill.prelude.FiniteCollection[SrcC, T],"),
+      ("MappedStream", "enum MappedStream[Source, Src, T]:",
+        "case Mapped(source: _root_.anthill.prelude.Iterable[Source, Src],"),
+      ("FilteredStream", "enum FilteredStream[Source, T]:",
+        "case Filtered(source: _root_.anthill.prelude.Iterable[Source, T],"),
     ).foreach { case (sort, decl, field) =>
       val src = files.find(_.relPath.endsWith(s"/$sort.scala"))
         .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
