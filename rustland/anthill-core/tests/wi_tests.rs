@@ -699,6 +699,8 @@ mod wi612_abstract_stream_consumer_effect_test;
 #[path = "include/wi614_requires_dot_dispatch_test.rs"]
 mod wi614_requires_dot_dispatch_test;
 
+#[path = "include/wi590_enclosing_requires_test.rs"]
+mod wi590_enclosing_requires_test;
 #[path = "include/wi590_witness_param_carrier_test.rs"]
 mod wi590_witness_param_carrier_test;
 

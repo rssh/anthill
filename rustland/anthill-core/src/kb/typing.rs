@@ -14461,6 +14461,23 @@ fn check_apply_iter(
                 named_results,
             )
         };
+        // WI-590 — the ENCLOSING SORT's `requires` clause licensing this call, when the
+        // carrier-param classification declined. ONE lookup: the binder below and both
+        // refusal arms read this, so the licence and the binding cannot disagree, and the
+        // scan runs at most once per call.
+        let enclosing_requires_clause = if carrier_param_info.is_none() {
+            enclosing_requires_licensing_clause(
+                kb,
+                env,
+                &op,
+                fn_sym,
+                named_args,
+                pos_results,
+                named_results,
+            )
+        } else {
+            None
+        };
         // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by three
         // sites (the WI-496/598 abstract-spec deferral and both `statically_pinned_carrier`
         // calls). The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps
@@ -14505,9 +14522,17 @@ fn check_apply_iter(
                     view.clone(),
                     *recv_arg_sym,
                 ),
-                None => false,
+                // WI-590: no carrier to read a provision from — the receiver is an
+                // abstract sort PARAM (bare, or a spec view over one). Its members come
+                // from the enclosing sort's own `requires Spec[C = P, …]` instead.
+                None => bind_spec_params_from_enclosing_requires(
+                    kb,
+                    &mut subst,
+                    enclosing_requires_clause.as_deref(),
+                ),
             },
         };
+
         // WI-379: synthesize from the ARGUMENTS first (the two loops below);
         // the caller-side `expected` is consulted only AFTER (moved below the
         // arg loops), so it fills still-free type params without overriding any
@@ -16831,7 +16856,13 @@ fn check_apply_iter(
                     // pass-through below, so this only changes the abstract case.
                     // WI-653: carrier-aware coverage — the licensing `requires` must
                     // supply `spec_sort` OVER THE CALL'S CARRIER, not merely by symbol.
-                    if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                    // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
+                    // is DECLARED to resolve, so it must not be reported as a
+                    // missing-`requires`: the sort-level twin of WI-562's op-scoped licence.
+                    // Leave the call as the spec op for value-directed eval, exactly as that
+                    // licence does.
+                    if enclosing_requires_clause.is_some() {
+                    } else if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         // WI-1091: licensed by the enclosing op's own `requires` — and
                         // now DEFERRED to the slot that licence names, when the chain
                         // has one. See `defer_to_op_scoped_slot`.
@@ -17048,7 +17079,10 @@ fn check_apply_iter(
                     // (abstract) dispatch reaches here — a concrete call resolves
                     // `Unique` and keeps its impl effect-grounding (WI-365).
                     // WI-653: carrier-aware coverage (see the NoCandidates arm above).
-                    if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                    // WI-590: as in the `NoCandidates` arm above — the enclosing SORT's
+                    // `requires` covers this receiver.
+                    if enclosing_requires_clause.is_some() {
+                    } else if op_requires_covers_call(kb, env, &subst, spec_sort) {
                         // WI-1091: as in the `NoCandidates` arm above.
                         defer_to_op_scoped_slot(
                             kb, env, occ, &subst, spec_sort, fn_sym, op_short_sym,
@@ -35466,6 +35500,202 @@ fn carrier_param_receiver(
         ));
     }
     None
+}
+
+/// WI-590 — the ENCLOSING SORT's `requires` clause that licenses this spec-op call, with
+/// the spec params it supplies ALREADY RESOLVED to the terms to bind (carrier param
+/// excluded — that one binds by ordinary argument unification against the receiver).
+///
+/// The carrier-param path ([`carrier_param_receiver`] → [`bind_spec_params_from_carrier_param`])
+/// reads a spec's params off the RECEIVER's carrier: its `provides` fact (WI-424/492), the
+/// spec that carrier itself `requires` (WI-608), or its own type-args when carrier and spec
+/// coincide (WI-609). All three need a carrier SORT to read from. A receiver typed by an
+/// abstract sort PARAMETER has none — inside a sort body the param is rigidified to a
+/// Skolem, `sort_functor_of_view` answers `None`, and the parameter is skipped entirely — so
+/// every spec param but the carrier leaks `?_`. The information is one level out: the
+/// enclosing sort's own `requires Spec[C = P, …]` IS the statement "P provides Spec, with
+/// these params". This is the wiring [`carrier_provision_short_bindings`]' doc names as
+/// missing ("a free op licensing `c` through an ambient `requires FiniteCollection[C = C2,
+/// …]` is NOT handled here … What is missing is the wiring, not the information").
+///
+/// `Some(vec![])` means LICENSED but with nothing left to bind, and is NOT the same as
+/// `None` — the two refusal arms read exactly that distinction.
+///
+/// STRICTLY ADDITIVE: the caller runs it only where `carrier_param_receiver` already
+/// declined, so it can bind only params that would otherwise have leaked and cannot
+/// redirect a dispatch that resolves today.
+///
+/// THREE GATES, each load-bearing for soundness:
+///
+///  1. THE RECEIVER IS THE CARRIER SLOT. Only the op parameter typed as the spec's own
+///     CARRIER param counts. Otherwise any spec-param-typed parameter would do —
+///     `Bag.put(other, x)` with `x : Src` would match the clause's `Elem = Src` on parameter
+///     1 and license a call nothing licenses. ([`carrier_param_receiver`] gets the same
+///     guarantee from `provision_binds_param_to_carrier`, which has no analogue for a
+///     `requires` clause.) NO TEST DRIVES THIS ONE, and the reason is worth recording: the
+///     wrong licence does not produce a wrong TYPE, because the carrier param is already
+///     bound by ordinary argument unification against the receiver and the binder's
+///     `resolve_as_value(...).is_none()` guard will not overwrite it — so the declared
+///     return is still checked against the real receiver and the program is still refused,
+///     one diagnostic later. MEASURED: a fixture built to the shape above passes with this
+///     gate and with it backed out to the earlier scan-every-parameter form. The gate stays
+///     because granting a licence on a basis that does not hold is a fail-open waiting for
+///     its first reader; it is not, today, a wrong answer.
+///
+///  2. A VIEW RECEIVER MUST BE A SPEC VIEW. The receiver may be spelled as a view over the
+///     param (`src : Iterable[C = S, …]`, what destructuring a spec-typed field yields), and
+///     then the carrier is the view's own carrier binding. But `TypeExtractor::Parameterized`
+///     matches ANY application, so `xs : Option[T = S]` would otherwise have its first type
+///     arg read as a carrier and be licensed as if it were the `S` itself.
+///     `carrier_is_abstract_spec` is the separator: a spec has no constructors and has
+///     providers, where `Option` has `some`/`none`.
+///
+///  3. THE CLAUSE MUST BE ABOUT THIS RECEIVER. `requires Spec[C = P]` says nothing about a
+///     receiver typed by a DIFFERENT param `Q`, so the clause's own carrier binding is
+///     resolved and compared against the receiver's; a mismatch skips the clause rather than
+///     borrowing its `Element`/`E`.
+///
+/// A clause value is resolved as a `Ref`/`Var` naming an enclosing param (to that param's
+/// BODY RIGID — a `requires` clause is stored against the pre-rigidify forms while the body
+/// references the rigids) or as an already-GROUND type (`requires Eq[T = Int64]`), bound
+/// verbatim. Anything else leaves that param unbound and so still LOUD downstream; it does
+/// not silently pass, because the licence and the resolution are decided together here
+/// rather than in two places that can disagree.
+fn enclosing_requires_licensing_clause(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Option<Vec<(VarId, TermId)>> {
+    // Cheapest gates first — this runs on every call whose carrier-param classification
+    // declined, and most of those are free ops with no enclosing sort at all.
+    let encl = env.enclosing_sort()?;
+    let rigids = env.enclosing_instance_param_rigids().to_vec();
+    if rigids.is_empty() {
+        return None;
+    }
+    let spec_sort = impl_parent_of_op(kb, fn_sym)?;
+    let spec_params = sort_type_params_as_pairs(kb, spec_sort);
+    let (_, carrier_param_term) = spec_params.first()?;
+    let Term::Var(Var::Global(carrier_pvid)) = kb.get_term(*carrier_param_term) else {
+        return None;
+    };
+    let carrier_pvid = *carrier_pvid;
+    let encl_rigid_by_sym: Vec<(Symbol, TermId)> = sort_type_params_as_pairs(kb, encl)
+        .iter()
+        .filter_map(|(psym, pty)| {
+            let Term::Var(Var::Global(v)) = kb.get_term(*pty) else {
+                return None;
+            };
+            rigids.iter().find(|(pv, _)| pv == v).map(|(_, r)| (*psym, *r))
+        })
+        .collect();
+    let rigid_of = |kb: &KnowledgeBase, t: TermId| -> Option<TermId> {
+        match kb.get_term(t) {
+            Term::Ref(sym) => encl_rigid_by_sym
+                .iter()
+                .find(|(s, _)| {
+                    short_name_of(kb.local_name_of(*s)) == short_name_of(kb.local_name_of(*sym))
+                })
+                .map(|(_, r)| *r),
+            Term::Var(Var::Global(v)) => rigids.iter().find(|(pv, _)| pv == v).map(|(_, r)| *r),
+            _ => None,
+        }
+    };
+
+    // GATE 1 — the receiver is the parameter typed as the spec's CARRIER param.
+    let (i, (pname, _)) = op
+        .params
+        .iter()
+        .enumerate()
+        .find(|(_, (_, pty))| declared_type_param_vid(kb, pty) == Some(carrier_pvid))?;
+    let recv_ty = pos_results
+        .get(i)
+        .and_then(|r| r.as_ref().ok())
+        .map(|r| r.ty.clone())
+        .or_else(|| {
+            named_args
+                .iter()
+                .position(|(n, _)| same_label(kb, *n, *pname))
+                .and_then(|j| named_results.get(j))
+                .and_then(|r| r.as_ref().ok())
+                .map(|r| r.ty.clone())
+        })?;
+    // GATE 2 — a bare param (a Skolem, no carrier sort), or a SPEC view over one.
+    let recv_carrier: TermId = match extract_type(kb, &recv_ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            if !carrier_is_abstract_spec(kb, base) {
+                return None;
+            }
+            let params = sort_type_params_as_pairs(kb, base);
+            let (view_carrier_psym, _) = params.first()?;
+            match bindings
+                .iter()
+                .find(|(k, _)| same_label(kb, *k, *view_carrier_psym))
+                .map(|(_, v)| v)
+            {
+                Some(Value::Term { id, .. }) => *id,
+                _ => return None,
+            }
+        }
+        _ => match &recv_ty {
+            Value::Term { id, .. } => *id,
+            _ => return None,
+        },
+    };
+
+    for entry in direct_requires(kb, encl) {
+        if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(spec_sort) {
+            continue;
+        }
+        let Some((_base, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+            continue;
+        };
+        // GATE 3 — this clause is about THIS receiver.
+        let licenses = bindings.iter().any(|(p, t)| {
+            type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid)
+                && rigid_of(kb, *t) == Some(recv_carrier)
+        });
+        if !licenses {
+            continue;
+        }
+        let mut out: Vec<(VarId, TermId)> = Vec::new();
+        for (p, t) in &bindings {
+            let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *p) else {
+                continue;
+            };
+            if spec_vid == carrier_pvid {
+                continue;
+            }
+            if let Some(r) = rigid_of(kb, *t).or_else(|| type_value_is_ground(kb, *t).then_some(*t))
+            {
+                out.push((spec_vid, r));
+            }
+        }
+        return Some(out);
+    }
+    None
+}
+
+/// WI-590 — bind what [`enclosing_requires_licensing_clause`] resolved. Split from the
+/// finder only so the LICENCE and the BINDING cannot disagree: both read one clause,
+/// resolved once.
+fn bind_spec_params_from_enclosing_requires(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    clause: Option<&[(VarId, TermId)]>,
+) -> bool {
+    let mut any = false;
+    for (spec_vid, concrete) in clause.unwrap_or(&[]) {
+        if subst.resolve_as_value(*spec_vid).is_none() && !occurs_in(kb, *spec_vid, *concrete) {
+            subst.bind_term(kb, *spec_vid, *concrete);
+            any = true;
+        }
+    }
+    any
 }
 
 /// WI-424 — ground a spec's sort params from the carrier's provision for a
