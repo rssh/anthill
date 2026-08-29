@@ -759,7 +759,14 @@ impl<'a> Converter<'a> {
             self.collect_field_access_segments(node, &mut segments);
             return Name { segments, span };
         }
-        if node.kind() == "application" {
+        // WI-20260829-BAD3V: `dot_application` (`recv.m[T = X](…)`) is the SAME
+        // unwrap as `application` — the name is the `name` field (a `field_access`
+        // there, a `name` here) and the bindings are the caller's to read. ONE arm
+        // with `application` because the alternative is exactly the bug that arm's
+        // comment describes: the identifier-child scan below would walk into the
+        // BRACKET and mint segments from the bindings' own identifiers, so
+        // `?x.m[Dst = Int64]` would name the functor `x.m.Dst.Int64`.
+        if node.kind() == "application" || node.kind() == "dot_application" {
             // WI-311: `Name[bindings]` — the functor/name is the `name` field (a
             // `name` node now, not a bare identifier), read it directly. The
             // bindings are consumed separately by callers (e.g. push_fn_term's
@@ -1241,14 +1248,77 @@ impl<'a> Converter<'a> {
 
     fn push_fn_term<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let name_node = self.field(node, "name").unwrap_or(node);
+        // WI-20260829-BAD3V: a `dot_application` callee (`recv.m[T = X](…)`) IS a
+        // dot callee wearing a type-arg bracket. Unwrap to the `field_access` it
+        // wraps so the receiver test below asks the same question of both
+        // spellings — the bracket decides what the bindings MEAN (see below), never
+        // whether this is a dot call.
+        let callee_node = if name_node.kind() == "dot_application" {
+            self.field(name_node, "name").unwrap_or(name_node)
+        } else {
+            name_node
+        };
         // WI-278: a method call `?x.method(args)` parses as an fn_term whose
         // callee is a `field_access` over a value receiver. Route it to
         // `dot_apply` (preserving the receiver the old flatten dropped).
         // `Foo.bar(...)` (name receiver) falls through to the normal call.
-        if name_node.kind() == "field_access" {
-            if let Some(receiver) = self.field(name_node, "object") {
+        if callee_node.kind() == "field_access" {
+            if let Some(receiver) = self.field(callee_node, "object") {
                 if self.is_value_receiver(receiver) {
-                    self.push_dot_method_call(node, name_node, receiver, work);
+                    // WI-20260829-BAD3V: the bracket is REFUSED on a VALUE receiver,
+                    // and refused HERE rather than dropped or forwarded. `dot_apply`
+                    // has no type-args channel — `Expr::DotApply` carries no
+                    // `type_args` field, which is the "a dot is bracket-less by
+                    // construction" premise the typer's tier-1 reasoning rests on
+                    // (WI-842, and `arbitrate_defaulted_supplier_tie`'s doc) and which
+                    // WI-443 already refused to fake by re-routing a bracketed
+                    // identifier-receiver call. So the bindings have nowhere to go, and
+                    // the two silent alternatives are both worse than a located error:
+                    // dropping them means `?xs.map[Dst = Int64](f)` quietly means
+                    // `?xs.map(f)`, and forwarding them onto the `dot_apply` term mints
+                    // a write-only channel whose first reader would have to invent what
+                    // it meant. The peer refusal is the `rest_arg` arm of
+                    // `push_dot_method_call`, on the same grounds: the dot form is not
+                    // where that syntax is read, and the message names the form that
+                    // is.
+                    if name_node.kind() == "dot_application" {
+                        let at = self
+                            .child_by_kind(name_node, "sort_binding")
+                            .unwrap_or(name_node);
+                        // `field_access` always has a `field`, so the fallback is
+                        // unreachable from the grammar — and it quotes the callee the
+                        // author wrote rather than inventing a member name, because a
+                        // repair spelled with a name that is not in the source reads as
+                        // a different call.
+                        let member =
+                            self.text(self.field(callee_node, "field").unwrap_or(callee_node));
+                        // THE MESSAGE NAMES A SHAPE, NOT A POSITION, and both halves of
+                        // that were learned the hard way. An earlier wording ended "…
+                        // `Sort.m[…](receiver, …)` in an operation body", which is the
+                        // exact defect WI-839 split `CallTypeArgsPosition` to avoid:
+                        // MEASURED on `rule dr: ?x.m[T = Int64](?y) <=> ?y [simp]`, it
+                        // told a RULE HEAD to move into an operation body — not a move a
+                        // rule head has, and the applicative rewrite it named would be
+                        // refused there in turn (`CallTypeArgsPosition::RuleHead`). This
+                        // converter cannot see which position it is in; the loader's
+                        // `call_type_args_unsupported_detail` can and does, so WHERE the
+                        // bracket is read is its sentence to write, not this one's.
+                        // `(…)` and not `(receiver, …)` for the second half: on a
+                        // QUALIFIED companion receiver (`Map[K = String].empty[…]()`)
+                        // there is no receiver argument at all, and that spelling is one
+                        // this arm's sibling now ACCEPTS.
+                        self.err(
+                            format!(
+                                "call-site type arguments are not supported on a dot call \
+                                 — a dot carries no channel for them, so the binding \
+                                 would be parsed and then silently dropped. The \
+                                 applicative spelling `Sort.{member}[…](…)` is the form \
+                                 that can carry one"
+                            ),
+                            at,
+                        );
+                    }
+                    self.push_dot_method_call(node, callee_node, receiver, work);
                     return;
                 }
             }
@@ -1262,7 +1332,17 @@ impl<'a> Converter<'a> {
         };
 
         // Side-channel for the typer at `Name[bindings](args)` callees.
-        let type_args: Vec<SortBinding> = if name_node.kind() == "application" {
+        // WI-20260829-BAD3V: `dot_application` feeds the SAME channel, because the
+        // callee it reaches here is by construction NOT a value receiver — the
+        // value-receiver arm above returned. What is left is the QUALIFIED companion
+        // spelling `Map[K = String].empty[T = Int64]()`, whose functor
+        // `convert_name` flattens to `Map.empty` exactly as it does for the
+        // bracket-less `Map[K = String].empty()`; the outer bracket is then this
+        // call's type arguments, the reading `Map.empty[T = Int64]()` already has.
+        let type_args: Vec<SortBinding> = if matches!(
+            name_node.kind(),
+            "application" | "dot_application"
+        ) {
             self.children_by_kind(name_node, "sort_binding")
                 .into_iter()
                 .map(|b| self.convert_sort_binding(b))
@@ -1369,9 +1449,17 @@ impl<'a> Converter<'a> {
         let name_sym = self.intern(self.text(field_node));
         let mut slots: SmallVec<[ArgSlot; 4]> = SmallVec::new();
         let mut child_nodes: SmallVec<[Node<'t>; 4]> = SmallVec::new();
+        // WI-20260829-BAD3V: skip the fn_term's OWN callee slot, read off `node`,
+        // not `name_node`. Under the `dot_application` spelling (`?x.m[T = X](y)`)
+        // the two differ — `name_node` is the INNER `field_access`, a grandchild —
+        // and comparing against it would leave the `dot_application` matching no arm
+        // but `_ => {}`, which drops it in silence: the call would load as `?x.m(y)`
+        // with its own callee counted as nothing. `node`'s `name` field is the slot
+        // by definition, so it cannot drift from whatever `push_fn_term` unwrapped.
+        let callee_slot = self.field(node, "name");
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child == name_node {
+            if Some(child) == callee_slot || child == name_node {
                 continue;
             }
             match child.kind() {

@@ -169,3 +169,34 @@ rather than on anything about qualification. Nine measured rows and their contro
 WI-20260829-BAD3V, which now OWNS the gap -- it had been recorded only inside two DELIVERED
 items, which no queue lists.
 
+### 2026-08-29T21:52:44Z — feedback — claude
+
+CORRECTION (from WI-20260829-BAD3V, which now owns and has closed the gap).
+
+Two claims here about the parse gap need amending.
+
+(1) The description's "a dot call takes no explicit type-arg bracket" is false as stated
+-- this file's own feedback note already caught that (`xs.map[Dst = Int64](f)` parses).
+
+(2) That note's REPLACEMENT diagnosis is also wrong. It says the failure is "a bracket on
+a dot whose RECEIVER IS COMPOUND ... (`(xs.map(f)).map[Dst](g)`), the latter placing it on
+WI-20260829-YBBC3's term/body split". It is NOT the term/body split: `paren_expr` already
+wraps an `_expr_body` (YBBC3), and the CST for the parenthesized row shows the
+`field_access` over the `paren_expr` BUILT FINE. The `[` is what had nowhere to go, and it
+was being taken as the DECLARATION'S `meta_block` -- which is why the reported error
+landed on the `=` inside a misread `meta_entry`.
+
+Nor is "compound receiver" the boundary: the FIRST hop over a plain variable,
+`?xs.map[Dst = Int64](f)`, was a syntax error too. The real rule: `application`'s base was
+`name | absolute_name`, so the bracket was admitted only where the callee was a NAME PATH
+-- i.e. only on the spelling that is a QUALIFIED call and not a dot call at all. No
+value-receiver dot could take one, at any depth.
+
+BAD3V's fix: a `dot_application` production in `fn_term`'s callee slot admits the bracket
+on a dot callee; the converter reads it as the call's type arguments on a QUALIFIED
+companion receiver (`Map[K = String].empty[T = Int64]()` -- new, and driven) and REFUSES
+it with a located message on a VALUE receiver, since `Expr::DotApply` carries no
+`type_args` field. So the repair a future type-arg diagnostic suggests now parses, and
+where it cannot work the author is told the applicative spelling instead of a syntax
+error.
+

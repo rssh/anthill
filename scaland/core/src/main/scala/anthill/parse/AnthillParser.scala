@@ -889,7 +889,8 @@ private class AnthillParserImpl(
     P(atomBase ~ dotSegment.rep).map { case (base, segs) =>
       segs.foldLeft(base) { (obj, seg) =>
         seg match
-          case DotSeg.Field(field, fieldSpan, callArgs) =>
+          case DotSeg.Field(field, fieldSpan, callArgs, typeArgs) =>
+            if typeArgs.nonEmpty then refuseDotTypeArgs(field, fieldSpan)
             buildFieldAccess(obj, field, fieldSpan, isValueReceiver(obj), callArgs)
           case DotSeg.Projection(members, span) =>
             buildDistributiveProjection(obj, members, span)
@@ -925,7 +926,10 @@ private class AnthillParserImpl(
   private enum DotSeg:
     case Field(
       name: TermSymbol, span: Span,
-      callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])
+      callArgs: Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]],
+      // WI-20260829-BAD3V: the call-site type-arg bracket a dot CALLEE may wear
+      // (`?x.m[T = Int](y)`). Empty for every other spelling.
+      typeArgs: IndexedSeq[SortBinding])
     case Projection(members: IndexedSeq[ProjectionMember], span: Span)
 
   /** One member of a distributive projection. A bare member auto-labels
@@ -940,11 +944,30 @@ private class AnthillParserImpl(
     // backtracks cleanly to the field form. Mirrors rustland's fused `.(` token.
     P(distributiveProjectionSeg | fieldSeg)
 
-  /** A field access `.name`, optionally a call `.name(args)` (WI-278). */
+  /** A field access `.name`, optionally a call `.name(args)` (WI-278), and — since
+    * WI-20260829-BAD3V — optionally a call-site type-arg bracket before those args
+    * (`.name[T = Int](args)`).
+    *
+    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT, which is the same narrowness
+    * rustland's `dot_application` production carries and for the same reason: a bare
+    * `?x.m [simp]` must keep reading its `[simp]` as the declaration's META BLOCK, and a
+    * `[bindings]` arm that did not require the `(` would swallow it as a positional
+    * `sortBinding` — the WI-881 trap that already costs a nullary `[simp]` head its
+    * parentheses. `instArgsList` takes no cut, so the first alternative backtracks
+    * cleanly to the second when the `(` is absent (rustland gets the same outcome from a
+    * declared GLR conflict letting the continuation decide). */
   private def fieldSeg[$: P]: P[DotSeg] =
-    P("." ~ located(ident) ~ fnArgsList.?).map {
-      case (name, span, args) => DotSeg.Field(name, span, args)
+    P("." ~ located(ident) ~ dotCallSuffix).map {
+      case (name, span, (typeArgs, args)) => DotSeg.Field(name, span, args, typeArgs)
     }
+
+  /** The suffix after a dotted member: `[bindings](args)`, `(args)`, or nothing. */
+  private def dotCallSuffix[$: P]
+      : P[(IndexedSeq[SortBinding], Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])] =
+    P(
+      (instArgsList ~ fnArgsList).map { case (b, a) => (b, Some(a)) } |
+      fnArgsList.?.map(a => (IndexedSeq.empty, a))
+    )
 
   /** WI-639: a distributive projection segment `.(m1, …, mn)`. The `.(` opener
     * is unambiguous (no other construct follows `x.` with a `(`), so it cuts
@@ -969,6 +992,39 @@ private class AnthillParserImpl(
 
   private lazy val fieldAccessSym = intern("field_access")
   private lazy val dotApplySym = intern("dot_apply")
+
+  /** WI-20260829-BAD3V: a dot call may not carry call-site type arguments. `dot_apply`
+    * has no channel for them — rustland's `Expr::DotApply` carries no `type_args` field,
+    * the "a dot is bracket-less by construction" premise its typer's tier-1 reasoning
+    * rests on — so the bindings would be parsed and then dropped. Refused HERE, with the
+    * applicative spelling named, rather than left to the LEXER: before this the `[` was
+    * simply unparseable after a dotted member, and the reported error landed on whatever
+    * the recovery made of the bracket's interior.
+    *
+    * THE MESSAGE NAMES A SHAPE, NOT A POSITION — `(…)`, not `(receiver, …)`, and nothing
+    * about an operation body. Both were wrong for a case that reaches this: a rule head
+    * has no operation body to move into, and the companion spelling below has no receiver
+    * ARGUMENT. Rustland's twin carries the identical sentence for the identical reason
+    * (`push_fn_term`, and `CallTypeArgsPosition::DotCall` for the identifier-receiver
+    * route); where the bracket IS read is a position-aware sentence the loader owns.
+    *
+    * ONE DIVERGENCE FROM RUSTLAND, INHERITED but now LOAD-BEARING: rustland ACCEPTS the
+    * bracket on a QUALIFIED companion receiver (`Map[K = String].empty[T = Int64]()`),
+    * reading it as the call's type arguments, because its CST tells an `application`
+    * receiver from a value one. Scaland collapses a call and an instantiation to the same
+    * `Fn` shape, so `isValueReceiver` already reads `Name[B].field` as a VALUE (see its
+    * own note) and this refusal covers that spelling too. The receiver-classification gap
+    * is old; what is new is that one side gained a capability across it, so a `.anthill`
+    * file adopting the companion-with-bracket spelling parses under rustland and NOT
+    * here. Nothing in the stdlib or the corpus writes it today (checked), and closing it
+    * means teaching this parser to tell an instantiation `Fn` from a call `Fn` — a change
+    * to `NameSuffix`, not to this refusal. */
+  private def refuseDotTypeArgs(field: TermSymbol, fieldSpan: Span): Unit =
+    val m = symbols.name(field)
+    errors += ParseError(
+      s"call-site type arguments are not supported on a dot call — a dot carries no " +
+      s"channel for them, so the binding would be parsed and then silently dropped. " +
+      s"The applicative spelling `Sort.$m[…](…)` is the form that can carry one", fieldSpan)
 
   /** WI-278: whether `tid` denotes a runtime *value* (→ `dot_apply`) rather
     * than a sort/namespace *name* (→ `field_access`). Walks the `field_access`

@@ -44,6 +44,14 @@ module.exports = grammar({
     // the factored `_non_name_atom_term` subrule, so the conflict is declared
     // there (it subsumes the former `[$._atom_term, $.fn_term]` declaration).
     [$._non_name_atom_term, $.fn_term],
+    // WI-20260829-BAD3V: a `[` after a `field_access` is either this term's end
+    // (the `[` opening a `meta_block` / a `collection_literal`) or the opening of a
+    // `dot_application` bracket on a dot CALLEE (`?x.m[T = Int](y)`). Nothing local
+    // decides it — the separator is the `(` after the `]`, which is two reductions
+    // away — so GLR explores both and keeps whichever continuation parses. That is
+    // what leaves `rule ?x.m [simp]` and `fact ?x.m [simp]` reading their `[simp]` as
+    // the META BLOCK: the `dot_application` branch dies at the missing `(`.
+    [$._non_name_atom_term, $.dot_application],
     // `!` in goal position is either a standalone `cut` goal or the leading
     // operator of a `prefix_term` (`! <atom>`, prefix negation) via `_prefix_op`.
     // They share the `!` token; GLR explores both and keeps whichever
@@ -1343,6 +1351,7 @@ module.exports = grammar({
         $.field_access,
         $.variable,
         $.application,
+        $.dot_application,
       )),
       '(',
       commaSep(choice($._fn_arg, $.rest_arg)),
@@ -1818,6 +1827,70 @@ module.exports = grammar({
       commaSep1($.sort_binding),
       ']',
     )),
+
+    // WI-20260829-BAD3V — the SAME bracket on a DOT callee, `recv.m[T = X](args)`.
+    // `application`'s base is a `name`, so before this the bracket was admitted
+    // exactly where the receiver chain was a pure NAME PATH — i.e. exactly where the
+    // call is NOT a dot call but a qualified one (`Iterable.map[Dst = …](xs, f)`).
+    // Every value-receiver dot REFUSED it: `?xs.map[Dst = …](f)` (first hop, variable
+    // receiver), `[1,2].map[…](f)`, and every chained hop `xs.map(f).map[…](g)` —
+    // whose callee is a `field_access`, not a `name`. Parenthesising did not rescue it
+    // (`(xs.map(f)).map[…](g)`): the `field_access` builds fine over a `paren_expr`,
+    // and the `[` is what has nowhere to go.
+    //
+    // A SEPARATE PRODUCTION, NOT A WIDENED `application` BASE, and only in `fn_term`'s
+    // callee slot. BOTH HALVES MEASURED, by building the widened form:
+    //   * It does not GENERATE. `application` is reachable from `_type`, so admitting a
+    //     `field_access` base ripples into TYPE positions: three further GLR conflicts
+    //     had to be declared before `tree-sitter generate` succeeded, two with nothing
+    //     to do with dots (`_spec_instantiation` at `requires (?x, …)`, `_type_literal`
+    //     at `requires (k: "s", …)`).
+    //   * With those added, `?x.m [simp]` reads as
+    //     `application(field_access(?x, m), sort_binding(simple_type(simp)))` — the
+    //     attribute EATEN as a positional binding and the equation INERT, which is the
+    //     WI-881 trap that already costs a nullary `[simp]` head its parentheses
+    //     (`tau()`, not `tau`), extended to every dot-headed rule.
+    // Here the bracket must be followed by the call's `(`, which is what kills the meta
+    // reading: `?x.m [simp]` has no `(`, so only the `meta_block` branch survives and
+    // that spelling is UNCHANGED. Corpus rows "Dot rule head keeps its meta block" and
+    // "Dot fact head keeps its meta block".
+    //
+    // "HAS NO `(`" IS ABOUT THE WHOLE FILE, NOT THE LINE, and the WI-893 shape is where
+    // that bites: rule entries are JUXTAPOSED, so a FOLLOWING entry can supply the `(`
+    // across a newline. Both readings are then live and the tie is broken by the bracket
+    // CONTENT, which is why two corpus rows pin it and not one (found by /code-review —
+    // the first cut pinned only `[simp]`, which is one side of the split):
+    //   * `?x.m [simp]` then `(a, b)` — "Juxtaposed rule entries keep the meta-block
+    //     bias": THREE entries, the `[simp]` still this entry's meta block.
+    //   * `?x.m [T = Int64]` then `(a, b)` — "…a NON-meta bracket takes the following
+    //     call": ONE entry, `(a, b)` becoming the call's arguments.
+    // The second is a CHANGE (the old grammar read three entries there), and it is
+    // admitted rather than fought: both readings refuse the program — the old one at
+    // `convert_rule_heads`, since a bare-literal conclusion is not an atom, and the new
+    // one with this ticket's located dot refusal — so nothing that used to load stops
+    // loading, and the surviving diagnostic is the better of the two. `[T = Int64]` is
+    // not a `meta_entry` (that takes `:`, not `=`), so no attribute can be eaten this
+    // way; only a bracket that could be BOTH is at stake, and that is the `[simp]` row.
+    //
+    // NOTE the corpus alone cannot separate the two DESIGNS: it stayed 214/214 green
+    // under the widened one. `wi_bad3v_dot_type_arg_bracket_test` is what fails.
+    //
+    // NOT admitted OUTSIDE a call (`?x.field[T = Int]` stays a syntax error): a bare
+    // bracket on a field projection has no reading, and admitting it is what would
+    // reopen the `meta_block` competition this production is shaped to avoid.
+    //
+    // The CONVERTER, not the grammar, decides what the bracket means — see
+    // `push_fn_term`: on a QUALIFIED callee (`Map[K = String].empty[T = Int]()`) it is
+    // the call's type arguments, the channel `application` already feeds; on a VALUE
+    // receiver it is REFUSED with a located error, because `Expr::DotApply` carries no
+    // `type_args` field (a dot is bracket-less by construction — the WI-842 argument
+    // the typer's tier-1 reasoning rests on).
+    dot_application: $ => seq(
+      field('name', $.field_access),
+      '[',
+      commaSep1($.sort_binding),
+      ']',
+    ),
 
     // =========================================================
     // Bindings (for tool params etc.)

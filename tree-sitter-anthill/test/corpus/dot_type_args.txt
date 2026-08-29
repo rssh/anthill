@@ -1,0 +1,297 @@
+=====================================
+Type-arg bracket on a chained dot hop
+=====================================
+
+fact xs.map(f).map[Dst = Int64](g)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (fn_term
+            name: (name
+              (identifier)
+              (identifier))
+            (name
+              (identifier)))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Type-arg bracket on a parenthesized receiver
+=====================================
+
+fact (xs.map(f)).map[Dst = Int64](g)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (paren_expr
+            (fn_term
+              name: (name
+                (identifier)
+                (identifier))
+              (name
+                (identifier))))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Type-arg bracket on a variable receiver (first hop)
+=====================================
+
+fact ?xs.map[Dst = Int64](f)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (variable_term
+            (variable))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Type-arg bracket on a literal receiver
+=====================================
+
+fact [1, 2].map[Dst = Int64](f)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (collection_literal
+            (integer_literal)
+            (integer_literal))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Type-arg bracket on BOTH hops
+=====================================
+
+fact xs.map[Dst = Int64](f).map[Dst = Int64](g)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (fn_term
+            name: (application
+              name: (name
+                (identifier)
+                (identifier))
+              (sort_binding
+                param: (name
+                  (identifier))
+                type: (simple_type
+                  (name
+                    (identifier)))))
+            (name
+              (identifier)))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Type-arg bracket on a companion receiver
+=====================================
+
+fact Map[K = String, V = Int64].empty[T = Int64](x)
+
+---
+
+(source_file
+  (fact_declaration
+    term: (fn_term
+      name: (dot_application
+        name: (field_access
+          object: (application
+            name: (name
+              (identifier))
+            (sort_binding
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier))))
+            (sort_binding
+              param: (name
+                (identifier))
+              type: (simple_type
+                (name
+                  (identifier)))))
+          field: (identifier))
+        (sort_binding
+          param: (name
+            (identifier))
+          type: (simple_type
+            (name
+              (identifier)))))
+      (name
+        (identifier)))))
+
+=====================================
+Dot rule head keeps its meta block
+=====================================
+
+rule dr: ?x.m [simp]
+
+---
+
+(source_file
+  (rule_declaration
+    label: (name
+      (identifier))
+    heads: (rule_heads
+      (field_access
+        object: (variable_term
+          (variable))
+        field: (identifier)))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier))))))
+
+=====================================
+Dot fact head keeps its meta block
+=====================================
+
+fact ?x.m [simp]
+
+---
+
+(source_file
+  (fact_declaration
+    term: (field_access
+      object: (variable_term
+        (variable))
+      field: (identifier))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier))))))
+
+=====================================
+Juxtaposed rule entries keep the meta-block bias
+=====================================
+
+sort S
+  rule {
+    ?x.m [simp]
+    (a, b)
+  }
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (rule_block
+      (rule_entry
+        heads: (rule_heads
+          (field_access
+            object: (variable_term
+              (variable))
+            field: (identifier)))
+        (meta_block
+          (meta_entry
+            key: (name
+              (identifier)))))
+      (rule_entry
+        heads: (rule_heads
+          (tuple_literal
+            (name
+              (identifier))
+            (name
+              (identifier))))))))
+
+=====================================
+Juxtaposed rule entries: a NON-meta bracket takes the following call
+=====================================
+
+sort S
+  rule {
+    ?x.m [T = Int64]
+    (a, b)
+  }
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (rule_block
+      (rule_entry
+        heads: (rule_heads
+          (fn_term
+            name: (dot_application
+              name: (field_access
+                object: (variable_term
+                  (variable))
+                field: (identifier))
+              (sort_binding
+                param: (name
+                  (identifier))
+                type: (simple_type
+                  (name
+                    (identifier)))))
+            (name
+              (identifier))
+            (name
+              (identifier))))))))

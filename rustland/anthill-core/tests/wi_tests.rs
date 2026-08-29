@@ -1513,3 +1513,6 @@ mod n01py_witness_provision_subtype_test;
 
 #[path = "include/x13yv_map_map_chain_test.rs"]
 mod x13yv_map_map_chain_test;
+
+#[path = "include/wi_bad3v_dot_type_arg_bracket_test.rs"]
+mod wi_bad3v_dot_type_arg_bracket_test;

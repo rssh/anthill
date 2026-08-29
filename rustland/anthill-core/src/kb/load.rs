@@ -1799,6 +1799,14 @@ pub enum CallTypeArgsPosition {
     /// `constraint`, an operation's `requires` / `ensures` contract expression, an
     /// entity-constructor call.
     NoChannel,
+    /// WI-20260829-BAD3V — a DOT call, reached only through the IDENTIFIER-receiver
+    /// spelling (`xs.map[Dst = Int64](f)` where `xs` names a local). Its peer
+    /// `?xs.map[…](f)` is refused a phase earlier, in `push_fn_term`: that one parses as
+    /// a `dot_application`, so the converter can see it is a dot. THIS one parses with a
+    /// bare NAME callee and only becomes a dot call here, when the head segment turns
+    /// out to name a binder — which is why the converter's refusal structurally cannot
+    /// cover it and this position exists.
+    DotCall,
 }
 
 /// WI-839: the one wording of [`LoadError::CallTypeArgsNotSupportedHere`], shared by
@@ -1822,11 +1830,26 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
         CallTypeArgsPosition::NoChannel => format!(
             "call-site type arguments `{callee}[…](…)` are not supported here — the \
              binding is parsed and would then be silently dropped. The bracket is read \
-             only on a call in an OPERATION BODY (and, as a bare introducer, on a rule \
-             head); a rule-body goal, a `fact` head, a `constraint`, a `requires` / \
-             `ensures` contract expression and an entity-constructor call have no \
-             channel for it. Where a rule body needs a chosen provider, call an \
-             operation whose body carries the bracket"
+             only on an APPLICATIVE call in an OPERATION BODY (and, as a bare \
+             introducer, on a rule head); a rule-body goal, a `fact` head, a \
+             `constraint`, a `requires` / `ensures` contract expression, an \
+             entity-constructor call and a DOT call (WI-20260829-BAD3V) have no channel \
+             for it. Where a rule body needs a chosen provider, call an operation whose \
+             body carries the bracket"
+        ),
+        // Deliberately the SAME sentence the converter gives the `?x.m[…](…)` spelling
+        // (`push_fn_term`'s dot refusal), because it is the same refusal about the same
+        // shape reached down a different route — an author who writes the bracket on a
+        // dot should not learn two different things depending on whether the receiver
+        // was a `?var` or a bare binder name. It names the applicative SHAPE and no
+        // position: this one IS in an operation body (that is the only place an
+        // identifier-receiver dot call arises), but saying so would make the two
+        // wordings diverge for nothing.
+        CallTypeArgsPosition::DotCall => format!(
+            "call-site type arguments are not supported on a dot call — a dot carries \
+             no channel for them, so the binding would be parsed and then silently \
+             dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
+             can carry one"
         ),
     }
 }
@@ -19859,13 +19882,68 @@ impl<'a> Loader<'a> {
                         let named_keys: SmallVec<[Symbol; 2]> =
                             visible_named.iter().map(|&(sym, _)| sym).collect();
                         let pos_count = pos_args.len();
+                        // WI-20260829-BAD3V — THE LOUD FLATTEN IS NOW A LOCATED
+                        // REFUSAL. The gate below declines to re-route when the bracket
+                        // is present, which is right (`dot_apply` has no type-args
+                        // channel), but declining ALONE let the call fall through as a
+                        // flat apply on the dotted functor `xs.map`, and what the author
+                        // then read was the typer's verdict on that: "expected an
+                        // operation, which declares the type parameters a call-site `[…]`
+                        // bracket binds, got a callee with no type-parameter list"
+                        // (MEASURED on `xs.map[Dst = Int64](lambda x -> x)` with `xs` a
+                        // parameter). That names the flattened functor, not the dot the
+                        // author wrote, and it is the misleading-diagnostic class this
+                        // ticket exists to close.
+                        //
+                        // IT CANNOT BE REFUSED IN THE CONVERTER, which is why the check
+                        // is here and not beside its `?x.m[…](…)` peer: this spelling
+                        // has a bare NAME callee, so it never becomes a `dot_application`
+                        // node, and nothing before this point knows `xs` is a binder
+                        // rather than a namespace. `dot_call_receiver_chain` is the
+                        // predicate that finds out, and it is `&self` — the same test the
+                        // re-route makes, run for its verdict only.
+                        let ident_dot_bracket = named_args.len() != visible_named.len()
+                            && name.rsplit_once('.').is_some_and(|(receiver_name, _)| {
+                                self.dot_call_receiver_chain(receiver_name, &name).is_some()
+                            });
+                        if ident_dot_bracket {
+                            let member = name.rsplit_once('.').map(|(_, m)| m).unwrap_or(&name);
+                            self.errors.push(LoadError::CallTypeArgsNotSupportedHere {
+                                callee: member.to_string(),
+                                position: CallTypeArgsPosition::DotCall,
+                                span: self.parsed.terms.span(parse_id),
+                            });
+                            // REPORTED, therefore accounted for. The sweep
+                            // (`check_unconsumed_call_type_args`) enumerates brackets
+                            // NOBODY spoke about; having just refused this one, letting
+                            // it also arrive there would report the same bracket twice
+                            // under two different wordings. "Read or refused" is the
+                            // rule the set serves — this is the refused half.
+                            self.consumed_call_type_args.insert(parse_id);
+                        }
                         // WI-443: an identifier-receiver dot call — re-routed
                         // to the DotApply path when the dotted functor's head
-                        // segment names a local binding. Gated on no
-                        // type-args (the filtered ParseAux children):
-                        // `dot_apply` has no type-args channel, and silently
-                        // dropping them would be worse than the loud flatten.
-                        if named_args.len() == visible_named.len()
+                        // segment names a local binding.
+                        //
+                        // WI-20260829-BAD3V — THE BRACKET NO LONGER BLOCKS THE RE-ROUTE,
+                        // and the reason the gate existed is what removed it. WI-443
+                        // declined to re-route a bracketed call because "`dot_apply` has
+                        // no type-args channel, and silently dropping them would be
+                        // worse than the loud flatten" — both halves true, and the drop
+                        // is no longer SILENT: `ident_dot_bracket` above has just refused
+                        // it by name and location. What the decline actually bought was
+                        // a SECOND, wrong diagnosis: the call flattened to the functor
+                        // `xs.map` and the typer reported "expected an operation … got a
+                        // callee with no type-parameter list" beneath the refusal
+                        // (MEASURED — two errors on one program, the second naming a
+                        // callee the author never wrote). Re-routing drops only the
+                        // bracket, which was refused, and lets the rest of the call be
+                        // checked as the `xs.map(f)` it otherwise is. This mirrors the
+                        // converter's peer exactly: `push_fn_term` refuses the
+                        // `?x.m[…](…)` spelling and then calls `push_dot_method_call`
+                        // WITHOUT the bindings. `visible_named` already excludes the
+                        // `ParseAux`, so the re-route needs no other change.
+                        if (named_args.len() == visible_named.len() || ident_dot_bracket)
                             && self.try_identifier_dot_call(
                                 parse_id,
                                 &name,

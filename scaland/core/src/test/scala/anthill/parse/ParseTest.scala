@@ -1739,3 +1739,88 @@ end
       .getOrElse(fail("the delegate should parse"))
     assert(viaDelegate.terms eq direct)
   }
+
+  // ── WI-20260829-BAD3V: where a call-site type-arg bracket may be written ──
+  //
+  // `nameSuffix` admits `Name[bindings](args)`, so the bracket was accepted exactly
+  // where the callee's receiver chain was a pure NAME PATH — which is exactly where the
+  // call is NOT a dot call but a qualified one. Every value-receiver dot refused it at
+  // the LEXER (`parse error: found "[…"`), including the FIRST hop `?xs.map[T = X](f)`.
+  // `fieldSeg` now admits the bracket on a dot callee and `refuseDotTypeArgs` gives the
+  // located refusal, so the author is told the applicative spelling instead of being
+  // told the bracket is unpronounceable.
+  //
+  // WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT (`fieldSeg`'s `dotCallSuffix`):
+  //   * `a dot call's type-arg bracket is admitted and refused` — RED; every row goes
+  //     back to `parse error: found …`.
+  //   * `a dot head keeps its meta block` and `a bracket off a call does not parse` —
+  //     GREEN EITHER WAY, by design. They are the narrowness controls: the bracket is
+  //     admitted only when a `(` follows, which is what leaves `?x.m [simp]` alone.
+
+  private def dotBracketErrors(src: String): IndexedSeq[String] =
+    Parser.parse(src, "<bad3v>") match
+      case Right(_) => fail(s"expected a refusal for: $src")
+      case Left(errs) => errs.map(_.message)
+
+  test("WI-20260829-BAD3V: a dot call's type-arg bracket is admitted and refused") {
+    val rows = Seq(
+      "fact xs.map(f).map[Dst = Int64](g)",          // chained hop
+      "fact (xs.map(f)).map[Dst = Int64](g)",        // parenthesized receiver
+      "fact map(xs, f).map[Dst = Int64](g)",         // unqualified-call receiver
+      "fact Iterable.map(xs, f).map[Dst = Int64](g)",// qualified-call receiver
+      "fact xs.map[Dst = Int64](f).map[Dst = Int64](g)", // bracket on both hops
+      "fact ?xs.map[Dst = Int64](f)",                // variable receiver, FIRST hop
+      "fact [1, 2].map[Dst = Int64](f)"              // literal receiver
+    )
+    for src <- rows do
+      val msgs = dotBracketErrors(src)
+      assertEquals(msgs.length, 1, s"$src: ${msgs.mkString("; ")}")
+      assert(msgs.head.contains("call-site type arguments are not supported on a dot call"),
+        s"$src: expected the located refusal, got: ${msgs.head}")
+      assert(!msgs.head.startsWith("parse error: "),
+        s"$src: the parser must ADMIT this shape — a syntax error means `dotCallSuffix` " +
+        s"did not fire; got: ${msgs.head}")
+      assert(msgs.head.contains("The applicative spelling"),
+        s"$src: the refusal must name the move; got: ${msgs.head}")
+      // A SHAPE, NOT A POSITION — the peer of rustland's `the_refusal_prescribes_no_position`.
+      // An earlier wording said "`Sort.m[…](receiver, …)` in an operation body"; a rule head
+      // has no operation body to move into, and the companion receiver has no receiver
+      // ARGUMENT (both found by /code-review).
+      assert(!msgs.head.contains("operation body") && !msgs.head.contains("receiver, "),
+        s"$src: the refusal must prescribe no position and no receiver argument; got: ${msgs.head}")
+  }
+
+  test("WI-20260829-BAD3V: a dot head keeps its meta block") {
+    // The narrowness control. A `[` after a dotted member is also how a `meta_block`
+    // opens; the bracket arm requires the call's `(`, so `[simp]` with nothing after it
+    // can only be the meta block. Green against the backed-out parser — it measures the
+    // DESIGN, not the feature. MEASURED against the wider arm `instArgsList ~
+    // fnArgsList.?` (the shape that does not require the call): this test and its
+    // neighbour both fail, `fact ?x.m [simp]` and `fact ?x.field[T = Int]` each drawing
+    // the dot refusal. Note the failure mode differs from rustland's, where the same
+    // widening EATS the attribute silently into a `sort_binding`: here the refusal fires
+    // on `typeArgs.nonEmpty` whatever follows, so a `[simp]` after a dot head would be
+    // loudly rejected instead. Loud, but wrong — the attribute is not a type argument.
+    for src <- Seq("fact ?x.m [simp]", "rule dr: ?x.m [simp]", "rule dr2: ?x.m(?y) [simp]") do
+      val pf = Parser.parse(src, "<bad3v-meta>") match
+        case Right(p) => p
+        case Left(errs) => fail(s"$src: ${errs.map(_.message).mkString("; ")}")
+      val meta = pf.items.collectFirst {
+        case Item.FactItem(f) => f.meta
+        case Item.RuleItem(r) => r.meta
+      }.flatten.getOrElse(fail(s"$src: the `[simp]` must still be the META BLOCK"))
+      assertEquals(
+        meta.entries.map(e => e.key.segments.map(pf.symbols.name).mkString(".")).toList,
+        List("simp"), src)
+  }
+
+  test("WI-20260829-BAD3V: a bracket off a call does not parse") {
+    // The other half of the narrowness: `?x.field[T = Int]` has no call after the `]`,
+    // so nothing kills the meta-block reading and the bracket stays unpronounceable.
+    // Green either way — it says what was deliberately NOT widened.
+    val msgs = dotBracketErrors("fact ?x.field[T = Int]")
+    assert(msgs.exists(_.startsWith("parse error: ")),
+      s"expected a syntax error; got: ${msgs.mkString("; ")}")
+    assert(!msgs.exists(_.contains("call-site type arguments")),
+      s"it must not reach the refusal at all; got: ${msgs.mkString("; ")}")
+  }
