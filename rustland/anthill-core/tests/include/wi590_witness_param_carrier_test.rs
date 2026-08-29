@@ -44,13 +44,31 @@ namespace wi590.witness
     effects EF = ?
     entity mk(source: Source, fn: (Src) -> T @ {EF})
     provides Stream[T = T, E = {ES, EF}]
+    -- WI-20260829-1SSXM — THE SIGNATURE IS THE SUBJECT; THE BODY IS THE EMPTY STREAM.
+    -- The peel this used to spell (`match Stream.splitFirst(src) … mk(rest, fn)`) never
+    -- type-checked, and could not: it sat in a match SCRUTINEE, whose error the typer
+    -- dropped until this WI. It is wrong TWICE over, and the second break is the one
+    -- that decides the shape:
+    --   1. `src : Source`, a bare sort param under NO `requires`, so it is not a Stream.
+    --      The real stdlib `MappedStream` (combinators.anthill) fixes exactly this by
+    --      typing the field on the `Iterable[C = Source, …]` SPEC VIEW and peeling
+    --      `Stream.splitFirst(Iterable.iterator(src))`.
+    --   2. Even repaired that way, `mk(rest, fn)` wants `rest : Source` and the peel
+    --      yields a bare `Stream` — the tail wraps the SOURCE's tail, so its `Source` is
+    --      that tail's sort, NOT this carrier's. That is precisely why `MappedStream`
+    --      returns a BARE `Stream` tail, with a comment saying so.
+    -- Adopting the stdlib's bare-`Stream` tail here would DELETE what these two fixtures
+    -- measure: WI-606's whole subject is that this declared return IS the CONCRETE
+    -- carrier tail, which the unqualified `splitFirst(m)` in `MappedFinite.collect` must
+    -- thread. So the RETURN stands and the body stops pretending to peel: the empty
+    -- stream, which is a total and truthful `splitFirst` — neither test evaluates it,
+    -- both read this signature. It stays body-HAVING (rather than becoming a body-less
+    -- primitive like `LogicalStream.splitFirst`) so the fixture keeps exercising the
+    -- same dispatch route it did before.
     operation splitFirst(m: Mapped)
       -> Option[Pair[A = T, B = Mapped[Source = Source, Src = Src, T = T, ES = ES, EF = EF]]] effects {ES, EF} =
       match m
-        case mk(src, fn) ->
-          match Stream.splitFirst(src)
-            case none() -> none
-            case some(pair(h, rest)) -> some(pair(fn(h), mk(rest, fn)))
+        case mk(_, _) -> none
   end
 
   -- WITNESS: Mapped[Source = S] provides FiniteCollection WHEN S does. Keys on the

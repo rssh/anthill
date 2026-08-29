@@ -3,9 +3,9 @@
 - id: WI-20260829-1SSXM-typer-a-match-scrutinee-s-type
 - created: 2026-08-29T06:34:49Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-29T06:34:49Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-29T08:20:35Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

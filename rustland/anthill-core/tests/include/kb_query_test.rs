@@ -3,7 +3,7 @@
 //! Demonstrates the full query surface from anthill source: obtain the ambient
 //! KB with `kb()` (the zero-arg reflect operation — WI-313), build a goal term
 //! with a `fresh_var` hole, run it via `KB.execute(kb(), pattern_query(...))`,
-//! pull the first solution with `LogicalStream.splitFirst`, and read the bound
+//! pull the first solution with `Stream.splitFirst`, and read the bound
 //! value with `Substitution.lookup`. The query runs against the interpreter's
 //! real `KnowledgeBase` (the `kb()` value is an ignored sentinel).
 //!
@@ -21,8 +21,15 @@ use anthill_core::eval::Value;
 fn anthill_program_queries_kb_for_matching_fact() {
     let src = r#"
 namespace test.kb_query
-  import anthill.prelude.{LogicalStream, Option, Pair, String, Error}
-  import anthill.prelude.LogicalStream.{splitFirst}
+  import anthill.prelude.{Stream, Option, Pair, String, Error}
+  -- WI-20260829-1SSXM: `Stream.splitFirst`, not `LogicalStream`'s. `execute` returns a
+  -- BARE `Stream[T = Solution, E = Error]`, and provision runs `LogicalStream provides
+  -- Stream`, not the reverse — so a `LogicalStream` param cannot accept it. This used to
+  -- load because the mismatch sat in a match SCRUTINEE, whose error the typer dropped;
+  -- it worked at run time only because eval dispatches on the VALUE (which really is a
+  -- LogicalStream). The stdlib says as much on `LogicalStream.splitFirst`: "a value typed
+  -- as a bare `Stream` (e.g. `execute`'s `Stream[Solution]`) splits via `Stream.splitFirst`".
+  import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
   import anthill.reflect.{Term, Substitution, Solution, fresh_var, term_as_string, as_term}
@@ -50,7 +57,7 @@ namespace test.kb_query
   -- Substitution — so the consumer DECIDES. Here we just read the bindings
   -- from either arm (this admin query is definite; the undecided arm exercises
   -- the residual-carrying shape).
-  operation name_of(p: Pair[Solution, LogicalStream]) -> String =
+  operation name_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error]]) -> String =
     match p
       case pair(sol, _) -> string_of(lookup(subst_of(sol), "n"))
 

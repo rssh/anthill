@@ -6070,8 +6070,10 @@ enum TypeBuildFrame {
         branch_count: usize,
         outer_env: Env,
         /// WI-342: the scrutinee type, carrier-agnostic (`Value`) — read for
-        /// the exhaustiveness sort lookup below via [`TermView`].
-        scr_ty: Option<Value>,
+        /// the exhaustiveness sort lookup below via [`TermView`]. WI-20260829-1SSXM:
+        /// NOT an `Option` — a match whose scrutinee did not type never builds this
+        /// frame, it returns the scrutinee's `Err` at `MatchAfterScrutinee`.
+        scr_ty: Value,
         covered_entities: Vec<Symbol>,
         has_wildcard: bool,
         /// WI-803: each branch's pattern as `bind_and_label_pattern` returned it
@@ -13300,24 +13302,38 @@ fn build_type(
             let scr_r = results
                 .pop()
                 .expect("MatchAfterScrutinee: missing scrutinee result");
-            // WI-342: carry the scrutinee's `ty` as a `Value` — the sort lookup
-            // and pattern env binding read it carrier-agnostically (no re-ground).
-            let scr_ty = scr_r.as_ref().ok().map(|r| r.ty.clone());
-            let mut scr_effects = scr_r
-                .as_ref()
-                .ok()
-                .map(|r| r.effects.clone())
-                .unwrap_or_default();
-            // WI-283: the scrutinee's (possibly-rewritten) node for
-            // reassembly — falling back to the original when it didn't type.
-            let scr_node = scr_r
-                .as_ref()
-                .ok()
-                .map(|r| Rc::clone(&r.node))
-                .unwrap_or_else(|| match occ.as_expr() {
-                    Some(Expr::Match { scrutinee, .. }) => Rc::clone(scrutinee),
-                    _ => Rc::clone(&occ),
-                });
+            // WI-20260829-1SSXM — A SCRUTINEE THAT DID NOT TYPE FAILS THE MATCH, and it
+            // is the LAST frame to learn that. Every other build frame propagates a child
+            // failure (`LambdaBody` re-pushes it; `IfExpr` / `Apply` / `Constructor` run
+            // their children through `collect_arg_errors`); this one used to read the
+            // result through `.ok()` three times and never re-push the `Err`, which typed
+            // the arms against no scrutinee type at all and — worse — put the
+            // UN-REWRITTEN scrutinee node back into the stored tree. The whole match then
+            // reported nothing and the program LOADED, so a `match find(rs, lambda r ->
+            // r.nosuchfield) …` died at eval with `Internal("unhandled Expr variant")`,
+            // which is not a `Raised` payload and so cannot be caught.
+            //
+            // The early return is safe exactly here: this frame has pushed no work and
+            // drained no results yet (the arm-body `Visit`s and `MatchFinal` go on the
+            // stack at the very bottom), so one `Err` is the match's single result and
+            // the stack stays balanced — the same shape the `binder_error` /
+            // `guard_error` short-circuits below already rely on.
+            //
+            // WI-342: the scrutinee's `ty` rides as a `Value` — the sort lookup and the
+            // pattern env binding read it carrier-agnostically (no re-ground). WI-283:
+            // `node` is the scrutinee as any `[simp]` rewrite left it, which is what
+            // `MatchFinal` reassembles the stored `Match` from. The scrutinee's own `env`
+            // is deliberately not threaded (the branch envs extend `outer_env`), as it
+            // was not before.
+            let (scr_ty, mut scr_effects, scr_node) = match scr_r {
+                Ok(TypeResult {
+                    ty, effects, node, ..
+                }) => (ty, effects, node),
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
+            };
 
             // Coverage / exhaustiveness inputs are derived purely from
             // pattern terms, independent of body type-checks — compute
@@ -13348,9 +13364,7 @@ fn build_type(
             // (`Option[T = Int64]`, now also produced by the let-annotation
             // rewrite) must resolve its constructor set exactly like a bare
             // one; the bare-ref-only read silently skipped it.
-            let scrutinee_ctors: Vec<Symbol> = scr_ty
-                .as_ref()
-                .and_then(|sty| sort_functor_of_view(kb, sty))
+            let scrutinee_ctors: Vec<Symbol> = sort_functor_of_view(kb, &scr_ty)
                 .map(|s| sort_constructor_syms(kb, s))
                 .unwrap_or_default();
             let mut branch_envs: Vec<Env> = Vec::with_capacity(branches.len());
@@ -13394,7 +13408,7 @@ fn build_type(
                     kb,
                     &mut branch_env,
                     &branch.pattern,
-                    scr_ty.clone(),
+                    Some(scr_ty.clone()),
                     PatternRole::MatchArm,
                     &mut repointed,
                     &mut branch_binder_errors,
@@ -13457,11 +13471,14 @@ fn build_type(
                 // before WI-537, so never visited) under the arm's type env — pattern
                 // vars are in scope — and narrow the arm Γ with the guard
                 // predicate. No `Bool` hint (matching how `if` treats its
-                // condition); the visit catches real errors in the guard. Skip
-                // the visit when the scrutinee didn't type (pattern vars are then
-                // untyped → only cascading noise).
+                // condition); the visit catches real errors in the guard.
+                // WI-20260829-1SSXM: the `scr_ty.is_some()` half of this gate is GONE
+                // with the swallow — it skipped the guard visit when the scrutinee
+                // didn't type, to keep pattern vars typed as nothing from producing
+                // cascading noise. That case no longer reaches here at all: the frame
+                // returns the scrutinee's own `Err` above.
                 if let Some(g) = branch_guard {
-                    if scr_ty.is_some() && guard_error.is_none() {
+                    if guard_error.is_none() {
                         // WI-657(9): reuse the gate build_type already holds.
                         // WI-K88TN: under `arm_flow`, NOT an empty Γ. The arm's Γ is
                         // the outer one (which carries the enclosing operation's own
@@ -13588,33 +13605,31 @@ fn build_type(
 
             let mut result_env = (*outer_env).clone();
             if !has_wildcard {
-                if let Some(sty) = scr_ty {
-                    // WI-374: base sort via `sort_functor_of_view` so a
-                    // PARAMETERIZED scrutinee keeps its exhaustiveness check
-                    // (the bare-ref-only read silently skipped it).
-                    if let Some(sort_sym) = sort_functor_of_view(kb, &sty) {
-                        if kb.sort_kind(sort_sym) == Some(SortKind::Enum) {
-                            let all_entities = sort_constructor_syms(kb, sort_sym);
-                            let missing: Vec<String> = all_entities
-                                .iter()
-                                .filter(|e| {
-                                    // WI-672: `covered_entities` are now resolved scrutinee
-                                    // ctors (via `pattern_var_ctor_sym` / `resolve_pattern_ctor`),
-                                    // so compare by canonical identity, not `same_symbol`.
-                                    !covered_entities
-                                        .iter()
-                                        .any(|c| same_sort_canonical(kb, *c, **e))
-                                })
-                                .map(|s| kb.local_name_of(*s).to_string())
-                                .collect();
-                            if !missing.is_empty() {
-                                let sort_name = kb.local_name_of(sort_sym);
-                                result_env.diagnostics.push(format!(
-                                    "non-exhaustive match on {}: missing {}",
-                                    sort_name,
-                                    missing.join(", ")
-                                ));
-                            }
+                // WI-374: base sort via `sort_functor_of_view` so a
+                // PARAMETERIZED scrutinee keeps its exhaustiveness check
+                // (the bare-ref-only read silently skipped it).
+                if let Some(sort_sym) = sort_functor_of_view(kb, &scr_ty) {
+                    if kb.sort_kind(sort_sym) == Some(SortKind::Enum) {
+                        let all_entities = sort_constructor_syms(kb, sort_sym);
+                        let missing: Vec<String> = all_entities
+                            .iter()
+                            .filter(|e| {
+                                // WI-672: `covered_entities` are now resolved scrutinee
+                                // ctors (via `pattern_var_ctor_sym` / `resolve_pattern_ctor`),
+                                // so compare by canonical identity, not `same_symbol`.
+                                !covered_entities
+                                    .iter()
+                                    .any(|c| same_sort_canonical(kb, *c, **e))
+                            })
+                            .map(|s| kb.local_name_of(*s).to_string())
+                            .collect();
+                        if !missing.is_empty() {
+                            let sort_name = kb.local_name_of(sort_sym);
+                            result_env.diagnostics.push(format!(
+                                "non-exhaustive match on {}: missing {}",
+                                sort_name,
+                                missing.join(", ")
+                            ));
                         }
                     }
                 }
@@ -60396,17 +60411,28 @@ fn refine_self_receiver_body_type(
 /// is a silent load and an un-repairable run-time death for a program the typer had
 /// already decided was wrong.
 ///
-/// A BACKSTOP AND NOT THE REPAIR, deliberately. The known producer is
-/// `MatchAfterScrutinee`, which drops the scrutinee's `Err` and puts the un-rewritten
-/// node back (measured: `match find(rs, lambda r -> r.nosuchfield) …` loads clean and
-/// dies at eval). Propagating that error is the real fix and is a bigger change than this
-/// ticket — it turns 13 corpus programs that load today into load failures across three
-/// unrelated root causes, two of them genuine under-specifications and the third a shape
-/// two delivered fixtures encode on purpose. So this closes the CLASS at the boundary the
-/// ticket names — "an unresolved dot must not reach the evaluator either way" — while the
-/// swallow itself is WI-20260829-1SSXM, which carries that measurement per root. When it
-/// is repaired this stays: a backstop that never fires is what an invariant looks like
-/// once it holds.
+/// A BACKSTOP AND NOT THE REPAIR, deliberately — and the repair has since landed. The
+/// known producer was `MatchAfterScrutinee`, which dropped the scrutinee's `Err` and put
+/// the un-rewritten node back (measured: `match find(rs, lambda r -> r.nosuchfield) …`
+/// loaded clean and died at eval). WI-20260829-1SSXM propagates that error, which cost
+/// 13 corpus programs their clean load across three unrelated root causes — two genuine
+/// under-specifications, repaired, and one untypable fixture body whose signature was the
+/// thing under test.
+///
+/// SO THIS NOW FIRES ON NOTHING, and it stays for exactly that reason. Measured on this
+/// tree: with the error push below neutralized, `wi_tests` is 3773/3773 — no program in
+/// the corpus reaches it any more, because the frame that produced the refusal now
+/// reports it. It is the BOUNDARY and not the repair ("an unresolved dot must not reach
+/// the evaluator, by whichever route says so"), it is the only thing standing between a
+/// producer we have not found yet and an `Internal` eval death no handler can catch, and
+/// a backstop that never fires is what an invariant looks like once it holds. Anything
+/// that makes it fire again is a NEW swallow, not a regression of this one.
+///
+/// ITS COVERAGE IS THE UNIT TEST BESIDE IT, for exactly that reason: no PROGRAM reaches
+/// this any more, so `wi_1ssxm_surviving_dot_backstop_tests` drives the walk over
+/// synthetic occurrences instead — the depth find, the receiver it hands back, the
+/// SOURCE-ORDER guarantee below, and the dot-free control. Without it this whole
+/// function would be live, load-bearing and unexercised (found by /code-review).
 ///
 /// Returns the dot's RECEIVER too, so the refusal can name the sort the member was looked
 /// for on. Without it the error carries `receiver_sort: None`, which renders as "the
@@ -60441,6 +60467,119 @@ fn surviving_dot_apply(
         stack.extend(children.into_iter().rev());
     }
     None
+}
+
+#[cfg(test)]
+mod wi_1ssxm_surviving_dot_backstop_tests {
+    //! WI-20260829-1SSXM — THE BACKSTOP'S ONLY COVERAGE, and it is a unit test because
+    //! nothing else can reach it any more.
+    //!
+    //! [`surviving_dot_apply`] was driven from anthill source by
+    //! `wi_n2fhm_find_callback_dot_test::an_unresolvable_dot_never_reaches_the_evaluator`
+    //! while `MatchAfterScrutinee` still swallowed its scrutinee's `Err`. Repairing that
+    //! swallow took the last producer away: measured on this tree, neutralizing the
+    //! error push in `check_operation_bodies` leaves `wi_tests` at 3773/3773, because the
+    //! frame now reports the refusal before any stored body is walked. That is the
+    //! invariant holding — and it left a live, unexercised guard behind, which
+    //! /code-review named.
+    //!
+    //! So the WALK is driven here directly, over synthetic occurrences, since no PROGRAM
+    //! can produce one. These cases pin what the function's doc claims and what its
+    //! caller reads: that it finds a surviving dot at depth, that it returns the dot's
+    //! RECEIVER (so the refusal can name the sort the member was looked for on, rather
+    //! than reporting it unresolved), that it reports the FIRST dot in SOURCE ORDER, and
+    //! that it stays silent on a dot-free tree — the last being what makes it a backstop
+    //! rather than a refusal of every body.
+
+    use super::surviving_dot_apply;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use std::rc::Rc;
+
+    fn span_at(start: u32) -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), start, start + 1)
+    }
+
+    /// A leaf to hang dots off: `?recv`.
+    fn var_ref(kb: &mut KnowledgeBase, name: &str, at: u32) -> Rc<NodeOccurrence> {
+        let name = kb.intern(name);
+        NodeOccurrence::new_expr(Expr::VarRef { name }, span_at(at), None)
+    }
+
+    /// `<recv>.<member>` — a field-access `DotApply`, the form that survives when dot
+    /// dispatch produced `DotDispatchNoMatch` and the refusal was then lost.
+    fn dot(kb: &mut KnowledgeBase, recv: &str, member: &str, at: u32) -> Rc<NodeOccurrence> {
+        let receiver = var_ref(kb, recv, at);
+        let name = kb.intern(member);
+        NodeOccurrence::new_expr(
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            },
+            span_at(at),
+            None,
+        )
+    }
+
+    fn list(elems: Vec<Rc<NodeOccurrence>>, at: u32) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_expr(Expr::ListLit(elems), span_at(at), None)
+    }
+
+    /// DRIVES the backstop: a dot nested under a list literal is found, and the result
+    /// carries the member AND the receiver. The receiver is the half the caller needs —
+    /// it reads the WI-732 type stamp off it to name the sort; without it the refusal
+    /// renders as "the receiver's type is unresolved", which is false whenever the
+    /// receiver typed fine and the author simply mistyped the member.
+    #[test]
+    fn a_surviving_dot_is_found_at_depth_with_its_member_and_receiver() {
+        let mut kb = KnowledgeBase::new();
+        let body = list(vec![list(vec![dot(&mut kb, "r", "nosuchfield", 10)], 5)], 0);
+        let (member, span, receiver) =
+            surviving_dot_apply(&body).expect("a surviving DotApply must be found");
+        assert_eq!(kb.local_name_of(member), "nosuchfield");
+        assert_eq!(span.map(|s| s.start), Some(10), "the dot's own span is reported");
+        match receiver.as_expr() {
+            Some(Expr::VarRef { name }) => assert_eq!(kb.local_name_of(*name), "r"),
+            other => panic!("the dot's own receiver must come back, got {other:?}"),
+        }
+    }
+
+    /// DRIVES the SOURCE-ORDER claim, which is the reason the walk pushes children in
+    /// REVERSE and pops. `and(r.typo1, r.typo2)` must name `typo1`: reporting the LAST
+    /// dot would have the author fix it, reload, and only then be told about the first.
+    /// RED if the `.rev()` on the child push is dropped — that is the whole content of
+    /// this case, and it is invisible to any test with one dot in it.
+    #[test]
+    fn the_first_dot_in_source_order_is_the_one_reported() {
+        let mut kb = KnowledgeBase::new();
+        let body = list(
+            vec![dot(&mut kb, "r", "typo1", 10), dot(&mut kb, "r", "typo2", 20)],
+            0,
+        );
+        let (member, _, _) = surviving_dot_apply(&body).expect("a surviving DotApply must be found");
+        assert_eq!(
+            kb.local_name_of(member),
+            "typo1",
+            "the FIRST dot in source order is reported, not the last",
+        );
+    }
+
+    /// CONTROL — a tree with no `DotApply` answers `None`. Green with the walk's
+    /// `.rev()` removed and with the caller's error push removed; it is what says the
+    /// backstop refuses a surviving dot rather than refusing bodies. Every well-typed
+    /// body in the corpus takes this path, which is why the guard is silent there.
+    #[test]
+    fn control_a_dot_free_tree_is_not_refused() {
+        let mut kb = KnowledgeBase::new();
+        let body = list(vec![list(vec![var_ref(&mut kb, "r", 10)], 5)], 0);
+        assert!(
+            surviving_dot_apply(&body).is_none(),
+            "a body with no DotApply must not be refused",
+        );
+    }
 }
 
 /// Check operation bodies against their declared return types.

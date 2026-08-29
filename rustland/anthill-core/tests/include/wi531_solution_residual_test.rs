@@ -22,8 +22,11 @@ use anthill_core::eval::Value;
 fn execute_streams_undecided_solution_carrying_residual() {
     let src = r#"
 namespace test.wi531_residual
-  import anthill.prelude.{LogicalStream, Option, Pair, String, Error, List, Int64}
-  import anthill.prelude.LogicalStream.{splitFirst}
+  import anthill.prelude.{Stream, Option, Pair, String, Error, List, Int64}
+  -- WI-20260829-1SSXM: `Stream.splitFirst`, not `LogicalStream`'s — `execute` returns a
+  -- BARE `Stream[T = Solution, E = Error]` and `LogicalStream provides Stream` runs the
+  -- other way. See the same note in `kb_query_test`.
+  import anthill.prelude.Stream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.List.{cons, nil}
@@ -53,7 +56,7 @@ namespace test.wi531_residual
       case none()  -> 0 - 1
       case some(p) -> outcome_of(p)
 
-  operation outcome_of(p: Pair[Solution, LogicalStream]) -> Int64 =
+  operation outcome_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error]]) -> Int64 =
     match p
       case pair(definite(_), _)     -> 0 - 2
       case pair(undecided(_, r), _) -> len(r)

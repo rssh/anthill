@@ -4453,6 +4453,19 @@ case split, the C++ backend — still read the stored pattern, where a bare name
 binder: `case red -> 1` matched **everything**, every later arm was dead, the
 operation returned a wrong value, and no pass said so.
 
+**An ill-typed scrutinee is an error for the whole `match`.** Because the arms' pattern
+resolution, exhaustiveness and Γ facts are all read off the scrutinee's *type*, a
+scrutinee that does not type leaves the match with nothing to resolve against — so its
+error is the match's error, reported and not swallowed, and the arms are not checked
+against a scrutinee of unknown type. This is worth stating because the typer once did the
+opposite: it type-checked the arms against no scrutinee type at all and dropped the
+scrutinee's own diagnostic, so a program with an ill-typed `match` subject **loaded
+clean** and failed (or silently misbehaved) at run time instead. One consequence of that
+is why a `match` supplies **no expected type** to its subject, which matters for the
+author: a callee whose type parameter appears only in its *return* has nothing to pin it
+in scrutinee position, and must be written with the argument — `match
+term_as_entity[WorkItem](t)` rather than `match term_as_entity(t)` (WI-20260829-1SSXM).
+
 **Nullary only, and at every depth.** A bare name denotes a constructor only when
 that constructor takes **no fields**. `case cons` over a `List` names one that takes
 two, so the written text is not a value, cannot be one arm of a case split, and stays

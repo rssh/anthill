@@ -388,7 +388,12 @@ namespace anthill.todo.store
         case nil() -> nil()
         case cons(t, rest) ->
           if has_string_id(t) then
-            match term_as_entity(t)
+            -- WI-20260829-1SSXM: the type arg is WRITTEN. `term_as_entity[E](t: Term)
+            -- -> Option[T = E]` puts `E` only in its RETURN, and a match SCRUTINEE has
+            -- no expected type to pin it from — so unwritten, `E` is unconstrained.
+            -- (The sibling call in `lookup` below needs no arg: it sits in an ARM, where
+            -- the enclosing operation's declared `Option[T = WorkItem]` return pins it.)
+            match term_as_entity[WorkItem](t)
               case some(w) -> cons(w, terms_to_workitems(rest))
               case none() -> terms_to_workitems(rest)
           else terms_to_workitems(rest)

@@ -49,9 +49,21 @@
 //!   * THE STAGING HALF ALONE (`spec_carrier` only) ⟹ the two COMPUTED-receiver rows fail
 //!     and `find_dot_on_a_var_ref_receiver` PASSES — the binder half covers a receiver the
 //!     WI-485 env reader can already answer for, and only staging reaches a call.
-//!   * THE BACKSTOP ALONE (drop the `surviving_dot_apply` error push) ⟹ only
-//!     `an_unresolvable_dot_never_reaches_the_evaluator` fails, and it fails by LOADING
-//!     CLEAN — which is the defect.
+//!   * THE BACKSTOP ALONE (drop the `surviving_dot_apply` error push) ⟹ NOTHING FAILS
+//!     ANY MORE, and that is the point rather than a hole. It read "only
+//!     `an_unresolvable_dot_never_reaches_the_evaluator` fails, by LOADING CLEAN" until
+//!     WI-20260829-1SSXM repaired the SWALLOW this ticket only fenced off:
+//!     `MatchAfterScrutinee` now propagates the scrutinee's own `Err`, so that program's
+//!     `DotDispatchNoMatch` — naming `nosuchfield` AND the receiver sort `Row`, the two
+//!     things the case asserts — is reported before the stored tree is ever walked.
+//!     MEASURED on this tree: with the push neutralized, `wi_tests` is 3773/3773. The
+//!     backstop is now unreachable from every program in the corpus, which is what an
+//!     invariant looks like once it holds; it stays because it is the boundary
+//!     ("an unresolved dot must not reach the evaluator") and not the repair, and
+//!     nothing else guards that boundary for a producer we have not found yet. Since
+//!     that leaves it live but unexercised BY A PROGRAM, its walk is now driven directly
+//!     by `typing::wi_1ssxm_surviving_dot_backstop_tests` over synthetic occurrences —
+//!     which is where a regression in it would surface, not here.
 //! The four controls pass under all three, by design.
 
 const DECLS: &str = r#"
@@ -170,16 +182,19 @@ fn find_callback_dot_selects_by_the_field_it_reads() {
     );
 }
 
-/// DRIVES THE SECOND HALF — the backstop. An unresolvable dot inside a match SCRUTINEE
-/// still loses its own `DotDispatchNoMatch`: `MatchAfterScrutinee` drops the scrutinee's
-/// `Err` and puts the un-rewritten node back into the stored tree. Before
-/// `surviving_dot_apply` this program loaded CLEAN and died at eval with
-/// `Internal("unhandled Expr variant in eval")` — not a `Raised` payload, so no handler
-/// sees it and the caller cannot catch it. Now it is a load error naming the member.
+/// An unresolvable dot inside a match SCRUTINEE. Before `surviving_dot_apply` this
+/// program loaded CLEAN and died at eval with `Internal("unhandled Expr variant in
+/// eval")` — not a `Raised` payload, so no handler sees it and the caller cannot catch
+/// it. Now it is a load error naming the member.
 ///
-/// The SWALLOW itself is not repaired here — it is WI-20260829-1SSXM; see
-/// [`surviving_dot_apply`] for why and for what propagating it costs. This pins the
-/// boundary the ticket names: an unresolved dot must not reach the evaluator.
+/// WHAT REPORTS IT HAS CHANGED HANDS, and the assertions below are deliberately blind to
+/// which. This drove the BACKSTOP when it was written: `MatchAfterScrutinee` dropped the
+/// scrutinee's `Err` and put the un-rewritten node back into the stored tree, so the only
+/// thing left to catch was the surviving `DotApply`. WI-20260829-1SSXM repaired that
+/// swallow, so the same refusal now arrives from the frame itself and the backstop is
+/// never reached (measured: neutralizing its push leaves `wi_tests` 3773/3773). What the
+/// case pins is the BOUNDARY, which outlives either mechanism — an unresolved dot must
+/// not reach the evaluator, by whichever route says so.
 #[test]
 fn an_unresolvable_dot_never_reaches_the_evaluator() {
     let errs = load_errors(

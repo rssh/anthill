@@ -1489,3 +1489,6 @@ mod wi_5nszy_arrow_reaches_a_nested_bare_name_test;
 
 #[path = "include/wi_n2fhm_find_callback_dot_test.rs"]
 mod wi_n2fhm_find_callback_dot_test;
+
+#[path = "include/wi_1ssxm_match_scrutinee_error_test.rs"]
+mod wi_1ssxm_match_scrutinee_error_test;
