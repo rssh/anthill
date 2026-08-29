@@ -1483,3 +1483,6 @@ mod wi_t2470_positional_ctor_in_op_body_test;
 
 #[path = "include/wi_2tmb5_bare_op_name_zero_arg_reading_test.rs"]
 mod wi_2tmb5_bare_op_name_zero_arg_reading_test;
+
+#[path = "include/wi_5nszy_arrow_reaches_a_nested_bare_name_test.rs"]
+mod wi_5nszy_arrow_reaches_a_nested_bare_name_test;

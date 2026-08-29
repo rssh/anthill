@@ -212,62 +212,50 @@ end
 
 /// THE ROW THAT DECIDED THE SHAPE OF THE FIX, and it is DRIVEN. This ticket's first cut
 /// did the opposite of the refusal above: with no arrow to lift against it lifted anyway
-/// and pinned the dispatch dictionary against the operation's OWN arrow. That looked like
-/// a capability — `some(sub2)` bound `T` to an arrow instead of to the operation's return
-/// type — and it was a soundness hole. `attach_eta_dispatch_dict` reads the expected arrow
-/// to pin BOTH the requirement dictionary and the argument-spread labels
+/// and pinned the dispatch dictionary against the operation's OWN arrow. That looked like a
+/// capability and was a soundness hole — `attach_eta_dispatch_dict` reads the expected
+/// arrow to pin BOTH the requirement dictionary and the argument-spread labels
 /// (`function_slot_spread_labels`, WI-1087), and an arrow unified with ITSELF pins neither.
 ///
-/// The two halves of this row are the same operation, the same declared slot and the same
-/// applied tuple, differing only in whether the callback arrives through an ARROW parameter
-/// or through a POLYMORPHIC one. They must agree, and under the first cut they did not:
-/// `direct` returned 7 and `via_option` returned **-7**, the labels having gone unpinned so
-/// eval spread `(acc: 3, x: 10)` by source order. A silently wrong answer is worse than the
-/// clean-load-with-the-wrong-type this ticket set out to fix, which is why the delivered
-/// fix refuses instead of lifting.
+/// The two halves are the same operation, the same declared slot and the same applied
+/// tuple, differing only in whether the callback arrives through an ARROW parameter or
+/// through a POLYMORPHIC one. THEY MUST AGREE, and that is the whole row. Under the first
+/// cut they did not: `direct` returned 7 and `via_option` returned **-7**, the labels having
+/// gone unpinned so eval spread `(acc: 3, x: 10)` by source order.
 ///
-/// ON MAIN this program is a LOAD ERROR (`expected Option[T = Function[…]], got Option[T =
-/// Int64]`) — so the first cut did not restore a capability, it converted a correct refusal
-/// into a wrong answer. Today it is a load error again, at the reference. The row is kept
-/// DRIVEN on the `direct` half so the refusal cannot quietly take the arrow-slot path with
-/// it: that half must still return 7.
+/// WI-20260828-5NSZY MADE THE SECOND HALF WORK RATHER THAN REFUSING IT, which is why this
+/// row now drives both. When 2TMB5 shipped, the arrow the author had written one level out
+/// (`Option[T = Function[…]]`) could not reach the name — an op-call argument that is a
+/// constructor application was handed no expected type unless its parameter type named an
+/// ENTITY — so the honest answer was to refuse. 5NSZY delivers the arrow instead, through
+/// `ctor_arg_unlocks_an_arrow_for_a_bare_name` plus `arrow_field_expected_from_ctor`, and
+/// the reference then takes the ordinary WI-275 path with its dictionary and labels pinned
+/// from the slot. Both halves return 7.
 ///
-/// THE REFUSAL IS A LIMIT, NOT THE LAST WORD: the author DID pin an arrow one level out,
-/// and it fails to reach the reference. WI-20260828-5NSZY is that repair, and its acceptance
-/// is that BOTH halves of this row return 7 — the fix is to make the arrow arrive, never to
-/// lift without one.
+/// THE POINT IS THE AGREEMENT, not the number. `7` and `-7` are the two orderings of the
+/// same subtraction, so a row asserting only `direct` would pass under the first cut, and a
+/// row asserting only `via_option` would pass on a fix that spread positionally in BOTH.
+/// Only the pair separates "the labels are pinned" from "the labels happen to match source
+/// order", which is why the tuple is written `(acc: 3, x: 10)` — in the OTHER order from the
+/// parameter list, so source order gives the wrong answer.
 ///
-/// BACKED OUT: the `via_option` half loads and returns -7 (the first cut) or is refused
-/// with `got Option[T = Int64]` (main); either way this row's `assert_refused_with` and its
-/// `7` both have to hold, and only the delivered fix makes them.
+/// BACKED OUT (2TMB5's gate): both halves still return 7 — that gate is not what makes this
+/// work, and this row is a control for it rather than a measurement of it. BACKED OUT
+/// (5NSZY's two hints, either one): `via_option` is REFUSED at the reference, naming `sub2`.
+/// Under the abandoned first cut of 2TMB5: `via_option` returns -7.
 #[test]
-fn the_polymorphic_slot_is_refused_and_the_arrow_slot_still_runs() {
-    const SRC: &str = r#"
-namespace wi2tmb5.spread
-  import anthill.prelude.{Option, Int64, Function, some, none}
+fn the_arrow_slot_and_the_polymorphic_slot_agree() {
+    const DIRECT: &str = r#"
+namespace wi2tmb5.arrowslot
+  import anthill.prelude.{Int64, Function}
   operation sub2(x: Int64, acc: Int64) -> Int64 = x - acc
   operation direct(g: Function[A = (x: Int64, acc: Int64), B = Int64]) -> Int64 =
     g((acc: 3, x: 10))
-  operation drive_direct() -> Int64 = direct(sub2)
+  operation drive() -> Int64 = direct(sub2)
 end
 "#;
-    // The ARROW slot still lifts, with its labels pinned from the slot: `(acc: 3, x: 10)`
-    // must reach `sub2(x, acc)` BY NAME, so the answer is 10 - 3 and not 3 - 10.
-    match interp_for(SRC)
-        .call("wi2tmb5.spread.drive_direct", &[])
-        .expect("call drive_direct")
-    {
-        anthill_core::eval::Value::Int(i) => assert_eq!(
-            i, 7,
-            "the arrow-slot eta must keep its spread labels; -7 means they went unpinned",
-        ),
-        other => panic!("expected Int, got {other:?}"),
-    }
-
-    // The POLYMORPHIC slot, which supplies no arrow, is refused at the reference.
-    assert_refused_with(
-        r#"
-namespace wi2tmb5.spreadpoly
+    const VIA: &str = r#"
+namespace wi2tmb5.polyslot
   import anthill.prelude.{Option, Int64, Function, some, none}
   operation sub2(x: Int64, acc: Int64) -> Int64 = x - acc
   operation via_option(o: Option[T = Function[A = (x: Int64, acc: Int64), B = Int64]])
@@ -275,13 +263,24 @@ namespace wi2tmb5.spreadpoly
     match o
       case none() -> 0
       case some(g) -> g((acc: 3, x: 10))
-  operation drive_via() -> Int64 = via_option(some(sub2))
+  operation drive() -> Int64 = via_option(some(sub2))
 end
-"#,
-        &["sub2", "no function type to lift it against"],
-        "a slot that supplies no arrow must refuse the lift rather than mint an OpRef \
-         whose spread labels and dispatch dictionary are unpinned",
-    );
+"#;
+    // SEPARATE PROGRAMS on purpose: a load error anywhere in a file is reported for every
+    // operation in it, so one namespace holding both halves cannot say which half failed.
+    for (src, op, which) in [
+        (DIRECT, "wi2tmb5.arrowslot.drive", "the ARROW slot"),
+        (VIA, "wi2tmb5.polyslot.drive", "the POLYMORPHIC slot"),
+    ] {
+        match interp_for(src).call(op, &[]).unwrap_or_else(|e| panic!("call {op}: {e:?}")) {
+            anthill_core::eval::Value::Int(i) => assert_eq!(
+                i, 7,
+                "{which} must spread `(acc: 3, x: 10)` into `sub2(x, acc)` BY LABEL; \
+                 -7 means the labels went unpinned and eval used source order",
+            ),
+            other => panic!("call {op}: expected Int, got {other:?}"),
+        }
+    }
 }
 
 /// CONTROL — a NULLARY operation keeps the zero-arg-call reading. Passes either way BY

@@ -6673,12 +6673,27 @@ fn check_bare_ref(
                                  stays a subset of the evaluator's"
                             .to_string(),
                     },
-                    format!(
-                        "a bare reference to `{}`, which carries no body: a builtin, a spec \
-                         declaration, or an operation defined only by rule clauses. Write a \
-                         lambda that calls it instead",
-                        kb.qualified_name_of(sym)
-                    ),
+                    {
+                        // The REPAIR advice needs the slot's answer too. A lambda is what to
+                        // write where an arrow was wanted; where the slot declares no arrow
+                        // at all (a body-less operation named in an `Int64` field) a lambda
+                        // is equally inadmissible, and advising one sends the author in a
+                        // direction the very same rule refuses. Computed BEFORE the format!
+                        // so its `&mut kb` does not overlap the `qualified_name_of` borrow.
+                        let advice = match expected {
+                            Some(e) if arrow_parts(kb, e).is_some() => {
+                                ". Write a lambda that calls it instead"
+                            }
+                            _ => "",
+                        };
+                        format!(
+                            "a bare reference to `{}`, which carries no body: a builtin, a \
+                             spec declaration, or an operation defined only by rule \
+                             clauses{}",
+                            kb.qualified_name_of(sym),
+                            advice
+                        )
+                    },
                 )
             };
             return Err(TypeError::Other {
@@ -9320,10 +9335,28 @@ fn one_arg_hint(
         (Some(s), Some(t)) if is_hof_shaped(arg) => Some(resolve_type_deep_value(kb, s, &t)),
         (_, t) => t,
     };
-    hof_arg_hint(kb, arg, pt_hof)
+    let pt_eliminated = pt_hof.clone();
+    let base = hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
+        .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()));
+    if base.is_some() {
+        return base;
+    }
+    // WI-20260828-5NSZY: the fifth kind, written after the chain rather than inside it
+    // because its gate needs `&mut kb` (it performs a unification to walk the parameter
+    // type through the constructor) while the four above read immutably. Last, so it
+    // cannot pre-empt a hint any of them would have produced.
+    // WI-20260828-5NSZY review: the PROJECTION-ELIMINATED type (`pt_hof`), not the raw `pt`.
+    // Every other callback-shaped hint reads the eliminated one (WI-485), and this hint's
+    // whole job is to deliver an arrow to a name that will be checked against it — an
+    // un-eliminated `s.T` there would be checked against a projection the caller has already
+    // resolved. Falls back to `pt` when elimination declines, which is what `pt_hof` already
+    // encodes. MEASURED: no verdict in the workspace changes, so this is an agreement with
+    // the siblings rather than a fix — recorded because `one_arg_hint`'s own doc says the
+    // non-HOF hints "never mention a callee type param", which this one can.
+    let pt = pt_eliminated.or(pt)?;
+    ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, &pt).then_some(pt)
 }
 
 /// WI-275: the top-down hints for every argument of a call, positional then named.
@@ -9718,7 +9751,16 @@ fn ctor_field_expected(
     let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
     let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
     let field_decl = field_decl.clone();
-    let parent_sym = kb.strict_parent_sort(ctor_sym)?;
+    // WI-20260828-5NSZY: the TOTAL belongs-to. WI-946 left `strict_parent_sort` here alone
+    // among the belongs-to readers, recording that converting was "the right move the moment
+    // a failing test exists" — for an EPONYMOUS parametric sort (`sort Wrap { sort T = ?;
+    // entity Wrap(v: T) }`) strict answers `None`, so no hint was pushed, and every probe it
+    // had typed bottom-up to the same thing anyway. WI-20260828-2TMB5 supplied that test by
+    // making a missing hint a REFUSAL rather than a worse inference: `apply_it(Wrap(inc),
+    // 41)` was a hard load error while the `Option`/`some` spelling of the identical program
+    // returned 42, and a lambda in the same slot returned 41. Same author-written arrow,
+    // three verdicts by spelling.
+    let parent_sym = kb.sort_of_constructor(ctor_sym)?;
     let parent_type = kb.make_sort_ref(parent_sym);
     let mut subst = Substitution::new();
     if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
@@ -9754,6 +9796,121 @@ fn variant_field_expected_from_ctor(
     }
     let walked = ctor_field_expected(kb, ctor_sym, field_sym, expected)?;
     type_head_names_an_entity(kb, &walked).then_some(walked)
+}
+
+/// WI-20260828-5NSZY — [`arrow_slot_arg_hint`] for a field whose ARROW arrives through a
+/// type PARAMETER, the one-level-nested case its own gate cannot see. The exact peer of
+/// [`variant_field_expected_from_ctor`], walking through the same [`ctor_field_expected`],
+/// and gated on the WALKED type rather than the declared one.
+///
+/// `arrow_slot_arg_hint` asks [`type_head_is_callable`] of the field's DECLARED type. For
+/// `entity some(value: T)` that is the type var `T`, which is not callable, so no hint
+/// reached the argument. Since WI-20260828-2TMB5 that is not merely a worse message: a bare
+/// operation name with no arrow to lift against is REFUSED, because such a value cannot be
+/// minted — [`attach_eta_dispatch_dict`] reads the expected arrow to pin both the
+/// requirement dictionary and the argument-spread labels, and has nothing to read without
+/// one. So the author who wrote `o: Option[T = Function[…]]` had pinned an arrow that never
+/// reached the name.
+///
+/// IT TAKES BOTH HALVES, and this one alone was measured to fire NOWHERE: the walk needs
+/// the CONSTRUCTOR's own `expected`, and an op-call argument that is a constructor
+/// application was given none unless its parameter type named an ENTITY
+/// ([`variant_slot_arg_hint`]'s gate) — `Option[T = …]` names a SORT. See
+/// [`ctor_arg_unlocks_an_arrow_for_a_bare_name`], which supplies it.
+fn arrow_field_expected_from_ctor(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+    expected: &Option<Value>,
+    arg: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    if !arg_is_bare_operation_name(kb, arg) {
+        return None;
+    }
+    let walked = ctor_field_expected(kb, ctor_sym, field_sym, expected)?;
+    type_head_is_callable(kb, &walked).then_some(walked)
+}
+
+/// WI-20260828-5NSZY — the OTHER half: may a call's declared parameter type be pushed into
+/// a CONSTRUCTOR-APPLICATION argument, because doing so unlocks an ARROW for a bare
+/// operation name in one of that constructor's fields?
+///
+/// THE GATE IS THE WHOLE ANSWER, not a formality. Pushing an expected type where none was
+/// pushed before is not neutral for a constructor: `check_constructor_iter` reads it for the
+/// §8.2 classification decision (`expected_names_an_entity`, WI-20260826-JSFHG) and seeds it
+/// into the build after the field loops (WI-384/WI-270). So this does not push whenever the
+/// argument is a constructor, nor whenever it carries a bare name — it performs the walk
+/// [`arrow_field_expected_from_ctor`] would perform and pushes only when that walk actually
+/// reaches a CALLABLE for a field whose argument IS a bare operation name. The hint
+/// therefore fires exactly where it changes the reading it exists to change, and the census
+/// of what newly receives one is that same set.
+fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
+    kb: &mut KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    pt: &Value,
+) -> bool {
+    let NodeKind::Expr {
+        expr:
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
+            },
+        ..
+    } = &arg.kind
+    else {
+        return false;
+    };
+    let (ctor, pos_args, named_args) = (*name, pos_args.clone(), named_args.clone());
+    // The cheap predicate FIRST: this runs for every constructor-shaped argument of every
+    // call that reaches the hint chain, and `entity_field_types(..).to_vec()` allocates.
+    // Nothing below can fire unless some argument is a bare operation name.
+    if !pos_args
+        .iter()
+        .chain(named_args.iter().map(|(_, a)| a))
+        .any(|a| arg_is_bare_operation_name(kb, a))
+    {
+        return false;
+    }
+    let Some(fields) = kb.entity_field_types(ctor).map(|f| f.to_vec()) else {
+        return false;
+    };
+    let exp = Some(pt.clone());
+    // THE WALK MUST UNLOCK SOMETHING. A field whose DECLARED type is already callable is
+    // [`arrow_slot_arg_hint`]'s (WI-20260828-8Q0Q5), which reads the declaration and needs
+    // no `expected` at all — firing here for one of those would push an expected type into a
+    // constructor purely to re-derive a hint that already exists, widening what
+    // `check_constructor_iter` sees for no reading. MEASURED: without this condition the
+    // hint fires on four stdlib call sites (`Stream.splitFirst`, `Iterable.iterator`,
+    // `FiniteCollection.collect`) plus `wi8q0q5`'s arrow-field carrier, every one of them an
+    // already-arrow field; with it, on nothing but the nested-through-a-parameter shape.
+    let unlocks = |kb: &mut KnowledgeBase, field: Symbol, declared: &Value| {
+        !type_head_is_callable(kb, declared)
+            && ctor_field_expected(kb, ctor, field, &exp)
+                .is_some_and(|w| type_head_is_callable(kb, &w))
+    };
+    for (i, a) in pos_args.iter().enumerate() {
+        if arg_is_bare_operation_name(kb, a) {
+            if let Some((fs, decl)) = fields.get(i).cloned() {
+                if unlocks(kb, fs, &decl) {
+                    return true;
+                }
+            }
+        }
+    }
+    for (fname, a) in named_args.iter() {
+        if !arg_is_bare_operation_name(kb, a) {
+            continue;
+        }
+        let Some((_, decl)) = fields.iter().find(|(s, _)| s == fname).cloned() else {
+            continue;
+        };
+        if unlocks(kb, *fname, &decl) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Aggregate sibling errors into one `TypeError`. Flattens nested
@@ -11355,6 +11512,15 @@ fn visit_type(
                         })
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
+                            arrow_field_expected_from_ctor(kb, name, fs, &expected, arg)
+                        })
+                        .or_else(|| {
+                            let (_, ft) = field.as_ref()?;
+                            ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, ft)
+                                .then(|| ft.clone())
+                        })
+                        .or_else(|| {
+                            let fs = field.as_ref().map(|(s, _)| *s)?;
                             variant_field_expected_from_ctor(kb, name, fs, &expected, arg)
                         })
 
@@ -11384,6 +11550,14 @@ fn visit_type(
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| {
+                            arrow_field_expected_from_ctor(kb, name, *fname, &expected, arg)
+                        })
+                        .or_else(|| {
+                            let ft = ft.as_ref()?;
+                            ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, ft)
+                                .then(|| ft.clone())
+                        })
                         .or_else(|| {
                             variant_field_expected_from_ctor(kb, name, *fname, &expected, arg)
                         })

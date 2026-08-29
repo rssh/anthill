@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260828-5NSZY-typer-a-bare-operation-name-in
+
 ## Description
 
 a HINTED list/set literal never consults its elements: TypeBuildFrame::ListLit takes element_hint as the element type UNCONDITIONALLY, so `operation mk() -> List[T = Int64] = ["x"]` LOADS CLEAN -- a silent type hole at every element type, and the reason a variant-typed argument slot cannot be given the hint it needs
