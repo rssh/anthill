@@ -3,9 +3,9 @@
 - id: WI-20260829-ARQ5X-tests-a-typer-capability
 - created: 2026-08-29T08:03:30Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-29T10:13:45Z
+- status_at: 2026-08-29T14:08:47Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -99,4 +99,23 @@ known-red for a reason that has been measured, otherwise the slice ships all-gre
 and pins nothing. On today's tree the callback-dot row is green across
 {map, filter, find, foldLeft} x {dot, unqualified, qualified} on a plain entity, so
 the red cell has to come from the label-parameterized receiver.
+
+### 2026-08-29T14:08:40Z — feedback — user
+
+THE GRID IS COMPLETE — 48 of 48 cells, `the_grid_census_is_honest` asserts `todo.is_empty()`, `built == 48` and `unspellable == 0`, and the two slices that finished it are `every_position_through_a_provision_chain` (the column that was the largest gap) and `the_row_remainders`.
+
+THE FOUR CELLS THAT WERE `Unspellable` ARE BUILT. They were `match` in each NESTED route, unspellable because a compound expression lived in `_expr_body` alone; WI-20260829-YBBC3 widened the delimited value positions, so `the_remaining_positions_across_their_routes`' skip list is gone and `match` sweeps all five routes, with the provision-chain one in the table above.
+
+SEVEN DEFECTS IN THE FIRST CUT OF THIS SLICE WERE FOUND BY /code-review AND REPAIRED, and they are worth listing because every one of them was a cell that was GREEN and measured nothing — which is the failure mode a census invites:
+ * `list literal / from a sibling projection` held `pick(xs, 1)`. `pick`'s `e: xs.T` is `Int64`, so the slot contained an INTEGER and the cell would have stayed green with list-literal-into-a-projection broken outright. It now uses `pick_ll(xss, [1, 2])`, whose element IS a list, with `pick(xs, [1, 2])` beside it as the NEGATIVE that shows the slot discriminates.
+ * The SET literal was never exercised at all, while the census marked the `list/set literal` position Built in every column on the LIST's strength. The two genuinely differ: `ti({1, 2})` REFUSES — `prelude/set.anthill` declares only `provides PartialEq[T = Set]` / `provides Eq[T = Set]`, so a `Set` has no chain to `Iterable`, where a `List` provides `Stream` / `FiniteCollection` outright. Both members are now swept per route and the refusal is a recorded cell with its reason.
+ * `bare op name / through a provision chain` held `ti(mk_list())` — a NULLARY CALL, not a bare name — so two cells claimed one grid position with opposite verdicts. Relabelled "nullary call"; the genuine cell is `the_row_remainders`' `ti(inc)`, which refuses.
+ * `lambda (reached through a combinator)` held `ti(Iterable.map(rs, lambda x -> x))`, where the spec-typed slot holds a QUALIFIED CALL and the lambda is one level in. Relabelled "nested call"; the genuine lambda cell is `ti(lambda x -> 7)`, which refuses because an arrow is no `Iterable`.
+ * One of the three NEGATIVE rows, `ti(b.nosuchfield)`, refuses at MEMBER RESOLUTION — before the argument's type ever reaches the parameter — so it would stay red if the `Iterable` slot became permissive. Kept, relabelled as the field-dot POSITION's control; `ti(1)` and `ti(r)` are the two rows carrying the slot claim.
+ * The `take_any` / annotated-let literal cells CANNOT REFUSE. Three `SilentlyAccepted` rows now say exactly what each route lets past, with a CONTROL (`takes_list(["a", 1])`, which does refuse) that keeps them from reading as "literals are unchecked".
+ * A stale citation, `a_hinted_literal_never_checks_its_elements`, named a test that does not exist anywhere in the repo. It is `a_literal_is_checked_on_one_route_and_overwritten_on_the_other`, and that stale pointer is exactly what would have flagged the literal cells as sitting on a known hole.
+
+ONE NEW DEFECT CAME OUT OF REPAIRING THEM, filed as WI-20260829-WBXGX: a collection literal's element type is its FIRST element's and every later element is unchecked. `takes_list([1, "a"])` LOADS; `takes_list(["a", 1])` REFUSES; `takes_set({1, "a"})` LOADS. It is NOT WI-20260826-7JDWY — that one is the return-hint route overwriting the elements, and this is on the ARGUMENT route 7JDWY's own table uses as its control. Three cells record it as `SilentlyAccepted` so they fail when it is fixed.
+
+THE LESSON THIS SLICE COST, and it is the one worth keeping: a coverage census makes GREEN the goal, and green is exactly what a cell that measures nothing is. Six of the seven findings were cells whose EXPRESSION did not hold the position its LABEL named — an integer where a list literal was claimed, a call where a bare name was claimed, a qualified call where a lambda was claimed. The check that catches this is not "does the cell pass" but "does the expression in the slot contain the thing the row is named for", asked per row when the row is written.
 

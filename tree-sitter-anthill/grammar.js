@@ -1384,10 +1384,28 @@ module.exports = grammar({
     // `(lambda y -> y,)`) fell back into the very error-recovered `missing \`name\``
     // the arm exists to eliminate. Excluding `named_arg` is what keeps the arm
     // from overlapping the one-NAMED arm on `(a: 1,)`.
+    // WI-20260829-YBBC3: the alternative is `_expr_body`, not `_term` — a COMPOUND
+    // EXPRESSION (`match` / `if` / `let` / `lambda` / `proof`) is admissible in every
+    // DELIMITED value position, not only as an operation body. `f(if c then a else b)`
+    // is ordinary code; before this it was a syntax error and parenthesizing did not
+    // help, because `paren_expr` wrapped a `_term` too.
+    //
+    // THE DELIMITER IS WHAT MAKES IT UNAMBIGUOUS, and that is the whole rule: every
+    // compound form is `prec.right` and extends as far right as it can, so it is
+    // admissible exactly where a `,` or a closing bracket stops it. None of the
+    // compound bodies is a `_term` that could consume the argument-separating comma
+    // (`f(match x case a -> 1, y)` is `f` of two arguments, the second `y`), which is
+    // the argument that already licensed a bare `lambda` here — this generalizes it to
+    // the family rather than keeping one member privileged.
+    //
+    // NOT widened to the positions with no delimiter: an infix operand and a dot
+    // receiver are `_atom_term`, and a `set_literal` element stays a `_term` because
+    // `{ a, b }` is already the block/goal-list spelling and admitting `_expr_body`
+    // there is a real `rule { _term • , }` conflict (MEASURED). Those reach the
+    // compound forms through `paren_expr`, which now wraps an `_expr_body`.
     _positional_fn_arg: $ => choice(
-      $._term,
+      $._expr_body,
       $.typed_var_arg,
-      $.lambda_expr,
     ),
 
     // WI-582: a type-annotated variable argument, e.g. `add(?x: Numeric, 0)`
@@ -1409,10 +1427,11 @@ module.exports = grammar({
     named_arg: $ => seq(
       field('name', $.identifier),
       ':',
-      // A lambda is admissible as a named-arg value too (not just positional —
-      // `_fn_arg`); its `_expr_body` cannot consume the argument-separating
-      // comma, so `f(k: lambda x -> g(x), j: 2)` stays unambiguous.
-      field('value', choice($._term, $.lambda_expr)),
+      // A compound expression is admissible as a named-arg value too, on the same
+      // terms as a positional one (`_positional_fn_arg`): the value's own body
+      // cannot consume the argument-separating comma, so `f(k: lambda x -> g(x),
+      // j: 2)` and `f(k: if c then 1 else 2, j: 3)` stay unambiguous.
+      field('value', $._expr_body),
     ),
 
     // Set literal: {x, y, z} desugars to add(add(add(empty(), x), y), z).
@@ -1427,7 +1446,9 @@ module.exports = grammar({
     // prec(-2) like set_literal/tuple_literal to avoid conflicts with block-level constructs.
     collection_literal: $ => prec(-2, choice(
       seq('[', ']'),                                                          // empty
-      seq('[', commaSep1($._term), ']'),                                      // elements
+      // Elements are `_expr_body` (WI-20260829-YBBC3): `[if c then 1 else 2, 3]`.
+      // The `,` / `]` delimit each one exactly as a call's argument list does.
+      seq('[', commaSep1($._expr_body), ']'),                                 // elements
       // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
       // surface with no end-to-end semantics; list destructuring uses the
       // explicit `cons(?h, ?t)` constructor. A first-class collection
@@ -1496,7 +1517,15 @@ module.exports = grammar({
 
     // Parenthesized expression: (a) = a. Grouping only, no tuple.
     // Distinguished from tuple_literal by absence of comma.
-    paren_expr: $ => seq('(', $._term, ')'),
+    //
+    // WI-20260829-YBBC3: the inside is an `_expr_body`, so parentheses are the
+    // UNIVERSAL ESCAPE into the compound forms from a position that only takes an
+    // atom — `(if c then a else b).foo()`, `1 + (if c then a else b)`, `match (if c
+    // then x else y) case …`. Wrapping a `_term` was why parenthesizing a `match` did
+    // not rescue it from an argument slot either; both halves of that bug were this
+    // one rule. `convert.rs`'s `paren_expr` arm dispatches the inner node as an
+    // `ExprBody` to match.
+    paren_expr: $ => seq('(', $._expr_body, ')'),
 
     // Prefix operators: restricted to specific tokens that cannot
     // start an _infix_op, avoiding ambiguity in flat chains.

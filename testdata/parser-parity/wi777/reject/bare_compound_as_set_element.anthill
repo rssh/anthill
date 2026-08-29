@@ -1,0 +1,6 @@
+namespace parity.ybbc3.set_element
+  -- WI-20260829-YBBC3 left a set literal's elements as terms: `{ a, b }` is
+  -- already the block / goal-list spelling, and admitting an expression body
+  -- there is a `rule { term . , }` grammar conflict. Write `{(if c then a else b)}`.
+  operation element(r: R) -> S = takes_set({if c then a else b, 3})
+end

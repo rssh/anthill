@@ -870,6 +870,49 @@ PatternArg ::= Pattern | Identifier ':' Pattern   -- constructor field pattern
 PatternElem ::= Pattern | Identifier ':' Type     -- typed tuple binder
 ```
 
+**Where an `Expr` may be written.** The compound forms — `MatchExpr`, `IfExpr`,
+`LetExpr`, `LambdaExpr`, `ProofStatement` — are not `Term`s, and the difference is
+positional rather than a matter of kind.  Each extends as far to the **right** as it
+can, so each is admissible exactly where something **ends** it: a `,` or a closing
+bracket.  Those are the **delimited value positions** — a call argument, a
+named-argument value, a tuple component, and a **list** element:
+
+```
+takes_int(if c then a else b)               -- call argument
+pair_up(match r case row(x) -> x, 3)        -- the `,` ends the arm list
+pair_up(a: if c then a else b, b: 3)        -- named-argument value
+[if c then 1 else 2, match r case row(x) -> x]   -- list elements
+```
+
+Everywhere else a `Term` is expected — an infix operand, a dot receiver, a `match`
+scrutinee, an `if` condition, a **set** element — an `Expr` must be **parenthesized**;
+`( Expr )` is grouping and admits the whole `Expr`, not only a `Term`.
+
+```
+1 + (if c then a else b)                    -- infix operand
+(match r case row(x) -> r).a_of()           -- dot receiver
+match (if c then r else s) case row(x) -> x -- scrutinee
+{(if c then a else b), 3}                   -- set element
+```
+
+A **set** literal's elements are `Term`s and not `Expr`s, unlike a list's, because
+`{ a, b }` is already the braced-body and rule-goal-list spelling; the parenthesized
+form above is how a compound expression reaches one.  (WI-20260829-YBBC3; before it
+the compound forms were admissible only where a *body* was expected, and parentheses
+did not help.)
+
+**A rule term is not a value position, and an `Expr` written in one does not behave
+like one.**  A rule head, a rule-body goal and a `fact` argument are the same call
+syntax as an operation-body call, so the delimited positions above admit an `Expr`
+there too — but a rule data position is not evaluated (§5.3, *Naming one from
+elsewhere*): the form lowers to its `anthill.reflect.Expr` term, and today the same
+text written in a `fact` and in a goal does **not** unify, so the goal answers nothing
+and nothing is reported.  That silence is tracked by **WI-20260829-8VGRW**, which also
+owns the question of whether the surface spelling should be admitted at a rule data
+position at all or only the explicit `Expr.…` constructor.  Until it is settled, write
+expression syntax in a rule through `anthill.reflect.Expr` (which is what a `[simp]`
+macro reads — proposal 056), not by writing the surface form.
+
 There is no `end` belonging to `match`: each `case` arm's body is an `Expr`, and
 the surrounding declaration/body delimiter ends the last arm.  A guard after
 `|` is checked only for that arm.  Patterns bind lexically in their arm or

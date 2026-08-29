@@ -1,0 +1,13 @@
+namespace parity.ybbc3.delimited
+  -- WI-20260829-YBBC3: a compound expression is admissible wherever a `,` or a
+  -- closing bracket ends it — a call argument, a named-argument value, a list
+  -- element — not only where an operation BODY is expected.
+  operation arg(r: R) -> A = takes(if c then a else b)
+  operation arg_match(r: R) -> A = pair(match r case row(x) -> x, 3)
+  operation named(r: R) -> A = pair(a: if c then a else b, b: 3)
+  operation element(r: R) -> L = [if c then a else b, match r case row(x) -> x]
+  operation let_arg(r: R) -> A = pair(let v = 1
+    v, 3)
+  operation tuple_pos(r: R) -> P = (if c then a else b, 3)
+  operation tuple_named(r: R) -> P = (a: if c then a else b, b: 3)
+end

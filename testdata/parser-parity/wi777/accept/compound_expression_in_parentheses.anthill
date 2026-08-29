@@ -1,0 +1,9 @@
+namespace parity.ybbc3.parens
+  -- WI-20260829-YBBC3: `paren_expr` wraps an expression body, so parentheses are
+  -- the escape into a compound form from the positions that have no delimiter —
+  -- an infix operand, a dot receiver, a `match` scrutinee, a set element.
+  operation operand(r: R) -> A = 1 + (if c then a else b)
+  operation receiver(r: R) -> A = (match r case row(x) -> r).a_of()
+  operation scrutinee(r: R) -> A = match (if c then r else r) case row(x) -> x
+  operation element(r: R) -> S = takes_set({(if c then a else b), 3})
+end

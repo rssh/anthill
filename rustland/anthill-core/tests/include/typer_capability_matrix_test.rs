@@ -73,7 +73,7 @@
 //! goes first because three delivered items live in that row — WI-20260828-2TMB5, -5NSZY,
 //! -8Q0Q5 — each having found ONE route by hand, none able to say what the others did.
 //! `a_bare_operation_name_across_its_routes` is those three plus the routes nobody had
-//! asked about, and `a_hinted_literal_never_checks_its_elements` is the other side of its
+//! asked about, and `a_literal_is_checked_on_one_route_and_overwritten_on_the_other` is the other side of its
 //! two red cells: the hint they need cannot be supplied while the literal OVERWRITES its
 //! elements instead of checking them (WI-20260826-7JDWY).
 //!
@@ -1024,7 +1024,7 @@ fn a_bare_operation_name_across_its_routes() {
     // said why: `TypeBuildFrame::ListLit` takes `element_hint` as the element type
     // UNCONDITIONALLY, so a hint would OVERWRITE the elements rather than check them —
     // trading a correct refusal for a silent accept. The hole that makes it unsafe is
-    // WI-20260826-7JDWY, pinned by `a_hinted_literal_never_checks_its_elements` below;
+    // WI-20260826-7JDWY, pinned by `a_literal_is_checked_on_one_route_and_overwritten_on_the_other`;
     // these two cells and those are the same defect seen from both sides, which is the
     // kind of thing a matrix shows and two separate WI files do not.
     const LITERAL_GAP: Verdict = Verdict::KnownGap {
@@ -1163,47 +1163,69 @@ fn a_literal_is_checked_on_one_route_and_overwritten_on_the_other() {
     ]);
 }
 
-/// A LAMBDA CANNOT APPEAR INSIDE A LIST LITERAL AT ALL — it does not PARSE, with or
-/// without parentheses. Found by this slice while building the control for route 6.
+/// A LAMBDA INSIDE A LIST LITERAL — routes 6 and 7 of the table above, seen from the
+/// other side. It did not PARSE at all until WI-20260829-YBBC3 (with or without
+/// parentheses, since `paren_expr` wrapped a `_term` too); it now loads, and its element
+/// type is CHECKED.
 ///
-/// It matters for the route table above: the natural repair for "a bare name in a list
-/// literal is refused" is "write a lambda instead", and that advice is unavailable here.
-/// Both spellings are recorded because the parenthesized one is what a reader would try
-/// next, and it fails differently (`syntax error near 'lambda x -> x + 1'` against
-/// `near 'lambda'`), which is the kind of detail that decides whether someone thinks they
-/// have a syntax slip or a missing capability.
+/// IT SETTLES THE REPAIR THE TABLE ABOVE COULD NOT OFFER. Routes 6 and 7 record that a
+/// bare operation name in a list/set literal is refused (`LITERAL_GAP`, WI-20260826-7JDWY
+/// through WI-20260828-5NSZY), and the natural advice — "write a lambda instead" — was
+/// unavailable because that spelling was a syntax error. It is available now, and these
+/// rows are what makes the advice checkable rather than plausible.
 ///
-/// NOT a `Verdict` row: these are PARSE failures, and every verdict in this file is about
-/// what the LOADER decides. Asserting the parse directly keeps that line clean.
+/// THE FIXTURE BODY IS `lambda x -> 7`, NOT `lambda x -> x + 1`, and the difference was
+/// MEASURED: the arithmetic body refuses in every row here with "ambiguous dispatch of
+/// Additive.add: 3 instances", a fact about numeric dispatch on a binder no route pins,
+/// not about the position. `the_row_remainders` removed the same confound for the same
+/// reason.
+///
+/// THE NEGATIVE ROW IS WHAT MAKES THE REST A MEASUREMENT: `takes_list([lambda x -> 7])`
+/// refuses, located, naming the arrow it found. Without it, "loads" would be consistent
+/// with the literal's elements never being looked at — which is exactly what
+/// WI-20260826-7JDWY does on the RETURN-HINT route (`a_literal_is_checked_on_one_route_
+/// and_overwritten_on_the_other`).
 #[test]
-fn a_lambda_inside_a_list_literal_does_not_parse() {
-    // The DISTINGUISHING token per row, not just "lambda" for both: the doc records that
-    // the two spellings fail differently, and asserting only the common substring would
-    // let that recorded distinction become false while the test stayed green
-    // (found by /code-review).
-    for (name, body, want) in [
-        ("bare", "  operation c() -> Int64 = head_apply([lambda x -> x + 1], 41)", "near `lambda`"),
+fn a_lambda_inside_a_list_literal() {
+    run_routes(vec![
         (
-            "parenthesized",
-            "  operation c() -> Int64 = head_apply([(lambda x -> x + 1)], 41)",
-            "near `lambda x -> x + 1`",
+            "6' lambda inside a LIST literal (the repair route 6 lacked)".into(),
+            "  operation c() -> Int64 = head_apply([lambda x -> 7], 41)".into(),
+            Verdict::Loads,
         ),
-    ] {
-        let src = route_program(body);
-        let errs = anthill_core::parse::parse(&src)
-            .err()
-            .unwrap_or_else(|| panic!(
-                "a {name} lambda inside a list literal now PARSES. If that is intended, \
-                 move this case into `a_bare_operation_name_across_its_routes` as a \
-                 load-verdict row and say what it types as."
-            ));
-        assert!(
-            errs.iter().any(|e| e.message.contains(want)),
-            "the {name} spelling must still fail with {want:?} — the two spellings failing \
-             differently is what this case records; got: {:?}",
-            errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
-        );
-    }
+        (
+            "6' lambda inside a LIST literal, parenthesized".into(),
+            "  operation c() -> Int64 = head_apply([(lambda x -> 7)], 41)".into(),
+            Verdict::Loads,
+        ),
+        (
+            // A set literal's elements are still `_term` (the `rule { _term • , }`
+            // conflict), so the parenthesized spelling is the only one that reaches one.
+            "7' lambda inside a SET literal, parenthesized (the only spelling)".into(),
+            "  operation c() -> Int64 = set_apply({(lambda x -> 7)}, 41)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "NEGATIVE — the element type is CHECKED, not overwritten".into(),
+            "  operation c() -> Int64 = takes_list([lambda x -> 7])".into(),
+            // BOTH SIDES of the mismatch. Pinning only `expected …` left the doc's claim
+            // — that the refusal names the ARROW it found — unchecked, so a regression on
+            // the `got` side would keep this green (found by /code-review).
+            Verdict::RefusesLocated("expected List[T = Int64], got List[T = ??param -> Int64]"),
+        ),
+    ]);
+    // The BARE set-literal spelling stays a parse error, and that is a language fact
+    // rather than a coverage gap — `set_literal` was deliberately not widened. Asserted
+    // here so the "parenthesized is the only spelling" claim one row up cannot go stale.
+    assert!(
+        anthill_core::parse::parse(&route_program(
+            "  operation c() -> Int64 = set_apply({lambda x -> 7}, 41)"
+        ))
+        .is_err(),
+        "a BARE lambda inside a set literal now parses — if `set_literal` was widened, \
+         fold this into the row above and say what settled the `rule {{ _term • , }}` \
+         conflict."
+    );
 }
 
 /// AN OP-RETURN MISMATCH CARRIES NO SPAN, while an op-arg mismatch and a dot-dispatch
@@ -1386,7 +1408,7 @@ fn pos_program(decl: &str) -> String {
     format!(
         r#"
 namespace capmatrix_pos
-  import anthill.prelude.{{List, Int64, Bool, String, Iterable, Stream, Option}}
+  import anthill.prelude.{{List, Set, Int64, Bool, String, Iterable, Stream, Option}}
   sort Row
     import anthill.prelude.{{Int64, Bool}}
     entity row(a: Int64, flag: Bool)
@@ -1399,6 +1421,7 @@ namespace capmatrix_pos
   operation takes_iterable(c: Iterable[C = List[T = Row], Element = Row, E = {{}}]) -> Int64 = 1
   operation pair_up(a: Int64, b: Int64) -> Int64 = a
   operation pick(xs: List[T = Int64], e: xs.T) -> Int64 = 1
+  operation takes_set(s: Set[T = Int64]) -> Int64 = 1
 {decl}
 end
 "#
@@ -1441,23 +1464,15 @@ fn the_remaining_positions_across_their_routes() {
         // row measured the argument route a second time under a different name.
         ("from a sibling projection", "  operation c(r: Row, ns: List[T = Int64]) -> Int64 = pick(ns, {})"),
     ];
-    // The three routes that nest the expression inside a TERM. A compound form cannot be
-    // spelled there at all (WI-20260829-YBBC3), so those `match` cells are not verdicts
-    // about the typer and are skipped WITH THE REASON — the parse guard in `check_src`
-    // would otherwise report them as table bugs, which is right for a table bug and wrong
-    // for a language fact.
-    const NESTED_ROUTES: &[&str] = &[
-        "from a callee's declared param",
-        "from a type parameter",
-        "from a sibling projection",
-    ];
-    let mut unspellable: Vec<String> = Vec::new();
+    // NO ROUTE IS SKIPPED. The three NESTED routes — the ones that put the expression
+    // inside a term rather than at a body — used to be unspellable for `match`, because
+    // the compound forms lived in `_expr_body` alone; WI-20260829-YBBC3 widened the
+    // delimited positions and closed that, so `match` sweeps the same five routes every
+    // other position does. If a position ever becomes unspellable again, record it the
+    // way that ticket's rows do — as a named skip WITH the WI — rather than by dropping
+    // it from `int_positions`.
     for (pos, expr) in int_positions {
         for (route, shape) in int_routes {
-            if *pos == "match" && NESTED_ROUTES.contains(route) {
-                unspellable.push(format!("{pos} / {route}"));
-                continue;
-            }
             cells.push((
                 format!("{pos} / {route}"),
                 shape.replace("{}", expr),
@@ -1465,15 +1480,16 @@ fn the_remaining_positions_across_their_routes() {
             ));
         }
     }
+    // A GUARD, NOT A MEASUREMENT, and it cannot fail on today's loop — which is the
+    // point: it replaced `assert_eq!(unspellable.len(), 3)`, which counted a skip list
+    // that no longer exists. What reddens it is the edit it exists to catch — a
+    // `continue` reintroduced in the loop above, which is how the `match` cells were
+    // dropped while WI-20260829-YBBC3 was open. A skipped cell must be a named skip with
+    // its WI, never a silently shorter table.
     assert_eq!(
-        unspellable.len(),
-        3,
-        "only `match` in the three nested routes is unspellable: {unspellable:?}"
-    );
-    println!(
-        "  not spellable — WI-20260829-YBBC3 ({}): {}",
-        unspellable.len(),
-        unspellable.join(", ")
+        cells.len(),
+        int_positions.len() * int_routes.len(),
+        "every position must sweep every route — a skipped cell needs a WI, not silence"
     );
     // The CONSTRUCTOR position produces a `Row`, so it meets the Row-expecting routes.
     let row_routes: &[(&str, &str)] = &[
@@ -1492,52 +1508,114 @@ fn the_remaining_positions_across_their_routes() {
     run_positions(cells);
 }
 
-/// A COMPOUND EXPRESSION IS NOT A TERM — `match`, `if`, `let` and `lambda` can appear
-/// where a BODY is expected and nowhere else, and parentheses do not rescue them
-/// (WI-20260829-YBBC3). Six rows, every one a PARSE failure that never reaches the typer.
+/// A COMPOUND EXPRESSION IS A VALUE EXPRESSION — `match`, `if`, `let` and `lambda` are
+/// admissible in every DELIMITED value position, and parentheses reach the rest.
+/// WI-20260829-YBBC3, which this table's earlier slice found and which is now CLOSED.
 ///
-/// STRUCTURAL, not a missing case. `grammar.js` puts the four forms in `_expr_body` (the
-/// operation-body rule) while arguments, list elements and every other nested slot are
-/// built from `_term` — and `paren_expr` wraps a `_term`, which is exactly why the
-/// parenthesized spellings fail identically to the bare ones.
+/// WHAT IT WAS. `grammar.js` put the compound forms in `_expr_body` — the operation-BODY
+/// rule — while arguments, named-argument values and list elements were built from
+/// `_term`, which does not include them; and `paren_expr` wrapped a `_term` too, which is
+/// why the parenthesized spellings failed IDENTICALLY to the bare ones. All five rows
+/// below were parse errors that never reached the typer. They are `Verdict` rows now,
+/// like everything else in this file.
 ///
-/// IT EXPLAINS TWO EARLIER FINDINGS. `a_lambda_inside_a_list_literal_does_not_parse` is
+/// THE TWO LIMITS ARE ROWS TOO, and they are what keeps this table from reading as
+/// "compound forms are terms now": a bare compound form is still not an INFIX OPERAND and
+/// still not a SET-LITERAL element. Those stay parse assertions, because that is what
+/// they are.
+///
+/// IT EXPLAINS AN EARLIER FINDING. `a_lambda_inside_a_list_literal` was
 /// this rule seen through one form, and it is why WI-20260828-5NSZY could not offer
-/// "write a lambda instead" as the repair for a bare operation name in a list literal.
+/// "write a lambda instead" as the repair for a bare operation name in a list literal —
+/// that spelling now parses, and that test now records what it types as.
 ///
-/// NOT `Verdict` rows: every verdict in this file is about what the LOADER decides, and
-/// nothing here reaches it. Asserting the parse directly keeps that line clean.
+/// The end-to-end evidence lives in `wi_ybbc3_compound_expression_positions_test`, which
+/// DRIVES each position to a value; these rows are the matrix's own load verdicts.
 #[test]
-fn a_compound_expression_is_not_a_term() {
-    let rows: &[(&str, &str, &str)] = &[
-        ("match as an argument", "takes_int(match r case row(x, f) -> x)", "r case row"),
-        ("match as an argument, parenthesized", "takes_int((match r case row(x, f) -> x))", "r case row"),
-        ("if as an argument", "takes_int(if true then 1 else 2)", "if true then 1 else"),
-        ("if as an argument, parenthesized", "takes_int((if true then 1 else 2))", "if true then 1 else"),
-        ("match as a list element", "[(match r case row(x, f) -> x)]", "r case row"),
+fn a_compound_expression_is_a_value_expression() {
+    let cells: Vec<(String, String, Verdict)> = vec![
+        (
+            "match as an argument".into(),
+            "  operation c(r: Row) -> Int64 = takes_int(match r case row(x, f) -> x)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "match as an argument, parenthesized".into(),
+            "  operation c(r: Row) -> Int64 = takes_int((match r case row(x, f) -> x))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "if as an argument".into(),
+            "  operation c(r: Row) -> Int64 = takes_int(if true then 1 else 2)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "if as an argument, parenthesized".into(),
+            "  operation c(r: Row) -> Int64 = takes_int((if true then 1 else 2))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "match as a list element".into(),
+            "  operation c(r: Row) -> List[T = Int64] = [match r case row(x, f) -> x]".into(),
+            Verdict::Loads,
+        ),
+        // ── the NEGATIVE rows: the slot is type-checked, not merely parsed ──
+        // Without these, every row above would stay green if a compound argument were
+        // parsed and then skipped by the typer.
+        (
+            "NEGATIVE — a match arm's type is checked in an argument".into(),
+            "  operation c(r: Row) -> Int64 = takes_int(match r case row(x, f) -> f)".into(),
+            Verdict::RefusesLocated("expected Int64, got Bool"),
+        ),
+        (
+            "NEGATIVE — an if branch's type is checked in an argument".into(),
+            "  operation c(r: Row) -> Int64 = takes_int(if true then 1 else true)".into(),
+            Verdict::RefusesLocated("expected Int64, got Bool"),
+        ),
     ];
-    let mut wrong: Vec<String> = Vec::new();
-    for (name, expr, frag) in rows {
+    run_positions(cells);
+
+    // ── THE TWO LIMITS, which are parse facts and stay parse assertions ──
+    // `_term` was NOT widened: only the delimited positions and `paren_expr` were. An
+    // infix operand and a set-literal element are the two an author is most likely to
+    // try next, and each has its own reason — an infix operand has no delimiter, and a
+    // set literal's `{ a, b }` is already the block / goal-list spelling, so widening it
+    // is a measured `rule { _term • , }` grammar conflict.
+    for (what, expr, next) in [
+        (
+            "a bare compound form as an infix operand",
+            "1 + if true then 1 else 2",
+            "widening `_term` itself, which also puts the compound forms in dot-receiver \
+             and pattern positions",
+        ),
+        (
+            "a bare compound form as a set-literal element",
+            "takes_set({if true then 1 else 2, 3})",
+            "settling the `rule { _term • , }` conflict",
+        ),
+    ] {
         let src = pos_program(&format!("  operation c(r: Row) -> Int64 = {expr}"));
-        match anthill_core::parse::parse(&src) {
-            Ok(_) => wrong.push(format!(
-                "{name}: `{expr}` now PARSES. If the grammar was widened, that is \
-                 WI-20260829-YBBC3 closing — move this row into \
-                 `the_remaining_positions_across_their_routes` as a load-verdict cell, \
-                 drop it from the `unspellable` skip list there, and close the ticket."
-            )),
-            Err(errs) => {
-                if !errs.iter().any(|e| e.message.contains(frag)) {
-                    wrong.push(format!(
-                        "{name}: still refused, but not with the message this row records \
-                         ({frag:?}); got {:?}",
-                        errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
-                    ));
-                }
-            }
-        }
+        assert!(
+            anthill_core::parse::parse(&src).is_err(),
+            "{what} (`{expr}`) now PARSES. That is a LARGER change than \
+             WI-20260829-YBBC3 made — it needs {next}. Say so at the grammar site, then \
+             flip this into a load-verdict cell above."
+        );
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
+    // And the parenthesized spelling is what reaches both, so the limits are a shape
+    // requirement and not a missing capability.
+    run_positions(vec![
+        (
+            "if as an infix operand, parenthesized".into(),
+            "  operation c(r: Row) -> Int64 = 1 + (if true then 1 else 2)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "if as a set element, parenthesized".into(),
+            "  operation c(r: Row) -> Int64 = takes_set({(if true then 1 else 2), 3})".into(),
+            Verdict::Loads,
+        ),
+    ]);
 }
 
 /// A SPEC-TYPED PARAMETER AND ITS CARRIER — the `through a provision chain` route, which
@@ -1613,90 +1691,508 @@ end
 
 // ═══ THE COVERAGE CENSUS ════════════════════════════════════════════════════
 
-/// WHAT THE GRID COVERS AND WHAT IT DOES NOT — the ticket's two axes crossed in full, with
-/// each of the 48 cells marked. This exists because "is it all combinations?" is a
+/// WHAT THE GRID COVERS — the ticket's two axes crossed in full, each of the 48 cells
+/// named by the test that asserts it. This exists because "is it all combinations?" is a
 /// question I answered by eye once and got wrong, and because WI-20260829-ARQ5X was
 /// DELIVERED once on a slice while its SHAPE section specified the whole grid.
 ///
-/// A census that lives in prose goes stale the first time someone adds a row. This one is
-/// checked: `Built` cells must be non-empty and `NotYetBuilt` cells name what is missing,
-/// so the file cannot silently claim completeness — and when the grid is finished this
-/// test is what says so.
-#[derive(PartialEq)]
-enum Coverage {
-    /// A cell with at least one assertion somewhere in this file.
-    Built,
-    /// The combination cannot be spelled in the language; the WI that tracks it.
-    Unspellable(&'static str),
-    /// Not yet written. The remaining scope of WI-20260829-ARQ5X.
-    NotYetBuilt,
-}
-
+/// IT NAMES TESTS, NOT A `Coverage` MARKER, and that is the difference between a census
+/// that can fail and one that cannot. The first cut was an enum — `Built` /
+/// `Unspellable(wi)` / `NotYetBuilt` — over a hand-written table, and once the grid
+/// completed every cell read `Built`: two variants constructed nowhere (a dead-code
+/// warning), and three asserts comparing a constant table against itself. What a reader
+/// actually needs from a census is WHERE a cell is asserted, and that is checkable —
+/// `include_str!` on this file, and every name below must be a `fn` in it.
+///
+/// WHAT REDDENS IT, which is the whole point: renaming or deleting a test the grid leans
+/// on. That is not hypothetical — `a_compound_expression_is_not_a_term` and
+/// `a_lambda_inside_a_list_literal_does_not_parse` were both renamed when
+/// WI-20260829-YBBC3 closed, and under the enum the census stayed green through it,
+/// still claiming 48 covered cells while two of the tests it meant no longer existed.
+/// MEASURED, on this version: renaming `a_lambda_inside_a_list_literal` fails the census
+/// naming the position that loses its owner (`lambda -> a_lambda_inside_a_list_literal`).
+///
+/// WHAT IT STILL DOES NOT CHECK, said plainly rather than implied: that the named test
+/// asserts THIS position in THIS route. Rust cannot ask that, and the finer key would be
+/// a fiction — slice 2's routes map onto the ticket's six only approximately, which its
+/// own comment said. So the grid is per POSITION, listing every test that carries any of
+/// its routes; a cell-level claim would be more precise and less true.
+///
+/// IF A CELL EVER BECOMES UNSPELLABLE AGAIN — the language cannot express it — that is a
+/// LANGUAGE ticket, not a coverage gap. Write the position's entry as the WI id and say
+/// so here; `a_compound_expression_is_a_value_expression` is what that looked like while
+/// WI-20260829-YBBC3 was open, and its two `_term` limits are what it looks like now.
 #[test]
 fn the_grid_census_is_honest() {
-    use Coverage::*;
-    // Rows are the ticket's POSITIONS; columns its ROUTES, in the order it lists them:
-    // written directly | from a hint | callee's declared param | type parameter |
-    // provision chain | sibling projection.
-    let grid: &[(&str, [Coverage; 6])] = &[
-        // slice 2 swept this position across routes of its own naming; mapped onto the
-        // ticket's six, it reaches the hint and callee-param columns.
-        ("bare op name",       [NotYetBuilt, Built, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
-        // slice 1 swept the lambda across HOSTS x SPELLINGS x BODIES — a different and
-        // deeper cross, but only the callee-param column of THIS one.
-        ("lambda",             [NotYetBuilt, NotYetBuilt, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
-        ("inline constructor", [Built, Built, Built, Built, NotYetBuilt, NotYetBuilt]),
-        ("field dot",          [Built, Built, Built, Built, NotYetBuilt, Built]),
-        // Every NESTED route is unspellable for `match` — the provision-chain one too,
-        // since that route is spelled as an argument to a spec-typed parameter.
-        ("match",              [Built, Built, Unspellable("WI-20260829-YBBC3"),
-                                Unspellable("WI-20260829-YBBC3"),
-                                Unspellable("WI-20260829-YBBC3"),
-                                Unspellable("WI-20260829-YBBC3")]),
-        ("list/set literal",   [NotYetBuilt, Built, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
-        ("qualified call",     [Built, Built, Built, Built, NotYetBuilt, Built]),
-        ("dot call",           [Built, Built, Built, Built, NotYetBuilt, Built]),
+    /// This file's own source, so a named test that no longer exists is a FAILURE rather
+    /// than a stale comment.
+    const SELF: &str = include_str!("typer_capability_matrix_test.rs");
+
+    // The ticket's six ROUTES, in the order it lists them. Named so the arithmetic below
+    // is about the ticket's axes and not a bare `48`.
+    const ROUTES: [&str; 6] = [
+        "written directly",
+        "from a hint",
+        "callee's declared param",
+        "from a type parameter",
+        "through a provision chain",
+        "from a sibling projection",
+    ];
+    // The ticket's eight POSITIONS, each with the tests that carry its routes.
+    let grid: &[(&str, &[&str])] = &[
+        // Slice 2 swept this position across routes of its own naming; mapped onto the
+        // ticket's six it reaches the hint and callee-param columns, and
+        // `the_row_remainders` carries the rest — including the two REFUSALS (a type
+        // parameter and a spec-typed slot supply no arrow to lift a bare name against).
+        ("bare op name", &[
+            "a_bare_operation_name_across_its_routes",
+            "the_row_remainders",
+        ]),
+        // Slice 1 ALSO swept the lambda across HOSTS x SPELLINGS x BODIES — a different
+        // and deeper cross than this grid; these are the tests carrying the grid's own
+        // columns.
+        ("lambda", &[
+            "the_row_remainders",
+            "a_lambda_inside_a_list_literal",
+            "sweep_map",
+        ]),
+        ("inline constructor", &[
+            "the_remaining_positions_across_their_routes",
+            "the_row_remainders",
+            "every_position_through_a_provision_chain",
+        ]),
+        ("field dot", &[
+            "the_remaining_positions_across_their_routes",
+            "every_position_through_a_provision_chain",
+        ]),
+        // Every NESTED route was UNSPELLABLE for `match` until WI-20260829-YBBC3 widened
+        // the delimited value positions — a compound form lived in `_expr_body` (the
+        // operation-BODY rule) and nowhere else, parentheses included.
+        ("match", &[
+            "the_remaining_positions_across_their_routes",
+            "every_position_through_a_provision_chain",
+            "a_compound_expression_is_a_value_expression",
+        ]),
+        // BOTH MEMBERS in every route, which is what this entry asserts and what the
+        // first cut did not have: `the_row_remainders` sweeps a `[…]` and a `{…}` per
+        // route, and the provision-chain column carries the two separately — a `List`
+        // loads there and a `Set` REFUSES, correctly, because `prelude/set.anthill`
+        // provides only `PartialEq` / `Eq`. Sweeping the LIST alone while the census
+        // called the position covered is what /code-review caught.
+        ("list/set literal", &[
+            "a_literal_is_checked_on_one_route_and_overwritten_on_the_other",
+            "the_row_remainders",
+            "every_position_through_a_provision_chain",
+        ]),
+        ("qualified call", &[
+            "the_remaining_positions_across_their_routes",
+            "every_position_through_a_provision_chain",
+        ]),
+        ("dot call", &[
+            "the_remaining_positions_across_their_routes",
+            "every_position_through_a_provision_chain",
+        ]),
     ];
 
-    let (mut built, mut unspellable, mut todo) = (0usize, 0usize, Vec::new());
-    const ROUTES: [&str; 6] = [
-        "written directly", "from a hint", "callee's declared param",
-        "from a type parameter", "through a provision chain", "from a sibling projection",
-    ];
-    for (pos, row) in grid {
-        for (i, cell) in row.iter().enumerate() {
-            match cell {
-                Built => built += 1,
-                Unspellable(_) => unspellable += 1,
-                NotYetBuilt => todo.push(format!("{pos} / {}", ROUTES[i])),
+    let mut missing: Vec<String> = Vec::new();
+    for (pos, tests) in grid {
+        assert!(
+            !tests.is_empty(),
+            "position `{pos}` names no test — a cell with no owner is the gap this \
+             census exists to show, not an empty list"
+        );
+        for t in tests.iter() {
+            if !SELF.contains(&format!("fn {t}(")) {
+                missing.push(format!("{pos} -> {t}"));
             }
         }
     }
-    assert_eq!(built + unspellable + todo.len(), 48, "the grid is 8 positions x 6 routes");
-
-    // THE PROVISION-CHAIN COLUMN IS EMPTY, and that is the largest single gap: the route
-    // is exercised only by `a_spec_typed_parameter_and_its_carrier`, which varies the
-    // PARAMETER's spec type rather than what sits in the position. Crossing it with the
-    // eight positions is the next slice.
-    let provision_gaps = todo.iter().filter(|t| t.contains("provision")).count();
-    assert_eq!(
-        provision_gaps, 7,
-        "the provision-chain column should be unbuilt for every position but `match`, \
-         whose nested routes are unspellable: {todo:?}"
+    assert!(
+        missing.is_empty(),
+        "the census names {} test(s) that do not exist in this file. A renamed or deleted \
+         test leaves its grid cells unasserted while the census still claims them:\n  {}",
+        missing.len(),
+        missing.join("\n  "),
     );
 
-    // The numbers are asserted so they cannot drift in the prose above.
-    assert_eq!(built, 26, "built cells");
-    assert_eq!(unspellable, 4, "cells the language cannot express (WI-20260829-YBBC3)");
-    assert_eq!(
-        todo.len(),
-        18,
-        "remaining scope of WI-20260829-ARQ5X — these are what is left:\n  {}",
-        todo.join("\n  "),
-    );
+    // THE SHAPE, against the ticket's own axes rather than a bare constant: 8 positions
+    // times 6 routes. It reddens when a position or a route is added without the grid
+    // being extended to say what covers it.
+    assert_eq!(grid.len(), 8, "the ticket names eight positions");
+    assert_eq!(grid.len() * ROUTES.len(), 48, "the grid is 8 positions x 6 routes");
     println!(
-        "  grid: {built} built, {unspellable} unspellable, {} not yet built:\n    {}",
-        todo.len(),
-        todo.join("\n    "),
+        "  grid: {} positions x {} routes = {} cells, every position owned by a live test",
+        grid.len(),
+        ROUTES.len(),
+        grid.len() * ROUTES.len(),
     );
 }
+
+/// THE PROVISION-CHAIN COLUMN — the positions that can be delivered into a parameter
+/// typed on a SPEC the argument's carrier provides transitively (`List provides Stream
+/// provides Iterable`). It was the grid's largest gap: `a_spec_typed_parameter_and_its_
+/// carrier` varies the PARAMETER's spec type, which is a different question from what
+/// sits in the position.
+///
+/// NOT EVERY POSITION, and the exceptions are named rather than absent. `bare op name`
+/// and `lambda` reach this column in `the_row_remainders`, where they REFUSE — a bare
+/// non-nullary name has no arrow to lift against, and an arrow is not an `Iterable` — so
+/// they sit beside the other routes' refusals of the same two rules. The first cut of
+/// this table carried rows LABELLED for those two positions that did not hold them
+/// (`ti(mk_list())` is a nullary call; `ti(Iterable.map(rs, …))` is a qualified call),
+/// which made two cells claim one grid position with opposite verdicts — found by
+/// /code-review; both are relabelled below under what they actually are.
+///
+/// THE PARAMETER IS THE BARE SPEC NAME, deliberately — per WI-20260829-GNPG7 that is the
+/// only spelling that accepts a carrier at all, so a bound one would red every cell for a
+/// reason that has nothing to do with the position under test.
+///
+/// AND THE SLOT DISCRIMINATES, which is what stops all-green from being vacuous: `ti`'s
+/// body ignores its argument, so "loads" would mean nothing if the parameter accepted
+/// anything. `ti(1)` and `ti(r)` are the two rows that carry that claim — an `Int64` and
+/// a `Row` are each refused, located.
+#[test]
+fn every_position_through_a_provision_chain() {
+    fn prov_program(decl: &str) -> String {
+        format!(
+            r#"
+namespace capmatrix_chain
+  import anthill.prelude.{{Int64, Bool, List, Set, Iterable, Stream}}
+  import anthill.prelude.List.{{cons, nil}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  sort Box
+    import anthill.prelude.{{List}}
+    import capmatrix_chain.{{Row}}
+    entity box(rows: List[T = Row])
+    operation rows_of(b: Box) -> List[T = Row] = match b case box(rs) -> rs
+  end
+  import capmatrix_chain.Row.{{row}}
+  import capmatrix_chain.Box.{{box}}
+  operation mk_list() -> List[T = Row] = nil()
+  operation mk_box() -> Box = box(rows: nil())
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation ti(c: Iterable) -> Int64 = 1
+{decl}
+end
+"#
+        )
+    }
+    let cells: Vec<(String, String, Verdict)> = vec![
+        // A NULLARY CALL, not a bare operation name — `ti(mk_list())` APPLIES `mk_list`,
+        // and the bare-name position is `ti(mk_list)`. It was labelled "bare op name"
+        // here and that made two cells claim the same grid position with opposite
+        // verdicts (found by /code-review). The genuine one is `the_row_remainders`'
+        // `ti(inc)`, which REFUSES; this row is kept under its real name because a
+        // nullary call reaching a spec-typed slot is worth a cell of its own.
+        ("nullary call".into(), "  operation c() -> Int64 = ti(mk_list())".into(), Verdict::Loads),
+        (
+            "inline constructor".into(),
+            "  operation c(r: Row) -> Int64 = ti(cons(r, nil()))".into(),
+            Verdict::Loads,
+        ),
+        ("field dot".into(), "  operation c(b: Box) -> Int64 = ti(b.rows)".into(), Verdict::Loads),
+        (
+            "qualified call".into(),
+            "  operation c() -> Int64 = ti(Box.rows_of(mk_box()))".into(),
+            Verdict::Loads,
+        ),
+        ("dot call".into(), "  operation c() -> Int64 = ti(mk_box().rows_of())".into(), Verdict::Loads),
+        ("list literal".into(), "  operation c(r: Row) -> Int64 = ti([r])".into(), Verdict::Loads),
+        // A NESTED CALL, not a lambda: the expression in the spec-typed slot is
+        // `Iterable.map(…)` and the lambda is one level inside it, in a slot the
+        // callback sweep already covers. Labelled "lambda" it duplicated the
+        // `qualified call` row three entries up and said nothing about a lambda in this
+        // position (found by /code-review). The genuine lambda cell is
+        // `the_row_remainders`' `ti(lambda x -> 7)`, which REFUSES — an arrow is not an
+        // `Iterable` — and the refusal is correct by kind, which is why it lives beside
+        // the other routes' refusals rather than here.
+        (
+            "nested call (a combinator result)".into(),
+            "  operation c(rs: List[T = Row]) -> Int64 = ti(Iterable.map(rs, lambda x -> x))".into(),
+            Verdict::Loads,
+        ),
+        // THE SET LITERAL, which this table did not exercise at all while the census
+        // marked the `list/set literal` position Built in this column on the strength of
+        // the LIST row alone (found by /code-review). It REFUSES, and correctly:
+        // `prelude/set.anthill` declares `provides PartialEq[T = Set]` and
+        // `provides Eq[T = Set]` and NOTHING else, so a `Set` has no chain to `Iterable`
+        // — unlike `List`, which provides `Stream` / `FiniteCollection` / `Iterable`
+        // outright. The cell is a fact about the stdlib's provision graph, not a gap:
+        // the two members of this grid position genuinely differ on this route, which is
+        // exactly what a table exists to show.
+        (
+            "set literal (REFUSES — Set provides no Iterable chain)".into(),
+            "  operation c() -> Int64 = ti({1, 2})".into(),
+            Verdict::RefusesLocated("expected Iterable, got Set[T = Int64]"),
+        ),
+        // `match` — an argument position, which WI-20260829-YBBC3 made spellable. It was
+        // absent here while the compound forms lived in `_expr_body` alone, and the
+        // census recorded the cell as one the LANGUAGE could not express; it is an
+        // ordinary cell now.
+        (
+            "match".into(),
+            "  operation c(b: Box) -> Int64 = ti(match b case box(rs) -> rs)".into(),
+            Verdict::Loads,
+        ),
+        //
+        // ── the NEGATIVE rows: the slot is not a hole ──
+        (
+            "NEGATIVE — an Int64 is not an Iterable".into(),
+            "  operation c() -> Int64 = ti(1)".into(),
+            Verdict::RefusesLocated("expected Iterable, got Int64"),
+        ),
+        (
+            "NEGATIVE — a Row is not an Iterable".into(),
+            "  operation c(r: Row) -> Int64 = ti(r)".into(),
+            Verdict::RefusesLocated("expected Iterable, got Row"),
+        ),
+        (
+            // NOT a negative for the SLOT, and the distinction matters: member
+            // resolution fails BEFORE the argument's type ever reaches `ti`'s parameter,
+            // so this row would stay red if the `Iterable` parameter silently became
+            // permissive. It is the FIELD-DOT position's own control, and it is kept
+            // under that name (found by /code-review). `ti(1)` and `ti(r)` above are the
+            // two rows that carry the slot claim.
+            "CONTROL — the field-dot POSITION refuses an absent member".into(),
+            "  operation c(b: Box) -> Int64 = ti(b.nosuchfield)".into(),
+            Verdict::RefusesLocated("no such member"),
+        ),
+    ];
+    run_with(cells, prov_program);
+}
+
+/// THE ROW REMAINDERS — `lambda`, `bare op name` and `list/set literal` in the routes the
+/// earlier slices did not reach, plus `inline constructor` in a sibling projection. With
+/// `every_position_through_a_provision_chain` these are the last cells of the grid.
+///
+/// BOTH MEMBERS OF THE `list/set literal` POSITION are swept, not just the list: the two
+/// differ on the provision-chain route (a `Set` provides no `Iterable` chain), so a table
+/// that swept one of them and a census that marked the position Built would have hidden a
+/// live refusal — found by /code-review, and the reason each literal route below carries a
+/// `[…]` row and a `{…}` row.
+///
+/// AND WHAT THE LITERAL ROUTES DO NOT CHECK IS RECORDED, not left to a reader. Three
+/// `SilentlyAccepted` rows name the holes — 7JDWY on the annotated-let route, and
+/// WI-20260829-WBXGX, found here, on the ARGUMENT route that 7JDWY's own table uses as its
+/// control: a literal's element type is its FIRST element's, so `takes_list([1, "a"])`
+/// loads while `takes_list(["a", 1])` refuses. The reversed-order row is the control that
+/// makes that a measurement rather than "literals are unchecked".
+///
+/// TWO REFUSALS HERE ARE CORRECT BY KIND, not gaps, and they are worth a cell precisely
+/// because a reader scanning for red would otherwise have to re-derive that: a lambda and
+/// a bare operation name are not `Iterable`s, so the provision-chain route refuses them
+/// the way it refuses an `Int64`. They are `RefusesLocated`, and the message is pinned so
+/// the cell cannot start passing on some other refusal.
+///
+/// THE `bare op name` REFUSALS ARE WI-20260828-2TMB5's RULE, seen from two more routes: a
+/// non-nullary name needs an arrow to lift against, and neither a free type parameter nor
+/// a spec-typed slot supplies one. The `written directly` and `sibling projection` rows
+/// are the contrast — both DO supply an arrow, and both load.
+///
+/// ONE FIXTURE CONFOUND WAS MEASURED AND REMOVED. The lambda rows first used
+/// `lambda x -> x + 1`, which refused in the two routes that leave the binder's type
+/// open — but with "ambiguous dispatch of Additive.add: 3 instances", a fact about
+/// numeric dispatch on an unpinned binder and not about the route. `lambda x -> 7` asks
+/// the same question of the route with nothing else varying.
+#[test]
+fn the_row_remainders() {
+    fn rem_program(decl: &str) -> String {
+        format!(
+            r#"
+namespace capmatrix_rem
+  import anthill.prelude.{{Int64, Bool, List, Set, Function, Iterable, Option}}
+  import anthill.prelude.List.{{cons, nil}}
+  sort Rw
+    import anthill.prelude.{{Int64}}
+    entity rw(a: Int64)
+  end
+  import capmatrix_rem.Rw.{{rw}}
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation take_any[A](x: A) -> Int64 = 1
+  operation pick(xs: List[T = Int64], e: xs.T) -> Int64 = 1
+  operation pick_fn(fs: List[T = Function[A = Int64, B = Int64]], e: fs.T) -> Int64 = 1
+  operation pick_rw(xs: List[T = Rw], e: xs.T) -> Int64 = 1
+  -- The projection slots whose ELEMENT is itself a collection, so a literal in the
+  -- slot is a literal and not an Int64 (see the `list literal / sibling projection`
+  -- cell). `pick`'s `xs.T` is `Int64`, which is why it cannot host one.
+  operation pick_ll(xss: List[T = List[T = Int64]], e: xss.T) -> Int64 = 1
+  operation pick_ss(sss: List[T = Set[T = Int64]], e: sss.T) -> Int64 = 1
+  operation takes_list(xs: List[T = Int64]) -> Int64 = 1
+  operation takes_set(xs: Set[T = Int64]) -> Int64 = 1
+  operation ti(c: Iterable) -> Int64 = 1
+{decl}
+end
+"#
+        )
+    }
+    let cells: Vec<(String, String, Verdict)> = vec![
+        // ── lambda ──
+        (
+            "lambda / written directly (annotated let)".into(),
+            "  operation c() -> Int64 =\n    let f: (Int64) -> Int64 = lambda x -> x + 1\n    f(41)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "lambda / from a hint (declared return)".into(),
+            "  operation c() -> (Int64) -> Int64 = lambda x -> x + 1".into(),
+            Verdict::Loads,
+        ),
+        (
+            // A `take_any[A](x: A)` slot unifies `A` with anything, so this cell says the
+            // lambda TYPES, not that the route constrains it. The `bare op name / from a
+            // type parameter` row below is the one that shows the route is not wholly
+            // inert — it REFUSES through the same slot.
+            "lambda / from a type parameter (the slot constrains nothing)".into(),
+            "  operation c() -> Int64 = take_any(lambda x -> 7)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "lambda / through a provision chain (CORRECT — an arrow is no Iterable)".into(),
+            "  operation c() -> Int64 = ti(lambda x -> 7)".into(),
+            Verdict::RefusesLocated("expected Iterable"),
+        ),
+        (
+            "lambda / from a sibling projection".into(),
+            "  operation c(fs: List[T = Function[A = Int64, B = Int64]]) -> Int64 = pick_fn(fs, lambda x -> x + 1)".into(),
+            Verdict::Loads,
+        ),
+        // ── bare operation name ──
+        (
+            "bare op name / written directly (annotated let)".into(),
+            "  operation c() -> Int64 =\n    let f: (Int64) -> Int64 = inc\n    f(41)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "bare op name / from a type parameter (CORRECT — no arrow to lift against)".into(),
+            "  operation c() -> Int64 = take_any(inc)".into(),
+            Verdict::RefusesLocated("supplies no function type to lift it against"),
+        ),
+        (
+            "bare op name / through a provision chain (CORRECT — same rule)".into(),
+            "  operation c() -> Int64 = ti(inc)".into(),
+            Verdict::RefusesLocated("supplies no function type to lift it against"),
+        ),
+        (
+            "bare op name / from a sibling projection".into(),
+            "  operation c(fs: List[T = Function[A = Int64, B = Int64]]) -> Int64 = pick_fn(fs, inc)".into(),
+            Verdict::Loads,
+        ),
+        // ── list / set literal ──
+        //
+        // BOTH MEMBERS OF THE POSITION, in every route. The first cut swept the LIST
+        // alone while the census marked `list/set literal` Built, and the two genuinely
+        // differ on one route — a `Set` provides no `Iterable` chain (found by
+        // /code-review; the provision-chain refusal is recorded in
+        // `every_position_through_a_provision_chain`, where that column lives).
+        (
+            "list literal / written directly (annotated let)".into(),
+            "  operation c() -> Int64 =\n    let xs: List[T = Int64] = [1, 2]\n    1".into(),
+            Verdict::Loads,
+        ),
+        (
+            "set literal / written directly (annotated let)".into(),
+            "  operation c() -> Int64 =\n    let s: Set[T = Int64] = {1, 2}\n    1".into(),
+            Verdict::Loads,
+        ),
+        (
+            "list literal / from a type parameter".into(),
+            "  operation c() -> Int64 = take_any([1, 2])".into(),
+            Verdict::Loads,
+        ),
+        (
+            "set literal / from a type parameter".into(),
+            "  operation c() -> Int64 = take_any({1, 2})".into(),
+            Verdict::Loads,
+        ),
+        (
+            "list literal / through a provision chain".into(),
+            "  operation c() -> Int64 = ti([1, 2])".into(),
+            Verdict::Loads,
+        ),
+        (
+            // A GENUINE list literal in the projection slot. `pick`'s `e: xs.T` is
+            // `Int64`, so the first cut's `pick(xs, 1)` put an INTEGER there and the cell
+            // would have stayed green with list-literal-into-a-projection broken outright
+            // (found by /code-review). `pick_ll`'s element IS a list, so the literal
+            // meets the slot.
+            "list literal / from a sibling projection".into(),
+            "  operation c(xss: List[T = List[T = Int64]]) -> Int64 = pick_ll(xss, [1, 2])"
+                .into(),
+            Verdict::Loads,
+        ),
+        (
+            "set literal / from a sibling projection".into(),
+            "  operation c(sss: List[T = Set[T = Int64]]) -> Int64 = pick_ss(sss, {1})".into(),
+            Verdict::Loads,
+        ),
+        (
+            // AND THE SLOT DISCRIMINATES — without this row the two above are consistent
+            // with a projection slot accepting anything.
+            "NEGATIVE — a list literal into an Int64 projection slot".into(),
+            "  operation c(xs: List[T = Int64]) -> Int64 = pick(xs, [1, 2])".into(),
+            Verdict::RefusesLocated("expected Int64, got List[T = Int64]"),
+        ),
+        //
+        // ── WHAT THE LITERAL ROUTES DO NOT CHECK, recorded as verdicts rather than left
+        // to a reader to infer from four green cells. /code-review's finding was that
+        // those cells "cannot refuse"; these three say exactly what each route lets past,
+        // so the coverage claim is bounded rather than overstated.
+        (
+            // The ANNOTATED-LET route: the annotation OVERWRITES the elements instead of
+            // checking them, so the row above would be green with the annotation ignored.
+            // Same defect as the return-hint rows in
+            // `a_literal_is_checked_on_one_route_and_overwritten_on_the_other`.
+            "SILENT — an annotated let does not check its literal's elements".into(),
+            "  operation c() -> Int64 =\n    let xs: List[T = Int64] = [\"a\", \"b\"]\n    1"
+                .into(),
+            Verdict::SilentlyAccepted {
+                wi: "WI-20260826-7JDWY",
+                should_say: "type mismatch: expected Int64, got String",
+            },
+        ),
+        (
+            // The TYPE-PARAMETER route accepts anything BY CONSTRUCTION — `take_any[A](x: A)`
+            // unifies `A` with whatever arrives — so its literal cell measures the literal
+            // and not the route. Stated here rather than left implicit.
+            "SILENT — a type parameter accepts a mixed literal (it accepts anything)".into(),
+            "  operation c() -> Int64 = take_any([1, \"a\"])".into(),
+            Verdict::SilentlyAccepted {
+                wi: "WI-20260829-WBXGX",
+                should_say: "list element 2 has type String; the literal's elements are Int64",
+            },
+        ),
+        (
+            // AND THE ARGUMENT ROUTE, which IS the checking one, lets the same literal
+            // past — a distinct hole from 7JDWY, on the very route that ticket's table
+            // uses as its control. `takes_list([\"a\"])` refuses; `takes_list([1, \"a\"])`
+            // does not, because the element type is element ONE's and the rest ride free.
+            "SILENT — a checked ARGUMENT slot takes the first element's type".into(),
+            "  operation c() -> Int64 = takes_list([1, \"a\"])".into(),
+            Verdict::SilentlyAccepted {
+                wi: "WI-20260829-WBXGX",
+                should_say: "list element 2 has type String; the literal's elements are Int64",
+            },
+        ),
+        (
+            // THE CONTROL THAT MAKES THE TWO ROWS ABOVE A MEASUREMENT: the SAME two
+            // elements in the other order DO refuse. Without it "loads" is consistent
+            // with the argument route checking nothing at all.
+            "CONTROL — the same two elements reversed DO refuse".into(),
+            "  operation c() -> Int64 = takes_list([\"a\", 1])".into(),
+            Verdict::RefusesLocated("expected List[T = Int64], got List[T = String]"),
+        ),
+        // ── inline constructor, the one cell outside the three rows above ──
+        (
+            "inline constructor / from a sibling projection".into(),
+            "  operation c(rs: List[T = Rw]) -> Int64 = pick_rw(rs, rw(a: 1))".into(),
+            Verdict::Loads,
+        ),
+    ];
+    run_with(cells, rem_program);
+}
+
+
+

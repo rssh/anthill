@@ -830,3 +830,246 @@ end
           (operator_symbol)
           (name
             (identifier)))))))
+
+=====================================
+Compound expression as a call argument (WI-20260829-YBBC3)
+=====================================
+
+namespace t
+  operation c(r: Row) -> Int = takes_int(if true then 1 else 2)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (fn_term
+        (name
+          (identifier))
+        (if_expr
+          (boolean_literal)
+          (integer_literal)
+          (integer_literal))))))
+
+=====================================
+Match as a call argument, delimited by the comma (WI-20260829-YBBC3)
+=====================================
+
+namespace t
+  operation c(r: Row) -> Int = pair_up(match r case row(x) -> x, 3)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (fn_term
+        (name
+          (identifier))
+        (match_expr
+          (name
+            (identifier))
+          (match_branch
+            (pattern_constructor
+              (name
+                (identifier))
+              (pattern_var
+                (identifier)))
+            (name
+              (identifier))))
+        (integer_literal)))))
+
+=====================================
+Compound expression as a named-argument value (WI-20260829-YBBC3)
+=====================================
+
+namespace t
+  operation c(r: Row) -> Int = pair_up(a: if true then 1 else 2, b: 3)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (fn_term
+        (name
+          (identifier))
+        (named_arg
+          (identifier)
+          (if_expr
+            (boolean_literal)
+            (integer_literal)
+            (integer_literal)))
+        (named_arg
+          (identifier)
+          (integer_literal))))))
+
+=====================================
+Compound expression as a list element (WI-20260829-YBBC3)
+=====================================
+
+namespace t
+  operation c(r: Row) -> L = [if true then 1 else 2, match r case row(x) -> x]
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (collection_literal
+        (if_expr
+          (boolean_literal)
+          (integer_literal)
+          (integer_literal))
+        (match_expr
+          (name
+            (identifier))
+          (match_branch
+            (pattern_constructor
+              (name
+                (identifier))
+              (pattern_var
+                (identifier)))
+            (name
+              (identifier))))))))
+
+=====================================
+Parentheses reach a compound expression from an atom position (WI-20260829-YBBC3)
+=====================================
+
+namespace t
+  operation c(r: Row) -> Int = 1 + (if true then 1 else 2)
+  operation d(r: Row) -> Int = (match r case row(x) -> r).a_of()
+  operation e(r: Row) -> Int = match (if true then r else r) case row(x) -> x
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (infix_term
+        (integer_literal)
+        (operator_symbol)
+        (paren_expr
+          (if_expr
+            (boolean_literal)
+            (integer_literal)
+            (integer_literal)))))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (fn_term
+        (field_access
+          (paren_expr
+            (match_expr
+              (name
+                (identifier))
+              (match_branch
+                (pattern_constructor
+                  (name
+                    (identifier))
+                  (pattern_var
+                    (identifier)))
+                (name
+                  (identifier)))))
+          (identifier))))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (match_expr
+        (paren_expr
+          (if_expr
+            (boolean_literal)
+            (name
+              (identifier))
+            (name
+              (identifier))))
+        (match_branch
+          (pattern_constructor
+            (name
+              (identifier))
+            (pattern_var
+              (identifier)))
+          (name
+            (identifier)))))))

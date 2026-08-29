@@ -1184,11 +1184,12 @@ private class AnthillParserImpl(
     // (e.g. `find(specs, lambda s -> match s case ...)`, stdlib cli/parse).
     // `exprBody` falls through to `term`, so ordinary args are unchanged.
     P(
-      // A lambda is admissible as a named-arg value too (not just positional) —
-      // `f(k: lambda x -> g(x), j: 2)` — mirroring rustland's `named_arg`
-      // `value: choice($._term, $.lambda_expr)`. Its `_expr_body` cannot consume
-      // the argument-separating comma, so the call stays unambiguous.
-      (ident ~ ":" ~/ (lambdaExpr | term)).map { case (k, v) => Right((k, v)) } |
+      // A named-arg VALUE is an `exprBody` on the same terms as a positional one
+      // (WI-20260829-YBBC3), mirroring rustland's `named_arg` `value: $._expr_body`:
+      // `f(k: lambda x -> g(x), j: 2)` and `f(k: if c then 1 else 2, j: 3)` alike.
+      // The value's own body cannot consume the argument-separating comma, so the
+      // call stays unambiguous. It admitted a lambda and nothing else before.
+      (ident ~ ":" ~/ exprBody).map { case (k, v) => Right((k, v)) } |
       typedVarArg.map(Left(_)) |
       exprBody.map(Left(_))
     )
@@ -1533,9 +1534,13 @@ private class AnthillParserImpl(
   private def collectionLiteral[$: P]: P[TermId] =
     // Head-tail `[h | t]` removed (WI-560): it was an unused, parse-only
     // surface; list destructuring uses the explicit `cons(?h, ?t)` constructor.
+    // Elements are `exprBody`, not `term` (WI-20260829-YBBC3), mirroring rustland's
+    // `collection_literal`: `[if c then 1 else 2, 3]`. The `,` / `]` delimit each
+    // element exactly as a call's argument list does. A `setLiteral` element stays a
+    // `term` on BOTH sides — `{ a, b }` is already the block / goal-list spelling.
     P(spanOfToken("[") ~/ (
       "]".map(_ => None) |
-      (term.rep(1, sep = ",") ~ "]").map(Some(_))
+      (exprBody.rep(1, sep = ",") ~ "]").map(Some(_))
     )).map { case (span, elems) =>
       terms.allocAt(
         Term.Fn(intern("ListLiteral"), IArray.from(elems.getOrElse(Seq.empty)), IArray.empty),

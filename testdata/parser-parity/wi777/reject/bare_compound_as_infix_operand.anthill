@@ -1,0 +1,6 @@
+namespace parity.ybbc3.operand
+  -- WI-20260829-YBBC3 widened the DELIMITED value positions and `paren_expr`, and
+  -- deliberately NOT `_term` itself: a compound form is not an infix operand, a
+  -- dot receiver or a pattern. Write `1 + (if c then a else b)`.
+  operation operand(r: R) -> A = 1 + if c then a else b
+end
