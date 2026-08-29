@@ -4,7 +4,9 @@
 //! and its laziness are the delivered WI-410/413 engine; these tests pin the
 //! Iterable-level derivation: typecheck (pure / wrong-element rejected), eval
 //! keep/drop, a non-Stream carrier reached only through Iterable, and parity
-//! with the Stream-level `FilteredStream.filter`.
+//! with the erasing Stream-level spelling `Iterable.filter` (which was
+//! `FilteredStream.filter` until WI-20260829-X13YV re-typed that one onto a
+//! `FilteredStream` receiver — see the parity test's own note).
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
@@ -56,13 +58,24 @@ end
 }
 
 /// EVAL: keep/drop on a List, including the drop-everything case, plus parity
-/// with the Stream-level `FilteredStream.filter` on the same input.
+/// with the Stream-level filter on the same input.
 ///
-/// The parity op lives in its OWN namespace: it needs the unqualified
-/// `filter[S = …, Eff = …]` form (the eval_test.rs convention) because a
-/// QUALIFIED call with explicit type-arg brackets
-/// (`FilteredStream.filter[S = …](…)`) does not parse, and the short name
-/// `filter` in the main namespace is taken by the Iterable import.
+/// THE PARITY PARTNER CHANGED, and the reason is worth keeping. It used to be
+/// `FilteredStream.filter`, which was then a STATIC CONSTRUCTOR over any `Stream` and so
+/// took this `List` directly. WI-20260829-X13YV re-typed it to take a `FilteredStream`
+/// receiver and return a carrier built from that input, because as a static constructor
+/// it SHADOWED `FiniteCollection.filter` in dot dispatch and broke
+/// `xs.filter(p).filter(q)` — see its note in `combinators.anthill`. So it no longer
+/// accepts a `List`, and the erasing Stream-level spelling that still does is
+/// `Iterable.filter` (`filtered(iterator(c), pred)`), which is the partner here now.
+///
+/// THE EXPERIMENT IS UNCHANGED: two spellings of the one keep/drop engine, over the same
+/// input, must agree on the value — the non-erasing `FiniteCollection.filter` against the
+/// erasing Stream-level one. The chaining spelling is driven in
+/// `x13yv_map_map_chain_test`, which is where the re-typed operation is exercised.
+///
+/// The parity op lives in its OWN namespace because the short name `filter` in the main
+/// namespace is taken by the FiniteCollection import.
 #[test]
 fn iterable_filter_eval_on_list_and_stream_parity() {
     let src = r#"
@@ -84,16 +97,16 @@ end
 
 namespace test.wi439.parity
   import anthill.prelude.{List, Int64, Bool}
-  import anthill.prelude.FilteredStream.{filter}
+  import anthill.prelude.Iterable.{filter}
   import anthill.prelude.Stream.{takeN}
   import test.wi439.eval.{is_big, encode2}
 
-  -- Stream-level engine on the same input (List provides Stream); the finite
-  -- member must agree. The LAZY FilteredStream is no longer collect-able (Phase
-  -- C / WI-589), so drain it with the still-Stream-level `takeN` (bound ≥ the
-  -- list length yields every kept element) — the keep/drop self-recursion engine
-  -- runs the same way. The direct Stream-level call needs the explicit bindings.
-  operation kept_stream() -> Int64 = encode2(takeN(filter[S = Int64, EffS = {}, EffP = {}]([1, 2, 3, 4], is_big), 1000))
+  -- Stream-level engine on the same input (List provides Iterable); the finite
+  -- member must agree. This spelling ERASES the source to a bare `Stream`, so it is
+  -- not collect-able (Phase C / WI-589) — drain it with the still-Stream-level
+  -- `takeN` (bound >= the list length yields every kept element), which runs the same
+  -- keep/drop self-recursion.
+  operation kept_stream() -> Int64 = encode2(takeN(filter([1, 2, 3, 4], is_big), 1000))
 end
 "#;
     let mut interp = crate::common::interp_for(src);
@@ -102,7 +115,7 @@ end
     assert_eq!(
         run_int(&mut interp, "test.wi439.parity.kept_stream"),
         run_int(&mut interp, "test.wi439.eval.kept"),
-        "Iterable.filter and FilteredStream.filter must agree on the same input",
+        "FiniteCollection.filter and Iterable.filter must agree on the same input",
     );
 }
 

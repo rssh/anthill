@@ -8392,6 +8392,13 @@ fn generalize_eta_arrow(
 /// its eight binders (`?S`, `?EffS` and the sort's own two), `Iterable.map` two,
 /// `FilteredStream.filter` three. Found by review; the unit rows use a ONE-parameter
 /// operation, whose parameter is a bare `Term`, and stayed green throughout.
+///
+/// THAT READING IS HISTORICAL AND ITS SUBJECTS HAVE MOVED: WI-20260829-X13YV re-typed
+/// `MappedStream.map` and `FilteredStream.filter` onto their own carriers, so neither
+/// declares `?S` or `?EffS` any more and re-running the count on today's stdlib will not
+/// reproduce those figures. The measurement is kept because it is what justifies this
+/// function's choice of walk, not as a live inventory — `Iterable.map` is the one named
+/// operation whose signature is unchanged.
 fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> {
     // HEAD FIRST, then the children: `type_head` reads at most the functor symbol, while
     // `extract_type` materializes a fresh child vector with every bound type cloned into it
@@ -51663,10 +51670,18 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // WI-466: nominal check is `(actual=ab, expected=ev)` — the parameterized
                 // side is the ACTUAL, the sort_ref the EXPECTED (the pre-WI-466 `(ev, ab)`
                 // was swapped; see the term-dispatch twin for the two latent defects).
-                // WI-20260829-N01PY — THE WITNESS LEG IS NOT HERE, and that is a
+                // WI-20260829-N01PY — THE WITNESS LEG IS NOT ON THIS ARM, and that is a
                 // KNOWN GAP rather than an oversight, so it is written down at the site
                 // whose contract it breaks (one line up: "so provider admissibility stays
                 // carrier-symmetric").
+                //
+                // ON THIS ARM, NOT IN THIS FUNCTION — the distinction matters because
+                // WI-20260829-2NMXA is scoped from this comment. The `(sort_ref, sort_ref)`
+                // arm above DOES reach the leg, through the `bare_sort_compatible` it
+                // shares with the term dispatch, so a bare witnessed carrier on a `Value`
+                // carrier is ACCEPTED here today. Whoever closes 2NMXA must add the leg to
+                // this arm only; adding it to the function would double it (found by
+                // /code-review, which read the earlier "NOT HERE" as the wider claim).
                 //
                 // MEASURED, a drivable pair: a DENOTED effect row on the actual
                 // (`MappedStream[…, EF = {Modify[k]}]`) routes here instead of to the term
@@ -53076,19 +53091,31 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
 /// and matches each provision's carrier binding — so the two readers of one relation
 /// disagreed, and this is the leg that ends the disagreement at the subtype side.
 ///
-/// A THIRD ARM IS DELIBERATELY WITHOUT IT — `types_compatible_view_structural`'s
+/// ONE ARM IS DELIBERATELY WITHOUT IT — `types_compatible_view_structural`'s
 /// `(parameterized, sort_ref)`, which a DENOTED actual routes to. That is a stated known
 /// gap with a drivable fixture and a ticket (WI-20260829-2NMXA); the reason it is not a
-/// one-line addition is written at that arm.
+/// one-line addition is written at that arm. IT IS THAT ARM AND NOT THAT FUNCTION —
+/// `types_compatible_view_structural`'s OTHER bare-expected arm does reach this leg, and
+/// the inventory below says how.
 ///
-/// TWO CALL SITES, BOTH BARE-EXPECTED ARMS of [`types_compatible_term_dispatch`]:
-/// `(sort_ref, sort_ref)` and `(parameterized, sort_ref)`. Which one a carrier lands at
-/// is decided by whether it has TYPE PARAMETERS, which has nothing to do with how its
-/// provision is filed — the first cut wired only the parameterized arm (where the
-/// stdlib's `MappedStream[…]` lives) and left a bare witnessed carrier refused, which
-/// `a_bare_witnessed_carrier_is_admissible_too` is the row for. Both arms are BARE on the
-/// expected side, which is what makes the accept sound for the reason
-/// [`sort_provides_admissibly`]'s doc gives: a bare spec carries no bindings to drop.
+/// THREE ARMS REACH IT, ACROSS BOTH DISPATCHERS, and only ONE of them is a textual call:
+///   * [`types_compatible_term_dispatch`] `(parameterized, sort_ref)` — calls it directly.
+///   * [`types_compatible_term_dispatch`] `(sort_ref, sort_ref)` — through
+///     [`bare_sort_compatible`].
+///   * [`types_compatible_view_structural`] `(sort_ref, sort_ref)` — through the SAME
+///     [`bare_sort_compatible`], which is shared by both dispatchers. This one is why the
+///     count is three and not two, and grepping this function's name finds only two of
+///     the three (found by /code-review; the first version of this doc read "TWO CALL
+///     SITES, BOTH BARE-EXPECTED ARMS of `types_compatible_term_dispatch`", which
+///     under-counted the population a later census would trust).
+///
+/// Which arm a carrier lands at is decided by whether it has TYPE PARAMETERS, which has
+/// nothing to do with how its provision is filed — the first cut wired only the
+/// parameterized arm (where the stdlib's `MappedStream[…]` lives) and left a bare
+/// witnessed carrier refused, which `a_bare_witnessed_carrier_is_admissible_too` is the
+/// row for. Every arm above is BARE on the expected side, which is what makes the accept
+/// sound for the reason [`sort_provides_admissibly`]'s doc gives: a bare spec carries no
+/// bindings to drop.
 ///
 /// MEASURED, four rows over one minimal fixture (`n01py_witness_provision_subtype_test`),
 /// one axis varied — how the provision is FILED — and the DIRECT rows are the control

@@ -306,6 +306,16 @@ end
 /// default body's raise arm being reachable. Without this, the defaults the
 /// backing check certifies for the combinator carriers had zero run-time
 /// witness (every other eval fixture's receiver is a List, which overrides).
+///
+/// HOW THE CARRIER IS BUILT CHANGED, and the experiment did not. It used to be
+/// `MappedStream.map[EffS = {}](cons(7, nil), …)` — that operation was then a static
+/// constructor over any `Stream`, so it took the `List` directly and needed the explicit
+/// row binding. WI-20260829-X13YV re-typed it onto a `MappedStream` receiver (as a static
+/// constructor it SHADOWED `FiniteCollection.map` in dot dispatch and broke
+/// `xs.map(f).map(g)`), so the spelling that builds a `MappedStream` FROM a `List` is now
+/// `FiniteCollection.map`, which also grounds the row without a binding. What this test
+/// asserts is unchanged: the receiver `head` runs on is a combinator carrier that supplies
+/// only `splitFirst`, so the frame entered is the SPEC DEFAULT's.
 #[test]
 fn stream_defaults_evaluate_on_inheriting_carriers() {
     let src = r#"
@@ -313,16 +323,15 @@ namespace wi818.comb
   import anthill.prelude.{Int64, Option, EmptyStream}
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Stream.{head, headOption}
-  import anthill.prelude.MappedStream.{map}
-  import anthill.prelude.FilteredStream.{filter}
+  import anthill.prelude.FiniteCollection.{map, filter}
   import anthill.prelude.Numeric.{add}
   import anthill.prelude.PartialOrd.{gt}
 
   sort Use
     operation mh() -> Int64 effects Error[EmptyStream] =
-      head(map[EffS = {}](cons(7, nil), lambda (x: Int64) -> add(x, 100)))
+      head(map(cons(7, nil), lambda (x: Int64) -> add(x, 100)))
     operation fho() -> Option[T = Int64] =
-      headOption(filter[EffS = {}](cons(7, nil), lambda (x: Int64) -> gt(x, 100)))
+      headOption(filter(cons(7, nil), lambda (x: Int64) -> gt(x, 100)))
   end
 end
 "#;

@@ -793,6 +793,17 @@ fn lazy_stream_consumption() {
 /// A CELL SAYS THE PROGRAM LOADS AND NOTHING MORE — `n01py_witness_provision_subtype_test`
 /// and `wi492_transitive_provision_test` are where these are driven to values.
 ///
+/// AND A THIRD READING WAS MISSING AGAIN, which the CHAINED rows are here to say. Every
+/// row above consumes a ONE-HOP result. A SECOND hop of the same combinator —
+/// `xs.map(f).map(g)` — did not load at all, and the table could not see it because it
+/// never asked: dot dispatch takes the receiver's OWN member before a provided spec's, and
+/// `MappedStream` declares a `map` (a static constructor returning an ERASED `Stream`)
+/// while declaring no `filter`. So the mixed chains worked and the same-name ones did not.
+/// WI-20260829-X13YV re-typed those two members to return a carrier built from their
+/// input; `x13yv_map_map_chain_test` drives them to values and gates them on finiteness.
+/// The MIXED rows sit beside the same-name ones because without them a same-name refusal
+/// reads as "chaining lazy combinators is broken", which is what it looked like.
+///
 /// WHICH ROWS MEASURE WI-20260829-N01PY, measured by backing the fix out (making
 /// `witness_provides_admissibly` return `false` at its first statement): ONLY the two
 /// `AUTHOR's consumer <- map/filter` rows go red. The `size` / `collect` / `.size()` rows
@@ -850,6 +861,44 @@ fn an_author_declared_consumer_takes_a_finite_carrier() {
                 .into(),
             "total(Iterable.map(xs, lambda r -> r.a))".into(),
             Verdict::RefusesLocated("expected FiniteCollection"),
+        ),
+        // ── CHAINED HOPS (WI-20260829-X13YV) ────────────────────────────────────
+        // The rows above all consume a ONE-HOP combinator result. Chaining a SECOND hop
+        // of the SAME combinator was refused outright — `xs.map(f).map(g)` did not load —
+        // while the MIXED chains did, because dot dispatch resolves a member on the
+        // receiver's own sort before the specs it provides and `MappedStream` declares a
+        // `map` while declaring no `filter`. The mixed rows are kept beside the same-name
+        // ones for exactly that reason: without them the same-name refusal reads as
+        // "chaining lazy combinators is broken".
+        (
+            "size(map(...).map(...)) — SAME name twice [WI-20260829-X13YV]".into(),
+            "size(xs.map(lambda r -> r.a).map(lambda n -> n))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "size(filter(...).filter(...)) — SAME name twice [WI-20260829-X13YV]".into(),
+            "size(xs.filter(lambda r -> r.flag).filter(lambda r -> true))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "size(map(...).filter(...)) — MIXED (CONTROL: loaded before the fix too)".into(),
+            "size(xs.map(lambda r -> r.a).filter(lambda n -> true))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "size(filter(...).map(...)) — MIXED (CONTROL)".into(),
+            "size(xs.filter(lambda r -> r.flag).map(lambda r -> r.a))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "AUTHOR's consumer <- map(...).map(...) [WI-20260829-X13YV]".into(),
+            "total(xs.map(lambda r -> r.a).map(lambda n -> n))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "map(...).map(...).collect() — the materializing consumer".into(),
+            "xs.map(lambda r -> r.a).map(lambda n -> n).collect()".into(),
+            Verdict::Loads,
         ),
     ];
     let mut failures = Vec::new();

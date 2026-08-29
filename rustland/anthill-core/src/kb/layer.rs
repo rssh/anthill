@@ -299,7 +299,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         #[cfg(test)]
             sem_eq_sub_depth: _,
 
-        // ── SCOPED: every field below is in `kb_scoped_fields!` ─
+        // ── SCOPED: every field to the NEXT HEADER is in `kb_scoped_fields!` ─
         rules: _,
         rules_by_functor: _,
         by_domain: _,
@@ -388,14 +388,24 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         provider_dict_chain_cache: _,
         sort_param_pairs_cache: _,
         spec_carrier_param_cache: _,
+        resolve_cache: _,
+
+        // ── NEITHER: in-flight stack state, in NO list ─────────
+        //
+        // A THIRD CLASS, and it needs its own header rather than a comment inside the
+        // SCOPED block. This destructure's whole contract is that a field's POSITION
+        // declares its class, so a field sitting under "every field below is in
+        // `kb_scoped_fields!`" while deliberately absent from that list makes the header
+        // false and tells an auditor of the scoped block that this one is snapshotted and
+        // rolled back. It is not (found by /code-review).
+        //
         // WI-20260829-N01PY — NEITHER MONOTONE NOR SCOPED, because it is neither derived
         // state nor a memo: it holds the `(carrier, spec)` questions currently ON THE
         // STACK, and every insert is paired with a remove on the way out. Outside a
         // `witness_provides_admissibly` call it is EMPTY, so a layer has nothing of it to
-        // roll back — the rule the memo above obeys ("a memo is scoped exactly when the
+        // roll back — the rule the memos above obey ("a memo is scoped exactly when the
         // thing it caches is") does not reach it, because it caches nothing.
         witness_admissibility_in_flight: _,
-        resolve_cache: _,
     } = kb;
 }
 

@@ -84,10 +84,43 @@ sort anthill.prelude.MappedStream
           case none() -> none
           case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
 
-  -- map constructor: the lazy mapped stream is admissible wherever a
-  -- Stream[Dst, {EffS, EffP}] is expected (it provides Stream).
-  operation map[S, Dst, EffS, EffP](s: Stream[S, EffS], f: (x: S) -> Dst @ {EffP, -Modify[x]}) -> Stream[Dst, {EffS, EffP}] =
-    mapped(s, f)
+  -- `map` ON A MAPPED STREAM — the chaining hop of `xs.map(f).map(g)`.
+  --
+  -- WI-20260829-X13YV. This was a STATIC CONSTRUCTOR over a bare Stream
+  -- (`map[S, Dst, EffS, EffP](s: Stream[S, EffS], f) -> Stream[Dst, {EffS, EffP}]`),
+  -- and being declared HERE is what made the chain unreachable. Dot dispatch resolves a
+  -- member on the receiver's OWN sort BEFORE the specs it provides — the
+  -- `own_op.or_else(find_spec_op_for_provided_sort)` ladder in `typing.rs` — so `.map` on
+  -- a mapped stream landed on this declaration, while `.filter` on the SAME value fell
+  -- through to `FiniteCollection.filter` because this sort has no `filter` member. Same
+  -- chain, different member name, different route; the mixed chains are what localized it.
+  --
+  -- Landing here was fatal twice over. `EffS` did not ground from
+  -- `provides Stream[T = T, E = {ES, EF}]` (WI-594's gap 2), so the chain did not load;
+  -- and the return ERASED the source to a bare `Stream` — the erasure WI-590 removed the
+  -- finite twin carriers to be rid of — so even grounded it would have yielded a value no
+  -- finiteness witness can read, and `xs.map(f).map(g).size()` would still be refused.
+  --
+  -- THE RETURN REUSES THE INPUT TYPE: the receiver is this carrier, and the result names
+  -- it as its own `Source`. So `MappedStreamFinite` keys on it and RECURSES — a two-hop
+  -- chain is finite exactly when the ORIGINAL carrier is. Driven both ways in
+  -- `x13yv_map_map_chain_test`: over a `List` the chain collects and evaluates; over an
+  -- infinite `Nats` this hop still LOADS (chaining a lazy stream is always sound) and only
+  -- the CONSUMPTION is refused, naming `FiniteCollection[C = Nats]`.
+  --
+  -- NOT `FiniteCollection.map` UNDER ANOTHER NAME: that one carries `requires
+  -- FiniteCollection`, so it cannot serve a mapped stream over an infinite source. This
+  -- one can, which is what the `Nats` row measures.
+  --
+  -- WHAT THE SHAPE COST: the input is now THIS carrier rather than any `Stream`. The
+  -- general form — any Iterable source, source kept in the return — needs an op-level
+  -- `requires` on a FREE operation to ground the element type, which WI-599 delivered for
+  -- the SPEC-METHOD shape only and explicitly excluded here (measured: `Dst` does not
+  -- ground, and the row leaks). `Iterable.map` stays the spelling that takes any source,
+  -- and erases. See WI-20260829-X13YV.
+  operation map[Dst, EffP](m: MappedStream, f: (x: T) -> Dst @ {EffP, -Modify[x]})
+    -> MappedStream[Source = MappedStream, Src = T, T = Dst, ES = {ES, EF}, EF = EffP] =
+    mapped(m, f)
 end
 
 -- Lazy stream-producing combinator (WI-410): filter.
@@ -149,8 +182,12 @@ sort anthill.prelude.FilteredStream
             if pred(h) then some(pair(h, filtered(rest, pred)))
             else Stream.splitFirst(filtered(rest, pred))
 
-  -- filter constructor: the lazy filtered stream is admissible wherever a
-  -- Stream[S, {EffS, EffP}] is expected (it provides Stream).
-  operation filter[S, EffS, EffP](s: Stream[S, EffS], p: (x: S) -> Bool @ {EffP, -Modify[x]}) -> Stream[S, {EffS, EffP}] =
+  -- `filter` ON A FILTERED STREAM — the twin of `MappedStream.map`, and the same repair
+  -- for the same reason (WI-20260829-X13YV); read that operation's note for the mechanism.
+  -- The element is kept VERBATIM by a filter, so `T` is unchanged across the hop where
+  -- `map`'s becomes `Dst`; the new carrier's source row is the receiver's own provided row
+  -- `{ES, EF}` and its transform row is the new predicate's `EffP`.
+  operation filter[EffP](s: FilteredStream, p: (x: T) -> Bool @ {EffP, -Modify[x]})
+    -> FilteredStream[Source = FilteredStream, T = T, ES = {ES, EF}, EF = EffP] =
     filtered(s, p)
 end
