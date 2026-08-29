@@ -174,7 +174,7 @@ namespace guardians
   -- it. That is what defeats the injection's CONCEALMENT half, which
   -- freezing a tool sequence does not touch (docs/design/two-flows.md §1.3).
   entity Verdict(message: MessageId, label: String)
-  entity Report(items: List[T = Verdict], summary: Text[Untrusted])
+  entity Report(items: List[Verdict], summary: Text[Untrusted])
 
   -- ---------------- tools that consult no model ----------------
 
@@ -200,7 +200,7 @@ namespace guardians
   -- is derived from the fetched list, so a generated body cannot drop a row
   -- from it, which is what defeats the injection's CONCEALMENT half. An agent
   -- that fabricates `items` instead fails the postcondition.
-  operation verdicts_of(msgs: List[T = Message[?t]]) -> List[T = Verdict]
+  operation verdicts_of(msgs: List[Message[?t]]) -> List[Verdict]
 
   -- The sink. `Public` is FIXED, so nothing untrusted can reach it.
   -- WHO THIS ADDRESS BELONGS TO — DECLARED here, ASSERTED nowhere in `lib/`.
