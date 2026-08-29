@@ -354,7 +354,7 @@ RUN TIME, any mailbox including adversarial ────────────
      │                          span quotation checked; atoms enter the KB
      ├── classified(m, ?v)              SLD over the rules — no model
      ├── ★ site 4  summarize(msgs)      tainted in, tainted out
-     ├── choose_recipient(report, box)  -Model, -External — no model
+     ├── choose_recipient(report, box)  {} — a pure row: no model, no world
      └── deliver
 ```
 
@@ -542,9 +542,13 @@ out is what "summarizing does not launder" means as a type.
 Two further refusals come from the row rather than the types, and either alone
 would be enough. `send_email` carries `External[Commit]`, which the spec's row
 does not declare, so §2.3's widening rule refuses the provision whatever the
-recipient and whatever the label. And `choose_recipient` carrying `-Model`
+recipient and whatever the label. And `choose_recipient` carrying an EMPTY row
 means the injected email's entire strategy — persuade a model to name
-`it@othercorp.com` — has no operation to work on.
+`it@othercorp.com` — has no operation to work on. *(2026-08-29: this was
+`-Model`; it is now `{}`, which is strictly stronger. A pure row admits no
+`External` and no `Permission[Model]`, so the body can neither mint a model nor
+usefully be handed one — and what a model returns is a sealed `LlmOutput` that
+nothing here could read anyway.)*
 
 That is three independent refusals for one attack. A design that rested on any
 single one would be a design with a single point of failure.
@@ -617,6 +621,15 @@ denied the ACQUISITION, so a generated component that minted its own model
 satisfied it. [Proposal 064](../../../../docs/proposals/064-permission-effect.md)'s
 `Permission[X]` is that half, and `lib/harness.anthill` now writes both. Families
 remain unfiled and nothing here waits on them.
+
+> **AND THEN THE FIRST HALF WENT AWAY (2026-08-29).** `Permission[X]` is the half
+> that survived; `-Model` is not. `Llm.complete` returns a sealed
+> `LlmOutput[Text[Untrusted]]`, so a component handed a model cannot READ what it
+> answers — and being steered requires reading the answer. Denying the USE bought
+> nothing once the answer was unreadable, so the label and the `fact
+> Effect[T = Model]` registration are gone. The paragraph above is now exactly
+> backwards: acquisition is the half the design keeps, and use is the half a TYPE
+> holds. See `effects.md` §"Six candidates the rule rejects".
 
 ---
 

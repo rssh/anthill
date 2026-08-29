@@ -45,7 +45,12 @@ the alternative is running.
 `{External, Suspend}`: it goes outside the process and it may block. Having
 been approved is a **value** — the unforgeable `Approval` token of
 `high-level-api.md` §6.2 — which is 054's "authority lives in values" applied
-verbatim.
+verbatim. *(2026-08-29: the rejection stands, but the token was REMOVED from the
+example. Nothing minted one, so `declassify` — its only consumer — could not be
+written by any program; and `text(raw: u.raw)` re-labels a `Text` for free
+regardless, so the guarded route was unreachable while an unguarded one was open.
+"Authority lives in values" needs the value to be OBTAINABLE by someone; here it
+was obtainable by no one, which is a different thing from unforgeable.)*
 
 **`Budget` / `Cost`.** A resource whose state changes, which is `Modify[b]` on
 a cell. The existing mechanism fits exactly, and a token budget threaded as
@@ -69,25 +74,56 @@ That is the note's main result: **the challenge motivates no new capability
 labels**, and 054's "one effect, not one per capability" holds up under the
 case designed to break it.
 
-> **Where the `Model` rejection landed, once it was built (2026-08-26).** The
-> verdict above is about the KERNEL row and it stands — `Permission[X]` is the one
-> label 064 added, and its argument is a capability rather than a new label per
-> capability. But the example carries `Model` as a project label anyway, and the
-> reason is sharper than "a project needs it": the two claims are not the same
-> claim, and the checker needs both.
+> **Where the `Model` rejection landed, in two steps (2026-08-26, then
+> 2026-08-29).** The verdict above is about the KERNEL row and it never moved —
+> `Permission[X]` is the one label 064 added, and its argument is a capability
+> rather than a new label per capability. What moved is whether the EXAMPLE needed
+> `Model` as a project label on top of it. For three days it did. It does not now,
+> and the reason the first answer was wrong is worth more than the answer.
+>
+> **Step one: the rejection was overridden.** The example carried `Model`, on this
+> argument — two claims, not one, and the checker needs both:
 >
 > | claim | spelled | catches |
 > |---|---|---|
 > | this code never CONSULTS a model | `-Model` | a checker handed an `Llm` it should not have |
 > | this code never ACQUIRES one | `-Permission[Model]` | a checker that mints its own |
 >
-> Neither implies the other — minting is not consulting, and consulting a
-> smuggled `Llm` acquires nothing — and both directions are measured, not argued:
-> `rejected/bad_checker.anthill` and `rejected/minting_checker.anthill` are the two
-> programs, and deleting either denial reds exactly one of them while the other
-> stays green. So the honest reading of the six rejections is that `Model` is
-> authority AT THE POINT OF ACQUISITION, where 064 now puts it, and semantics at
-> the point of use, where a project label still earns its place.
+> Neither implies the other — minting is not consulting, and consulting a smuggled
+> `Llm` acquires nothing — and both directions were measured:
+> `rejected/bad_checker.anthill` and `rejected/minting_checker.anthill`, deleting
+> either denial redding exactly one.
+>
+> **THE MEASUREMENT WAS OF THE MECHANISM, NOT OF THE REQUIREMENT, and that is the
+> whole defect in it.** It established that `-Model` was the only thing catching
+> `bad_checker`. It never asked whether `bad_checker` is an attack. That checker
+> calls a model and *discards the reply* — it returns a hardcoded `Rejected`. It
+> demonstrates CONTACT, not STEERING, and a verifier that consults an oracle and
+> ignores the answer is not steerable by it. A fixture chosen to exercise a label
+> was read as evidence that the label was needed.
+>
+> **Step two: the requirement dissolved.** Being steered requires READING the
+> answer, so the claim to make is about the answer, not about the call.
+> `Llm.complete` now returns `LlmOutput[Text[Untrusted]]` — an `internal`
+> constructor, so generated code can neither project it nor match on it (measured:
+> `'value' is internal`, `'llm_output' is internal`). A checker handed an `Llm`
+> obtains a token it cannot read; the call teaches it nothing. Consultation became
+> harmless, so it stopped being worth denying, and `bad_checker` is accepted today.
+>
+> The row keeps one denial, of ACQUISITION. `fact Effect[T = Model]` is gone,
+> `Model` is a capability and nothing else, and
+> `prelude/external.anthill`'s rule — "ONE effect, not one per capability (no Http
+> / Db / Forge effects) … what distinguishes external capabilities is AUTHORITY,
+> which lives in CARRIERS" — is restored. **Six candidates, six rejections, none
+> overridden.**
+>
+> **What this costs the Recommendation below, and it is not nothing.**
+> §"Recommendation" argues for `Permission[X]` partly on "`-Model` on a generated
+> agent is a claim the design needs and no carrier can make". The carrier half of
+> that stands — no carrier can say *never consults*. The needs half does not: the
+> design wanted *cannot be steered*, which is weaker, sufficient, and exactly what
+> a return type says. 064 is unaffected — it passes its own four-point test at the
+> acquisition site independently — but it has one supporting argument fewer.
 
 ## The one thing that does not fit: `External` is one label doing three jobs
 
@@ -241,6 +277,29 @@ This is the honest update to the six rejections: they stand **as kernel
 effects**, and a user family gives the useful subset of them a home as project
 vocabulary that the kernel threads without interpreting.
 
+> **THE CRITERION SURVIVED THIS SECTION'S OWN EXAMPLE (2026-08-29).** "Say it in
+> the contract, so nobody re-audits a parameter list on every regeneration" is the
+> right test, and the paragraph above is right that withholding a carrier fails
+> it. What is wrong is the next inference — that only a ROW can pass it.
+>
+> A RETURN TYPE PASSES IT TOO. `Llm.complete -> LlmOutput[Text[Untrusted]]`, with
+> an `internal` constructor, states in the signature that what a model returns can
+> be neither projected nor matched. Nothing is audited, nothing is re-checked on
+> regeneration, and the claim is read where the operation is declared — and it is
+> a claim about a VALUE, which is where 054 says authority belongs.
+>
+> The heading stays literally true: a carrier cannot say *lacks X*. The defeat is
+> that the design never needed that sentence. It needed *cannot be steered*, and a
+> sealed return type says it. `-Model` and the `Model` label are gone from the
+> example (see the note under §"Six candidates"), so THIS SECTION HAS NO MOTIVATING
+> CASE LEFT: the row above would today read
+> `effects {External[Read], Error, -External[Commit]}`, in which every remaining
+> `-` belongs to a KERNEL label.
+>
+> That does not refute the User family — it removes the one piece of evidence
+> offered for it. `Filesystem` is the example's only surviving project label, and
+> nothing has yet asked whether it earns its place by this same test.
+
 ### What a family owns
 
 A family is worth having only if it owns things that currently force every rule
@@ -359,7 +418,7 @@ capability" is an argument about the externality axis and never spoke to
 authority.
 
 **The example already gets this wrong, which is the evidence.**
-`guardians.FakeLlm.complete` declares `effects {External, Model, Error}` —
+`guardians.FakeLlm.complete` declares `effects {External, Error}` —
 identical to `LiveLlm` — while touching nothing outside the process. Under the
 split it narrows to `{Permission[Model], Error}`: a legal override narrowing, and
 honest. A test can then assert the fake is not external, which today it cannot.
@@ -446,8 +505,15 @@ rejections stand as written, and are worth recording as evidence for 054
 whether or not anything else happens. They are rejections of a **static**
 capability label. Do add `Permission[X]` on **acquisition**, because the act of
 checking a grant is an effect on 054's own test while the standing attribute is
-not — and because `-Model` on a generated agent is a claim the design needs and
-no carrier can make.
+not.
+
+> **ONE SUPPORTING ARGUMENT WITHDRAWN (2026-08-29).** This sentence used to end
+> "— and because `-Model` on a generated agent is a claim the design needs and no
+> carrier can make". The carrier half stands; the *needs* half does not. What the
+> design wanted was **cannot be steered**, which is weaker, sufficient, and stated
+> by a sealed return type (`LlmOutput`). 064 is unaffected — it passes the
+> four-point test at the acquisition site on its own — but it rests on one
+> argument fewer, and the example that supplied the other one no longer does.
 
 **The `Permission[X]` half is now proposal 064**, which carries the argument in
 specification form together with the names and placements this note refuted

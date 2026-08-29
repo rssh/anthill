@@ -21,7 +21,7 @@ sort guardians.agent.GoodTriage
   -- against the spec's (an override may not widen it).
   operation run(self: GoodTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error} =
+    effects {External, Error} =
       -- `fetch_mail` is External, so it is called ONCE and the result reused.
       -- Calling it twice would be two different mailbox reads, which is
       -- exactly the licence External revokes.

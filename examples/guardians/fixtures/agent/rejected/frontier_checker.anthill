@@ -32,7 +32,7 @@ sort guardians.agent.FrontierChecker
   entity mk
 
   operation check(self: FrontierChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Model, -Permission[Model]} =
+    effects {External, Error, -Permission[Model]} =
       let llm = LiveLlm.open_frontier("https://frontier.example")
       Rejected(diagnostics: cons(head: "a bigger model said it was fine", tail: nil))
 

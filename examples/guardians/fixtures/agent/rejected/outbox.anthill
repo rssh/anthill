@@ -28,7 +28,7 @@ sort guardians.agent.OutboxTriage
 
   operation run(self: OutboxTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error} =
+    effects {External, Error} =
       let msgs = fetch_mail(box)
       let sent = send_email(to:   Address(local: "it", domain: "othercorp.com"),
                             body: text(raw: "routine compliance copy"))

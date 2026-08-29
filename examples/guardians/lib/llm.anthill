@@ -25,9 +25,30 @@ enum guardians.Prompt
   entity prompt(body: Text[Trust])
 end
 
+-- WHAT A MODEL RETURNED, and the ONLY thing that proves one was consulted.
+--
+-- SEALED, on `Approval`'s pattern: the constructor is `internal`, so generated
+-- code can neither BUILD one (no forging "this came from a model") nor PROJECT
+-- one (no reading what the model said). The mint is the host binding behind
+-- `complete`, which is trusted by construction.
+--
+-- THIS IS WHAT RETIRES THE `Model` EFFECT LABEL. `-Model` existed to say "this
+-- code was not steered by a model", and it had to be a row label because a
+-- TRUST LABEL ON THE VALUE IS STRIPPABLE — `text(raw: u.raw)` re-labels any
+-- `Text[Untrusted]` as `Text[Public]` in one line, and the typer says nothing
+-- (measured; `rejected/launder_projection.anthill`). An opaque wrapper is not:
+-- there is no projection to strip it with. A checker that calls a model gets a
+-- token it cannot read, learns nothing from it, and so cannot be steered by it
+-- — which is the property `-Model` was approximating by forbidding the call
+-- outright.
+sort guardians.LlmOutput
+  sort T = ?
+  internal entity llm_output(value: T)
+end
+
 sort guardians.Llm
   import anthill.prelude.{Error, External}
-  import guardians.{Prompt, Text, Model}
+  import guardians.{Prompt, Text, Model, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   sort C = ?
@@ -73,8 +94,8 @@ sort guardians.Llm
   -- Worth a diagnostic eventually: a once-occurring type variable in a
   -- signature is almost always either a mistake or noise, and the typer knows.
   -- Not filed; recorded here.
-  operation complete(self: C, p: Prompt) -> Text[Untrusted]
-    effects {External, Model, Error}
+  operation complete(self: C, p: Prompt) -> LlmOutput[Text[Untrusted]]
+    effects {External, Error}
 end
 
 -- ================================================================
@@ -101,7 +122,8 @@ end
 -- authority to* — and this example needs both, because a checker can fail either
 -- way independently:
 --
---   holds an Llm it was handed, calls it   caught by `-Model`            (bad_checker)
+--   holds an Llm it was handed, calls it   HARMLESS — the reply is `LlmOutput`,
+--                                          which it can neither project nor match
 --   holds none, mints one                  caught by `-Permission[Model]`(minting_checker)
 --   holds none, forges one                 caught by `internal`          (forged_llm)
 --
@@ -110,7 +132,7 @@ end
 -- ================================================================
 sort guardians.LiveLlm
   import anthill.prelude.{String, Error, External, Permission}
-  import guardians.{Llm, Prompt, Text, Model, FrontierModel}
+  import guardians.{Llm, Prompt, Text, Model, FrontierModel, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity live_llm(endpoint: String, model: String)
@@ -129,14 +151,14 @@ sort guardians.LiveLlm
     effects {Permission[FrontierModel]} =
       live_llm(endpoint: endpoint, model: "frontier")
 
-  operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
-    effects {External, Model, Error}
+  operation complete(self: LiveLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
+    effects {External, Error}
   provides Llm
 end
 
 sort guardians.FakeLlm
   import anthill.prelude.{String, Error, External, Permission}
-  import guardians.{Llm, Prompt, Text, Model}
+  import guardians.{Llm, Prompt, Text, Model, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity fake_llm(fixture: String)
@@ -148,8 +170,8 @@ sort guardians.FakeLlm
   operation open(fixture: String) -> FakeLlm
     effects {Permission[Model]} = fake_llm(fixture: fixture)
 
-  operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
-    effects {External, Model, Error}
+  operation complete(self: FakeLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
+    effects {External, Error}
   provides Llm
 end
 

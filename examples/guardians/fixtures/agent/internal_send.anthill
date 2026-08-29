@@ -24,7 +24,7 @@ sort guardians.agent.InternalSendTriage
 
   operation run(self: InternalSendTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error} =
+    effects {External, Error} =
       let msgs = fetch_mail(box)
       let sent = send_email(to:   Address(local: "boss", domain: "ourcorp.com"),
                             body: text(raw: "routine compliance copy"))

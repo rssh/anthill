@@ -278,7 +278,7 @@ message does.
 
 The positive control is separate and load-bearing: `guardians.open_round`
 (`lib/harness.anthill`) mints legitimately and declares `{Permission[Model],
-External, Model, Error}`, while `guardians.attempt` — the same round with the
+External, Error}`, while `guardians.attempt` — the same round with the
 capability in hand — declares no `Permission`.
 `the_legitimate_acquisition_path_is_accepted` reads both rows back out of the KB,
 so moving the label downstream fails it.
@@ -286,6 +286,27 @@ so moving the label downstream fails it.
 **If it did not fire,** a generated checker could mint its own model. That is not
 hypothetical: it is what this example permitted before 064, since construction
 carried no effect at all.
+
+> **SUPERSEDED IN ONE ROW, 2026-08-29 — and the measurements above are kept
+> because they are what identified the defect.** The `bad_checker` row is gone:
+> `Llm.complete` now returns `LlmOutput[Text[Untrusted]]`, sealed with an
+> `internal` constructor, so a checker handed an `Llm` receives a token it can
+> neither project nor match. `-Model` was deleted along with the `Model` effect
+> kind, and `rejected/bad_checker.anthill` is ACCEPTED today.
+>
+> **What this entry got wrong, and it is a methodological point rather than a
+> detail.** Every measurement above is sound, and the control table still reads
+> correctly. What none of them asked is whether `bad_checker` is an ATTACK. It
+> calls a model and DISCARDS the reply — it returns a hardcoded `Rejected` — so it
+> demonstrates CONTACT, never STEERING, and a verifier that ignores an oracle's
+> answer is not steered by it. The fixture was built to exercise `-Model` and was
+> then read as evidence that `-Model` was needed. A control that varies the
+> MECHANISM (delete the denial, watch it red) cannot see a requirement that was
+> never in question; only varying the REQUIREMENT can, and nothing here did.
+>
+> The `minting_checker` row is untouched and still fires: acquisition remains the
+> one thing worth denying, so `-Permission[Model]` and this group's positive
+> control both stand exactly as recorded.
 
 ## D2 · A sub-capability is named as a violated denial, not as an omission
 
@@ -374,7 +395,7 @@ triage can mail outside the organisation, whatever it does.
 
 **Control** — `fixtures/agent/internal_send.anthill`, ONE TOKEN away
 (`boss@ourcorp.com` for `it@othercorp.com`), which LOADS on the unchanged
-`{External, Model, Error}` row. Two further edits, each reddening exactly one row
+`{External, Error}` row. Two further edits, each reddening exactly one row
 and measured:
 
 | edit | red |
@@ -564,14 +585,14 @@ the mint high-water mark nor the containment rule sees it:
     sort guardians.Triage
       sort C = ?
       operation run(self: C, box: Mailbox, llm: Llm) -> Report
-        effects {External, Model, Error, Filesystem}
+        effects {External, Error, Filesystem}
     end
 ```
 
 **Measured.** It loads. `guardians.Triage` keeps the same `Symbol`, and the load
 banks a SECOND `OperationInfo` row for `run`: the reported effects go from
-`[External, Model, Error]` to
-`[External, Model, Error, External, Model, Error, Filesystem]`.
+`[External, Error]` to
+`[External, Error, External, Error, Filesystem]`.
 
 **What it does NOT buy, and this is why the effect budget is not re-checked.** A
 widening carrier is refused with the identical message
@@ -596,7 +617,7 @@ loaded clean while implementing NOTHING was Accepted.
 
 **Measured, now.** `spec` is a `Symbol` reference, and
 `agent/good.anthill` yields `Accepted(carrier: guardians.agent.GoodTriage,
-spec: guardians.Triage, budget: [External, Model, Error])`. A candidate that
+spec: guardians.Triage, budget: [External, Error])`. A candidate that
 declares only under `guardians.agent.` and provides nothing is refused:
 `the candidate declares no carrier that provides 'guardians.Triage'`.
 
@@ -952,8 +973,8 @@ specification is exactly that shape, which is how it surfaced.
 ## C9 · A `Modify[p]` target is not compared by the refinement check · **FIXED**
 
 **Scenario.** While building the row-widening fixture: an override declaring
-`{External, Model, Error, Modify[box]}` against a spec declaring
-`{External, Model, Error}`.
+`{External, Error, Modify[box]}` against a spec declaring
+`{External, Error}`.
 
 **Loaded clean.** A named effect (`Filesystem`) in the same position was refused
 loudly, so the widening check worked — it just did not treat a `Modify` target

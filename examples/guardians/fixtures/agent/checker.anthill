@@ -1,12 +1,16 @@
 -- ================================================================
 -- FIXTURE — a generated `Checker` implementation, ACCEPTED.
 --
--- CONTROL for all THREE refused checkers — bad_checker (consults), minting_checker
--- (acquires), forged_llm (forges) — and it is what stops the two denials from
--- reading as a checker that refuses everything on sight. Same shape, same spec,
--- same row; no route to a model of any kind, so both `-Model` and
--- `-Permission[Model]` are satisfiable and this one honours them by having
--- nothing in scope that could consult or mint.
+-- CONTROL for the two refused checkers — minting_checker (acquires) and
+-- forged_llm (forges) — and it is what stops the denial from reading as a checker
+-- that refuses everything on sight. Same shape, same spec, same row; no route to a
+-- model of any kind, so `-Permission[Model]` is satisfiable and this one honours
+-- it by having nothing in scope that could mint.
+--
+-- THERE USED TO BE A THIRD, and its disappearance is the point of `LlmOutput`.
+-- `bad_checker` was handed an `Llm` in its own carrier and consulted it; `-Model`
+-- refused it. What a model returns is now sealed, so that checker obtains a token
+-- it cannot read, learns nothing, and is ACCEPTED.
 --
 -- ITS VERDICT IS `Rejected`, AND THAT IS THE HONEST ONE: this fixture performs no
 -- check. What it is a control for is that the ROW is satisfiable, and `Accepted`
@@ -22,7 +26,7 @@ sort guardians.agent.HonestChecker
   entity mk
 
   operation check(self: HonestChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Model, -Permission[Model]} =
+    effects {External, Error, -Permission[Model]} =
       Rejected(diagnostics: cons(head: "this checker performs no check", tail: nil))
 
   provides Checker[C = HonestChecker]

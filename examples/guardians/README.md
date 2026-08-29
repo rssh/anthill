@@ -30,27 +30,26 @@ to `it@othercorp.com`. Refused because `summarize` preserves its argument's labe
 Leaks nothing; claims a capability the spec never granted. One token apart from
 `fixtures/agent/good.anthill`, so this measures the effect row and nothing else.
 
-```
-rejected/bad_checker.anthill: check.effects (op-effects):
-    got denied effect: Model — the row DECLARES `-Model`
-```
 **Who guards the guard.** The checker must provably not be steerable, or it is as
-manipulable as the thing it verifies. `Checker.check` is handed no `Llm`, so this
-one smuggles one into its own carrier and reaches it through `self` — and is
-caught anyway, because the row it DECLARES is the spec's and the row INFERRED
-FROM ITS BODY carries `Model`.
+manipulable as the thing it verifies. There are two routes to a model — being
+handed one, and acquiring one — and only the second is still denied.
+
+A checker CAN now be handed an `Llm` in its own carrier and call it. That used to
+be `rejected/bad_checker.anthill`, refused by a `-Model` label on the row; it is
+accepted today, because what `complete` returns is an `LlmOutput` — sealed, with
+no projection and no pattern to match. The call hands the checker a token it
+cannot read, so it learns nothing and cannot be steered. Being steered requires
+reading the answer, and the type forbids that.
 
 ```
 rejected/minting_checker.anthill: check.effects (op-effects):
     got denied effect: Permission[T = Model] — the row DECLARES `-Permission[T = Model]`
 ```
 The mirror attack. This one is handed nothing and holds nothing — it **mints** its
-own model. Minting is not consulting, so `-Model` never fires: what confines it is
-that acquisition is now an *effect* at all (proposal 064's `Permission[Model]`, on
-`LiveLlm.open`), which the checker's row does not grant. **Before this, minting
-was unconstrained** — the constructors were public and construction carried no
-effect, so a checker could obtain a model out of thin air and `-Model` caught it
-only if it went on to call one.
+own model. What confines it is that acquisition is an *effect* (proposal 064's
+`Permission[Model]`, on `LiveLlm.open`), which the checker's row does not grant.
+**Before this, minting was unconstrained** — the constructors were public and
+construction carried no effect, so a checker could obtain a model out of thin air.
 
 The `-Permission[Model]` in the row is the *contract*, not the mechanism: delete
 it and this fixture is still refused, as `undeclared effect` rather than `denied
@@ -58,7 +57,7 @@ effect`. `docs/design/measured.md` D1 records exactly what each half buys.
 
 ```
 rejected/outbox.anthill: run.effects (op-effects): expected declared:
-    [External, Model, Error], got undeclared effect: Permission[T = Outbox]
+    [External, Error], got undeclared effect: Permission[T = Outbox]
 ```
 The article's policy has two halves — *"forbid data flow from `fetch_email`'s
 result to the `body` parameter of `send_email` **with an external email address as
@@ -91,7 +90,7 @@ declaration — acquiring a frontier model IS acquiring a model.
 | `lib/observe.anthill` | the **only** vocabulary the model may write at run time — a closed `Feature` enum with no constructor naming an address, a tool, or an action |
 | `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Model]`-carrying `open` |
 | `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide |
-| `lib/harness.anthill` | the generation loop as declarations: `generate` carries `Model`, `check` carries `-Model, -Permission[Model]` |
+| `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Model]` — it may not ACQUIRE a model; being handed one is harmless, since `LlmOutput` is unreadable |
 | `lib/tasks.anthill` | `summarize` and `observe`, built on the one primitive rather than bound per task |
 | `lib/classify.anthill` | what counts as suspicious — rules in the KB, not a prompt |
 | `lib/gate.anthill` | the trust partition, as a policy: what the candidate DECLARED and what it ASSERTED, asked of a discardable layer |

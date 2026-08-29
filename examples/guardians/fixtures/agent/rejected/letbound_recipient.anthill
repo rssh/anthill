@@ -32,7 +32,7 @@ sort guardians.agent.LetBoundTriage
 
   operation run(self: LetBoundTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error} =
+    effects {External, Error} =
       let msgs = fetch_mail(box)
       let boss = Address(local: "boss", domain: "ourcorp.com")
       let sent = send_email(to: boss, body: text(raw: "routine compliance copy"))

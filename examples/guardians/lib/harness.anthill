@@ -11,18 +11,21 @@
 --                                              (on the CARRIERS; `Llm` the spec
 --                                               declares no mint, and nothing
 --                                               forces a carrier to have one)
---   Llm.complete {External, Model, Error}      the untrusted step
+--   Llm.complete {External, Error}             the untrusted step
 --   check        {External, Error,
---                 -Model, -Permission[Model]}  provably not steerable
+--                 -Permission[Model]}          provably not steerable
 --
 -- The checker's row is the answer to "who guards the guard". A verifier that
--- could itself be steered by a model is as manipulable as the thing it verifies,
--- and there are TWO ways to be steered — consulting a model you were handed, and
--- acquiring one yourself. `-Model` denies the first, `-Permission[Model]` the
--- second (proposal 064), and neither implies the other: minting is not
--- consulting, and consulting a smuggled `Llm` acquires nothing. Both are written,
--- and `rejected/bad_checker.anthill` and `rejected/minting_checker.anthill` are
--- the two programs that show a single one would not do.
+-- could itself be steered by a model is as manipulable as the thing it verifies.
+--
+-- ONE DENIAL, WHERE THERE USED TO BE TWO. There are two ways to reach a model —
+-- being handed one, and acquiring one — and the row used to deny both, with
+-- `-Model` for the first. It no longer needs to: `LlmOutput` (llm.anthill) makes
+-- what a model RETURNS unreadable, so a checker handed an `Llm` obtains a token
+-- it cannot project or match, learns nothing from the call, and cannot be steered
+-- by it. Being steered requires reading the answer, and the type now forbids that
+-- — so only ACQUISITION is still worth denying, which is `-Permission[Model]`
+-- (proposal 064) and `rejected/minting_checker.anthill`.
 -- ================================================================
 
 -- A candidate program. Opaque and unverified: the ONLY thing that can be done
@@ -97,7 +100,7 @@ sort guardians.Harness
   -- no label at all: unverified-ness is a different axis, riding on the type
   -- being opaque with `Checker.check` its only elimination.
   operation generate(self: C, llm: Llm, p: Prompt[Public]) -> Source
-    effects {External, Model, Error}
+    effects {External, Error}
 end
 
 sort guardians.Checker
@@ -115,7 +118,7 @@ sort guardians.Checker
   -- the second half is downward-closed, so naming a narrower capability does not
   -- evade it (see the file header, and vocabulary.anthill).
   operation check(self: C, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Model, -Permission[Model]}
+    effects {External, Error, -Permission[Model]}
 end
 
 namespace guardians
@@ -134,7 +137,7 @@ namespace guardians
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: Symbol, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
-    effects {External, Model, Error} =
+    effects {External, Error} =
       let p = h.render_task(spec, tools, feedback)
       chk.check(h.generate(llm, p), spec)
 
@@ -147,13 +150,13 @@ namespace guardians
   --
   -- This is where the whole pipeline's model authority enters, ONCE, and the row
   -- says so. `attempt` above is the same round with the capability already in
-  -- hand: same `{External, Model, Error}`, no `Permission`. The one line between
+  -- hand: same `{External, Error}`, no `Permission`. The one line between
   -- them is the entire difference between using authority and obtaining it.
   operation open_round(h: Harness, chk: Checker,
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
                        feedback: List[T = String]) -> CheckResult
-    effects {Permission[Model], External, Model, Error} =
+    effects {Permission[Model], External, Error} =
       let llm = LiveLlm.open(endpoint, model)
       attempt(h, llm, chk, spec, tools, feedback)
 end
@@ -169,7 +172,7 @@ sort guardians.FileHarness
                         feedback: List[T = String]) -> Prompt[Public]
     effects {Error}
   operation generate(self: FileHarness, llm: Llm, p: Prompt[Public]) -> Source
-    effects {External, Model, Error}
+    effects {External, Error}
   provides Harness
 end
 
@@ -179,7 +182,7 @@ sort guardians.LoadChecker
   import guardians.{Checker, Source, CheckResult, Model}
   entity load_checker
   operation check(self: LoadChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Model, -Permission[Model]}
+    effects {External, Error, -Permission[Model]}
   provides Checker
 end
 

@@ -28,8 +28,8 @@
 -- BUDGET IS DISCHARGED BY THE LOAD, NOT BY THIS FILE. The typer's
 -- override-refinement pass already bounds the override's declared row by the
 -- spec's and the body's inferred row by its own declaration —
--- `rejected/wide_row.anthill`, `wide_row_modify.anthill` and
--- `bad_checker.anthill` are the three programs that show it firing. Re-deriving
+-- `rejected/wide_row.anthill` and `wide_row_modify.anthill` are the programs
+-- that show it firing. Re-deriving
 -- it here from `OperationInfo.effects` would be strictly WEAKER, because that
 -- fact is forgeable and the typer's comparison is not. The row therefore
 -- appears in the verdict as REPORTED — read from the BASE, before the layer is

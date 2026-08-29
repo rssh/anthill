@@ -156,19 +156,25 @@ defines.
 
 The negative clause in that row is the strongest claim in the design and it is
 not expressible any other way: `-External[Commit]` says the agent provably
-never performs an irreversible external act. The companion claim,
-`-Model`, does not belong on `triage` — which consults a model twice — but on
-the operation that chooses a recipient, where it defeats the article's attack
-directly; [`two-flows.md`](two-flows.md) §2.3 works that through.
+never performs an irreversible external act. The companion claim about models does not belong on `triage` — which consults a
+model twice — but on the operation that chooses a recipient, where it defeats the
+article's attack directly; [`two-flows.md`](two-flows.md) §2.3 works that through.
+*(2026-08-29: that claim was `-Model` and is now an EMPTY row, after the `Model`
+effect label was retired — see `effects.md` §"Six candidates the rule rejects".
+`-External[Commit]`, the sentence's actual subject, is untouched.)*
 A
 lacks-constraint is a **negative capability claim**, and a carrier discipline
 cannot make one — withholding a handle prevents reach, but the *signature* then
 says nothing, and the reader must audit a parameter list instead of reading a
 contract.
 
-> **Built, 2026-08-26, and it needed no family.** A project sort registered with
-> `fact Effect[T = Model]` is a label; `effects.md` §"Families" remains unfiled and
-> nothing here waited on it. What the negative claim DID need is a second half:
+> **Built, 2026-08-26; HALF OF IT RETIRED 2026-08-29.** A project sort registered
+> with `fact Effect[T = Model]` is a label, and `effects.md` §"Families" remains
+> unfiled. But `-Model` is gone: `Llm.complete` returns a sealed `LlmOutput`, so a
+> component handed a model cannot read what it answers, and denying the USE bought
+> nothing. ACQUISITION is the half that survived. The paragraph below is kept as
+> written because it is how the second half was reached; read `-Model denies the
+> use` as a claim that WAS true of the design, not one that is.
 > `-Model` denies the use, and until
 > [064](../../../../docs/proposals/064-permission-effect.md) nothing denied the
 > ACQUISITION, so a component that minted its own model satisfied it.

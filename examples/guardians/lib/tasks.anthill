@@ -12,7 +12,7 @@
 -- ================================================================
 namespace guardians
   import anthill.prelude.{List, Error, External}
-  import guardians.{Text, Prompt, Llm, Message, Observed, Model,
+  import guardians.{Text, Prompt, Llm, Message, Observed, Model, LlmOutput,
                     prompt_with, join_texts, bodies_of}
   import guardians.TrustLevel.{Untrusted, Public}
 
@@ -49,8 +49,8 @@ namespace guardians
   -- one alike, and claims no relationship between what goes in and what comes
   -- back, because there is none.
   operation summarize(llm: Llm, msgs: List[T = Text[Untrusted]])
-      -> Text[Untrusted]
-    effects {External, Model, Error} =
+      -> LlmOutput[Text[Untrusted]]
+    effects {External, Error} =
       let content = join_texts(msgs)
       let p = prompt_with(
         instruction: text(raw: "Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable."),
@@ -65,5 +65,5 @@ namespace guardians
   -- in the host binding and is the example's largest remaining fiction.
   operation observe(llm: Llm, m: Message[Untrusted])
       -> List[T = Observed]
-    effects {External, Model, Error}
+    effects {External, Error}
 end

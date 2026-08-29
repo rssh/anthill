@@ -29,7 +29,7 @@ sort guardians.Triage
   -- and the override's are distinct symbols. See docs/design/measured.md C8.
   operation run(self: C, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error}
+    effects {External, Error}
 end
 
 namespace guardians

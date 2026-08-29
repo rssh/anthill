@@ -74,28 +74,26 @@ enum guardians.Message
     body     : Text[Trust])
 end
 
--- An unforgeable declassification token. NO entity constructor, so no
--- generated code can build one — authority lives in the value (054).
-sort guardians.Approval
-end
-
--- `Model` WEARS TWO HATS, and after proposal 064 that is the point rather than
--- an ambiguity. It is
+-- `Model` IS A CAPABILITY AND NOTHING ELSE: the argument of `Permission[Model]`,
+-- "this operation ACQUIRES the authority to consult a model"
+-- (kernel-language.md §5.5, proposal 064). It is not an effect kind and is not
+-- registered as one.
 --
---   * a project-defined EFFECT LABEL — "this operation consults a model" — not
---     a kernel effect (it is authority, not semantics: docs/design/effects.md),
---     so it lives as project vocabulary and is registered below; and
---   * a CAPABILITY, the argument of `Permission[Model]` — "this operation
---     ACQUIRES the authority to consult a model" (kernel-language.md §5.5).
+-- IT WORE TWO HATS ONCE, and the second is worth recording because losing it was
+-- the point. `Model` was also a project-defined EFFECT LABEL — "this operation
+-- consults a model" — so that `-Model` could deny consultation to a checker
+-- handed an `Llm` it should not have. `docs/design/effects.md` rejected that hat
+-- on its own terms ("semantics: `{External, Error}`, and nothing more"), and
+-- `prelude/external.anthill` forbids the shape outright: "ONE effect, not one per
+-- capability (no Http / Db / Forge effects) — what distinguishes external
+-- capabilities is AUTHORITY, which lives in CARRIERS".
 --
--- THE TWO CLAIMS ARE DIFFERENT AND THE CHECKER NEEDS BOTH, which is why this
--- example carries both rather than migrating from one to the other. `-Model`
--- says the body never consults a model — it catches a checker HANDED an `Llm`
--- it should not have (rejected/bad_checker.anthill smuggles one in its own
--- carrier). `-Permission[Model]` says the body never acquires one — it catches
--- a checker that MINTS (rejected/minting_checker.anthill), which the use-site
--- label cannot see, since minting is not consulting. Neither subsumes the
--- other, and llm.anthill states where each bites.
+-- WHAT MADE IT DELETABLE was making the model's ANSWER unreadable rather than the
+-- call unavailable. `LlmOutput` (llm.anthill) is sealed, so a component that
+-- consults a model receives a token it can neither project nor match: the call
+-- teaches it nothing, and being steered requires reading the answer. The row
+-- label was approximating that property by forbidding the call; the type now
+-- holds it directly, and one denial — of ACQUISITION — is all that is left.
 sort guardians.Model
 end
 
@@ -155,13 +153,18 @@ namespace guardians
   import anthill.prelude.{String, List, Unit, Error, External, Effect}
   import guardians.TrustLevel.{Untrusted, Public}
   import anthill.prelude.{Permission}
-  import guardians.{Text, Message, Approval, Model, Filesystem, Outbox}
+  import guardians.{Text, Message, Model, Filesystem, Outbox}
 
-  -- The two project effect KINDS. `FrontierModel` is deliberately absent: it is
-  -- a CAPABILITY (an argument of `Permission[…]`) and never a bare row label, so
-  -- registering it would claim a use it has none of. `Permission` itself is
-  -- registered by the prelude.
-  fact Effect[T = Model]
+  -- The project's one effect KIND. `Model` and `FrontierModel` are deliberately
+  -- absent: both are CAPABILITIES (arguments of `Permission[…]`) and never bare
+  -- row labels. `Model` WAS registered here, and the reason it no longer is, is
+  -- `LlmOutput` (llm.anthill): a sealed wrapper makes model output unreadable, so
+  -- a component that consults a model learns nothing from it and cannot be
+  -- steered by it — which is the property `-Model` approximated by forbidding
+  -- the call. With the property held by a type, the label bought nothing, and
+  -- the prelude's rule against per-capability effects
+  -- (`prelude/external.anthill`: "no Http / Db / Forge effects") is restored.
+  -- `Permission` itself is registered by the prelude.
   fact Effect[T = Filesystem]
 
   entity MessageId(value: String)
@@ -174,7 +177,7 @@ namespace guardians
   -- it. That is what defeats the injection's CONCEALMENT half, which
   -- freezing a tool sequence does not touch (docs/design/two-flows.md §1.3).
   entity Verdict(message: MessageId, label: String)
-  entity Report(items: List[Verdict], summary: Text[Untrusted])
+  entity Report(items: List[Verdict], summary: LlmOutput[Text[Untrusted]])
 
   -- ---------------- tools that consult no model ----------------
 
@@ -258,17 +261,36 @@ namespace guardians
   operation send_email(to: Address, body: Text[Public]) -> Unit
     effects {External, Error, (Permission[Outbox] :- external_addr(to))}
 
-  -- Widening is always safe and needs no licence.
-  operation widen(body: Text[Public]) -> Text[Untrusted]
+  -- NO TRANSITIONS BETWEEN LEVELS, and their removal is a finding rather than a
+  -- tidy-up. `widen` (Public -> Untrusted, free) and `declassify` (the other way,
+  -- guarded by an `Approval` token) were both declared and NEITHER WAS EVER
+  -- CALLED — not in `lib/`, not in a fixture, not in a test. `declassify` could
+  -- not be: nothing in the example mints an `Approval`, so no program could write
+  -- the call even if it wanted to.
+  --
+  -- WHAT MADE THEM WORSE THAN UNUSED is that a free route exists beside them:
+  -- `text(raw: u.raw)` re-labels any `Text[Untrusted]` as `Text[Public]` in one
+  -- line and loads clean, because `text`'s constructor is public and the label is
+  -- phantom. So the guarded door was unreachable while the window stood open, and
+  -- declaring the door suggested a discipline the example does not enforce.
+  --
+  -- What the lattice still does, and it is measured: it pins a value's label AT A
+  -- SINK. `send_email(body: Text[Public])` refuses `Text[Untrusted]`
+  -- (`rejected/leak.anthill`). What it does not do is confine how a label CHANGES.
+  -- Sealing `Text` the way `LlmOutput` is sealed would close that, at the cost of
+  -- moving labelling to the boundary — `fixtures/mailbox.anthill` builds
+  -- `Text[Untrusted]` in FACTS, which cannot call a smart constructor (measured:
+  -- 10 sites).
 
-  -- The only route the other way, and it needs the token.
-  operation declassify(body: Text[Untrusted], approval: Approval)
-      -> Text[Public]
-
-  -- The recipient is chosen WITHOUT consulting a model. `-Model` is the
-  -- claim that defeats the article's attack at its root: the injection's
-  -- whole strategy is to make a model name `it@othercorp.com`.
-  -- NB the space in `{ -Model }` is REQUIRED: `{-` opens a block comment.
+  -- The recipient is chosen WITHOUT consulting a model, which defeats the
+  -- article's attack at its root: the injection's whole strategy is to make a
+  -- model name `it@othercorp.com`.
+  --
+  -- THE EMPTY ROW IS THE CLAIM, and it is stronger than the `-Model` this used to
+  -- carry. A pure row admits no `External`, no `Permission[Model]` — so this body
+  -- cannot mint a model, and cannot be handed one it could use, since the only
+  -- thing a model returns is an `LlmOutput` nothing here can read. `-Model`
+  -- denied one route; `{}` denies every route there is.
   operation choose_recipient(r: Report, box: Mailbox) -> Address
-    effects { -Model }
+    effects {}
 end

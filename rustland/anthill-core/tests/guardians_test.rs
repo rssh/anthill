@@ -377,7 +377,7 @@ fn exfiltrating_agent_is_refused_by_the_label() {
     // `send_email` wants Public. The summarizer does not launder.
     assert_refused(
         "leak",
-        "expected Text[Trust = Public], got Text[Trust = Untrusted]",
+        "expected Text[Trust = Public], got LlmOutput[T = Text[Trust = Untrusted]]",
     );
 }
 
@@ -524,37 +524,18 @@ fn the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed() {
 
 #[test]
 fn honest_checker_is_accepted() {
-    // CONTROL for the FOUR refused checkers below. Same spec, same declared row
-    // including both denials, and no route to a model of any kind — so `-Model`
-    // and `-Permission[Model]` are jointly satisfiable and do not refuse every
-    // checker on sight. Without this, four refusals are consistent with a checker
-    // that rejects anything mentioning a model.
+    // CONTROL for the refused checkers below. Same spec, same declared row, and
+    // no route to a model of any kind — so `-Permission[Model]` is satisfiable and
+    // does not refuse every checker on sight. Without this, the refusals are
+    // consistent with a checker that rejects anything mentioning a model.
+    //
+    // ONE FEWER REFUSAL THAN BEFORE. `bad_checker` — handed an `Llm` in its own
+    // carrier, and calling it — was refused by `-Model`, and is now ACCEPTED: with
+    // `LlmOutput` sealed it obtains a token it cannot read, so the call teaches it
+    // nothing and cannot steer it. Consulting became harmless, so it stopped being
+    // refused; `rejected/bad_checker.anthill` went with the label.
     let errs = errors_for("checker");
     assert!(errs.is_empty(), "agent/checker.anthill should load: {errs:#?}");
-}
-
-#[test]
-fn model_consulting_checker_is_refused_by_lacks_model() {
-    // The design's sharpest claim: the checker must PROVABLY not consult a
-    // model, or the guard is as steerable as the thing it guards.
-    //
-    // `Checker.check` is handed no Oracle, so a generated checker cannot reach
-    // one through its parameters. This fixture defeats that by SMUGGLING an
-    // Oracle in its own carrier and reaching it through `self` — and is caught
-    // anyway, on a DIFFERENT leg from `capability_widening_is_refused_by_the_row`:
-    // the row it DECLARES is the spec's, and it is the row INFERRED FROM THE BODY
-    // that carries `Model`. Asserting the body-leg needle rather than
-    // "effects must not widen" is what keeps this from silently degrading into a
-    // duplicate of the declared-row test, which is what it used to be.
-    //
-    // THE NEEDLE SHARPENED (WI-20260825-CBRSW), and the refusal did not move: this
-    // used to read `got undeclared effect: Model`, which understated it. `check`
-    // does not merely fail to declare `Model` — its row DENIES it, and the two
-    // failures have different repairs (an undeclared effect is fixed by adding the
-    // label; a denied one cannot be). The body leg now says which of the two it is,
-    // and `denied effect` is a needle no other leg can produce — so this row is now
-    // pinned against the declared-row test twice over.
-    assert_refused("bad_checker", "got denied effect: Model");
 }
 
 #[test]
@@ -641,11 +622,14 @@ fn the_legitimate_acquisition_path_is_accepted() {
 
 #[test]
 fn minting_checker_is_refused_by_lacks_permission() {
-    // THE EXACT MIRROR of the test above, and the reason `Checker.check` carries
-    // TWO denials rather than one (proposal 064). `bad_checker` holds an `Llm` it
-    // was handed and CONSULTS it; this one holds none — its carrier is bare `mk`,
-    // so an audit of "what was this checker given" comes back empty — and MINTS
-    // one instead.
+    // THE ONE ROUTE TO A MODEL STILL WORTH DENYING (proposal 064). This checker
+    // holds no `Llm` — its carrier is bare `mk`, so an audit of "what was this
+    // checker given" comes back empty — and MINTS one instead.
+    //
+    // IT USED TO HAVE A MIRROR. `bad_checker` was handed an `Llm` and CONSULTED
+    // it, refused by a second denial `-Model`. Sealing what `complete` returns
+    // (`LlmOutput`) made consulting harmless, so that denial and that fixture are
+    // both gone and `Checker.check` carries one denial rather than two.
     //
     // NEITHER LABEL SEES THE OTHER'S PROGRAM, which is what makes this a test
     // rather than a duplicate. Minting is not consulting, so `Model` is never
@@ -949,7 +933,7 @@ fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
     // The row REPORTED, read from the base before the candidate was loaded. Exact,
     // because the whole point of reading it from the base is that a candidate which
     // redeclares the spec cannot widen what the verdict cites.
-    assert_eq!(v.budget, vec!["External", "Model", "Error"]);
+    assert_eq!(v.budget, vec!["External", "Error"]);
 }
 
 #[test]
@@ -1006,7 +990,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
 
     let v = read_verdict(&interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
-    assert_eq!(v.budget, vec!["External", "Model", "Error"]);
+    assert_eq!(v.budget, vec!["External", "Error"]);
 }
 
 #[test]
@@ -1039,7 +1023,7 @@ fn harness_rejects_the_exfiltrating_agent_with_a_repairable_diagnostic() {
     // merely that something failed — is what pins the repair loop as usable.
     let errs = check_candidate(&agent_source("leak")).expect_err("must be rejected");
     assert!(
-        errs.iter().any(|e| e.contains("expected Text[Trust = Public], got Text[Trust = Untrusted]")),
+        errs.iter().any(|e| e.contains("expected Text[Trust = Public], got LlmOutput[T = Text[Trust = Untrusted]]")),
         "expected the taint diagnostic; got: {errs:#?}"
     );
 }
@@ -1067,7 +1051,7 @@ sort guardians.agent.MisprojectingTriage
 
   operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Model, Error} =
+    effects {External, Error} =
       let msgs = fetch_mail(box)
       Report(items:   verdicts_of(bodies_of(msgs)),
              summary: summarize(llm, bodies_of(msgs)))
@@ -1097,7 +1081,7 @@ fn a_model_cannot_mint_releasable_text() {
     // were blind to it: the exploit uses no untrusted input at all.
     assert_refused(
         "minting",
-        "expected Text[Trust = Public], got Text[Trust = Untrusted]",
+        "expected Text[Trust = Public], got LlmOutput[T = Text[Trust = Untrusted]]",
     );
 }
 
@@ -1248,7 +1232,7 @@ fn redeclaring_a_trusted_name_is_refused_by_the_naming_rule() {
           import guardians.{Mailbox, Report, Model, Llm, Filesystem}
           sort C = ?
           operation run(self: C, box: Mailbox, llm: Llm) -> Report
-            effects {External, Model, Error, Filesystem}
+            effects {External, Error, Filesystem}
         end
     "#,
     )
@@ -1277,7 +1261,7 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
 
           operation run(self: TidyTriage, box: Mailbox, llm: Llm) -> Report
             ensures mentions_all(result)
-            effects {External, Model, Error} =
+            effects {External, Error} =
               let msgs = fetch_mail(box)
               Report(items:   verdicts_of(msgs),
                      summary: summarize(llm, bodies_of(msgs)))
@@ -1374,7 +1358,7 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
 
           operation run(self: ShadowTriage, box: Mailbox, llm: Llm) -> Report
             ensures mentions_all(result)
-            effects {External, Model, Error} =
+            effects {External, Error} =
               let msgs = fetch_mail(box)
               Report(items:   verdicts_of(msgs),
                      summary: summarize(llm, bodies_of(msgs)))
