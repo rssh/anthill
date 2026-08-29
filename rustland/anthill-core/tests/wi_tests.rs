@@ -1498,3 +1498,6 @@ mod wi_ybbc3_compound_expression_positions_test;
 
 #[path = "include/typer_capability_matrix_test.rs"]
 mod typer_capability_matrix_test;
+
+#[path = "include/wi_9tgp7_branch_expected_flex_var_test.rs"]
+mod wi_9tgp7_branch_expected_flex_var_test;

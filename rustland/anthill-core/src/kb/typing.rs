@@ -52445,6 +52445,36 @@ fn meet_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) ->
     combine_parameterized_same_base(kb, LatticeDir::Glb, a, b)
 }
 
+/// WI-20260829-9TGP7: is this expected type NO REAL BOUND on a branching expression's
+/// branches — a wildcard every type conforms to, rather than a constraint?
+///
+/// TWO FORMS, and before this predicate only the first was recognized. `type_var` is the
+/// declared wildcard the typer already treated as "compatible with anything"
+/// ([`types_compatible`]'s first arm). `FlexVar` is the ENGINE's own unbound logical
+/// variable — `map`'s `Dst` at a call site that has not yet been told what the callback
+/// returns — and it is exactly as unconstraining, but [`types_compatible`] has no arm for
+/// it at all: `type_dispatch_name_view` answers `None` for a variable head (deliberately,
+/// WI-1079 — the structural arms are not where a variable is decided), so the subtype
+/// relation fell to its `_ => false` and read an UNCONSTRAINED expectation as a MISMATCH.
+///
+/// `Skolem` is NOT here and that is the point of naming the two separately: an opened
+/// existential / a rigidified parameter unifies with nothing but itself, so it IS a real
+/// bound and a branch that does not match it must still be refused. MEASURED, not assumed
+/// — an operation's declared `[T]` arrives here as a `Skolem` (`rigidify_op_type_params`,
+/// WI-392, rigidifies it for the body check), so `if b then x else 1` at `-> T` still
+/// refuses the `Int64` branch while `if b then x else y` still loads. Both rows are
+/// `wi_9tgp7_branch_expected_flex_var_test::a_rigid_expectation_still_refuses`.
+///
+/// NOT [`is_type_variable`] (~14k lines earlier in this file, not nearby — the first
+/// version of this note said "one screen up" and was wrong), the three-way test that answers a
+/// DIFFERENT question — "is this position generic at all", for the list-literal lowering,
+/// where a skolem and a flex var carry the same (absent) information. Here they do not: a
+/// skolem BOUNDS its branches and a flex var does not, so the two predicates must disagree
+/// on `Skolem` and a future reader merging them would silently delete the refusal above.
+fn expected_is_unconstraining(kb: &KnowledgeBase, exp: &Value) -> bool {
+    matches!(type_head(kb, exp), TypeHead::TypeVar(_) | TypeHead::FlexVar(_))
+}
+
 /// WI-287: the result type of a branching expression (`match` / `if`),
 /// computed from *every* branch body instead of taking branch 0 (the old
 /// soundness gap). `construct` names the form for diagnostics ("match",
@@ -52462,6 +52492,11 @@ fn meet_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) ->
 /// supertype and no expected type to bound them (e.g. `Int` vs
 /// `String`) are a type error, reported against the branch that breaks
 /// the join.
+///
+/// WI-20260829-9TGP7: AN EXPECTED TYPE THAT IS A BARE VARIABLE IS NOT A BOUND, and this
+/// is one of the few expression forms that ENFORCES its top-down hint rather than ignoring
+/// it — so it is the one that had to learn the difference. See
+/// [`expected_is_unconstraining`]; the three arms it guards are marked below.
 fn compute_branch_join_type(
     kb: &mut KnowledgeBase,
     branch_tys: &[(Value, Option<Span>)],
@@ -52495,7 +52530,16 @@ fn compute_branch_join_type(
     // (`types_compatible` covers entity→sort and `requires`-refine).
     // This is the enforcement the old code skipped — it only ever
     // type-checked the synthesized type, which was branch 0.
-    if let Some(exp) = &expected {
+    // WI-20260829-9TGP7: ...unless the expectation is no bound at all. An unbound
+    // inference variable (`map`'s `Dst`, before the callback has told the call site what
+    // it returns) constrains nothing — it is a HINT flowing top-down, and the binding that
+    // makes it concrete happens ABOVE, when the lambda's arrow unifies with the declared
+    // `(x: Element) -> Dst`. Running the subtype relation against it here refused every
+    // branch, because `types_compatible` has no variable arm (see
+    // [`expected_is_unconstraining`]). The `Substitution` below is fresh and discarded, so
+    // there was never a binding to be had here either way.
+    let checked = expected.as_ref().filter(|e| !expected_is_unconstraining(kb, e));
+    if let Some(exp) = checked {
         for (bt, span) in branch_tys {
             // WI-335: each branch's conformance check is independent.
             let mut subst = Substitution::new();
@@ -52531,6 +52575,13 @@ fn compute_branch_join_type(
         // (and never collapse a precise join to a `type_var` hint).
         (None, None) => Ok(acc),
         (None, Some(exp)) => {
+            // WI-20260829-9TGP7: an unconstraining expectation loses to the join
+            // outright. `types_compatible(acc, ?Dst)` is false (no variable arm), so
+            // without this the precise `Int64` would be discarded for the bare `?Dst` —
+            // the very collapse the comment above forbids, one form over.
+            if expected_is_unconstraining(kb, &exp) {
+                return Ok(acc);
+            }
             let mut subst = Substitution::new();
             if types_compatible(kb, &mut subst, &acc, &exp) {
                 Ok(acc)
@@ -52546,7 +52597,10 @@ fn compute_branch_join_type(
         // to a wildcard — report the clash instead, mirroring the
         // type_var guard in the `(None, Some)` arm above.
         (Some((bt, span)), Some(exp)) => {
-            if type_dispatch_name_view(kb, &exp) == Some("type_var") {
+            // WI-20260829-9TGP7: `FlexVar` joins `type_var` here for the same reason the
+            // comment above gives — an unbound inference variable is no upper bound, so
+            // accepting it would collapse a genuine branch clash to a wildcard.
+            if expected_is_unconstraining(kb, &exp) {
                 Err(TypeError::TypeMismatch {
                     site: TypeError::here(),
                     span,

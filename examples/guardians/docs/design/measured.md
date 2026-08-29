@@ -926,6 +926,19 @@ in the vocabulary because a message's body genuinely *is* a projection and the
 label genuinely does ride along it — but it is now ordinary API rather than the
 thing standing between the design and a laundered label.
 
+**And an agent can now write it out.** For a while the vocabulary's own comment
+claimed otherwise — that both spellings a generated agent would reach for were
+refused, so `bodies_of` was the *only* route from `List[Message[Untrusted]]` to
+`List[Text[Untrusted]]`. One of those refusals was an artefact of the probe (a
+qualified `Iterable.map` written into a file that does not import `Iterable`);
+the other was WI-20260829-9TGP7, `map`'s free result parameter being used as a
+BOUND on a `match` arm rather than as a hint, and it is fixed.
+`msgs.map(lambda m -> m.body).collect()` and its match-destructure twin both load
+through the whole checker, and the article's attack stays refused through both —
+`guardians_test::an_agent_can_inline_the_body_projection`. That does not change
+the decision above; it removes the last reason the decision could have been
+mistaken for a necessity.
+
 ## C8 · A spec operation with `ensures` had no possible provider · **FIXED**
 
 **Scenario.** Write the tier-2 obligation the design most wants —

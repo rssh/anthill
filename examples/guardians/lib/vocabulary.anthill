@@ -188,32 +188,39 @@ namespace guardians
 
   -- Projection: a message's body carries the message's label.
   --
-  -- IT IS HERE BECAUSE A GENERATED AGENT CANNOT WRITE IT, which is the test for
-  -- what belongs in the trusted vocabulary at all. Both spellings an agent would
-  -- reach for are refused today (MEASURED against `good.anthill`, substituting
-  -- only this call):
+  -- IT IS ORDINARY API, and this comment used to claim the opposite. It said an
+  -- agent CANNOT write this projection — that both spellings it would reach for
+  -- are refused, so the trusted vocabulary has to supply what the agent cannot
+  -- express. Both halves of that were wrong, one per spelling, and both are now
+  -- measured in
+  -- `guardians_test::an_agent_can_inline_the_body_projection`:
   --
-  --   msgs.map(lambda m -> m.body)
-  --     -> `<unresolved receiver>.body … no such member (dot dispatch)`
-  --   msgs.map(lambda m -> match m case message(i, f, r, s, b) -> b)
-  --     -> `type mismatch in match.rule: expected ?Dst, got Text[Trust = ?_]`
+  --   msgs.map(lambda m -> m.body).collect()                      LOADS
+  --   msgs.map(lambda m -> match m case message(i,f,r,s,b) -> b)
+  --     .collect()                                                LOADS
   --
-  -- Two different gaps, neither closed by WI-20260828-N2FHM: that one grounded a
-  -- callback binder from the receiver's PROVISION for `Iterable.find`, and the
-  -- first failure above is its `map` twin; the second is `map`'s result parameter
-  -- failing to ground from a match arm. So this is not a convenience wrapper over
-  -- a projection the agent could inline — it is the ONLY route from
-  -- `List[Message[Untrusted]]` to `List[Text[Untrusted]]`.
+  -- The dot spelling's `<unresolved receiver>.body` was an artefact of the probe
+  -- that reported it: the substitution wrote `Iterable.map(…)` into a file that
+  -- does not import `Iterable`, and the refusal was about the missing import.
+  -- The match spelling's `expected ?Dst` was real and is WI-20260829-9TGP7,
+  -- fixed. What each spelling DOES still need is the `collect` — `map` yields a
+  -- lazy `MappedStream` and `summarize` wants a `List` (WI-20260829-N01PY, open).
   --
-  -- WHY IT WAS WRITTEN OUT ORIGINALLY, which is a different reason and no longer
-  -- the operative one: it surfaced C7, as a DISCIPLINE keeping every
-  -- label-polymorphic operation reachable only through arguments of exactly its
-  -- declared sort — because until WI-RKMD4 a sort mismatch against a parameter
-  -- containing a type variable was accepted SILENTLY, leaving the label variable
-  -- free to bind `Public` at the sink. The typer refuses that now (including a
-  -- mis-projected `List[Text[?t]]` handed to this signature), so the discipline
-  -- is enforced rather than conventional — but removing the operation would
-  -- still leave the agent with no way to say it.
+  -- SO WHY IT STAYS. `docs/design/measured.md` settled this under C7 before the
+  -- fix and the answer did not change: a message's body genuinely IS a
+  -- projection and the label genuinely does ride along it, so the operation
+  -- earns its place as API. It is no longer the thing standing between the
+  -- design and a laundered label — the inlined spellings preserve `Untrusted`,
+  -- which the test above pins by re-running the article's attack through them.
+  --
+  -- WHY IT WAS WRITTEN OUT ORIGINALLY, which is a different reason again: it
+  -- surfaced C7, as a DISCIPLINE keeping every label-polymorphic operation
+  -- reachable only through arguments of exactly its declared sort — because
+  -- until WI-RKMD4 a sort mismatch against a parameter containing a type
+  -- variable was accepted SILENTLY, leaving the label variable free to bind
+  -- `Public` at the sink. The typer refuses that now (including a mis-projected
+  -- `List[Text[?t]]` handed to this signature), so the discipline is enforced
+  -- rather than conventional.
   operation bodies_of(msgs: List[Message[?t]])
       -> List[Text[?t]]
 

@@ -37,8 +37,8 @@
 //!
 //! WHAT THIS SLICE COVERS: callback binders. Hosts {find, filter, map, foldLeft,
 //! foldRight} crossed with call spellings {dot, unqualified, qualified} crossed with
-//! callback body forms {constant, identity, field dot, match destructure, nested call,
-//! dot call} — 84 cells, the 6 remaining combinations being identity under a PREDICATE
+//! callback body forms {constant, identity, field dot, match destructure, if, nested call,
+//! dot call} — 99 cells, the 6 remaining combinations being identity under a PREDICATE
 //! host, which the language cannot express and which the sweep reports as skipped rather
 //! than dropping. Plus three tables the sweep needs to mean anything: `lazy_stream_-
 //! consumption` (the measured gap, each cell paired with its dot-free control),
@@ -51,7 +51,10 @@
 //! `foldRight`, because its callback binds `(x, acc)` — the REVERSE of `foldLeft`'s
 //! `(acc, x)` — so a defect keyed on binder ORDER shows there and nowhere else. And the
 //! constant row, because it is the control for every other row at the same host and
-//! spelling.
+//! spelling. `if` joined the body forms with WI-20260829-9TGP7: it shares
+//! `compute_branch_join_type`'s checked mode with `match destructure`, so the two move
+//! together and a table carrying one of them under-reports that mode by half — which it
+//! did, silently, for as long as the `match` cell was the file's one red row.
 //!
 //! ONE AXIS WAS TRIED AND DROPPED, with the reason recorded rather than the axis silently
 //! absent: a label-parameterized receiver (`Msg[Trust]` with a `Txt[Trust]` field, the
@@ -60,12 +63,13 @@
 //! mis-measurement that made it look necessary.
 //!
 //! WHAT A CELL CAN AND CANNOT WITNESS. A verdict here is about LOADING, and a sweep is
-//! the only thing that can ask 84 questions cheaply — but `LOADS` is not `works`, and
+//! the only thing that can ask 99 questions cheaply — but `LOADS` is not `works`, and
 //! this file must not be read as if it were. Driving each capability to a value is the
 //! per-WI files''' job, and `wi_n2fhm_find_callback_dot_test` does exactly that for the
-//! `find` callback dot (`first_flagged_name` asserts the selected row). A cell that goes
-//! green here without a driven test somewhere is evidence that the program type-checks
-//! and nothing more.
+//! `find` callback dot (`first_flagged_name` asserts the selected row), as
+//! `wi_9tgp7_branch_expected_flex_var_test` does for the `match` and `if` bodies under
+//! `map` (it evaluates the mapped list). A cell that goes green here without a driven test
+//! somewhere is evidence that the program type-checks and nothing more.
 //!
 //! SLICE 2 — WHAT SITS IN THE POSITION x HOW ITS TYPE IS REACHED, the ticket's other axis
 //! pair. Slice 1 swept one POSITION (a lambda callback) across its hosts; slice 2 sweeps
@@ -241,6 +245,13 @@ enum Body {
     Identity,
     FieldDot,
     MatchDestructure,
+    /// WI-20260829-9TGP7 — THE OTHER BRANCHING FORM, and it was red for the same reason
+    /// `match destructure` was while nothing in this table asked about it. `match` and
+    /// `if` share ONE checked-mode implementation (`compute_branch_join_type`), so a
+    /// defect in it presents at both and a table carrying only one of them under-reports
+    /// its own subject by half. It is a row and not a footnote for exactly the reason
+    /// `Constant` is.
+    Branch,
     NestedCall,
     DotCall,
 }
@@ -252,6 +263,7 @@ impl Body {
             Body::Identity => "identity (CONTROL)",
             Body::FieldDot => "field dot",
             Body::MatchDestructure => "match destructure",
+            Body::Branch => "if",
             Body::NestedCall => "nested call",
             Body::DotCall => "dot call",
         }
@@ -277,6 +289,11 @@ impl Body {
             (Body::FieldDot, false) => "r.a",
             (Body::MatchDestructure, true) => "match r case row(x, f) -> f",
             (Body::MatchDestructure, false) => "match r case row(x, f) -> x",
+            // Two branches of the SAME type, so the row asks only about the checked-mode
+            // conformance against the expectation — not about the join, which
+            // `branch_types_that_clash_are_still_refused` is where it belongs.
+            (Body::Branch, true) => "if r.flag then true else false",
+            (Body::Branch, false) => "if r.flag then 1 else 2",
             (Body::NestedCall, true) => "is_set(r)",
             (Body::NestedCall, false) => "a_of(r)",
             (Body::DotCall, true) => "r.is_set()",
@@ -290,6 +307,7 @@ const BODIES: &[Body] = &[
     Body::Identity,
     Body::FieldDot,
     Body::MatchDestructure,
+    Body::Branch,
     Body::NestedCall,
     Body::DotCall,
 ];
@@ -498,52 +516,50 @@ fn run_with(cells: Vec<(String, String, Verdict)>, build: fn(&str) -> String) {
 
 // ── THE CALLBACK-BINDER SWEEP ────────────────────────────────────────────────
 
-/// `Iterable.map`'s RESULT type parameter is not reconciled against a match arm's type
-/// — the one red row of the sweep below, and the gap WI-20260829-9TGP7 tracks.
-const MAP_MATCH_GAP: Verdict = Verdict::KnownGap {
-    wi: "WI-20260829-9TGP7",
-    expect: "expected ?Dst",
-};
-
-/// 84 cells: {find, filter, map, foldLeft, foldRight} x {dot, unqualified, qualified} x
-/// {constant, identity, field dot, match destructure, nested call, dot call}, less the 6
-/// identity-under-a-predicate-host combinations the language cannot express.
+/// 99 cells: {find, filter, map, foldLeft, foldRight} x {dot, unqualified, qualified} x
+/// {constant, identity, field dot, match destructure, if, nested call, dot call}, less the
+/// 6 identity-under-a-predicate-host combinations the language cannot express.
 ///
-/// 81 GREEN, 3 RED. The green is a CHARACTERIZATION rather than a null result — but read
-/// it as "every one of these HOSTS AND DECLARATIONS", not "every host in every spelling".
-/// The two are different because the spelling axis co-varies with the declaration it
-/// resolves to (`xs.map` reaches `FiniteCollection.map`, `map(xs, …)` reaches
-/// `Iterable.map`, `xs.find` reaches `Stream.find`), which
-/// `each_spelling_resolves_to_a_named_declaration` pins. The first version of this note
-/// claimed the spelling reading and /code-review measured it false; what the sweep
-/// actually says is that N2FHM's repair reached every one of the SEVEN declarations these
-/// cells touch — which is still what nobody could say when `find` was fixed and `filter`
-/// was believed broken, and is a wider statement than the one it replaces. The 3 red are `MAP_MATCH_GAP`, which this sweep FOUND — the
-/// discovery the ticket was written to get, on the first run. Any cell that moves names
-/// the host, the spelling and the body form that moved.
-/// THE SWEEP LOCALIZED THIS; IT DID NOT DISCOVER IT, and the first version of this note
-/// claimed otherwise (found by /code-review). WI-20260829-9TGP7's original description,
-/// written before this file existed, already records the cell verbatim —
+/// ALL GREEN, and 6 of them only since WI-20260829-9TGP7 was fixed — 3 that this table
+/// carried and reported RED, and 3 (`map` / `if`) it did not carry at all. The green is a
+/// CHARACTERIZATION rather than a null result — but read it as "every one of these HOSTS
+/// AND DECLARATIONS", not "every host in every spelling". The two are different because
+/// the spelling axis co-varies with the declaration it resolves to (`xs.map` reaches
+/// `FiniteCollection.map`, `map(xs, …)` reaches `Iterable.map`, `xs.find` reaches
+/// `Stream.find`), which `each_spelling_resolves_to_a_named_declaration` pins. The first
+/// version of this note claimed the spelling reading and /code-review measured it false;
+/// what the sweep actually says is that N2FHM's repair reached every one of the SEVEN
+/// declarations these cells touch — which is still what nobody could say when `find` was
+/// fixed and `filter` was believed broken, and is a wider statement than the one it
+/// replaces. Any cell that moves names the host, the spelling and the body form that moved.
+///
+/// WHAT THE RED ROWS WERE, kept because the neighbourhood is the finding and a table with
+/// nothing red does not say on its own what it once separated. WI-20260829-9TGP7's
+/// original description already recorded the cell verbatim —
 /// `msgs.map(lambda m -> match m case message(i,f,r,s,b) -> b)` → "expected ?Dst, got
-/// Text[Trust = ?_]". What is new here is the NEIGHBOURHOOD, which is what a sweep can
-/// give and a single probe cannot:
+/// Text[Trust = ?_]"; this sweep LOCALIZED it (it did not discover it, and the first
+/// version of this note claimed otherwise — found by /code-review):
 ///
-///   map / {dot, unqualified, qualified} / match destructure   RED, `expected ?Dst, got Int64`
+///   map / {dot, unqualified, qualified} / match destructure   WAS RED, `expected ?Dst, got Int64`
+///   map / {…} / if                                            WAS RED, same message
+///                                                                 (added by the fix; the
+///                                                                  table had no `if` row)
 ///   map / {…} / {constant, field dot, nested call, dot call}  GREEN  ⇒ not the callback binder
 ///   foldLeft / {…} / match destructure                        GREEN  ⇒ not "has a result param"
 ///                                                                      (`foldLeft[Acc]` has one)
 ///   find, filter / every body                                 GREEN  ⇒ not callbacks at large
 ///
-/// THAT SET ANSWERS WI-20260829-9TGP7'S OPEN QUESTION. Its spelling (b),
-/// `msgs.map(lambda m -> match m case message(…) -> b)` → "expected ?Dst, got
-/// Text[Trust = ?_]", is the same cell. The ticket asks whether (b) is a CONSEQUENCE of
-/// (a) — "if `Element` never grounds, the match arm has nothing to reconcile `?Dst`
-/// against" — or independent. It is INDEPENDENT: `Element` grounds fine here, which the
-/// green `map / field dot` cell says directly, and `?Dst` still fails. The two must be
-/// fixed separately.
+/// THAT SET ANSWERED WI-20260829-9TGP7'S OPEN QUESTION, which asked whether spelling (b)
+/// was a CONSEQUENCE of (a) — "if `Element` never grounds, the match arm has nothing to
+/// reconcile `?Dst` against" — or independent. It was INDEPENDENT: `Element` grounds fine
+/// here, which the green `map / field dot` cell said directly, and `?Dst` failed anyway.
+/// (a) is WI-20260829-N01PY and is still open; `lazy_stream_consumption` below is its row.
+/// The root and its measurement are `wi_9tgp7_branch_expected_flex_var_test`.
+///
 /// ONE TEST PER HOST rather than one for the table, so libtest runs them on separate
-/// threads: every cell is an independent full-stdlib load, and 84 of them serialized cost
-/// ~55s of wall time that nothing needed to be serial (found by /code-review). A failure
+/// threads: every cell is an independent full-stdlib load, and the 84 cells there were
+/// then cost ~55s of wall time serialized that nothing needed to be serial (found by
+/// /code-review). A failure
 /// still names host / spelling / body, and `run` still reports every failing cell within
 /// a host rather than stopping at the first.
 fn sweep_host(host: &str) {
@@ -564,12 +580,10 @@ fn sweep_host(host: &str) {
                 };
                 let body_expr = if raw == "IDENTITY" { h.identity } else { raw };
                 let cb = format!("lambda {} -> {}", h.binder, body_expr);
-                // THE ONE RED ROW, and this sweep is what localized it. See
-                // `MAP_MATCH_GAP` above.
-                let want = match (h.name, b) {
-                    ("map", Body::MatchDestructure) => MAP_MATCH_GAP,
-                    _ => Verdict::Loads,
-                };
+                // EVERY CELL LOADS. It has been true only since WI-20260829-9TGP7; the
+                // six rows that did not are named in the note above, and the back-out
+                // that fails them is stated at `wi_9tgp7_branch_expected_flex_var_test`.
+                let want = Verdict::Loads;
                 cells.push((
                     format!("{} / {} / {}", h.name, sp.name(), b.name()),
                     sp.call(h, &cb),
@@ -578,12 +592,12 @@ fn sweep_host(host: &str) {
             }
         }
     }
-    // 3 spellings x 6 bodies, less the identity cells a PREDICATE host cannot express.
-    let want_cells = if h.predicate { 15 } else { 18 };
+    // 3 spellings x 7 bodies, less the identity cells a PREDICATE host cannot express.
+    let want_cells = if h.predicate { 18 } else { 21 };
     assert_eq!(
         cells.len(),
         want_cells,
-        "{host}: 3 spellings x 6 bodies, less {} inexpressible",
+        "{host}: 3 spellings x 7 bodies, less {} inexpressible",
         skipped.len()
     );
     if !skipped.is_empty() {
@@ -624,7 +638,7 @@ fn sweep_fold_right() {
 /// AND `swept` IS THE WEAK LINK, stated rather than pretended away (found by
 /// /code-review): it is hand-maintained, so someone who adds a `Host` and dutifully adds
 /// its name here but forgets the `#[test] fn sweep_<host>()` still gets a green guard and
-/// 18 cells that never execute. Deriving the list from the test functions would close it
+/// 21 cells that never execute. Deriving the list from the test functions would close it
 /// and needs a registry this file does not otherwise want; until then the guard catches
 /// the common half (a `Host` added and nothing else touched) and this note names the half
 /// it does not.
@@ -714,7 +728,7 @@ fn lazy_stream_consumption() {
 
 /// EVERY VERDICT MUST BE ABLE TO FAIL, and nothing above proves that: the two tables are
 /// all-passing by construction, so a `check` that returned `Ok` unconditionally — or a
-/// `KnownGap` arm that forgot the closed-gap branch — would leave all 110 table cells vacuous
+/// `KnownGap` arm that forgot the closed-gap branch — would leave every table cell vacuous
 /// and green forever. That is precisely the failure this file exists to prevent, so it
 /// would be an odd thing to ship inside it.
 ///
@@ -923,8 +937,9 @@ fn refusals_that_should_stand() {
 /// So the rows below carry the label parameter the guardians `Message[Trust]` has, and
 /// they LOAD — in every spelling, exactly as the plain `Row` fixture does. The label
 /// parameter separates nothing, which is why the main table does not carry it as an axis.
-/// The one red cell it does produce is `map` + match destructure, which is already in the
-/// sweep under the plain fixture — the same gap, not a new one.
+/// The one red cell it used to produce was `map` + match destructure, which was already in
+/// the sweep under the plain fixture — the same gap (WI-20260829-9TGP7), not a new one, and
+/// fixed with it.
 #[test]
 fn a_label_parameterized_receiver_changes_no_verdict() {
     const SRC: &str = r#"
@@ -1342,9 +1357,12 @@ fn each_spelling_resolves_to_a_named_declaration() {
         ("foldRight", Spelling::Unqualified, "anthill.prelude.List.foldRight"),
         // The QUALIFIED fold columns, missing from the first cut while the doc table above
         // asserted them (found by /code-review). Without them, `List.foldLeft(xs, …)`
-        // could start resolving elsewhere and 12 sweep cells would silently change which
-        // declaration they measure with this guard still green — the exact confound the
-        // test exists to rule out.
+        // could start resolving elsewhere and 14 sweep cells (2 hosts x 1 spelling x 7 body
+        // forms) would silently change which declaration they measure with this guard
+        // still green — the exact confound the test exists to rule out. THE FIGURE IS
+        // DERIVED FROM `BODIES`, so it moves when the axis does: it read 12 until
+        // WI-20260829-9TGP7 added the `if` row and nothing re-derived it (found by
+        // /code-review, the second stale count of that pair).
         ("foldLeft", Spelling::Qualified, "anthill.prelude.List.foldLeft"),
         ("foldRight", Spelling::Qualified, "anthill.prelude.List.foldRight"),
     ];

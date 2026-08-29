@@ -1028,6 +1028,62 @@ fn harness_rejects_the_exfiltrating_agent_with_a_repairable_diagnostic() {
     );
 }
 
+/// WI-20260829-9TGP7, AT THE VOCABULARY THAT FILED IT. The ticket's claim was that
+/// `bodies_of` is the ONLY route from `List[Message[Untrusted]]` to
+/// `List[Text[Untrusted]]` — that both spellings a generated agent would reach for are
+/// refused, so the trusted vocabulary has to supply what the agent cannot express. Half of
+/// that was a callback-dot gap that turned out never to have existed (a missing `Iterable`
+/// import in my own probe); the other half was real, and this is it: the match-destructure
+/// spelling failed with `expected ?Dst, got Text[Trust = ?_]`, because `map`'s free result
+/// parameter was being used as a BOUND on the arm rather than as a hint
+/// (`wi_9tgp7_branch_expected_flex_var_test` is the root and its controls).
+///
+/// BOTH SPELLINGS NOW LOAD, through the whole checker rather than through a bare load, so
+/// the claim being retired is retired against the thing that measured it. `collect`
+/// materializes `map`'s lazy `MappedStream` — handing that stream straight to `summarize`
+/// is WI-20260829-N01PY and a different gap, which is why both rows carry the call.
+///
+/// AND THE LABEL STILL RIDES ALONG, which is the half that matters here: the same
+/// substitution into `rejected/leak.anthill` is refused with the taint diagnostic,
+/// unchanged. An inlined projection that laundered `Untrusted` would defeat the example
+/// while loading clean — exactly the shape C7 was.
+///
+/// `bodies_of` STAYS. `docs/design/measured.md` settled that under C7 ("the mitigation
+/// stands, and is no longer a mitigation") and this only removes its last claim to being
+/// load-bearing: it is ordinary API over a projection an agent can now write.
+#[test]
+fn an_agent_can_inline_the_body_projection() {
+    // The two spellings the ticket names, each replacing the ONE `bodies_of(msgs)` call.
+    for (label, sub) in [
+        ("field dot", "msgs.map(lambda m -> m.body).collect()"),
+        (
+            "match destructure",
+            "msgs.map(lambda m -> match m case message(i, f, r, s, b) -> b).collect()",
+        ),
+    ] {
+        let good = agent_source("good").replace("bodies_of(msgs)", sub);
+        assert!(good.contains(sub), "{label}: the substitution did not apply");
+        let v = check_candidate(&good).unwrap_or_else(|e| {
+            panic!("an agent must be able to write the body projection inline ({label}): {e:#?}")
+        });
+        assert_eq!(v.carrier, "guardians.agent.GoodTriage", "{label}");
+
+        // THE CONTROL, and the reason this is not merely a loads-clean row: the article's
+        // attack must stay refused through the inlined projection.
+        let leak = agent_source("leak").replace("bodies_of(msgs)", sub);
+        assert!(leak.contains(sub), "{label}: the substitution did not apply");
+        let errs = check_candidate(&leak)
+            .err()
+            .unwrap_or_else(|| panic!("the leak must stay refused ({label})"));
+        assert!(
+            errs.iter().any(|e| e.contains(
+                "expected Text[Trust = Public], got LlmOutput[T = Text[Trust = Untrusted]]"
+            )),
+            "an inlined projection must preserve the Untrusted label ({label}); got: {errs:#?}",
+        );
+    }
+}
+
 #[test]
 fn a_wrong_sort_at_a_label_polymorphic_parameter_is_refused() {
     // C7, AT THE VOCABULARY THAT FOUND IT (WI-RKMD4). Until it was fixed, an argument

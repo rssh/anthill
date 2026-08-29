@@ -3,9 +3,9 @@
 - id: WI-20260829-9TGP7-typer-a-field-dot-on-an
 - created: 2026-08-29T07:52:27Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-29T07:52:27Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-29T15:24:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -129,6 +129,7 @@ HOW THIS WAS FOUND, because it bears on WI-20260829-ARQ5X: by writing four
 one-line probes over one entity. Nothing in the 544-file test suite does that —
 seven files in the whole of `anthill-core/tests/include/` contain a dot inside a
 lambda at all, and none sweeps one construct across several hosts.
+
 ## Changes
 
 ### 2026-08-29T09:23:27Z — feedback — user
@@ -237,4 +238,99 @@ THE TICKET'S OPEN QUESTION IS ANSWERED. It asks whether (b) is a consequence of 
 or independent. INDEPENDENT: `Element` grounds fine, which the green `map / field dot`
 cell says directly, and `?Dst` fails anyway. Retitling to name (b) alone would now be
 accurate; (a) has moved to N01PY.
+
+### 2026-08-29T15:16:26Z — feedback — user
+
+FIXED. The root is neither the callback binder nor `map`: a BRANCHING expression
+(`match` / `if`) whose expected type is an UNBOUND INFERENCE VARIABLE was refused outright.
+
+WHERE. `compute_branch_join_type` (`kb/typing.rs`) is one of the few expression forms that
+ENFORCES its top-down expected type rather than ignoring it, and it enforced it with
+`types_compatible`, which has no arm for a bare variable: `type_dispatch_name_view` answers
+`None` for a variable head (deliberately, WI-1079 -- the structural arms are not where a
+variable is decided), so the subtype relation fell to its `_ => false` and read an
+UNCONSTRAINED expectation as a MISMATCH. Three arms guarded by one new predicate,
+`expected_is_unconstraining`:
+
+  * the per-branch conformance loop is SKIPPED for such an expectation -- it constrains
+    nothing, and its `Substitution` was fresh and discarded, so there was never a binding
+    to be had there anyway. The binding happens ABOVE, when the lambda's arrow unifies with
+    the declared `(x: Element) -> Dst`;
+  * `(no clash, Some(exp))` returns the precise JOIN rather than collapsing to the bare
+    `?Dst` -- otherwise `Dst` would bind to a still-free variable and the element type
+    would be lost. `the_branch_join_reaches_the_result_type` is that row;
+  * `(clash, Some(exp))` reports the clash, mirroring the `type_var` guard already beside
+    it. This arm was UNREACHABLE before (the loop refused first), so it is new behaviour
+    rather than a preserved one, and `branch_types_that_clash_are_still_refused` drives it.
+
+THE FOUR VARIABLE FORMS, MEASURED rather than reasoned -- by printing every
+`compute_branch_join_type` call's expectation and its `type_head` over four programs and
+counting the rows that DIFFER between them (the rest is the shared stdlib prefix):
+
+  xs.map(lambda r -> match ...)             expected `?Dst`  FLEXVAR   <- the defect
+  xs.foldLeft(0, lambda (acc, r) -> ...)    expected `Int64` SortRef
+  pick[Q9](x,y,b) = if b then x else y      expected `?Q9`   SKOLEM, branches ?Q9/?Q9  LOADS
+  bad[Q9](x,b)    = if b then x else 1      expected `?Q9`   SKOLEM, branches ?Q9/Int64 REFUSED
+
+So `Skolem` is EXCLUDED from the predicate and that is load-bearing: a declared type
+parameter arrives as a Skolem (`rigidify_op_type_params`, WI-392), it IS a real bound
+because the CALLER picks it, and the loop must keep refusing the `Int64` branch. It is
+deliberately NOT `is_type_variable`, the three-way test in the same file, which answers
+"is this position generic at all" for list-literal lowering -- there a skolem and a flex
+var carry the same absent information, here they must disagree. Both predicates now
+cross-reference the other.
+
+AND `foldLeft` WAS NEVER ABOUT THE RESULT PARAMETER. Its callback body is not checked
+against `Acc` at all -- the seed `0` grounds it to `Int64` BEFORE the callback is visited,
+which the row count shows directly (the foldLeft program is the only one of the four
+carrying an extra ground-`Int64` expectation). `filter`'s callback returns a ground `Bool`
+for the same reason. `map` is simply the combinator whose result parameter is still free
+when the callback body is visited.
+
+THE SECOND HALF NOTHING HAD ASKED ABOUT: `if` shares the checked mode with `match` and
+failed identically. The capability matrix carried NO `if` body form, so it was
+under-reporting that mode by half for as long as the `match` cell was its one red row.
+`Body::Branch` is now a row: 5 hosts x 3 spellings x 7 bodies = 99 cells, all green.
+
+MEASUREMENT.
+  * DRIVEN, not "it loads": `wi_9tgp7_branch_expected_flex_var_test` EVALUATES the mapped
+    list -- `viaMatch` -> [1,2], `viaIf` -> [10,20] -- through `collect`, so the arm's
+    VALUE comes out and `Dst` demonstrably bound to what the arm returns.
+  * BACK-OUT (narrowing the predicate to `TypeVar` alone -- a `false` stub would neutralize
+    the `type_var` half too, which is not this change): 4 of the 6 tests fail;
+    `sweep_map` fails naming EXACTLY `{dot, unqualified, qualified}` x `{match destructure,
+    if}`; `an_agent_can_inline_the_body_projection` fails alone among guardians' 36. Every
+    other host's sweep and `a_label_parameterized_receiver_changes_no_verdict` hold.
+  * THE TWO THAT HOLD BOTH WAYS BY DESIGN are named at their sites:
+    `a_field_dot_body_is_the_control` (a field dot never enforces the hint) and
+    `a_rigid_expectation_still_refuses` (Skolem is a real bound, left enforced).
+  * MY CONTROL WAS WRONG ONCE AND THE BACK-OUT CAUGHT IT: the field-dot control first
+    shared a fixture with the two arms, so a back-out that stopped the file loading failed
+    it too -- it was measuring "the file loads". It has its own program now.
+  * /code-review (high) independently reproduced the back-out numbers and censused the
+    other `types_compatible`-against-an-expectation sites (typing.rs:4055, 6471, 6879,
+    7436, 13138, 45989, 61197): none can receive an unbound top-down inference variable
+    (each is a source annotation, gated on `arrow_parts`, or gated on
+    `resolved_type_is_ground`), so `compute_branch_join_type` really is the unique site and
+    the narrow fix is not an incomplete one. Its four findings are applied, the load-bearing
+    one being that `a_rigid_expectation_still_refuses`'s `any()` was satisfiable by `bad`'s
+    error alone -- the `pick` control was decoration until an exact error COUNT was asserted.
+
+THE TICKET'S OPEN QUESTION, re-answered from the fix rather than from the sweep: (a) and
+(b) are INDEPENDENT. `Element` grounds fine (the green `map / field dot` cell says so) and
+`?Dst` failed anyway. (a) is WI-20260829-N01PY, still open.
+
+`bodies_of` STAYS, and the ticket's "it should be deleted when this is fixed" is retired
+rather than done. Both spellings an agent would reach for now load THROUGH THE WHOLE
+CHECKER once the stream is materialized -- `msgs.map(lambda m -> m.body).collect()` and the
+match twin -- and the article's attack stays refused through both with the taint diagnostic
+unchanged, so the inlined projection preserves `Untrusted`. But `docs/design/measured.md`
+had already settled the KEEP decision under C7, before either fix and for a different
+reason: a message's body genuinely is a projection and the label genuinely rides along it,
+so it is ordinary API. What was wrong was its declaration comment, which claimed to be the
+ONLY route; that is rewritten to what is measured, and `measured.md` records the correction.
+N01PY carried the same false consequence and has been corrected too.
+
+Full workspace suite green. `scaland` is untouched: it has no typer (no
+`types_compatible` / branch-join equivalent), so there is nothing to mirror.
 
