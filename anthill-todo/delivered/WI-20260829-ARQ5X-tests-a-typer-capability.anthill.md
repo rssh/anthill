@@ -3,9 +3,9 @@
 - id: WI-20260829-ARQ5X-tests-a-typer-capability
 - created: 2026-08-29T08:03:30Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-29T08:03:30Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-29T10:07:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -48,4 +48,55 @@ FIRST SLICE, and it should ship alone before the rest is designed: callback bind
 NOT A REWRITE OF THE PER-WI FILES. They stay: a matrix cell says a capability holds, a WI file says why a specific defect was possible, and the second is the thing that keeps a fix from regressing for its original reason. This adds the sweep the suite has never had.
 
 OPEN, and worth deciding before writing code: where it lives (a new aggregator, or wi_tests.rs which is already 499 modules), and whether the fixture per cell is anthill source in a string or a file on disk — the guardians harness reads files, most WI tests build strings.
+
+## Changes
+
+### 2026-08-29T09:24:05Z — feedback — user
+
+THE WORKED EXAMPLE DOES NOT HOLD AS WRITTEN, and re-measuring it makes the case
+for the matrix stronger rather than weaker. Full measurement in WI-20260829-9TGP7's
+feedback; the part that bears on this ticket:
+
+  List.length(xs.filter(lambda r -> r.flag))  REFUSED -- expected List, got FilteredStream[...]
+  List.length(xs.filter(lambda r -> true))    REFUSED -- expected List, got FilteredStream[...]
+
+Byte-identical with and without the dot. The `filter REFUSED` / `map REFUSED` rows
+are a LAZY-STREAM-VS-EAGER-CONSUMER gap, not a callback-dot gap. So "the matrix's
+first row would have caught both the day N2FHM landed" is not right: a
+callback-binder row would have shown those two cells GREEN, and the actual gap
+would have gone on hiding in a row about stream consumers. The genuine N2FHM-class
+refusal reproduces only in the QUALIFIED spelling (`Iterable.map(msgs, lambda ...)`)
+on a receiver whose type carries a label parameter -- not in any spelling of the
+plain two-field entity the probes use.
+
+WHY THIS IS EVIDENCE FOR THE TICKET. Three independent sets of hand-written probes
+-- the ones in 9TGP7, the ones here, and my own first attempt at re-measuring them
+-- all attributed a consumer error to the callback dot, because none of them ran
+the dot-free control beside the dot. That is precisely the failure a matrix with a
+control per cell prevents, and it is a better argument than the one in the text.
+
+SO THE SHAPE NEEDS ONE MORE THING: every cell that asserts REFUSES or KNOWN GAP
+must carry the MINIMAL-PAIR control that isolates the axis it claims to vary --
+the same cell with the construct-under-test swapped for the dullest thing that
+fits (a constant callback, a bare binder). Without it a red cell says "this line
+does not load", which is what the four probes said, and not "this CAPABILITY is
+missing". A 30-cell matrix without controls reproduces the same misattribution
+thirty times and looks authoritative doing it.
+
+TWO OPEN QUESTIONS, ANSWERED:
+  * WHERE IT LIVES: wi_tests.rs. rustland/CLAUDE.md is explicit that a direct child
+    of tests/ costs a link and a process launch, and that consolidation took the
+    workspace from 42 integration targets to 21. One more module in the aggregator
+    is free; a new binary is not.
+  * STRINGS OR FILES: strings, built by one `fn program(host, body) -> String` so a
+    cell is a row in a table rather than a file. Files would put 30 fixtures on disk
+    whose only difference is one lambda body, and the guardians harness reads files
+    because it loads a whole example, which this does not.
+
+AND THE FIRST SLICE SHOULD BE RE-DERIVED, not taken from the text: the hosts named
+there are right, but the body forms should be chosen so that at least one cell is
+known-red for a reason that has been measured, otherwise the slice ships all-green
+and pins nothing. On today's tree the callback-dot row is green across
+{map, filter, find, foldLeft} x {dot, unqualified, qualified} on a plain entity, so
+the red cell has to come from the label-parameterized receiver.
 

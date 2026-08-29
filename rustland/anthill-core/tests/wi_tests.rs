@@ -1492,3 +1492,6 @@ mod wi_n2fhm_find_callback_dot_test;
 
 #[path = "include/wi_1ssxm_match_scrutinee_error_test.rs"]
 mod wi_1ssxm_match_scrutinee_error_test;
+
+#[path = "include/typer_capability_matrix_test.rs"]
+mod typer_capability_matrix_test;
