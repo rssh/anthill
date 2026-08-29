@@ -3,9 +3,9 @@
 - id: WI-20260829-ARQ5X-tests-a-typer-capability
 - created: 2026-08-29T08:03:30Z
 
-- status: Delivered
+- status: Claimed
 - status_agent: claude
-- status_at: 2026-08-29T10:07:50Z
+- status_at: 2026-08-29T10:13:45Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
