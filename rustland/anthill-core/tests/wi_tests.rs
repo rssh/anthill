@@ -1486,3 +1486,6 @@ mod wi_2tmb5_bare_op_name_zero_arg_reading_test;
 
 #[path = "include/wi_5nszy_arrow_reaches_a_nested_bare_name_test.rs"]
 mod wi_5nszy_arrow_reaches_a_nested_bare_name_test;
+
+#[path = "include/wi_n2fhm_find_callback_dot_test.rs"]
+mod wi_n2fhm_find_callback_dot_test;

@@ -3,9 +3,9 @@
 - id: WI-20260828-N2FHM-typer-a-field-dot-on-an
 - created: 2026-08-28T19:52:33Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-28T19:52:33Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-29T06:58:40Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

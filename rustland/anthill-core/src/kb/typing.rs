@@ -9040,6 +9040,64 @@ fn param_sym_for_arg_index(
         .map(|(s, _)| *s)
 }
 
+/// WI-20260828-N2FHM — does a declared param type MENTION one of `spec_sort`'s own type
+/// params? The gate on the carrier-param staging trigger, and the exact question
+/// [`op_tp_pinning_params`] asks for WI-821's — asked over a carrier that one cannot read.
+///
+/// WHY IT IS NOT [`type_mentions_op_tp`]. That reader answers `false` for a
+/// `Value::Node`-carried type, and says so in its own doc ("no staging extension — sound,
+/// just not extended"). MEASURED on `Iterable.find`: `c: C` is `Value::Term` and answers
+/// `true`, while `pred: (x: Element) -> Bool @ {EffP, -Modify[x]}` is `Value::Node` — the
+/// dependent-absence arrow puts it on the occurrence carrier — and answers `false`. So
+/// gating this trigger on that reader would decline exactly the shape the trigger exists
+/// for. This walks the carrier-agnostic [`extract_type`] view instead, and hands a
+/// `Value::Term` subtree straight to `type_term_mentions_op_tp` so the two agree wherever
+/// both can see.
+///
+/// DELIBERATELY LOCAL, and not a widening of `type_mentions_op_tp`: that reader is shared
+/// with WI-821's `tp_pinning`, and making it see through the Node carrier would change
+/// which arguments THAT trigger stages — a different question, with its own corpus.
+///
+/// Leaves are compared by SYMBOL as well as by canonical `VarId`, since a sort param is
+/// spelled `Ref`/`Ident`/nullary-`Fn` through its alias and `extract_type` renders those as
+/// `SortRef`/`TypeVar` without the term to run [`elem_var_step`] over.
+fn type_mentions_spec_param(
+    kb: &KnowledgeBase,
+    ty: &Value,
+    spec_syms: &[Symbol],
+    spec_vars: &[VarId],
+) -> bool {
+    if let Value::Term { id, .. } = ty {
+        return type_term_mentions_op_tp(kb, *id, spec_vars);
+    }
+    let names = |sym: Symbol| spec_syms.iter().any(|s| same_sort_canonical(kb, *s, sym));
+    let recur = |v: &Value| type_mentions_spec_param(kb, v, spec_syms, spec_vars);
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(sym) | TypeExtractor::TypeVar(sym) => names(sym),
+        TypeExtractor::Parameterized { base, bindings } => {
+            names(base) || bindings.iter().any(|(_, v)| recur(v))
+        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => recur(&param) || recur(&result) || recur(&effects),
+        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| recur(v)),
+        TypeExtractor::EffectsRows(e) => recur(&e),
+        TypeExtractor::PolyType { body, .. } => recur(&body),
+        TypeExtractor::Denoted(v) => recur(&v),
+        TypeExtractor::ExprCarried { value, .. } => recur(&value),
+        // A logical variable, a rigid, and the two empties are LEAVES that name no
+        // declared param. `RigidTypeProjection` bottoms out in a skolem, likewise.
+        TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. }
+        | TypeExtractor::RigidTypeProjection { .. }
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => false,
+    }
+}
+
 /// WI-485 + WI-793: the param→argument-type map that lets a sibling callback param's
 /// projection be eliminated BEFORE it hints a lambda — plus the argument positions whose
 /// type this call must compute FIRST for that map to be complete.
@@ -9081,6 +9139,10 @@ fn param_sym_for_arg_index(
 ///    lambda body types against an unconstrained wildcard — and a requires-carrying
 ///    call inside it builds its dispatch dict against that wildcard (the WI-817
 ///    witness measured exactly that);
+///  - or — WI-20260828-N2FHM — one that could be the callee's CARRIER-PARAM RECEIVER
+///    (`Iterable.find(c: C, …)`, what [`spec_carrier_param_candidates`] recognizes),
+///    since a callback param naming one of the spec's own params (`x: Element`) is
+///    grounded from that receiver's provision and from nothing in the signature;
 ///  - the no-typing readers must have MISSED, so a var-ref receiver still costs nothing;
 ///  - and the argument must not itself be [`is_hof_shaped`]. That last one is not
 ///    hypothetical: `foo(g: (x: Int64) -> Int64, h: (y: g.T) -> Int64)` puts a CALLBACK
@@ -9106,6 +9168,55 @@ fn known_arg_types_and_staged(
     // mechanism (type-param identity, not path projection) but identical in
     // treatment: their arguments are typed first so the hint map can be completed.
     let tp_pinning = op_tp_pinning_params(kb, functor, op, pos_args, named_args);
+    // WI-20260828-N2FHM: the THIRD trigger — the callee's CARRIER-PARAM receiver
+    // (`Iterable.find(c: C, …)`). A callback param that names one of the spec's OWN params
+    // (`pred: (x: Element) -> Bool`) is grounded from that receiver's PROVISION, not from
+    // the signature, so `bind_spec_params_for_hint` needs its type before the lambda is
+    // hinted — and neither trigger above reaches it. `projected` sees only path
+    // projections, and `tp_pinning`'s mention-walk answers `false` for a `Value::Node`
+    // param type by its own doc, which is exactly what `find`'s dependent-absence arrow
+    // (`@ {EffP, -Modify[x]}`) is. MEASURED: with a var-ref receiver the WI-485 env reader
+    // already supplies the type and this changes nothing; with a COMPUTED receiver
+    // (`find(rows(), λ)`) nothing was staged, the binder typed as the bare sort ref
+    // `Iterable.Element`, and `r.flag` reached eval as an un-desugared `DotApply`.
+    //
+    // No wider than the classification it feeds: [`spec_carrier_param_candidates`] is the
+    // recognizer `carrier_param_receiver` itself runs, so an argument staged here is one
+    // whose type that classification will read.
+    let spec_carrier: SmallVec<[Symbol; 2]> = spec_carrier_param_candidates(kb, ps, functor)
+        .filter(|(spec_sort, _)| {
+            // THE GATE, the peer of `op_tp_pinning_params`' `some_hof_mentions_tp` (added on
+            // /code-review): stage nothing unless a HOF-shaped argument's declared type
+            // actually names one of the spec's params — otherwise every call to a
+            // carrier-param spec op that happens to carry a lambda took the two-phase
+            // `ApplyHints` path for a hint that could not change. `find(xs, λ)` passes it on
+            // `pred: (x: Element) -> …`; `Stream.find`, whose `pred: (x: s.T)` is a path
+            // PROJECTION rather than a spec param, does not — that one is `projected`'s.
+            //
+            // IT IS NOT VACUOUS, measured rather than argued: on one stdlib + fixture load
+            // the gate is asked 97 times and DECLINES 36 of them, so better than a third of
+            // the calls that reach here keep their single-phase order. No verdict changes
+            // either way — this is an ordering gate, and nothing in the corpus can be red
+            // for it — so the count IS the evidence, and there is no test to point at.
+            let spec_params = sort_type_params_as_pairs(kb, *spec_sort);
+            let spec_syms: SmallVec<[Symbol; 4]> =
+                spec_params.iter().map(|(s, _)| *s).collect();
+            let spec_vars: SmallVec<[VarId; 4]> = spec_params
+                .iter()
+                .filter_map(|(_, t)| match kb.get_term(*t) {
+                    Term::Var(Var::Global(v)) => Some(*v),
+                    _ => None,
+                })
+                .collect();
+            ps.iter().enumerate().any(|(j, (psym, pty))| {
+                param_arg_index(kb, *psym, j, pos_args.len(), named_args)
+                    .and_then(|u| arg_at(pos_args, named_args, u))
+                    .is_some_and(is_hof_shaped)
+                    && type_mentions_spec_param(kb, pty, &spec_syms, &spec_vars)
+            })
+        })
+        .map(|(_, cands)| cands.iter().map(|(_, psym, _)| *psym).collect())
+        .unwrap_or_default();
     let mut known: HashMap<Symbol, Value> = HashMap::new();
     let mut staged: Vec<usize> = Vec::new();
     for (j, (psym, _)) in ps.iter().enumerate() {
@@ -9147,7 +9258,11 @@ fn known_arg_types_and_staged(
         // path already composes.
         if let Some(t) = projection_receiver_type(kb, env, a) {
             known.insert(*psym, t);
-        } else if (projected.contains(psym) || tp_pinning.contains(psym)) && !is_hof_shaped(a) {
+        } else if (projected.contains(psym)
+            || tp_pinning.contains(psym)
+            || spec_carrier.contains(psym))
+            && !is_hof_shaped(a)
+        {
             staged.push(unified);
         }
     }
@@ -9359,6 +9474,73 @@ fn one_arg_hint(
     ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, &pt).then_some(pt)
 }
 
+/// WI-20260828-N2FHM — the substitution that grounds a spec's OWN type params from the
+/// receiver argument's carrier, computed at HINT time so a callback param that names one
+/// can be eliminated before it hints a lambda.
+///
+/// THE GAP THIS CLOSES, measured. `Iterable.find(c: C, pred: (x: Element) -> Bool)` types
+/// its callback binder from `Element`, a param of the SPEC — not, as `Stream.find`'s
+/// `pred: (x: s.T)` does, a PROJECTION of a sibling. WI-485's elimination and WI-821's
+/// `hint_instantiation_subst` between them cover the projection and the callee-type-param
+/// spellings; neither covers this one. `hint_instantiation_subst` unifies the declared
+/// `c: C` against `List[T = Row]` and so binds `C`, but nothing in the signature relates
+/// `Element` to `C` — that relation lives in the carrier's PROVISION
+/// (`List provides Stream provides Iterable[C = …, Element = T, E = {}]`), which is
+/// exactly what [`carrier_param_receiver`] classifies and
+/// [`bind_spec_params_from_carrier_param`] reads. So `find(rows, lambda r -> r.flag)`
+/// hinted its binder with the bare sort ref `Iterable.Element`, the dot found no `flag`
+/// on it, and the resulting `DotDispatchNoMatch` was swallowed by the match frame
+/// (repaired separately) — leaving an un-desugared `Expr::DotApply` for eval to die on.
+///
+/// ONE DECISION PROCEDURE, TWO MOMENTS: this runs the SAME classification + binder pair
+/// `check_apply` runs after the arguments are typed, differing only in where the
+/// receiver's type comes from (the WI-793 `known` map rather than the typed results).
+/// It cannot bind anything the later pass would not bind — same view, same provision,
+/// same skip of the carrier param `C` — so it can only make a hint MORE ground, never
+/// redirect a dispatch.
+///
+/// `false` whenever the classification declines (no carrier-param receiver, no provision
+/// view, a receiver whose type no no-typing reader knows) or nothing binds; the hint then
+/// stays exactly as declared, which is today's behaviour.
+///
+/// Binds into the SAME `subst` [`hint_instantiation_subst`] filled, not a second one the
+/// caller would have to merge: the two are disjoint by construction — that one pins the
+/// callee's params from the declared/argument pairs (the carrier param `C` among them),
+/// this one the spec's OTHER params from the provision, and
+/// [`bind_spec_params_from_carrier_param`] skips `C` for exactly that reason. Filling one
+/// σ keeps the hint's single deep resolve, and a contradiction (should the disjointness
+/// ever stop holding) is loud from `bind_term` rather than silently order-dependent.
+fn bind_spec_params_for_hint(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    functor: Symbol,
+    params: &[(Symbol, Value)],
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    known: &HashMap<Symbol, Value>,
+) -> bool {
+    if known.is_empty() {
+        return false;
+    }
+    let Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive, recv_arg_sym)) =
+        carrier_param_receiver(kb, params, functor, pos_args, named_args, &|_i, pname| {
+            known.get(&pname).cloned()
+        })
+    else {
+        return false;
+    };
+    bind_spec_params_from_carrier_param(
+        kb,
+        subst,
+        spec_sort,
+        carrier_sym,
+        carrier_pvid,
+        &recv_ty,
+        view,
+        recv_arg_sym,
+    )
+}
+
 /// WI-275: the top-down hints for every argument of a call, positional then named.
 ///
 /// WI-793 note on why calling this BEFORE the staged arguments are typed is sound: only
@@ -9379,7 +9561,17 @@ fn apply_arg_hints(
     // WI-821: pin callee type params from the known sibling argument types once,
     // so every HOF hint below carries the instantiation (`Function[A = X]` hints
     // as `Function[A = Wrap[…]]` when the sibling `a: X` argument is known).
-    let inst = op_params.and_then(|ps| hint_instantiation_subst(kb, ps, known));
+    //
+    // WI-20260828-N2FHM: and, into the SAME σ, the callee spec's own params read off the
+    // receiver's provision — the third spelling a callback param can name its element in
+    // (`Iterable.find`'s `pred: (x: Element) -> Bool`), which neither the WI-485
+    // projection elimination nor the pairwise pinning above can reach. See
+    // [`bind_spec_params_for_hint`].
+    let inst = op_params.and_then(|ps| {
+        let mut s = hint_instantiation_subst(kb, ps, known).unwrap_or_else(Substitution::new);
+        bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
+        (!s.is_empty()).then_some(s)
+    });
     let mut pos_hints = Vec::with_capacity(pos_args.len());
     for (i, arg) in pos_args.iter().enumerate() {
         // WI-707: inside a sort application every argument is a type.
@@ -14864,12 +15056,31 @@ fn check_apply_iter(
         } else {
             carrier_param_receiver(
                 kb,
-                &op,
+                &op.params,
                 fn_sym,
                 pos_args,
                 named_args,
-                pos_results,
-                named_results,
+                // WI-477: read the receiver's inferred type as a carrier-agnostic `Value`
+                // (NOT `.as_term()`) — an occurrence-primary `List[T = …]` is a
+                // `Value::Node` whose `T`/`E` bindings live in the node; `.as_term()`
+                // would drop the carrier and leak `Eff unconstrained`. Mirrors the
+                // self-receiver twin `bind_spec_params_from_carrier` (WI-470 d42682c).
+                &|i, pname| {
+                    pos_results
+                        .get(i)
+                        .and_then(|r| r.as_ref().ok())
+                        .map(|r| r.ty.clone())
+                        .or_else(|| {
+                            named_args
+                                // WI-426: a named label binds to its param by name, not
+                                // symbol identity.
+                                .iter()
+                                .position(|(n, _)| same_label(kb, *n, pname))
+                                .and_then(|j| named_results.get(j))
+                                .and_then(|r| r.as_ref().ok())
+                                .map(|r| r.ty.clone())
+                        })
+                },
             )
         };
         // WI-590 — the ENCLOSING SORT's `requires` clause licensing this call, when the
@@ -36331,6 +36542,44 @@ fn bind_spec_params_from_carrier(
     any
 }
 
+/// WI-20260828-N2FHM — the parameters of `fn_sym` that could be its CARRIER-PARAM
+/// receiver: those declared as one of the enclosing spec sort's own type params
+/// (`Iterable.find(c: C, …)`, `sort C = ?` on Iterable), with that param's canonical
+/// `VarId`. `None` when `fn_sym` is not a member of a parametric sort at all.
+///
+/// The first two gates of [`carrier_param_receiver`], lifted out because a SECOND reader
+/// needs exactly them and nothing else: [`known_arg_types_and_staged`] decides which
+/// arguments to type FIRST, and it must reach that decision before any receiver type
+/// exists — which is the one input the rest of `carrier_param_receiver` is about. Sharing
+/// the recognizer is what keeps "which parameter is the carrier" a single answer; a
+/// staging predicate that drifted from the classification would stage the wrong argument
+/// and the hint would go quietly un-grounded again.
+fn spec_carrier_param_candidates(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    fn_sym: Symbol,
+) -> Option<(Symbol, SmallVec<[(usize, Symbol, VarId); 2]>)> {
+    let spec_sort = impl_parent_of_op(kb, fn_sym)?;
+    let spec_params = sort_type_params_as_pairs(kb, spec_sort);
+    if spec_params.is_empty() {
+        return None;
+    }
+    let mut out: SmallVec<[(usize, Symbol, VarId); 2]> = SmallVec::new();
+    for (i, (pname, pty)) in params.iter().enumerate() {
+        let Some(pvid) = declared_type_param_vid(kb, pty) else {
+            continue;
+        };
+        if !spec_params
+            .iter()
+            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
+        {
+            continue;
+        }
+        out.push((i, *pname, pvid));
+    }
+    Some((spec_sort, out))
+}
+
 /// WI-424 — classify a CARRIER-PARAM receiver: a spec op that takes its carrier
 /// through a parameter typed as the spec's own carrier type-param
 /// (`Iterable.find(c: C, …)`, `sort C = ?` on Iterable) rather than as the spec
@@ -36354,14 +36603,24 @@ fn bind_spec_params_from_carrier(
 /// provides the spec only through a provides-chain (the impl lives on an intermediate
 /// spec sort), the bit the dispatch gate reads to defer to eval; and the receiver-arg
 /// var-sym (WI-612) is the projection subject for threading an abstract carrier param.
+///
+/// WI-20260828-N2FHM — the receiver's TYPE arrives through `recv_ty_of`, not off the
+/// typed argument results, because this classification now has TWO readers that learn a
+/// receiver's type at different moments. `check_apply` reads it from the argument
+/// results, as it always did. [`bind_spec_params_for_hint`] runs BEFORE any argument is
+/// typed, off the WI-793 `known` map, so a callback param naming a spec param
+/// (`Iterable.find`'s `pred: (x: Element) -> Bool`) can be grounded in time to hint the
+/// lambda. Everything else about the classification — which parameter is the carrier,
+/// which provision view licenses it, whether it is transitive — is ONE decision
+/// procedure, deliberately: a second copy keyed on hint-time inputs is exactly the
+/// desync the carrier-param path has been repaired for three times (WI-495/608/609).
 fn carrier_param_receiver(
     kb: &KnowledgeBase,
-    op: &OperationInfoFull,
+    params: &[(Symbol, Value)],
     fn_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Result<TypeResult, TypeError>],
-    named_results: &[Result<TypeResult, TypeError>],
+    recv_ty_of: &dyn Fn(usize, Symbol) -> Option<Value>,
 ) -> Option<(
     Symbol,
     Symbol,
@@ -36371,41 +36630,11 @@ fn carrier_param_receiver(
     bool,
     Option<Symbol>,
 )> {
-    let spec_sort = impl_parent_of_op(kb, fn_sym)?;
-    let spec_params = sort_type_params_as_pairs(kb, spec_sort);
-    if spec_params.is_empty() {
-        return None;
-    }
-    for (i, (pname, pty)) in op.params.iter().enumerate() {
-        let Some(pvid) = declared_type_param_vid(kb, pty) else {
+    let (spec_sort, candidates) = spec_carrier_param_candidates(kb, params, fn_sym)?;
+    for (i, pname, pvid) in candidates {
+        let Some(recv_ty) = recv_ty_of(i, pname) else {
             continue;
         };
-        if !spec_params
-            .iter()
-            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
-        {
-            continue;
-        }
-        // WI-477: read the receiver's inferred type as a carrier-agnostic `Value`
-        // (NOT `.as_term()`) — an occurrence-primary `List[T = …]` is a `Value::Node`
-        // whose `T`/`E` bindings live in the node; `.as_term()` would drop the carrier
-        // and leak `Eff unconstrained`. The bindings are read below through the
-        // carrier-agnostic `parameterized_short_bindings`. Mirrors the self-receiver
-        // twin `bind_spec_params_from_carrier` (WI-470 d42682c).
-        let recv_ty = pos_results
-            .get(i)
-            .and_then(|r| r.as_ref().ok())
-            .map(|r| r.ty.clone())
-            .or_else(|| {
-                named_args
-                    // WI-426: a named label binds to its param by name, not symbol identity.
-                    .iter()
-                    .position(|(n, _)| same_label(kb, *n, *pname))
-                    .and_then(|j| named_results.get(j))
-                    .and_then(|r| r.as_ref().ok())
-                    .map(|r| r.ty.clone())
-            });
-        let Some(recv_ty) = recv_ty else { continue };
         let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else {
             continue;
         };
@@ -36456,7 +36685,7 @@ fn carrier_param_receiver(
             .or_else(|| {
                 named_args
                     .iter()
-                    .find(|(n, _)| same_label(kb, *n, *pname))
+                    .find(|(n, _)| same_label(kb, *n, pname))
                     .and_then(|(_, occ)| extract_var_ref_sym_node(occ))
             });
         return Some((
@@ -60153,6 +60382,67 @@ fn refine_self_receiver_body_type(
     Some(Value::term(kb.make_parameterized_type(base, &bindings)))
 }
 
+/// WI-20260828-N2FHM — the BACKSTOP on the typer's own output: the first
+/// `Expr::DotApply` still standing anywhere in a typed operation body, with the dot's
+/// member and span.
+///
+/// A `DotApply` is a PRE-DISPATCH form. Every one of them is supposed to leave the
+/// `TypeBuildFrame::DotApply` arm rewritten — to a method `Apply`, a `field_access`, a
+/// relation projection, or a `[simp]` dot-rule RHS — and that arm ends in
+/// `DotDispatchNoMatch` when none of those apply, so one surviving in a STORED body
+/// means its refusal was produced and then lost somewhere between the dot and the top.
+/// Eval has no arm for it: it raises `Internal("unhandled Expr variant in eval")`, which
+/// is not a `Raised` payload, so no handler sees it and the caller cannot catch it. That
+/// is a silent load and an un-repairable run-time death for a program the typer had
+/// already decided was wrong.
+///
+/// A BACKSTOP AND NOT THE REPAIR, deliberately. The known producer is
+/// `MatchAfterScrutinee`, which drops the scrutinee's `Err` and puts the un-rewritten
+/// node back (measured: `match find(rs, lambda r -> r.nosuchfield) …` loads clean and
+/// dies at eval). Propagating that error is the real fix and is a bigger change than this
+/// ticket — it turns 13 corpus programs that load today into load failures across three
+/// unrelated root causes, two of them genuine under-specifications and the third a shape
+/// two delivered fixtures encode on purpose. So this closes the CLASS at the boundary the
+/// ticket names — "an unresolved dot must not reach the evaluator either way" — while the
+/// swallow itself is WI-20260829-1SSXM, which carries that measurement per root. When it
+/// is repaired this stays: a backstop that never fires is what an invariant looks like
+/// once it holds.
+///
+/// Returns the dot's RECEIVER too, so the refusal can name the sort the member was looked
+/// for on. Without it the error carries `receiver_sort: None`, which renders as "the
+/// receiver's type is unresolved" — and in this ticket's own witness that is FALSE: the
+/// receiver types as `Row`, and what is wrong is that `Row` has no such field. Pointing
+/// the author of `find(rs, lambda r -> r.typo)` at an inference problem they do not have,
+/// instead of at their typo, is not the loud error the repo asks for (found by
+/// /code-review). The receiver's type is on the occurrence because the `DotApply` frame
+/// stamped it there (WI-732) before any of this went wrong.
+///
+/// SOURCE ORDER, so the FIRST unresolved dot is the one reported: children are pushed in
+/// reverse and popped, which is pre-order DFS left to right. Pushing them forward reports
+/// the LAST one — `and(r.typo1, r.typo2)` would name `typo2`, and the author would fix it,
+/// reload, and only then be told about `typo1`.
+///
+/// An EXPLICIT STACK, not host recursion, for the reason the typer's own tree walk is a
+/// worklist: a body's nesting depth is the author's, not this pass's, and a deep one must
+/// not decide whether the loader stands up. `as_expr()` is `None` for a Pattern-kind
+/// occurrence, which ends that branch — correctly, since a `DotApply` in a pattern slot is
+/// not something eval reduces.
+fn surviving_dot_apply(
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Symbol, Option<Span>, Rc<NodeOccurrence>)> {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if let Expr::DotApply { name, receiver, .. } = expr {
+            return Some((*name, Some(node.span.span), Rc::clone(receiver)));
+        }
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        super::node_occurrence::for_each_child(expr, |child| children.push(Rc::clone(child)));
+        stack.extend(children.into_iter().rev());
+    }
+    None
+}
+
 /// Check operation bodies against their declared return types.
 fn check_operation_bodies(
     kb: &mut KnowledgeBase,
@@ -60682,6 +60972,24 @@ fn check_operation_bodies(
                 // (`ptr_eq` unchanged ⇒ no allocation, no write).
                 if !Rc::ptr_eq(&result.node, &op.body_node) {
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
+                }
+                // WI-20260828-N2FHM — see [`surviving_dot_apply`]. Checked on the STORED
+                // tree (after the write-back above), because the stored tree is what eval
+                // will run; checking `op.body_node` would ask about the pre-rewrite one.
+                if let Some((member, span, receiver)) = surviving_dot_apply(&result.node) {
+                    errors.push(TypeError::DotDispatchNoMatch {
+                        span,
+                        member,
+                        // The stamp the `DotApply` frame left on the raw receiver (WI-732),
+                        // read through the same `sort_functor_of_view` that frame's own
+                        // refusal uses — so the backstop's message names the same sort the
+                        // in-frame diagnostic would have, rather than claiming the receiver
+                        // is unresolved when it is not.
+                        receiver_sort: receiver
+                            .inferred_type()
+                            .and_then(|ty| sort_functor_of_view(kb, &ty)),
+                        receiver_param: None,
+                    });
                 }
                 let mut subst = Substitution::new();
                 // WI-341/342: both sides are carrier-agnostic `Value` — the

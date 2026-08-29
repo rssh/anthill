@@ -64,24 +64,15 @@ namespace guardians
   -- Shared by G1 and G2. MINTED and not merely declared: a candidate that
   -- REDECLARES a base name has not introduced it, and must not be able to claim
   -- either a provision or a clause under it.
-  -- THE PARAMETER IS DESTRUCTURED RATHER THAN DOTTED, and that is not style. A dot
-  -- on an `Iterable.find` callback's parameter — `lambda ls -> ls.minted` — does not
-  -- resolve to a field: the projection survives the typer and dies at eval as
-  -- `unhandled Expr variant: DotApply`. MEASURED here, twice, and it is specific to
-  -- the combinator rather than to lambdas: the same dot on a `List.filterElems`
-  -- callback works (`naming_violations` below writes `ls.symbol`), and `find` reaches
-  -- its element type through `List provides Stream provides Iterable`, where
-  -- `filterElems` projects `xs.T` directly. A constructor pattern needs no such
-  -- projection, so it binds where the dot cannot.
-  --
-  -- Filed as WI-20260828-N2FHM. This is the WORKAROUND and not the fix: a program that
-  -- loads clean and then dies on a host-level `Internal` is the opposite of the loud
-  -- error the repo asks for, at both ends.
+  -- The dot on the callback parameter is written back as of WI-20260828-N2FHM. It
+  -- used to be a DESTRUCTURING match, because `lambda ls -> ls.minted` did not resolve
+  -- to a field here: `Iterable.find` types its callback from the spec's own `Element`,
+  -- which a `List` reaches only through `List provides Stream provides Iterable`, and
+  -- the typer had no way to ground it before hinting the lambda. The projection then
+  -- survived the typer and died at eval as `unhandled Expr variant: DotApply`. The
+  -- hint now reads that provision, so this is the ordinary spelling again.
   operation is_minted(layer: KB, s: Symbol) -> Bool =
-    match find(layer_symbols(layer),
-               lambda ls ->
-                 match ls
-                   case LayerSymbol(sym, m, _) -> and(m, sym === s))
+    match find(layer_symbols(layer), lambda ls -> and(ls.minted, ls.symbol === s))
       case some(_) -> true
       case none() -> false
 
