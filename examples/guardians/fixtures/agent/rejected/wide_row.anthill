@@ -8,7 +8,7 @@
 -- ================================================================
 sort guardians.agent.WideRowTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Model, Filesystem, Llm, summarize,
+  import guardians.{Triage, Mailbox, Report, Filesystem, Llm, summarize,
                     fetch_mail, bodies_of, verdicts_of}
   entity mk
 

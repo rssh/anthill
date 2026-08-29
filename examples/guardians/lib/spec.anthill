@@ -16,7 +16,7 @@
 -- ================================================================
 sort guardians.Triage
   import anthill.prelude.{Error, External}
-  import guardians.{Mailbox, Report, Model, Llm}
+  import guardians.{Mailbox, Report, Llm}
 
   sort C = ?
 

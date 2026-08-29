@@ -14,7 +14,7 @@
 -- ================================================================
 sort guardians.agent.ContentPrimedGenerator
   import anthill.prelude.{List, Error, External}
-  import guardians.{Mailbox, Text, Prompt, Llm, Harness, Source, Model,
+  import guardians.{Mailbox, Text, Prompt, Llm, Harness, Source,
                     fetch_mail, bodies_of, join_texts, prompt_with}
   entity mk
 

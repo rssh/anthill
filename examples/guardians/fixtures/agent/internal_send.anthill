@@ -17,7 +17,7 @@
 -- ================================================================
 sort guardians.agent.InternalSendTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Address, Text, Model, Llm, summarize,
+  import guardians.{Triage, Mailbox, Report, Address, Text, Llm, summarize,
                     fetch_mail, bodies_of, verdicts_of, send_email}
   import guardians.TrustLevel.{Public}
   entity mk

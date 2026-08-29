@@ -15,7 +15,7 @@
 -- ================================================================
 sort guardians.agent.LeakTriage
   import anthill.prelude.{List, Unit, Error, External}
-  import guardians.{Triage, Mailbox, Report, Address, Model, Llm, summarize,
+  import guardians.{Triage, Mailbox, Report, Address, Llm, summarize,
                     fetch_mail, bodies_of, verdicts_of, send_email}
   entity mk
 

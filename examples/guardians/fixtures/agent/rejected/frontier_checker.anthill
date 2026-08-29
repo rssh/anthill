@@ -2,8 +2,8 @@
 -- FIXTURE — a generated `Checker` implementation, REFUSED BY THE DOWNWARD
 -- CLOSURE of its denial.
 --
--- The row denies `Permission[Model]`, so this one asks for something whose NAME is
--- different: `Permission[FrontierModel]`.
+-- The row denies `Permission[Llm]`, so this one asks for something whose NAME is
+-- different: `Permission[LiveLlm]`.
 --
 -- IT IS REFUSED EITHER WAY, and saying so is the point. `FrontierModel` is not in
 -- the checker's row, so B3's body leg refuses it as an UNDECLARED effect with or
@@ -27,12 +27,12 @@ sort guardians.agent.FrontierChecker
   import anthill.prelude.{String, List, Error, External, Permission}
   import anthill.prelude.List.{nil, cons}
   import anthill.reflect.{Symbol}
-  import guardians.{Checker, Source, CheckResult, Model, LiveLlm}
+  import guardians.{Checker, Source, CheckResult, LiveLlm}
   import guardians.CheckResult.{Rejected}
   entity mk
 
   operation check(self: FrontierChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Permission[Model]} =
+    effects {External, Error, -Permission[Llm]} =
       let llm = LiveLlm.open_frontier("https://frontier.example")
       Rejected(diagnostics: cons(head: "a bigger model said it was fine", tail: nil))
 

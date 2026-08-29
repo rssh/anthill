@@ -4,7 +4,7 @@
 -- CONTROL for the two refused checkers — minting_checker (acquires) and
 -- forged_llm (forges) — and it is what stops the denial from reading as a checker
 -- that refuses everything on sight. Same shape, same spec, same row; no route to a
--- model of any kind, so `-Permission[Model]` is satisfiable and this one honours
+-- model of any kind, so `-Permission[Llm]` is satisfiable and this one honours
 -- it by having nothing in scope that could mint.
 --
 -- THERE USED TO BE A THIRD, and its disappearance is the point of `LlmOutput`.
@@ -21,12 +21,12 @@ sort guardians.agent.HonestChecker
   import anthill.prelude.{String, List, Error, External, Permission}
   import anthill.prelude.List.{nil, cons}
   import anthill.reflect.{Symbol}
-  import guardians.{Checker, Source, CheckResult, Model}
+  import guardians.{Checker, Source, CheckResult, Llm}
   import guardians.CheckResult.{Rejected}
   entity mk
 
   operation check(self: HonestChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Permission[Model]} =
+    effects {External, Error, -Permission[Llm]} =
       Rejected(diagnostics: cons(head: "this checker performs no check", tail: nil))
 
   provides Checker[C = HonestChecker]

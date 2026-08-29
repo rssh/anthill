@@ -12,7 +12,7 @@
 -- ================================================================
 namespace guardians
   import anthill.prelude.{List, Error, External}
-  import guardians.{Text, Prompt, Llm, Message, Observed, Model, LlmOutput,
+  import guardians.{Text, Prompt, Llm, Message, Observed, LlmOutput,
                     prompt_with, join_texts, bodies_of}
   import guardians.TrustLevel.{Untrusted, Public}
 

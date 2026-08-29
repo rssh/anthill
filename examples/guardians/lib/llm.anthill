@@ -48,7 +48,7 @@ end
 
 sort guardians.Llm
   import anthill.prelude.{Error, External}
-  import guardians.{Prompt, Text, Model, LlmOutput}
+  import guardians.{Prompt, Text, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   sort C = ?
@@ -105,7 +105,7 @@ end
 -- hide gate: it hides the name from cross-scope resolution AND from field
 -- projection, with top-level code outside every declaring scope (WI-977). So
 -- `open` is the only way to obtain an `Llm`, and `open` carries
--- `Permission[Model]` — the runtime consultation of an ambient grant, which can
+-- `Permission[Llm]` — the runtime consultation of an ambient grant, which can
 -- refuse.
 --
 -- WITHOUT `internal` THE EFFECT IS ADVISORY, and that is not a slogan here: it
@@ -124,7 +124,7 @@ end
 --
 --   holds an Llm it was handed, calls it   HARMLESS — the reply is `LlmOutput`,
 --                                          which it can neither project nor match
---   holds none, mints one                  caught by `-Permission[Model]`(minting_checker)
+--   holds none, mints one                  caught by `-Permission[Llm]`(minting_checker)
 --   holds none, forges one                 caught by `internal`          (forged_llm)
 --
 -- Neither label sees the other's program. vocabulary.anthill states the split at
@@ -132,23 +132,23 @@ end
 -- ================================================================
 sort guardians.LiveLlm
   import anthill.prelude.{String, Error, External, Permission}
-  import guardians.{Llm, Prompt, Text, Model, FrontierModel, LlmOutput}
+  import guardians.{Llm, Prompt, Text, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity live_llm(endpoint: String, model: String)
 
-  -- THE MINT, and the sole introduction. The `Permission[Model]` is consumed
+  -- THE MINT, and the sole introduction. The `Permission[Llm]` is consumed
   -- here and nowhere downstream.
   operation open(endpoint: String, model: String) -> LiveLlm
-    effects {Permission[Model]} = live_llm(endpoint: endpoint, model: model)
+    effects {Permission[Llm]} = live_llm(endpoint: endpoint, model: model)
 
   -- A STRONGER DEMAND for the same object. Acquiring a frontier model is
-  -- acquiring a model (`FrontierModel <: Model`), so `-Permission[Model]`
+  -- acquiring a model (`FrontierModel <: Model`), so `-Permission[Llm]`
   -- forbids this one too — the downward closure that stops a denial being
   -- evaded by naming a narrower capability. Measured:
   -- rejected/frontier_checker.anthill.
   operation open_frontier(endpoint: String) -> LiveLlm
-    effects {Permission[FrontierModel]} =
+    effects {Permission[LiveLlm]} =
       live_llm(endpoint: endpoint, model: "frontier")
 
   operation complete(self: LiveLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
@@ -158,7 +158,7 @@ end
 
 sort guardians.FakeLlm
   import anthill.prelude.{String, Error, External, Permission}
-  import guardians.{Llm, Prompt, Text, Model, LlmOutput}
+  import guardians.{Llm, Prompt, Text, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity fake_llm(fixture: String)
@@ -168,7 +168,7 @@ sort guardians.FakeLlm
   -- and may refuse — and nothing leaves the process. That the two axes are
   -- orthogonal is what makes a double possible without a second code path.
   operation open(fixture: String) -> FakeLlm
-    effects {Permission[Model]} = fake_llm(fixture: fixture)
+    effects {Permission[Llm]} = fake_llm(fixture: fixture)
 
   operation complete(self: FakeLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
     effects {External, Error}

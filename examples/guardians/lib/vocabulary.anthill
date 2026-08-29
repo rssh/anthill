@@ -74,60 +74,39 @@ enum guardians.Message
     body     : Text[Trust])
 end
 
--- `Model` IS A CAPABILITY AND NOTHING ELSE: the argument of `Permission[Model]`,
--- "this operation ACQUIRES the authority to consult a model"
--- (kernel-language.md §5.5, proposal 064). It is not an effect kind and is not
--- registered as one.
+-- CAPABILITIES ARE THE SORTS YOU ACQUIRE, so there is no marker sort here.
+-- `Permission[Llm]` is "may obtain a model" and `Permission[LiveLlm]` is the
+-- narrower claim, over sorts that exist for their own sake and carry `complete`.
 --
--- IT WORE TWO HATS ONCE, and the second is worth recording because losing it was
--- the point. `Model` was also a project-defined EFFECT LABEL — "this operation
--- consults a model" — so that `-Model` could deny consultation to a checker
--- handed an `Llm` it should not have. `docs/design/effects.md` rejected that hat
--- on its own terms ("semantics: `{External, Error}`, and nothing more"), and
--- `prelude/external.anthill` forbids the shape outright: "ONE effect, not one per
--- capability (no Http / Db / Forge effects) — what distinguishes external
--- capabilities is AUTHORITY, which lives in CARRIERS".
---
--- WHAT MADE IT DELETABLE was making the model's ANSWER unreadable rather than the
--- call unavailable. `LlmOutput` (llm.anthill) is sealed, so a component that
--- consults a model receives a token it can neither project nor match: the call
--- teaches it nothing, and being steered requires reading the answer. The row
--- label was approximating that property by forbidding the call; the type now
--- holds it directly, and one denial — of ACQUISITION — is all that is left.
-sort guardians.Model
-end
-
--- A SUB-CAPABILITY. A frontier model is a model, so `FrontierModel <: Model`,
--- and that is the whole declaration — `provides` on a constructor-less sort is
--- the is-a.
---
--- IT EXISTS TO BE DENIED. A denial is DOWNWARD-CLOSED in the capability:
--- `-Permission[Model]` forbids `Permission[X]` for every `X <: Model`, because
--- acquiring a frontier model IS acquiring a model. So a generated checker cannot
--- evade its denial by naming a narrower capability
+-- TWO EMPTY SORTS USED TO STAND IN FOR THEM — `Model` and `FrontierModel`, whose
+-- only job was to be arguments of `Permission[…]` — with the sub-capability edge
+-- faked by `FrontierModel provides Model`. `LiveLlm provides Llm` is that edge for
+-- real, so the DOWNWARD CLOSURE is unchanged: a denial is closed in the
+-- capability, `-Permission[Llm]` forbids `Permission[X]` for every `X <: Llm`, and
+-- a generated checker cannot evade it by naming a narrower one
 -- (rejected/frontier_checker.anthill).
 --
 -- THAT IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE, and the two run OPPOSITE
 -- ways — worth stating because the names invite the wrong reading.
--- `fact Contravariant(sort: Permission, param: T)` is the SUBSUMPTION rule: a
--- spec granting `Permission[FrontierModel]` accepts an implementation that takes
--- only `Permission[Model]`, because it asks less. The closure above is the other
+-- `fact Contravariant(sort: Permission, param: T)` is the SUBSUMPTION rule: a spec
+-- granting `Permission[LiveLlm]` accepts an implementation that takes only
+-- `Permission[Llm]`, because it asks less. The closure above is the other
 -- direction and runs COVARIANTLY in the capability; it needed its own rule in the
 -- kernel (`typing::permission_entails`), which is the one thing proposal 064
 -- predicted would come free and did not. See
 -- `stdlib/anthill/prelude/permission.anthill`.
 --
--- NOT registered as an effect kind: it is a capability and never a bare label,
--- which is the separation 064 asks for.
-sort guardians.FrontierModel
-  import guardians.{Model}
-  provides Model
-end
+-- `Model` ALSO WORE AN EFFECT-LABEL HAT once — "this operation consults a model" —
+-- so that `-Model` could deny consultation. `docs/design/effects.md` rejected that
+-- on its own terms and `prelude/external.anthill` forbids the shape ("no Http / Db
+-- / Forge effects"); what made it deletable was sealing the model's ANSWER
+-- (`LlmOutput`, llm.anthill) rather than forbidding the call.
+
 
 -- THE OUTBOX CAPABILITY — the authority to mail OUTSIDE the organisation.
 --
--- A capability, not an effect kind (like `FrontierModel` above, and unlike
--- `Model` / `Filesystem`): it is only ever the argument of `Permission[…]`.
+-- A capability, not an effect kind (unlike `Filesystem`): it is only ever the
+-- argument of `Permission[…]`.
 --
 -- What makes it worth having is that the permission `send_email` demands is
 -- CONDITIONAL (proposal 048's guarded effects, on 064's label). The article
@@ -153,7 +132,7 @@ namespace guardians
   import anthill.prelude.{String, List, Unit, Error, External, Effect}
   import guardians.TrustLevel.{Untrusted, Public}
   import anthill.prelude.{Permission}
-  import guardians.{Text, Message, Model, Filesystem, Outbox}
+  import guardians.{Text, Message, Filesystem, Outbox}
 
   -- The project's one effect KIND. `Model` and `FrontierModel` are deliberately
   -- absent: both are CAPABILITIES (arguments of `Permission[…]`) and never bare
@@ -313,7 +292,7 @@ namespace guardians
   -- model name `it@othercorp.com`.
   --
   -- THE EMPTY ROW IS THE CLAIM, and it is stronger than the `-Model` this used to
-  -- carry. A pure row admits no `External`, no `Permission[Model]` — so this body
+  -- carry. A pure row admits no `External`, no `Permission[Llm]` — so this body
   -- cannot mint a model, and cannot be handed one it could use, since the only
   -- thing a model returns is an `LlmOutput` nothing here can read. `-Model`
   -- denied one route; `{}` denies every route there is.

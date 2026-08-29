@@ -7,13 +7,13 @@
 -- which half is trusted:
 --
 --   render_task  {Error}                       reads declarations; no model
---   LiveLlm.open {Permission[Model]}           the ACQUISITION — see llm.anthill
+--   LiveLlm.open {Permission[Llm]}           the ACQUISITION — see llm.anthill
 --                                              (on the CARRIERS; `Llm` the spec
 --                                               declares no mint, and nothing
 --                                               forces a carrier to have one)
 --   Llm.complete {External, Error}             the untrusted step
 --   check        {External, Error,
---                 -Permission[Model]}          provably not steerable
+--                 -Permission[Llm]}          provably not steerable
 --
 -- The checker's row is the answer to "who guards the guard". A verifier that
 -- could itself be steered by a model is as manipulable as the thing it verifies.
@@ -24,7 +24,7 @@
 -- what a model RETURNS unreadable, so a checker handed an `Llm` obtains a token
 -- it cannot project or match, learns nothing from the call, and cannot be steered
 -- by it. Being steered requires reading the answer, and the type now forbids that
--- — so only ACQUISITION is still worth denying, which is `-Permission[Model]`
+-- — so only ACQUISITION is still worth denying, which is `-Permission[Llm]`
 -- (proposal 064) and `rejected/minting_checker.anthill`.
 -- ================================================================
 
@@ -65,7 +65,7 @@ end
 sort guardians.Harness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Prompt, Source, Text, Model, Llm}
+  import guardians.{Prompt, Source, Text, Llm}
   import guardians.TrustLevel.{Public, Untrusted}
 
   sort C = ?
@@ -106,7 +106,7 @@ end
 sort guardians.Checker
   import anthill.prelude.{String, Error, External, Permission}
   import anthill.reflect.{Symbol}
-  import guardians.{Source, CheckResult, Model}
+  import guardians.{Source, CheckResult}
 
   sort C = ?
 
@@ -118,13 +118,13 @@ sort guardians.Checker
   -- the second half is downward-closed, so naming a narrower capability does not
   -- evade it (see the file header, and vocabulary.anthill).
   operation check(self: C, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Permission[Model]}
+    effects {External, Error, -Permission[Llm]}
 end
 
 namespace guardians
   import anthill.prelude.{String, List, Error, External, Permission}
   import anthill.reflect.{Symbol}
-  import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult, Model}
+  import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult}
 
   -- ONE ROUND of the loop: render, complete, check. The repair loop is the
   -- caller's — `Rejected`'s diagnostics are exactly what `render_task` takes
@@ -142,7 +142,7 @@ namespace guardians
       chk.check(h.generate(llm, p), spec)
 
   -- THE ACQUISITION, and the POSITIVE CONTROL for every `Permission` refusal in
-  -- this example. Without it `Permission[Model]` would appear only in
+  -- this example. Without it `Permission[Llm]` would appear only in
   -- `fixtures/agent/rejected/`, and a vocabulary that shows up exclusively in
   -- refused programs is indistinguishable from one that refuses everything — the
   -- trap this example's own methodology warns about (docs/design/measured.md, on
@@ -156,7 +156,7 @@ namespace guardians
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
                        feedback: List[T = String]) -> CheckResult
-    effects {Permission[Model], External, Error} =
+    effects {Permission[Llm], External, Error} =
       let llm = LiveLlm.open(endpoint, model)
       attempt(h, llm, chk, spec, tools, feedback)
 end
@@ -165,7 +165,7 @@ end
 sort guardians.FileHarness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Harness, Prompt, Source, Text, Llm, Model}
+  import guardians.{Harness, Prompt, Source, Text, Llm}
   import guardians.TrustLevel.{Public, Untrusted}
   entity file_harness
   operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
@@ -179,10 +179,10 @@ end
 sort guardians.LoadChecker
   import anthill.prelude.{String, Error, External, Permission}
   import anthill.reflect.{Symbol}
-  import guardians.{Checker, Source, CheckResult, Model}
+  import guardians.{Checker, Source, CheckResult, Llm}
   entity load_checker
   operation check(self: LoadChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Permission[Model]}
+    effects {External, Error, -Permission[Llm]}
   provides Checker
 end
 

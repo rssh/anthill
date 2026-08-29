@@ -13,7 +13,7 @@
 -- ================================================================
 sort guardians.agent.GoodTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+  import guardians.{Triage, Mailbox, Report, Llm, summarize,
                     fetch_mail, bodies_of, verdicts_of}
   entity mk
 

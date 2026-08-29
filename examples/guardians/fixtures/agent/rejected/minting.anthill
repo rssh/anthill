@@ -14,7 +14,7 @@
 -- ================================================================
 sort guardians.agent.MintingTriage
   import anthill.prelude.{List, Unit, Error, External}
-  import guardians.{Mailbox, Address, Text, Prompt, Llm, Model,
+  import guardians.{Mailbox, Address, Text, Prompt, Llm,
                     prompt_with, send_email}
   import guardians.TrustLevel.{Public}
   entity mk

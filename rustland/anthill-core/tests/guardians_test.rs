@@ -591,14 +591,14 @@ fn the_legitimate_acquisition_path_is_accepted() {
 
     // THE MINT carries it …
     assert!(
-        carries(&row("guardians.LiveLlm.open"), "Permission[T = Model]"),
-        "LiveLlm.open must carry exactly `Permission[T = Model]`; got: {:?}",
+        carries(&row("guardians.LiveLlm.open"), "Permission[T = Llm]"),
+        "LiveLlm.open must carry exactly `Permission[T = Llm]`; got: {:?}",
         row("guardians.LiveLlm.open")
     );
     // … the round that ACQUIRES declares it, since its body reaches the mint …
     assert!(
-        carries(&row("guardians.open_round"), "Permission[T = Model]"),
-        "open_round must declare exactly `Permission[T = Model]`; got: {:?}",
+        carries(&row("guardians.open_round"), "Permission[T = Llm]"),
+        "open_round must declare exactly `Permission[T = Llm]`; got: {:?}",
         row("guardians.open_round")
     );
     // … and NOTHING DOWNSTREAM carries a Permission of ANY capability. This is the
@@ -642,7 +642,7 @@ fn minting_checker_is_refused_by_lacks_permission() {
     // closed row already means "not incurred". What 064 bought here is that
     // acquisition is an EFFECT AT ALL — before it, the constructors were public
     // and construction carried nothing, so minting was unconstrained.
-    assert_refused("minting_checker", "denied effect: Permission[T = Model]");
+    assert_refused("minting_checker", "denied effect: Permission[T = Llm]");
 }
 
 #[test]
@@ -692,7 +692,7 @@ fn a_sub_capability_mint_is_refused_by_the_downward_closed_denial() {
     // checker that had refused the wrong program.
     assert_refused(
         "frontier_checker",
-        "denied effect: Permission[T = FrontierModel]",
+        "denied effect: Permission[T = LiveLlm]",
     );
 }
 
@@ -1101,7 +1101,7 @@ fn a_wrong_sort_at_a_label_polymorphic_parameter_is_refused() {
     let candidate = r#"
 sort guardians.agent.MisprojectingTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+  import guardians.{Triage, Mailbox, Report, Llm, summarize,
                     fetch_mail, bodies_of, verdicts_of}
   entity mk
 
@@ -1285,7 +1285,7 @@ fn redeclaring_a_trusted_name_is_refused_by_the_naming_rule() {
         r#"
         sort guardians.Triage
           import anthill.prelude.{Error, External}
-          import guardians.{Mailbox, Report, Model, Llm, Filesystem}
+          import guardians.{Mailbox, Report, Llm, Filesystem}
           sort C = ?
           operation run(self: C, box: Mailbox, llm: Llm) -> Report
             effects {External, Error, Filesystem}
@@ -1311,7 +1311,7 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
         r#"
         sort guardians.agent.TidyTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+          import guardians.{Triage, Mailbox, Report, Llm, summarize,
                             fetch_mail, bodies_of, verdicts_of}
           entity mk
 
@@ -1407,7 +1407,7 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
         r#"
         sort guardians.agent.ShadowTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Mailbox, Report, Model, Llm, summarize,
+          import guardians.{Triage, Mailbox, Report, Llm, summarize,
                             fetch_mail, bodies_of, verdicts_of}
           import guardians.agent.{mentions_all}
           entity mk
