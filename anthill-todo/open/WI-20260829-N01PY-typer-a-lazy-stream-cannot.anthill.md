@@ -36,3 +36,43 @@ WHAT TO DECIDE FIRST, because it is a design question and not a typo: whether th
 
 CELLS THAT TRACK IT: `typer_capability_matrix_test::lazy_stream_consumption`, four KNOWN GAP cells, each paired with its dot-free control. They FAIL when the gap closes, which is the signal to flip them to `Verdict::Loads` and close this item.
 
+## Changes
+
+### 2026-08-29T15:15:42Z — feedback — user
+
+ONE CLAIM IN THIS TEXT IS NOW FALSE, corrected while delivering WI-20260829-9TGP7. It
+does not touch the gap this ticket is about, only its stated CONSEQUENCE.
+
+The text says: "`guardians/lib/vocabulary.anthill`'s `bodies_of` exists ONLY because of
+this -- the trusted vocabulary has to supply a projection the agent cannot express. Its
+declaration says so."
+
+MEASURED, through the whole guardians checker rather than a bare load, both spellings the
+ticket names now work once the stream is materialized:
+
+  msgs.map(lambda m -> m.body).collect()                                    LOADS
+  msgs.map(lambda m -> match m case message(i,f,r,s,b) -> b).collect()      LOADS
+
+and the article's attack stays refused through both, with the taint diagnostic unchanged
+("expected Text[Trust = Public], got LlmOutput[T = Text[Trust = Untrusted]]") -- so the
+inlined projection preserves `Untrusted` rather than laundering it. Row:
+`guardians_test::an_agent_can_inline_the_body_projection`.
+
+Two things changed since this was written. (1) The match-destructure spelling was refused
+by WI-20260829-9TGP7 (`map`'s free `Dst` used as a BOUND on a match arm rather than as a
+hint), now fixed. (2) The dot spelling's `<unresolved receiver>.body` was never real: it
+was a missing-`Iterable`-import artefact in the probe that reported it, already corrected
+on WI-20260829-9TGP7's own feedback.
+
+WHAT THIS TICKET STILL OWNS IS UNCHANGED, and the `.collect()` in both rows above is
+exactly it: `summarize(llm, msgs.map(...))` without the materialization is still refused
+with "expected List[T = Text[Trust = Untrusted]], got MappedStream[...]". The gap is real
+and the four paired cells in `lazy_stream_consumption` still track it. What is no longer
+true is that anything in guardians is BLOCKED by it -- `collect` is a spelling an author
+can write, so the consequence to cite is ergonomic, not "the agent cannot express it".
+
+`bodies_of` STAYS regardless, and not because of this gap. `docs/design/measured.md` settled
+that under C7 before either fix: a message's body genuinely is a projection and the label
+genuinely rides along it, so it earns its place as ordinary API. Its declaration comment
+said the opposite and has been rewritten to say what is measured.
+

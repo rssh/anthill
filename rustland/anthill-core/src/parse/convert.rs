@@ -1181,8 +1181,15 @@ impl<'a> Converter<'a> {
             "collection_literal" => self.push_collection_literal(node, work),
             "tuple_literal" => self.push_tuple_literal(node, work),
             "paren_expr" => {
+                // WI-20260829-YBBC3: the parenthesized form is `('(' _expr_body ')')`,
+                // so the inner node may be any compound expression — `(if c then a
+                // else b)`, `(match r case … -> …)`. Dispatching it as `ExprBody` is
+                // what makes parentheses the universal escape into the compound forms
+                // from a position that only takes an atom (an infix operand, a dot
+                // receiver, a `match` scrutinee). `visit_expr_body` falls through to
+                // `visit_term`, so an ordinary parenthesized term is unaffected.
                 let inner = node.named_child(0).unwrap_or(node);
-                work.push(WorkOp::Visit(WorkKind::Term, inner));
+                work.push(WorkOp::Visit(WorkKind::ExprBody, inner));
             }
             "identifier" => {
                 let sym = self.intern(self.text(node));
@@ -1750,8 +1757,10 @@ impl<'a> Converter<'a> {
             node,
             elem_count,
         }));
+        // WI-20260829-YBBC3: a list element is an `_expr_body`, so an element may be
+        // a lambda or any other compound form; route it the way a call argument is.
         for child in elements.iter().rev() {
-            work.push(WorkOp::Visit(WorkKind::Term, *child));
+            work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
     }
 
@@ -5440,12 +5449,20 @@ fn is_term_kind(kind: &str) -> bool {
             | "name"
             // WI-1075: the absolute spelling of a `name` atom.
             | "absolute_name"
-            // A lambda is a value expression collectible as a positional
-            // argument: `map(xs, lambda x -> f(x))`. The grammar only
-            // admits `lambda_expr` in `_fn_arg` / `_expr_body` positions,
-            // so the other `is_term_kind` call sites (infix operands, dot
-            // receivers, pattern contexts) never receive one.
+            // A COMPOUND EXPRESSION is a value expression collectible as a
+            // positional argument, a named-argument value, a list element or a
+            // tuple component: `map(xs, lambda x -> f(x))`, `f(if c then a else b)`.
+            // The grammar admits these five only in `_expr_body` and in the
+            // DELIMITED value positions (WI-20260829-YBBC3) — never as an infix
+            // operand, a dot receiver or inside a pattern, so the `is_term_kind`
+            // call sites that serve those never receive one. The list is
+            // [`is_expr_body_kind`] so the routing in `fn_arg_work_kind` and the
+            // admission here cannot drift apart.
             | "lambda_expr"
+            | "match_expr"
+            | "if_expr"
+            | "let_chain"
+            | "proof_statement"
             // Goal-position `let ?v = expr` (proposal 049); lowered to `unify(?v, expr)`
             // by `visit_term`. Rejected in head position by `convert_rule_heads`.
             | "let_binding"
@@ -5476,18 +5493,31 @@ fn is_data_literal_kind(kind: &str) -> bool {
     )
 }
 
-/// `WorkKind` for visiting a collected call-argument child. A
-/// `lambda_expr` argument must be visited as an `ExprBody` (only that
-/// dispatch builds the lambda); every other argument kind is a plain
-/// `Term`. `visit_expr_body` falls back to `visit_term` for non-lambda
-/// nodes, so this stays correct if the grammar later admits more
-/// `_expr_body` forms as arguments.
+/// `WorkKind` for visiting a collected call-argument / list-element child. A
+/// compound expression must be visited as an `ExprBody` — only that dispatch
+/// builds it — and every other kind is a plain `Term`. `visit_expr_body` falls
+/// back to `visit_term`, so routing a plain term here would also be correct;
+/// the split is kept so the two dispatches stay legible.
 fn fn_arg_work_kind(kind: &str) -> WorkKind {
-    if kind == "lambda_expr" {
+    if is_expr_body_kind(kind) {
         WorkKind::ExprBody
     } else {
         WorkKind::Term
     }
+}
+
+/// The COMPOUND EXPRESSION kinds — `_expr_body`'s own alternatives, everything it
+/// admits beyond `_term`. WI-20260829-YBBC3 made these admissible in every
+/// delimited value position (call argument, named-argument value, list element,
+/// tuple component, and inside `paren_expr`), not just as an operation body, so
+/// the set is read in two places and must not drift: [`fn_arg_work_kind`] routes
+/// them to `visit_expr_body`, and [`is_term_kind`] admits them so the collecting
+/// loops do not silently drop one.
+fn is_expr_body_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "match_expr" | "if_expr" | "let_chain" | "lambda_expr" | "proof_statement"
+    )
 }
 
 /// Check if a node kind is a pattern.
