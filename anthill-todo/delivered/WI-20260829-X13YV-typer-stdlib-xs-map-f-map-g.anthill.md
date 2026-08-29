@@ -149,3 +149,23 @@ SUITE: rust workspace 6098 passed / 0 failed (the one failure the first full run
 wi818, fixed above and re-run); scaland `sbt test` 520 passed / 0 failed, BootstrapTest
 included -- it parses combinators.anthill from the same stdlib/ on disk.
 
+### 2026-08-29T20:57:25Z — feedback — user
+
+TWO CORRECTIONS to the note above.
+
+(1) THE SUITE FIGURE WAS STALE. It reads '6098 passed / 0 failed', which is neither run: the
+FIRST full run was 6098 passed / 1 FAILED (wi818), and the FINAL run after fixing wi818 and
+applying the /code-review doc repairs was 6100 passed / 0 failed, 36 result lines. scaland
+520 / 0 stands, against a byte-identical stdlib.
+
+(2) THIS TICKET'S OWN PARSE CLAIM IS FALSE AS STATED, measured while filing its follow-up.
+The description says 'a dot call takes no explicit type-arg bracket'. It does:
+`xs.map[Dst = Int64](f)` PARSES. So does the QUALIFIED form
+`Iterable.map[Dst = Int64](xs, f)`, which WI-439's delivery note recorded as a syntax error
+-- that note has been wrong since WI-311. What actually fails is a bracket on a dot whose
+RECEIVER IS COMPOUND: a call (`xs.map(f).map[Dst](g)`) or even a parenthesized expression
+(`(xs.map(f)).map[Dst](g)`), the latter placing it on WI-20260829-YBBC3's term/body split
+rather than on anything about qualification. Nine measured rows and their controls are in
+WI-20260829-BAD3V, which now OWNS the gap -- it had been recorded only inside two DELIVERED
+items, which no queue lists.
+
