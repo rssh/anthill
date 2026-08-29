@@ -180,7 +180,7 @@ namespace guardians
 
   -- The source. The label is fixed by the SIGNATURE, which is the only
   -- place it can enter (measured: C6).
-  operation fetch_mail(box: Mailbox) -> List[T = Message[Untrusted]]
+  operation fetch_mail(box: Mailbox) -> List[Message[Untrusted]]
     effects {External, Error}
 
   -- Projection: a message's body carries the message's label.
@@ -192,8 +192,8 @@ namespace guardians
   -- The typer now refuses such a call (including a mis-projected
   -- `List[Text[?t]]` handed to this signature), so this is ordinary API: a
   -- message's body genuinely is a projection, and the label rides along it.
-  operation bodies_of(msgs: List[T = Message[?t]])
-      -> List[T = Text[?t]]
+  operation bodies_of(msgs: List[Message[?t]])
+      -> List[Text[?t]]
 
   -- One Verdict per message, in the order given. This is the operation an
   -- agent MUST call to satisfy `ensures mentions_all(result)`: the enumeration
