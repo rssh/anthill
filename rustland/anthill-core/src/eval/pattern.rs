@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::{NodeOccurrence, Pattern};
+use crate::kb::resolve::PositionalPlan;
 use crate::kb::term::Literal;
 
 use super::value::{TupleComponents, Value};
@@ -95,21 +96,48 @@ fn match_constructor_pattern(
         return None;
     }
 
+    let field_order = kb.entity_field_names(ctor_sym);
+    // WI-20260827-1F0QP: a MIXED pattern (`case two(y, a: 1)`) means what the MIXED
+    // APPLICATION `two(2, a: 1)` means — the positional sub-patterns rank among the
+    // fields NOT already given by name, through the SHARED owner
+    // ([`KnowledgeBase::positional_to_named_plan`]) rather than an open-coded
+    // leading-index copy. Open-coded, `y` was given field `a`, the named `a: 1` then
+    // found index 0 already covered, and the arm SILENTLY did not match — so a later
+    // arm answered instead (`gpat`/`gpat0` in `wi_t2470_positional_ctor_in_op_body_test`,
+    // and this ticket's own `wi_1f0qp_mixed_ctor_pattern_test`).
+    let named_syms: SmallVec<[Symbol; 2]> = named_args.iter().map(|(s, _)| *s).collect();
+    let pos_fields = match kb.positional_to_named_plan(ctor_sym, &named_syms, pos_args.len()) {
+        PositionalPlan::Assign(fields) => Some(fields),
+        // No declared schema, or a reflect-form meta-ctor whose positional shape IS
+        // its encoding: there is no field list to rank among, so the sub-values are
+        // read by SLOT. `sub_values` is that same positional shape, so slot `i` is
+        // exact here rather than a fallback.
+        PositionalPlan::Skip => None,
+        // Unreachable behind the arity-strict test above (`pos + named == n` and a
+        // double-named cover is caught by `covered`), and if it were reached the
+        // pattern names more fields than the entity has — no match.
+        PositionalPlan::OverArity { .. } => return None,
+    };
     let mut covered = vec![false; n];
     let mut bindings = SmallVec::new();
-    // Positional sub-patterns fill the leading field indices.
     for (i, sub_pat) in pos_args.iter().enumerate() {
-        covered[i] = true;
-        let mut sub_b = match_pattern(interp, sub_pat, &sub_values[i])?;
+        let idx = match &pos_fields {
+            Some(fields) => field_index(field_order, fields[i])?,
+            None => i,
+        };
+        if idx >= n || covered[idx] {
+            return None;
+        }
+        covered[idx] = true;
+        let mut sub_b = match_pattern(interp, sub_pat, &sub_values[idx])?;
         bindings.append(&mut sub_b);
     }
     // WI-445: named sub-patterns (`Box(v: some(x))`) resolve to their field's
     // declaration index. A field the constructor doesn't declare, an
     // out-of-range index, or a double cover is no match (mirrors the
     // arity-strict positional behaviour).
-    let field_order = kb.entity_field_names(ctor_sym);
     for (field_sym, sub_pat) in named_args {
-        let idx = field_order.and_then(|order| order.iter().position(|f| *f == *field_sym))?;
+        let idx = field_index(field_order, *field_sym)?;
         if idx >= n || covered[idx] {
             return None;
         }
@@ -118,6 +146,13 @@ fn match_constructor_pattern(
         bindings.append(&mut sub_b);
     }
     Some(bindings)
+}
+
+/// A declared field's index in `field_order` — the index its sub-value occupies,
+/// since `constructor_sub_values` hands the fields back in DECLARATION order.
+/// `None` when the constructor declares no fields, or none by that name.
+fn field_index(field_order: Option<&[Symbol]>, field: Symbol) -> Option<usize> {
+    field_order.and_then(|order| order.iter().position(|f| *f == field))
 }
 
 /// Match a tuple pattern, binding each binder to the component the typer
@@ -382,6 +417,30 @@ fn constructor_sub_values(
     for k in scrutinee.named_keys(kb) {
         let arg = scrutinee.named_arg(kb, k)?;
         named.push((k, arg.to_value()));
+    }
+    // WI-20260827-1F0QP: MAKE the "in declaration order" claim above true, instead of
+    // ASSUMING it. Concatenating `positional ++ canonicalized-named` puts the fields in
+    // declaration order only when the positional args occupy the LEADING declared
+    // fields — true for an all-positional and an all-named carrier, and FALSE for a
+    // MIXED one, where `two(2, a: 1)` denotes `two(a: 1, b: 2)` and the concatenation
+    // yields `[2, 1]`. Both this function's callers index the result by DECLARATION
+    // index (the named sub-pattern loop always did; the positional loop does since this
+    // ticket), so a mixed carrier handed every sub-pattern the wrong field.
+    //
+    // Gated on BOTH being present, so the two shapes every in-tree producer actually
+    // emits take the identical path they took before — this is the carrier no producer
+    // is supposed to build, closed at the reader rather than trusted not to arrive.
+    if !all.is_empty() && !named.is_empty() {
+        let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
+        if let PositionalPlan::Assign(fields) =
+            kb.positional_to_named_plan(functor, &named_syms, all.len())
+        {
+            let mut merged: Vec<(Symbol, Value)> =
+                fields.iter().copied().zip(all.drain(..)).collect();
+            merged.append(&mut named);
+            kb.canonicalize_record_named_args(functor, &mut merged);
+            return Some(merged.into_iter().map(|(_, v)| v).collect());
+        }
     }
     kb.canonicalize_record_named_args(functor, &mut named);
     all.extend(named.into_iter().map(|(_, v)| v));

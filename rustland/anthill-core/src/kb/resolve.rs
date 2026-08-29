@@ -5254,10 +5254,37 @@ impl KnowledgeBase {
             // map onto, leave positional.
             return PositionalPlan::Skip;
         };
+        Self::rank_positional_among_unnamed(all_fields, |f| named_fields.contains(&f), pos_count)
+    }
+
+    /// WI-20260827-1F0QP: THE RANK RULE ITSELF, on an explicit declared-field list —
+    /// [`Self::positional_to_named_plan`] minus the functor gating (`pos_count == 0`,
+    /// reflect-form meta-ctors, no registered schema). The i-th positional argument
+    /// takes the i-th declared field NOT already given by name.
+    ///
+    /// Split out so the sites that cannot phrase their question as "this functor's
+    /// declared fields, keyed by `Symbol` equality" still share ONE owner of the rule
+    /// rather than open-coding a leading-index copy of it. Two do:
+    ///
+    ///  * [`crate::kb::body_specialize`]'s `match_ctor_fields` / `ctor_field_occs`,
+    ///    which key a field by its SHORT name (the pattern's `a` and the scrutinee's
+    ///    declared `a` can be differently-qualified `Symbol`s there — the module's
+    ///    `short_of` convention), so `is_named` is a short-name test, not `contains`;
+    ///  * [`crate::kb::typing`]'s pattern binder typing, which has the declared
+    ///    field list already in hand as `(Symbol, Value)` pairs.
+    ///
+    /// Every OTHER caller wants the gated [`Self::positional_to_named_plan`]: calling
+    /// this one directly skips the reflect-form exemption, and a reflect meta-ctor's
+    /// positional shape IS its encoding.
+    pub(crate) fn rank_positional_among_unnamed(
+        all_fields: &[Symbol],
+        mut is_named: impl FnMut(Symbol) -> bool,
+        pos_count: usize,
+    ) -> PositionalPlan {
         let unfilled: SmallVec<[Symbol; 4]> = all_fields
             .iter()
             .copied()
-            .filter(|f| !named_fields.contains(f))
+            .filter(|f| !is_named(*f))
             .collect();
         if pos_count > unfilled.len() {
             return PositionalPlan::OverArity {
@@ -8840,10 +8867,58 @@ impl KnowledgeBase {
                 // bound value matches how entities are represented everywhere. A
                 // NULLARY constructor is the canonical `Ref(name)` (WI-436/WI-511),
                 // not an empty-args `Constructor`.
-                let fields = self.entity_field_names(name).map(|f| f.to_vec());
+                //
+                // WI-20260827-1F0QP: through the SHARED owners —
+                // [`Self::positional_to_named_plan`] for WHICH field each positional
+                // sub-pattern takes, [`Self::canonicalize_record_named_args`] for the
+                // order they end up in — rather than this arm's former open-coded
+                // `fields.get(i)` + `sort_by_key(s.index())`. Both copies were wrong,
+                // and independently:
+                //
+                //  * `fields.get(i)` gave a MIXED `case two(y, a: 1)` the LEADING field
+                //    `a` for `y`, so the built occurrence was `two(a: 1, a: y)` — two
+                //    args for one field, which unifies with no `Two` value at all,
+                //    where the mixed APPLICATION `two(2, a: 1)` means `two(a: 1, b: 2)`;
+                //  * `sort_by_key(s.index())` is INTERNING order, not DECLARATION
+                //    order. The discrim tree and `unify_concrete` compare named args
+                //    BY POSITION (`canonicalize_record_named_args`'s own contract), so
+                //    the two agreed only as long as an entity's fields happened to be
+                //    interned in the order it declares them — which a `requires`/import
+                //    that mentions a later field first is enough to break.
+                //
+                // This is the PATTERN twin of the desugar `anf_flatten` (below) does for
+                // the arm BODY; the two must build the same shape or the case-split's
+                // `unify(scrutinee, pattern)` goal never fires.
                 let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+                let named_syms: SmallVec<[Symbol; 2]> = named_p.iter().map(|(s, _)| *s).collect();
+                let pos_fields = match self.positional_to_named_plan(name, &named_syms, pos_p.len())
+                {
+                    PositionalPlan::Assign(fields) => Some(fields),
+                    // No declared schema, or a reflect-form meta-ctor: no field list to
+                    // rank among. This arm builds an ALL-NAMED occurrence, so it still
+                    // needs a name per positional sub-pattern — the leading declared
+                    // field, and `None` (decline the unfold) when there is none, exactly
+                    // as before.
+                    PositionalPlan::Skip => None,
+                    // DECLINE, and deliberately NOT the debug-assert `anf_flatten`
+                    // makes one arm down. That arm asserts because the loader refuses an
+                    // over-arity constructor TERM, so reaching it means a runtime-built
+                    // one — a broken invariant. The same is NOT true of a PATTERN:
+                    // MEASURED, `case two(p, q, r)` on `entity two(a, b)` LOADS CLEAN
+                    // (only the eval matcher's arity-strict test refuses it, at match
+                    // time), so an ordinary source program reaches this arm and an
+                    // assertion here would abort every debug build that ran one. Which
+                    // pass should refuse an over-arity pattern at LOAD is a real gap
+                    // and a separate ticket; until then it is a shape this unfold
+                    // declines, not an invariant it may assume.
+                    PositionalPlan::OverArity { .. } => return None,
+                };
+                let fields = self.entity_field_names(name).map(|f| f.to_vec());
                 for (i, p) in pos_p.iter().enumerate() {
-                    let field = fields.as_ref().and_then(|f| f.get(i).copied())?;
+                    let field = match &pos_fields {
+                        Some(f) => f[i],
+                        None => fields.as_ref().and_then(|f| f.get(i).copied())?,
+                    };
                     let occ = self.fresh_pattern_occ(p, rename)?;
                     named.push((field, occ));
                 }
@@ -8853,7 +8928,7 @@ impl KnowledgeBase {
                 if named.is_empty() {
                     Some(NodeOccurrence::new_expr(Expr::Ref(name), span, None))
                 } else {
-                    named.sort_by_key(|(s, _)| s.index());
+                    self.canonicalize_record_named_args(name, &mut named);
                     Some(NodeOccurrence::new_expr(
                         Expr::Constructor {
                             name,
@@ -8956,13 +9031,15 @@ impl KnowledgeBase {
                 // case-split (`gm` in `wi_t2470_positional_ctor_in_op_body_test`).
                 //
                 // Through `positional_to_named_plan` + `canonicalize_record_named_args`
-                // — the shared owners — rather than `fresh_pattern_occ`'s open-coded
-                // `fields.get(i)` + `sort_by_key(index)`, so a MIXED
-                // `esome(1, other: 2)` follows the rank-among-NOT-named rule and a
-                // multi-field entity lands in DECLARED field order. `Skip` covers the
-                // reflect FORM meta-ctors (`from_projection`'s `TupleLiteral` among
-                // them) and any functor with no declared schema, so those keep the
-                // positional shape that IS their encoding.
+                // — the shared owners — so a MIXED `esome(1, other: 2)` follows the
+                // rank-among-NOT-named rule and a multi-field entity lands in DECLARED
+                // field order. `Skip` covers the reflect FORM meta-ctors
+                // (`from_projection`'s `TupleLiteral` among them) and any functor with
+                // no declared schema, so those keep the positional shape that IS their
+                // encoding. WI-20260827-1F0QP routed [`Self::fresh_pattern_occ`] — the
+                // PATTERN side of this same unfold, which had its own open-coded
+                // `fields.get(i)` + `sort_by_key(index)` copy — through both owners too,
+                // so the two halves of one case-split cannot take different shapes.
                 //
                 // OverArity is a BROKEN INVARIANT, not one of the body forms this
                 // unfold declines. It still returns `None`, because the signature has no

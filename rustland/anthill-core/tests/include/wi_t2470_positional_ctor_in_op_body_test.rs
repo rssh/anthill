@@ -143,14 +143,17 @@
 //! reader repair not yet made, so it was reading THIS change's regression and crediting
 //! the branch.)
 //!
-//! ## THE ADJACENT DEFECT THIS DOES NOT FIX
+//! ## THE ADJACENT DEFECT, SINCE FIXED
 //!
-//! `gpat`/`gpat0` below are asserted at their CURRENT (wrong) values on purpose. A mixed
-//! constructor PATTERN uses a different rule from a mixed constructor APPLICATION: the
-//! application `two(2, a: 1)` puts 2 in `b` (rank among NOT-named — `gmix`, fixed here),
-//! while the pattern `case two(y, a: 1)` gives `y` field `a`, collides with the named
-//! `a: 1`, and silently does not match, so a later arm answers instead. That is
-//! WI-20260827-1F0QP, which must flip `gpat` to (1,1) and `gpat0` to (0,0).
+//! `gpat`/`gpat0` were pinned here at their WRONG values so WI-20260827-1F0QP would have
+//! a row to flip: a mixed constructor PATTERN used a different rule from a mixed
+//! constructor APPLICATION. The application `two(2, a: 1)` puts 2 in `b` (rank among
+//! NOT-named — `gmix`, fixed here), while the pattern `case two(y, a: 1)` gave `y` field
+//! `a`, collided with the named `a: 1`, and silently did not match, so a later arm
+//! answered instead. WI-20260827-1F0QP flipped them: the two sides now read one spelling
+//! one way. The rows are KEPT (at their correct values now) because they are the only
+//! place the two sides are asserted TOGETHER, in one fixture, off one declaration —
+//! `wi_1f0qp_mixed_ctor_pattern_test` measures the pattern side per producer.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
@@ -208,8 +211,8 @@ namespace test.t2470
     operation inc(x: Int64) -> Int64 = x
     operation omap () -> Option[T = Int64] = optionMap(some(value: 1), inc)
     operation opure() -> Option[T = Int64] = optionPure(1)
-    -- WI-20260827-1F0QP: a MIXED constructor PATTERN, which reads the same spelling
-    -- `twoMix` writes and disagrees with it. Asserted at its CURRENT value below.
+    -- WI-20260827-1F0QP: a MIXED constructor PATTERN, reading the same spelling
+    -- `twoMix` writes — and, since that ticket, agreeing with it.
     operation punmix(t: Two) -> Int64 =
       match t
         case two(y, a: 1) -> y
@@ -476,18 +479,20 @@ end
     );
 }
 
-/// WI-20260827-1F0QP, PINNED AT ITS CURRENT (WRONG) VALUE so that ticket has a row to
-/// flip and so the divergence is not rediscovered.
+/// THE TWO SIDES OF ONE SPELLING, ASSERTED TOGETHER — this ticket fixed the APPLICATION
+/// (`gmix`) and WI-20260827-1F0QP the PATTERN (`gpat`/`gpat0`), and the point of keeping
+/// all three in one test over one `Two` declaration is that they must not drift apart
+/// again: `two(2, a: 1)` and `case two(y, a: 1)` both mean "2 is field `b`, the one not
+/// given by name".
 ///
-/// `C.twoMix()` writes `two(2, a: 1)` as an APPLICATION and this change makes it mean
-/// `two(a: 1, b: 2)` (`gmix`, above). `C.punmix` reads the SAME spelling as a PATTERN,
-/// `case two(y, a: 1)`, and gives `y` the LEADING field `a` — which the named `a: 1` has
-/// already taken — so the arm silently does not match and the fallthrough answers 0.
+/// `gpat`/`gpat0` were pinned at (0,0)/(1,1) — the pattern arm silently not matching and
+/// the fallthrough answering 0 where the program says 7 — until WI-20260827-1F0QP routed
+/// the pattern side through the same `positional_to_named_plan` the application uses.
 ///
-/// The two sides use two different rules; this ticket fixes only the application side.
-/// Asserted here as CURRENT BEHAVIOUR, not as correct behaviour.
+/// Back out THIS ticket and `gmix` reddens; back out WI-20260827-1F0QP and `gpat`/`gpat0`
+/// redden. Neither backs out the other.
 #[test]
-fn a_mixed_constructor_pattern_still_disagrees_with_a_mixed_application() {
+fn a_mixed_constructor_pattern_now_agrees_with_a_mixed_application() {
     let mut kb = kb();
     assert_eq!(
         counts(&mut kb, "test.t2470.gmix(1)"),
@@ -497,14 +502,13 @@ fn a_mixed_constructor_pattern_still_disagrees_with_a_mixed_application() {
     );
     assert_eq!(
         counts(&mut kb, "test.t2470.gpat(1)"),
-        (0, 0),
-        "but the PATTERN `case two(y, a: 1)` does not match `two(a: 1, b: 7)` at all. \
-         WI-20260827-1F0QP must make this (1, 1)"
+        (1, 1),
+        "and the PATTERN `case two(y, a: 1)` reads it the same way: `y` is field `b`, \
+         so `two(a: 1, b: 7)` gives 7 (WI-20260827-1F0QP)"
     );
     assert_eq!(
         counts(&mut kb, "test.t2470.gpat0(1)"),
-        (1, 1),
-        "and it loses SILENTLY: the next arm answers 0 where the program says 7. \
-         WI-20260827-1F0QP must make this (0, 0)"
+        (0, 0),
+        "so the fallthrough arm does NOT answer — the silent 0 is gone"
     );
 }

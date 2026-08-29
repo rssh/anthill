@@ -16195,11 +16195,35 @@ fn convert_query_term_expecting(
                 return kb.build_list(&items);
             }
 
-            // The declared field type of the i-th POSITIONAL argument, by declaration
-            // order — the same rank the positional→named desugar below assigns.
+            // The declared field type of the i-th POSITIONAL argument — the same rank
+            // the positional→named desugar below assigns, and WI-20260827-1F0QP made
+            // that literally true by asking the SHARED owner instead of taking the
+            // i-th declared field. In a MIXED query `two(?x, a: 1)` the desugar puts
+            // `?x` in `b` while this hint typed it from `a`, so a mixed query's
+            // positional argument was converted under the WRONG expected type.
+            let named_kb_syms: SmallVec<[Symbol; 2]> = named_args
+                .iter()
+                .map(|&(sym, _)| kb.intern(parse_symbols.local_name(sym)))
+                .collect();
+            let pos_plan = match kb.positional_to_named_plan(
+                kb_functor,
+                &named_kb_syms,
+                pos_args.len(),
+            ) {
+                PositionalPlan::Assign(fields) => Some(fields),
+                // No schema / reflect-form ctor, or an over-arity query. A transient
+                // query has no load-error channel, so both leave the args positional
+                // (the query simply finds no match) and untyped by rank.
+                _ => None,
+            };
             let pos_field_type = |kb: &KnowledgeBase, i: usize| {
-                kb.entity_field_names(kb_functor)
-                    .and_then(|fields| fields.get(i).copied())
+                pos_plan
+                    .as_ref()
+                    .map(|fields| fields[i])
+                    .or_else(|| {
+                        kb.entity_field_names(kb_functor)
+                            .and_then(|fields| fields.get(i).copied())
+                    })
                     .and_then(|f| declared_field_type(kb, kb_functor, f))
             };
             let mut new_pos: SmallVec<[TermId; 4]> = pos_args
@@ -16249,17 +16273,13 @@ fn convert_query_term_expecting(
             // channel, so an over-arity query is left positional (it simply finds no
             // match) rather than aborting — unlike a stored fact/rule, a malformed
             // query corrupts nothing.
-            if !new_pos.is_empty() {
-                let named_syms: SmallVec<[Symbol; 2]> = new_named.iter().map(|(s, _)| *s).collect();
-                // A transient query has no load-error channel, so an over-arity
-                // query is left positional (it simply finds no match) rather than
-                // aborting — only the `Assign` plan rewrites.
-                if let PositionalPlan::Assign(fields) =
-                    kb.positional_to_named_plan(kb_functor, &named_syms, new_pos.len())
-                {
-                    for (i, pos_val) in new_pos.drain(..).enumerate() {
-                        new_named.push((fields[i], pos_val));
-                    }
+            // `new_pos` is `pos_args` converted 1:1 and `new_named`'s keys are
+            // `named_kb_syms`, so `pos_plan` above IS this rewrite's plan — computed
+            // once, so the hint each positional arg was CONVERTED under and the field
+            // it LANDS in cannot disagree.
+            if let Some(fields) = &pos_plan {
+                for (i, pos_val) in new_pos.drain(..).enumerate() {
+                    new_named.push((fields[i], pos_val));
                 }
             }
 

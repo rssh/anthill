@@ -35,6 +35,7 @@ use crate::span::SourceSpan;
 use super::node_occurrence::{Expr, MatchBranch, NodeOccurrence, Pattern};
 use super::occurrence::PassId;
 use super::op_info::lookup_operation_info;
+use super::resolve::PositionalPlan;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::ClauseKind;
 use super::{KnowledgeBase, RuleId};
@@ -265,10 +266,17 @@ fn flatten_arms(
 }
 
 /// Bind `params` (declaration order) to the call's positional-then-named
-/// argument occurrences. Positional args fill the leading parameters; named
-/// args match a parameter by short name. Returns `None` on any arity mismatch,
-/// unknown named argument, or double binding (a partial / malformed application
-/// — decline rather than specialize a wrong shape).
+/// argument occurrences. Positional args RANK among the parameters not already
+/// given by name; named args match a parameter by short name. Returns `None` on any
+/// arity mismatch, unknown named argument, or double binding (a partial / malformed
+/// application — decline rather than specialize a wrong shape).
+///
+/// WI-20260827-1F0QP: the ranking is
+/// [`KnowledgeBase::rank_positional_among_unnamed`], the same owner the typer's
+/// `bind_call_arguments` and the constructor path use. Filling the LEADING parameters
+/// made a mixed call `add2(2, a: 1)` a double binding here, so the specializer
+/// declined the whole inline — silently, since `None` is also how it declines a body
+/// form it does not handle.
 fn bind_params(
     kb: &KnowledgeBase,
     params: &[(Symbol, crate::eval::value::Value)],
@@ -278,11 +286,30 @@ fn bind_params(
     if pos_args.len() + named_args.len() != params.len() {
         return None;
     }
+    let decl: SmallVec<[Symbol; 4]> = params.iter().map(|(s, _)| *s).collect();
+    let ranked = match KnowledgeBase::rank_positional_among_unnamed(
+        &decl,
+        |p| {
+            let short = short_of(kb, p);
+            named_args.iter().any(|(n, _)| short_of(kb, *n) == short)
+        },
+        pos_args.len(),
+    ) {
+        PositionalPlan::Assign(f) => f,
+        // `pos + named == params.len()` above, so over-arity means a named argument
+        // names a parameter twice — the double binding this function already declines.
+        _ => return None,
+    };
     let mut env: Env = Vec::with_capacity(params.len());
     let mut bound = vec![false; params.len()];
-    for (i, arg) in pos_args.iter().enumerate() {
-        bound[i] = true;
-        env.push((params[i].0, Rc::clone(arg)));
+    for (f, arg) in ranked.iter().zip(pos_args) {
+        let short = short_of(kb, *f);
+        let idx = params.iter().position(|(p, _)| short_of(kb, *p) == short)?;
+        if bound[idx] {
+            return None;
+        }
+        bound[idx] = true;
+        env.push((params[idx].0, Rc::clone(arg)));
     }
     for (name, arg) in named_args {
         let short = short_of(kb, *name);
@@ -652,9 +679,21 @@ fn match_pattern_occ(
 }
 
 /// Match a constructor pattern's sub-patterns against a constructor scrutinee's
-/// fields, aligning both sides by field symbol (declaration order for
+/// fields, aligning both sides by field symbol (the rank-among-NOT-named rule for
 /// positionals, name for named) so the result is independent of how either side
 /// ordered its args.
+///
+/// WI-20260827-1F0QP: the positional ranking is
+/// [`KnowledgeBase::rank_positional_among_unnamed`], not a leading-index copy. This
+/// is the SPECIALIZER's compile-time matcher, so getting it wrong is worse than at
+/// runtime: a mixed `case two(y, a: 1)` ranked by slot collided with the named `a`
+/// and answered `PatOutcome::No` — a DEFINITE non-match, which prunes the arm
+/// statically and hands the scrutinee to whatever arm comes next.
+///
+/// The rank rule is called in its list-taking form because this module keys a field
+/// by its SHORT name: the pattern's `a` and the scrutinee's declared `a` need not be
+/// the same `Symbol` (see [`short_of`]), which the `Symbol`-equality
+/// `positional_to_named_plan` would read as "not named" and mis-rank.
 fn match_ctor_fields(
     kb: &KnowledgeBase,
     scr: &Rc<NodeOccurrence>,
@@ -668,14 +707,47 @@ fn match_ctor_fields(
     if pos_pats.len() + named_pats.len() != n {
         return PatOutcome::No;
     }
+    let decl: SmallVec<[Symbol; 4]> = fields.iter().map(|(f, _)| *f).collect();
+    let pos_fields = match KnowledgeBase::rank_positional_among_unnamed(
+        &decl,
+        |f| {
+            let short = short_of(kb, f);
+            named_pats.iter().any(|(s, _)| short_of(kb, *s) == short)
+        },
+        pos_pats.len(),
+    ) {
+        PositionalPlan::Assign(f) => f,
+        // `pos + named == n` above, so over-arity means a named sub-pattern names a
+        // field twice (or one the scrutinee doesn't carry): no match, the same answer
+        // the `covered` test below gives.
+        _ => return PatOutcome::No,
+    };
     let mut binds = Vec::new();
     let mut covered = vec![false; n];
+    let take = |idx: usize,
+                    covered: &mut Vec<bool>,
+                    binds: &mut Vec<(Symbol, Rc<NodeOccurrence>)>,
+                    pat: &Rc<NodeOccurrence>|
+     -> Option<PatOutcome> {
+        if covered[idx] {
+            return Some(PatOutcome::No);
+        }
+        covered[idx] = true;
+        match match_pattern_occ(kb, pat, &fields[idx].1) {
+            PatOutcome::Yes(mut b) => {
+                binds.append(&mut b);
+                None
+            }
+            other => Some(other),
+        }
+    };
     for (i, pat) in pos_pats.iter().enumerate() {
-        covered[i] = true;
-        match match_pattern_occ(kb, pat, &fields[i].1) {
-            PatOutcome::Yes(mut b) => binds.append(&mut b),
-            PatOutcome::No => return PatOutcome::No,
-            PatOutcome::Undecidable => return PatOutcome::Undecidable,
+        let short = short_of(kb, pos_fields[i]);
+        let Some(idx) = fields.iter().position(|(f, _)| short_of(kb, *f) == short) else {
+            return PatOutcome::No;
+        };
+        if let Some(out) = take(idx, &mut covered, &mut binds, pat) {
+            return out;
         }
     }
     for (fsym, pat) in named_pats {
@@ -683,14 +755,8 @@ fn match_ctor_fields(
         let Some(idx) = fields.iter().position(|(f, _)| short_of(kb, *f) == short) else {
             return PatOutcome::No;
         };
-        if covered[idx] {
-            return PatOutcome::No;
-        }
-        covered[idx] = true;
-        match match_pattern_occ(kb, pat, &fields[idx].1) {
-            PatOutcome::Yes(mut b) => binds.append(&mut b),
-            PatOutcome::No => return PatOutcome::No,
-            PatOutcome::Undecidable => return PatOutcome::Undecidable,
+        if let Some(out) = take(idx, &mut covered, &mut binds, pat) {
+            return out;
         }
     }
     PatOutcome::Yes(binds)
@@ -738,6 +804,14 @@ fn match_tuple_fields(
 /// entity's declaration order, or `None` when the scrutinee is not a statically
 /// resolvable constructor application. Robust to the scrutinee mixing / reordering
 /// positional and named args.
+///
+/// WI-20260827-1F0QP: "robust to MIXING" is what the rank rule buys, and this
+/// function only claimed it. Filling the LEADING slots from `pos_args` meant a mixed
+/// scrutinee `two(2, a: 1)` put 2 in `a`, the named `a: 1` then found that slot
+/// already `Some`, and the whole read answered `None` — so the specializer called an
+/// ordinary value undecidable and left a residual `match`. The build side means
+/// `two(a: 1, b: 2)` ([`KnowledgeBase::positional_to_named_plan`], WI-20260827-T2470);
+/// this reader now agrees with it.
 fn ctor_field_occs(
     kb: &KnowledgeBase,
     scr: &Rc<NodeOccurrence>,
@@ -751,8 +825,27 @@ fn ctor_field_occs(
         } => {
             let fields = kb.entity_field_names(*name)?;
             let mut slots: Vec<Option<Rc<NodeOccurrence>>> = vec![None; fields.len()];
+            // Short-name keyed, like the named loop below: a built occurrence's named
+            // arg need not carry the same `Symbol` as the declaration.
+            let pos_fields = match KnowledgeBase::rank_positional_among_unnamed(
+                fields,
+                |f| {
+                    let short = short_of(kb, f);
+                    named_args.iter().any(|(s, _)| short_of(kb, *s) == short)
+                },
+                pos_args.len(),
+            ) {
+                PositionalPlan::Assign(f) => f,
+                // More positional args than unfilled fields — not a readable value.
+                _ => return None,
+            };
             for (i, a) in pos_args.iter().enumerate() {
-                *slots.get_mut(i)? = Some(Rc::clone(a));
+                let short = short_of(kb, pos_fields[i]);
+                let idx = fields.iter().position(|f| short_of(kb, *f) == short)?;
+                if slots[idx].is_some() {
+                    return None;
+                }
+                slots[idx] = Some(Rc::clone(a));
             }
             for (fsym, a) in named_args {
                 let short = short_of(kb, *fsym);

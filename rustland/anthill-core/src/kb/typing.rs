@@ -16,6 +16,7 @@ use super::node_occurrence::{
     MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
+use super::resolve::PositionalPlan;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
 use super::{KnowledgeBase, RuleId, SortKind};
@@ -10084,9 +10085,30 @@ fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
             && ctor_field_expected(kb, ctor, field, &exp)
                 .is_some_and(|w| type_head_is_callable(kb, &w))
     };
+    // WI-20260827-1F0QP: the field a positional ARGUMENT takes is the same
+    // rank-among-NOT-named rule the constructor's build will use
+    // (`positional_to_named_plan`), so a MIXED `mk(f, other: 1)` asks about the field
+    // `f` will actually land in. Indexing `fields` by slot asked about the wrong
+    // declaration whenever a named argument came earlier in the field order.
+    let named_syms: SmallVec<[Symbol; 2]> = named_args.iter().map(|(s, _)| *s).collect();
+    let decl_syms: SmallVec<[Symbol; 4]> = fields.iter().map(|(s, _)| *s).collect();
+    let pos_fields = match KnowledgeBase::rank_positional_among_unnamed(
+        &decl_syms,
+        |fs| named_syms.contains(&fs),
+        pos_args.len(),
+    ) {
+        PositionalPlan::Assign(f) => Some(f),
+        // Over-arity is refused elsewhere; `Skip` cannot arise (this is the explicit
+        // field list). Either way there is no ranking to apply — fall back to the slot.
+        _ => None,
+    };
     for (i, a) in pos_args.iter().enumerate() {
         if arg_is_bare_operation_name(kb, a) {
-            if let Some((fs, decl)) = fields.get(i).cloned() {
+            let field = match &pos_fields {
+                Some(pf) => fields.iter().find(|(fs, _)| *fs == pf[i]).cloned(),
+                None => fields.get(i).cloned(),
+            };
+            if let Some((fs, decl)) = field {
                 if unlocks(kb, fs, &decl) {
                     return true;
                 }
@@ -15237,10 +15259,20 @@ fn check_apply_iter(
         // arg loops because a row tail's lower bound is the UNION over every parameter
         // naming it. Empty for an op with no type parameters (the gate at each push).
         let mut callback_pairs: Vec<(Value, Value)> = Vec::new();
+        // WI-20260827-1F0QP: the parameter each positional argument fills, from the one
+        // owner ([`positional_param_indices`]) that `bind_call_arguments` and
+        // `reorder_named_args_in_apply` also read. `op.params` is the inference-expanded
+        // list and `written_params` its clone, so ONE index serves both loops below.
+        //
+        // The identity for a call with no labels, which is nearly every call; what it
+        // changes is the MIXED one, whose positional arguments rank among the parameters
+        // the labels did not take. Reading `params.get(i)` there checked an argument
+        // against one parameter while the runtime bound it to another.
+        let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
-                if let Some((param_sym, _)) = op.params.get(i) {
+                if let Some((param_sym, _)) = pos_call_params[i].and_then(|p| op.params.get(p)) {
                     param_to_arg_sym.insert(*param_sym, arg_var_sym);
                     // WI-20260823-4GBQV: the EFFECT re-key must not mint a label the
                     // DECLARATION cannot spell. See `param_to_placeless_arg`.
@@ -15265,7 +15297,9 @@ fn check_apply_iter(
             if let Ok(ref arg_result) = pos_results[i] {
                 // WI-341 Stage A: the param type is `Value` (`Value::TermView`),
                 // unified carrier-agnostically — no `TermIdView` wrap.
-                if let Some((param_sym, param_type)) = op.params.get(i) {
+                if let Some((param_sym, param_type)) =
+                    pos_call_params[i].and_then(|p| op.params.get(p))
+                {
                     // WI-398: a param whose declared type IS / CONTAINS a projection
                     // (`k: s.cell.T`) cannot be unified against its raw `ExprCarried` —
                     // the receiver param's type-args are not yet projected, and an
@@ -15438,7 +15472,9 @@ fn check_apply_iter(
                 // rather than any parameter. Checked below beside the arity verdict that
                 // admits it ([`relational_result_column`]), not here, because this loop
                 // pairs arguments to PARAMETERS and that column fills none.
-                if let Some((param_sym, param_type)) = written_params.get(i) {
+                if let Some((param_sym, param_type)) =
+                    pos_call_params[i].and_then(|p| written_params.get(p))
+                {
                     // WI-398: validate against the ELIMINATED type for a projection param
                     // (`s.cell.T` → `String`); the raw type for a non-projection param.
                     let param_type = effective_param_types.get(param_sym).unwrap_or(param_type);
@@ -18117,10 +18153,20 @@ fn check_apply_iter(
                         // with every bound type cloned in).
                         (a, slots.iter().map(|(l, _)| *l).collect::<Vec<_>>())
                     });
+                    // WI-20260827-1F0QP: through the same owner as a NAMED operation's
+                    // call. An arrow's `slots` are a parameter list like any other, so a
+                    // mixed application of a function VALUE ranks its positional
+                    // arguments the same way — and must be CHECKED against the slot it
+                    // ranks to, or a mixed `f("hi", acc: 3)` is refused naming a
+                    // parameter it never filled.
+                    let slot_params: SmallVec<[(Symbol, Value); 4]> = slots.iter().cloned().collect();
+                    let pos_slots =
+                        positional_param_indices(kb, &slot_params, pos_args.len(), named_args);
                     for (i, _) in pos_args.iter().enumerate() {
-                        if let (Ok(arg_result), Some((param_sym, slot_type))) =
-                            (&pos_results[i], slots.get(i))
-                        {
+                        if let (Ok(arg_result), Some((param_sym, slot_type))) = (
+                            &pos_results[i],
+                            pos_slots[i].and_then(|p| slots.get(p)),
+                        ) {
                             match validate_arg_against_param(
                                 kb,
                                 &mut subst,
@@ -39402,6 +39448,67 @@ struct ArgumentBinding {
     /// Positional arguments past the end of the declared list — each occupies no slot
     /// at all. Counted rather than flagged so the diagnostic can state the count given.
     surplus_positional: usize,
+    /// Whether the call wrote ANY named argument. Read only by
+    /// [`relational_result_column`], which §5.3 restricts to the all-positional
+    /// spelling — see there.
+    has_named_args: bool,
+}
+
+/// WI-20260827-1F0QP: the PARAMETER each POSITIONAL argument of a call binds — one
+/// owner, read by every site that used to write `params.get(i)`.
+///
+/// Entry `i` is the parameter index positional argument `i` fills, or `None` when it
+/// fills none (a surplus argument, including a relational goal's RESULT column). With
+/// named arguments in play that is NOT `i`: they rank among the parameters the labels
+/// have not already taken ([`KnowledgeBase::rank_positional_among_unnamed`]), the same
+/// rule a constructor's arguments follow (kernel §6.3).
+///
+/// The no-labels case returns the identity, so every call written without a label — all
+/// but a handful in the tree — takes exactly the mapping it always had, and this
+/// function is the only place the two cases are told apart.
+///
+/// EVERY reader must use this, not just the one that binds. The type checker validates
+/// argument `i` against parameter `i`, the inference loop unifies against parameter `i`,
+/// and the function-value path indexes its slot list by `i`: with the rank rule live and
+/// those three left alone, a mixed call would be CHECKED against one parameter and BOUND
+/// to another — a silent wrong-type delivery, which is worse than the load error the
+/// rank rule replaced. Review-found, after exactly that shipped in a first draft.
+fn positional_param_indices(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_count: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> SmallVec<[Option<usize>; 4]> {
+    if named_args.is_empty() {
+        return (0..pos_count)
+            .map(|i| (i < params.len()).then_some(i))
+            .collect();
+    }
+    let decl: SmallVec<[Symbol; 4]> = params.iter().map(|(s, _)| *s).collect();
+    let assigned = match KnowledgeBase::rank_positional_among_unnamed(
+        &decl,
+        |p| named_args.iter().any(|(l, _)| same_label(kb, p, *l)),
+        pos_count,
+    ) {
+        PositionalPlan::Assign(f) => f,
+        // Over-applied: more positional arguments than parameters the labels left open.
+        // Which of them is surplus is not a question with an answer, so NONE of them is
+        // matched to a parameter and `call_arity_error` reports the count. The old
+        // slot mapping matched the leading ones and reported the rest, which is how a
+        // relational RESULT column used to be found — see [`relational_result_column`],
+        // which now asks the question directly instead of inferring it from a surplus.
+        PositionalPlan::OverArity { .. } => return (0..pos_count).map(|_| None).collect(),
+        PositionalPlan::Skip => {
+            unreachable!("rank_positional_among_unnamed returned Skip for a call's arguments")
+        }
+    };
+    (0..pos_count)
+        .map(|i| {
+            assigned
+                .get(i)
+                .and_then(|f| params.iter().position(|(s, _)| *s == *f))
+        })
+        .collect()
 }
 
 /// WI-426 / WI-783: named-argument COVERAGE against a callee's parameter list —
@@ -39450,12 +39557,36 @@ fn bind_call_arguments(
             label_errors: Vec::new(),
             unfilled: params[positional_filled..].iter().map(|(s, _)| *s).collect(),
             surplus_positional: pos_count - positional_filled,
+            has_named_args: false,
         };
     }
     let site = std::panic::Location::caller();
+    // WI-20260827-1F0QP: a MIXED call ranks its positional arguments among the
+    // parameters NOT already given by name — ONE rule with the constructor spelling
+    // (§6.3), through the same owner. Marking the first `pos_count` parameters filled
+    // and then reading the labels made `add2(2, a: 1)` a load error ("named argument
+    // 'a' binds a parameter already given") while the constructor `two(2, a: 1)` was
+    // legal, so an author had two models to learn for one shape.
+    //
+    // `same_label` is the comparator, not `Symbol` equality, which is why this calls
+    // the list-taking [`KnowledgeBase::rank_positional_among_unnamed`] rather than
+    // `positional_to_named_plan`: a call-site label and the declared parameter need
+    // not be the same `Symbol` (`same_label` is the tree's existing rule here).
+    // WI-20260827-1F0QP: through [`positional_param_indices`], the one owner — so which
+    // parameter this check calls FILLED and which one the type checker validates against
+    // and the runtime binds cannot disagree. Marking the first `pos_count` parameters
+    // filled and then reading the labels made `add2(2, a: 1)` a load error ("named
+    // argument 'a' binds a parameter already given") while the constructor `two(2, a: 1)`
+    // was legal, so an author had two models to learn for one shape.
+    let pos_params = positional_param_indices(kb, params, pos_count, named_args);
     let mut covered = vec![false; params.len()];
-    for slot in covered.iter_mut().take(pos_count) {
-        *slot = true;
+    // How many positional arguments actually LAND, once the named ones have taken their
+    // parameters — the named-arg twin of `positional_filled` above, which counted against
+    // the whole parameter list and so under-reported the surplus of a mixed over-applied
+    // call (`add2(2, 3, a: 1)` has one surplus argument, not none).
+    let positional_filled = pos_params.iter().filter(|p| p.is_some()).count();
+    for idx in pos_params.iter().flatten() {
+        covered[*idx] = true;
     }
     let mut label_errors = Vec::new();
     for (arg_name, _) in named_args.iter() {
@@ -39496,6 +39627,7 @@ fn bind_call_arguments(
             .collect(),
         label_errors,
         surplus_positional: pos_count - positional_filled,
+        has_named_args: true,
     }
 }
 
@@ -39531,7 +39663,21 @@ fn relational_result_column(
     binding: &ArgumentBinding,
     pos: NodePos,
 ) -> Option<usize> {
-    (pos == NodePos::RuleBodyGoal && binding.unfilled.is_empty() && binding.surplus_positional == 1)
+    // WI-20260827-1F0QP added the `has_named_args` clause, and it is the SPEC's own
+    // condition rather than a guard bolted on: §5.3 says of the functional-relation view
+    // that "named arguments are not this shape: the result column is positional and
+    // last". It was implied before only because a labelled call could not reach here —
+    // a label over a positionally-filled parameter was a coverage error. With the rank
+    // rule live it can: `Desc.describe(x: leaf(), ?r)` fills every parameter by name and
+    // leaves one positional over, which is `unfilled` empty and `surplus_positional == 1`
+    // exactly like the relational spelling. Without this clause that answered
+    // `Some(params.len())` and the caller indexed `pos_results` out of bounds — a PANIC
+    // on an ordinary load, review-found. Now it is the ordinary over-arity call it is,
+    // and `call_arity_error` names the count.
+    (pos == NodePos::RuleBodyGoal
+        && !binding.has_named_args
+        && binding.unfilled.is_empty()
+        && binding.surplus_positional == 1)
         .then_some(params.len())
 }
 
@@ -39830,6 +39976,59 @@ fn reorder_named_args_in_apply(
         .map(|((k, l), c)| (k, l, c))
         .collect();
     triples.sort_by_key(|(k, _, _)| *k);
+    // WI-20260827-1F0QP: a MIXED call is rewritten ALL-POSITIONAL, in PARAMETER ORDER.
+    //
+    // The runtime binds argument `i` to parameter `i` — `start_apply` streams
+    // `pos_args ++ named_args` and `enter_operation` zips that against `params` — so
+    // this rewrite is the ONLY thing that puts a call's arguments where its body reads
+    // them. `pos ++ (named sorted by param)` lands correctly exactly when the
+    // positional arguments occupy the LEADING parameters, which is the shape every
+    // call had while a mixed one was refused at load. Now that `bind_call_arguments`
+    // ranks them among the NOT-named, the positional arguments no longer do, and
+    // emitting them first would hand parameter 0 an argument meant for parameter 1.
+    //
+    // Sorting ALL the arguments by parameter index and emitting them positionally is
+    // the shape an all-positional call already has, so every downstream reader — the
+    // SLD unfold's `anf_flatten`, `body_specialize`'s `reduce`, WI-938's
+    // functional-relation view (which requires `named_arity: 0`) — sees a form it
+    // already handles, rather than a novel all-named one. The labels are a SPELLING
+    // that this pass has finished validating; nothing after it reads them.
+    //
+    // Untouched when the call is not mixed: an all-positional call has no labels to
+    // rank against and an all-named one has no positional arguments to move, so both
+    // keep the exact node they had.
+    if !pos_children.is_empty() && !triples.is_empty() {
+        // Through [`positional_param_indices`], the owner `bind_call_arguments` and the
+        // two type-check loops read — so the parameter an argument is CHECKED against is
+        // by construction the one it is BOUND to.
+        let named_occs: Vec<(Symbol, Rc<NodeOccurrence>)> = triples
+            .iter()
+            .map(|(_, l, c)| (*l, Rc::clone(c)))
+            .collect();
+        let pos_params = positional_param_indices(kb, params, pos_children.len(), &named_occs);
+        if pos_params.iter().all(|p| p.is_some()) {
+            let mut ordered: Vec<(usize, Rc<NodeOccurrence>)> = pos_params
+                .iter()
+                .flatten()
+                .copied()
+                .zip(pos_children)
+                .collect();
+            ordered.extend(triples.into_iter().map(|(k, _, c)| (k, c)));
+            ordered.sort_by_key(|(k, _)| *k);
+            let pass = super::simp_rewrite::simp_pass(kb);
+            return Some(NodeOccurrence::synthesized_expr(
+                Expr::Apply {
+                    functor,
+                    pos_args: ordered.into_iter().map(|(_, c)| c).collect(),
+                    named_args: Vec::new(),
+                    type_args,
+                },
+                Rc::clone(occ),
+                pass,
+                occ.owner,
+            ));
+        }
+    }
     let named_pairs: Vec<(Symbol, Rc<NodeOccurrence>)> =
         triples.into_iter().map(|(_, l, c)| (l, c)).collect();
     let pass = super::simp_rewrite::simp_pass(kb);
@@ -45805,7 +46004,30 @@ fn bind_and_label_pattern(
             // none of them moved.
             let mut rebuilt: Vec<Rc<NodeOccurrence>> =
                 Vec::with_capacity(pos_args.len() + named_args.len());
-            // POSITIONAL sub-patterns: zip against field types by index.
+            // WI-20260827-1F0QP: WHICH field a positional sub-pattern takes is the
+            // rank-among-NOT-named rule, one owner
+            // ([`KnowledgeBase::rank_positional_among_unnamed`]) — not a leading-index
+            // copy. In `case two(y, a: 1)`, `y` is field `b`, so it must be typed from
+            // `b`'s declared type. Zipping by index typed it from `a` instead, which is
+            // invisible while an entity's fields share a type and a WRONG BINDER TYPE
+            // the moment they don't (`a_mixed_pattern_binder_is_typed_from_the_field_it_takes`).
+            let named_syms: SmallVec<[Symbol; 2]> = named_args.iter().map(|(s, _)| *s).collect();
+            let pos_fields = match field_types.as_ref().map(|f| {
+                let decl: SmallVec<[Symbol; 4]> = f.iter().map(|(s, _)| *s).collect();
+                KnowledgeBase::rank_positional_among_unnamed(
+                    &decl,
+                    |fs| named_syms.contains(&fs),
+                    pos_args.len(),
+                )
+            }) {
+                Some(PositionalPlan::Assign(fields)) => Some(fields),
+                // No declared field types to rank among, or more positional
+                // sub-patterns than unfilled fields — an ill-formed pattern the
+                // arity checks refuse elsewhere. Fall back to the slot, which types
+                // what it can and leaves the rest `None`, as before.
+                _ => None,
+            };
+            // POSITIONAL sub-patterns: the field each one RANKS to (its declared type).
             for (i, sub_pat) in pos_args.iter().enumerate() {
                 // WI-342: the field type is a carrier-agnostic `Value`
                 // (`entity_field_types`); resolve its sort-level type params
@@ -45815,7 +46037,13 @@ fn bind_and_label_pattern(
                 // `walk_type_value` left unsubstituted — so the destructure did
                 // not thread the scrutinee's element / effect into the
                 // sub-pattern var (WI-413).
-                let field_type = match (field_types.as_ref().and_then(|f| f.get(i)), &subst) {
+                let declared = match &pos_fields {
+                    Some(fields) => field_types
+                        .as_ref()
+                        .and_then(|f| f.iter().find(|(fs, _)| *fs == fields[i])),
+                    None => field_types.as_ref().and_then(|f| f.get(i)),
+                };
+                let field_type = match (declared, &subst) {
                     (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,

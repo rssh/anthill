@@ -3178,6 +3178,50 @@ still constructed and read **positionally** (`mk(1, 2)` type-checks both fields,
 check. It is refused anyway, because a field name is the field's public interface and
 a name identifying two fields addresses neither.
 
+**Mixing positional and named arguments — one rule, both directions** (WI-20260827-1F0QP).
+A constructor's arguments may be written positionally, by name, or both. When both, each
+positional argument fills the next declared field **not already given by name**, in
+declaration order — the same *rank-among-not-named* rule §5.2 states for sort bindings
+and §5.4 for operation calls. So for `entity two(a: Int64, b: Int64)`:
+
+```
+two(1, 2)        -- a = 1, b = 2      (all positional)
+two(a: 1, b: 2)  -- a = 1, b = 2      (all named)
+two(2, a: 1)     -- a = 1, b = 2      (mixed: `a` is named, so 2 takes `b`)
+```
+
+**A constructor PATTERN reads the spelling its application writes.** The rule above is
+one rule, not two: `case two(y, a: 1)` binds `y` to field `b`, because that is the field
+`two(2, a: 1)` would have put a value in. A pattern is how a value is taken apart and an
+application is how it is put together, so one spelling means one thing in both positions.
+This holds wherever a constructor pattern is matched — a `match` arm, a `let`
+destructuring, a lambda binder list — and on every path that matches one: the runtime
+matcher, the SLD case-split over an unground scrutinee, and the compile-time
+specializer alike.
+
+Prior to WI-20260827-1F0QP the pattern side ranked positional sub-patterns among **all**
+fields rather than the unfilled ones, so a mixed pattern collided with its own named
+argument, the arm silently did not match, and a later arm answered in its place.
+
+**Over-arity is a load error on the TERM side only, and that gap is known.** More
+arguments than there are unfilled fields is a located load error naming the constructor
+and its declared fields — for a constructor *term*. The **pattern** spelling of the same
+over-arity is not yet refused anywhere: `case two(p, q, r)` on `entity two(a, b)` loads
+clean and is then declined by whichever consumer notices first, no two of them the same
+way (the matcher silently does not match; the SLD unfold declines the case-split, so the
+goal residualizes; the specializer prunes the arm as a definite non-match). It *should*
+be the same load error, in the same words — WI-20260829-QBNKY.
+
+**An OPERATION CALL reads it the same way** (WI-20260827-1F0QP). `add2(2, a: 1)` on
+`add2(a: Int64, b: Int64)` binds `a = 1` and `b = 2`, exactly as the constructor
+spelling of the same shape does — one rule for arguments, whatever the head is. Until
+that ticket the call half marked the first `pos_count` *parameters* filled and then read
+the labels, so the call was a **load error** (`named argument 'a' binds a parameter
+already given`) where the constructor was legal: one shape with two answers, and two
+models for an author to learn. (§5.4's own `pair(b: 2, a: 1)` example is **all-named**
+and never spoke to mixing.) Over-application is still the ordinary arity error of §5.4,
+counted against the parameters a named argument has **not** already taken.
+
 > **Omitted optional fields (surface semantics, WI-716).** Omitting an
 > `Option[…]`-typed field is position-dependent: in a **value position** (a
 > `fact`, or the head of an entity-deriving rule) the absent field denotes
