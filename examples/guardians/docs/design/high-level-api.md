@@ -139,11 +139,17 @@ the program checks.**
 The task is a specification:
 
 ```anthill
-operation triage(box: Mailbox) -> Report
+operation triage(box: Mailbox, llm: Llm) -> Report
   requires owns(caller, box)
   ensures  mentions_all(result, fetched(box))
-  effects  {External[Read], Model, Error, -External[Commit]}
+  effects  {External[Read], Error, -External[Commit]}
 ```
+
+*The `Llm` IS the model authority, handed in rather than acquired, which is why
+the row names none — 064's shape and the example's own `lib/spec.anthill`. Had
+`triage` taken no `llm` and consulted one anyway it would have to MINT, and the
+row would read `Permission[Model]`. Neither carries a bare `Model` label; that was
+retired — see the note at §"the negative clause" below.*
 
 The model supplies the body. The kernel checks four things, and each is an
 existing mechanism rather than a new one: the body type-checks against the tool
