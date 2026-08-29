@@ -1160,6 +1160,22 @@ owner decides this for every reader (`provision_carrier_binding` /
 `witness_dispatch_carrier_value`), so the load checks, the coherence grouping and
 dispatch cannot disagree about what a witness is.
 
+**A witnessed carrier is admissible where the bare spec is declared, conditions and
+all** (WI-20260829-N01PY). Provider admissibility (§8.2) is the value-position twin of
+`requires`, and until this rule it asked a carrier-keyed question — "does *this sort's*
+declaration provide" — which a witness answers `false` to by construction, its provision
+being filed under the witness. So `xs.map(f)` dispatched `FiniteCollection.size` through
+the `MappedStreamFinite` witness and was **refused** at `operation total(c:
+FiniteCollection)`, an operation the author writes over the very same spec: the
+capability existed and only the declared spelling of it did not. The two readers now
+agree. A witness is a **conditional** instance, so the condition decides: the position
+is discharged by resolving the spec at the argument's own carrier — the same resolution
+dispatch performs — so a mapped stream over a `List` conforms to `FiniteCollection` and
+one over an infinite generator does not. Two boundaries stay: a spec type carrying
+**bindings** is a distinct view and is not widened here (only the bare spec name is), and
+the subtype relation has no call site, so a condition met only by the *caller's* own
+`requires` is not seen.
+
 **`requires` and `provides` are BOTH chain entries, and they differ only in where the
 dictionary comes from** (WI-1110). `requires A[T]` says the `A` dictionary is **passed
 in** — an inbound slot the caller fills. A **spec's** `provides A[T]` says it is **built
@@ -1284,9 +1300,11 @@ exist**: dispatch is directed by the receiver value's own sort, there being no
 parameter position that could name a carrier, so a sort claiming such a spec is
 claiming to *be* one. Taking the first parameter unconditionally filed seven stdlib
 provisions at the type variable `T` and left the defaults substrate (§3.6) with no
-inferred row for any of them, while provider admissibility — which joins on
+inferred row for any of them, while provider admissibility — which joined on
 `SortProvidesInfo(sort_ref:)`, the provider, not the dispatch carrier — kept
-working, which is why it stayed silent.
+working, which is why it stayed silent. (That join is what the rule above now
+supplements: admissibility still asks the provider-keyed question first and falls
+back to the dispatch carrier, so a witness is reachable from a value position too.)
 
 **Inside a sort body, `provides Spec[…]` and `fact Spec[…]` record the same
 PROVISION** — both take the provider from the scope and the carrier from the
@@ -3955,7 +3973,7 @@ Three positions do **not** yet admit a variant, and each has its own reason rath
 
 Entity subtyping does **not** arise from nesting. A sort `T` declared inside a namespace or sort body is a **parameter**, not an entity. Only the constructor-of relationship creates entity subtyping.
 
-Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. Provider admissibility — a value whose sort *provides* a spec (`fact S[carrier]`) is usable where that spec is expected — is the demand/supply twin of refinement, handled by the sibling `provides()` rule in the same file. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)
+Spec refinement (`requires` chains) is a separate relationship handled by `refines()` rules in `stdlib/anthill/reflect/typing.anthill`. Provider admissibility — a value whose sort *provides* a spec (`fact S[carrier]`) is usable where that spec is expected — is the demand/supply twin of refinement, handled by the sibling `provides()` rule in the same file. That rule is **provider-keyed** — it joins on `SortProvidesInfo(sort_ref:)` — so it answers only for a self-providing carrier; the carrier's own question has a separate reflect spelling, `provision_carrier`, built on the `dispatch_carrier` builtin. The typer's admissibility check consults BOTH (§5.1, *A witnessed carrier is admissible*), and the reflect `provides()` relation has not been widened to match: a program asking `provides(?A, ?S)` still sees the provider-keyed answer. (`requires X` and `fact X[Y]` are the two ends of one relation: a position demanding the spec is discharged by the supplying fact.)
 
 ### 8.3 Rule Evaluation
 

@@ -1507,3 +1507,6 @@ mod wi_9tgp7_branch_expected_flex_var_test;
 
 #[path = "include/prelude_emptiness_and_exists_test.rs"]
 mod prelude_emptiness_and_exists_test;
+
+#[path = "include/n01py_witness_provision_subtype_test.rs"]
+mod n01py_witness_provision_subtype_test;

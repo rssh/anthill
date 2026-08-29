@@ -1560,6 +1560,39 @@ pub struct KnowledgeBase {
     // invalidation point.
     pub(crate) spec_carrier_param_cache: RefCell<HashMap<Symbol, Option<Symbol>>>,
 
+    // WI-20260829-N01PY — the `(carrier, spec)` witness-admissibility questions currently
+    // IN FLIGHT, and it is a correctness guard rather than a memo.
+    //
+    // `witness_provides_admissibly` answers a subtype question by calling `resolve`, and
+    // `resolve` calls back into the subtype relation when it matches a candidate head
+    // (`dispatch_values_match` → `types_lesseq`). A provision whose carrier binding is the
+    // SPEC ITSELF closes that loop: asking "is `A` a `Sp`" resolves `Sp[C = A]`, whose
+    // candidate `SpW provides Sp[C = Sp]` is matched by comparing `A` against `Sp` — which
+    // is the question we started from. MEASURED: a stack overflow, where the same program
+    // was a clean type error before the leg existed, so the guard is not defensive.
+    //
+    // A goal already being asked cannot answer itself, so re-entry returns `false` — the
+    // same verdict the walk had before, reached without the recursion. `resolve`'s own
+    // `stack` cannot serve: it is allocated per `resolve` call, so it cannot see across
+    // this boundary.
+    //
+    // KEYED ON THE ACTUAL'S FULL TYPE, not on its base SORT, and the difference is a
+    // suppression bug rather than a nicety (found by /code-review): the question is about
+    // the whole type, so a base-keyed set collapses `MappedStream[Source = List[…]]` onto
+    // `MappedStream[Source = MappedStream[…]]` and would answer the inner ask `false`
+    // because an OUTER ask with the same base is on the stack — silently disabling the
+    // feature for a nested combinator chain. A `TermId` is hash-consed, so the genuine
+    // self-recurrence (the same type meeting the same spec) still collides and still
+    // terminates.
+    //
+    // AND `false` IS THE RIGHT ANSWER AT A RE-ENTRY, not merely a safe one: the only way
+    // to reach it is for "is this type that spec" to be its own sub-question, and a
+    // question is not evidence for itself. Whatever INDEPENDENT provision can answer it is
+    // still weighed — in the measured fixture the witness answers and the self-carried
+    // rival drops out, which is why that row asserts a VALUE and not just "no crash".
+    pub(crate) witness_admissibility_in_flight:
+        RefCell<std::collections::HashSet<(crate::kb::term::TermId, Symbol)>>,
+
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(op_short, SortGoal, scope)`. Saves re-walking `SortProvidesInfo`
     // for repeated spec-op calls at the same (spec, bindings, scope) —
@@ -1846,6 +1879,7 @@ impl KnowledgeBase {
             op_frame_names_cache: RefCell::new(HashMap::new()),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: RefCell::new(HashMap::new()),
+            witness_admissibility_in_flight: RefCell::new(std::collections::HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
             host_mapped_ops: std::collections::HashSet::new(),

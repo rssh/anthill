@@ -388,6 +388,13 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         provider_dict_chain_cache: _,
         sort_param_pairs_cache: _,
         spec_carrier_param_cache: _,
+        // WI-20260829-N01PY — NEITHER MONOTONE NOR SCOPED, because it is neither derived
+        // state nor a memo: it holds the `(carrier, spec)` questions currently ON THE
+        // STACK, and every insert is paired with a remove on the way out. Outside a
+        // `witness_provides_admissibly` call it is EMPTY, so a layer has nothing of it to
+        // roll back — the rule the memo above obeys ("a memo is scoped exactly when the
+        // thing it caches is") does not reach it, because it caches nothing.
+        witness_admissibility_in_flight: _,
         resolve_cache: _,
     } = kb;
 }

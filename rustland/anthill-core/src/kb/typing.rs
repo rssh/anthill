@@ -51482,7 +51482,21 @@ fn types_compatible_term_dispatch(
                 // (a `Base[..]` where an expected spec that refines `Base` was demanded) —
                 // a soundness hole.
                 (Some(e), Some(ab)) => {
-                    sort_sym_compatible(kb, ab, e) || sort_provides_admissibly(kb, ab, e)
+                    // WI-20260829-N01PY: the witness leg LAST — see
+                    // [`witness_provides_admissibly`] for why the carrier-keyed
+                    // `sort_provides_admissibly` cannot answer for a witness-provided
+                    // carrier, and why this one costs a bucket read on the common path.
+                    //
+                    // NO entity→parent hop, and unlike the bare arm's this is MEASURED at
+                    // this site: /code-review read `ab = parameterized_base_sym(actual)`
+                    // as possibly a CONSTRUCTOR symbol, so a witness keyed on the parent
+                    // sort would be missed. Probed with an entity-parameterized actual
+                    // (`boxed(v: 1)` against `provides Cap[C = Box[T = T]]`), the actual
+                    // arrives as the PARENT `Box[T = Int64]` and the row loads — so there
+                    // is nothing for a hop to reach here either.
+                    sort_sym_compatible(kb, ab, e)
+                        || sort_provides_admissibly(kb, ab, e)
+                        || witness_provides_admissibly(kb, actual, ab, e)
                 }
                 _ => false,
             }
@@ -51649,6 +51663,28 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // WI-466: nominal check is `(actual=ab, expected=ev)` — the parameterized
                 // side is the ACTUAL, the sort_ref the EXPECTED (the pre-WI-466 `(ev, ab)`
                 // was swapped; see the term-dispatch twin for the two latent defects).
+                // WI-20260829-N01PY — THE WITNESS LEG IS NOT HERE, and that is a
+                // KNOWN GAP rather than an oversight, so it is written down at the site
+                // whose contract it breaks (one line up: "so provider admissibility stays
+                // carrier-symmetric").
+                //
+                // MEASURED, a drivable pair: a DENOTED effect row on the actual
+                // (`MappedStream[…, EF = {Modify[k]}]`) routes here instead of to the term
+                // dispatch, and is REFUSED at `total(c: FiniteCollection)` while the
+                // byte-identical ground-row twin is accepted. The pair is
+                // `n01py_witness_provision_subtype_test::a_denoted_effect_row_is_a_known_gap`.
+                //
+                // WHY IT CANNOT SIMPLY BE ADDED: `witness_provides_admissibly` asks its
+                // question by building a `SortGoal`, whose `bindings` are `TermId`s — and
+                // a denoted binding is exactly the thing that HAS no `TermId`
+                // (`unwrap_spec_view_value` says so at its own doc, and drops such
+                // bindings). Wiring the leg in and reading `walk_view`'s result was tried:
+                // the actual comes back a `Value::Node`, the branch never fires, and the
+                // verdict does not move. Substituting a bare `Ref(ab)` instead would ask
+                // about a DIFFERENT type — the carrier with its arguments dropped — and
+                // could answer for a witness the value does not match. Closing it means
+                // giving `SortGoal` a carrier-agnostic binding, which is its own increment
+                // (WI-20260829-2NMXA). Found by /code-review.
                 (Some(ev), Some(ab)) => {
                     sort_sym_compatible(kb, ab, ev) || sort_provides_admissibly(kb, ab, ev)
                 }
@@ -52896,6 +52932,23 @@ fn bare_sort_compatible<A: TermView, B: TermView>(
     if sort_sym_compatible(kb, a, e) || sort_provides_admissibly(kb, a, e) {
         return true;
     }
+    // WI-20260829-N01PY — the WITNESS leg, and it belongs at BOTH bare-expected arms.
+    // The first cut wired it only into `(parameterized, sort_ref)`, where the stdlib's
+    // `MappedStream[…]` lives; a witnessed carrier with NO type parameters (`sort
+    // PlainWitness provides Cap[C = Plain]`) compares here instead and stayed refused —
+    // one arm fixed, its sibling left, which is the shape WI-405 FACET A was filed for
+    // one relation over. `a_bare_witnessed_carrier_is_admissible_too` is that row.
+    //
+    // The actual is BARE, so its type term IS `Ref(a)` — no bindings to carry. No
+    // entity→parent hop is added here: `sort_provides_admissibly` above makes that hop on
+    // the SYMBOL, and a witness goal needs the carrier's TYPE, which the parent's symbol
+    // is not; measured, an entity-typed value already arrives at this arm as its parent
+    // sort, so the hop has nothing to reach and is left unwritten rather than shipped
+    // untested.
+    let actual_term = kb.make_sort_ref(a);
+    if witness_provides_admissibly(kb, actual_term, a, e) {
+        return true;
+    }
     // WI-405 FACET B: resolve a structured (ground) alias on EITHER side and re-dispatch,
     // so two aliases of the same shape (`sort IntList = List[T = Int64]; sort IntList2 =
     // List[T = Int64]`) compare by their underlying shapes and not by nominal NAME only.
@@ -53007,6 +53060,193 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
     if let Some(parent_sym) = kb.strict_parent_sort(actual_sym) {
         return sort_provides_admissibly(kb, parent_sym, expected_sym);
     }
+    false
+}
+
+/// WI-20260829-N01PY — provider admissibility THROUGH A WITNESS: the leg
+/// [`sort_provides_admissibly`] structurally cannot have.
+///
+/// THE TWO READERS. A `provides` clause files `SortProvidesInfo(sort_ref = <the
+/// ENCLOSING sort>, …)` — `load_provides_clause` writes `domain` there — so a WITNESS,
+/// whose carrier appears only in the spec's carrier BINDING (`sort MappedStreamFinite
+/// provides FiniteCollection[C = MappedStream[…]]`), files under the WITNESS. The
+/// carrier-keyed walk [`sort_provides`] therefore answers FALSE for a carrier that is
+/// fully spoken for, which [`provision_carriers_of_spec`]'s doc already states for the
+/// eq-derive reader. DISPATCH does not ask that question — it reads the spec-base bucket
+/// and matches each provision's carrier binding — so the two readers of one relation
+/// disagreed, and this is the leg that ends the disagreement at the subtype side.
+///
+/// A THIRD ARM IS DELIBERATELY WITHOUT IT — `types_compatible_view_structural`'s
+/// `(parameterized, sort_ref)`, which a DENOTED actual routes to. That is a stated known
+/// gap with a drivable fixture and a ticket (WI-20260829-2NMXA); the reason it is not a
+/// one-line addition is written at that arm.
+///
+/// TWO CALL SITES, BOTH BARE-EXPECTED ARMS of [`types_compatible_term_dispatch`]:
+/// `(sort_ref, sort_ref)` and `(parameterized, sort_ref)`. Which one a carrier lands at
+/// is decided by whether it has TYPE PARAMETERS, which has nothing to do with how its
+/// provision is filed — the first cut wired only the parameterized arm (where the
+/// stdlib's `MappedStream[…]` lives) and left a bare witnessed carrier refused, which
+/// `a_bare_witnessed_carrier_is_admissible_too` is the row for. Both arms are BARE on the
+/// expected side, which is what makes the accept sound for the reason
+/// [`sort_provides_admissibly`]'s doc gives: a bare spec carries no bindings to drop.
+///
+/// MEASURED, four rows over one minimal fixture (`n01py_witness_provision_subtype_test`),
+/// one axis varied — how the provision is FILED — and the DIRECT rows are the control
+/// that passes either way:
+///
+///   | reader                  | DIRECT provision | WITNESS provision |
+///   | dot dispatch `Cap.get(x)` | LOADS          | LOADS             |
+///   | spec-typed ARG `sink(x)`  | LOADS          | REFUSED ← the gap |
+///
+/// In the stdlib that row IS the ticket: `MappedStreamFinite` is what makes
+/// `xs.map(f)` finite, so `xs.map(f).size()` dispatches — while an operation the AUTHOR
+/// declares over the same spec (`operation summarize(c: FiniteCollection)`) refused the
+/// very same value. Option (a) of the ticket's three ("an eager consumer accepting any
+/// `FiniteCollection` rather than a concrete `List`") was not a design road not taken; it
+/// was unwritable.
+///
+/// THE CONDITION IS NOT WAIVED, and that is why this defers to [`resolve`] rather than
+/// asking a structural question of its own. A witness is a CONDITIONAL instance —
+/// `MappedStreamFinite requires FiniteCollection[C = S]`, i.e. "a mapped stream is finite
+/// WHEN ITS SOURCE IS" — so accepting on the head alone would make a `MappedStream` over
+/// an infinite generator an eagerly-consumable collection, which is precisely the
+/// unsoundness `FiniteCollection` exists to prevent. `resolve` is the ONE owner of "does
+/// this carrier satisfy this spec at these bindings" (it is what dispatch asks, and what
+/// reports `no impl provides …` for an unmet condition), so asking it here cannot drift
+/// from what dispatch decides. `an_unmet_witness_condition_is_still_refused` and
+/// `an_infinite_source_is_still_refused` are that control, in the minimal fixture and in
+/// the stdlib.
+///
+/// SCOPE `requires` ARE NOT VISIBLE HERE, deliberately and conservatively. The subtype
+/// relation has no call site and no enclosing operation, so `available_requires` is
+/// empty: a witness whose condition is met only by the CALLER's own `requires
+/// FiniteCollection[C = S]` is still refused. That is strictly narrower than dispatch and
+/// strictly wider than before this leg existed. It is STATED and not pinned by a cell, on
+/// purpose: such a cell would be red for a reason nobody could separate from the arms
+/// until the scope is actually threaded here — see the test file's module note, which
+/// says so at the list of what the back-out moves.
+///
+/// THE GATE IS CHEAP AND COMES BEFORE ANY RESOLUTION. Nearly no `(carrier, spec)` pair
+/// has a witness keyed on that carrier, and `types_compatible` is hot — so the answer for
+/// the common pair is `false` off a memoized [`spec_carrier_param`] read plus one
+/// `by_spec_base` bucket scan, with [`resolve`] never entered. And the whole function is
+/// reached only AFTER `sort_sym_compatible` and [`sort_provides_admissibly`] have both
+/// refused, so it is purely a loosening: no accept that stood before changes, which is
+/// what the workspace-wide back-out says (6085 passed, 8 failed, all eight in
+/// `n01py_witness_provision_subtype_test` and one capability-matrix table).
+fn witness_provides_admissibly(
+    kb: &mut KnowledgeBase,
+    actual: TermId,
+    actual_base: Symbol,
+    expected_spec: Symbol,
+) -> bool {
+    let actual_canon = kb.canonical_sort_sym(actual_base);
+    let spec_canon = kb.canonical_sort_sym(expected_spec);
+    // THE GATE, and it is the cheap one: `provisions_of_spec` reads the WI-660
+    // `by_spec_base` bucket, and `witness_dispatch_carrier` is the ONE owner of the
+    // witness criterion (its `None` means the provision's carrier IS its provider — a
+    // self-provision or an instance fact, both of which `sort_provides_admissibly` has
+    // already answered for). Nearly no `(carrier, spec)` pair has a witness, so the
+    // common answer is an empty `Vec` off one bucket read.
+    //
+    // AND IT MUST COME BEFORE [`spec_carrier_param`], which is not merely an ordering
+    // preference — it is what keeps this leg from ENLARGING that function's POPULATION.
+    // `spec_carrier_param` walks `sort_type_params_as_pairs`, whose `published_param_var`
+    // carries the WI-954 tripwire: a sort declaring a DOTTED type parameter (`sort a.b.T =
+    // ?`) publishes no canonical variable for it, and the assert says so rather than
+    // silently dropping the parameter. That assert's own doc records it as "LATENT, NOT
+    // LIVE ... measured, 29 binaries, 4441 tests" — true only because the function was
+    // asked about sorts NAMED IN PROVISIONS. Asked first, this leg would ask it about
+    // EVERY bare expected sort in a failed compatibility check, and
+    // `wi1000_secondary_entry_content_test::a_dotted_declaration_name_is_not_the_entrys_content`
+    // aborts the load (MEASURED; and in a RELEASE build the `debug_assert` vanishes and the
+    // parameter is silently dropped instead, which is the WI-384/WI-954 defect itself).
+    // Behind the gate the population is exactly what it was: a spec with a provision whose
+    // view is a `SortView`, which `witness_dispatch_carrier` already asks about.
+    // Found by /code-review.
+    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provisions_of_spec(kb, expected_spec)
+        .filter_map(|(provider, spec_t, bindings)| {
+            witness_dispatch_carrier(kb, expected_spec, provider, spec_t)
+                .filter(|c| *c == actual_canon)
+                .map(|_| bindings)
+        })
+        .collect();
+    if rows.is_empty() {
+        return false;
+    }
+    // The carrier PARAMETER is the slot the actual type goes in. A spec with none is not
+    // one a witness can be keyed on — `witness_dispatch_carrier` reads the SAME param to
+    // decide what a witness is, so a non-empty `rows` means this answers `Some` — and
+    // `None` refuses, it does not pass.
+    let Some(carrier_param) = spec_carrier_param(kb, spec_canon) else {
+        return false;
+    };
+    let carrier_short = short_name_of(kb.local_name_of(carrier_param)).to_string();
+    // EACH WITNESS ASKS ITS OWN GOAL. The carrier slot takes the ACTUAL type; every other
+    // slot takes the value THAT PROVISION'S HEAD WRITES, verbatim.
+    //
+    // TAKING THEM FROM THE HEAD IS THE WHOLE TRICK, and two simpler spellings were
+    // MEASURED WRONG before it — each passing one arm of the test file while failing the
+    // other, which is what a control is for:
+    //
+    //   * OMITTING the siblings — `collect_provides_candidates` REJECTS a candidate whose
+    //     head binds a type param the goal leaves out ("else every concrete `Eq` impl
+    //     would match a bare `Eq` goal"), so every candidate is dropped and the goal
+    //     reports `no impl provides`. Both arms fail.
+    //   * A WILDCARD in the sibling slot — no spelling works for both candidate shapes,
+    //     and that is a RULE rather than an accident. Against an impl-param head binding
+    //     (`Element = T`, the stdlib witnesses) a wildcard is accepted un-constrained by
+    //     `match_impl_param`'s WI-507 arm; against a CONCRETE one (`Element = Int64`, the
+    //     minimal fixture) it must NOT be, because WI-824's rule is that an abstract
+    //     per-call value does not match a concrete candidate — accepting would PIN a call
+    //     to an impl the caller never chose. A minted `?_` passed the minimal fixture and
+    //     failed the stdlib one; a fresh logic var did the reverse.
+    //
+    // The head's own value is neither: at an impl-param head it IS that param (accepted,
+    // un-constraining, by the same WI-507 arm), and at a concrete head it is that
+    // concrete (matched exactly). No value is invented, so nothing is claimed that the
+    // provision did not already write.
+    //
+    // AND THE HEAD'S KEYS ARE TAKEN VERBATIM, which /code-review read as this being the
+    // one `SortGoal` producer that skips `is_type_param_binding`. MEASURED, with that
+    // filter added and instrumented: it drops ZERO bindings across this file's rows and
+    // the whole capability matrix, and changes no verdict — because `unwrap_spec_view`
+    // has already dropped every non-`TermId` binding, and an `effects E = ?` param IS a
+    // sort (WI-320), so the filter answers `true` for the very binding it was expected to
+    // remove. A guard that refuses nothing is not shipped; the population it would guard
+    // is stated here instead.
+    // RE-ENTRANCY, and it is a correctness guard: `resolve` calls back into the subtype
+    // relation to match a candidate head, so a provision whose carrier binding is the SPEC
+    // ITSELF makes this question its own sub-question. See
+    // `KnowledgeBase::witness_admissibility_in_flight` for the measured shape — the
+    // borrow is dropped before `resolve` runs, and released on every exit below.
+    let key = (actual, spec_canon);
+    if !kb.witness_admissibility_in_flight.borrow_mut().insert(key) {
+        return false;
+    }
+    for bindings in rows {
+        let mut goal_bindings: SmallVec<[(Symbol, TermId); 2]> =
+            smallvec::smallvec![(carrier_param, actual)];
+        for (param, value) in bindings {
+            if short_name_of(kb.local_name_of(param)) == carrier_short {
+                continue;
+            }
+            goal_bindings.push((param, value));
+        }
+        // ONE OWNER for "does this carrier satisfy this spec at these bindings", shared
+        // with declared-field validation — and it is the resolver DISPATCH uses, which is
+        // what keeps this leg from becoming a second opinion. It is also what enforces
+        // the witness's CONDITION: a witness is a conditional instance
+        // (`MappedStreamFinite requires FiniteCollection[C = S]` — "a mapped stream is
+        // finite WHEN ITS SOURCE IS"), so accepting on the head alone would make a mapped
+        // stream over an infinite generator an eagerly-consumable collection, which is
+        // the exact unsoundness `FiniteCollection` exists to prevent.
+        if spec_resolves_at_bindings(kb, spec_canon, goal_bindings) {
+            kb.witness_admissibility_in_flight.borrow_mut().remove(&key);
+            return true;
+        }
+    }
+    kb.witness_admissibility_in_flight.borrow_mut().remove(&key);
     false
 }
 

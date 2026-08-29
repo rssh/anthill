@@ -15,11 +15,21 @@
 //!   List.length(xs.filter(lambda r -> r.flag))  REFUSED -- expected List, got FilteredStream
 //!   List.length(xs.filter(lambda r -> true))    REFUSED -- expected List, got FilteredStream
 //!
-//! Byte-identical. The dot was never what was refused; a lazy stream cannot feed an eager
-//! consumer. Three separate probe sets (two in the tickets, one in my first attempt to
-//! re-measure them) made that same misattribution, because none ran the dull row next to
-//! the interesting one. So [`Body::Constant`] is a row of this matrix, not a footnote: a
-//! RED cell means a capability is missing only if its control is GREEN.
+//! Byte-identical. The dot was never what was refused. Three separate probe sets (two in
+//! the tickets, one in my first attempt to re-measure them) made that same
+//! misattribution, because none ran the dull row next to the interesting one. So
+//! [`Body::Constant`] is a row of this matrix, not a footnote: a RED cell means a
+//! capability is missing only if its control is GREEN.
+//!
+//! AND THE SECOND READING WAS WRONG TOO — "a lazy stream cannot feed an eager consumer",
+//! which is what WI-20260829-N01PY was filed as. The refusal is `List.length`'s, and
+//! `length` is `List`'s OWN operation. `FiniteCollection.size` — the GENERIC eager
+//! consumer — takes the same filtered stream, and so does an operation the author
+//! declares over that spec. It took a THIRD row to see that, which is this file's own
+//! lesson applied one level up: a pair whose two members agree still says nothing if
+//! neither of them varies the axis that decides. `lazy_stream_consumption` and
+//! `an_author_declared_consumer_takes_a_finite_carrier` are the two tables that separate
+//! them now.
 //!
 //! THE VERDICTS. The ticket named three; two more were forced by cells that none of the
 //! three could describe honestly, and each of the five FAILS when its state changes, so
@@ -40,11 +50,13 @@
 //! callback body forms {constant, identity, field dot, match destructure, if, nested call,
 //! dot call} — 99 cells, the 6 remaining combinations being identity under a PREDICATE
 //! host, which the language cannot express and which the sweep reports as skipped rather
-//! than dropping. Plus three tables the sweep needs to mean anything: `lazy_stream_-
-//! consumption` (the measured gap, each cell paired with its dot-free control),
-//! `refusals_that_should_stand` (the third verdict — refusals the repo INTENDS, so a
-//! future silent accept reds a cell), and `every_verdict_fails_when_it_should` (the
-//! harness's own controls).
+//! than dropping. Plus four tables the sweep needs to mean anything: `lazy_stream_-
+//! consumption` (what `List.length` does to a lazy carrier — a refusal the repo INTENDS,
+//! each cell paired with its dot-free control), `an_author_declared_consumer_takes_a_-
+//! finite_carrier` (what the GENERIC eager consumers do to the same values, which is
+//! where the capability actually lives — WI-20260829-N01PY), `refusals_that_should_stand`
+//! (refusals the repo INTENDS, so a future silent accept reds a cell), and
+//! `every_verdict_fails_when_it_should` (the harness's own controls).
 //!
 //! WHY THESE AXES. Spelling, because WI-20260828-N2FHM's defect existed in the named
 //! spelling and not the dot one. Body form, because that is what N2FHM was about.
@@ -553,7 +565,10 @@ fn run_with(cells: Vec<(String, String, Verdict)>, build: fn(&str) -> String) {
 /// was a CONSEQUENCE of (a) — "if `Element` never grounds, the match arm has nothing to
 /// reconcile `?Dst` against" — or independent. It was INDEPENDENT: `Element` grounds fine
 /// here, which the green `map / field dot` cell said directly, and `?Dst` failed anyway.
-/// (a) is WI-20260829-N01PY and is still open; `lazy_stream_consumption` below is its row.
+/// (a) was WI-20260829-N01PY, now delivered — and the re-measurement moved it: `length`'s
+/// refusal is `List.length`'s and correct, while what was genuinely missing was an eager
+/// consumer declared over the SPEC. `lazy_stream_consumption` and
+/// `an_author_declared_consumer_takes_a_finite_carrier` below are the two halves.
 /// The root and its measurement are `wi_9tgp7_branch_expected_flex_var_test`.
 ///
 /// ONE TEST PER HOST rather than one for the table, so libtest runs them on separate
@@ -659,49 +674,88 @@ fn every_host_has_a_sweep() {
 
 // ── THE CONSUMPTION TABLE ────────────────────────────────────────────────────
 
-/// WHERE THE MEASURED GAP IS, and it is not where the tickets put it. `map` and `filter`
-/// return the lazy `MappedStream` / `FilteredStream` carriers, so an EAGER consumer
-/// refuses them — `xs.map(f).length()` is ordinary code that does not work. The four
-/// probes behind WI-20260829-ARQ5X and WI-20260829-9TGP7 hit exactly this and read it as
-/// a callback-dot defect, because they never ran the constant-callback row next to the
-/// field-dot one.
+/// A CELL'S PROGRAM WITH THE GENERIC EAGER CONSUMERS IN SCOPE, and its own builder rather
+/// than an addition to [`program`]: the sweep's 99 cells must keep loading the imports
+/// they were measured under, and an import can change what a name MEANS (WI-1046).
+/// `size` / `collect` live on `FiniteCollection`, and `total` is the consumer an AUTHOR
+/// writes — declared over the SPEC, which is the shape WI-20260829-N01PY delivered.
+fn consumption_program(body: &str) -> String {
+    format!(
+        r#"
+namespace capmatrixcons
+  import anthill.prelude.{{List, Int64, Bool, Stream, Option, Iterable, FiniteCollection}}
+  import anthill.prelude.Iterable.{{find, filter, map}}
+  import anthill.prelude.List.{{foldLeft, foldRight, length}}
+  import anthill.prelude.FiniteCollection.{{size, collect}}
+  import capmatrixcons.Row.{{row, a_of, is_set}}
+{FIXTURE}
+  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation cell(xs: List[T = Row]) -> Int64 =
+    let s = {body}
+    42
+end
+"#
+    )
+}
+
+/// WHAT CONSUMING A LAZY COMBINATOR'S RESULT ACTUALLY DOES, and it is not what the
+/// tickets that motivated this file said.
 ///
-/// SO EVERY GAP CELL HERE IS PAIRED WITH ITS CONTROL, and the pair is the finding: both
-/// members refuse with the same message, which is what says the callback body is not
-/// implicated. The two `let`-bound rows at the end are the other half — the same call,
-/// unconsumed, loads.
+/// THE ORIGINAL READING, kept because the neighbourhood is the finding: four hand-written
+/// probes reported `xs.filter(lambda r -> r.flag)` REFUSED and read it as a callback-dot
+/// defect. Re-measured with the dot-free control beside each one, both members refused
+/// byte-identically, so the callback was never implicated — which is what WI-20260829-N01PY
+/// was filed for, as "a LAZY STREAM cannot feed an EAGER consumer".
+///
+/// AND THAT SECOND READING WAS ALSO WRONG, which the `size` rows below are here to say.
+/// The refusal is `List.length`'s, and `length` is `List`'s OWN operation: a
+/// `MappedStream` is not a `List` and never will be. The generic eager consumer is
+/// `FiniteCollection.size`, and it takes the mapped stream — through the
+/// `MappedStreamFinite` witness WI-590 delivered ("a mapped stream is finite WHEN ITS
+/// SOURCE IS"). So the ticket's three candidate repairs stood as:
+///
+///   (b) a materializing step the author writes — `collect()` — ALREADY WORKED
+///   (c) map/filter on a finite carrier returning a finite carrier — ALREADY DELIVERED
+///   (a) an eager consumer declared over the SPEC rather than over `List` — the one that
+///       was missing, and not as a design choice: the subtype relation asked the
+///       CARRIER-keyed `sort_provides`, which cannot see a provision a WITNESS files
+///       under itself, so such a consumer could be written and could not be CALLED.
+///
+/// (a) is what N01PY delivered; `an_author_declared_consumer_takes_a_finite_carrier` is
+/// its cell here and `n01py_witness_provision_subtype_test` is where it is driven to a
+/// value with its controls.
+///
+/// EVERY PAIR IS STILL A PAIR. A `length` row keeps its dot-free control, because the
+/// pair is what says the callback body is not implicated; and the unconsumed rows are the
+/// other half — the same call, not consumed, loads either way.
 #[test]
 fn lazy_stream_consumption() {
-    // WI-20260829-N01PY and NOT WI-20260829-ARQ5X, which is the item that DELIVERS this
-    // file. A `KnownGap` contracts to fail when the gap closes so its WI can be closed in
-    // the same commit; pointed at the delivering ticket it would name something already
-    // Delivered, and the live defect would be tracked by nothing (found by /code-review).
-    const GAP: Verdict = Verdict::KnownGap {
-        wi: "WI-20260829-N01PY",
-        expect: "expected List",
-    };
+    // `List.length` over a non-`List`. A REFUSAL THE REPO INTENDS — the cell that used to
+    // be a `KnownGap` citing WI-20260829-N01PY, which is what made that ticket look like a
+    // typer defect rather than a call to the wrong operation.
+    const NOT_A_LIST: Verdict = Verdict::RefusesLocated("expected List");
     run(vec![
         (
             "length(map(...)) / field dot".into(),
             "length(xs.map(lambda r -> r.a))".into(),
-            GAP,
+            NOT_A_LIST,
         ),
         (
             "length(map(...)) / constant (CONTROL — same refusal ⇒ the dot is not it)".into(),
             "length(xs.map(lambda r -> 7))".into(),
-            GAP,
+            NOT_A_LIST,
         ),
         (
             "length(filter(...)) / field dot".into(),
             "length(xs.filter(lambda r -> r.flag))".into(),
-            GAP,
+            NOT_A_LIST,
         ),
         (
             "length(filter(...)) / constant (CONTROL)".into(),
             "length(xs.filter(lambda r -> true))".into(),
-            GAP,
+            NOT_A_LIST,
         ),
-        // The contrast that localizes the gap to CONSUMPTION: the identical calls,
+        // The contrast that localizes the refusal to CONSUMPTION: the identical calls,
         // unconsumed, load clean. Without these two the table above would be
         // consistent with "map and filter are broken", which is what was believed.
         (
@@ -715,13 +769,101 @@ fn lazy_stream_consumption() {
             Verdict::Loads,
         ),
         // `find` is eager and returns an Option, so it composes with a consumer. It is
-        // what attributes the gap to the LAZY carriers rather than to callbacks at large.
+        // what attributes the refusal to the LAZY carriers rather than to callbacks at
+        // large.
         (
             "find(...) into a consumer (CONTROL — eager host composes)".into(),
             "match xs.find(lambda r -> r.flag) case some(v) -> a_of(v) case none() -> 0".into(),
             Verdict::Loads,
         ),
     ]);
+}
+
+/// THE SAME CONSUMPTIONS THROUGH THE GENERIC EAGER CONSUMERS — the rows the table above
+/// did not have, and whose absence is what let `length`'s refusal read as "a lazy stream
+/// cannot feed an eager consumer".
+///
+/// `size` and `collect` are declared on `FiniteCollection`, which a mapped or filtered
+/// stream provides through its finiteness WITNESS; `total(c: FiniteCollection)` is the
+/// same capability in an operation an AUTHOR wrote, which is what WI-20260829-N01PY
+/// delivered. The `Iterable.map` row is the soundness boundary in the same table: that
+/// spelling DECLARES a bare `Stream` return, erasing the source and with it the
+/// finiteness gate, so it must stay refused.
+///
+/// A CELL SAYS THE PROGRAM LOADS AND NOTHING MORE — `n01py_witness_provision_subtype_test`
+/// and `wi492_transitive_provision_test` are where these are driven to values.
+///
+/// WHICH ROWS MEASURE WI-20260829-N01PY, measured by backing the fix out (making
+/// `witness_provides_admissibly` return `false` at its first statement): ONLY the two
+/// `AUTHOR's consumer <- map/filter` rows go red. The `size` / `collect` / `.size()` rows
+/// PASS EITHER WAY BY DESIGN — those are the spec's OWN operations, dispatched on the
+/// carrier, which the finiteness witness has answered since WI-590; they are here to say
+/// the capability existed and only the AUTHOR-declared spelling of it did not. The
+/// `total(xs)` control and the `Iterable.map` boundary pass either way too.
+#[test]
+fn an_author_declared_consumer_takes_a_finite_carrier() {
+    let rows: Vec<(String, String, Verdict)> = vec![
+        (
+            "size(map(...)) / field dot".into(),
+            "size(xs.map(lambda r -> r.a))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "size(map(...)) / constant (CONTROL)".into(),
+            "size(xs.map(lambda r -> 7))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "size(filter(...)) / field dot".into(),
+            "size(xs.filter(lambda r -> r.flag))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "collect(map(...))".into(),
+            "collect(xs.map(lambda r -> r.a))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "map(...).size() — the dot spelling of the same".into(),
+            "xs.map(lambda r -> r.a).size()".into(),
+            Verdict::Loads,
+        ),
+        (
+            "AUTHOR's consumer over the spec <- map(...)   [WI-20260829-N01PY]".into(),
+            "total(xs.map(lambda r -> r.a))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "AUTHOR's consumer over the spec <- filter(...) [WI-20260829-N01PY]".into(),
+            "total(xs.filter(lambda r -> r.flag))".into(),
+            Verdict::Loads,
+        ),
+        (
+            "AUTHOR's consumer over the spec <- a plain List (CONTROL — direct provision)"
+                .into(),
+            "total(xs)".into(),
+            Verdict::Loads,
+        ),
+        (
+            "AUTHOR's consumer <- Iterable.map (BOUNDARY — the erased `Stream` return \
+             is maybe-infinite and must NOT be eagerly consumable)"
+                .into(),
+            "total(Iterable.map(xs, lambda r -> r.a))".into(),
+            Verdict::RefusesLocated("expected FiniteCollection"),
+        ),
+    ];
+    let mut failures = Vec::new();
+    let mut report = String::new();
+    for (label, body, want) in rows {
+        match check_src(&label, &consumption_program(&body), want) {
+            Ok(line) => {
+                let _ = writeln!(report, "  {line}");
+            }
+            Err(e) => failures.push(e),
+        }
+    }
+    println!("{report}");
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
 // ── THE HARNESS'S OWN CONTROLS ───────────────────────────────────────────────
@@ -740,12 +882,15 @@ fn lazy_stream_consumption() {
 #[test]
 fn every_verdict_fails_when_it_should() {
     // A PERMANENTLY ILL-TYPED body, for every case below that needs one. It must not be
-    // a program that fails because of a gap this file TRACKS: `length(xs.map(...))` was
-    // used here first, and on the day WI-20260829-N01PY is fixed these controls would
-    // have started failing with "a Loads cell whose program refuses must fail" — blaming
-    // the harness, in the same run where the gap cells correctly report themselves
-    // (found by /code-review). `nosuchname` is refused by construction and by nothing
-    // anyone will ever repair.
+    // a program that fails because of something this file TRACKS: `length(xs.map(...))` was
+    // used here first, and the day that stopped refusing these controls would start
+    // failing with "a Loads cell whose program refuses must fail" — blaming the harness,
+    // in the same run where the tracked cells correctly report themselves (found by
+    // /code-review). `nosuchname` is refused by construction and by nothing anyone will
+    // ever repair. (WI-20260829-N01PY has since been delivered WITHOUT changing
+    // `length`'s verdict — `length` is `List`'s own operation and its refusal is right —
+    // so the hazard this note describes did not fire, and the rule stands for the next
+    // cell that would be tempted to reuse a tracked program here.)
     const ALWAYS_REFUSED: &str = "nosuchname(xs)";
 
     // A body that LOADS, recorded as a gap ⇒ "the gap closed, flip it".
@@ -874,8 +1019,8 @@ fn every_verdict_fails_when_it_should() {
         .expect("a correctly-recorded Loads cell must pass");
     check("self-test", "xs.map()", Verdict::RefusesLocated("map"))
         .expect("a correctly-recorded RefusesLocated cell must pass");
-    // NOT `length(xs.map(...))`, which is the live WI-20260829-N01PY gap: the day it is
-    // fixed this control would panic with "a correctly-recorded KnownGap cell must pass"
+    // NOT `length(xs.map(...))`, which the tables above track: were its verdict ever to
+    // move, this control would panic with "a correctly-recorded KnownGap cell must pass"
     // and send its fixer to a self-test that has no defect — the exact rule stated 30
     // lines above, which the first cut of this line broke (found by /code-review).
     check(
@@ -932,7 +1077,9 @@ fn refusals_that_should_stand() {
 /// `{List, Error, External}` and not `Iterable`, so the qualified call named a sort the
 /// file does not import and the refusal was about the missing import. With `Iterable`
 /// imported the same substitution gives the ordinary consumption error
-/// (WI-20260829-N01PY). /code-review caught it and measured the axis independently.
+/// (WI-20260829-N01PY: the erased `Stream` return of the QUALIFIED `Iterable.map` cannot
+/// feed an eager consumer, and still cannot — that is the soundness boundary, not a gap).
+/// /code-review caught it and measured the axis independently.
 ///
 /// So the rows below carry the label parameter the guardians `Message[Trust]` has, and
 /// they LOAD — in every spelling, exactly as the plain `Row` fixture does. The label
