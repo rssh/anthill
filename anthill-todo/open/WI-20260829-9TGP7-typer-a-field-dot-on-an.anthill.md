@@ -89,3 +89,43 @@ fixing.
 THE `bodies_of` CONSEQUENCE stands as written above: both spellings an agent would
 reach for are refused, so the trusted vocabulary must supply the projection, and
 `examples/guardians/lib/vocabulary.anthill` says so at the declaration.
+
+### WIDER THAN `map`, AND TWO HYPOTHESES ALREADY REFUTED
+
+`filter` is broken too, which was not known when this was filed. One entity, one
+dot, four combinators, `xs: List[Row]` where `entity Row(a: Int64, flag: Bool)`:
+
+  xs.find(lambda r -> r.flag)             LOADS
+  xs.foldLeft(0, lambda (acc, r) -> r.a)  LOADS
+  xs.filter(lambda r -> r.flag)           REFUSED  <unresolved receiver>.flag
+  xs.map(lambda r -> r.a)                 REFUSED  <unresolved receiver>.a
+
+The title says `map`; read it as `map` AND `filter`, and as a question about which
+combinators the N2FHM repair actually reached rather than about one of them.
+
+**REFUTED (1): the extra type parameter.** The obvious reading — `map[Dst, EffP]`
+and `find[EffP]`, so an open result parameter blocks it — does not survive
+`foldLeft[Acc, EffP]`, which carries one and LOADS, next to `filter[EffP]`, which
+carries none and FAILS. Pinning explicitly (`xs.map[Dst = Int64](…)`) also does
+not help.
+
+**REFUTED (2): ambiguous dispatch between two same-shaped declarations.** The
+failing pair are each declared with an identical `(c: C, …)` receiver in BOTH
+`finite_collection.anthill` and `iterable.anthill`, while the working pair are
+declared twice with DIFFERENT receivers (`find`: `c: C` / `s: Stream`; `foldLeft`:
+`c: C` / `xs: List`). That fits the literal wording `<unresolved receiver>` and is
+wrong anyway: naming the declaration does not fix it.
+
+  Iterable.map(xs, lambda r -> r.a)          REFUSED, identically
+  Iterable.filter(xs, lambda r -> r.flag)    REFUSED, identically
+
+So the split is real and reproducible, and neither of the two structural
+differences visible in the signatures explains it. Whoever takes this should start
+by diffing what `check_apply` does for `find` against what it does for `filter` —
+the same callback shape `(x: Element) -> Bool`, the same receiver `c: C`, opposite
+outcomes — since that pair holds everything else constant.
+
+HOW THIS WAS FOUND, because it bears on WI-20260829-ARQ5X: by writing four
+one-line probes over one entity. Nothing in the 544-file test suite does that —
+seven files in the whole of `anthill-core/tests/include/` contain a dot inside a
+lambda at all, and none sweeps one construct across several hosts.
