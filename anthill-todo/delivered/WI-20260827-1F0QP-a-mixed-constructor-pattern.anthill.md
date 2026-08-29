@@ -3,9 +3,9 @@
 - id: WI-20260827-1F0QP-a-mixed-constructor-pattern
 - created: 2026-08-27T21:41:51Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-29T14:01:24Z
+- status_at: 2026-08-29T18:42:34Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
