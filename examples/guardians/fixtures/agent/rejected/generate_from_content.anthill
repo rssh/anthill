@@ -14,16 +14,16 @@
 -- ================================================================
 sort guardians.agent.ContentPrimedGenerator
   import anthill.prelude.{List, Error, External}
-  import guardians.{Mailbox, Text, Prompt, Llm, Harness, Source,
-                    fetch_mail, bodies_of, join_texts, prompt_with}
+  import guardians.{Email, Mailbox, Text, Prompt, Llm, Harness, Source,
+                    join_texts, prompt_with}
   entity mk
 
   operation build(self: ContentPrimedGenerator, box: Mailbox,
                   h: Harness, llm: Llm) -> Source
     effects {External, Error} =
-      let msgs = fetch_mail(box)
+      let msgs = Email.fetch(box)
       let p = prompt_with(
         instruction: text(raw: "Given these emails, write me a triage agent."),
-        content:     join_texts(bodies_of(msgs)))
+        content:     join_texts(msgs.map(lambda m -> m.body).collect()))
       h.generate(llm, p)
 end

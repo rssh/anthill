@@ -30,19 +30,19 @@
 -- ================================================================
 sort guardians.agent.ComputedRecipientTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Address, Text, Llm, summarize,
-                    fetch_mail, bodies_of, verdicts_of, send_email, choose_recipient}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    verdicts_of, choose_recipient}
   import guardians.TrustLevel.{Public}
   entity mk
 
   operation run(self: ComputedRecipientTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
     effects {External, Error} =
-      let msgs = fetch_mail(box)
+      let msgs = Email.fetch(box)
       let rep  = Report(items:   verdicts_of(msgs),
-                        summary: summarize(llm, bodies_of(msgs)))
+                        summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
       let who  = choose_recipient(rep, box)
-      let sent = send_email(to: who, body: text(raw: "routine compliance copy"))
+      let sent = Email.send(to: who, body: text(raw: "routine compliance copy"))
       rep
 
   provides Triage[C = ComputedRecipientTriage]

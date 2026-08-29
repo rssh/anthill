@@ -333,4 +333,33 @@ N01PY carried the same false consequence and has been corrected too.
 
 Full workspace suite green. `scaland` is untouched: it has no typer (no
 `types_compatible` / branch-join equivalent), so there is nothing to mirror.
+### 2026-08-29T14:23:39Z — feedback — user
+
+`bodies_of` IS DELETED (2026-08-29), so both paragraphs that hang this ticket's
+importance on it are now stale — "WHY IT MATTERS BEYOND ERGONOMICS" and "THE
+`bodies_of` CONSEQUENCE". Neither the ticket's severity nor its subject changes;
+what changes is that the workaround it pointed at is gone.
+
+WHAT REPLACED IT, measured against good.anthill by substituting only the summarize
+argument:
+
+  msgs.map(lambda m -> m.body)              expected List[T = Text[Untrusted]], got
+                                            MappedStream[T = Text[Untrusted], ...]
+  msgs.map(lambda m -> m.body).collect()    LOADS
+
+So the callback dot resolves — as the 2026-08-29T09:51Z feedback already
+established — and the remaining refusal is WI-20260829-N01PY's lazy/eager gap,
+worked around with `collect`. Every agent fixture now writes that projection inline
+and the guardians suite is 35/35, so nothing in `examples/guardians` is waiting on
+this ticket any more.
+
+WHAT SURVIVES IS (b) ALONE, unchanged and untested by the above:
+
+  msgs.map(lambda m -> match m case message(...) -> b)   REFUSED, "expected ?Dst"
+
+`map`'s `Dst` failing to reconcile against a MATCH ARM's type — RED for map in all
+three spellings, GREEN for foldLeft's match destructure, GREEN for every other map
+body form. Retitling to name that alone would now be accurate; the title still says
+"a field dot on an `Iterable.map` callback parameter", which the sweep measured
+GREEN.
 

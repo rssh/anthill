@@ -1,55 +1,24 @@
 -- ================================================================
 -- guardians.tasks — the task operations, DERIVED from the one primitive.
 --
--- `summarize` is not a host function. It builds a prompt and completes it, in
--- anthill, so two things follow that did not before:
---
---   * THE PROMPT TEXT IS IN THE REPOSITORY — reviewable, diffable, versioned —
---     instead of buried in a Rust closure.
---   * THE LABEL ARITHMETIC IS VISIBLE. A Public instruction joined with
---     Untrusted content is an Untrusted prompt, so the reply is Untrusted and
---     the sink refuses it. Nothing about that is special-cased for summarizing.
+-- `summarize` is not a host function: it builds a prompt and completes it in
+-- anthill, so the prompt text is in the repository rather than in a Rust closure,
+-- and the label arithmetic is visible — a Public instruction joined with
+-- Untrusted content is an Untrusted prompt, nothing special-cased.
 -- ================================================================
 namespace guardians
   import anthill.prelude.{List, Error, External}
   import guardians.{Text, Prompt, Llm, Message, Observed, LlmOutput,
-                    prompt_with, join_texts, bodies_of}
+                    prompt_with, join_texts}
   import guardians.TrustLevel.{Untrusted, Public}
 
-  -- The quarantined summarizer. Its body is the whole dual-LLM pattern:
-  -- the instruction is trusted, the content is not, and the join decides.
-  --
-  -- MONOMORPHIC AT `Untrusted`, AND THE REASON IS NOT THE ONE THIS COMMENT USED
-  -- TO GIVE. It said two label-polymorphic operations DO NOT COMPOSE — a caller
-  -- generic in `?t` got back a PROJECTION of its own parameter instead of a
-  -- binding of its variable — and filed WI-20260822-1FKR2. That was a real
-  -- defect and it is FIXED: a label-preserving operation written in terms of
-  -- another one now loads, which is what makes the property compose through
-  -- library code and not only through the type checker.
-  --
-  -- What forces the monomorphic RETURN is `Llm.complete`, and it is a decision
-  -- rather than a limit. That comment described it as `Prompt[?t] -> Text[?t]`;
-  -- llm.anthill records at length why it is not — that spelling let a model MINT
-  -- releasable text out of an empty prompt, kept as
-  -- fixtures/agent/rejected/minting.anthill — so `complete` returns
-  -- `Text[Untrusted]` for EVERY prompt. A body ending in `llm.complete(p)`
-  -- therefore packs an `Untrusted` witness, and `-> Text[?t]` is refused at
-  -- `summarize.return (op-return): expected Text[Trust = ?t], got
-  -- Text[Trust = Untrusted]` — correctly, on the fixed loader. Measured; see
-  -- docs/design/measured.md C10.
-  --
-  -- The INPUT could now be widened to `List[T = Text[?t]]` — measured: it loads,
-  -- `good` still loads and all five rejected fixtures stay refused — and it is
-  -- left as written for the reason it was written. In this pipeline the
-  -- summarizer only ever sees mailbox text, which is Untrusted by construction,
-  -- so a variable there would claim a generality nothing exercises. llm.anthill
-  -- states the rule this follows: write no variable where no relationship
-  -- exists — and `complete`'s own bare `Prompt` parameter is that rule applied
-  -- to the primitive: it accepts the Public generation prompt and this Untrusted
-  -- one alike, and claims no relationship between what goes in and what comes
-  -- back, because there is none.
+  -- The quarantined summarizer: trusted instruction, untrusted content, and the
+  -- join decides. MONOMORPHIC AT `Untrusted` because `complete` returns
+  -- `Text[Untrusted]` for every prompt, so `-> Text[?t]` is refused (measured:
+  -- docs/design/measured.md C10). The input could be widened to `Text[?t]` and is
+  -- not — llm.anthill's rule: write no variable where no relationship exists.
   operation summarize(llm: Llm, msgs: List[T = Text[Untrusted]])
-      -> LlmOutput[Text[Untrusted]]
+      -> LlmOutput
     effects {External, Error} =
       let content = join_texts(msgs)
       let p = prompt_with(
@@ -57,12 +26,10 @@ namespace guardians
         content:     content)
       llm.complete(p)
 
-  -- The observation channel. Still host-bound, and for a reason worth stating:
-  -- its job is to PARSE the reply into the closed `Feature` vocabulary, and a
-  -- reply naming anything outside it must be refused at the boundary. That
-  -- parse is the enforcement `observe.anthill` describes; doing it in anthill
-  -- needs string machinery this example does not yet have, so the check lives
-  -- in the host binding and is the example's largest remaining fiction.
+  -- Still host-bound: its job is to PARSE the reply into the closed `Feature`
+  -- vocabulary, refusing anything outside it at the boundary. Doing that in
+  -- anthill needs string machinery this example lacks, so the check lives in the
+  -- host binding — the largest remaining fiction here.
   operation observe(llm: Llm, m: Message[Untrusted])
       -> List[T = Observed]
     effects {External, Error}

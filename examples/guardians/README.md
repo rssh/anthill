@@ -14,13 +14,15 @@ refuses every candidate agent in `fixtures/agent/rejected/` and nothing else.
 Each is refused by a **different** mechanism. Four of them:
 
 ```
-rejected/leak.anthill: type mismatch in send_email.body (op-arg):
-    expected Text[Trust = Public], got Text[Trust = Untrusted]
+rejected/leak.anthill: type mismatch in send.body (op-arg):
+    expected Text[Trust = Public], got LlmOutput
 ```
 The article's attack, as generated code: summarize the mailbox, mail the summary
-to `it@othercorp.com`. Refused because `summarize` preserves its argument's label
-— whatever went in comes out — so the summary is `Untrusted` and the sink wants
-`Public`. **Summarizing does not launder.**
+to `it@othercorp.com`. Refused twice over, and the message names the outer half:
+what a model returns is a sealed `LlmOutput`, which is not a `Text` at all, and
+the `Text` inside it carries the label its input had — `summarize` preserves it,
+so nothing that went through the mailbox comes back `Public`.
+**Summarizing does not launder.**
 
 ```
 'WideRowTriage' overrides 'Triage.run' but does not refine it: the override
@@ -43,15 +45,15 @@ reading the answer, and the type forbids that.
 
 ```
 rejected/minting_checker.anthill: check.effects (op-effects):
-    got denied effect: Permission[T = Model] — the row DECLARES `-Permission[T = Model]`
+    got denied effect: Permission[T = Llm] — the row DECLARES `-Permission[T = Llm]`
 ```
 The mirror attack. This one is handed nothing and holds nothing — it **mints** its
 own model. What confines it is that acquisition is an *effect* (proposal 064's
-`Permission[Model]`, on `LiveLlm.open`), which the checker's row does not grant.
+`Permission[Llm]`, on `LiveLlm.open`), which the checker's row does not grant.
 **Before this, minting was unconstrained** — the constructors were public and
 construction carried no effect, so a checker could obtain a model out of thin air.
 
-The `-Permission[Model]` in the row is the *contract*, not the mechanism: delete
+The `-Permission[Llm]` in the row is the *contract*, not the mechanism: delete
 it and this fixture is still refused, as `undeclared effect` rather than `denied
 effect`. `docs/design/measured.md` D1 records exactly what each half buys.
 
@@ -61,9 +63,10 @@ rejected/outbox.anthill: run.effects (op-effects): expected declared:
 ```
 The article's policy has two halves — *"forbid data flow from `fetch_email`'s
 result to the `body` parameter of `send_email` **with an external email address as
-the target**"* — and this is the second one. The body it mails is a literal
+the target**"* — and this is the second one, `Email.send` being the sink the
+article names. The body it mails is a literal
 `Public` string, so nothing flows and no label is violated; it is refused because
-the recipient is outside the organisation. `send_email` demands
+the recipient is outside the organisation. `Email.send` demands
 `Permission[Outbox]` **guarded on its target**, so mailing a colleague needs no
 authority at all (`fixtures/agent/internal_send.anthill`, one token away, loads)
 and mailing outside needs an authority `Triage.run`'s spec never grants. **No
@@ -77,27 +80,29 @@ naming the capability's `internal` constructor, and is refused before any effect
 is considered. That one is what makes the rest mean anything: without it a
 generated checker acquires nothing, calls nothing, and holds a model anyway.
 
-And `rejected/frontier_checker.anthill`, which asks for `Permission[FrontierModel]`
-rather than the denied `Permission[Model]`. It is refused either way, but only the
+And `rejected/frontier_checker.anthill`, which asks for `Permission[LiveLlm]`
+rather than the denied `Permission[Llm]`. It is refused either way, but only the
 downward closure names it as a **violated denial** rather than a missing
-declaration — acquiring a frontier model IS acquiring a model.
+declaration — `LiveLlm provides Llm`, so acquiring a live model IS acquiring a
+model. The capability is the SORT you acquire; there is no marker sort beside it.
 
 ## What is where
 
 | file | what |
 |---|---|
-| `lib/vocabulary.anthill` | `TrustLevel`, `Text[Trust]`, `Message[Trust]`, `Report`, the tools that consult no model, and the capability vocabulary (`Model`, `FrontierModel`, `Filesystem`) |
+| `lib/vocabulary.anthill` | the trust lattice and nothing else that is not it: `TrustLevel`, `Text[Trust]`, and the one remaining project effect kind (`Filesystem`) |
+| `lib/email.anthill` | the **email service** and every email-shaped declaration with it: `Message[Trust]`, `MessageId`, `Address`, `Mailbox`, the `Outbox` capability, `in_org`/`external_addr`, and `Email.fetch` / `Email.send` — the article's source and sink, adjacent |
 | `lib/observe.anthill` | the **only** vocabulary the model may write at run time — a closed `Feature` enum with no constructor naming an address, a tool, or an action |
-| `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Model]`-carrying `open` |
-| `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide |
-| `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Model]` — it may not ACQUIRE a model; being handed one is harmless, since `LlmOutput` is unreadable |
+| `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Llm]`-carrying `open`, answering in a sealed `LlmOutput` |
+| `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide — and what is SPECIFIC to it: `Report`, `Verdict`, `verdicts_of`, `choose_recipient`, `mentions_all` |
+| `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Llm]` — it may not ACQUIRE a model; being handed one is harmless, since `LlmOutput` is unreadable |
 | `lib/tasks.anthill` | `summarize` and `observe`, built on the one primitive rather than bound per task |
 | `lib/classify.anthill` | what counts as suspicious — rules in the KB, not a prompt |
 | `lib/gate.anthill` | the trust partition, as a policy: what the candidate DECLARED and what it ASSERTED, asked of a discardable layer |
 | `lib/safety.anthill` | where the tiers compose: types produce facts, proofs consume them |
 | `fixtures/*.anthill` | the article's inbox, including the injected email |
 | `fixtures/agent/good.anthill`, `checker.anthill` | generated implementations that pass — the controls |
-| `fixtures/agent/rejected/` | nine that must not, one per mechanism |
+| `fixtures/agent/rejected/` | eleven that must not, one per mechanism |
 
 Design notes and the full measurement record are in `docs/design/`; the runnable
 probes behind the measurements live in `docs/measurements/guardians/` at the
@@ -108,7 +113,7 @@ repository root, deliberately outside the example so this directory loads.
 `Llm` is a spec; `LiveLlm` and `FakeLlm` are carriers. Choosing between them is
 choosing a **value**, not re-registering a host function, and no agent source
 changes. Both are obtained the same way — `LiveLlm.open` / `FakeLlm.open`, each
-carrying `Permission[Model]` — so the test double exercises the same authority
+carrying `Permission[Llm]` — so the test double exercises the same authority
 path as production and differs only in whether the call leaves the process
 (`Permission` and `External` are orthogonal; proposal 064). Host functions are bound per carrier through
 `operation_map` + `KnowledgeBase::register_host_fn`, which must be called

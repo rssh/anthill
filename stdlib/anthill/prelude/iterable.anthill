@@ -46,6 +46,10 @@ sort anthill.prelude.Iterable
   -- It pays E: checking costs one splitFirst step of the produced stream.
   operation isEmpty(c: C) -> Bool effects E =
     Stream.isEmpty(iterator(c))
+  operation nonEmpty(c: C) -> Bool effects E =
+    Stream.nonEmpty(iterator(c))
+  operation exists[EffP](c: C, pred: (x: Element) -> Bool @ {EffP, -Modify[x]}) -> Bool effects {E, EffP} =
+    Stream.exists(iterator(c), pred)
 
   -- size / foldLeft / foldRight moved OFF `Iterable` to `FiniteCollection`
   -- (proposal library/003, Phase C / WI-589): each walks the iterator TO ITS

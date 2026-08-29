@@ -1,301 +1,67 @@
 -- ================================================================
--- guardians.vocabulary — the data sorts and the non-model tools.
+-- guardians.vocabulary — the trust lattice, and nothing that is not it.
 --
--- Nothing here is a new language feature. `Text` is an ordinary sort
--- with an ordinary type parameter; the only unusual thing is WHAT the
--- parameter ranges over — a trust level rather than an element type.
--- Because anthill type arguments carry logical variables and unify,
--- that one choice is the whole information-flow mechanism.
+-- `Text` is an ordinary sort with an ordinary type parameter. The only unusual
+-- thing is WHAT the parameter ranges over — a trust level rather than an element
+-- type — and because anthill type arguments unify, that one choice is the whole
+-- information-flow mechanism.
+--
+-- What belongs here is what every other file builds on and none owns. Anything
+-- with a subject of its own has left: mail to email.anthill, the triage
+-- declarations to spec.anthill.
 -- ================================================================
 
--- The trust lattice. Two points is all this example needs; an n-point
--- lattice would cost O(n^2) coercions (docs/design/high-level-api.md D2).
+-- Two points is all this example needs; an n-point lattice would cost O(n^2)
+-- coercions (docs/design/high-level-api.md D2).
 enum guardians.TrustLevel
   entity Untrusted            -- came from outside; may be attacker-authored
   entity Public               -- cleared to leave the system
 end
 
--- Text, labelled by where it came from. `Trust` is the parameter SLOT;
--- `TrustLevel` is the sort its arguments inhabit.
+-- THE PARAMETER IS NOT A WORKAROUND. It is the only way an inner label reaches a
+-- signature: without it `Text` is one type and `Email.send(body: Text[Public])`
+-- cannot be written at all.
 --
--- WHY A PARAMETER, AND WHICH HALF OF IT IS A WORKAROUND.
---
--- The parameter is NOT a workaround. It is the only way an inner label becomes
--- visible to a signature: without it `Text` is one single type, and
--- `send_email(body: Text[Public])` — the declaration that refuses the article's
--- exfiltration — cannot be written at all, because there is no slot to put
--- `Public` into. A label sitting in a field is unreachable from a signature,
--- and labels are erased at run time, so there is no later opportunity to check
--- one. This parameter stays.
---
--- The `= ?` IS a workaround, and it should go away. `sort Trust = ?` is
--- UNCONSTRAINED, so the slot admits anything at all — `Text[Int64]` loads
--- clean, measured. A `requires IsLevel[T = Trust]` does not bind it either, and
--- the reason is narrower than it looks: the only use-site enforcement that
--- exists is hard-wired to `anthill.prelude.Eq` (WI-644/WI-835), so the clause
--- is never consulted. Either way `TrustLevel` above is what these arguments are
--- MEANT to inhabit, not what they are required to — the lattice is a convention
--- held up by the pairings written below, and `Text[Publik]` would be a fresh
--- type rather than a typo.
---
--- Tracked as WI-20260822-T70A2, designed as proposal 062. What arrives is NOT a
--- bound. A bound would be `<:`, which drags in variance, transitivity and
--- higher-kinded parameters that none of this needs; what 062 settles on is a
--- GOAL, discharged when the parameter binds. These three declarations — here,
--- `Message` below, and `Prompt` in lib/llm.anthill — then read
---
---   sort Trust = ?
---   requires is_entity_of(Trust, TrustLevel)
---
--- with the admissible set DERIVED from the enum above rather than restated
--- beside it. This note goes with them.
---
--- Not a security hole either way, and measured: the suite passes 15/15 with the
--- slot unconstrained, the exfiltration refusal among them, because a sink
--- demands a LITERAL label and `Text[Int64]` reaches nothing. What is unsound is
--- only the claim one level up, that the parameter ranges over a lattice. It
--- ranges over everything.
+-- The `= ?` IS one. `sort Trust = ?` admits anything — `Text[Int64]` loads clean,
+-- measured — so `TrustLevel` is what these arguments are MEANT to inhabit, not
+-- what they are required to. Not a hole (a sink demands a literal label, and
+-- `Text[Int64]` reaches nothing); the unsound part is only the claim that the
+-- parameter ranges over a lattice. WI-20260822-T70A2, proposal 062.
 enum guardians.Text
   import anthill.prelude.{String}
   sort Trust = ?
   entity text(raw: String)
 end
 
--- A message, labelled the same way: subject and body from one message
--- are equally trusted.
-enum guardians.Message
-  import guardians.{Text, Address, MessageId}
-  sort Trust = ?
-  entity message(
-    id       : MessageId,
-    from     : Address,
-    reply_to : Address,
-    subject  : Text[Trust],
-    body     : Text[Trust])
-end
+-- NO TRANSITIONS BETWEEN LEVELS, and that is a finding. `widen` and `declassify`
+-- were declared and never called — `declassify` could not be, since nothing mints
+-- its `Approval` token — while `text(raw: u.raw)` re-labels any `Text[Untrusted]`
+-- as `Text[Public]` in one line and loads clean. A guarded door beside an open
+-- window. The lattice pins a label AT A SINK (rejected/leak.anthill); it does not
+-- confine how a label CHANGES. WI-20260829-MCKTE.
 
--- CAPABILITIES ARE THE SORTS YOU ACQUIRE, so there is no marker sort here.
--- `Permission[Llm]` is "may obtain a model" and `Permission[LiveLlm]` is the
--- narrower claim, over sorts that exist for their own sake and carry `complete`.
+-- CAPABILITIES ARE THE SORTS YOU ACQUIRE, so no marker sort stands in for one.
+-- `LiveLlm provides Llm` is the sub-capability edge for real, so `-Permission[Llm]`
+-- forbids `Permission[X]` for every `X <: Llm` (rejected/frontier_checker.anthill).
 --
--- TWO EMPTY SORTS USED TO STAND IN FOR THEM — `Model` and `FrontierModel`, whose
--- only job was to be arguments of `Permission[…]` — with the sub-capability edge
--- faked by `FrontierModel provides Model`. `LiveLlm provides Llm` is that edge for
--- real, so the DOWNWARD CLOSURE is unchanged: a denial is closed in the
--- capability, `-Permission[Llm]` forbids `Permission[X]` for every `X <: Llm`, and
--- a generated checker cannot evade it by naming a narrower one
--- (rejected/frontier_checker.anthill).
---
--- THAT IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE, and the two run OPPOSITE
--- ways — worth stating because the names invite the wrong reading.
--- `fact Contravariant(sort: Permission, param: T)` is the SUBSUMPTION rule: a spec
--- granting `Permission[LiveLlm]` accepts an implementation that takes only
--- `Permission[Llm]`, because it asks less. The closure above is the other
--- direction and runs COVARIANTLY in the capability; it needed its own rule in the
--- kernel (`typing::permission_entails`), which is the one thing proposal 064
--- predicted would come free and did not. See
--- `stdlib/anthill/prelude/permission.anthill`.
---
--- `Model` ALSO WORE AN EFFECT-LABEL HAT once — "this operation consults a model" —
--- so that `-Model` could deny consultation. `docs/design/effects.md` rejected that
--- on its own terms and `prelude/external.anthill` forbids the shape ("no Http / Db
--- / Forge effects"); what made it deletable was sealing the model's ANSWER
--- (`LlmOutput`, llm.anthill) rather than forbidding the call.
+-- THAT IS ENTAILMENT, NOT THE DECLARED CONTRAVARIANCE, and they run opposite ways.
+-- `fact Contravariant(sort: Permission, param: T)` is subsumption; the closure runs
+-- covariantly in the capability and needed its own kernel rule
+-- (`typing::permission_entails`) — the one thing 064 predicted would come free and
+-- did not.
 
-
--- THE OUTBOX CAPABILITY — the authority to mail OUTSIDE the organisation.
---
--- A capability, not an effect kind (unlike `Filesystem`): it is only ever the
--- argument of `Permission[…]`.
---
--- What makes it worth having is that the permission `send_email` demands is
--- CONDITIONAL (proposal 048's guarded effects, on 064's label). The article
--- states the policy as *"forbid data flow from fetch_email's result to the body
--- parameter of send_email WITH AN EXTERNAL EMAIL ADDRESS AS THE TARGET"*, and
--- the target half of that is a property of one argument at one call — exactly
--- what a guard reads. So mailing a colleague needs no authority at all, and
--- mailing outside needs `Permission[Outbox]`, decided at LOAD from the address
--- the call actually passes.
-sort guardians.Outbox
-end
-
--- A second project effect: touching the filesystem. Present so the row checks
--- have a label to widen BY that is not `Modify`, and it stays after C9 was
--- fixed: the two widenings travel DIFFERENT ARMS of one check — a named label
--- is compared as a TYPE, a `Modify` target as a RESOURCE (§5.6's frame
--- condition) — so `rejected/wide_row.anthill` and
--- `rejected/wide_row_modify.anthill` each catch a program the other does not.
+-- A second project effect, so the row checks have a label to widen BY that is not
+-- `Modify`. The two widenings travel different arms of one check — a named label
+-- as a TYPE, a `Modify` target as a RESOURCE (§5.6) — so wide_row.anthill and
+-- wide_row_modify.anthill each catch a program the other does not.
 sort guardians.Filesystem
 end
 
 namespace guardians
-  import anthill.prelude.{String, List, Unit, Error, External, Effect}
-  import guardians.TrustLevel.{Untrusted, Public}
-  import anthill.prelude.{Permission}
-  import guardians.{Text, Message, Filesystem, Outbox}
+  import anthill.prelude.{Effect}
+  import guardians.{Filesystem}
 
-  -- The project's one effect KIND. `Model` and `FrontierModel` are deliberately
-  -- absent: both are CAPABILITIES (arguments of `Permission[…]`) and never bare
-  -- row labels. `Model` WAS registered here, and the reason it no longer is, is
-  -- `LlmOutput` (llm.anthill): a sealed wrapper makes model output unreadable, so
-  -- a component that consults a model learns nothing from it and cannot be
-  -- steered by it — which is the property `-Model` approximated by forbidding
-  -- the call. With the property held by a type, the label bought nothing, and
-  -- the prelude's rule against per-capability effects
-  -- (`prelude/external.anthill`: "no Http / Db / Forge effects") is restored.
-  -- `Permission` itself is registered by the prelude.
+  -- The project's one effect KIND. Capabilities are arguments of `Permission[…]`,
+  -- never bare row labels; `Permission` itself the prelude registers.
   fact Effect[T = Filesystem]
-
-  entity MessageId(value: String)
-  entity Address(local: String, domain: String)
-  entity Mailbox(owner: Address)
-
-  -- The report SPLITS enumeration from prose. `items` is one Verdict per
-  -- fetched message, built by iterating the list `fetch_mail` returned —
-  -- the model never constructs it and therefore cannot drop a row from
-  -- it. That is what defeats the injection's CONCEALMENT half, which
-  -- freezing a tool sequence does not touch (docs/design/two-flows.md §1.3).
-  entity Verdict(message: MessageId, label: String)
-  entity Report(items: List[Verdict], summary: LlmOutput[Text[Untrusted]])
-
-  -- ---------------- tools that consult no model ----------------
-
-  -- The source. The label is fixed by the SIGNATURE, which is the only
-  -- place it can enter (measured: C6).
-  operation fetch_mail(box: Mailbox) -> List[Message[Untrusted]]
-    effects {External, Error}
-
-  -- Projection: a message's body carries the message's label.
-  --
-  -- IT IS ORDINARY API, and this comment used to claim the opposite. It said an
-  -- agent CANNOT write this projection — that both spellings it would reach for
-  -- are refused, so the trusted vocabulary has to supply what the agent cannot
-  -- express. Both halves of that were wrong, one per spelling, and both are now
-  -- measured in
-  -- `guardians_test::an_agent_can_inline_the_body_projection`:
-  --
-  --   msgs.map(lambda m -> m.body).collect()                      LOADS
-  --   msgs.map(lambda m -> match m case message(i,f,r,s,b) -> b)
-  --     .collect()                                                LOADS
-  --
-  -- The dot spelling's `<unresolved receiver>.body` was an artefact of the probe
-  -- that reported it: the substitution wrote `Iterable.map(…)` into a file that
-  -- does not import `Iterable`, and the refusal was about the missing import.
-  -- The match spelling's `expected ?Dst` was real and is WI-20260829-9TGP7,
-  -- fixed. What each spelling DOES still need is the `collect` — `map` yields a
-  -- lazy `MappedStream` and `summarize` wants a `List` (WI-20260829-N01PY, open).
-  --
-  -- SO WHY IT STAYS. `docs/design/measured.md` settled this under C7 before the
-  -- fix and the answer did not change: a message's body genuinely IS a
-  -- projection and the label genuinely does ride along it, so the operation
-  -- earns its place as API. It is no longer the thing standing between the
-  -- design and a laundered label — the inlined spellings preserve `Untrusted`,
-  -- which the test above pins by re-running the article's attack through them.
-  --
-  -- WHY IT WAS WRITTEN OUT ORIGINALLY, which is a different reason again: it
-  -- surfaced C7, as a DISCIPLINE keeping every label-polymorphic operation
-  -- reachable only through arguments of exactly its declared sort — because
-  -- until WI-RKMD4 a sort mismatch against a parameter containing a type
-  -- variable was accepted SILENTLY, leaving the label variable free to bind
-  -- `Public` at the sink. The typer refuses that now (including a mis-projected
-  -- `List[Text[?t]]` handed to this signature), so the discipline is enforced
-  -- rather than conventional.
-  operation bodies_of(msgs: List[Message[?t]])
-      -> List[Text[?t]]
-
-  -- One Verdict per message, in the order given. This is the operation an
-  -- agent MUST call to satisfy `ensures mentions_all(result)`: the enumeration
-  -- is derived from the fetched list, so a generated body cannot drop a row
-  -- from it, which is what defeats the injection's CONCEALMENT half. An agent
-  -- that fabricates `items` instead fails the postcondition.
-  operation verdicts_of(msgs: List[Message[?t]]) -> List[Verdict]
-
-  -- The sink. `Public` is FIXED, so nothing untrusted can reach it.
-  -- WHO THIS ADDRESS BELONGS TO — DECLARED here, ASSERTED nowhere in `lib/`.
-  -- Which domain is "ours" is a DEPLOYMENT's fact, not the library's, exactly as
-  -- `safety.anthill` says of `Checked` and `mailbox.anthill` says of the inbox:
-  -- the relation is the library's, the rows are a deployment's. The rows live in
-  -- `fixtures/mailbox.anthill`.
-  --
-  -- A bodyless `rule` is proposal 061's DECLARATION rather than a clause, so with
-  -- no deployment loaded this relation is empty and EVERY address is external —
-  -- which is the safe default: an unconfigured organisation grants nothing.
-  rule in_org(?a)
-  rule external_addr(?a) :- not(in_org(?a))
-
-  -- THE SINK, GATED ON ITS TARGET. `Permission[Outbox]` is demanded only when the
-  -- recipient is outside the organisation: at the call the argument is
-  -- substituted into the guard, and the label is dropped when the guard's
-  -- negation is constructively proved (§5.5). So
-  --
-  --   send_email(to: Address(local: "boss", domain: "ourcorp.com"), …)  nothing
-  --   send_email(to: Address(local: "it", domain: "othercorp.com"), …)  Permission[Outbox]
-  --   send_email(to: <anything not written inline>, …)                  Permission[Outbox]
-  --
-  -- THE RULE IS NARROWER THAN "PROVABLY INTERNAL", and stating it loosely was a
-  -- real error in an earlier draft of this comment. The guard is refuted only
-  -- where the checker can prove `in_org(to)` from the argument TERM AT THE CALL,
-  -- so the address must be written INLINE. Measured: the identical literal
-  -- let-bound one line earlier is REFUSED
-  -- (rejected/letbound_recipient.anthill) — `refute_guard` proves the negation
-  -- over Γ, and a `let` deposits an equation SLD does not use to ground the goal,
-  -- so the double negation flounders and §5.5 conservatively keeps the effect.
-  --
-  -- So the operative policy is: A GENERATED AGENT MAY MAIL ONLY AN ADDRESS
-  -- WRITTEN LITERALLY, INLINE, AT THE CALL — and matching a deployment's `in_org`
-  -- rows. Everything else (an external literal, a let-bound one, a computed
-  -- address, one read out of a message) needs an authority `Triage.run` never
-  -- grants. That is sound, and stricter than intended in the let-bound case,
-  -- which is a typer limit rather than a policy decision: the bound value IS
-  -- statically known. Worth a ticket; not worth pretending it is by design.
-  --
-  -- THE CONSEQUENCE FOR A GENERATED AGENT is the whole point: `Triage.run`'s spec
-  -- row grants no `Permission[Outbox]`, so an implementation can neither declare
-  -- one (a widening) nor perform one (an undeclared effect). No generated triage
-  -- can mail outside the organisation, and that is a property of the SPEC rather
-  -- than of any particular agent.
-  --
-  -- INDEPENDENT OF THE `Text[Trust]` LABEL, which the article's policy names in
-  -- the same sentence. The two halves are measured by two fixtures, neither of
-  -- which catches the other's program: `rejected/leak.anthill` violates the FLOW
-  -- (an `Untrusted` summary reaching a `Public` parameter) and
-  -- `rejected/outbox.anthill` violates the TARGET (a literal `Public` body, no
-  -- flow at all, external recipient). In `leak` the label error is reported and
-  -- the effect leg does not run, so it is NOT observably caught twice — the two
-  -- are independent by fixture rather than by double diagnosis.
-  operation send_email(to: Address, body: Text[Public]) -> Unit
-    effects {External, Error, (Permission[Outbox] :- external_addr(to))}
-
-  -- NO TRANSITIONS BETWEEN LEVELS, and their removal is a finding rather than a
-  -- tidy-up. `widen` (Public -> Untrusted, free) and `declassify` (the other way,
-  -- guarded by an `Approval` token) were both declared and NEITHER WAS EVER
-  -- CALLED — not in `lib/`, not in a fixture, not in a test. `declassify` could
-  -- not be: nothing in the example mints an `Approval`, so no program could write
-  -- the call even if it wanted to.
-  --
-  -- WHAT MADE THEM WORSE THAN UNUSED is that a free route exists beside them:
-  -- `text(raw: u.raw)` re-labels any `Text[Untrusted]` as `Text[Public]` in one
-  -- line and loads clean, because `text`'s constructor is public and the label is
-  -- phantom. So the guarded door was unreachable while the window stood open, and
-  -- declaring the door suggested a discipline the example does not enforce.
-  --
-  -- What the lattice still does, and it is measured: it pins a value's label AT A
-  -- SINK. `send_email(body: Text[Public])` refuses `Text[Untrusted]`
-  -- (`rejected/leak.anthill`). What it does not do is confine how a label CHANGES.
-  -- Sealing `Text` the way `LlmOutput` is sealed would close that, at the cost of
-  -- moving labelling to the boundary — `fixtures/mailbox.anthill` builds
-  -- `Text[Untrusted]` in FACTS, which cannot call a smart constructor (measured:
-  -- 10 sites).
-
-  -- The recipient is chosen WITHOUT consulting a model, which defeats the
-  -- article's attack at its root: the injection's whole strategy is to make a
-  -- model name `it@othercorp.com`.
-  --
-  -- THE EMPTY ROW IS THE CLAIM, and it is stronger than the `-Model` this used to
-  -- carry. A pure row admits no `External`, no `Permission[Llm]` — so this body
-  -- cannot mint a model, and cannot be handed one it could use, since the only
-  -- thing a model returns is an `LlmOutput` nothing here can read. `-Model`
-  -- denied one route; `{}` denies every route there is.
-  operation choose_recipient(r: Report, box: Mailbox) -> Address
-    effects {}
 end

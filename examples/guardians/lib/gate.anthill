@@ -1,39 +1,24 @@
 -- ================================================================
 -- guardians.gate — WHAT THE CANDIDATE CONTRIBUTED, ASKED POSITIVELY.
 --
--- The checker loads the generated program into a DISCARDABLE LAYER over the
--- trusted declarations (`KB.loaded`, WI-SPGBP) and then asks this file three
--- questions about the layer. Everything here is policy; the two facts it reads
--- — which names the layer introduced, and which clauses its SOURCE TEXT wrote —
--- are engine-side marks (`KB.layer_symbols` / `KB.layer_clauses`).
+-- The checker loads the candidate into a DISCARDABLE LAYER over the trusted
+-- declarations (`KB.loaded`, WI-SPGBP) and asks this file three questions about
+-- it. Everything here is policy; the two facts it reads — which names the layer
+-- introduced, which clauses its SOURCE wrote — are engine marks
+-- (`KB.layer_symbols` / `KB.layer_clauses`).
 --
--- WHY THE MARKS AND NOT A RELATION. A gate phrased over reflect FACTS reads a
--- channel its own subject can write: measured, a candidate hand-writes
+-- WHY MARKS AND NOT A RELATION: a gate phrased over reflect FACTS reads a channel
+-- its own subject can write. Measured — a candidate hand-writes
+-- `fact SortProvidesInfo(...)` and it lands beside the loader's own row,
+-- indistinguishable. So containment is asked FIRST, off marks the candidate
+-- cannot reach, and only then are its reflect rows believed.
 --
---     fact SortProvidesInfo(sort_ref: LiarTriage, spec: LiarTriage)
---
--- and it lands beside the row the loader banked for a real `provides`,
--- structurally alike and equally believable. So the containment question is
--- asked FIRST, off marks the candidate cannot reach, and only a candidate that
--- passes it has its reflect rows believed.
---
--- THIS REPLACES A TEXT SCAN. The gate used to be `src.lines()` in the Rust
--- host function, matching the prefixes `namespace `/`sort `/`enum `. It read
--- lines because that was the only moment provenance existed — the candidate
--- was loaded into the same KB as the library, after which nothing
--- distinguished its declarations from anyone else's. A layer restores the
--- distinction, so the check can be an analysis of what was LOADED.
---
--- WHAT IS DELIBERATELY NOT RE-ASKED, and saying so is the point: THE EFFECT
--- BUDGET IS DISCHARGED BY THE LOAD, NOT BY THIS FILE. The typer's
--- override-refinement pass already bounds the override's declared row by the
--- spec's and the body's inferred row by its own declaration —
--- `rejected/wide_row.anthill` and `wide_row_modify.anthill` are the programs
--- that show it firing. Re-deriving
--- it here from `OperationInfo.effects` would be strictly WEAKER, because that
--- fact is forgeable and the typer's comparison is not. The row therefore
--- appears in the verdict as REPORTED — read from the BASE, before the layer is
--- applied — and never as re-checked.
+-- THE EFFECT BUDGET IS DISCHARGED BY THE LOAD, NOT HERE. The typer already bounds
+-- the override's row by the spec's and the body's by its own declaration
+-- (rejected/wide_row.anthill, wide_row_modify.anthill). Re-deriving it from
+-- `OperationInfo.effects` would be strictly WEAKER — that fact is forgeable and
+-- the typer's comparison is not — so the row appears in the verdict as REPORTED,
+-- read from the BASE, never as re-checked.
 -- ================================================================
 namespace guardians
   import anthill.prelude.{String, List, Bool, Option}
@@ -82,7 +67,7 @@ namespace guardians
   -- itself introduced. One rule, and it refuses all three measured forgeries
   -- with no name list and no spelling to enumerate:
   --
-  --   `fact guardians.Checked(...)`               — the safety fact, about itself
+  --   `fact guardians.TypeChecked(...)`           — the typer's verdict, about itself
   --   `rule guardians.mentions_all(?r) :- ...`    — the concealment guarantee, inverted
   --   `fact anthill.reflect.SortProvidesInfo(..)` — hand-written metadata
   --

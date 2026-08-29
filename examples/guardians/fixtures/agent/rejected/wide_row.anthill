@@ -8,16 +8,16 @@
 -- ================================================================
 sort guardians.agent.WideRowTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Filesystem, Llm, summarize,
-                    fetch_mail, bodies_of, verdicts_of}
+  import guardians.{Triage, Email, Mailbox, Report, Filesystem, Llm, summarize,
+                    verdicts_of}
   entity mk
 
   operation run(self: WideRowTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
     effects {External, Filesystem, Error} =
-      let msgs = fetch_mail(box)
+      let msgs = Email.fetch(box)
       Report(items:   verdicts_of(msgs),
-             summary: summarize(llm, bodies_of(msgs)))
+             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = WideRowTriage]
 end

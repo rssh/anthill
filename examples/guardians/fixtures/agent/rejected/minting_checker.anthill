@@ -10,8 +10,9 @@
 -- and CONSULTED it, and `-Model` refused it. Consulting is now harmless: what
 -- `complete` returns is a sealed `LlmOutput`, unreadable by generated code, so a
 -- checker that calls a model learns nothing from it and cannot be steered by it.
--- Minting is not consulting, and only minting is still refused — by `Llm.open`'s
--- `Permission[Llm]` reaching a row that DENIES it (proposal 064).
+-- Minting is not consulting. `Llm` is the spec and declares no mint; the
+-- carriers do, and `FakeLlm.open`'s `Permission[Llm]` reaches a row that DENIES
+-- it (proposal 064).
 --
 -- The refusal is on the BODY leg — the declared row is the spec's, verbatim — so
 -- it is independent of wide_row.anthill's declared-row leg.

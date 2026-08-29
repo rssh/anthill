@@ -1,10 +1,19 @@
 -- Option: a parametric sort
 enum anthill.prelude.Option
-  import anthill.prelude.{Monad}
+  import anthill.prelude.{Monad, Bool}
 
   sort T = ?                                           -- type parameter (abstract)
   entity none                                        -- absent
   entity some(value: T)                              -- present
+
+  -- Emptiness, as a test rather than a match. `nonEmpty` is not decoration: it
+  -- is what makes `exists` a one-liner over `find` (Stream / Iterable).
+  operation isEmpty(o: Option) -> Bool =
+    match o
+      case none() -> true
+      case some(_) -> false
+
+  operation nonEmpty(o: Option) -> Bool = not(isEmpty(o))
 
   -- Option is a Monad. Op-value bindings (not a bare `fact Monad[Option]`)
   -- because Monad.pure is result-determined — it has no Option argument to

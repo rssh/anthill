@@ -75,4 +75,28 @@ can write, so the consequence to cite is ergonomic, not "the agent cannot expres
 that under C7 before either fix: a message's body genuinely is a projection and the label
 genuinely rides along it, so it earns its place as ordinary API. Its declaration comment
 said the opposite and has been rewritten to say what is measured.
+### 2026-08-29T14:22:18Z — feedback — user
+
+`bodies_of` IS GONE (2026-08-29), so this ticket's "IT REACHES REAL CODE" paragraph
+no longer describes the tree. The example now takes option (b) from WHAT TO DECIDE
+FIRST — the author writes the materializing step:
+
+  summarize(llm, msgs.map(lambda m -> m.body).collect())   LOADS
+
+Measured against good.anthill by substituting only the summarize argument, and the
+guardians suite is 35/35 with every fixture written that way. So `collect` is a
+WORKING workaround at one call shape, which narrows what this ticket buys: not "the
+projection is inexpressible" — it is expressible — but that `xs.map(f).length()` and
+every eager consumer over a lazy carrier still needs a materializing step the author
+must know to write.
+
+WHAT THIS DOES NOT SETTLE. Taking (b) at one call site is not choosing (b) as the
+design. The four `lazy_stream_consumption` cells are unchanged and still KNOWN GAP;
+(a) and (c) remain open, and `MappedStreamFinite` / `FilteredStreamFinite` are still
+where (c) would live.
+
+The declaration this cites is also relocated: the mail vocabulary moved to
+`examples/guardians/lib/email.anthill`, and the record of `bodies_of`'s deletion —
+with the before/after measurement — is the comment between `Email.fetch` and
+`Email.send` there.
 

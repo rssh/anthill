@@ -10,8 +10,8 @@
 -- violated and nothing flows from the mailbox into the message at all — and it
 -- is still refused, because the recipient is outside the organisation.
 --
--- What refuses it is that `send_email` demands `Permission[Outbox]` GUARDED on
--- its recipient (vocabulary.anthill), and `Triage.run`'s spec row grants none.
+-- What refuses it is that `Email.send` demands `Permission[Outbox]` GUARDED on
+-- its recipient (email.anthill), and `Triage.run`'s spec row grants none.
 -- The implementation can neither perform it (an undeclared effect, which is what
 -- fires here) nor declare it (a widening against the spec). So no generated
 -- triage can mail outside, and that is a property of the SPEC rather than of
@@ -21,19 +21,19 @@
 -- ================================================================
 sort guardians.agent.OutboxTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Mailbox, Report, Address, Text, Llm, summarize,
-                    fetch_mail, bodies_of, verdicts_of, send_email}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    verdicts_of}
   import guardians.TrustLevel.{Public}
   entity mk
 
   operation run(self: OutboxTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
     effects {External, Error} =
-      let msgs = fetch_mail(box)
-      let sent = send_email(to:   Address(local: "it", domain: "othercorp.com"),
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "it", domain: "othercorp.com"),
                             body: text(raw: "routine compliance copy"))
       Report(items:   verdicts_of(msgs),
-             summary: summarize(llm, bodies_of(msgs)))
+             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = OutboxTriage]
 end

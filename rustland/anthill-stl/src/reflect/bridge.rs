@@ -644,6 +644,39 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         }
     }
 
+    fn non_empty(&self) -> Result<bool, Error> {
+        Ok(!self.is_empty()?)
+    }
+
+    fn exists(&self, pred: fn(Solution) -> bool) -> Result<bool, Error> {
+        // IMPLEMENTABLE WHERE `find` IS NOT, and the difference is the return type:
+        // `find` must hand back the element it tested, but the predicate takes a
+        // `Solution` by value and `Solution` is not `Clone`. `exists` answers a
+        // `bool`, so consuming each element as it is tested costs nothing.
+        //
+        // Consumes the stream, like `take_n` above; short-circuits on the first hit.
+        let mut current = self.inner.borrow_mut().take();
+        loop {
+            let next = match current.take() {
+                Some(s) => {
+                    let mut kb = self.kb.borrow_mut();
+                    s.split_first(&mut kb)
+                }
+                None => break,
+            };
+            match next {
+                Some((sol, rest)) => {
+                    if pred(self.make_solution(sol)) {
+                        return Ok(true);
+                    }
+                    current = Some(rest);
+                }
+                None => break,
+            }
+        }
+        Ok(false)
+    }
+
     fn find(&self, _pred: fn(Solution) -> bool) -> Result<Option<Solution>, Error> {
         // `find` returns the matching element, but its predicate consumes the
         // element by value and the reflect `Solution` is not `Clone` (it carries

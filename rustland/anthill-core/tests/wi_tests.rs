@@ -1504,3 +1504,6 @@ mod typer_capability_matrix_test;
 
 #[path = "include/wi_9tgp7_branch_expected_flex_var_test.rs"]
 mod wi_9tgp7_branch_expected_flex_var_test;
+
+#[path = "include/prelude_emptiness_and_exists_test.rs"]
+mod prelude_emptiness_and_exists_test;

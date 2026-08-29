@@ -7,43 +7,42 @@
 -- real integration binds one HTTP call, not one function per task.
 -- ================================================================
 
--- A prompt is a VALUE, and it carries a trust label. That is not bookkeeping:
--- the injection IS prompt content, so making the prompt a value makes the
--- attack surface a value.
--- The `Trust` parameter has exactly ONE consumer, and that is what earns it:
--- `Harness.generate` demands `Prompt[Public]`, so code generation may only
--- proceed from a content-free prompt. Without the parameter `Prompt` would be a
--- single type and that demand could not be written at all — the label would sit
--- inside the `body` field where no signature can reach it.
---
--- `complete` does NOT consume it (any prompt, always an Untrusted reply), and
--- the constructor cannot forge it: `prompt(body: t)` takes its label from `t`,
--- so `Prompt[Public]` from untrusted text is a type error (measured).
+-- A prompt is a VALUE carrying a trust label — the injection IS prompt content,
+-- so making the prompt a value makes the attack surface a value. The `Trust`
+-- parameter has exactly one consumer, and that earns it: `Harness.generate`
+-- demands `Prompt[Public]`, so generation may proceed only from a content-free
+-- prompt. The constructor cannot forge it — `prompt(body: t)` takes its label
+-- from `t` (measured).
 enum guardians.Prompt
   import guardians.{Text}
   sort Trust = ?
   entity prompt(body: Text[Trust])
 end
 
--- WHAT A MODEL RETURNED, and the ONLY thing that proves one was consulted.
---
--- SEALED, on `Approval`'s pattern: the constructor is `internal`, so generated
--- code can neither BUILD one (no forging "this came from a model") nor PROJECT
--- one (no reading what the model said). The mint is the host binding behind
--- `complete`, which is trusted by construction.
---
--- THIS IS WHAT RETIRES THE `Model` EFFECT LABEL. `-Model` existed to say "this
--- code was not steered by a model", and it had to be a row label because a
--- TRUST LABEL ON THE VALUE IS STRIPPABLE — `text(raw: u.raw)` re-labels any
--- `Text[Untrusted]` as `Text[Public]` in one line, and the typer says nothing
--- (measured; `rejected/launder_projection.anthill`). An opaque wrapper is not:
--- there is no projection to strip it with. A checker that calls a model gets a
--- token it cannot read, learns nothing from it, and so cannot be steered by it
--- — which is the property `-Model` was approximating by forbidding the call
--- outright.
+-- The authority to READ a model's answer — a different power from
+-- `Permission[Llm]`, the authority to obtain one. A generated row grants neither.
+sort guardians.Reveal
+end
+
+-- WHAT A MODEL RETURNED, and what retired the `Model` effect label: a trust label
+-- on a value is strippable (WI-20260829-MCKTE), an opaque wrapper is not. Not
+-- parameterized — a model's answer is always `Text[Untrusted]`, so there is no
+-- relationship for a variable to hold.
 sort guardians.LlmOutput
-  sort T = ?
-  internal entity llm_output(value: T)
+  import anthill.prelude.{Permission}
+  import guardians.{Text, Reveal}
+  import guardians.TrustLevel.{Untrusted}
+
+  internal entity llm_output(value: Text[Untrusted])
+
+  -- GATED ON THE ROW, NOT ON VISIBILITY, and the difference is measured:
+  -- `internal` hides the constructor and its projection but NOT a sibling
+  -- operation, so a public `text_of` loaded clean for a checker reading
+  -- `text_of(llm.complete(p))`. `Permission[Reveal]` is what refuses it
+  -- (rejected/steering_checker.anthill). Reading is not declassifying — the
+  -- result is `Text[Untrusted]`, which the sink still refuses.
+  operation text_of(o: LlmOutput) -> Text[Untrusted]
+    effects {Permission[Reveal]} = o.value
 end
 
 sort guardians.Llm
@@ -55,46 +54,17 @@ sort guardians.Llm
 
   -- ANY prompt in; the reply is ALWAYS `Untrusted`. Never `?t` out.
   --
-  -- This signature was `?t` in, `?t` out for one revision, and it was WRONG in
-  -- a way that had a working exploit. `Public` means "cleared to leave the
-  -- system", so a Public prompt yielding Public text let a model MINT
-  -- releasable output, and this loaded clean:
+  -- This was `?t` in, `?t` out for one revision, and the exploit is kept as
+  -- rejected/minting.anthill: a Public prompt yielding Public text let a model
+  -- MINT releasable output and mail it. A model is not a pure transformation —
+  -- its output is text it chose, so the model itself joins into the label.
   --
-  --     send_email(to: attacker,
-  --                body: llm.complete(prompt_with(instruction: "…", content: "")))
-  --
-  -- The mistake was conflating two things the label was carrying. Preserving a
-  -- label is right for a PURE transformation — whatever went in comes out. A
-  -- model is not one: its output is arbitrary text it chose, so the model
-  -- itself is an untrusted influence and belongs in the join.
-  -- `?t ⊔ Model = Untrusted` for every `?t`, which is why the output is fixed.
-  --
-  -- THE PARAMETER IS BARE, not `Prompt[?t]`, and this is worth a paragraph
-  -- because it is a general rule this file learned twice, both times the hard
-  -- way.
-  --
-  --   A TYPE VARIABLE THAT OCCURS ONCE IS A WILDCARD. Spelling it as a
-  --   variable claims a relationship that is not there.
-  --
-  -- `?t` here appeared in the parameter and never in the result, so it
-  -- constrained nothing — measured: `Prompt[?t]` and a bare `Prompt` accept a
-  -- Public and an Untrusted prompt alike, indistinguishably. What it DID do
-  -- was read like `f(x: T[?t]) -> T[?t]`, the shape that means "preserves the
-  -- label", to which this operation deliberately does not belong. A reviewer
-  -- scanning for label-preserving signatures would have counted this one.
-  --
-  -- That misreading is not hypothetical. `complete` WAS typed `?t` in, `?t`
-  -- out for a revision, and it let a model mint releasable text out of an
-  -- empty prompt and mail it away (the exploit is kept as a regression:
-  -- fixtures/agent/rejected/minting.anthill). Both defects found in this file
-  -- have the same shape — a signature asserting a relationship it does not
-  -- perform — so the cheapest defence is to write no variable where no
-  -- relationship exists.
-  --
-  -- Worth a diagnostic eventually: a once-occurring type variable in a
-  -- signature is almost always either a mistake or noise, and the typer knows.
-  -- Not filed; recorded here.
-  operation complete(self: C, p: Prompt) -> LlmOutput[Text[Untrusted]]
+  -- THE PARAMETER IS BARE for the same reason, and it is the rule this file
+  -- learned twice: WRITE NO VARIABLE WHERE NO RELATIONSHIP EXISTS. A `?t`
+  -- occurring once constrains nothing (measured — bare and `Prompt[?t]` accept
+  -- the same arguments) but reads as `T[?t] -> T[?t]`, the shape that means
+  -- "preserves the label", which this operation deliberately is not.
+  operation complete(self: C, p: Prompt) -> LlmOutput
     effects {External, Error}
 end
 
@@ -110,25 +80,24 @@ end
 --
 -- WITHOUT `internal` THE EFFECT IS ADVISORY, and that is not a slogan here: it
 -- is what these two lines used to be. Before 064 a generated checker could write
--- `fake_llm(fixture: "x")` and hold a model, and the ONLY thing that then caught
--- it was `complete`'s `Model` label at the moment of USE. Now it is caught twice,
--- at two different moments, and `rejected/forged_llm.anthill` measures the first.
+-- `fake_llm(fixture: "x")` and hold a model, and construction carried no effect
+-- at all, so nothing caught it at the moment of ACQUISITION. `internal` is what
+-- makes the mint the only door, and `rejected/forged_llm.anthill` measures it.
 --
--- WHY `complete` STILL CARRIES `Model`, when 064 says the label goes on the mint
--- and nowhere else. That rule is about `Permission`, and it holds: `complete`
--- carries no `Permission`, because the check already happened and the `Llm` in
--- its signature is the evidence. `Model` is a DIFFERENT label answering a
--- DIFFERENT question — *did this code consult a model*, not *did it acquire the
--- authority to* — and this example needs both, because a checker can fail either
--- way independently:
+-- `complete` CARRIES NO `Permission`, which is 064 holding: the label goes on
+-- the mint and nowhere else. The check already happened, and the `Llm` in this
+-- signature is the evidence of it.
+--
+-- IT USED TO CARRY A SECOND LABEL, `Model`, answering a DIFFERENT question —
+-- *did this code consult a model*, not *did it acquire the authority to*. That
+-- question stopped mattering when `complete` started returning a sealed
+-- `LlmOutput`: a component that calls a model learns nothing from the call, so
+-- of the three ways a checker can reach one, only two are still failures:
 --
 --   holds an Llm it was handed, calls it   HARMLESS — the reply is `LlmOutput`,
 --                                          which it can neither project nor match
---   holds none, mints one                  caught by `-Permission[Llm]`(minting_checker)
---   holds none, forges one                 caught by `internal`          (forged_llm)
---
--- Neither label sees the other's program. vocabulary.anthill states the split at
--- the sort; this is where it bites.
+--   holds none, mints one                  caught by `-Permission[Llm]` (minting_checker)
+--   holds none, forges one                 caught by `internal`         (forged_llm)
 -- ================================================================
 sort guardians.LiveLlm
   import anthill.prelude.{String, Error, External, Permission}
@@ -142,16 +111,18 @@ sort guardians.LiveLlm
   operation open(endpoint: String, model: String) -> LiveLlm
     effects {Permission[Llm]} = live_llm(endpoint: endpoint, model: model)
 
-  -- A STRONGER DEMAND for the same object. Acquiring a frontier model is
-  -- acquiring a model (`FrontierModel <: Model`), so `-Permission[Llm]`
-  -- forbids this one too — the downward closure that stops a denial being
-  -- evaded by naming a narrower capability. Measured:
-  -- rejected/frontier_checker.anthill.
+  -- A NARROWER CAPABILITY FOR THE SAME OBJECT, which is what makes it a probe
+  -- rather than a gate: `open` above mints the identical `LiveLlm` under the
+  -- weaker `Permission[Llm]`, so this demands more and protects nothing. What it
+  -- measures is the DOWNWARD CLOSURE — `LiveLlm provides Llm`, so `-Permission[Llm]`
+  -- forbids this one too and a denial cannot be evaded by naming a narrower
+  -- capability (rejected/frontier_checker.anthill). Note the closure runs one way
+  -- only: `-Permission[LiveLlm]` would NOT forbid `open`.
   operation open_frontier(endpoint: String) -> LiveLlm
     effects {Permission[LiveLlm]} =
       live_llm(endpoint: endpoint, model: "frontier")
 
-  operation complete(self: LiveLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
+  operation complete(self: LiveLlm, p: Prompt) -> LlmOutput
     effects {External, Error}
   provides Llm
 end
@@ -170,7 +141,7 @@ sort guardians.FakeLlm
   operation open(fixture: String) -> FakeLlm
     effects {Permission[Llm]} = fake_llm(fixture: fixture)
 
-  operation complete(self: FakeLlm, p: Prompt) -> LlmOutput[Text[Untrusted]]
+  operation complete(self: FakeLlm, p: Prompt) -> LlmOutput
     effects {External, Error}
   provides Llm
 end
@@ -180,16 +151,10 @@ namespace guardians
   import guardians.{Text, Prompt, LiveLlm, FakeLlm}
   import guardians.TrustLevel.{Public}
 
-  -- THE LATTICE JOIN, and the one place a label is DECIDED.
-  --
-  -- A trusted instruction plus untrusted content makes an untrusted prompt.
-  -- For this two-point lattice the arithmetic is exact: `Public` is bottom, so
-  -- `Public ⊔ ?t = ?t` and the variable carries the answer with no ordering
-  -- machinery. An n-point lattice would need the general join, which the
-  -- label slot cannot express while it stays invariant — though variance IS
-  -- declarable (`fact Covariant(sort: Text, param: Trust)` over a provides-chain
-  -- of levels), which would give the ordering directly. Measured, and the
-  -- correction to an earlier claim: docs/design/measured.md C4.
+  -- THE LATTICE JOIN, and the one place a label is DECIDED. `Public` is bottom,
+  -- so `Public ⊔ ?t = ?t` and the variable carries the answer with no ordering
+  -- machinery. An n-point lattice would need the general join; variance IS
+  -- declarable and would give it (measured: docs/design/measured.md C4).
   operation prompt_with(instruction : Text[Public],
                         content     : Text[?t]) -> Prompt[?t]
 

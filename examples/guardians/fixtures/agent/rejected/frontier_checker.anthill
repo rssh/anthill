@@ -5,12 +5,12 @@
 -- The row denies `Permission[Llm]`, so this one asks for something whose NAME is
 -- different: `Permission[LiveLlm]`.
 --
--- IT IS REFUSED EITHER WAY, and saying so is the point. `FrontierModel` is not in
--- the checker's row, so B3's body leg refuses it as an UNDECLARED effect with or
--- without any relation between the two capabilities. What the downward closure
--- decides is WHICH failure the author is told about: `FrontierModel <: Model`
--- (vocabulary.anthill), so acquiring a frontier model IS acquiring a model, and
--- the message names a VIOLATED DENIAL rather than a missing declaration — two
+-- IT IS REFUSED EITHER WAY, and saying so is the point. `Permission[LiveLlm]` is
+-- not in the checker's row, so B3's body leg refuses it as an UNDECLARED effect
+-- with or without any relation between the two capabilities. What the downward
+-- closure decides is WHICH failure the author is told about: `LiveLlm provides
+-- Llm` (lib/llm.anthill), so acquiring a live model IS acquiring a model, and the
+-- message names a VIOLATED DENIAL rather than a missing declaration — two
 -- failures whose repairs differ, since one is fixed by adding the label and the
 -- other cannot be.
 --
@@ -19,9 +19,12 @@
 -- one cannot isolate it. See `wi_cbrsw_permission_effect_test::
 -- permission_denial_is_not_evaded_by_a_sub_capability`.
 --
--- CONTROL: deleting `provides Model` from `FrontierModel` reds this fixture's
--- test alone (the message degrades to `undeclared effect`), and nothing else in
--- the example moves.
+-- THIS FIXTURE HAS NO CONTROL OF ITS OWN ANY MORE, and leaving the old one
+-- standing would be worse than saying so. While the sub-capability was an empty
+-- marker sort, deleting `FrontierModel provides Model` reddened this test alone
+-- and nothing else in the example moved. `LiveLlm` is the PRODUCTION carrier of
+-- `Llm`, so deleting its `provides` now takes the example down wholesale and
+-- measures nothing — the closure's control is the kernel test cited above.
 -- ================================================================
 sort guardians.agent.FrontierChecker
   import anthill.prelude.{String, List, Error, External, Permission}

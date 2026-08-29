@@ -1,0 +1,89 @@
+-- ================================================================
+-- guardians.email — the email service, and every email-shaped declaration.
+--
+-- Mail is one service with one source and one sink, and the interesting property
+-- is a relationship BETWEEN them: the article's policy forbids a flow from the
+-- source's result to the sink's `body` when the target is outside the
+-- organisation. Split across a data section and a tools section of a general
+-- vocabulary, that relationship was readable only by grepping.
+--
+-- `Email` is a plain sort, not a spec with carriers like `Llm`: nothing is handed
+-- out and nothing is minted, and what confines these two operations is the ROW.
+-- ================================================================
+
+-- Subject and body from one message are equally trusted.
+enum guardians.Message
+  import guardians.{Text, Address, MessageId}
+  sort Trust = ?
+  entity message(
+    id       : MessageId,
+    from     : Address,
+    reply_to : Address,
+    subject  : Text[Trust],
+    body     : Text[Trust])
+end
+
+-- The authority to mail OUTSIDE the organisation. A capability, not an effect
+-- kind — it is only ever the argument of `Permission[…]`. What makes it worth
+-- having is that the permission is CONDITIONAL (proposal 048's guarded effects on
+-- 064's label): the article's policy names an external target, and a target is a
+-- property of one argument at one call, which is exactly what a guard reads.
+sort guardians.Outbox
+end
+
+namespace guardians
+  import anthill.prelude.{String}
+
+  entity MessageId(value: String)
+  entity Address(local: String, domain: String)
+  entity Mailbox(owner: Address)
+
+  -- WHICH ADDRESSES ARE OURS — declared here, asserted nowhere in `lib/`: the
+  -- relation is the library's, the rows a deployment's (fixtures/mailbox.anthill).
+  -- A bodyless `rule` is proposal 061's DECLARATION, so with no deployment loaded
+  -- every address is external — the safe default.
+  rule in_org(?a)
+  rule external_addr(?a) :- not(in_org(?a))
+end
+
+sort guardians.Email
+  import anthill.prelude.{List, Unit, Error, External, Permission}
+  import guardians.{Text, Message, MessageId, Address, Mailbox, Outbox,
+                    external_addr}
+  import guardians.TrustLevel.{Untrusted, Public}
+
+  -- The source. The label is fixed by the SIGNATURE, the only place it can enter
+  -- (measured: C6).
+  operation fetch(box: Mailbox) -> List[Message[Untrusted]]
+    effects {External, Error}
+
+  -- NO `bodies_of` HERE, and its absence is the test for what belongs. It stood
+  -- here because an agent could not write the projection; it can now —
+  -- `msgs.map(lambda m -> m.body).collect()`, measured, the `collect` because
+  -- `map` answers with a lazy `MappedStream` (WI-20260829-N01PY). Nothing belongs
+  -- in the trusted vocabulary that an agent can spell for itself.
+
+  -- THE SINK, GATED ON ITS TARGET. `Permission[Outbox]` is demanded only when the
+  -- recipient is outside the organisation: the argument is substituted into the
+  -- guard, and the label drops when the guard's negation is constructively proved
+  -- (§5.5).
+  --
+  --   Email.send(to: Address(local: "boss",  domain: "ourcorp.com"),   …)  nothing
+  --   Email.send(to: Address(local: "it", domain: "othercorp.com"), …)  Permission[Outbox]
+  --   Email.send(to: <anything not written inline>, …)                  Permission[Outbox]
+  --
+  -- NARROWER THAN "PROVABLY INTERNAL": the guard is refuted only where `in_org(to)`
+  -- is provable from the argument TERM at the call, so the address must be INLINE.
+  -- The identical literal let-bound one line earlier is refused
+  -- (rejected/letbound_recipient.anthill) — a typer limit, WI-20260829-4S404, and
+  -- the external literal and the computed address stay refused either way.
+  --
+  -- THE CONSEQUENCE: `Triage.run`'s spec row grants no `Permission[Outbox]`, so no
+  -- generated triage can mail outside the organisation — a property of the SPEC.
+  --
+  -- INDEPENDENT OF THE LABEL, which the article's policy names in the same
+  -- sentence. Two fixtures, neither catching the other's program: leak.anthill
+  -- violates the FLOW, outbox.anthill the TARGET.
+  operation send(to: Address, body: Text[Public]) -> Unit
+    effects {External, Error, (Permission[Outbox] :- external_addr(to))}
+end

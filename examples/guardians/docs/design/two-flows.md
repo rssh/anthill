@@ -5,6 +5,16 @@
 Every measured claim below is recorded as a scenario-by-scenario flow in
 [`measured.md`](measured.md).
 
+**Spelling, 2026-08-29:** two renames since this was written, neither of which
+touches an argument here. Where it writes `Permission[Model]` /
+`Permission[FrontierModel]`, the shipped example writes `Permission[Llm]` /
+`Permission[LiveLlm]` — the empty marker sorts were collapsed into the sorts one
+actually acquires, and `LiveLlm provides Llm` now carries the sub-capability edge.
+And where it writes the free operations `fetch_mail` / `send_email`, the example
+writes `Email.fetch` / `Email.send`: the mail declarations moved into one
+`lib/email.anthill` and one `sort guardians.Email`, so the article's source and
+its sink sit adjacent. Same signatures, same rows, same guard.
+
 ## 0. First, "plan" is three different things
 
 The word has been doing three jobs, which is most of why the pipeline reads as

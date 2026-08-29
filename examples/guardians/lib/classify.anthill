@@ -27,7 +27,7 @@ namespace guardians
 
   -- ---- the two inputs a deployment supplies ----
 
-  -- What the mailbox holds. In a deployment this is what `fetch_mail` returned.
+  -- What the mailbox holds. In a deployment this is what `Email.fetch` returned.
   entity InMailbox(box: Mailbox, message: Message[Untrusted])
 
   -- The owner's address book.

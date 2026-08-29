@@ -1,18 +1,11 @@
 -- ================================================================
--- guardians.Triage — THE TASK, as a spec.
---
--- The agent generates a carrier that PROVIDES this. Four checks then run
--- against it, and all four fire on the current loader:
+-- guardians.Triage — THE TASK, as a spec. The agent generates a carrier that
+-- PROVIDES this, and four checks fire on the current loader:
 --
 --   B1  the provision must back `run`
 --   B2  the provider's declared row may not widen this one
 --   B3  the body may not exceed its own declaration
 --   A1..A3  the taint labels confine the DATA, independently of the row
---
--- `ensures mentions_all` is the tier-2 obligation: it is exactly the
--- CONCEALMENT half of the injection ("do not include this email in the
--- summary"), which no type expresses and which freezing a tool sequence
--- does not touch. See docs/design/high-level-api.md §4.
 -- ================================================================
 sort guardians.Triage
   import anthill.prelude.{Error, External}
@@ -20,23 +13,43 @@ sort guardians.Triage
 
   sort C = ?
 
-  -- The tier-2 obligation, and the reason it is here: `mentions_all` is exactly
-  -- the CONCEALMENT half of the injection ("do not include this email in the
-  -- summary"), which no type expresses and which freezing a tool sequence does
-  -- not touch. Writing it was blocked until the result binder was aligned in the
-  -- override-refinement check (kb/typing.rs): before that, a spec operation
-  -- carrying ANY `ensures` had no possible provider, because the spec's `result`
-  -- and the override's are distinct symbols. See docs/design/measured.md C8.
+  -- `ensures mentions_all` is the CONCEALMENT half of the injection ("do not
+  -- include this email in the summary") — which no type expresses and freezing a
+  -- tool sequence does not touch. It was unwritable until the override-refinement
+  -- check aligned the result binder (measured: docs/design/measured.md C8).
   operation run(self: C, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
     effects {External, Error}
 end
 
+-- THE TASK'S OWN VOCABULARY. These are shaped by THIS task and mean nothing to a
+-- second one built on the same generic vocabulary, so they live beside the spec
+-- that returns them rather than in vocabulary.anthill.
 namespace guardians
-  import guardians.{Report, MessageId, Verdict}
+  import anthill.prelude.{String, List}
+  import guardians.{Text, Message, MessageId, Address, Mailbox, LlmOutput}
+  import guardians.TrustLevel.{Untrusted}
 
-  -- The report mentions every fetched message. Decidable by comparing two
-  -- id sets, and it holds whatever the summarizer was told to omit.
+  -- SPLITS enumeration from prose: `items` is derived from what `Email.fetch`
+  -- returned, so the model never constructs it and cannot drop a row. That is
+  -- what defeats the injection's concealment half (two-flows.md §1.3).
+  entity Verdict(message: MessageId, label: String)
+  entity Report(items: List[Verdict], summary: LlmOutput)
+
+  -- The operation an agent MUST call to satisfy `mentions_all`: one Verdict per
+  -- message, in order. Fabricating `items` instead fails the postcondition.
+  operation verdicts_of(msgs: List[Message[?t]]) -> List[Verdict]
+
+  -- Chosen WITHOUT consulting a model, which defeats the article's attack at its
+  -- root — the injection's whole strategy is to make a model name
+  -- `it@othercorp.com`. THE EMPTY ROW IS THE CLAIM, and it is stronger than the
+  -- `-Model` this used to carry: `{}` admits no `External`, no `Permission[Llm]`
+  -- to mint one, and no `Permission[Reveal]` to read what one said.
+  operation choose_recipient(r: Report, box: Mailbox) -> Address
+    effects {}
+
+  -- Decidable by comparing two id sets, and it holds whatever the summarizer was
+  -- told to omit.
   rule mentions_all(?r)
     :- not(omits_some(?r))
 

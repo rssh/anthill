@@ -1,41 +1,29 @@
 -- ================================================================
 -- guardians.harness — THE GENERATION LOOP, as declarations.
 --
--- The harness is the only component that touches both the KB-as-data and the
--- model. It renders the task from the trusted declarations, completes it,
--- takes the reply as a candidate program, and checks it. The effect rows say
--- which half is trusted:
+-- The only component touching both the KB-as-data and the model: it renders the
+-- task from the trusted declarations, completes it, and checks the reply. The
+-- effect rows say which half is trusted:
 --
---   render_task  {Error}                       reads declarations; no model
---   LiveLlm.open {Permission[Llm]}           the ACQUISITION — see llm.anthill
---                                              (on the CARRIERS; `Llm` the spec
---                                               declares no mint, and nothing
---                                               forces a carrier to have one)
---   Llm.complete {External, Error}             the untrusted step
+--   render_task  {Error}                        reads declarations; no model
+--   LiveLlm.open {Permission[Llm]}              the ACQUISITION (on the CARRIERS —
+--                                               `Llm` the spec declares no mint)
+--   Llm.complete {External, Error}              the untrusted step
 --   check        {External, Error,
---                 -Permission[Llm]}          provably not steerable
+--                 -Permission[Llm]}             provably not steerable
 --
--- The checker's row is the answer to "who guards the guard". A verifier that
--- could itself be steered by a model is as manipulable as the thing it verifies.
---
--- ONE DENIAL, WHERE THERE USED TO BE TWO. There are two ways to reach a model —
--- being handed one, and acquiring one — and the row used to deny both, with
--- `-Model` for the first. It no longer needs to: `LlmOutput` (llm.anthill) makes
--- what a model RETURNS unreadable, so a checker handed an `Llm` obtains a token
--- it cannot project or match, learns nothing from the call, and cannot be steered
--- by it. Being steered requires reading the answer, and the type now forbids that
--- — so only ACQUISITION is still worth denying, which is `-Permission[Llm]`
--- (proposal 064) and `rejected/minting_checker.anthill`.
+-- The checker's row answers "who guards the guard": a verifier that could itself
+-- be steered is as manipulable as the thing it verifies. ONE DENIAL, WHERE THERE
+-- USED TO BE TWO — being handed a model is now harmless, since reading its answer
+-- needs `Permission[Reveal]` (llm.anthill), so only ACQUISITION is worth denying
+-- (rejected/minting_checker.anthill, rejected/steering_checker.anthill).
 -- ================================================================
 
--- A candidate program. Opaque and unverified: the ONLY thing that can be done
--- with a `Source` is submit it to a `Checker`.
---
--- NOTE WHAT IT IS NOT: `Source` carries no trust LABEL, and that is deliberate.
--- Taint asks "did attacker-controlled data influence this value?" — and for a
--- program generated from a Public prompt the answer is NO. Unverified-ness is a
--- different axis, and it rides on the type being opaque rather than on a label.
--- Labelling generated code `Untrusted` would assert something false.
+-- A candidate program: opaque and unverified, and the only thing to do with one
+-- is submit it to a `Checker`. It carries NO trust label, deliberately — taint
+-- asks whether attacker data influenced a value, and for a program generated from
+-- a Public prompt the answer is no. Unverified-ness is a different axis, carried
+-- by the type being opaque.
 sort guardians.Source
   import anthill.prelude.{String}
   entity source(text: String)
@@ -65,8 +53,8 @@ end
 sort guardians.Harness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Prompt, Source, Text, Llm}
-  import guardians.TrustLevel.{Public, Untrusted}
+  import guardians.{Prompt, Source, Llm}
+  import guardians.TrustLevel.{Public}
 
   sort C = ?
 
@@ -110,13 +98,11 @@ sort guardians.Checker
 
   sort C = ?
 
-  -- Loads the candidate ALONGSIDE the trusted declarations and runs every
-  -- check: namespace isolation, types (taint), row conformance against the
-  -- spec (capability), and the contract legs. `External` because it touches
-  -- the loader and the filesystem; the two denials because the guard must not be
-  -- steerable — it neither consults a model nor acquires the authority to, and
-  -- the second half is downward-closed, so naming a narrower capability does not
-  -- evade it (see the file header, and vocabulary.anthill).
+  -- Loads the candidate ALONGSIDE the trusted declarations and runs every check:
+  -- namespace isolation, taint, row conformance, contract legs. `External`
+  -- because it touches the loader and the filesystem; the denial because the
+  -- guard must not acquire a model — and it is downward-closed, so naming a
+  -- narrower capability does not evade it.
   operation check(self: C, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Permission[Llm]}
 end
@@ -126,14 +112,11 @@ namespace guardians
   import anthill.reflect.{Symbol}
   import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult}
 
-  -- ONE ROUND of the loop: render, complete, check. The repair loop is the
-  -- caller's — `Rejected`'s diagnostics are exactly what `render_task` takes
-  -- as `feedback` on the next round, which is why the signature carries it.
-  --
-  -- IT TAKES THE `Llm` AND ACQUIRES NOTHING, which is the shape proposal 064 is
-  -- about: the check happened before this call, and the `Llm` in the signature is
-  -- the evidence. So this row carries `Model` (it consults one, through
-  -- `generate`) and no `Permission` at all.
+  -- ONE ROUND: render, complete, check. The repair loop is the caller's —
+  -- `Rejected`'s diagnostics are what `render_task` takes as `feedback` next
+  -- round. It TAKES the `Llm` and acquires nothing, which is 064's shape: the
+  -- check happened earlier and the `Llm` in the signature is the evidence, so
+  -- this row carries no `Permission` at all.
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: Symbol, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
@@ -165,8 +148,8 @@ end
 sort guardians.FileHarness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Harness, Prompt, Source, Text, Llm}
-  import guardians.TrustLevel.{Public, Untrusted}
+  import guardians.{Harness, Prompt, Source, Llm}
+  import guardians.TrustLevel.{Public}
   entity file_harness
   operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
                         feedback: List[T = String]) -> Prompt[Public]

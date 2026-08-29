@@ -10,6 +10,16 @@ fires. **C1**, after WI-20260822-1MAGR (2026-08-23): `p3_spec_wrong_sig` and
 reuse — still loads clean. Every other verdict below is the 2026-08-22 reading
 against `3b980e5c` and was not re-run.
 
+**Spellings that changed after the runs, and nothing else did.** The marker sorts
+`Model` / `FrontierModel` were collapsed into the sorts one acquires, so a row
+reading `Permission[Model]` is `Permission[Llm]` today and `Permission[FrontierModel]`
+is `Permission[LiveLlm]`; the free operations `fetch_mail` / `send_email` became
+`Email.fetch` / `Email.send` when the mail declarations moved into
+`lib/email.anthill`; and `bodies_of` is gone, an agent writing
+`msgs.map(lambda m -> m.body).collect()` for itself. Signatures, rows and guards
+are unchanged, so every verdict below still reads as recorded. Where a CONTROL
+stopped being available, the entry says so — see D2.
+
 Each entry is written the same way: **the scenario** (what an attacker or a bad
 generation is trying to do), **the flow**, **what fires**, **the control**, and
 **what it would mean if it did not fire**. A run without its control measures
@@ -305,8 +315,11 @@ carried no effect at all.
 > never in question; only varying the REQUIREMENT can, and nothing here did.
 >
 > The `minting_checker` row is untouched and still fires: acquisition remains the
-> one thing worth denying, so `-Permission[Model]` and this group's positive
-> control both stand exactly as recorded.
+> one thing worth denying, so the denial and this group's positive control both
+> stand exactly as recorded. It is SPELLED differently now — the marker sort
+> `Model` is gone, a capability being the sort you actually acquire — so the row
+> reads `-Permission[Llm]` and the diagnostic `denied effect: Permission[T = Llm]`.
+> What the measurement established is unchanged; only the argument's name is.
 
 ## D2 · A sub-capability is named as a violated denial, not as an omission
 
@@ -341,6 +354,22 @@ the wrong failure — and on an OPEN row, where a lacks-constraint is the only t
 standing between a program and a capability, it would not refuse it at all. That
 case is measured in the kernel, not here:
 `wi_cbrsw_permission_effect_test::permission_denial_is_not_evaded_by_a_sub_capability`.
+
+> **SUPERSEDED IN ITS SPELLING AND IN ITS CONTROL, 2026-08-29.** The marker sorts
+> `Model` and `FrontierModel` are gone — a capability is the SORT YOU ACQUIRE — so
+> the row denies `Permission[Llm]` and `open_frontier` demands
+> `Permission[LiveLlm]`. The sub-capability edge is no longer an empty marker's
+> `provides` but the production one, `LiveLlm provides Llm` (lib/llm.anthill), and
+> the fires-line reads `got denied effect: Permission[T = LiveLlm]`. The MECHANISM
+> paragraph above is untouched: entailment still runs covariantly in the
+> capability, opposite to the declared contravariance.
+>
+> **The control recorded above no longer exists, and that is the real cost of the
+> collapse.** Deleting `provides Model` from a constructor-less marker reddened
+> this row alone; deleting `provides Llm` from `LiveLlm` takes the whole example
+> down, because `LiveLlm` is the production carrier every accepted fixture runs
+> through. Nothing at fixture level isolates the closure any more — what does is
+> the kernel test already cited under "If it did not fire".
 
 ## D3 · Containment is what stops the effect being advisory
 
@@ -438,7 +467,7 @@ Everything else needs an authority `Triage.run` never grants. A genuinely dynami
 recipient belongs to the trusted harness, which can hold `Permission[Outbox]`
 where a generated agent cannot.
 
-**WHOSE FACT `in_org` IS.** `lib/vocabulary.anthill` DECLARES it (proposal 061)
+**WHOSE FACT `in_org` IS.** `lib/email.anthill` DECLARES it (proposal 061)
 and asserts no row; `fixtures/mailbox.anthill` supplies it, like the inbox and the
 address book — `safety.anthill`'s principle, that the relation is the library's
 and the rows are a deployment's. The default is CLOSED: with no deployment
@@ -483,27 +512,28 @@ good): `loaded: 2895 facts, 218 rules`.
 
 ## E1 · The safety fact, forged about itself
 
-**Scenario.** `guardians.Checked` is tier 1 of `lib/safety.anthill` — the
+**Scenario.** `guardians.TypeChecked` is `lib/safety.anthill` — the
 relation a safety claim cites, whose rows a real typer verdict would supply. A
 candidate declares a carrier under `guardians.agent.` and then reopens the
 trusted namespace to assert one about itself:
 
 ```anthill
     namespace guardians
-      fact Checked(carrier: "guardians.agent.ForgeTriage", spec: "guardians.Triage")
+      fact TypeChecked(carrier: "guardians.agent.ForgeTriage", spec: "guardians.Triage")
     end
 ```
 
 **Measured, before.** Loads at `2896 facts, 218 rules`, and
-`query --mode functor 'guardians.Checked'` goes from `0 result(s)` to the forged
+`query --mode functor 'guardians.TypeChecked'` goes from `0 result(s)` to the forged
 row. Type checking has nothing to say: the fact is well-formed.
 
 **Measured, now.** Refused —
-`the candidate asserts a fact at 'guardians.Checked', a name it did not declare`.
+`the candidate asserts a fact at 'guardians.TypeChecked', a name it did not declare`.
 The clause heads at a symbol the layer did not mint.
 
-**It is the LEAST severe of the three.** `agent_is_safe` also needs
-`ToolAlgebraSound`, which has no rows on purpose, so the forged claim was
+**It is the LEAST severe of the three.** At the time, `agent_is_safe` also needed
+`ToolAlgebraSound` — since deleted, both of them: no rows, no uses, no definition
+of what "sound" meant. So the forged claim was
 underivable regardless. E2 is the one that was live.
 
 ## E2 · The concealment guarantee, inverted — and proposal 061 does not see it

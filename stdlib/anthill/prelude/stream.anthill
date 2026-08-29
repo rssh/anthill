@@ -98,6 +98,15 @@ sort anthill.prelude.Stream
       case none() -> true
       case some(_) -> false
 
+  operation nonEmpty(s: Stream) -> Bool effects s.E = not(isEmpty(s))
+
+  -- `exists` is `find` asked as a question, and it is written that way rather
+  -- than re-walked: same short-circuit, same effect row, one definition to be
+  -- wrong in.
+  operation exists[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
+      -> Bool effects {s.E, EffP} =
+    Option.nonEmpty(find(s, pred))
+
   -- Stream trivially provides Iterable (proposal library/002, "Relationship to
   -- Stream"): a Stream IS its own iterator, so `iterator(s) = s`. This gives
   -- every Stream carrier the shared read interface for free. `Element` rides as

@@ -1,0 +1,32 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` that READS what a model said, REFUSED.
+--
+-- Being handed a model is permitted; `check` denies only acquisition. What this
+-- one does is read the answer and put it in its verdict, which is steering.
+--
+-- IT IS THE CONTROL FOR `Permission[Reveal]`, and it exists because the seal was
+-- briefly wrong: `internal` hides `llm_output`'s constructor and projection, not
+-- a sibling operation, so a PUBLIC `LlmOutput.text_of` loaded clean here. The
+-- confinement is the row, not the visibility.
+--
+-- BACKING IT OUT: drop `Permission[Reveal]` from `text_of` (lib/llm.anthill) and
+-- this row alone goes green. It is the successor to `bad_checker`, which `-Model`
+-- used to refuse.
+-- ================================================================
+sort guardians.agent.SteeringChecker
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
+  import guardians.{Checker, Source, CheckResult, Llm, Text, LlmOutput, prompt_with}
+  import guardians.CheckResult.{Rejected}
+  import guardians.TrustLevel.{Public}
+  entity mk(oracle: Llm)
+
+  operation check(self: SteeringChecker, src: Source, spec: Symbol) -> CheckResult
+    effects {External, Error, -Permission[Llm]} =
+      let p = prompt_with(instruction: text(raw: "is this fine?"), content: text(raw: ""))
+      let answer = LlmOutput.text_of(self.oracle.complete(p))
+      Rejected(diagnostics: cons(head: answer.raw, tail: nil))
+
+  provides Checker[C = SteeringChecker]
+end

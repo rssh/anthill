@@ -121,7 +121,7 @@ it reports `HasVar` for every `Term::Var` and a skolem is *represented* as a rig
 Only the third reading would have made a groundness gate behave, and it is the one most likely
 to be corrected. Were it corrected, a groundness gate would call the body's goal ready, resolve
 `is_entity_of(sk, TrustLevel)`, get no solutions, and refuse **every** label-polymorphic
-operation body — `bodies_of`, `verdicts_of`, and every signature like them.
+operation body — `verdicts_of`, `join_texts`, and every signature like them.
 
 So the criterion is CONCRETENESS. A skolem is ground but not concrete: it stands for an
 arbitrary type, so no verdict about it is a verdict about the program. Inside that body the
