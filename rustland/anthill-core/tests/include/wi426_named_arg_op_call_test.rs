@@ -233,20 +233,74 @@ end
     );
 }
 
-/// COVERAGE: a label that duplicates a positionally-bound parameter is rejected
-/// (otherwise the duplicate would silently shift later bindings).
+/// A LABEL AND A POSITIONAL ARGUMENT DO NOT COLLIDE — they RANK (WI-20260827-1F0QP,
+/// kernel §6.3). `two(7, a: 1)` means `a = 1, b = 7`: the positional argument takes the
+/// parameter the label did not, exactly as the constructor spelling `two(7, a: 1)` has
+/// always meant `two(a: 1, b: 7)`.
+///
+/// THIS TEST ASSERTED THE OPPOSITE until WI-20260827-1F0QP. It read the shape as a
+/// duplicate binding and required a load error, "otherwise the duplicate would silently
+/// shift later bindings" — true of the rule this file was written against, where a
+/// positional argument filled the LEADING parameter and a label naming it was therefore
+/// a second binding for one slot. Under the rank rule there is no second binding to
+/// shift anything: the label takes `a` and the positional ranks past it to `b`.
+///
+/// DRIVEN, not merely loaded — `two` returns `a`, so the answer NAMES which parameter
+/// the label reached, which "it loads" cannot.
 #[test]
-fn named_label_duplicating_positional_is_rejected() {
+fn a_label_and_a_positional_rank_rather_than_collide() {
     let src = r#"
 namespace test.wi426.dup
   import anthill.prelude.Int64
   operation two(a: Int64, b: Int64) -> Int64 = a
-  operation caller() -> Int64 = two(7, a: 1)
+  operation twob(a: Int64, b: Int64) -> Int64 = b
+  operation caller()  -> Int64 = two(7, a: 1)
+  operation callerb() -> Int64 = twob(7, a: 1)
 end
 "#;
-    let errs = load_errors(src);
     assert!(
-        !errs.is_empty(),
-        "a named label duplicating a positionally-bound param must be rejected",
+        load_errors(src).is_empty(),
+        "a label beside a positional argument is a RANK, not a duplicate: {:?}",
+        load_errors(src),
+    );
+    let mut interp = interp_for(src);
+    let a = interp.call("test.wi426.dup.caller", &[]).expect("caller");
+    assert_eq!(
+        expect_int(a),
+        1,
+        "`two(7, a: 1)` gives parameter `a` the LABELLED 1"
+    );
+    let b = interp.call("test.wi426.dup.callerb", &[]).expect("callerb");
+    assert_eq!(
+        expect_int(b),
+        7,
+        "and parameter `b` the POSITIONAL 7 — the same call read from the other end, \
+         which is what says the arguments were BOUND and not merely accepted"
+    );
+}
+
+/// COVERAGE, and the half of the old test that survives the rank rule: a GENUINE
+/// duplicate — two LABELS naming one parameter — is still refused. That is the only
+/// shape "binds a parameter already given" can now describe, since a positional
+/// argument never lands on a parameter a label has taken.
+///
+/// MEASURED at the PARSE level, which is where it turns out to live: the repeated label
+/// is refused before any load pass sees it, so `load_errors` never gets the chance and
+/// this row reads `parse_errs` instead. The load-time check remains as the reader for a
+/// pair the parser cannot compare — it matches by `same_label` (SHORT name), so two
+/// differently-qualified spellings of one parameter are its case, not the parser's.
+#[test]
+fn two_labels_naming_one_parameter_are_rejected() {
+    let src = r#"
+namespace test.wi426.dup2
+  import anthill.prelude.Int64
+  operation two(a: Int64, b: Int64) -> Int64 = a
+  operation caller() -> Int64 = two(a: 1, a: 2)
+end
+"#;
+    let errs = crate::common::parse_errs(src);
+    assert!(
+        errs.iter().any(|e| e.contains("duplicate named argument")),
+        "two labels naming one parameter must still be refused, got: {errs:?}",
     );
 }

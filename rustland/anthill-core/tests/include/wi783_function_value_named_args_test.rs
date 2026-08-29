@@ -151,11 +151,26 @@ end
     );
 }
 
-/// A label that re-binds a parameter already filled POSITIONALLY. Without the
-/// coverage check the stray label sorts last in the reorder and eval rebinds it
-/// to the leftover slot — the WI-426 failure mode, here on the arrow path.
+/// A LABEL BESIDE A POSITIONAL ARGUMENT RANKS, on the ARROW path too
+/// (WI-20260827-1F0QP, kernel §6.3). `f(3, acc: 10)` against `(acc: Int64, x: Int64)`
+/// means `acc = 10, x = 3` — the positional argument takes the slot the label did not.
+///
+/// THIS TEST ASSERTED THE OPPOSITE until WI-20260827-1F0QP, and its reasoning was sound
+/// under the rule it was written against: a positional argument filled the LEADING slot,
+/// so a label naming that slot was a second binding, and "the stray label sorts last in
+/// the reorder and eval rebinds it to the leftover slot" was a real failure mode. The
+/// rank rule removes the stray label rather than the check — there is no leftover slot,
+/// because `acc` was never filled positionally.
+///
+/// A function VALUE is a SEPARATE READER from a named operation's call — an arrow's
+/// `slots`, not an operation's `params` — which is why it gets its own row here and why
+/// the ranking had to reach it: with this path left indexing by slot, the call is
+/// refused naming a parameter it never filled.
+///
+/// DRIVEN end-to-end, and `sub2` is `a - b` precisely so a swapped binding is a
+/// DIFFERENT number: `acc = 10, x = 3` yields 7, the reverse would yield -7.
 #[test]
-fn label_duplicating_a_positional_arg_rejected() {
+fn a_label_and_a_positional_rank_on_the_arrow_path() {
     let src = format!(
         r#"
 namespace test.wi783dup
@@ -168,7 +183,18 @@ namespace test.wi783dup
 end
 "#
     );
-    assert_named_arg_rejected(&src, "acc", "binds a parameter already given");
+    assert!(
+        try_load_kb_with(&src).is_ok(),
+        "a label beside a positional argument is a RANK, not a duplicate: {:?}",
+        try_load_kb_with(&src).err(),
+    );
+    let mut interp = interp_for(&src);
+    assert_eq!(
+        run_int(&mut interp, "test.wi783dup.drive"),
+        7,
+        "`f(3, acc: 10)` binds `acc = 10` and `x = 3`, so `sub2` computes 10 - 3. \
+         A -7 here would mean the two were bound the other way round"
+    );
 }
 
 /// A ONE-parameter arrow drops its binder name when the type is built —
