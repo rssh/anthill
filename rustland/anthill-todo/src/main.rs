@@ -103,10 +103,9 @@ prerequisite" step, in one command.
 /// There is no `!path.exists() { continue; }` skip here, and the reason is worth
 /// stating because an earlier draft of this function had one, justified by "a
 /// fresh project has no `anthill-todo/` until `init`". That was fiction:
-/// `scan_dir` returns `<project>/anthill-todo` only when `is_dir()` says so and
-/// otherwise returns `<project>` itself, and `find_project_dir` hands it only
-/// directories it has already proven exist (an explicit `-d` must `is_dir()`;
-/// discovery needs a marker FILE inside). So the path always exists — and if that
+/// `find_project_dir` hands it only directories it has already proven exist (an
+/// explicit `-d` must `is_dir()`; discovery needs a marker FILE inside, which is
+/// proof the directory holding it is there). So the path always exists — and if that
 /// invariant ever breaks, or a TOCTOU delete lands between the two, the honest
 /// answer is a loud error, not a skip that makes `list` say "No work items found"
 /// and exit 0.
@@ -168,18 +167,106 @@ const PROJECT_MARKERS: [&str; 2] = ["project.anthill", "workitems.anthill"];
 /// in the wrong tree. A warning naming the chosen directory used to be the only
 /// hint; a marker test means there is nothing to hint AT, because the wrong
 /// directory is no longer a candidate.
-fn is_project_dir(dir: &Path) -> bool {
-    PROJECT_MARKERS.iter().any(|m| dir.join(m).is_file())
+///
+/// `Err` ON A STAT THAT FAILS FOR ANY REASON BUT "NOT THERE" — an unreadable
+/// directory, a broken mount, a symlink loop. `Path::is_file()` answers `false`
+/// for all of those exactly as it does for a missing file, and under the ancestor
+/// walk (WI-20260828-C8SG5) that swallow stopped being harmless: "no marker here"
+/// means KEEP WALKING, so an EACCES on the project the user is standing in would
+/// hand the next command a DIFFERENT project further up and write into it. A
+/// permission wall is not a fact about where the project is (CLAUDE.md: prefer a
+/// loud error over a silent skip).
+fn is_project_dir(dir: &Path) -> Result<bool, String> {
+    for marker in PROJECT_MARKERS {
+        let candidate = dir.join(marker);
+        match fs::metadata(&candidate) {
+            Ok(md) if md.is_file() => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "cannot read {}: {e}\n  \
+                     A marker that cannot be STATTED is not a marker that is absent, so \
+                     project discovery stops here rather than resolve to some other \
+                     project further up the tree.",
+                    candidate.display()
+                ))
+            }
+        }
+    }
+    Ok(false)
 }
 
-/// Find the project directory. Checks:
-/// 1. Explicit --dir flag
-/// 2. `anthill-todo/` subdirectory of current dir
-/// 3. Current directory itself (if it contains .anthill files)
+/// The directory to SCAN, if `dir` locates a project — either in its
+/// `anthill-todo/` subdirectory (the normal layout) or in itself (the flat
+/// layout). `Ok(None)` when it locates neither.
+///
+/// THE MARKER TEST AND THE SCAN TARGET ARE ONE DECISION, and that is the whole
+/// point of this function. They used to be two: `find_project_dir` proved a
+/// project by MARKER and returned the directory ABOVE it, and a separate
+/// `scan_dir` then re-derived the scan root by NAME (`<dir>/anthill-todo`, if
+/// `is_dir()`). The two could disagree, and this repo's own shape is the
+/// counterexample again — a flat project at `<d>/workitems.anthill` beside a
+/// MARKER-LESS `<d>/anthill-todo/` (a crate, a scratch directory) resolved on the
+/// flat marker and then scanned the marker-less directory: `list` said "No work
+/// items found", exit 0, and `add` opened a SECOND store inside it, orphaning the
+/// rows discovery had just matched on. Returning the scanned directory itself
+/// makes that disagreement unrepresentable (found by /code-review).
+fn scan_root_at(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let subdir = dir.join("anthill-todo");
+    if is_project_dir(&subdir)? {
+        // A HALF-MIGRATED PROJECT KEEPS BOTH, and the subdirectory wins. Say which
+        // file is being ignored: its rows are not in the listing, and `add` mints
+        // ids without seeing the ids in it.
+        if is_project_dir(dir)? {
+            for marker in PROJECT_MARKERS {
+                let stray = dir.join(marker);
+                if stray.is_file() {
+                    eprintln!(
+                        "warning: ignoring {} — {} holds a project and takes precedence",
+                        stray.display(),
+                        subdir.display()
+                    );
+                }
+            }
+        }
+        return Ok(Some(subdir));
+    }
+    if is_project_dir(dir)? {
+        return Ok(Some(dir.to_path_buf()));
+    }
+    Ok(None)
+}
+
+/// Find the directory to SCAN for the project's files. Checks, in order:
+/// 1. An explicit `--dir` flag, resolved through the same two arms (so `-d` cannot
+///    route to a marker-less `anthill-todo/` either); a directory locating no
+///    project at all is still accepted, and reports itself empty downstream.
+/// 2. Cwd AND EVERY ANCESTOR, NEAREST FIRST, each tried the same two ways.
+///
+/// WI-20260828-C8SG5: THE ANCESTOR WALK IS NOT A RETURN OF THE WI-744 FOOTGUN — it
+/// is the MARKER test, not the search depth, that rejects `rustland/anthill-todo/`
+/// (this CLI's own crate, which holds no `project.anthill`). Walking up from
+/// `rustland/` now reaches the repo's real tracker one level further up, which is
+/// the project WI-744 wanted found there; the crate is not a candidate at any depth.
+///
+/// It became necessary when the item-per-file layout (WI-1118) gave a project
+/// SUBDIRECTORIES: `<proj>/anthill-todo/claimed/` is where a user stands while
+/// editing a `WI-….anthill.md`, and a bare `list` from there used to exit 1 —
+/// advising `init`, which would have nested a SECOND project inside the tracker
+/// (`run_init` now refuses that outright).
+///
+/// THE WALK IS UNBOUNDED — no `.git`, no `$HOME`, no filesystem-boundary stop — so
+/// the answer can be far from the cwd, and a MUTATING command would then write
+/// there. Every match above the cwd itself therefore NAMES the directory it chose,
+/// on stderr. WI-744 deleted a warning on the AT-cwd path because it annotated
+/// every normal invocation and distinguished nothing; this one fires only where
+/// the project is somewhere the cwd does not show, which is exactly the case that
+/// warning could not cover.
 fn find_project_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(dir) = explicit {
         if dir.is_dir() {
-            return Ok(dir.to_path_buf());
+            return Ok(scan_root_at(dir)?.unwrap_or_else(|| dir.to_path_buf()));
         }
         return Err(format!(
             "project directory does not exist: {}",
@@ -191,35 +278,30 @@ fn find_project_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
         std::env::current_dir().map_err(|e| format!("cannot determine current directory: {e}"))?;
 
     // Discovery is by MARKER, not by name or by "holds some .anthill file", so a
-    // successful match needs no warning to caveat it (WI-744).
-    let subdir = cwd.join("anthill-todo");
-    if is_project_dir(&subdir) {
-        return Ok(cwd);
-    }
-    // Already inside the project dir.
-    if is_project_dir(&cwd) {
-        return Ok(cwd);
+    // successful match needs no warning to caveat it (WI-744) — only a match the
+    // cwd does not show does, and that is the `depth > 0` note below.
+    for (depth, dir) in cwd.ancestors().enumerate() {
+        if let Some(root) = scan_root_at(dir)? {
+            if depth > 0 {
+                eprintln!(
+                    "note: using the anthill-todo project at {} (found by searching upward \
+                     from {})",
+                    root.display(),
+                    cwd.display()
+                );
+            }
+            return Ok(root);
+        }
     }
 
     Err(format!(
-        "no anthill-todo project found in {cwd}.\n  \
-         Looked for {cwd}/anthill-todo/{markers} and {cwd}/{markers}.\n  \
+        "no anthill-todo project found in {cwd} or any parent directory.\n  \
+         Looked for <dir>/anthill-todo/{markers} and <dir>/{markers} at every level \
+         from {cwd} up to the filesystem root.\n  \
          Run `anthill-todo init`, or pass -d <project-dir>.",
         cwd = cwd.display(),
         markers = format!("{{{}}}", PROJECT_MARKERS.join(",")),
     ))
-}
-
-/// Determine the directory to scan for workitem files.
-/// If the project dir has an anthill-todo/ subdirectory, scan only there.
-/// Otherwise scan the project dir itself.
-fn scan_dir(project_dir: &Path) -> PathBuf {
-    let subdir = project_dir.join("anthill-todo");
-    if subdir.is_dir() {
-        subdir
-    } else {
-        project_dir.to_path_buf()
-    }
 }
 
 // ── KB loading ──────────────────────────────────────────────────
@@ -4102,12 +4184,54 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
         eprintln!("error: {} already exists", dir.display());
         return runner::EXIT_RUNTIME;
     }
-    if is_project_dir(&abs_base) {
-        eprintln!(
-            "error: {} is already an anthill-todo project",
-            abs_base.display()
-        );
-        return runner::EXIT_RUNTIME;
+    match is_project_dir(&abs_base) {
+        Ok(true) => {
+            eprintln!(
+                "error: {} is already an anthill-todo project",
+                abs_base.display()
+            );
+            return runner::EXIT_RUNTIME;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("error: {e}");
+            return runner::EXIT_RUNTIME;
+        }
+    }
+
+    // REFUSE TO NEST A PROJECT INSIDE ANOTHER PROJECT'S TRACKER. Scaffolding into
+    // `<proj>/anthill-todo/open/` is not merely redundant, it CORRUPTS THE OUTER
+    // PROJECT: `collect_anthill_files` walks `<proj>/anthill-todo` recursively, so
+    // the nested `project.anthill` becomes a second `Project` fact and a second
+    // `ExtentBinding` in the outer project's own KB — measured, `add` at `<proj>`
+    // then dies with "default acceptance found multiple Project facts", naming
+    // neither file. Discovery is nearest-first, so the nested tracker also shadows
+    // the real one for everything beneath it (found by /code-review).
+    //
+    // THE TEST IS "INSIDE A TRACKER", NOT "BENEATH A PROJECT", and the difference
+    // is the false positive it avoids: someone whose home directory holds a
+    // personal `~/anthill-todo/` must still be able to `init` at `~/code/newthing`,
+    // which is below that project but outside its tracker.
+    for ancestor in abs_base.ancestors().skip(1) {
+        let tracker = ancestor.join("anthill-todo");
+        match is_project_dir(&tracker) {
+            Ok(true) if abs_base.starts_with(&tracker) => {
+                eprintln!(
+                    "error: {} is inside the anthill-todo project at {} — a project nested \
+                     in another project's tracker is read as part of it, and breaks it.\n  \
+                     Work items go in that project (`anthill-todo add`), or pass -d <dir> \
+                     naming a directory outside it.",
+                    abs_base.display(),
+                    tracker.display()
+                );
+                return runner::EXIT_RUNTIME;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error: {e}");
+                return runner::EXIT_RUNTIME;
+            }
+        }
     }
 
     let name = project_name.map(str::to_string).unwrap_or_else(|| {
@@ -4399,7 +4523,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             return runner::EXIT_RUNTIME;
         }
     };
-    let scan = scan_dir(&project_dir);
+    let scan = project_dir.clone();
     let project_files = match collect_anthill_files(&[scan]) {
         Ok(f) => f,
         Err(errs) => {
@@ -4526,7 +4650,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // for a project with no mirror at all: the mapping is in the BUNDLE, and an
     // unknown key stops every interpreter built for the program, including the
     // scratch one each bridged evaluation makes.
-    if let Err(e) = forge::register(&mut kb, &scan_dir(&project_dir)) {
+    if let Err(e) = forge::register(&mut kb, &project_dir) {
         eprintln!("error: {e}");
         return runner::EXIT_COMPILE;
     }
@@ -4586,7 +4710,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // GitHub-backed tracker) was blocked on. It is now `fact ExtentBinding(...)` in
     // project.anthill, and the host's remaining job is the one part that must stay
     // native: mapping a declared store to one of its compiled-in backends.
-    let store_root = scan_dir(&project_dir);
+    let store_root = project_dir.clone();
     let mut declared = match build_declared_store(
         &mut interp,
         &store_root,

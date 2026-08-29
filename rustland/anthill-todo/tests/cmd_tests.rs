@@ -22,6 +22,16 @@
 
 mod common;
 
+// CWD FOR EVERY TEST HERE IS `rustland/anthill-todo`, and since WI-20260828-C8SG5
+// widened project discovery to the cwd's ANCESTORS that resolves to THIS REPO'S OWN
+// TRACKER two levels up (the crate dir and `rustland/` carry no marker; the repo
+// root's `anthill-todo/` does). So a test that spawns the binary with neither `-d`
+// nor `current_dir` will read — and a mutating one will WRITE — the real
+// `anthill-todo/` of this checkout, during `cargo test`, leaving the file behind.
+// Every such test must pass `-d` or set `current_dir` to a tempdir; the ones that
+// do neither today (`cmd_shim_test`'s two flag-refusal tests) are safe only because
+// the argument strip refuses before discovery runs.
+
 #[path = "include/cmd_add_test.rs"]
 mod cmd_add_test;
 
@@ -126,3 +136,6 @@ mod wi1123_delete_cascade_test;
 
 #[path = "include/wivdxam_fsck_renumber_test.rs"]
 mod wivdxam_fsck_renumber_test;
+
+#[path = "include/wic8sg5_discovery_walks_up_test.rs"]
+mod wic8sg5_discovery_walks_up_test;

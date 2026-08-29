@@ -84,3 +84,29 @@ pub fn setup_domainless_project(tmp: &tempfile::TempDir, workitems: &str) -> Pat
     fs::write(inner.join("workitems.anthill"), workitems).expect("write workitems");
     proj
 }
+
+/// Assert that no anthill-todo project sits at or above `dir`.
+///
+/// A PRECONDITION, NOT A SKIP. WI-20260828-C8SG5 widened discovery from the cwd's
+/// own two arms to the cwd AND EVERY ANCESTOR, so any test that drives discovery
+/// with no `-d` and expects "no project" now depends on the whole chain above the
+/// system temp root being clean — true wherever this runs, and false the moment
+/// `TMPDIR` is redirected into a checkout. Left unstated, such a test does not
+/// fail, it does the WRONG THING: `add` files a real work item into whatever
+/// project it found, and only the later exit-code assertion fails, after the
+/// write. Say so loudly and at the top instead.
+pub fn assert_no_project_above(dir: &Path) {
+    let physical = fs::canonicalize(dir).expect("canonicalize");
+    for level in physical.ancestors() {
+        for marker in ["project.anthill", "workitems.anthill"] {
+            for candidate in [level.join(marker), level.join("anthill-todo").join(marker)] {
+                assert!(
+                    !candidate.is_file(),
+                    "test environment holds an anthill-todo project above {}: {}",
+                    dir.display(),
+                    candidate.display()
+                );
+            }
+        }
+    }
+}

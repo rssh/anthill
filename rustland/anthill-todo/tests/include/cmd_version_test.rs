@@ -58,7 +58,14 @@ fn version_flag_after_subcommand_is_not_hijacked() {
     // print. Run in an empty dir with no project so the fall-through fails
     // loudly (proving the token was NOT consumed as the version flag); the
     // pre-fix code would have printed the stamp and exited 0 instead.
+    //
+    // WI-20260828-C8SG5 widened discovery to the cwd's ANCESTORS, so "no project"
+    // now means none at any level above the temp dir either. Asserted, not
+    // assumed: without the guard a redirected TMPDIR makes this `add` FILE A REAL
+    // WORK ITEM described `--version` into someone's tracker, and the failure
+    // lands on the exit code afterwards, blaming flag hijacking.
     let tmp = tempfile::tempdir().expect("tempdir");
+    crate::common::assert_no_project_above(tmp.path());
     let out = Command::new(BIN)
         .current_dir(tmp.path())
         .args(["add", "--version"])
