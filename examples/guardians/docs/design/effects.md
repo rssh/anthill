@@ -7,6 +7,23 @@ example is its first consumer; see *What running it changed* below. The rest is 
 reasoning rather than runs, unlike [`high-level-api.md`](high-level-api.md) §8.1.
 Companion to [proposal 054](../../../../docs/proposals/054-external-effect.md).
 
+## Result
+
+**Acquire authority with `Permission[X]`** — one effect for the *act of acquiring*,
+carried where a capability object is minted, not one label per capability. Holding
+the object is the authority thereafter. Shipped as
+[proposal 064](../../../../docs/proposals/064-permission-effect.md);
+`LiveLlm.open` is the example's mint.
+
+**Encode when authority is needed as a CONDITIONAL effect** — `send_email` carries
+`(Permission[Outbox] :- external_addr(to))`
+([proposal 048](../../../../docs/proposals/048-conditional-effects.md)), so the
+guard says when the licence is required and no standing label has to.
+
+That is the whole of what the agent domain added to the effect vocabulary. Six
+further candidates suggested themselves and all six are rejected below, which is
+this note's actual result: **the challenge motivates no new capability labels.**
+
 ## The test every candidate has to pass
 
 054 fixes the admission rule, and it is strict:
@@ -215,12 +232,18 @@ with `Read ⊑ Write ⊑ Commit`. Whether 045's row algebra can carry a label wh
 arguments join, alongside labels whose arguments stay distinct, is the question
 that decides whether this is a small change or a large one.
 
-That question is the reason the next section exists. Asking one label to carry
-a join while its neighbours carry set union is a special case; asking each
-**family** to declare its algebra is a structure, and the mode split falls out
-of it rather than being bolted on.
+That question is what the FAMILIES proposal existed to answer — asking one label
+to carry a join while its neighbours carry set union is a special case, whereas
+asking each **family** to declare its algebra is a structure, and the mode split
+falls out of it rather than being bolted on. That proposal was never filed and its
+working is no longer here; see §"Families: worked out here, never filed" below.
+The question above stands on its own regardless, and does not wait on it.
 
-## Families: a row per family — and the label that came out of it
+## `Permission[X]`: the effect is the CHECK, at the point of acquisition
+
+*The one candidate that survived. It sat at depth three inside §"Families" until
+2026-08-29, because that is where it was found — which made the note's only shipped
+result the fourth subsection of a proposal that was never filed.*
 
 > **Reconciliation with proposal 064 (2026-08-25), and what running it changed
 > (2026-08-26).** `Permission[X]` was found here, while asking what a `User`
@@ -254,99 +277,6 @@ semantics, so it does not belong in the row". That verdict is right about the
 **kernel** row and wrong about what a project needs, and the gap shows up the
 moment §3 of [`high-level-api.md`](high-level-api.md) makes the deliverable a
 *generated program*.
-
-### What forces it: a lacks-constraint is a claim a carrier cannot make
-
-The strongest safety claim about a generated agent is a **negative** one:
-
-```anthill
-operation triage(box: Mailbox) -> Report
-  effects {External[Read], Error, -Model, -External[Commit]}
-```
-
-`-Model` says the generated body provably never consults a model. Withholding
-a carrier prevents the reach, but it says so *nowhere in the contract* — a
-reader must audit a parameter list, and a reviewer of generated code must audit
-it again on every regeneration. 045 already has `-label` for exactly this, and
-nothing has used it yet, because there has been nowhere for a project-defined
-label to live. §5.5 gestures at the hole — "users can define additional effect
-kinds; the kernel stores and propagates them but only interprets the well-known
-ones" — without saying where they go or how they combine.
-
-This is the honest update to the six rejections: they stand **as kernel
-effects**, and a user family gives the useful subset of them a home as project
-vocabulary that the kernel threads without interpreting.
-
-> **THE CRITERION SURVIVED THIS SECTION'S OWN EXAMPLE (2026-08-29).** "Say it in
-> the contract, so nobody re-audits a parameter list on every regeneration" is the
-> right test, and the paragraph above is right that withholding a carrier fails
-> it. What is wrong is the next inference — that only a ROW can pass it.
->
-> A RETURN TYPE PASSES IT TOO. `Llm.complete -> LlmOutput[Text[Untrusted]]`, with
-> an `internal` constructor, states in the signature that what a model returns can
-> be neither projected nor matched. Nothing is audited, nothing is re-checked on
-> regeneration, and the claim is read where the operation is declared — and it is
-> a claim about a VALUE, which is where 054 says authority belongs.
->
-> The heading stays literally true: a carrier cannot say *lacks X*. The defeat is
-> that the design never needed that sentence. It needed *cannot be steered*, and a
-> sealed return type says it. `-Model` and the `Model` label are gone from the
-> example (see the note under §"Six candidates"), so THIS SECTION HAS NO MOTIVATING
-> CASE LEFT: the row above would today read
-> `effects {External[Read], Error, -External[Commit]}`, in which every remaining
-> `-` belongs to a KERNEL label.
->
-> That does not refute the User family — it removes the one piece of evidence
-> offered for it. `Filesystem` is the example's only surviving project label, and
-> nothing has yet asked whether it earns its place by this same test.
-
-### What a family owns
-
-A family is worth having only if it owns things that currently force every rule
-to case-split on the label. Five qualify:
-
-| | State | Control | World | Permission | User |
-|---|---|---|---|---|---|
-| members | `Modify[r]` | `Error[E]`, `Suspension`, `Branch` | `External[mode]` | `Permission[X]` | project labels |
-| algebra | set union over distinct resources | set union over distinct payloads | **join** over a rank | set union over distinct capabilities | set union |
-| scope obligation | yes — 046's region elimination | none | none | none | none |
-| **droppable when unused** | yes, for a fresh non-escaping region | n/a | `Read` yes; `Write`/`Commit` no | **no** | per label |
-| interpretation | `StateT` | `ExceptT` / `ContT` / `LogicT` | host binding | ambient grant, may refuse | none |
-
-`Permission`'s column is here because it is what forced the droppability row.
-064 claims no family; the row below is this note's finding about the TABLE, not
-a dependency of the proposal.
-
-**The droppability row is new, and `Permission` is why it has to be there.** The
-opening table of this note — replay, reorder, dedup, drop-when-unused — is
-written only for `External`'s three modes, and the family table records
-algebra, scope and interpretation but not droppability. Those two tables never
-meet, and they have to, because droppability is what decides whether a label
-can share another family's rules. `Permission[X]` is the case that forces it: see
-below.
-
-The evidence that this cut is real is proposal 046. That document exists
-because `effect_derive` has to be correct for both region-keyed and
-non-region-keyed effects at once, and every one of its incorrect cases is a
-`Modify` target escaping a callback binder. `Error` and `Suspension` cannot
-have that bug, because they have no region to escape. **The well-scopedness
-obligation belongs to a family, not to the row**, and stating it there turns
-046's case analysis into a property of one family rather than a correctness
-condition on one relation.
-
-The same is true of the rank problem this note opened with. `External[Read] ⊑
-External[Write] ⊑ External[Commit]` needs join, and `Modify[a]`/`Modify[b]`
-need set union. Under a flat row that is a special case; under families it is
-each family declaring its algebra, and the special case disappears. **The
-`External` mode split of the previous section is not really a separate proposal
-— it is the first thing families make expressible.**
-
-Cross-family rules also get a place to be stated once. WI-701's `Branch ×
-External` prohibition is a Control × World incompatibility, and 047 §8's
-monad-transformer rank ordering is a total order on families. Both are
-currently statements about label pairs.
-
-### `Permission[X]`: the effect is the CHECK, at the point of acquisition
 
 > Stated in final form — with subsumption, contravariance and the
 > provider-cannot-self-grant rule — in **064**. What follows is why the label was
@@ -400,6 +330,7 @@ good as its leaf declarations, and under flat labels that audit is *every
 leaf*. Here it is *every minting operation*, because a host-bound operation
 still has to name `FsRoot` in its signature to touch one.
 
+
 ### `Permission` and `External` are orthogonal, and the test double proves it
 
 The tempting cheap answer is to make authority a fourth `External` mode. A
@@ -428,75 +359,74 @@ makes the *mode* conditional; with the axes separated, a sandbox refutes
 `External` and leaves `Permission` standing — you still need the grant, you just do
 not reach the world.
 
-### Spelling: no surface change
 
-Effects are registered today as facts:
+### What forces it: a lacks-constraint is a claim a carrier cannot make
 
-```anthill
-  fact Effect[T = Modify[?]]
-  fact Effect[T = Error[?]]
-```
-
-so the family belongs at the registration site, and `Effect` gains a required
-parameter so that a registration without one fails to load rather than
-defaulting silently:
+The strongest safety claim about a generated agent is a **negative** one:
 
 ```anthill
-  sort Effect { sort T = ?  sort Family = ? }
-
-  fact Effect[T = Modify[?],   Family = State]
-  fact Effect[T = Error[?],    Family = Control]
-  fact Effect[T = External[?], Family = World]
-
-  fact Effect[T = Permission[?],   Family = Permission]   -- IF families land;
-                                                          -- 064 registers it plain
-
-  -- a project's own, in its own namespace
-  fact Effect[T = Model,       Family = User]
+operation triage(box: Mailbox) -> Report
+  effects {External[Read], Error, -Model, -External[Commit]}
 ```
 
-**Written rows do not change.** `effects {Modify[c], Error, -Model}` still
-parses and still reads the same; the typer partitions by consulting the
-registration. That matters more than it sounds: a reorganization that churns
-every effect annotation in the stdlib will not get done, and one that changes
-no source might.
+`-Model` says the generated body provably never consults a model. Withholding
+a carrier prevents the reach, but it says so *nowhere in the contract* — a
+reader must audit a parameter list, and a reviewer of generated code must audit
+it again on every regeneration. 045 already has `-label` for exactly this, and
+nothing has used it yet, because there has been nowhere for a project-defined
+label to live. §5.5 gestures at the hole — "users can define additional effect
+kinds; the kernel stores and propagates them but only interprets the well-known
+ones" — without saying where they go or how they combine.
 
-### What the kernel must not concede
+This is the honest update to the six rejections: they stand **as kernel
+effects**, and a user family gives the useful subset of them a home as project
+vocabulary that the kernel threads without interpreting.
 
-**One user family, not user-declared families.** If projects can mint families,
-"one effect, not one per capability" fails one level up, which is the exact
-mistake 054 was written to prevent. Kernel families stay a closed set; projects
-declare *labels* within `User`, and those labels combine by set union and carry
-no interpretation. `Permission[X]` needs none of this: 064 gives it no family
-at all, and its capability argument follows the same discipline `Modify[r]`
-already does.
+> **THE CRITERION SURVIVED THIS SECTION'S OWN EXAMPLE (2026-08-29).** "Say it in
+> the contract, so nobody re-audits a parameter list on every regeneration" is the
+> right test, and the paragraph above is right that withholding a carrier fails
+> it. What is wrong is the next inference — that only a ROW can pass it.
+>
+> A RETURN TYPE PASSES IT TOO. `Llm.complete -> LlmOutput[Text[Untrusted]]`, with
+> an `internal` constructor, states in the signature that what a model returns can
+> be neither projected nor matched. Nothing is audited, nothing is re-checked on
+> regeneration, and the claim is read where the operation is declared — and it is
+> a claim about a VALUE, which is where 054 says authority belongs.
+>
+> The heading stays literally true: a carrier cannot say *lacks X*. The defeat is
+> that the design never needed that sentence. It needed *cannot be steered*, and a
+> sealed return type says it. `-Model` and the `Model` label are gone from the
+> example (see the note under §"Six candidates"), so THIS SECTION HAS NO MOTIVATING
+> CASE LEFT: the row above would today read
+> `effects {External[Read], Error, -External[Commit]}`, in which every remaining
+> `-` belongs to a KERNEL label.
+>
+> That does not refute the User family — it removes the one piece of evidence
+> offered for it. `Filesystem` is the example's only surviving project label, and
+> nothing has yet asked whether it earns its place by this same test.
 
-**A user label is only as honest as its leaf declarations.** `-Model` is
-enforced through anthill-typed code; a host-bound operation that secretly calls
-a model defeats it. That is precisely the trust boundary `Modify` and `External`
-already live on, and it should be written down rather than discovered. Routing
-a capability through an object narrows this from every leaf to every minting
-operation, but it does not remove it: a host op declared to return an `FsRoot`
-without the `Permission` effect defeats the scheme exactly as before.
+## Families: worked out here, never filed
 
-**Discharge comes free, and that is worth checking rather than assuming.** 045
-§5.5 makes handler discharge purely type-level — a shared row tail with the
-label present on the body side and absent from the result. If that holds
-per-family, a user family gets handlers with no kernel semantics at all. It is
-the cheapest part of the design if true and a hidden cost if not, so it is the
-second thing to verify.
+A `User` family — a home in the row algebra for project-defined labels — was
+designed in this section and is no longer here. Three things retired it, in order:
 
-### Cost, stated plainly
+* **It was never filed.** The Recommendation below said not to, and nothing since
+  has: `Permission[X]` went to 064 as an ordinary row member, with set-inclusion
+  subsumption and no family-indexed algebra.
+* **Both documents that cited it said it was not needed.**
+  [`two-flows.md`](two-flows.md) — "BUILT, and the family was not required";
+  [`high-level-api.md`](high-level-api.md) — "remains unfiled".
+* **Its motivating case is gone (2026-08-29).** The family existed to house
+  `-Model`, the example's one project label. `Model` was retired when
+  `Llm.complete` began returning a sealed `LlmOutput` — see §"Six candidates the
+  rule rejects". `Filesystem` is the only project label left, and nothing has yet
+  asked whether it earns its place by this note's own test.
 
-This is a typer refactor, not a syntax change: row union, subset conformance,
-lacks-constraints, and discharge each become family-indexed. Nothing here has
-been measured — unlike `high-level-api.md` §8.1, no probe was run — and the
-claim that it *reduces* complexity rests on the argument that it localizes
-case-splits that already exist, not on a diff. The way to find out cheaply is
-to write the family table as facts, leave the typer alone, and see whether the
-existing case-splits in `effect_derive` and the row algebra line up with the
-four columns. If they do, the refactor is mechanical; if they do not, the cut
-is wrong and the table cost nothing.
+What the exploration produced that outlived it is `Permission[X]`, promoted to its
+own section above. The rest — the five-family table, the registration spelling,
+the "one user family, not user-declared families" concession and the unmeasured
+typer-refactor cost — was 151 lines arguing for a proposal that was not made, and
+is recoverable from git history if the question reopens.
 
 ## Recommendation
 
@@ -519,8 +449,10 @@ not.
 specification form together with the names and placements this note refuted
 along the way. What remains open here is the FAMILY question, and it is
 separable: whether 045's row algebra can carry a label whose arguments **join**
-alongside labels whose arguments stay distinct, and whether the family table's
-columns actually match the case-splits already present in the typer.
+alongside labels whose arguments stay distinct. (The second half of this sentence
+used to ask whether the family table's columns matched the case-splits already in
+the typer. That table is no longer in this note — §"Families: worked out here,
+never filed" — and the question is recoverable with it from git history.)
 
 One prerequisite is not optional. WI-20260823-VM3YB measured that `fact
 Effect[T = X]` is documented as the registration and checked at **no site**, so
