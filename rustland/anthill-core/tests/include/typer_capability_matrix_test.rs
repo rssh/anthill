@@ -83,6 +83,23 @@
 //! type mismatch is UNLOCATED while op-arg and dot-dispatch mismatches are located
 //! (WI-20260829-6RBPD, found by a cell of mine failing an assertion I expected to hold).
 //!
+//! SLICE 3 — THE REMAINING POSITIONS. `inline constructor`, `field dot`, `match`,
+//! `qualified call` and `dot call`, each across the routes it can be spelled in, plus the
+//! two routes nothing had exercised: `through a provision chain` and `from a sibling
+//! projection`. With slices 1 and 2 that is every position and every route the ticket
+//! names.
+//!
+//! WHAT SLICE 3 TURNED UP:
+//!   * NO COMPOUND EXPRESSION IS A TERM — `match`, `if`, `let` and `lambda` parse only
+//!     where a BODY is expected, and parentheses do not rescue them (WI-20260829-YBBC3).
+//!     `grammar.js` puts them in `_expr_body` while every nested slot is `_term`, and
+//!     `paren_expr` wraps a `_term`. This subsumes the earlier lambda-in-a-list finding
+//!     and explains why WI-20260828-5NSZY could not offer "write a lambda instead".
+//!   * A BOUND SPEC-VIEW PARAMETER REFUSES ITS OWN CARRIER while the bare spec name
+//!     accepts it, and `Stream` accepts both (WI-20260829-GNPG7) — filed as a QUESTION,
+//!     since which side is right is a design decision, and recorded here as measured
+//!     facts rather than as gaps.
+//!
 //! NOT A REWRITE OF THE PER-WI FILES. A matrix cell says a capability holds; a WI file
 //! says why one specific defect was possible, and that is what keeps a fix from
 //! regressing for its original reason.
@@ -1358,5 +1375,328 @@ fn each_spelling_resolves_to_a_named_declaration() {
         "the spelling→declaration map has moved, so the sweep's columns no longer measure \
          what its doc says they do — update this table AND the note on `Host::qualifier`:\n\n{}",
         wrong.join("\n\n"),
+    );
+}
+
+// ═══ SLICE 3 — THE REMAINING POSITIONS x THE REMAINING ROUTES ═══════════════
+
+/// A program with a `Row` value and an `Int64` in scope, plus a slot of every ROUTE kind.
+/// `{slot}` is where a cell's expression goes; the surrounding declaration is the route.
+fn pos_program(decl: &str) -> String {
+    format!(
+        r#"
+namespace capmatrix_pos
+  import anthill.prelude.{{List, Int64, Bool, String, Iterable, Stream, Option}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+    operation a_of(r: Row) -> Int64 = match r case row(x, f) -> x
+    operation is_set(r: Row) -> Bool = match r case row(x, f) -> f
+  end
+  operation takes_int(v: Int64) -> Int64 = v
+  operation takes_row(v: Row) -> Int64 = 1
+  operation takes_any[A](x: A) -> Int64 = 1
+  operation takes_iterable(c: Iterable[C = List[T = Row], Element = Row, E = {{}}]) -> Int64 = 1
+  operation pair_up(a: Int64, b: Int64) -> Int64 = a
+  operation pick(xs: List[T = Int64], e: xs.T) -> Int64 = 1
+{decl}
+end
+"#
+    )
+}
+
+fn run_positions(cells: Vec<(String, String, Verdict)>) {
+    run_with(cells, pos_program)
+}
+
+/// THE REMAINING POSITIONS, each in the four routes that can be spelled uniformly for it.
+/// Positions already covered: `lambda` (slice 1), `bare op name` and `list/set literal`
+/// (slice 2). These are the other five the ticket names.
+///
+/// EVERY CELL IS WELL-TYPED BY CONSTRUCTION — an `Int64`-producing position only meets an
+/// `Int64`-expecting route, and the constructor position only meets `Row`-expecting ones —
+/// so a RED cell means the ROUTE failed to carry the type, never that the cell asked for
+/// something impossible. That is what makes the table about routes rather than about
+/// whether five expressions happen to type.
+#[test]
+fn the_remaining_positions_across_their_routes() {
+    let mut cells: Vec<(String, String, Verdict)> = Vec::new();
+    // (position, expression producing Int64)
+    let int_positions: &[(&str, &str)] = &[
+        ("field dot", "r.a"),
+        ("match", "match r case row(x, f) -> x"),
+        ("qualified call", "Row.a_of(r)"),
+        ("dot call", "r.a_of()"),
+    ];
+    // (route, how the slot is spelled around `{}`)
+    let int_routes: &[(&str, &str)] = &[
+        ("written directly (annotated let)", "  operation c(r: Row) -> Int64 =\n    let v: Int64 = {}\n    v"),
+        ("from a hint (declared return)", "  operation c(r: Row) -> Int64 = {}"),
+        ("from a callee's declared param", "  operation c(r: Row) -> Int64 = takes_int({})"),
+        ("from a type parameter", "  operation c(r: Row) -> Int64 = takes_any({})"),
+        // A GENUINE sibling projection: `pick`'s second parameter type PROJECTS off the
+        // first argument (`e: xs.T`), which is the stdlib's own shape (`Stream.find`'s
+        // `pred: (x: s.T)`). The first cut used `pair_up(a: Int64, b: Int64)` and called
+        // it a sibling projection — two ordinary parameters, projecting nothing, so the
+        // row measured the argument route a second time under a different name.
+        ("from a sibling projection", "  operation c(r: Row, ns: List[T = Int64]) -> Int64 = pick(ns, {})"),
+    ];
+    // The three routes that nest the expression inside a TERM. A compound form cannot be
+    // spelled there at all (WI-20260829-YBBC3), so those `match` cells are not verdicts
+    // about the typer and are skipped WITH THE REASON — the parse guard in `check_src`
+    // would otherwise report them as table bugs, which is right for a table bug and wrong
+    // for a language fact.
+    const NESTED_ROUTES: &[&str] = &[
+        "from a callee's declared param",
+        "from a type parameter",
+        "from a sibling projection",
+    ];
+    let mut unspellable: Vec<String> = Vec::new();
+    for (pos, expr) in int_positions {
+        for (route, shape) in int_routes {
+            if *pos == "match" && NESTED_ROUTES.contains(route) {
+                unspellable.push(format!("{pos} / {route}"));
+                continue;
+            }
+            cells.push((
+                format!("{pos} / {route}"),
+                shape.replace("{}", expr),
+                Verdict::Loads,
+            ));
+        }
+    }
+    assert_eq!(
+        unspellable.len(),
+        3,
+        "only `match` in the three nested routes is unspellable: {unspellable:?}"
+    );
+    println!(
+        "  not spellable — WI-20260829-YBBC3 ({}): {}",
+        unspellable.len(),
+        unspellable.join(", ")
+    );
+    // The CONSTRUCTOR position produces a `Row`, so it meets the Row-expecting routes.
+    let row_routes: &[(&str, &str)] = &[
+        ("written directly (annotated let)", "  operation c() -> Int64 =\n    let v: Row = {}\n    1"),
+        ("from a hint (declared return)", "  operation c() -> Row = {}"),
+        ("from a callee's declared param", "  operation c() -> Int64 = takes_row({})"),
+        ("from a type parameter", "  operation c() -> Int64 = takes_any({})"),
+    ];
+    for (route, shape) in row_routes {
+        cells.push((
+            format!("inline constructor / {route}"),
+            shape.replace("{}", "row(a: 1, flag: true)"),
+            Verdict::Loads,
+        ));
+    }
+    run_positions(cells);
+}
+
+/// A COMPOUND EXPRESSION IS NOT A TERM — `match`, `if`, `let` and `lambda` can appear
+/// where a BODY is expected and nowhere else, and parentheses do not rescue them
+/// (WI-20260829-YBBC3). Six rows, every one a PARSE failure that never reaches the typer.
+///
+/// STRUCTURAL, not a missing case. `grammar.js` puts the four forms in `_expr_body` (the
+/// operation-body rule) while arguments, list elements and every other nested slot are
+/// built from `_term` — and `paren_expr` wraps a `_term`, which is exactly why the
+/// parenthesized spellings fail identically to the bare ones.
+///
+/// IT EXPLAINS TWO EARLIER FINDINGS. `a_lambda_inside_a_list_literal_does_not_parse` is
+/// this rule seen through one form, and it is why WI-20260828-5NSZY could not offer
+/// "write a lambda instead" as the repair for a bare operation name in a list literal.
+///
+/// NOT `Verdict` rows: every verdict in this file is about what the LOADER decides, and
+/// nothing here reaches it. Asserting the parse directly keeps that line clean.
+#[test]
+fn a_compound_expression_is_not_a_term() {
+    let rows: &[(&str, &str, &str)] = &[
+        ("match as an argument", "takes_int(match r case row(x, f) -> x)", "r case row"),
+        ("match as an argument, parenthesized", "takes_int((match r case row(x, f) -> x))", "r case row"),
+        ("if as an argument", "takes_int(if true then 1 else 2)", "if true then 1 else"),
+        ("if as an argument, parenthesized", "takes_int((if true then 1 else 2))", "if true then 1 else"),
+        ("match as a list element", "[(match r case row(x, f) -> x)]", "r case row"),
+    ];
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, expr, frag) in rows {
+        let src = pos_program(&format!("  operation c(r: Row) -> Int64 = {expr}"));
+        match anthill_core::parse::parse(&src) {
+            Ok(_) => wrong.push(format!(
+                "{name}: `{expr}` now PARSES. If the grammar was widened, that is \
+                 WI-20260829-YBBC3 closing — move this row into \
+                 `the_remaining_positions_across_their_routes` as a load-verdict cell, \
+                 drop it from the `unspellable` skip list there, and close the ticket."
+            )),
+            Err(errs) => {
+                if !errs.iter().any(|e| e.message.contains(frag)) {
+                    wrong.push(format!(
+                        "{name}: still refused, but not with the message this row records \
+                         ({frag:?}); got {:?}",
+                        errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
+}
+
+/// A SPEC-TYPED PARAMETER AND ITS CARRIER — the `through a provision chain` route, which
+/// turns out not to have one verdict. `List provides Stream provides Iterable`, so the
+/// edge is there either way; what decides admissibility is whether the parameter's spec
+/// type carries BINDINGS.
+///
+/// RECORDED AS MEASURED FACTS, NOT AS GAPS. No row here says a verdict is wrong: which
+/// side is right is a design question (WI-20260829-GNPG7), and the table's job is to say
+/// what the loader does so that whichever way it is settled, the change is visible. That
+/// is why the refusing rows are `RefusesLocated` — a correct-as-far-as-anyone-knows
+/// refusal — and not `KnownGap`.
+///
+/// THE LINE IS THIN, which is why it is worth pinning: the stdlib relies on the
+/// permissive direction (`MappedStream`'s `source: Iterable[C = Source, …]` is fed a
+/// `Stream` by `Iterable.map`), and that works only because `Source` is an unbound sort
+/// param there. So the working case and the refusal differ only in whether the binding is
+/// a VARIABLE or a CONCRETE sort.
+#[test]
+fn a_spec_typed_parameter_and_its_carrier() {
+    fn program_with(param: &str) -> String {
+        format!(
+            r#"
+namespace capmatrix_prov
+  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  operation ti(c: {param}) -> Int64 = 1
+  operation c(rs: List[T = Row]) -> Int64 = ti(rs)
+end
+"#
+        )
+    }
+    let rows: &[(&str, &str, Verdict)] = &[
+        ("bare spec name", "Iterable", Verdict::Loads),
+        (
+            "spec bound to its own carrier",
+            "Iterable[C = List[T = Row], Element = Row, E = {}]",
+            Verdict::RefusesLocated("expected Iterable[C = List[T = Row]"),
+        ),
+        (
+            // C is UNBOUND here, so this is not "naming the carrier makes a distinct
+            // view" — ANY binding is enough to refuse.
+            "spec with one binding, carrier unbound",
+            "Iterable[Element = Row]",
+            Verdict::RefusesLocated("expected Iterable[Element = Row]"),
+        ),
+        // `Stream` accepts BOTH spellings, which is what makes the rows above an
+        // asymmetry between two specs on one chain rather than a rule about spec params.
+        ("bare Stream (CONTRAST)", "Stream", Verdict::Loads),
+        (
+            "Stream WITH bindings (CONTRAST — the discriminator)",
+            "Stream[T = Row, E = {}]",
+            Verdict::Loads,
+        ),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (label, param, want) in rows {
+        if let Err(e) = check_src(label, &program_with(param), *want) {
+            failures.push(e);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} spec-view row(s) moved — if WI-20260829-GNPG7 was settled, update these and \
+         close it:\n\n{}",
+        failures.len(),
+        failures.join("\n\n"),
+    );
+}
+
+// ═══ THE COVERAGE CENSUS ════════════════════════════════════════════════════
+
+/// WHAT THE GRID COVERS AND WHAT IT DOES NOT — the ticket's two axes crossed in full, with
+/// each of the 48 cells marked. This exists because "is it all combinations?" is a
+/// question I answered by eye once and got wrong, and because WI-20260829-ARQ5X was
+/// DELIVERED once on a slice while its SHAPE section specified the whole grid.
+///
+/// A census that lives in prose goes stale the first time someone adds a row. This one is
+/// checked: `Built` cells must be non-empty and `NotYetBuilt` cells name what is missing,
+/// so the file cannot silently claim completeness — and when the grid is finished this
+/// test is what says so.
+#[derive(PartialEq)]
+enum Coverage {
+    /// A cell with at least one assertion somewhere in this file.
+    Built,
+    /// The combination cannot be spelled in the language; the WI that tracks it.
+    Unspellable(&'static str),
+    /// Not yet written. The remaining scope of WI-20260829-ARQ5X.
+    NotYetBuilt,
+}
+
+#[test]
+fn the_grid_census_is_honest() {
+    use Coverage::*;
+    // Rows are the ticket's POSITIONS; columns its ROUTES, in the order it lists them:
+    // written directly | from a hint | callee's declared param | type parameter |
+    // provision chain | sibling projection.
+    let grid: &[(&str, [Coverage; 6])] = &[
+        // slice 2 swept this position across routes of its own naming; mapped onto the
+        // ticket's six, it reaches the hint and callee-param columns.
+        ("bare op name",       [NotYetBuilt, Built, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
+        // slice 1 swept the lambda across HOSTS x SPELLINGS x BODIES — a different and
+        // deeper cross, but only the callee-param column of THIS one.
+        ("lambda",             [NotYetBuilt, NotYetBuilt, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
+        ("inline constructor", [Built, Built, Built, Built, NotYetBuilt, NotYetBuilt]),
+        ("field dot",          [Built, Built, Built, Built, NotYetBuilt, Built]),
+        // Every NESTED route is unspellable for `match` — the provision-chain one too,
+        // since that route is spelled as an argument to a spec-typed parameter.
+        ("match",              [Built, Built, Unspellable("WI-20260829-YBBC3"),
+                                Unspellable("WI-20260829-YBBC3"),
+                                Unspellable("WI-20260829-YBBC3"),
+                                Unspellable("WI-20260829-YBBC3")]),
+        ("list/set literal",   [NotYetBuilt, Built, Built, NotYetBuilt, NotYetBuilt, NotYetBuilt]),
+        ("qualified call",     [Built, Built, Built, Built, NotYetBuilt, Built]),
+        ("dot call",           [Built, Built, Built, Built, NotYetBuilt, Built]),
+    ];
+
+    let (mut built, mut unspellable, mut todo) = (0usize, 0usize, Vec::new());
+    const ROUTES: [&str; 6] = [
+        "written directly", "from a hint", "callee's declared param",
+        "from a type parameter", "through a provision chain", "from a sibling projection",
+    ];
+    for (pos, row) in grid {
+        for (i, cell) in row.iter().enumerate() {
+            match cell {
+                Built => built += 1,
+                Unspellable(_) => unspellable += 1,
+                NotYetBuilt => todo.push(format!("{pos} / {}", ROUTES[i])),
+            }
+        }
+    }
+    assert_eq!(built + unspellable + todo.len(), 48, "the grid is 8 positions x 6 routes");
+
+    // THE PROVISION-CHAIN COLUMN IS EMPTY, and that is the largest single gap: the route
+    // is exercised only by `a_spec_typed_parameter_and_its_carrier`, which varies the
+    // PARAMETER's spec type rather than what sits in the position. Crossing it with the
+    // eight positions is the next slice.
+    let provision_gaps = todo.iter().filter(|t| t.contains("provision")).count();
+    assert_eq!(
+        provision_gaps, 7,
+        "the provision-chain column should be unbuilt for every position but `match`, \
+         whose nested routes are unspellable: {todo:?}"
+    );
+
+    // The numbers are asserted so they cannot drift in the prose above.
+    assert_eq!(built, 26, "built cells");
+    assert_eq!(unspellable, 4, "cells the language cannot express (WI-20260829-YBBC3)");
+    assert_eq!(
+        todo.len(),
+        18,
+        "remaining scope of WI-20260829-ARQ5X — these are what is left:\n  {}",
+        todo.join("\n  "),
+    );
+    println!(
+        "  grid: {built} built, {unspellable} unspellable, {} not yet built:\n    {}",
+        todo.len(),
+        todo.join("\n    "),
     );
 }
