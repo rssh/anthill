@@ -112,15 +112,23 @@ sort anthill.prelude.MappedStream
   -- FiniteCollection`, so it cannot serve a mapped stream over an infinite source. This
   -- one can, which is what the `Nats` row measures.
   --
-  -- WHAT THE SHAPE COST: the input is now THIS carrier rather than any `Stream`. The
-  -- general form — any Iterable source, source kept in the return — needs an op-level
-  -- `requires` on a FREE operation to ground the element type, which WI-599 delivered for
-  -- the SPEC-METHOD shape only and explicitly excluded here (measured: `Dst` does not
-  -- ground, and the row leaks). `Iterable.map` stays the spelling that takes any source,
-  -- and erases. See WI-20260829-X13YV.
-  operation map[Dst, EffP](m: MappedStream, f: (x: T) -> Dst @ {EffP, -Modify[x]})
-    -> MappedStream[Source = MappedStream, Src = T, T = Dst, ES = {ES, EF}, EF = EffP] =
-    mapped(m, f)
+  -- GENERAL OVER ANY ITERABLE SOURCE (WI-20260829-70XVH). X13YV had to narrow the input to
+  -- THIS carrier: the general form needs an op-level `requires` on a FREE operation to
+  -- ground the element type from the argument's own provision, which WI-599 delivered for
+  -- the SPEC-METHOD shape only and explicitly excluded for this one (measured then: `Dst`
+  -- does not ground, and the row leaks). 70XVH closed that exclusion, so the input is `Sc`
+  -- again and a bare `List` is accepted — driven in `wi599_carrier_arg_provision_test::
+  -- the_stdlib_combinators_are_general_over_any_iterable_source`.
+  --
+  -- THE ROUTE IS UNCHANGED and so is the finiteness reading: `.map` on a mapped stream still
+  -- lands here (the dot ladder reads the receiver's OWN sort first), `Source = Sc` is still
+  -- the receiver's own type, so `MappedStreamFinite` still recurses on it, and a `.map` over
+  -- an infinite source still loads while only its CONSUMPTION is refused. `Iterable.map`
+  -- remains the erasing spelling.
+  operation map[Sc, S, Dst, EffS, EffP](s: Sc, f: (x: S) -> Dst @ {EffP, -Modify[x]})
+    -> MappedStream[Source = Sc, Src = S, T = Dst, ES = EffS, EF = EffP]
+    requires Iterable[C = Sc, Element = S, E = EffS] =
+    mapped(s, f)
 end
 
 -- Lazy stream-producing combinator (WI-410): filter.
@@ -182,12 +190,11 @@ sort anthill.prelude.FilteredStream
             if pred(h) then some(pair(h, filtered(rest, pred)))
             else Stream.splitFirst(filtered(rest, pred))
 
-  -- `filter` ON A FILTERED STREAM — the twin of `MappedStream.map`, and the same repair
-  -- for the same reason (WI-20260829-X13YV); read that operation's note for the mechanism.
-  -- The element is kept VERBATIM by a filter, so `T` is unchanged across the hop where
-  -- `map`'s becomes `Dst`; the new carrier's source row is the receiver's own provided row
-  -- `{ES, EF}` and its transform row is the new predicate's `EffP`.
-  operation filter[EffP](s: FilteredStream, p: (x: T) -> Bool @ {EffP, -Modify[x]})
-    -> FilteredStream[Source = FilteredStream, T = T, ES = {ES, EF}, EF = EffP] =
+  -- The twin of `MappedStream.map` — X13YV's repair and 70XVH's generalization both; read
+  -- that operation's note for the mechanism. The element is kept VERBATIM by a filter, so
+  -- the result's `T` IS the source's element where `map`'s becomes `Dst`.
+  operation filter[Sc, S, EffS, EffP](s: Sc, p: (x: S) -> Bool @ {EffP, -Modify[x]})
+    -> FilteredStream[Source = Sc, T = S, ES = EffS, EF = EffP]
+    requires Iterable[C = Sc, Element = S, E = EffS] =
     filtered(s, p)
 end

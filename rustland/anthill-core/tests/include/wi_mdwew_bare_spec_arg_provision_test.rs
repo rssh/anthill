@@ -48,21 +48,10 @@
 //! silently claimed when its short name collides, because `substitute_carrier_params` joins
 //! its leaves by LOCAL NAME. Each has its own back-out named at its test.
 
-/// A refusal control that asserts only "something failed" measures nothing: a fixture typo
-/// or an unrelated future change keeps it green while the behaviour it names rots. Each one
-/// below names the token that DISTINGUISHES the right refusal from the wrong acceptance —
-/// the string the corresponding back-out makes disappear.
-#[track_caller]
-fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
-    let joined = errs.join(" | ");
-    assert!(!errs.is_empty(), "{why}: expected a refusal, got a clean load");
-    for t in tokens {
-        assert!(
-            joined.contains(t),
-            "{why}: the refusal should name `{t}`, got:\n{joined}"
-        );
-    }
-}
+/// Each refusal control below names the token that DISTINGUISHES the right refusal from the
+/// wrong acceptance — the string the corresponding back-out makes disappear. The assertion
+/// itself moved to `common` under WI-20260829-70XVH, whose free-op rows are its second user.
+use crate::common::assert_refused_naming;
 
 /// The shape the ticket names, in miniature and self-contained. `Seq` is the
 /// self-receiver spec (the `Stream` analogue) and `Walk` the carrier-param spec the field

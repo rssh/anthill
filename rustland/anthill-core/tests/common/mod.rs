@@ -338,6 +338,27 @@ pub fn parses_clean(src: &str) {
     }
 }
 
+/// A refusal control that asserts only "something failed" measures nothing: a fixture typo
+/// or an unrelated future change keeps it green while the behaviour it names rots. This
+/// takes the token(s) that DISTINGUISH the right refusal from the wrong acceptance — the
+/// string the corresponding back-out makes disappear.
+///
+/// Shared rather than per-file since WI-20260829-70XVH, whose rows are the second set to
+/// need it: a control's whole value is that its token is the one a back-out removes, and two
+/// copies of the assertion would let two files drift on what "refused" is allowed to mean.
+#[track_caller]
+#[allow(dead_code)]
+pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
+    let joined = errs.join(" | ");
+    assert!(!errs.is_empty(), "{why}: expected a refusal, got a clean load");
+    for t in tokens {
+        assert!(
+            joined.contains(t),
+            "{why}: the refusal should name `{t}`, got:\n{joined}"
+        );
+    }
+}
+
 /// Load stdlib + user source, construct an `Interpreter`, and register the
 /// standard eval builtins. The one-liner every eval_mN_test file needs.
 #[allow(dead_code)]

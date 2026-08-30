@@ -1,0 +1,26 @@
+# `cargo fmt` MUST NOT be allowed to reach `kb/typing.rs`.
+#
+# rustfmt reaches ~15.3 GB anonymous RSS on that one file and is OOM-killed, taking the
+# whole WSL VM down with it. MEASURED 2026-08-30, three times in a row:
+#
+#   Out of memory: Killed process 29945 (rustfmt) total-vm:20083328kB, anon-rss:15209636kB
+#   Out of memory: Killed process 1192  (rustfmt) total-vm:20083324kB, anon-rss:15344020kB
+#   Out of memory: Killed process 1421  (rustfmt) total-vm:20083328kB, anon-rss:15399148kB
+#
+# (`journalctl -b -1 | grep "Killed process"` — the record is in the JOURNAL, not `dmesg`,
+# which only ever shows the current boot and so is empty of the crash after the restart.)
+# `rustc`, `rust-lld` and `cargo` were killed ZERO times across both crashed boots: the
+# COMPILER is fine and the cache is irrelevant — this is rustfmt's own allocation on a
+# 3.7 MB / 72k-line source file, and it is superlinear in that size.
+#
+# This entry is the enforcement, replacing "remember not to run it". Without it the crash is
+# one `cargo fmt` away for anyone, and the command looks entirely routine.
+#
+# CONSEQUENCE, stated so nobody reads silence as cleanliness: `typing.rs` is formatted BY
+# HAND and nothing checks it. Match the surrounding style when editing. To format a small
+# region, run `rustfmt` on a COPY of an extracted snippet under `(ulimit -v 4000000; …)` so a
+# blow-up kills that process alone.
+#
+# The file's SIZE is a separate question with its own ticket (WI-20260830-009H2); splitting
+# it would not fix rustfmt, it would only move the threshold, so this entry stands either way.
+ignore = ["src/kb/typing.rs"]

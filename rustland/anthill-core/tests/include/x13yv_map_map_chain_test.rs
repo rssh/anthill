@@ -22,10 +22,16 @@
 //! `xs.map(f).map(g).size()` would still have been refused — exactly as
 //! `total(Iterable.map(xs, f))` is, and must stay.
 //!
-//! THE REPAIR REUSES THE INPUT TYPE: the receiver is the
-//! carrier and the result names it as its own `Source`, so the witness recurses and a
-//! two-hop chain is finite exactly when the ORIGINAL carrier is. `combinators.anthill`
-//! carries the signature and what the shape cost.
+//! THE REPAIR REUSES THE INPUT TYPE: the result names its input as its own `Source`, so the
+//! witness recurses and a two-hop chain is finite exactly when the ORIGINAL carrier is.
+//! `combinators.anthill` carries the signature.
+//!
+//! WHAT X13YV ALSO COST HAS SINCE BEEN REPAID: the input was narrowed to THIS carrier, which
+//! is what made the two operations stop accepting a bare `List`. WI-20260829-70XVH ground
+//! the element from an op-level `requires` on a free operation and the input is `Sc` again
+//! — general over any `Iterable` source, with the `Source` reuse and therefore every row
+//! below unchanged. Driven in `wi599_carrier_arg_provision_test::
+//! the_stdlib_combinators_are_general_over_any_iterable_source`.
 //!
 //! WHICH ROWS MEASURE THE CHANGE, by restoring the two old static-constructor signatures:
 //!   * `map_map_chain_evaluates` / `filter_filter_chain_evaluates` — RED (they do not

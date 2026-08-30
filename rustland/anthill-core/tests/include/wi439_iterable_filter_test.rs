@@ -5,8 +5,8 @@
 //! Iterable-level derivation: typecheck (pure / wrong-element rejected), eval
 //! keep/drop, a non-Stream carrier reached only through Iterable, and parity
 //! with the erasing Stream-level spelling `Iterable.filter` (which was
-//! `FilteredStream.filter` until WI-20260829-X13YV re-typed that one onto a
-//! `FilteredStream` receiver — see the parity test's own note).
+//! `FilteredStream.filter` until WI-20260829-X13YV re-typed that one — see the parity
+//! test's own note).
 
 /// Call a nullary op and expect an Int result.
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
@@ -60,14 +60,18 @@ end
 /// EVAL: keep/drop on a List, including the drop-everything case, plus parity
 /// with the Stream-level filter on the same input.
 ///
-/// THE PARITY PARTNER CHANGED, and the reason is worth keeping. It used to be
-/// `FilteredStream.filter`, which was then a STATIC CONSTRUCTOR over any `Stream` and so
-/// took this `List` directly. WI-20260829-X13YV re-typed it to take a `FilteredStream`
-/// receiver and return a carrier built from that input, because as a static constructor
-/// it SHADOWED `FiniteCollection.filter` in dot dispatch and broke
-/// `xs.filter(p).filter(q)` — see its note in `combinators.anthill`. So it no longer
-/// accepts a `List`, and the erasing Stream-level spelling that still does is
-/// `Iterable.filter` (`filtered(iterator(c), pred)`), which is the partner here now.
+/// THE PARITY PARTNER CHANGED, and the reason is worth keeping — including the part that
+/// has since expired. It used to be `FilteredStream.filter`, then a STATIC CONSTRUCTOR over
+/// any `Stream`, which took this `List` directly. WI-20260829-X13YV re-typed it to take a
+/// `FilteredStream` receiver because as a static constructor it SHADOWED
+/// `FiniteCollection.filter` in dot dispatch and broke `xs.filter(p).filter(q)`, and it then
+/// no longer accepted a `List` — which is why the partner moved.
+///
+/// WI-20260829-70XVH widened it back to any `Iterable` source, so it WOULD take this `List`
+/// again (driven in `wi599_carrier_arg_provision_test::the_stdlib_combinators_are_general_-
+/// over_any_iterable_source`). The partner stays `Iterable.filter` regardless: what this row
+/// measures is the ERASING Stream-level spelling against the non-erasing one, and
+/// `Iterable.filter` is the erasing spelling either way.
 ///
 /// THE EXPERIMENT IS UNCHANGED: two spellings of the one keep/drop engine, over the same
 /// input, must agree on the value — the non-erasing `FiniteCollection.filter` against the

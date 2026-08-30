@@ -15114,34 +15114,9 @@ fn check_apply_iter(
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
-            carrier_param_receiver(
-                kb,
-                &op.params,
-                fn_sym,
-                pos_args,
-                named_args,
-                // WI-477: read the receiver's inferred type as a carrier-agnostic `Value`
-                // (NOT `.as_term()`) — an occurrence-primary `List[T = …]` is a
-                // `Value::Node` whose `T`/`E` bindings live in the node; `.as_term()`
-                // would drop the carrier and leak `Eff unconstrained`. Mirrors the
-                // self-receiver twin `bind_spec_params_from_carrier` (WI-470 d42682c).
-                &|i, pname| {
-                    pos_results
-                        .get(i)
-                        .and_then(|r| r.as_ref().ok())
-                        .map(|r| r.ty.clone())
-                        .or_else(|| {
-                            named_args
-                                // WI-426: a named label binds to its param by name, not
-                                // symbol identity.
-                                .iter()
-                                .position(|(n, _)| same_label(kb, *n, pname))
-                                .and_then(|j| named_results.get(j))
-                                .and_then(|r| r.as_ref().ok())
-                                .map(|r| r.ty.clone())
-                        })
-                },
-            )
+            carrier_param_receiver(kb, &op.params, fn_sym, pos_args, named_args, &|i, pname| {
+                supplied_arg_type(kb, i, pname, pos_results, named_args, named_results)
+            })
         };
         // WI-590 — the ENCLOSING SORT's `requires` clause licensing this call, when the
         // carrier-param classification declined. ONE lookup: the binder below and both
@@ -15219,6 +15194,38 @@ fn check_apply_iter(
                 ),
             },
         };
+
+        // WI-20260829-70XVH — the CALLEE's OWN type parameters, from the CALLEE's own
+        // op-level `requires`. A DIFFERENT question from the three arms above and so an
+        // unconditional pass rather than a fourth arm: those ask "what does the receiver's
+        // carrier bind THE SPEC's parameters to" for a call that dispatches on a spec, and
+        // are mutually exclusive by which shape the receiver has. This one asks what the
+        // callee's clause determines about the callee's OWN parameters, which no spec-op
+        // classification is about — the operation need not be a spec op, need not sit in a
+        // parametric sort, and its clause names a spec nothing else here mentions.
+        //
+        // Placed HERE for WI-367's reason: above the `expected` seeding (a caller's return
+        // claim is not evidence about the carrier) and below `seed_op_type_args` (a written
+        // bracket outranks the clause). It reports NOTHING — unlike `carrier_bound`, nothing
+        // downstream is gated on whether a clause supplied anything; the parameters it leaves
+        // free reach `check_unconstrained_type_params` exactly as before.
+        //
+        // GATED on the callee declaring both, so the >99% of calls whose callee has neither
+        // pay one pair of `is_empty()` reads and never build the argument-type table.
+        if !op.type_params.is_empty() && !op.requires.is_empty() {
+            // MATERIALIZED rather than passed as a closure, because the pass takes `&mut kb`
+            // while [`supplied_arg_type`] reads it — and only here, so the >99% of calls the
+            // gate above turns away never build it.
+            let arg_tys: Vec<Option<Value>> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, (pname, _))| {
+                    supplied_arg_type(kb, i, *pname, pos_results, named_args, named_results)
+                })
+                .collect();
+            bind_op_type_params_from_op_requires(kb, &mut subst, &op, fn_sym, &arg_tys);
+        }
 
         // WI-379: synthesize from the ARGUMENTS first (the two loops below);
         // the caller-side `expected` is consulted only AFTER (moved below the
@@ -36805,6 +36812,42 @@ fn spec_carrier_param_candidates(
     Some((spec_sort, out))
 }
 
+/// The INFERRED TYPE of the argument supplied for the parameter at index `i`, named `pname`
+/// — positionally, else by its label.
+///
+/// WI-477: a carrier-agnostic `Value`, never `.as_term()` — an occurrence-primary
+/// `List[T = …]` is a `Value::Node` whose `T`/`E` bindings live in the node, and dropping the
+/// carrier leaks `Eff unconstrained`. WI-426: a named label binds to its param BY NAME, not
+/// by symbol identity.
+///
+/// ONE OWNER, because two passes in `check_apply_iter` ask it and they must not drift
+/// (`/code-review`): [`carrier_param_receiver`] asks WHICH ARGUMENT IS THE RECEIVER, and
+/// [`bind_op_type_params_from_op_requires`] asks WHOSE PROVISION GROUNDS THE ELEMENT. A
+/// change to how a call's arguments are matched to parameters — a variadic capture, a
+/// default, the label rule — applied to one copy and not the other would answer those two
+/// with different arguments.
+fn supplied_arg_type(
+    kb: &KnowledgeBase,
+    i: usize,
+    pname: Symbol,
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Option<Value> {
+    pos_results
+        .get(i)
+        .and_then(|r| r.as_ref().ok())
+        .map(|r| r.ty.clone())
+        .or_else(|| {
+            named_args
+                .iter()
+                .position(|(n, _)| same_label(kb, *n, pname))
+                .and_then(|j| named_results.get(j))
+                .and_then(|r| r.as_ref().ok())
+                .map(|r| r.ty.clone())
+        })
+}
+
 /// WI-424 — classify a CARRIER-PARAM receiver: a spec op that takes its carrier
 /// through a parameter typed as the spec's own carrier type-param
 /// (`Iterable.find(c: C, …)`, `sort C = ?` on Iterable) rather than as the spec
@@ -37133,6 +37176,199 @@ fn bind_spec_params_from_enclosing_requires(
         }
     }
     any
+}
+
+/// WI-20260829-70XVH — the TYPE PARAMETER a `requires` clause value NAMES, of EITHER scope.
+/// `None` for anything that is not one — a concrete leaf, a compound, an anonymous `?`.
+///
+/// The two value shapes are the ones [`enclosing_requires_provision_bindings`]' own
+/// `clause_param_vid` reads, and for the same reason: a clause names a parameter as a `Ref`
+/// to its symbol, and a row TAIL arrives as the bare canonical `Var::Global`.
+fn clause_named_type_param(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
+    match kb.get_term(t) {
+        Term::Ref(sym) | Term::Ident(sym) => type_param_global_var(kb, *sym),
+        Term::Var(Var::Global(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// The same, narrowed to the operation's OWN parameters — the ones a CALL may bind. An
+/// enclosing SORT's parameter belongs to the sort INSTANCE and not to this call, so it may
+/// be READ (as the clause's carrier, below) but never WRITTEN.
+///
+/// `own` is the CLASSIFICATION's own list ([`OperationInfoFull::type_params`]), not a
+/// name-scoped test: §5.3 says a clause names parameters of two scopes in ONE list, and only
+/// membership here separates them.
+fn clause_named_op_type_param(kb: &KnowledgeBase, t: TermId, own: &[VarId]) -> Option<VarId> {
+    clause_named_type_param(kb, t).filter(|v| own.contains(v))
+}
+
+/// WI-20260829-70XVH — ground the CALLEE's OWN type parameters from the CALLEE's op-level
+/// `requires`, at a call that pinned the clause's carrier.
+///
+/// `gmap[Sc, S, Dst, EffS, EffP](s: Sc, f: (x: S) -> Dst @ …) requires Walk[C = Sc,
+/// Element = S, E = EffS]` is the general free combinator — it takes ANY carrier that walks,
+/// and the clause says which element and which access effect that walk has. Called as
+/// `gmap(xs, f)` over a `List[T = Int64]` only `Sc` is determined by an argument: `S` and
+/// `EffS` appear nowhere a value flows through, so the call is refused `type parameter 'S'
+/// is unconstrained` and the author must write a bracket that repeats what the source
+/// already says. The clause IS the determination — `List provides Walk[Element = T, E = {}]`
+/// at `T = Int64` says `S = Int64` and `EffS = {}`.
+///
+/// It is the CALL-SITE twin of [`op_requires_provision_bindings`], which reads the same
+/// clause in the operation's own BODY to type a construction, and it reads the provision
+/// exactly the way [`carrier_param_receiver`] does — [`transitive_provision_view`], then the
+/// receiver's own type-args — because the question is the same one: what does THIS carrier
+/// bind that spec's parameters to. What differs is only WHICH variables the answer lands on.
+/// The carrier-param path binds the SPEC's parameters, because there the spec op's signature
+/// is written in them; here the spec is named by a clause, and the clause says which of the
+/// OPERATION's parameters each spec parameter is.
+///
+/// RETURNS NOTHING, unlike every `bind_spec_params_from_*` sibling: their booleans gate the
+/// WI-357 effect-close and the `expected` seeding, and nothing downstream is gated on whether
+/// a clause supplied anything here — the parameters it leaves free reach
+/// [`check_unconstrained_type_params`] exactly as they did before.
+///
+/// FOUR THINGS IT WILL NOT DO, each leaving the loud `unconstrained` rather than a guess:
+///   * bind a parameter the call already pinned. A written bracket ([`seed_op_type_args`],
+///     which runs above) outranks a clause, and so does the WI-424 same-sort rigid seeding;
+///     this sits beside the WI-367/424 carrier grounding, above the `expected` seeding, for
+///     the reason WI-367 states — a caller's return claim is not evidence about the carrier.
+///     The skip is NOT INDEPENDENTLY DRIVABLE and says so here rather than claiming a
+///     measurement it does not have: [`Substitution::bind_term`] already refuses to overwrite
+///     an existing binding, so removing the skip changes the outcome from "leave the author's
+///     value" to "mark the call's substitution CONTRADICTORY", and nothing on today's surface
+///     reads that flag differently — measured, the whole row set stays green either way. It
+///     is kept because those two are different behaviours and only one of them is additive.
+///   * bind anything but one of the OPERATION's own type parameters
+///     ([`clause_named_op_type_param`]).
+///   * bind the CARRIER parameter itself: ordinary argument unification against the receiver
+///     binds it, and the provision's value for it is the carrier APPLICATION — the artifact
+///     [`compose_provision_views`] documents, which would pin `Sc` to the intermediate sort.
+///   * bind a value the receiver does not fully determine. A provision binding still
+///     carrier-relative after the receiver's type-args are substituted in (an unwritten row,
+///     a witness template) is not an answer this reader has; [`bind_spec_params_from_carrier_param`]
+///     recovers some of those for the SPEC's own parameters and none of that is reused here,
+///     deliberately — a projection `s.E` is a path this call's parameter has no name for.
+///
+/// The carrier parameter is the spec's FIRST type parameter — the same convention, and the
+/// same fail-CLOSED limitation, that [`enclosing_requires_licensing_clause`] gate 1 and
+/// [`enclosing_requires_provision_bindings`] state. A spec that declares its carrier second
+/// makes this whole pass decline and the author sees the ordinary `unconstrained`.
+///
+/// A CARRIER WITH TWO WITNESSES THAT DISAGREE IS **NOT** REFUSED HERE, and that was measured
+/// before it was decided. [`transitive_provision_view`] takes the FIRST provision at the
+/// carrier, so with `First provides Pair[E = Tag, F = Int64]` beside `Second provides
+/// Pair[E = Tag, F = Tag]` this binds `F := Int64`. WI-1091 states the opposite rule —
+/// "neither may be picked for the author" — but about the HOST-ENTRY dictionary completion,
+/// a channel with no static receiver type to read. The typer's read of the same pair already
+/// picks: MEASURED on the delivered tree with this pass neutralized, the spec-op call
+/// `Pair.combine(t)` grounds its `F` to `Int64` and REFUSES a `-> Tag` return, through
+/// [`bind_spec_params_from_carrier_param`]. Adding a stricter rule HERE would make two
+/// readers of one question — "what does this carrier bind this spec's parameters to" —
+/// disagree by which declaration named the spec. Coherence at a carrier is that other
+/// reader's to settle, for both of them.
+fn bind_op_type_params_from_op_requires(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    arg_tys: &[Option<Value>],
+) {
+    let own: Vec<VarId> = op
+        .type_params
+        .iter()
+        .filter_map(|(_, v)| match v {
+            Var::Global(g) => Some(*g),
+            _ => None,
+        })
+        .collect();
+    if own.is_empty() {
+        return;
+    }
+    // The RAW entries, the shape [`op_requires_entry_carrier_map`] decodes — not
+    // `op_requires_chain_rc`, whose `SortView`-normalized spec that decoder would read
+    // positionally against the spec's own parameters. Value preconditions are filtered for
+    // the reason `op_requires_chain_rc` states: one keyword writes two things, and only a
+    // SPEC requirement can say a carrier provides anything.
+    for entry in op_requires_entries(kb, fn_sym) {
+        if is_value_precondition_clause(kb, &entry.spec) {
+            continue;
+        }
+        let spec = entry.required_sort;
+        let spec_params = sort_type_params_as_pairs(kb, spec).to_vec();
+        let Some((carrier_param, _)) = spec_params.first() else {
+            continue;
+        };
+        let Some(carrier_pvid) = type_param_vid_in_sort(kb, spec, *carrier_param) else {
+            continue;
+        };
+        let clause = op_requires_entry_carrier_map(kb, &entry);
+        // Clause binding ↦ the spec parameter it is FOR, by VarId identity (the clause's
+        // keys and the spec's declared parameters are resolved in two scopes).
+        let clause_value = |kb: &KnowledgeBase, want: VarId| -> Option<TermId> {
+            clause
+                .iter()
+                .find(|(p, _)| type_param_vid_in_sort(kb, spec, *p) == Some(want))
+                .map(|(_, v)| *v)
+        };
+        // READ EITHER SCOPE, WRITE ONLY THE OPERATION'S — the asymmetry §5.3's "one list"
+        // makes, and getting it wrong here is silent. The CARRIER only has to say WHICH
+        // ARGUMENT the clause is about, and an operation on a parametric sort routinely
+        // takes it through its sort's parameter (`each[El](x: C) … requires Iterable[C = C,
+        // Element = El]`); requiring the carrier to be the operation's own made that whole
+        // clause unreadable and left `El` unconstrained, with nothing saying why. The TARGET
+        // is a different question and keeps the narrow test: a sort parameter is the sort
+        // INSTANCE's, not this call's. Found by `/code-review`; driven by
+        // `a_clause_whose_carrier_is_the_enclosing_sorts_parameter_still_grounds`.
+        let Some(carrier_tp) =
+            clause_value(kb, carrier_pvid).and_then(|t| clause_named_type_param(kb, t))
+        else {
+            continue;
+        };
+        // The ARGUMENT that carries it — the parameter whose DECLARED TYPE is that
+        // parameter, the same recognizer [`spec_carrier_param_candidates`] uses one scope
+        // over. An operation may take the carrier in any position, so this is a search and
+        // not an index.
+        let Some(recv_ty) = op.params.iter().enumerate().find_map(|(i, (_, pty))| {
+            (declared_type_param_vid(kb, pty) == Some(carrier_tp))
+                .then(|| arg_tys.get(i).cloned().flatten())
+                .flatten()
+        }) else {
+            continue;
+        };
+        let Some(carrier_sym) = sort_functor_of_view(kb, &recv_ty) else {
+            continue;
+        };
+        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+        let Some((view, _transitive)) =
+            transitive_provision_view(kb, spec, carrier_pvid, carrier_sym, &mut visited)
+        else {
+            continue;
+        };
+        let recv_bindings = parameterized_vid_bindings(kb, &recv_ty, carrier_sym);
+        for (spec_param, carrier_value) in view {
+            let Some(pvid) = type_param_vid_in_sort(kb, spec, spec_param) else {
+                continue;
+            };
+            if pvid == carrier_pvid {
+                continue;
+            }
+            let Some(target) = clause_value(kb, pvid)
+                .and_then(|t| clause_named_op_type_param(kb, t, &own))
+            else {
+                continue;
+            };
+            if subst.resolve_as_value(target).is_some() {
+                continue;
+            }
+            let grounded = substitute_carrier_params(kb, carrier_value, carrier_sym, &recv_bindings);
+            if !type_value_is_ground(kb, grounded) || occurs_in(kb, target, grounded) {
+                continue;
+            }
+            subst.bind_term(kb, target, grounded);
+        }
+    }
 }
 
 /// WI-424 — ground a spec's sort params from the carrier's provision for a
@@ -41867,6 +42103,194 @@ fn enclosing_requires_provision_bindings(
     None
 }
 
+/// WI-20260829-70XVH — every TYPE PARAMETER inside a stored `requires` value, crossed to
+/// the BODY RIGID the operation is being checked at. `None` when one of them is a parameter
+/// this body does not hold.
+///
+/// The IDENTITY-KEYED twin of [`substitute_carrier_params`] + [`param_leaves_belong_to_sort`],
+/// which the two sort faces need as a pair because their leaf join is by LOCAL NAME anchored
+/// to a sort, and so can claim a FOREIGN sort's parameter whose short name collides (that
+/// function's doc carries the measurement). Here the join is the leaf's own canonical
+/// variable ([`type_param_global_var`]) against `rigids`, which IS the list of parameters in
+/// scope for this body — a foreign parameter is simply absent from it, so "is this ours" and
+/// "what is its rigid" have ONE answer and cannot disagree.
+///
+/// Fail-CLOSED, and the caller propagates that to the whole clause: a half-crossed provision
+/// would thread some params and leave the rest free for the sibling field to bind, which is
+/// granting a licence and binding a wrong rigid together.
+fn substitute_body_rigids(
+    kb: &mut KnowledgeBase,
+    tid: TermId,
+    rigids: &[(VarId, TermId)],
+) -> Option<TermId> {
+    // The PRE-RIGIDIFY parameter VARIABLE a row tail carries (`{ES}` lowers to
+    // `open[tail = Var]`, the tail anonymous — cf. `substitute_carrier_params` (1b)).
+    // A `Rigid` is accepted only when it is one THIS body holds, by the same identity test
+    // as every other join here: a stored `requires` is built at LOAD time and rigids are
+    // minted at CHECK time, so nothing can reach that arm today — but "already this body's
+    // own skolem" is an assumption, and left unenforced a FOREIGN body's skolem would pass
+    // the caller's `rigid_ok` groundness gate and be threaded into the field type, which is
+    // the granting-a-licence-and-binding-a-wrong-rigid hazard the sibling's doc names.
+    // (`/code-review`.) Any other var is undetermined and this clause does not decide it.
+    if let Term::Var(v) = kb.get_term(tid) {
+        return match v {
+            Var::Global(g) => {
+                let g = *g;
+                rigids.iter().find(|(rv, _)| *rv == g).map(|(_, r)| *r)
+            }
+            Var::Rigid(_) => rigids.iter().any(|(_, r)| *r == tid).then_some(tid),
+            _ => None,
+        };
+    }
+    if let Term::Ref(sym) | Term::Ident(sym) = kb.get_term(tid) {
+        let sym = *sym;
+        return match type_param_global_var(kb, sym) {
+            Some(vid) => rigids.iter().find(|(rv, _)| *rv == vid).map(|(_, r)| *r),
+            // Not a type parameter at all (`Int64`, a concrete sort): binds verbatim.
+            None => Some(tid),
+        };
+    }
+    // Any other compound: recurse into children, preserving the functor. A functor that is
+    // ITSELF a parameter is left alone and refused downstream by the caller's groundness
+    // gate (`type_value_is_ground_g` tests the functor), so nothing is claimed silently.
+    //
+    // CROSS EVERY CHILD FIRST, and only then rebuild. `map_fn_children` allocates as soon as
+    // any child changed, and `TermStore::alloc` increments the refcount ON A HIT — so
+    // rebuilding at a level this reader is about to DECLINE would pin a term nobody holds,
+    // once per call, on a store that has a free list (`/code-review`). The `?` here returns
+    // before any allocation at this level.
+    if let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(tid).clone()
+    {
+        let mut new_pos: SmallVec<[TermId; 4]> = SmallVec::with_capacity(pos_args.len());
+        for a in &pos_args {
+            new_pos.push(substitute_body_rigids(kb, *a, rigids)?);
+        }
+        let mut new_named: SmallVec<[(Symbol, TermId); 2]> =
+            SmallVec::with_capacity(named_args.len());
+        for (k, a) in &named_args {
+            new_named.push((*k, substitute_body_rigids(kb, *a, rigids)?));
+        }
+        if new_pos[..] == pos_args[..] && new_named[..] == named_args[..] {
+            return Some(tid);
+        }
+        return Some(kb.alloc(Term::Fn {
+            functor,
+            pos_args: new_pos,
+            named_args: new_named,
+        }));
+    }
+    Some(tid)
+}
+
+/// WI-20260829-70XVH — the OPERATION's own `requires` face of
+/// [`carrier_arg_provision_projection`]: the third and last declaration the statement
+/// "this carrier provides that spec" can be written on.
+///
+/// [`carrier_provision_short_bindings`] answers when the op is ON the field's spec, and
+/// [`enclosing_requires_provision_bindings`] when the ENCLOSING SORT requires it. Both read
+/// a SORT's declaration, and are therefore blind to the shape this one is for: an operation
+/// whose receiver is its OWN type parameter rather than its sort's carrier, carrying the
+/// clause itself — `gmap[Sc, S, …](s: Sc, …) requires Walk[C = Sc, Element = S, …]`. Such an
+/// operation may sit in no sort at all, or (the stdlib shape) in the DATA sort it constructs,
+/// whose own parameters say nothing about `Sc`.
+///
+/// WI-599 EXCLUDED IT AND NAMED A REASON THAT HAS SINCE EXPIRED — "op.rigidify not on env,
+/// requires-entry `Ref`s don't resolve to body rigids". WI-942 put the operation's OWN
+/// parameters into [`TypingEnv::param_rigids`], so a clause `Ref` resolves through
+/// [`type_param_global_var`] to a canonical var this body holds a rigid for; what was left
+/// was the wiring, which is this function.
+///
+/// The two load-bearing rules [`enclosing_requires_provision_bindings`] states hold here
+/// unchanged — THE CLAUSE MUST BE ABOUT THIS ARGUMENT, and EVERY PARAMETER IN A VALUE
+/// CROSSES TO ITS BODY RIGID or the whole clause declines — and both joins are by VarId
+/// identity. Two reads DIFFER, both because the clause is the OPERATION's:
+///
+///   * [`TypingEnv::param_rigids`] IN FULL, not the sort prefix. §5.3 lets an op-level clause
+///     name the operation's own type parameters as well as its enclosing sort's, one list —
+///     and the argument this face exists for is always one of the operation's own, which the
+///     prefix view excludes by construction.
+///   * the clause is decoded by [`op_requires_entry_carrier_map`], NOT
+///     [`unwrap_spec_view_value`]. An op-level `requires` is stored as the bare application
+///     `Fn{Spec, …}` rather than a `SortView` wrapper, and the SortView decoder reads a bare
+///     application as the NO-BINDINGS case — it would hand back an empty map, and this face
+///     would then answer for a clause it never read.
+fn op_requires_provision_bindings(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    arg_id: TermId,
+    field_base: Symbol,
+) -> Option<Vec<(String, Value)>> {
+    let rigids = env.param_rigids().to_vec();
+    if rigids.is_empty() {
+        return None;
+    }
+    let spec_params = sort_type_params_as_pairs(kb, field_base).to_vec();
+    let (carrier_param, _) = spec_params.first()?;
+    let carrier_pvid = type_param_vid_in_sort(kb, field_base, *carrier_param)?;
+
+    // [`TypingEnv::op_requires`] is the LICENCE list — every clause the operation wrote,
+    // value preconditions included (see its setter). Only a SPEC requirement can say a
+    // carrier provides anything, so the precondition filter is this reader's own question and
+    // not an inherited one; the sort-symbol test below would drop them anyway, and stating it
+    // keeps a precondition whose functor happens to be a sort's name from ever being read as
+    // a provision.
+    for entry in env.op_requires().to_vec() {
+        if is_value_precondition_clause(kb, &entry.spec)
+            || kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(field_base)
+        {
+            continue;
+        }
+        let clause = op_requires_entry_carrier_map(kb, &entry);
+        // Clause binding ↦ the spec parameter it is FOR, by VarId identity (the clause's
+        // keys and the spec's declared parameters are resolved in two scopes).
+        let bound_for = |kb: &KnowledgeBase, want: VarId| -> Option<TermId> {
+            clause
+                .iter()
+                .find(|(p, _)| type_param_vid_in_sort(kb, field_base, *p) == Some(want))
+                .map(|(_, t)| *t)
+        };
+        // THE CLAUSE MUST BE ABOUT THIS ARGUMENT. `requires Walk[C = P]` says nothing about
+        // an argument typed by a different parameter `Q`; crossing the clause's own carrier
+        // binding to its body rigid and comparing TERM IDENTITY against the argument's is
+        // that question asked exactly. (A short-name compare would pair two unrelated `C`s,
+        // and a clause may write another sort's parameters into the slots and permute them.)
+        let Some(cval) = bound_for(kb, carrier_pvid) else {
+            continue;
+        };
+        if substitute_body_rigids(kb, cval, &rigids) != Some(arg_id) {
+            continue;
+        }
+        let mut out: Vec<(String, Value)> = Vec::with_capacity(spec_params.len());
+        for (p, _) in spec_params.iter() {
+            // A spec parameter the clause leaves unwritten is OMITTED, not guessed: the
+            // caller `?`-declines the whole projection when the field binds a parameter this
+            // provision does not name.
+            let Some(pvid) = type_param_vid_in_sort(kb, field_base, *p) else {
+                continue;
+            };
+            let Some(v) = bound_for(kb, pvid) else {
+                continue;
+            };
+            let bound = substitute_body_rigids(kb, v, &rigids)?;
+            // DETERMINED AFTER THE CROSSING, or the clause supplies NOTHING — the same
+            // fail-closed verdict, and for the same reason, as the sort face states.
+            if !type_value_is_ground_g(kb, bound, true) {
+                return None;
+            }
+            out.push((
+                short_name_of(kb.local_name_of(*p)).to_owned(),
+                Value::term(bound),
+            ));
+        }
+        return Some(out);
+    }
+    None
+}
+
 /// The type an entity FIELD's supplied argument is INFERRED from (WI-594/WI-599).
 ///
 /// WI-594: a bare spec receiver into a parameterized field threads its element AND effect
@@ -41985,11 +42409,13 @@ fn carrier_arg_provision_projection(
         return None;
     }
 
-    // The spec-METHOD face first (the op is ON the field's spec), then the AMBIENT-`requires`
-    // face (the enclosing sort merely REQUIRES it). Additive in that order: the second runs
-    // only where the first declined.
+    // The spec-METHOD face first (the op is ON the field's spec), then the enclosing SORT's
+    // ambient `requires`, then the OPERATION's own (WI-20260829-70XVH). Additive in that
+    // order: each runs only where the ones before it declined. The three exhaust where the
+    // statement "this carrier provides that spec" can be written.
     let provision = carrier_provision_short_bindings(kb, env, &arg_carrier, field_base)
-        .or_else(|| enclosing_requires_provision_bindings(kb, env, *arg_id, field_base))?;
+        .or_else(|| enclosing_requires_provision_bindings(kb, env, *arg_id, field_base))
+        .or_else(|| op_requires_provision_bindings(kb, env, *arg_id, field_base))?;
 
     let (span, owner) = (arg.node.span, arg.node.owner);
     let base_ref = kb.make_sort_ref(field_base);
