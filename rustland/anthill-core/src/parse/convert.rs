@@ -151,6 +151,21 @@ enum BuildFrame<'t> {
         /// Bindings collected off an `instantiation_term` callee
         /// (`op[bindings](args)`); empty for the untyped form.
         type_args: Vec<SortBinding>,
+        /// WI-20260829-W6JH0 — the COMPANION RECEIVER's instantiation term, kept AS A
+        /// TYPE (`Map[K = String, V = Int64]` in `Map[…].empty()`), proposal 035 form
+        /// (3). `None` for every other callee shape, including the bare `Map.empty()`.
+        ///
+        /// A TYPE AND NOT A BINDINGS LIST, which is the whole of the reading this
+        /// implements: form (3) says "method dispatch on it produces values typed at
+        /// those bindings" (035), and the way a caller already says that is form (1)'s
+        /// `let m: Map[…] = Map.empty()` annotation. So the receiver rides the same
+        /// shape an annotation does and is consumed the same way, rather than being
+        /// merged into `type_args` — where it would bind the sort's params FOR the call
+        /// and then evaporate, because a constructor's bare self-sort return is
+        /// deliberately left untied (WI-1082, "NO SELF PARAMETER, NO TIE"). MEASURED:
+        /// `Map.empty[K = Bool, V = Bool]()`, which does reach `type_args`, still
+        /// accepts a `String` key.
+        recv_type: Option<TypeExpr>,
         /// WI-1129 (proposal 056 §2.3): the indices in `slots` of this call's
         /// `...?args` REST PATTERNS. The marker is syntax, not structure — each
         /// variable rides `slots` as an ordinary positional arg, so the head term
@@ -1351,6 +1366,32 @@ impl<'a> Converter<'a> {
             Vec::new()
         };
 
+        // WI-20260829-W6JH0 — the COMPANION RECEIVER's bracket, form (3). It reaches
+        // here having been ERASED from the functor: `collect_field_access_segments`
+        // flattens `Map[K = String].empty` to the segments `Map.empty` because the
+        // runtime call path wants the sort's NAME, and nothing downstream saw `K`/`V`
+        // at all — so the bindings were inert text that did not even reject an
+        // undeclared parameter name (`Map[Bogus = Int64].empty()` loaded clean, where
+        // both the callee bracket and a `let` annotation refuse it).
+        //
+        // The callee's `field_access` is reached through `dot_application`'s `name`
+        // field when the two-bracket spelling `Map[…].empty[T = X]()` is written
+        // (WI-20260829-BAD3V), and is `name_node` itself otherwise. Only an
+        // `application` OBJECT carries a bracket; a nested `field_access`
+        // (`a.b.Map.empty()`) and a bare `name` carry none, and answer `None` here.
+        let recv_type: Option<TypeExpr> = {
+            let callee = if name_node.kind() == "dot_application" {
+                self.field(name_node, "name").unwrap_or(name_node)
+            } else {
+                name_node
+            };
+            (callee.kind() == "field_access")
+                .then(|| self.field(callee, "object"))
+                .flatten()
+                .filter(|o| o.kind() == "application")
+                .map(|o| self.convert_type(o))
+        };
+
         // Collect child layout (positional vs named with key) and the
         // ordered list of child nodes whose TermIds the Build phase
         // will consume. For HO predicates the variable head slot is
@@ -1426,6 +1467,7 @@ impl<'a> Converter<'a> {
             functor,
             slots,
             type_args,
+            recv_type,
             rest_slots,
         }));
         for child in child_nodes.iter().rev() {
@@ -2199,6 +2241,7 @@ impl<'a> Converter<'a> {
                 functor,
                 slots,
                 type_args,
+                recv_type,
                 rest_slots,
             } => {
                 let span = self.span(node);
@@ -2237,6 +2280,16 @@ impl<'a> Converter<'a> {
                     let aux_tid = self.terms.alloc(aux, span);
                     let type_args_key = self.intern("type_args");
                     named_args.push((type_args_key, aux_tid));
+                }
+                // WI-20260829-W6JH0: the companion receiver's instantiation term, on the
+                // same inline channel and as a `TypeExpr` — the SAME `ParseAux` variant a
+                // `let m: T = …` annotation rides, because under form (3) it means the
+                // same thing about the same expression.
+                if let Some(recv_type) = recv_type {
+                    let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(recv_type)));
+                    let aux_tid = self.terms.alloc(aux, span);
+                    let recv_type_key = self.intern("recv_type");
+                    named_args.push((recv_type_key, aux_tid));
                 }
                 let tid = self.terms.alloc(
                     Term::Fn {

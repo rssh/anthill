@@ -345,6 +345,7 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
         .try_resolve_symbol("anthill.reflect.field_access")
         .unwrap();
     let goal = Value::Node(occ(Expr::Apply {
+        recv_type: None,
         functor: fa,
         pos_args: vec![
             recv,

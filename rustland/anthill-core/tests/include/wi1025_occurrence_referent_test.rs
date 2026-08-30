@@ -264,6 +264,7 @@ fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
     // half of the `Entity` arm, on this carrier.
     let nested = Value::Node(NodeOccurrence::new_expr(
         Expr::Apply {
+            recv_type: None,
             functor: sym,
             pos_args: vec![NodeOccurrence::new_expr(Expr::Ref(sym), span(), None)],
             named_args: vec![],

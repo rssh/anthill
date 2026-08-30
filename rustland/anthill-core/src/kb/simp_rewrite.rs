@@ -840,11 +840,15 @@ fn fold_capture_redex(
             pos_args,
             named_args,
             type_args,
+            recv_type,
         } => {
             // A call-site type-argument bracket is not part of the Inc-1 macro surface
             // (`try_expand_macro` declines a template carrying one), so a capture rule
             // declines it here rather than dropping the bracket in the reshaped redex.
-            if !type_args.is_empty() {
+            // WI-20260829-W6JH0: a form-(3) COMPANION RECEIVER is declined on the same
+            // grounds and in the same test — it is a type claim about the call's result,
+            // and the reshaped redex has nowhere to put it.
+            if !type_args.is_empty() || recv_type.is_some() {
                 return None;
             }
             (*functor, pos_args, named_args, None)
@@ -912,6 +916,7 @@ fn fold_capture_redex(
         }
     } else {
         Expr::Apply {
+            recv_type: None,
             functor,
             pos_args,
             named_args: kept,
@@ -1097,12 +1102,19 @@ fn try_expand_macro(
         pos_args,
         named_args,
         type_args,
+        recv_type,
     }) = template.as_expr()
     else {
         return Ok(None);
     };
     let functor = *functor;
-    if !named_args.is_empty() || !type_args.is_empty() || !super::typing::is_macro(kb, functor) {
+    // WI-20260829-W6JH0: `recv_type` joins the decline set for the reason the comment
+    // above gives about named and type args — a form-(3) call is not the Inc-1 surface.
+    if !named_args.is_empty()
+        || !type_args.is_empty()
+        || recv_type.is_some()
+        || !super::typing::is_macro(kb, functor)
+    {
         return Ok(None);
     }
     // Bind the macro's params to the argument occurrences as `Value::Node` — NOT
@@ -1336,6 +1348,7 @@ fn substitute_to_occurrence(
                 let pos_args: Vec<_> = (&mut children).take(pos_count).collect();
                 let named_args: Vec<_> = named_keys.into_iter().zip(children).collect();
                 let expr = Expr::Apply {
+                    recv_type: None,
                     functor,
                     pos_args,
                     named_args,
@@ -1489,7 +1502,9 @@ pub(super) fn reassemble(
             pos_args,
             named_args,
             type_args,
+            recv_type,
         } => Expr::Apply {
+            recv_type: recv_type.clone(),
             functor: *functor,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
@@ -1866,6 +1881,7 @@ mod tests {
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let body = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&seven), zero_occ],
                 named_args: vec![],
@@ -1904,6 +1920,7 @@ mod tests {
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let inner = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&seven), zero_occ],
                 named_args: vec![],
@@ -1914,6 +1931,7 @@ mod tests {
         );
         let body = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: wrap,
                 pos_args: vec![inner],
                 named_args: vec![],
@@ -1967,6 +1985,7 @@ mod tests {
         let zero_o = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let body = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&seven_o), zero_o],
                 named_args: vec![],
@@ -1999,6 +2018,7 @@ mod tests {
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let body = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&seven), zero_occ],
                 named_args: vec![],
@@ -2073,6 +2093,7 @@ mod tests {
         let seven = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span(), None);
         let body = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![seven],
                 named_args: vec![],
@@ -2128,6 +2149,7 @@ mod tests {
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span(), None);
         let mut node = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&seven), zero_occ],
                 named_args: vec![],
@@ -2139,6 +2161,7 @@ mod tests {
         for _ in 0..DEPTH {
             node = NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor: wrap,
                     pos_args: vec![node],
                     named_args: vec![],

@@ -1399,6 +1399,7 @@ pub fn one_goal_carrier_fixture(
                 };
                 NodeOccurrence::new_expr(
                     Expr::Apply {
+                        recv_type: None,
                         functor: rsip,
                         pos_args: vec![
                             NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),

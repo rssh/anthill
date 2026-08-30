@@ -12011,6 +12011,7 @@ mod tests {
         let child_b = NodeOccurrence::new_expr(Expr::Const(Literal::Int(2)), span, None);
         let add_occ = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![Rc::clone(&child_a), Rc::clone(&child_b)],
                 named_args: vec![],

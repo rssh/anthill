@@ -129,6 +129,7 @@ fn nonterminating_simp_rule_is_fuel_bounded_not_a_stack_overflow() {
     let seven = occ(Expr::Const(Literal::Int(7)));
     let eight = occ(Expr::Const(Literal::Int(8)));
     let body = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![seven, eight],
         named_args: vec![],
@@ -153,6 +154,7 @@ fn typer_fires_simp_rule_at_apply() {
     let seven = occ(Expr::Const(Literal::Int(7)));
     let zero = occ(Expr::Const(Literal::Int(0)));
     let body = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![Rc::clone(&seven), zero],
         named_args: vec![],
@@ -195,12 +197,14 @@ fn typer_cascades_nested_redex_to_fixpoint() {
     let zero_inner = occ(Expr::Const(Literal::Int(0)));
     let zero_outer = occ(Expr::Const(Literal::Int(0)));
     let inner = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![Rc::clone(&seven), zero_inner],
         named_args: vec![],
         type_args: vec![],
     });
     let body = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![inner, zero_outer],
         named_args: vec![],
@@ -227,6 +231,7 @@ fn typer_rewrites_redex_under_an_if_branch() {
     let seven = occ(Expr::Const(Literal::Int(7)));
     let zero = occ(Expr::Const(Literal::Int(0)));
     let then_b = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![Rc::clone(&seven), zero],
         named_args: vec![],
@@ -273,6 +278,7 @@ fn typer_and_resolver_phases_agree() {
     let seven_o = occ(Expr::Const(Literal::Int(7)));
     let zero_o = occ(Expr::Const(Literal::Int(0)));
     let body = occ(Expr::Apply {
+        recv_type: None,
         functor: add,
         pos_args: vec![Rc::clone(&seven_o), zero_o],
         named_args: vec![],

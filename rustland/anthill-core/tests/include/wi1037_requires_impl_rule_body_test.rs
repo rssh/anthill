@@ -301,6 +301,7 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
 
     let site = NodeOccurrence::new_expr(
         Expr::Apply {
+            recv_type: None,
             functor: spec,
             pos_args: Vec::new(),
             named_args: Vec::new(),
@@ -328,6 +329,7 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
     // (1) the carry is real — a plain rebuild on the DICTIONARY's target still
     //     decodes to the PIN, which is the override the woven arm must prevent.
     let rebuilt = site.rebuilt_expr(Expr::Apply {
+        recv_type: None,
         functor: dict_choice,
         pos_args: Vec::new(),
         named_args: Vec::new(),

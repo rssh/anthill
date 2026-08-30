@@ -1483,11 +1483,16 @@ impl<'kb> Emitter<'kb> {
                 pos_args,
                 named_args,
                 type_args,
+                recv_type,
             } => Expr::Apply {
                 functor: *functor,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
                 type_args: type_args.clone(),
+                // WI-20260829-W6JH0: closing rewrites the CHILDREN; the call's own result
+                // type is not one of them and rides through unchanged, exactly as
+                // `type_args` does beside it.
+                recv_type: recv_type.clone(),
             },
             // Proposal 055 — a nominal type value closes like the two shapes it
             // replaced: the BARE face was an `Expr::Ref` and passed through as a leaf,

@@ -1198,6 +1198,21 @@ pub enum Expr {
         /// DeBruijn/σ walkers via the carrier-agnostic `*_value_type` helpers
         /// (a `Value::Node` type carries no vars, so it passes through).
         type_args: Vec<(Option<Symbol>, Value)>,
+        /// WI-20260829-W6JH0 — proposal 035 form (3): the COMPANION RECEIVER's
+        /// instantiation type, `Map[K = String, V = Int64]` in
+        /// `Map[K = String, V = Int64].empty()`. `None` for every other call shape.
+        ///
+        /// A SEPARATE FIELD FROM `type_args`, because the two say different things
+        /// about the call and only one of them can be honoured today. `type_args`
+        /// BINDS the callee's type parameters (and, through `call_bracket_scopes`,
+        /// its parent sort's) for the duration of the call; this one says what the
+        /// call's RESULT is, which is what 035 means by "method dispatch on it
+        /// produces values typed at those bindings". Merging them would not work: a
+        /// binding that only enters the call's substitution evaporates on a
+        /// constructor, whose bare self-sort return is deliberately left untied
+        /// (WI-1082, "NO SELF PARAMETER, NO TIE") — MEASURED, `Map.empty[K = Bool,
+        /// V = Bool]()` reaches `type_args` and still accepts a `String` key.
+        recv_type: Option<Value>,
     },
     /// Proposal 055 §2 / `docs/design/055-implementation.md` §1 — a NOMINAL TYPE
     /// EXPRESSION standing in a VALUE position: a bare sort / standalone-entity
@@ -2207,11 +2222,24 @@ pub fn open_debruijn_node(
             pos_args,
             named_args,
             type_args,
+            recv_type,
         } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
             let (ta, c3) = open_type_args(kb, type_args, fresh);
-            (c1 || c2 || c3).then(|| Expr::Apply {
+            // WI-20260829-W6JH0: the receiver type is a type `Value` on exactly the
+            // footing of ONE `type_args` entry, so it takes the same per-value walk.
+            // Skipping it would leave a DeBruijn var inside `Map[K = T]` closed while
+            // every other type position on the call was opened.
+            let (rt, c4) = match recv_type {
+                Some(v) => {
+                    let (nv, ch) = open_value_type(kb, v, fresh);
+                    (Some(nv), ch)
+                }
+                None => (None, false),
+            };
+            (c1 || c2 || c3 || c4).then(|| Expr::Apply {
+                recv_type: rt,
                 functor: *functor,
                 pos_args: pos,
                 named_args: named,
@@ -2364,11 +2392,21 @@ pub fn node_to_debruijn(
             pos_args,
             named_args,
             type_args,
+            recv_type,
         } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
             let (ta, c3) = close_type_args(kb, type_args, var_order);
-            (c1 || c2 || c3).then(|| Expr::Apply {
+            // WI-20260829-W6JH0 — the σ/DeBruijn twin of `open_value_type` above.
+            let (rt, c4) = match recv_type {
+                Some(v) => {
+                    let (nv, ch) = close_value_type(kb, v, var_order);
+                    (Some(nv), ch)
+                }
+                None => (None, false),
+            };
+            (c1 || c2 || c3 || c4).then(|| Expr::Apply {
+                recv_type: rt,
                 functor: *functor,
                 pos_args: pos,
                 named_args: named,
@@ -3452,6 +3490,16 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             pos_args,
             named_args,
             type_args,
+            // WI-20260829-W6JH0 — the form-(3) receiver type is NOT carried into the
+            // term twin, and that is the same call [`Expr::TypeValue`]'s doc makes for
+            // itself one variant down: the twin is the RUNTIME / matching shape, and
+            // proposal 035 §"Runtime: type erasure" says a Map's K and V "do not need
+            // to be observable at runtime — heterogeneity only matters to the type
+            // checker". Carrying it would give `Map[K = Bool].empty()` a different
+            // discrimination key from `Map.empty()` for a distinction no resolver step
+            // can act on. Operation bodies are stored as occurrences, so a typed body
+            // never round-trips through a `Term` and back to lose it.
+            recv_type: _,
         }) => {
             return occ_build_apply(kb, *functor, pos_args, named_args, type_args);
         }
@@ -4479,6 +4527,7 @@ fn term_to_expr_leaf_occ(kb: &KnowledgeBase, tid: TermId, span: SourceSpan) -> R
                 .collect();
             NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor,
                     pos_args: pos,
                     named_args: named,
@@ -4521,6 +4570,7 @@ fn term_pattern_as_expr_occ(
                 .collect();
             NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor,
                     pos_args: pos,
                     named_args: named,
@@ -4831,13 +4881,23 @@ pub fn substitute_occurrence(
             pos_args,
             named_args,
             type_args,
+            recv_type,
         } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             let (ta, c3) = subst_type_args(kb, type_args, subst);
-            (c1 || c2 || c3).then(|| {
+            // WI-20260829-W6JH0 — the σ twin; see the opener.
+            let (rt, c4) = match recv_type {
+                Some(v) => {
+                    let (nv, ch) = subst_value_type(kb, v, subst);
+                    (Some(nv), ch)
+                }
+                None => (None, false),
+            };
+            (c1 || c2 || c3 || c4).then(|| {
                 NodeOccurrence::new_expr(
                     Expr::Apply {
+                        recv_type: rt,
                         functor: *functor,
                         pos_args: pos,
                         named_args: named,
@@ -5509,6 +5569,8 @@ pub(crate) enum BuildFrame {
         pos_count: usize,
         named_keys: Vec<Symbol>,
         type_args: Vec<(Option<Symbol>, Value)>,
+        /// WI-20260829-W6JH0 — proposal 035 form (3)'s companion-receiver type.
+        recv_type: Option<Value>,
     },
     Constructor {
         span: SourceSpan,
@@ -5827,6 +5889,12 @@ fn visit_fn(
                     pos_count,
                     named_keys,
                     type_args: type_args.clone(),
+                    // WI-20260829-W6JH0: this is `materialize_from_handle` — the TERM →
+                    // occurrence direction — and the term twin deliberately does not carry
+                    // a form-(3) receiver type (see `occurrence_to_term`'s arm), so there
+                    // is nothing here to recover. Operation bodies are stored as
+                    // occurrences and never make this round trip.
+                    recv_type: None,
                 },
                 span,
                 work,
@@ -6237,9 +6305,11 @@ pub(crate) fn build_frame(
             pos_count,
             named_keys,
             type_args,
+            recv_type,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Apply {
+                recv_type,
                 functor,
                 pos_args,
                 named_args,
@@ -6363,6 +6433,7 @@ pub(crate) fn build_frame(
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Apply {
+                recv_type: None,
                 functor,
                 pos_args,
                 named_args,
@@ -6544,6 +6615,7 @@ mod tests {
         let const42 = NodeOccurrence::new_expr(Expr::Const(Literal::Int(42)), span, None);
         let apply = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![const42],
                 named_args: vec![],
@@ -6606,6 +6678,7 @@ mod tests {
 
         // The control: `pos_args ++ named_args`, the shape every ordinary call has.
         let apply = Expr::Apply {
+            recv_type: None,
             functor: f,
             pos_args: vec![leaf(), leaf()],
             named_args: vec![(k, leaf())],
@@ -6806,6 +6879,7 @@ mod tests {
         let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: gt,
                 pos_args: vec![db0, Rc::clone(&three)],
                 named_args: vec![],
@@ -6851,6 +6925,7 @@ mod tests {
         let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: gt,
                 pos_args: vec![var0, Rc::clone(&three)],
                 named_args: vec![],
@@ -6907,6 +6982,7 @@ mod tests {
         let b = VarId::new(2, bname);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: p,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Var(Var::Global(a)), span, None),
@@ -6995,6 +7071,7 @@ mod tests {
         let f_sym = kb.intern("f");
         let apply = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f_sym,
                 pos_args: vec![body_arg],
                 named_args: vec![],
@@ -7055,6 +7132,7 @@ mod tests {
         let ta_db = kb.alloc(Term::Var(Var::DeBruijn(0)));
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
@@ -7107,6 +7185,7 @@ mod tests {
             let arg = NodeOccurrence::new_expr(Expr::Const(Literal::Int(n)), span, None);
             NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor: f,
                     pos_args: vec![arg],
                     named_args: vec![],
@@ -7291,6 +7370,7 @@ mod tests {
         let ta_global = kb.alloc(Term::Var(Var::Global(v0)));
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
@@ -7435,6 +7515,7 @@ mod tests {
         let ta_tid = kb.alloc(Term::Var(Var::Global(vt)));
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![],
                 named_args: vec![],
@@ -7465,6 +7546,7 @@ mod tests {
         let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: gt,
                 pos_args: vec![var0, Rc::clone(&three)],
                 named_args: vec![],
@@ -7636,6 +7718,7 @@ mod tests {
         let named_var = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![pos_var],
                 named_args: vec![(key, named_var)],
@@ -7682,6 +7765,7 @@ mod tests {
         let ref_child = NodeOccurrence::new_expr(Expr::Ref(r), span, None);
         let atom = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: f,
                 pos_args: vec![Rc::clone(&ref_child)],
                 named_args: vec![],
@@ -7945,6 +8029,7 @@ mod tests {
 
         let source = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: written,
                 pos_args: Vec::new(),
                 named_args: Vec::new(),

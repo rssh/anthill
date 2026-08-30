@@ -1679,6 +1679,7 @@ impl SearchStream {
                                 // return type, not something about the extra column.
                                 let call_occ = if reqs.is_empty() {
                                     goal_occ.rebuilt_expr(Expr::Apply {
+                                        recv_type: None,
                                         functor: f,
                                         pos_args: pos_args[..n].to_vec(),
                                         named_args: Vec::new(),
@@ -7370,6 +7371,7 @@ impl KnowledgeBase {
             let target = self.dictionary_dispatch_target(*functor, requirements, subst);
             let Some(target) = target else { return v };
             let call = occ.rebuilt_expr(Expr::Apply {
+                recv_type: None,
                 functor: target,
                 pos_args: args.clone(),
                 named_args: named_args.clone(),
@@ -8659,6 +8661,7 @@ impl KnowledgeBase {
         let mk_unify = |pos: Vec<Rc<NodeOccurrence>>, span| {
             Value::Node(NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor: unify_sym,
                     pos_args: pos,
                     named_args: Vec::new(),
@@ -9132,6 +9135,7 @@ impl KnowledgeBase {
                 // unfold on its now-smaller arguments.
                 let call = NodeOccurrence::new_expr(
                     Expr::Apply {
+                        recv_type: None,
                         functor,
                         pos_args: pos,
                         named_args: named,
@@ -9146,6 +9150,7 @@ impl KnowledgeBase {
                 let eq_sym = self.eq_functor();
                 let eq_goal = NodeOccurrence::new_expr(
                     Expr::Apply {
+                        recv_type: None,
                         functor: eq_sym,
                         pos_args: vec![call, Rc::clone(&tvar)],
                         named_args: Vec::new(),
@@ -11866,6 +11871,7 @@ mod tests {
         let zero_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(0)), span, None);
         let mut node = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: add,
                 pos_args: vec![std::rc::Rc::clone(&seven), zero_occ],
                 named_args: vec![],
@@ -11877,6 +11883,7 @@ mod tests {
         for _ in 0..DEPTH {
             node = NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor: wrap,
                     pos_args: vec![node],
                     named_args: vec![],
@@ -11949,6 +11956,7 @@ mod tests {
         let one_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let goal = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: wrap,
                 pos_args: vec![one_occ],
                 named_args: vec![],
@@ -12930,6 +12938,7 @@ mod tests {
         let var_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(result_vid)), span, None);
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: ls_sym,
                 pos_args: vec![name_occ, var_occ],
                 named_args: Vec::new(),
@@ -12999,6 +13008,7 @@ mod tests {
         };
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: fa_sym,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(recv), span, None),
@@ -13043,6 +13053,7 @@ mod tests {
         };
         let goal2 = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: fa_sym,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(positional), span, None),
@@ -13110,6 +13121,7 @@ mod tests {
         let ha_sym = kb.resolve_symbol("anthill.reflect.Expr.ho_apply");
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: ha_sym,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(Value::SymbolRef(pred)), span, None),
@@ -13164,6 +13176,7 @@ mod tests {
         let rsip = kb.resolve_symbol("anthill.reflect.resolve_sort_instantiation_param");
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: rsip,
                 pos_args: vec![
                     NodeOccurrence::new_expr(Expr::Spliced(inst), span, None),
@@ -14693,6 +14706,7 @@ mod tests {
         let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let g_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: g_sym,
                 pos_args: vec![concrete],
                 named_args: vec![],
@@ -14704,6 +14718,7 @@ mod tests {
         // test_builtin( g[T = ?caller_var](1) )
         let goal = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: builtin_sym,
                 pos_args: vec![g_call],
                 named_args: vec![],
@@ -14751,6 +14766,7 @@ mod tests {
         let caller_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(caller_vid)), span, None);
         let g_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: g_sym,
                 pos_args: vec![caller_occ],
                 named_args: vec![],
@@ -14761,6 +14777,7 @@ mod tests {
         );
         let goal = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: builtin_sym,
                 pos_args: vec![g_call],
                 named_args: vec![],
@@ -14796,6 +14813,7 @@ mod tests {
         let y_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(vy)), span, None);
         let g_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: g_sym,
                 pos_args: vec![y_occ],
                 named_args: vec![],
@@ -14841,6 +14859,7 @@ mod tests {
         // The Node-carried type-arg: a value-in-type `h[S = ?caller]` occurrence.
         let h_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: h_sym,
                 pos_args: vec![],
                 named_args: vec![],
@@ -14853,6 +14872,7 @@ mod tests {
         let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let g_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: g_sym,
                 pos_args: vec![concrete],
                 named_args: vec![],
@@ -14863,6 +14883,7 @@ mod tests {
         );
         let goal = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: builtin_sym,
                 pos_args: vec![g_call],
                 named_args: vec![],
@@ -14921,6 +14942,7 @@ mod tests {
         let concrete = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
         let g_call = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: g_sym,
                 pos_args: vec![concrete],
                 named_args: vec![],
@@ -14931,6 +14953,7 @@ mod tests {
         );
         let goal = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: builtin_sym,
                 pos_args: vec![g_call],
                 named_args: vec![],

@@ -414,6 +414,10 @@ fn reduce(
             pos_args,
             named_args,
             type_args,
+            // WI-20260829-W6JH0: a form-(3) receiver type is CARRIED through
+            // specialization, not dropped. It says what this call's result is, and a
+            // residual call still has that result.
+            recv_type,
         } => {
             // ── field projection (WI-687): a `field_access(recv, f)` whose
             // receiver reduces to a statically-known constructor projects to the
@@ -446,6 +450,7 @@ fn reduce(
                 return Some(rebuild(
                     occ,
                     Expr::Apply {
+                        recv_type: recv_type.clone(),
                         functor: *functor,
                         pos_args: pos,
                         named_args: named,
@@ -459,6 +464,7 @@ fn reduce(
             Some(rebuild(
                 occ,
                 Expr::Apply {
+                    recv_type: recv_type.clone(),
                     functor: *functor,
                     pos_args: pos,
                     named_args: named,
@@ -1153,6 +1159,7 @@ fn conj_of_guards(
             let not_sym = kb.try_resolve_symbol("anthill.prelude.Bool.not")?;
             NodeOccurrence::new_expr(
                 Expr::Apply {
+                    recv_type: None,
                     functor: not_sym,
                     pos_args: vec![cond],
                     named_args: Vec::new(),
@@ -1172,6 +1179,7 @@ fn conj_of_guards(
         let and_sym = kb.try_resolve_symbol("anthill.prelude.Bool.and")?;
         acc = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: and_sym,
                 pos_args: vec![acc, term],
                 named_args: Vec::new(),
@@ -1493,6 +1501,7 @@ impl KnowledgeBase {
         let result_occ = NodeOccurrence::new_expr(Expr::Var(Var::Global(result_var)), span, None);
         let body_node = NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: eq_sym,
                 pos_args: vec![result_occ, if_occ],
                 named_args: Vec::new(),

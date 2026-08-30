@@ -12651,6 +12651,10 @@ fn load_with_visited(
     // WI-839: every honouring reader of the call-site bracket channel has now run,
     // so anything still unread was written and dropped — report it.
     loader.check_unconsumed_call_type_args();
+    // WI-20260829-W6JH0 — its own call, NOT chained onto the tail of the one above: that
+    // function returns early when the file interned no `type_args` symbol at all, so a
+    // file whose only bracket is a receiver's would have swept nothing.
+    loader.check_unconsumed_recv_types();
 
     let result = LoadResult {
         defined_sorts: loader.defined_sorts,
@@ -17549,6 +17553,12 @@ struct Loader<'a> {
     // subtrees must carry this set over too, or every consumed bracket becomes a
     // spurious refusal. Named here because the set lives outside that type.
     consumed_call_type_args: HashSet<TermId>,
+    /// WI-20260829-W6JH0 — the `recv_type` channel's own half of the WI-839 rule "every
+    /// written bracket is read or reported". Kept SEPARATE from
+    /// [`Self::consumed_call_type_args`] rather than sharing one set: a call may carry
+    /// both brackets, and one set would mark the receiver's consumed because the callee's
+    /// was read, which is the accounting error the sweep exists to catch.
+    consumed_recv_types: HashSet<TermId>,
     // WI-839: rule-HEAD nodes whose bracket carries a concrete binding rather than a
     // bare WI-582 introducer (`rule r[A = Int64](…)`). Recorded by
     // `collect_rule_tvar_names` — the only place that knows the node is a head — purely
@@ -17746,6 +17756,7 @@ impl<'a> Loader<'a> {
             current_sort_carrier_bindings: HashMap::new(),
             signature_place_types: HashMap::new(),
             consumed_call_type_args: HashSet::new(),
+            consumed_recv_types: HashSet::new(),
             rule_head_bracket_bindings: HashSet::new(),
         }
     }
@@ -21135,6 +21146,19 @@ impl<'a> Loader<'a> {
                 };
                 let type_args_tid = self.type_args_term_handle(&type_args);
 
+                // WI-20260829-W6JH0 — proposal 035 form (3). Gated exactly as `type_args`
+                // is, and for the same reason: an ENTITY-headed or type-value callee
+                // builds a shape with nowhere to put it, and reading the channel there
+                // would be the silent drop WI-839 exists to prevent. The grammar cannot
+                // produce a receiver bracket on either of those (both are reached through
+                // a `name`, not a `field_access` over an `application`), so the gate never
+                // actually fires — it is written to keep the two channels' rules one rule.
+                let recv_type = if is_entity || is_type_value {
+                    None
+                } else {
+                    self.build_recv_type(outer_parse_id)
+                };
+
                 let s = &self.expr_syms;
                 let kb_id = if is_entity {
                     self.kb.alloc(Term::Fn {
@@ -21207,6 +21231,7 @@ impl<'a> Loader<'a> {
                             pos_count,
                             named_keys: occ_named_keys,
                             type_args,
+                            recv_type,
                         }
                     };
                     node_occurrence::build_frame(self.kb, frame, &mut self.expr_occ_results);
@@ -21373,6 +21398,58 @@ impl<'a> Loader<'a> {
                 callee,
                 position,
                 span,
+            });
+        }
+    }
+
+    /// WI-20260829-W6JH0 — the same sweep for the COMPANION RECEIVER's bracket, and it
+    /// needs one for the same reason: the channel is attached by ONE parse producer and
+    /// read by TWO lowerings (the `ApplyOrConstructor` frame and the rule-body walk), so
+    /// every other position drops it. MEASURED before this existed, all loading clean
+    /// where the `type_args` twin is a loud refusal: `Option[Bogus = Int64].some(1)` (an
+    /// ENTITY-constructor callee, which builds an `Expr::Constructor` with no channel to
+    /// put it in), a bracket inside a FACT HEAD, and one inside a `[simp]` rule head.
+    ///
+    /// So the gate on the entity arm is a real gate, not the dead one its first comment
+    /// claimed — and leaving the bracket UNREAD there is what routes it here, exactly as
+    /// WI-839 arranged for `type_args`. Every form-(3) call in the corpus is on an
+    /// OPERATION (`Map[…].empty()`), so nothing that loads today is newly refused.
+    fn check_unconsumed_recv_types(&mut self) {
+        let Some(key_sym) = self.parsed.symbols.lookup("recv_type") else {
+            return;
+        };
+        let mut unconsumed: Vec<(TermId, Symbol)> = Vec::new();
+        for i in 0..self.parsed.terms.len() {
+            let id = TermId::from_raw(i as u32);
+            if self.consumed_recv_types.contains(&id) {
+                continue;
+            }
+            let Term::Fn {
+                functor,
+                named_args,
+                ..
+            } = self.parsed.terms.get(id)
+            else {
+                continue;
+            };
+            if named_args
+                .iter()
+                .any(|&(s, t)| s == key_sym && self.is_parse_aux(t))
+            {
+                unconsumed.push((id, *functor));
+            }
+        }
+        for (id, functor) in unconsumed {
+            let span = self.parsed.terms.span(id);
+            let callee = self.parsed.symbols.local_name(functor).to_string();
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: format!(
+                    "a companion receiver's type bracket is not read here — `{callee}` is \
+                     not a call whose result it can type (proposal 035 form (3) applies to \
+                     an operation call, not to an entity constructor or a fact / rule head). \
+                     Drop the bracket, or annotate the result where one is accepted"
+                ),
+                span: Some(span),
             });
         }
     }
@@ -21643,6 +21720,41 @@ impl<'a> Loader<'a> {
             crate::parse::ir::ParseAux::SortBindings(bindings) => Some(bindings.clone()),
             _ => None,
         })
+    }
+
+    /// WI-20260829-W6JH0 — the COMPANION RECEIVER's instantiation type off a form-(3)
+    /// call (`Map[K = String, V = Int64].empty()`), as the parser preserved it. The twin
+    /// of [`Self::read_parse_call_type_args`] on the channel beside it; `None` for every
+    /// other callee shape.
+    fn read_parse_recv_type(&self, apply_parse_id: TermId) -> Option<crate::parse::ir::TypeExpr> {
+        self.read_parse_aux(apply_parse_id, "recv_type", |aux| match aux {
+            crate::parse::ir::ParseAux::TypeExpr(t) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
+    /// WI-20260829-W6JH0 — lower a form-(3) companion receiver (`Map[K = String, V =
+    /// Int64]` in `Map[…].empty()`) to the type `Value` the typer reads as this call's
+    /// RESULT type.
+    ///
+    /// NO CHECK OF ITS OWN, and that is the point rather than an omission. The parameter
+    /// names are validated by [`Self::type_expr_to_child_inner`]'s `Parameterized` arm —
+    /// WI-709's "the arguments must FIT the sort's declared params … decided by the same
+    /// rule the VALUE position decides it by, so one written type cannot mean two things"
+    /// — which every written type already goes through. A receiver bracket was
+    /// unvalidated only because it never reached a lowering at all: it was ERASED in
+    /// `collect_field_access_segments`, which flattens `Map[K = String].empty` to the
+    /// segments `Map.empty` for the runtime call path. So `Map[Bogus = Int64].empty()`
+    /// loaded clean where a `let m: Map[Bogus = Int64]` annotation refused it, and simply
+    /// lowering the type here closes that with no second rule.
+    ///
+    /// A FIRST CUT ADDED ITS OWN `check_sort_type_args` HERE and reported the same fault
+    /// TWICE. Kept as a note because the duplicate is what led to the shared checker: the
+    /// question "who validates a written type" already had an owner.
+    fn build_recv_type(&mut self, parse_id: TermId) -> Option<crate::eval::value::Value> {
+        let te = self.read_parse_recv_type(parse_id)?;
+        self.consumed_recv_types.insert(parse_id);
+        Some(self.type_expr_to_value(&te))
     }
 
     /// Build an `ApplyArg(name: …, value: …)` term using cached syms.
@@ -21962,6 +22074,15 @@ impl<'a> Loader<'a> {
                     }
                 }
                 Expr::Apply {
+                    // WI-20260829-W6JH0: a form-(3) receiver in a RULE BODY carries the
+                    // same claim it does in an operation body, and this walk is the other
+                    // producer of an `Expr::Apply` — so it reads the channel too. Without
+                    // this the claim vanished silently here while being honoured one
+                    // lowering over, which is exactly the split WI-839 wrote its sweep to
+                    // stop. (`type_args` beside it stays `Vec::new()`: that channel is
+                    // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
+                    // decision this ticket does not reopen.)
+                    recv_type: self.build_recv_type(parse_id),
                     functor: new_functor,
                     pos_args: pos,
                     named_args: named,

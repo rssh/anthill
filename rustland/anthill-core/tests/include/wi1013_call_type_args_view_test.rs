@@ -81,6 +81,7 @@ fn call(
 ) -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(
         Expr::Apply {
+            recv_type: None,
             functor,
             pos_args: vec![arg],
             named_args: Vec::new(),

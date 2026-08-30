@@ -1120,6 +1120,10 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             pos_args,
             named_args,
             type_args,
+            // WI-20260829-W6JH0: NOT counted, because `occurrence_to_term` does not put
+            // it in the twin (see its arm). A view head that counted a child the term
+            // twin has not got would stop the two matching.
+            recv_type: _,
         }) => functor_view_head(
             kb,
             *functor,

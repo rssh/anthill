@@ -7636,6 +7636,7 @@ fn build_relation_projection(
     let pos_args = vec![Rc::clone(receiver_node), Rc::clone(&spliced)];
     let synth = NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type: None,
             functor: project_run,
             pos_args: pos_args.clone(),
             named_args: Vec::new(),
@@ -12616,6 +12617,7 @@ fn build_type(
                                 pos_args: np,
                                 named_args: nn,
                                 type_args: ta,
+                                recv_type: rt,
                                 ..
                             },
                         ..
@@ -12626,6 +12628,10 @@ fn build_type(
                     let pass = super::simp_rewrite::simp_pass(kb);
                     let synth = NodeOccurrence::synthesized_expr(
                         Expr::Apply {
+                            // WI-20260829-W6JH0: the spec-op re-dispatch is the SAME call
+                            // with a resolved functor, so the receiver's type claim about
+                            // its result survives it.
+                            recv_type: rt.clone(),
                             functor: spec_op,
                             pos_args: np.clone(),
                             named_args: nn.clone(),
@@ -12973,6 +12979,7 @@ fn build_type(
                 let pass = super::simp_rewrite::simp_pass(kb);
                 let synth = NodeOccurrence::synthesized_expr(
                     Expr::Apply {
+                        recv_type: None,
                         functor: op_sym,
                         pos_args: synth_pos,
                         named_args: named_nodes,
@@ -14356,6 +14363,7 @@ fn synthesize_field_access(
     let pass = super::simp_rewrite::simp_pass(kb);
     Ok(NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type: None,
             functor: fa_sym,
             pos_args: vec![Rc::clone(receiver_node), field_name_node],
             named_args: Vec::new(),
@@ -14698,8 +14706,16 @@ fn normalize_variadic_capture(
         Some(Expr::Apply { type_args, .. }) => type_args.clone(),
         _ => Vec::new(),
     };
+    // WI-20260829-W6JH0: and the receiver's type claim, on the same grounds as the
+    // sentence above — the capture rewrite reshapes this call's ARGUMENTS, not what it
+    // returns.
+    let recv_type = match occ.as_expr() {
+        Some(Expr::Apply { recv_type, .. }) => recv_type.clone(),
+        _ => None,
+    };
     let new_occ = NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type,
             functor: fn_sym,
             pos_args: pos_args.to_vec(),
             named_args: kept_args.clone(),
@@ -16041,6 +16057,88 @@ fn check_apply_iter(
         ) {
             Some(opened) => opened,
             None => proj_return_type,
+        };
+
+        // WI-20260829-W6JH0 — proposal 035 FORM (3): `Map[K = String, V = Int64].empty()`.
+        // The receiver's bindings ARE this call's result type. 035 states it as "method
+        // dispatch on it produces values typed at those bindings", and lists form (3)
+        // beside form (1)'s `let m: Map[…] = Map.empty()` annotation and form (2)'s
+        // inference as three spellings of one thing — so this is the annotation's rule,
+        // reached from the receiver instead of from a binding occurrence.
+        //
+        // IT HAS TO BE THE RESULT AND NOT THE SUBSTITUTION, which is what the ticket's own
+        // proposed fix ("unify the receiver's bindings against the sort's params for the
+        // call") would have been, and it is why that fix was not taken. Binding the sort's
+        // params in `subst` is ALREADY what the callee bracket does — `call_bracket_scopes`
+        // includes the parent sort's params, so `Map.empty[K = Bool, V = Bool]()` reaches
+        // `seed_op_type_args` and binds them — and it changes nothing, because `empty()
+        // -> Map` returns the sort BARE and WI-1082 deliberately leaves a constructor's
+        // self-sort return untied ("NO SELF PARAMETER, NO TIE"). MEASURED: that spelling
+        // still accepts a `String` key. The binding has nowhere to land.
+        //
+        // GATED ON THE DECLARED RETURN BEING THE RECEIVER'S OWN SORT, so it speaks only
+        // where the receiver is describing the value that comes back. `Map[K = …].size(m)
+        // -> Int64` is untouched: its bracket is still checked for parameter NAMES at the
+        // loader, but it makes no claim this arm can honour, and inventing one would be
+        // reading `Map[…]` as the type of an `Int64`.
+        //
+        // AFTER the existential opening, so an opened rigid is what the receiver refines
+        // rather than the other way round.
+        //
+        // IT MERGES, IT DOES NOT REPLACE, and a first cut got this wrong in a way worth
+        // recording because the wrong version LOOKS right on the ticket's own row. Taking
+        // the receiver's type verbatim discards every slot it does not write, and for a
+        // callee whose return IS parameterized those slots hold what the ARGUMENTS just
+        // determined: `Map.put(m, key, value) -> Map[K = K, V = V]` (WI-1082's self-tie)
+        // has `V` pinned to `Int64` by the `1` in `put(Map.empty(), "a", 1)`, and a
+        // receiver writing only `Map[K = String]` — a TRUE claim — deleted it, silencing a
+        // real error one call out. MEASURED: `size(put(Map[K = String].put(Map.empty(),
+        // "a", 1), "b", true))` went from 1 error to 0. A written type that is CORRECT
+        // must never remove a check. So the receiver is unified INTO the declared return
+        // and the resolved declared return is what comes back; the receiver's own type is
+        // the result only where the declared return has no slots to carry (a bare
+        // `SortRef`, which is `empty()` and the case this ticket is about).
+        //
+        // AND THE VERDICT IS READ. A receiver that CONTRADICTS what the call determined
+        // (`Map[V = Bool].put(Map.empty(), "a", 1)`) is a fault the author wrote, and
+        // discarding the failed unify made it load clean — the same measurement, other
+        // polarity. It is reported here, at the receiver, because that is where the wrong
+        // claim is; the arguments are not at fault and reporting against them would send
+        // the author to the wrong line.
+        let proj_return_type = match call_recv_type_of(occ) {
+            Some(rt)
+                if matches!(
+                    (type_head(kb, &proj_return_type), type_head(kb, rt)),
+                    (TypeHead::SortRef(a), TypeHead::Parameterized { base: b })
+                        | (TypeHead::Parameterized { base: a }, TypeHead::Parameterized { base: b })
+                        if same_sort_canonical(kb, a, b)
+                ) =>
+            {
+                let rt = rt.clone();
+                let declared_carries_slots =
+                    matches!(type_head(kb, &proj_return_type), TypeHead::Parameterized { .. });
+                if !unify_types(kb, &mut subst, &proj_return_type, &rt) {
+                    let actual = walk_type_deep_value(kb, &subst, &proj_return_type);
+                    let surface = surface_of(kb, occ, fn_sym);
+                    return Err(TypeError::TypeMismatch {
+                        site: TypeError::here(),
+                        span,
+                        context: TypeErrorContext::OperationReturn {
+                            op_name: fn_sym,
+                            surface,
+                        },
+                        expected: rt,
+                        actual,
+                    });
+                }
+                let merged = if declared_carries_slots {
+                    &proj_return_type
+                } else {
+                    &rt
+                };
+                walk_type_deep_value(kb, &subst, merged)
+            }
+            _ => proj_return_type,
         };
 
         // Apply param-name substitution to op.effects (WI-209), then
@@ -24583,6 +24681,19 @@ fn call_type_args_of(
             expr: Expr::Apply { type_args, .. },
             ..
         } if !type_args.is_empty() => Some(type_args),
+        _ => None,
+    }
+}
+
+/// WI-20260829-W6JH0 — the form-(3) COMPANION RECEIVER's type on this call, if it wrote
+/// one (`Map[K = String, V = Int64].empty()`). The twin of [`call_type_args_of`] on the
+/// channel beside it.
+fn call_recv_type_of(occ: &Rc<NodeOccurrence>) -> Option<&crate::eval::value::Value> {
+    match &occ.kind {
+        NodeKind::Expr {
+            expr: Expr::Apply { recv_type, .. },
+            ..
+        } => recv_type.as_ref(),
         _ => None,
     }
 }
@@ -39571,8 +39682,14 @@ fn gather_spread_args_into_tuple(
     wraps: &[(usize, Value)],
     pos_results: &[Result<TypeResult, TypeError>],
 ) -> Option<Rc<NodeOccurrence>> {
+    // WI-20260829-W6JH0: carried for the reason `reorder_named_args_in_apply` records.
+    // This one runs AFTER the read, so it only corrupted the STORED node — still a
+    // divergence between what was typed and what is kept.
     let Some(Expr::Apply {
-        functor, type_args, ..
+        functor,
+        type_args,
+        recv_type,
+        ..
     }) = occ.as_expr()
     else {
         return None;
@@ -39599,6 +39716,7 @@ fn gather_spread_args_into_tuple(
     let pass = super::simp_rewrite::simp_pass(kb);
     Some(NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type: recv_type.clone(),
             functor,
             pos_args: vec![tuple_node],
             named_args: Vec::new(),
@@ -40120,16 +40238,23 @@ fn reorder_named_args_in_apply(
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
 ) -> Option<Rc<NodeOccurrence>> {
-    let (functor, labels, type_args) = match occ.as_expr()? {
+    // WI-20260829-W6JH0: `recv_type` rides along with `type_args`. This rebuild runs
+    // BEFORE the receiver type is read (it reorders a NAMED-argument call into positional
+    // form and rebinds `occ`), so dropping it made a form-(3) bracket inert on any call
+    // written with named arguments while working on the positional spelling of the same
+    // call — one claim, two verdicts, decided by argument spelling. Found by /code-review.
+    let (functor, labels, type_args, recv_type) = match occ.as_expr()? {
         Expr::Apply {
             functor,
             named_args,
             type_args,
+            recv_type,
             ..
         } => (
             *functor,
             named_args.iter().map(|(s, _)| *s).collect::<Vec<Symbol>>(),
             type_args.clone(),
+            recv_type.clone(),
         ),
         _ => return None,
     };
@@ -40198,6 +40323,7 @@ fn reorder_named_args_in_apply(
             let pass = super::simp_rewrite::simp_pass(kb);
             return Some(NodeOccurrence::synthesized_expr(
                 Expr::Apply {
+                    recv_type,
                     functor,
                     pos_args: ordered.into_iter().map(|(_, c)| c).collect(),
                     named_args: Vec::new(),
@@ -40214,6 +40340,7 @@ fn reorder_named_args_in_apply(
     let pass = super::simp_rewrite::simp_pass(kb);
     Some(NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type,
             functor,
             pos_args: pos_children,
             named_args: named_pairs,
@@ -45880,11 +46007,15 @@ fn repoint_arm_binders(
         pos_args,
         named_args,
         type_args,
+        recv_type,
     }) = rebuilt.as_expr()
     {
         if let Some(ctor) = hit(*functor) {
             return NodeOccurrence::new_expr(
                 Expr::Apply {
+                    // WI-20260829-W6JH0: re-pointing the FUNCTOR does not change what the
+                    // call's result was claimed to be — carry it.
+                    recv_type: recv_type.clone(),
                     functor: ctor,
                     pos_args: pos_args.clone(),
                     named_args: named_args.clone(),
@@ -64385,6 +64516,7 @@ fn rewrite_find_dictionary_goal(
         new_pos.extend(args_in_order);
         Some(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: fd_sym,
                 pos_args: new_pos,
                 // WI-1040: `out` survives the rewrite unchanged. The resolver arm
@@ -66492,6 +66624,7 @@ mod wi323_pattern_type_ann_walker_tests {
         let x2 = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(1)), span, None);
         NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: ho_apply_sym,
                 pos_args: vec![pred, x1, x2],
                 named_args: vec![],
@@ -68272,6 +68405,7 @@ mod wi621_carrier_neutral_goal_subst {
         let b = kb.intern("b");
         let eq = kb.eq_functor();
         let goal = Value::Node(e(Expr::Apply {
+            recv_type: None,
             functor: eq,
             pos_args: vec![e(Expr::VarRef { name: b }), e(Expr::Const(Literal::Int(0)))],
             named_args: vec![],
@@ -68320,6 +68454,7 @@ mod wi621_carrier_neutral_goal_subst {
         let var_ref_sym = kb.resolve_symbol("anthill.reflect.Expr.var_ref");
         let eq = kb.eq_functor();
         let goal = Value::Node(e(Expr::Apply {
+            recv_type: None,
             functor: eq,
             pos_args: vec![e(Expr::VarRef { name: b }), e(Expr::Const(Literal::Int(0)))],
             named_args: vec![],
@@ -68352,6 +68487,7 @@ mod wi621_carrier_neutral_goal_subst {
         let eq = kb.eq_functor();
         let goal = |n: i64| {
             e(Expr::Apply {
+                recv_type: None,
                 functor: eq,
                 pos_args: vec![
                     e(Expr::Const(Literal::Int(n))),
@@ -68362,6 +68498,7 @@ mod wi621_carrier_neutral_goal_subst {
             })
         };
         let conj = Value::Node(e(Expr::Apply {
+            recv_type: None,
             functor: conjunction,
             pos_args: vec![goal(1), goal(2)],
             named_args: vec![],
@@ -68401,6 +68538,7 @@ mod wi621_carrier_neutral_goal_subst {
         let pred = kb.intern("pred");
         // Build the goal with named args in NON-canonical order: `z` before `a`.
         let goal = Value::Node(e(Expr::Apply {
+            recv_type: None,
             functor: pred,
             pos_args: vec![],
             named_args: vec![

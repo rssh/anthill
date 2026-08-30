@@ -69,6 +69,7 @@ fn node(e: Expr) -> Value {
 /// `functor_view_head` (WI-436), so a zero-arg one would test the other case.
 fn applied_node(functor: Symbol, arg: Symbol) -> Value {
     node(Expr::Apply {
+        recv_type: None,
         functor,
         pos_args: vec![NodeOccurrence::new_expr(Expr::Ref(arg), span(), None)],
         named_args: vec![],

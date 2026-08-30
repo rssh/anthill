@@ -3037,6 +3037,7 @@ fn splice_query_runner(
     pos_args.push(spliced);
     let call = NodeOccurrence::synthesized_expr(
         Expr::Apply {
+            recv_type: None,
             functor: runner,
             pos_args,
             named_args: params,
@@ -5157,6 +5158,7 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let pass = crate::kb::occurrence::macro_expand_pass(&mut interp.kb);
     let owner = from.owner;
     let expr = Expr::Apply {
+        recv_type: None,
         functor,
         pos_args,
         named_args: Vec::new(),

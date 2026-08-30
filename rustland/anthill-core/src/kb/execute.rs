@@ -1338,6 +1338,7 @@ mod tests {
         let vb = Value::term(kb.alloc(Term::Var(Var::Global(b))));
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
+                recv_type: None,
                 functor: p,
                 pos_args: vec![occ_a],
                 named_args: vec![],
