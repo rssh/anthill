@@ -22832,6 +22832,38 @@ pub(crate) fn resolve_bridge_requirements(
     let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
     for (i, (entry, name)) in chain.iter().zip(names.iter()).enumerate() {
         let op_half = i >= sort_len;
+        // WI-20260830-DQD5W — the `EffectsRuntime` KIND-ANCHOR keeps its slot as a
+        // STRUCTURAL LEAF here too, exactly as [`build_dep_projection`] projects it at
+        // compile time and as `check_provider_requires` exempts it. It is synthesized
+        // from `effects E = ?` (WI-320) and satisfied by the effect-row machinery, never
+        // by a carrier `fact` — so there is nothing to resolve, and `E` is a row
+        // PARAMETER that no argument type can pin.
+        //
+        // WITHOUT THIS THE SORT HALF FAILED THE `all_pinned` GATE and the whole call was
+        // `Unresolvable`. MEASURED: bridging `anthill.prelude.Iterable.isEmpty` at a
+        // `List` argument suspended with "`anthill.prelude.EffectsRuntime[Effects =
+        // anthill.prelude.Iterable.E]` is not fully pinned by the argument types". That
+        // gate is right about every OTHER slot — an abstract binding matches ANY
+        // provider — and wrong about this one for the reason WI-857 records: the anchor
+        // has no provider to pick WRONGLY, so "not pinned" carries no hazard here.
+        //
+        // The `Leaf` with no bindings is the runtime twin of `build_empty_bundle`'s
+        // `Dictionary(impl: EffectsRuntime)`: `dictionary_of_tree` ports it to a
+        // sub-dictionary-free `Dictionary` rooted at the anchor, so the slot the
+        // [`DictLayout`] halves count is present and positionally exact. WI-857's
+        // "one owner for the three readers that must agree about the ANCHOR'S SLOT"
+        // now has a fourth, and this is it.
+        if is_effects_runtime(kb, entry.required_sort) {
+            trees.push((
+                *name,
+                ResolvedRequiresNode::Leaf {
+                    impl_sort: entry.required_sort,
+                    spec_sort: entry.required_sort,
+                    bindings: SmallVec::new(),
+                },
+            ));
+            continue;
+        }
         let concrete_spec = substitute_spec_via_subst(kb, &entry.spec, &subst);
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
@@ -56318,14 +56350,21 @@ pub struct DictLayout {
 /// never resolved: it rides as a structural leaf, occupying its dictionary slot so
 /// the [`DictLayout`] halves stay positionally exact.
 ///
-/// One owner for the three readers that must agree about the ANCHOR'S SLOT — the
-/// resolver's slot placement, `check_provider_requires`' exemption, and
-/// `build_dep_projection`'s synthetic projection. They previously spelled the name
+/// One owner for the FOUR readers that must agree about the ANCHOR'S SLOT — the
+/// resolver's slot placement, `check_provider_requires`' exemption,
+/// `build_dep_projection`'s synthetic projection, and (WI-20260830-DQD5W)
+/// [`resolve_bridge_requirements`]'s structural leaf. They previously spelled the name
 /// two ways (`try_resolve_symbol` and a qualified-name comparison) and, worse,
 /// DISAGREED about the slot: the provider half dropped the anchor while the
 /// parent-bundle projection kept it, so a provider with an effect-row param built a
 /// dictionary SHORTER than the chain it is indexed by (MEASURED: 144 such
 /// dictionaries across the suite — `Iterable`-over-`Stream` alone accounts for 140).
+///
+/// The FOURTH was the one that had never been written, and its absence had a
+/// different shape: the bridge did not drop the slot, it tried to RESOLVE it — so a
+/// bodied spec op reached from a rule body (`Iterable.isEmpty` at a `List`) suspended
+/// on "`EffectsRuntime[Effects = Iterable.E]` is not fully pinned by the argument
+/// types", which no argument type ever could be.
 /// Other checks look the anchor up for their own purposes (`check_provider_-
 /// operations`, `sort_param_is_effect_row`); they decide nothing about slots.
 pub(crate) fn effects_runtime_sym(kb: &KnowledgeBase) -> Option<Symbol> {

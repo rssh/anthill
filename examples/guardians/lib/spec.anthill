@@ -90,12 +90,18 @@ namespace guardians
   -- taste. (1) An ordinary denial (`:- Verdict(…), isEmpty(?ls)`) is stored and
   -- NOT registered with the guard engine (§6.2, §8.4): it is inert today, so a
   -- constraint written that way would be documentation wearing a keyword. Only
-  -- the quantified forms are enforced. (2) `isEmpty(?ls)` yields NO SOLUTIONS as
-  -- a rule-body goal — a spec operation's relational view does not derive, while
-  -- `List`'s own `contains` / `length` do (WI-20260830-DQD5W) — so a
-  -- `forall … -: nonEmpty(?ls)` fires on every verdict including the well-formed
-  -- ones. Emptiness is tested STRUCTURALLY, against `nil`, which is what a list
-  -- literally is, and which stays the better spelling after DQD5W closes.
+  -- the quantified forms are enforced. (2) `isEmpty(?ls)` USED TO YIELD NO
+  -- SOLUTIONS as a rule-body goal, so a `forall … -: nonEmpty(?ls)` fired on
+  -- every verdict including the well-formed ones. WI-20260830-DQD5W fixed it,
+  -- and found the reading above was only HALF the cause: the derivation does not
+  -- key on where the body lives at all. It read the SPEC's declared effect-row
+  -- PARAMETER (`effects E`) as an effect, and — separately — a goal written
+  -- DIRECTLY in a guard body reached the resolver on a different carrier and
+  -- never reduced, which made `List`'s own `contains` EQUALLY inert there. So
+  -- the second alternative was inert for a reason that had nothing to do with
+  -- spec operations, and both goals now decide in a guard. Emptiness is still
+  -- tested STRUCTURALLY, against `nil`, which is what a list literally is — the
+  -- direct spelling, and the one that needs no operation at all.
   constraint verdict_is_not_silent:
     no ?m -: Verdict(message: ?m, labels: nil)
 

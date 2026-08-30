@@ -4,11 +4,14 @@
 `anthill load` at commit `3b980e5c`; sources in [`docs/measurements/guardians/`](../../../../docs/measurements/guardians/). Everything
 here was executed — unlike [`effects.md`](effects.md), which is argument.
 
-**Two rows have been re-run since, and only two.** **C2**, after WI-9PGCM: it now
-fires. **C1**, after WI-20260822-1MAGR (2026-08-23): `p3_spec_wrong_sig` and
+**Three rows have been re-run since, and only three.** **C2**, after WI-9PGCM: it
+now fires. **C1**, after WI-20260822-1MAGR (2026-08-23): `p3_spec_wrong_sig` and
 `p7_sig_and_row` are both refused, and `p1_spec_good` — B2's control, and C1's by
-reuse — still loads clean. Every other verdict below is the 2026-08-22 reading
-against `3b980e5c` and was not re-run.
+reuse — still loads clean. **C11**, after WI-20260830-DQD5W (2026-08-30): the
+spec-op relational view now derives, so `isEmpty(?ls)` / `nonEmpty(?ls)` decide;
+the entry records what the cause actually was, which was not what it guessed.
+Every other verdict below is the 2026-08-22 reading against `3b980e5c` and was
+not re-run.
 
 **Five rows were added on 2026-08-30, run against the shipped example rather than
 a smoke file** (WI-20260830-N0PDV): **C2a**, why `Email.send`'s precondition is on
@@ -16,10 +19,12 @@ a smoke file** (WI-20260830-N0PDV): **C2a**, why `Email.send`'s precondition is 
 quantified one; **C12**, why `in_org` carries no description block; **C13**, the
 concealment postcondition that is refined and never proved; and the `in_org`
 addition under **D4**, on writing a deployment's membership heuristic as a rule
-over a named relation rather than as a variable-headed fact. Four open defects
-came out of them — **WI-20260830-JM7A8** (C2a), **WI-20260830-DQD5W** (C11),
+over a named relation rather than as a variable-headed fact. Four defects came out
+of them — **WI-20260830-JM7A8** (C2a), **WI-20260830-DQD5W** (C11),
 **WI-20260830-VFAKK** (C12), **WI-20260830-2FP2K** (C13) — and C13 is the one
-that weakens a claim this example makes.
+that weakens a claim this example makes. DQD5W is closed (C11's re-run above, which
+also corrects that entry's own diagnosis and spun off WI-20260830-NX4FD); the other
+three are open.
 
 **Spellings that changed after the runs, and nothing else did.** The marker sorts
 `Model` / `FrontierModel` were collapsed into the sorts one acquires, so a row
@@ -1278,9 +1283,40 @@ rule full(?b)  :- Box(items: ?ls), nonEmpty(?ls)        →  NO SOLUTIONS
 
 `contains` and `length` are `List`'s OWN bodied operations and their relational
 views derive (WI-580); `isEmpty` / `nonEmpty` are `Iterable` SPEC operations
-reached through `List`'s provision, and theirs do not. Both spellings import
-cleanly — the goal simply has no clauses to try, and a goal with no clauses is
+reached through `List`'s provision, and theirs did not. Both spellings import
+cleanly — the goal simply had no clauses to try, and a goal with no clauses is
 FALSE rather than an error. **WI-20260830-DQD5W.**
+
+**RE-RUN 2026-08-30, after WI-20260830-DQD5W: FIXED — and this entry's diagnosis
+was wrong twice over.** The two goals now decide, and decide differently:
+`isEmpty(?ls)` yields the empty `Box` and `nonEmpty(?ls)` the two-element one, one
+definite solution each. THREE causes, none of them "the body lives on the spec":
+
+1. The derivation keyed on the declared EFFECT ROW. `Iterable.isEmpty(c: C) ->
+   Bool effects E` declares a row PARAMETER — its sort declares `effects E = ?` —
+   which `List` instantiates to `{}`, so a `!effects.is_empty()` test read the
+   SPEC's abstraction where the goal asks about the CALL.
+2. Behind that, the SLD→eval bridge tried to RESOLVE the `EffectsRuntime`
+   kind-anchor that `effects E = ?` synthesizes, which no argument type can pin —
+   where three other readers already treat it as a structural leaf holding its
+   slot (WI-857).
+3. **And the sentence above about `contains` and `length` was only true of a RULE
+   BODY.** In a CONSTRAINT GUARD body neither worked: the guard hands the resolver
+   a hash-consed term where a rule body carries an occurrence, and the reduction
+   folds only an occurrence — so `no ?ls: Box(items: ?ls) -: contains(?ls, "z")`
+   loaded clean over `fact Box(items: ["z"])`. The control this entry leaned on
+   was inert in the position the entry was actually about.
+
+So the consequence recorded here — a `forall … -: nonEmpty(?ls)` firing on every
+verdict — had a cause that was **not about spec operations at all**, and DQD5W's
+own scope would not have closed it. All three are fixed;
+`rustland/anthill-core/tests/include/wi_dqd5w_spec_op_relational_view_test.rs`
+carries the rows and a per-cause back-out for each. What is NOT closed is the
+arity+1 spelling (`size(?ls, ?n)`) — **WI-20260830-NX4FD**, with both its
+measurements. **The constraint below is unchanged and stays as written**: `nil` is
+the more direct spelling for an empty list either way, and it is the QUANTIFIED
+form that makes it enforced at all, which is this entry's first and separate
+finding.
 
 The consequence here is the one that makes it worth filing: `forall ?ls:
 Verdict(…, labels: ?ls) -: nonEmpty(?ls)` LOADS and then fires on **every**
@@ -1422,7 +1458,7 @@ rather than delete.
 | C5 | computed region in `Modify[…]` | ❌ the slot takes a PLACE, and `glob(p)` names none (§5.6) |
 | C6 | type argument on a constructor | ❌ and desirable |
 | C2a | precondition vs guarded effect on the SAME argument | ❌ **defect** (WI-20260830-JM7A8) — the precondition's diagnostic preempts the effect check |
-| C11 | an empty label set refused by a QUANTIFIED constraint | ✅ fires — and a spec op's relational view does not derive: ❌ **defect** (WI-20260830-DQD5W) |
+| C11 | an empty label set refused by a QUANTIFIED constraint | ✅ fires — the relational-view ❌ **defect** at filing is FIXED on re-run 2026-08-30 (WI-20260830-DQD5W, three causes, and the `contains` control was inert in a guard too); arity+1 still open (WI-20260830-NX4FD) |
 | C12 | description block on a body-less rule declaration | ❌ **defect** (WI-20260830-VFAKK) — no description target exists |
 | C13 | `ensures mentions_all(result)` proved of a body | ❌ **gap** (WI-20260830-2FP2K) — refined against the spec, never proved; `conceal.anthill` is accepted |
 

@@ -14978,8 +14978,12 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
         return false;
     };
     // Effect-free: an effectful body is not a logical relation, so it is granted no
-    // derived view and a clause beside it takes nothing away.
-    if !sig.effects.is_empty() {
+    // derived view and a clause beside it takes nothing away. Via the resolver's own
+    // owner (WI-20260830-DQD5W), NOT a second `effects.is_empty()` here: a bodied op
+    // whose row is entirely PARAMETERS (`effects E` on a sort declaring `effects E =
+    // ?`) DOES get the view, so a local re-spelling would answer `false` for it and
+    // let an own-arity clause suppress a working reading without a word.
+    if !kb.effect_row_admits_relational_view(f, sig) {
         return false;
     }
     super::typing::sort_functor_of_view(kb, &sig.return_type)

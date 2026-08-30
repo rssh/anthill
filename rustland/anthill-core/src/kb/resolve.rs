@@ -1548,13 +1548,92 @@ impl SearchStream {
         // only for a non-builtin goal (the builtin block above returns first);
         // fires only once a functor's unification twins are retired, and never for
         // a rule-backed relation (`Set.member`) — see `bare_bodied_bool_relation`.
+        //
+        // AT THE OPERATION'S DECLARED ARITY, and nowhere else. §5.3 says so in those
+        // words ("the gating applies only in goal position and at the operation's
+        // declared arity") and the typer's static twin `check_goal_atom_reading`
+        // already reads `pos_args.len() + named_args.len()` that way, but this site
+        // did not — MEASURED on `main`: `rule three(?r) :- Box(items: ?ls),
+        // contains(?ls, "a", ?r)` answers ONE **DEFINITE** solution with `?r` still a
+        // free `Var`, because the rewrite wraps the whole 3-ary goal in `eq(…, true)`
+        // and `reduce_op_value` then reads args BY ARG PLACE and silently drops the
+        // extra column. The `"z"` twin answers 0, so the pair reads exactly like a
+        // working 3-place relation. WI-20260830-DQD5W adds the gate because its own
+        // widening ENLARGES that population — `Iterable.isEmpty(?ls, ?r)` went from
+        // no answer to the same free-`?r` definite — and a change whose note says it
+        // "costs a reduction attempt, never a wrong answer" may not ship one.
+        //
+        // TOTAL arity (positional + named), because the loader canonicalizes a plain
+        // op-call's args to NAMED form (`code(?c)` → `code(c: ?c)`), so a positional-
+        // only test would refuse the ordinary spelling.
+        //
+        // AND IT COUNTS THE VIEW'S ARITY, WHICH INCLUDES ONE SYNTHETIC SLOT — stated
+        // because it is a latent off-by-one and NOT corrected here. `term_view`'s
+        // `Expr::Apply` head reports `named_args.len() + usize::from(!type_args.
+        // is_empty())` (the WI-1013 `anthill.reflect.type_arg` child, carried into the
+        // term twin as well), so a goal bearing CALL-SITE TYPE ARGUMENTS would report
+        // `params + 1`, be declined here, and be declined again by the arity+1 hook
+        // (which requires `named_arity: 0`) — no clauses, no answer, for a well-formed
+        // call. It is unreachable today: the loader REFUSES a written bracket in a
+        // rule-body goal ("call-site type arguments … are not supported here"), and the
+        // live producer `synthesize_field_access` stamps `field_access`, not a bodied
+        // `Bool` op. Raised by /code-review; NOT fixed, because the corrected count
+        // (exclude the `type_arg` slot) cannot be DRIVEN from any program this loader
+        // accepts, and an untested branch here is worth less than this paragraph.
+        // Whoever widens that channel: this is the line to change.
+        //
+        // The arity+1 hook BELOW is what a genuine `f(args, ?r)` goal wants, and it
+        // has its own arity test; a goal that is neither shape now falls through to
+        // ordinary candidate selection — no clauses, no answer — which is the honest
+        // outcome for a call written at an arity the operation does not have.
         if let ViewHead::Functor {
-            functor: Some(f), ..
+            functor: Some(f),
+            pos_arity,
+            named_arity,
         } = goal_val.head(kb)
         {
-            if kb.bare_bodied_bool_relation(f) {
+            let declared_arity = kb
+                .op_record(f)
+                .and_then(|r| r.signature.as_ref())
+                .map(|sig| sig.params.len());
+            if declared_arity == Some(pos_arity + named_arity) && kb.bare_bodied_bool_relation(f) {
                 let eq_sym = kb.eq_functor();
-                let eq_goal = kb.make_goal_value(eq_sym, vec![goal_val.clone(), Value::Bool(true)]);
+                // WI-20260830-DQD5W — THE OPERAND GOES IN ON THE OCCURRENCE CARRIER, and
+                // that is not tidiness: `reduce_op_value` opens with `Value::Node(o) =>
+                // …, _ => return v`, so a `Value::Term` call is handed straight back
+                // un-reduced and the `eq(…, true)` goal then FAILS. The arity+1 hook
+                // below already materializes for exactly this reason and says so ("an
+                // `Entity`-carried call would silently never reduce"); this hook did
+                // not, so the two disagreed about which carriers the view works on.
+                //
+                // MEASURED, and the population is not exotic — it is every CONSTRAINT
+                // GUARD. `lower_query` hands the resolver a hash-consed `Value::Term`
+                // goal (a rule body carries occurrences, which is why the rule-body face
+                // always worked), so `constraint c: no ?ls: Box(items: ?ls) -:
+                // contains(?ls, "z")` LOADED CLEAN over `fact Box(items: ["z"])` — the
+                // guard body could never hold, so a `no` never fired and its `forall`
+                // transform (`no … not(body)`, WI-513) fired on EVERY row. That is the
+                // consequence this ticket was found by (`examples/guardians`' verdict
+                // constraint), and it was NOT the spec-op defect: `List.contains` — the
+                // ticket's own control, which decides in a rule body — was equally inert
+                // there.
+                //
+                // `materialize_from_handle`, not a re-parse: the same call the arity+1
+                // hook uses, so one term reaches `reduce_op_value` one way.
+                //
+                // THE `Term` HALF ONLY, and the sibling is no different: its own carrier
+                // match maps `Node` through, materializes `Term`, and answers `None` for
+                // anything else — so an `Entity`-carried functor goal reaches no
+                // reduction on either hook. The outcome is the pre-existing one (no
+                // answer, never a wrong one) and no producer builds such a goal, so this
+                // says where the gap is rather than adding a branch nothing drives.
+                let operand = match &goal_val {
+                    Value::Term { id, .. } => {
+                        Value::Node(node_occurrence::materialize_from_handle(kb, *id))
+                    }
+                    other => other.clone(),
+                };
+                let eq_goal = kb.make_goal_value(eq_sym, vec![operand, Value::Bool(true)]);
                 let fr = self.stack.last_mut().unwrap();
                 // Rewrite goal[0] in place, same goal count — `delay_mode` is
                 // threaded through unchanged (like the `push_choice` / Γ / HoApply
@@ -8347,6 +8426,73 @@ impl KnowledgeBase {
                 .is_some_and(|sig| sig.effects.is_empty())
     }
 
+    /// Does `f`'s declared effect row leave it a LOGICAL RELATION — i.e. may a
+    /// relational view be derived from its body at all?
+    ///
+    /// An effectful body is not a relation: effects don't belong in one, and the eval
+    /// bridge (empty effect registry) would suspend on one anyway. So the row must
+    /// name no effect.
+    ///
+    /// WI-20260830-DQD5W — AND "NAME NO EFFECT" READS THE ROW'S MEMBERS, NOT ITS
+    /// LENGTH. That distinction is the whole of what this ticket measured. A spec op
+    /// declared over a row PARAMETER — `Iterable.isEmpty(c: C) -> Bool effects E`,
+    /// whose sort declares `effects E = ?` — has a one-member row that names no
+    /// effect: `E` is instantiated BY THE CARRIER, and `List` writes `E = {}`. Reading
+    /// `!effects.is_empty()` therefore answered a question about the SPEC's
+    /// abstraction where the goal asks one about the CALL. MEASURED: `rule empty(?b)
+    /// :- Box(items: ?ls), isEmpty(?ls)` answered ZERO solutions beside a
+    /// `contains(?ls, "a")` that answered one — and a goal with no clauses is FALSE
+    /// rather than an error, so a constraint built on it fires on every row while
+    /// reading, from its acceptance test, exactly like one that works.
+    ///
+    /// [`Self::effect_member_is_parametric`] (WI-1049) is the same reading
+    /// `effect_row_blocking_equations` already uses to tell `Polymorphic` from
+    /// `Effectful`, and it is deliberately HEAD-only: `Modify[c]` and `Error[T = P]`
+    /// are concrete effects applied to arguments and stay refused.
+    ///
+    /// WHAT THAT ADMITS IS BOTH OF ITS SPELLINGS, and the second is worth naming because
+    /// the comment this replaced used it as the example of what the gate REFUSES: a
+    /// path-dependent PROJECTION, `Stream.isEmpty(s: Stream) -> Bool effects s.E`, is
+    /// parametric too (WI-1049's own doc names it). So `Stream.isEmpty` / `nonEmpty` /
+    /// `exists` and `Iterable.exists` / `find` join `Iterable.isEmpty` here — driven by
+    /// `the_projected_row_spelling_is_admitted_too` rather than left to be inferred from
+    /// a deleted comment. `exists`'s `EffP` is a CALLER-SUPPLIED predicate's row, and it
+    /// rides the same argument: an effectful callback raises inside the bridge's empty
+    /// registry, so the call does not reduce and the goal residualizes.
+    ///
+    /// ADMITTING A PARAMETRIC ROW COSTS A REDUCTION ATTEMPT, NEVER A WRONG ANSWER —
+    /// AND ONLY BECAUSE THE OP IS BODIED, which is why that is a clause here and not
+    /// a remark. The eval bridge runs the body under an EMPTY effect registry, so a
+    /// carrier that instantiates the row to a real effect raises it, the bridge's
+    /// `Err(_) => None` arm catches it, the call does not reduce, and the goal
+    /// residualizes — the pre-existing outcome. That argument is exactly the one
+    /// [`Self::host_op_reducible_at_a_value`]'s doc says does NOT carry over to a host
+    /// function: opaque Rust raises nothing and simply runs, so its declared row is
+    /// the only thing standing between a rule body and a real side effect. A
+    /// host-mapped op with a parametric row therefore keeps the strict reading.
+    ///
+    /// ONE OWNER, because there are TWO readers and they must not drift: this gate,
+    /// and the LOAD-TIME [`super::load::would_derive_bool_relation`], which asks
+    /// "would this bodied op have had a Bool relational view?" to refuse a clause that
+    /// would SUPPRESS it (WI-939 item 4). A `would_derive_…` that still read
+    /// `!effects.is_empty()` would answer `false` for exactly the ops this ticket
+    /// admits, so an own-arity clause on one of them would load clean and silently
+    /// take the working reading away — the loss that check exists to refuse.
+    ///
+    /// `sig` is passed rather than re-read so the caller keeps its by-ref borrow.
+    pub(crate) fn effect_row_admits_relational_view(
+        &self,
+        f: Symbol,
+        sig: &super::op_info::OpSignature,
+    ) -> bool {
+        sig.effects.is_empty()
+            || (self.op_body_node(f).is_some()
+                && sig
+                    .effects
+                    .iter()
+                    .all(|e| self.effect_member_is_parametric(e)))
+    }
+
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the
     /// RELATIONAL VIEW of a bodied operation — a Bool-returning operation with a
     /// runnable body and NO hand-written rules? Such a goal (`member(?x, ?l)`) is
@@ -8372,15 +8518,13 @@ impl KnowledgeBase {
         let Some(sig) = self.op_record(f).and_then(|r| r.signature.as_ref()) else {
             return false;
         };
-        // Effect-free: an effectful body is not a logical relation — effects don't
-        // belong in a relation, and the eval bridge (empty effect registry) would
-        // suspend on one anyway — so an effectful Bool op (`Stream.isEmpty`) is NOT
-        // granted a relational view. `requires` is deliberately NOT excluded here
-        // (unlike the unfold's `folded_call_match` gate): `member`'s `requires
-        // Eq[T]` is discharged at the body's own `eq(head, x)` call by
-        // value-directed dispatch, which the bridge honours (the unfold would drop
-        // the dict; the bridge does not).
-        if !sig.effects.is_empty() {
+        // Effect-free — [`Self::effect_row_admits_relational_view`], which owns what
+        // that means. `requires` is deliberately NOT excluded here (unlike the
+        // unfold's `folded_call_match` gate): `member`'s `requires Eq[T]` is
+        // discharged at the body's own `eq(head, x)` call by value-directed dispatch,
+        // which the bridge honours (the unfold would drop the dict; the bridge does
+        // not).
+        if !self.effect_row_admits_relational_view(f, sig) {
             return false;
         }
         // Bool-returning? `sort_sym_is_bool` compares by short name — robust to
@@ -8421,6 +8565,35 @@ impl KnowledgeBase {
     ///   the WI-669 prover seam. This is the one clause a reader is most likely to
     ///   drop; without it a hand-written relation would be shadowed by its own
     ///   op's derived view.
+    ///
+    /// **THE EFFECT CLAUSE HERE IS A PLAIN `effects.is_empty()` AND IS DELIBERATELY
+    /// NOT THE BOOL SIBLING'S [`Self::effect_row_admits_relational_view`]** — the two
+    /// gates now DISAGREE about a PARAMETRIC row (`effects E` on a sort declaring
+    /// `effects E = ?`), and that asymmetry is measured rather than an oversight.
+    /// WI-20260830-DQD5W widened the Bool view for such a row and TRIED the same here;
+    /// backed out, because the widened branch cannot be driven and where it does fire
+    /// it answers WRONG:
+    ///
+    ///   * `rule spec_len(?n) :- Box(items: ?ls), FiniteCollection.size(?ls, ?n)` still
+    ///     answers `[]` with the widening in, beside a `List.length(?ls, ?n)` that
+    ///     answers `Int(2)`. The hook now FIRES (`dispatched_relation_arity` returns
+    ///     `Some(1)`) and the bridge then suspends one level down on a DIFFERENT
+    ///     unresolvable slot: `FiniteCollection requires Iterable[C, Element, E]`, of
+    ///     which the argument pins only `C = List[String]`. Completing `Element`/`E`
+    ///     from the carrier's provision is the SORT half of `resolve_bridge_
+    ///     requirements`, which WI-1091 left untouched on purpose.
+    ///   * `rule flag(?r) :- Box(items: ?ls), Iterable.isEmpty(?ls, ?r)` — whose chain
+    ///     IS pinnable — answered ONE **DEFINITE** solution with `?r` still a free
+    ///     `Var`, over two Boxes whose true answers are `true` and `false`. That is the
+    ///     definite-looking wrong answer §5.3 warns about, traded for the honest zero.
+    ///
+    /// So the row-parameter admission stops at the Bool view until the sort half can
+    /// complete an open element — **WI-20260830-NX4FD** owns that, and carries both
+    /// measurements above. Widening this predicate ALSO moves `collect_covered_
+    /// calls` (WI-1040), which gates weaving on it precisely because
+    /// "`functional_relation_arity(..).is_some()`" is how it asks whether a woven goal
+    /// will have a reader — one more reason the two must be moved together and with a
+    /// measurement, not separately.
     ///
     /// Cheap-gated for the per-goal hot path in the same order as the Bool gate:
     /// a builtin or a body-less predicate (the overwhelmingly common case) bails

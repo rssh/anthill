@@ -1381,7 +1381,7 @@ impl KnowledgeBase {
     /// somewhere INSIDE them. Those are concrete effects applied to arguments —
     /// the effect is `Modify`, whichever cell it names. The question is only ever
     /// about the row member's HEAD.
-    fn effect_member_is_parametric(&self, e: &crate::eval::value::Value) -> bool {
+    pub(crate) fn effect_member_is_parametric(&self, e: &crate::eval::value::Value) -> bool {
         // A path-dependent projection (`s.E`) — carrier-agnostically, since one
         // can ride as a `Value::Node` as well as a `Value::Term`.
         if matches!(

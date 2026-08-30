@@ -3,9 +3,9 @@
 - id: WI-20260830-DQD5W-a-spec-operation-s-relational
 - created: 2026-08-30T14:29:01Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-30T14:29:01Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-30T19:36:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
