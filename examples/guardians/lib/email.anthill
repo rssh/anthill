@@ -37,10 +37,13 @@ namespace guardians
   entity Address(local: String, domain: String)
   entity Mailbox(owner: Address)
 
-  -- WHICH ADDRESSES ARE OURS — declared here, asserted nowhere in `lib/`: the
-  -- relation is the library's, the rows a deployment's (fixtures/mailbox.anthill).
-  -- A bodyless `rule` is proposal 061's DECLARATION, so with no deployment loaded
-  -- every address is external — the safe default.
+  -- A bodyless `rule` is proposal 061's DECLARATION; the rows are a deployment's
+  -- (fixtures/mailbox.anthill). The block below is the one a body-less declaration
+  -- could not carry until WI-20260830-VFAKK — measured.md C12.
+  {< Which addresses are the organisation's own. The library DECLARES this relation
+     and asserts no row of it: the rows belong to a deployment. With none loaded the
+     relation is empty, so every address is external — the safe default, and the one
+     `Email.send` reads to decide whether it needs `Permission[Outbox]`. >}
   rule in_org(?a)
   rule external_addr(?a) :- not(in_org(?a))
 
@@ -62,6 +65,10 @@ namespace guardians
   -- — which loads the library WITHOUT any deployment — would fail on the
   -- precondition instead of on the missing authority, and stop measuring the
   -- closed default it exists for.
+  {< Which text the organisation has cleared for release. A statement about CONTENT,
+     proved from the KB at the call site — not about provenance, which is the
+     `Text[Public]` label the typer decides. A deployment extends the set by
+     asserting rows; `Email.send` may carry nothing else. >}
   rule releasable(?t)
   fact releasable(text(raw: "routine compliance copy"))
 end

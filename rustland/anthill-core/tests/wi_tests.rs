@@ -1531,3 +1531,6 @@ mod wi_w6jh0_companion_receiver_bracket_test;
 
 #[path = "include/wi_dqd5w_spec_op_relational_view_test.rs"]
 mod wi_dqd5w_spec_op_relational_view_test;
+
+#[path = "include/wi_vfakk_declaration_description_test.rs"]
+mod wi_vfakk_declaration_description_test;

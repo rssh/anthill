@@ -636,21 +636,35 @@ impl<'a> Converter<'a> {
     }
 
     /// WI-1072: refuse a description on a declaration with no stable name/citation
-    /// target. This is decided from the surface alone, so it belongs in conversion:
-    /// every `ParsedFile` consumer sees the refusal, including generators that never
-    /// load a KB. One diagnostic per declaration, even if several blocks were written.
+    /// target. One diagnostic per declaration, even if several blocks were written.
+    ///
+    /// WHAT REACHES HERE is what the SURFACE ALONE decides — a `fact`, an unlabeled
+    /// `constraint`, an unlabeled BODIED rule — and that is why the refusal is in
+    /// conversion: every `ParsedFile` consumer sees it, including generators that
+    /// never load a KB.
+    ///
+    /// A BODY-LESS rule does NOT reach here (WI-20260830-VFAKK), and the exclusion is
+    /// a statement about which pass can answer, not a relaxation: whether such a rule
+    /// DECLARES a predicate (a target) or heads a `<=>` equation (none) is
+    /// `kb::load::rule_reading`'s question, and asking a second copy of it here is
+    /// how a block would come to be admitted at one site and dropped at the other.
+    /// `load_rule` refuses that half with this same sentence
+    /// ([`crate::parse::error::description_without_target`]).
+    ///
+    /// WHAT THAT COSTS, stated because the paragraph above is the reason this function
+    /// exists at all: a KB-LESS consumer no longer sees the refusal for that one shape.
+    /// MEASURED (found by /code-review) — `anthill codegen rust` over
+    /// `{< … >} rule twice(?x) <=> ?x` reports `1 file(s), 0 error(s)` where it used to
+    /// report a parse error, with the bodied control still refused. It is a lost
+    /// DIAGNOSTIC and not a lost fact: the generators read no `Rule::descriptions`, and
+    /// `load` / `run` / `check` all still refuse it, located. Buying it back means
+    /// giving the generator a load pass, which is a bigger change than the diagnostic
+    /// is worth.
     fn reject_description_without_target(&mut self, node: Node, kind: &str) {
         let Some(at) = self.fields_by_name(node, "description").into_iter().next() else {
             return;
         };
-        self.err(
-            format!(
-                "description block on {kind} has no stable target: descriptions name a \
-                 declaration symbol or citation handle. Add a label where this \
-                 construct permits one, or move the text to a named declaration"
-            ),
-            at,
-        );
+        self.err(super::error::description_without_target(kind), at);
     }
 
     // ── Root ────────────────────────────────────────────────────
@@ -4093,12 +4107,6 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
 
         let label = self.field(node, "label").map(|n| self.convert_name(n));
-        let descriptions = if label.is_some() {
-            self.declaration_descriptions(node)
-        } else {
-            self.reject_description_without_target(node, "unlabeled rule");
-            Vec::new()
-        };
 
         let heads = self
             .field(node, "heads")
@@ -4106,6 +4114,31 @@ impl<'a> Converter<'a> {
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
 
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
+
+        // WI-20260830-VFAKK — WHICH RULES HAVE A DESCRIPTION TARGET, and the split is
+        // NOT "labeled or not". A rule has one when it is LABELED (the citation
+        // handle) or when it DECLARES: proposal 061's body-less form brings a
+        // PREDICATE SYMBOL into existence in scan pass 1, which is a
+        // `DescriptionInfo.target` of exactly the kind a sort, an entity or an
+        // operation gets. Only an unlabeled rule that stores a CLAUSE has neither.
+        //
+        // THE DECIDER IS `kb::load::rule_reading`, NOT THIS TEST, and the two cannot
+        // disagree because this asks only `rule_reading`'s FIRST LINE — a body ⇒
+        // `Clause`, full stop. Everything body-less rides to the loader, which holds
+        // the decider and leaves no third outcome: `Declaration` emits the fact on
+        // the declared symbol, `Clause` (a body-less `<=>` equation head, whose
+        // clauses index under the CONNECTIVE so its subject declares nothing)
+        // refuses with this same sentence at `load_rule`, and `DeclaresNothing` is
+        // already refused. A SECOND COPY of the declaration test here is what that
+        // arrangement exists to avoid: the moment the two spellings parted, a block
+        // the loader never emits would be admitted here and vanish in silence —
+        // WI-1072's original defect, re-entered from the other side.
+        let descriptions = if label.is_some() || body.is_none() {
+            self.declaration_descriptions(node)
+        } else {
+            self.reject_description_without_target(node, "unlabeled rule");
+            Vec::new()
+        };
 
         let meta = self.convert_meta_block(node);
 

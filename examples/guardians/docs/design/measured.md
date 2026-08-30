@@ -16,15 +16,16 @@ not re-run.
 **Five rows were added on 2026-08-30, run against the shipped example rather than
 a smoke file** (WI-20260830-N0PDV): **C2a**, why `Email.send`'s precondition is on
 `body` and not on `to`; **C11**, why the no-silent-verdict constraint is a
-quantified one; **C12**, why `in_org` carries no description block; **C13**, the
+quantified one; **C12**, why `in_org` could carry no description block; **C13**, the
 concealment postcondition that is refined and never proved; and the `in_org`
 addition under **D4**, on writing a deployment's membership heuristic as a rule
 over a named relation rather than as a variable-headed fact. Four defects came out
 of them — **WI-20260830-JM7A8** (C2a), **WI-20260830-DQD5W** (C11),
 **WI-20260830-VFAKK** (C12), **WI-20260830-2FP2K** (C13) — and C13 is the one
 that weakens a claim this example makes. DQD5W is closed (C11's re-run above, which
-also corrects that entry's own diagnosis and spun off WI-20260830-NX4FD); the other
-three are open.
+also corrects that entry's own diagnosis and spun off WI-20260830-NX4FD), and so is
+VFAKK: `in_org` and `releasable` now carry their blocks, and C12 records the split
+that admits them. JM7A8 and 2FP2K are open.
 
 **Spellings that changed after the runs, and nothing else did.** The marker sorts
 `Model` / `FrontierModel` were collapsed into the sorts one acquires, so a row
@@ -1345,42 +1346,90 @@ report itself total is that the agent's enumeration is DERIVED from what
 records that the second half is not actually proved. The constraint is what stops
 the *representation* admitting a second, silent way to say nothing.
 
-## C12 · A body-less rule declaration cannot carry a description block
+## C12 · A body-less rule declaration had no description target — FIXED
 
 **Scenario.** Part of moving this example's intent out of `--` comments and into
 `{< … >}` facts the KB can answer queries about. `in_org` is the declaration a
 reader most wants explained — the relation is the library's, the rows a
 deployment's — and it is a body-less `rule`.
 
-**Both spellings are refused, from opposite directions.** Unlabeled, the
-converter refuses the block:
+**What was measured.** Both spellings were refused, from opposite directions.
+Unlabeled, the converter refused the block:
 
 ```
 description block on unlabeled rule has no stable target: descriptions name a
 declaration symbol or citation handle
 ```
 
-Add the label §4.1 asks for, and proposal 061 refuses the label:
+Add the label §4.1 asked for, and proposal 061 refused the label:
 
 ```
 the body-less rule `in_org` DECLARES the predicate and stores no clause
 (proposal 061). A citation label on it has nothing to cite.
 ```
 
-The `061` suggestion — "Add `:- true` to make it an assertion" — is not available
-here: `in_org(?a) :- true` makes **every** address internal, which is the one
-thing this declaration exists to avoid.
+The `061` suggestion — "Add `:- true` to make it an assertion" — was not
+available here: `in_org(?a) :- true` makes **every** address internal, which is
+the one thing this declaration exists to avoid.
 
-**Control.** The other four sites take a block and produce the fact:
-`guardians.Text`, `guardians.Message`, `Triage.run` and `Email.send` each yield a
-`DescriptionInfo(target:, content:, index: 0)` row, read back by
-`the_intent_of_a_declaration_is_a_fact_in_the_kb`.
+**The diagnosis, and it was a kernel gap rather than a choice about this
+example.** The two refusals were written for different constructs. §4.1's is
+about a CLAUSE — a fact or an unlabeled rule has no stable handle for
+`DescriptionInfo.target`, and a label supplies a citation handle. 061's is about a
+DECLARATION — a citation label has nothing to cite because no clause is stored.
+But a 061 declaration DOES have a stable target: the predicate SYMBOL it brings
+into existence in scan pass 1, which is exactly what every other
+`DescriptionInfo.target` is. The declaration is the one rule form that names
+something without storing a clause, and it fell between the two rules.
 
-**Consequence.** A predicate DECLARATION has no description target today, so the
-intent of `in_org` stays in `--`. That is a kernel gap rather than a choice about
-this example: 061 gives a body-less rule a symbol, and §4.1's requirement is a
-*citation handle* for a clause, which a declaration does not have and does not
-need in order to be described. **WI-20260830-VFAKK.**
+**What the split is now.** A rule has a description target when it is LABELED
+(the citation handle) or when it DECLARES (the predicate symbol). An unlabeled
+rule that stores a CLAUSE has neither — a bodied one, the explicit `:- true`
+assertion, and a body-less EQUATIONAL head (`lhs <=> rhs`), whose clauses index
+under the connective so its subject declares nothing. §4.1 and §5.3 now say so;
+`in_org` and `releasable` carry their blocks, and
+`the_intent_of_a_declaration_is_a_fact_in_the_kb` reads both back.
+
+**Which pass decides, because the answer is not "the converter".** Only
+`rule_reading` can tell a declaration from a body-less equation head, so the
+converter refuses just what its own surface settles — a rule with a BODY, which
+is `rule_reading`'s first line — and carries every body-less block to the loader.
+The loader then emits or refuses with no third outcome. Measured by backing out
+that loader refusal alone: `rule twice(?x) <=> ?x` with a block LOADED CLEAN and
+the block was gone, which is the silent drop §4.1 exists to prevent —
+`a_bodyless_equation_head_is_refused_at_load` is the row.
+
+**Controls, all three still refusing.** A LABELED body-less rule is still refused
+by 061 ("nothing to cite"); an unlabeled BODIED rule's block is still refused by
+the converter, at the block's own span; `rule p(1) :- true` — body-less in intent
+and the remedy 061's diagnostic offers — still reads as a CLAUSE and is still
+refused. The four sites that already worked (`guardians.Text`,
+`guardians.Message`, `Triage.run`, `Email.send`) still each yield their
+`DescriptionInfo(target:, content:, index: 0)` row.
+
+**Back-out matrix.** Three axes, three distinct failing sets, each measured on its
+own against the delivered tree (present-but-neutralized, not deleted).
+
+| backed out | `guardians_test` | `wi_tests` |
+|---|---|---|
+| the converter's admission of a body-less block | **47 of 47 red** — the example stops PARSING, with exactly the two refusals quoted above (`in_org` and `releasable`), so every row that loads it falls | 5 red / 3914 green |
+| the loader's emission on the declared symbol | 1 red — `the_intent_of_a_declaration_is_a_fact_in_the_kb`, and nothing else | 3 red / 3916 green |
+| the loader's §4.1 refusal for a clause-storing head | 47 green | 1 red / 3918 green |
+
+The first row is the loudest and the least informative: a parse failure reds the
+whole suite, which is why the SECOND is the one that measures what this ticket
+actually added — the fact reaching the KB, with the example still parsing and
+every other check in the suite untouched. The third is the smallest and the one
+that says no hole was opened: `a_bodyless_equation_head_is_refused_at_load` fails
+by LOADING CLEAN, i.e. with the block silently dropped.
+
+**One thing the third row does not cover, stated so it is not read as covered.**
+The refusal it guards is the LOADER's, so a `ParsedFile` consumer that never loads
+a KB no longer sees it: `anthill codegen rust` over `{< … >} rule twice(?x) <=> ?x`
+reports `1 file(s), 0 error(s)` where it used to report a parse error (found by
+/code-review; the bodied control is still refused there). A lost diagnostic rather
+than a lost fact — the generators read no rule descriptions, and `load` / `run` /
+`check` all still refuse it, located. **WI-20260830-VFAKK.**
 
 ## C13 · The concealment postcondition is REFINED but never PROVED
 
@@ -1459,7 +1508,7 @@ rather than delete.
 | C6 | type argument on a constructor | ❌ and desirable |
 | C2a | precondition vs guarded effect on the SAME argument | ❌ **defect** (WI-20260830-JM7A8) — the precondition's diagnostic preempts the effect check |
 | C11 | an empty label set refused by a QUANTIFIED constraint | ✅ fires — the relational-view ❌ **defect** at filing is FIXED on re-run 2026-08-30 (WI-20260830-DQD5W, three causes, and the `contains` control was inert in a guard too); arity+1 still open (WI-20260830-NX4FD) |
-| C12 | description block on a body-less rule declaration | ❌ **defect** (WI-20260830-VFAKK) — no description target exists |
+| C12 | description block on a body-less rule declaration | ✅ **fixed** (WI-20260830-VFAKK) — a declaration's target is the predicate it declares; a LABEL on one stays refused |
 | C13 | `ensures mentions_all(result)` proved of a body | ❌ **gap** (WI-20260830-2FP2K) — refined against the spec, never proved; `conceal.anthill` is accepted |
 
 **C7 changed the picture, and then was fixed.** A1–A3 and B1–B4 are real and
@@ -1488,8 +1537,8 @@ is the example's answer to the injection's CONCEALMENT half, and it is checked
 for refinement against the spec and never proved of a body. A generated agent
 that filters a message out of its own enumeration loads clean —
 `fixtures/agent/conceal.anthill` is that program, shipped and accepted. The other
-three new rows are ordinary defects that cost the example a spelling each
-(C2a, C11, C12); C13 costs it a claim.
+three new rows were ordinary defects that cost the example a spelling each
+(C2a, C11, C12 — the last two now fixed); C13 costs it a claim.
 
 **THE TWO CONFINEMENT CHAINS ARE UNAFFECTED BY C13**, which is the reason it is a
 gap in one property rather than a hole in the design: `conceal.anthill` leaks

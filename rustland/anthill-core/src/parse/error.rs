@@ -84,3 +84,25 @@ impl ParseError {
         crate::span::render_located(Some(path), self.format_at(loc), true)
     }
 }
+
+/// §4.1's REFUSAL SENTENCE, one owner — "a description block names a stable target,
+/// and this construct has none".
+///
+/// It has TWO raise sites, and they are in different passes because the two halves of
+/// §4.1's rule are decided in different passes (WI-20260830-VFAKK). A `fact`, an
+/// unlabeled `constraint` and an unlabeled BODIED rule are decided from the surface
+/// alone, so `parse::convert` refuses them and every `ParsedFile` consumer sees it. A
+/// BODY-LESS rule is not: only `kb::load::rule_reading` can tell proposal 061's
+/// DECLARATION (which now HAS a target — the predicate symbol it declares) from a
+/// body-less equation head, so the converter carries the block and the loader refuses
+/// the half that has no target.
+///
+/// Shared rather than copied for [`crate::kb::load`]'s own reason: two hand-kept
+/// spellings of one language rule drift, and only one of them is ever under test.
+pub(crate) fn description_without_target(kind: &str) -> String {
+    format!(
+        "description block on {kind} has no stable target: descriptions name a \
+         declaration symbol or citation handle. Add a label where this construct \
+         permits one, or move the text to a named declaration"
+    )
+}

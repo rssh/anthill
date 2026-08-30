@@ -12,7 +12,7 @@ This specification is **self-contained**: it can be implemented without referenc
 
 3. **Algebraic specification.** The kernel is in the tradition of algebraic specification languages (OBJ, CafeOBJ, Maude): a namespace declares sorts (unspecified, type aliases, or defined types), operations (typed behavioral specs with contracts), and rules (laws).
 
-4. **Partial formalization.** Any named declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Each block is stored as its own indexed `anthill.reflect.DescriptionInfo` fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language. A fact or an unlabeled rule/constraint has no stable declaration target, so a leading block on one is refused rather than dropped (§4.1).
+4. **Partial formalization.** Any named declaration can have one or more **description blocks** (`{< >}`) — free-form text preserved as KB facts. Each block is stored as its own indexed `anthill.reflect.DescriptionInfo` fact. Combined with anonymous variables (`?`), this allows a spectrum from fully informal to fully formal within the same language. A fact, an unlabeled constraint, or an unlabeled rule that stores a **clause** has no stable declaration target, so a leading block on one is refused rather than dropped (§4.1); a body-less rule **declaration** has one — the predicate it declares.
 
 5. **Everything carries metadata.** Every fact has provenance (who, when, trust level, iteration). Trust is attached to facts, not to agents.
 
@@ -152,13 +152,17 @@ operation withdraw(amount: ?T {< monetary type >} {< must support subtraction >}
 
 Description blocks can appear in three positions:
 
-1. **Before a named declaration keyword** (`sort`, `operation`, `const`, labeled `rule`, `entity`, labeled `constraint`, `namespace`) — describes the declaration that follows. For an `operation` this holds in BOTH spellings — the standalone `operation NAME(…)` and an entry of an `operation { … }` block — and the description attaches to the entry it precedes, not to the block. A fact, unlabeled rule, or unlabeled constraint has no declaration symbol/citation handle to put in `DescriptionInfo.target`; the grammar accepts a leading block so the converter can refuse it precisely, never silently discard it. Add a label where one is available, or move the text to a named declaration.
+1. **Before a named declaration keyword** (`sort`, `operation`, `const`, labeled `rule`, body-less `rule`, `entity`, labeled `constraint`, `namespace`) — describes the declaration that follows. For an `operation` this holds in BOTH spellings — the standalone `operation NAME(…)` and an entry of an `operation { … }` block — and the description attaches to the entry it precedes, not to the block.
+
+   **A rule needs a target, and it has one two ways.** A **label** is a citation handle; a **body-less rule** is proposal 061's *declaration* (§5.3), and the predicate symbol it brings into existence is a `DescriptionInfo.target` of exactly the kind a `sort` or an `operation` gets — no label required, and a label on one is still refused because a declaration stores no clause for a citation to cite. What is left with neither is an unlabeled rule that stores a **clause**: a bodied one, the explicit `:- true` assertion, and a body-less **equational** head (`lhs <=> rhs`), whose clauses index under the connective so its subject declares nothing. A `fact` and an unlabeled `constraint` likewise have no declaration symbol/citation handle to put in `DescriptionInfo.target`.
+
+   The grammar accepts a leading block on every one of these so the block can be refused precisely, never silently discarded. Add a label where one is available, or move the text to a named declaration.
 2. **After `describe Name`** — standalone, can reference any named symbol. Appends to existing descriptions.
 3. **After a variable (`?` or `?name`), closed by trailing `?`** — describes what the variable represents in that rule, constraint, fact, or operation contract. The trailing `?` delimiter disambiguates variable descriptions from declaration descriptions.
 
 Multiple `{< >}` blocks on the same target each emit a separate fact with an increasing index, preserving declaration order. The `describe` construct emits additional `DescriptionInfo` facts for its target, enabling incremental annotation across files (the index counter is per file, so declaration order is encoded within a file, not across files).
 
-Descriptions are stored as `anthill.reflect.DescriptionInfo(target, content, index)` facts — one fact per block, with a 0-based per-target `index`. For variables, the target is the variable's term in the KB; for a declaration, it is the declaration's qualified symbol term. A labeled rule's target is its citation label, so a multi-head rule still emits once; a labeled constraint's label is likewise a `Constraint` symbol in its declaring scope.
+Descriptions are stored as `anthill.reflect.DescriptionInfo(target, content, index)` facts — one fact per block, with a 0-based per-target `index`. For variables, the target is the variable's term in the KB; for a declaration, it is the declaration's qualified symbol term. A labeled rule's target is its citation label, so a multi-head rule still emits once; a labeled constraint's label is likewise a `Constraint` symbol in its declaring scope. A body-less rule's target is the **predicate** it declares — the same symbol a call site names and a standalone `describe` reaches, so the two spellings share one target and one index counter.
 
 | Purpose | Syntax | Structural? |
 |---------|--------|-------------|
@@ -1881,14 +1885,19 @@ clause 3 refuses everywhere else — and a head in a position the defining pass 
 reach, which today is the interior of a `provides … language … end` block. Each would
 assert nothing and declare nothing, so each is a located load error rather than a silent
 drop; write a body (`:- true` asserts it, and against an operation that is a lemma about
-it — §8.6) or spell it as a `fact`. A **label, a description block, a `[…]` tag, a `[t]`
-type-variable introducer or a typed column `?x: T`** on a declaration is refused for the
-same reason: a declaration stores no clause, so there is nothing for a citation handle to
-cite, nothing for a tag to govern, no body goal to bound a `[t]` (§5.3's `:- Spec[t]`),
-and no rewrite for a typed-pattern bound to be enforced on. 060's reading of a body-less
-head's `?x: T` as the **column's type** is the intended future of that last one
-(WI-742); it is not delivered, so the ascription is refused rather than accepted and
-ignored.
+it — §8.6) or spell it as a `fact`. A **label, a `[…]` tag, a `[t]` type-variable
+introducer or a typed column `?x: T`** on a declaration is refused for the same reason: a
+declaration stores no clause, so there is nothing for a citation handle to cite, nothing
+for a tag to govern, no body goal to bound a `[t]` (§5.3's `:- Spec[t]`), and no rewrite
+for a typed-pattern bound to be enforced on. 060's reading of a body-less head's `?x: T`
+as the **column's type** is the intended future of that last one (WI-742); it is not
+delivered, so the ascription is refused rather than accepted and ignored.
+
+**A description block is not on that list**, and the difference is what the block names.
+The others need a *clause*; a description names a **declaration symbol**, and a
+declaration is precisely a thing that has one. So `{< … >}` on a body-less rule is
+admitted and emits `DescriptionInfo` against the declared predicate (§4.1) — the one rule
+form that documents itself without a label.
 
 **A declaration carries no arity claim.** Clauses of one predicate may still differ in
 arity, exactly as today; whether they should is a separate question
@@ -1914,10 +1923,12 @@ RestArg     ::= '...' VariableTerm         -- variadic capture (§11 CallArg); l
                                            --   equation head's LHS — see below
 ```
 
-A leading `DescriptionBlock` requires the optional `Name` label to be present. The
-grammar retains the unlabeled combination only to produce the precise §4.1 refusal.
-The label is the description target (and, for a multi-head rule, remains one target
-regardless of how many stored clauses the sugar produces).
+A leading `DescriptionBlock` requires either the optional `Name` label or an absent
+`RuleBody`. The label is the description target (and, for a multi-head rule, remains one
+target regardless of how many stored clauses the sugar produces); with no body, the
+declared predicate is (§4.1, §5.3). The grammar retains the remaining combinations —
+unlabeled with a body, and unlabeled over an equational head — only to produce the
+precise §4.1 refusal.
 
 **Single arrow per rule.** `:-` and `-:` are mirror surface forms of the same implication operator (proposal 032). Exactly one of them appears per rule (or neither, for a bare-head fact). The dual-arrow form `head :- body -: conclusion` is **not** part of the grammar — under the unified design the head IS the rule's conclusion, so a separate `-:` slot would duplicate it. `:-` reads as "if" (head if body); `-:` reads as "then" (body therefore head). They produce the same internal Horn clause; choice is purely stylistic.
 
@@ -3000,7 +3011,8 @@ Fact ::= DescriptionBlock*
 
 `DescriptionBlock*` is accepted for a precise diagnostic, but a fact has no declaration
 name or citation handle and therefore no stable `DescriptionInfo.target`; a non-empty
-prefix is refused (§4.1). Describe the named relation/sort declaration instead.
+prefix is refused (§4.1). Describe the named relation/sort declaration instead — for a
+relation that is the body-less `rule` DECLARING it (§5.3), which does take a block.
 
 **Desugars to:**
 

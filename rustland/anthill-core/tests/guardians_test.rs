@@ -927,19 +927,26 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
     // QUERY — what a declaration is FOR. The design history, the WI references and the
     // measurement notes stay in `--`: those are commentary ON the source, not intent.
     //
-    // `in_org` IS NOT IN THIS LIST, AND THAT IS A FINDING RATHER THAN AN OVERSIGHT. It
-    // is the one declaration a reader most wants explained, and a body-less `rule` can
-    // carry no description at all: unlabeled, the converter refuses the block ("no
-    // stable target", §4.1); labeled, proposal 061 refuses the LABEL, because a
-    // declaration stores no clause for a citation to cite. Its intent stays in `--`
-    // until a body-less rule declaration gets a description target of its own —
-    // WI-20260830-VFAKK, whose acceptance is `in_org` moving from this comment into
-    // the loop below. Measured both ways: measured.md C12.
+    // `in_org` AND `releasable` ARE THE TWO BODY-LESS DECLARATIONS, and they were the
+    // finding this list used to record rather than cover. `in_org` is the declaration
+    // a reader most wants explained, and until WI-20260830-VFAKK a body-less `rule`
+    // could carry no description at all: unlabeled, the converter refused the block
+    // ("no stable target", §4.1); labeled, proposal 061 refused the LABEL, because a
+    // declaration stores no clause for a citation to cite. Each refusal sent the
+    // author to the other. A declaration now names its own target — the predicate
+    // symbol it declares — so both blocks are here and read back like the rest.
+    // Measured both ways: measured.md C12.
+    //
+    // WHICH KIND OF TARGET EACH ROW EXERCISES, because the list is no longer
+    // homogeneous: `Text` is a sort, `Message` an enum, `Triage.run` and `Email.send`
+    // operations, `in_org` and `releasable` PREDICATE DECLARATIONS. The last two are
+    // the only ones whose target the loader mints from a rule head.
     //
     // WHAT FAILS WHEN IT IS BACKED OUT: deleting any one block reds THIS ROW AND
     // NOTHING ELSE — measured. A description block is inert to every check in the
     // suite, which is exactly why the example had none and why this row has to
-    // read the fact back rather than assert that the file still loads.
+    // read the fact back rather than assert that the file still loads. Backing out
+    // VFAKK itself is louder still: the example stops PARSING.
     let kb = try_load_with_agent(None, register_pipeline)
         .unwrap_or_else(|e| panic!("load: {e:#?}"));
     let descriptions = description_targets(&kb);
@@ -948,6 +955,8 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
         "guardians.Message",
         "guardians.Triage.run",
         "guardians.Email.send",
+        "guardians.in_org",
+        "guardians.releasable",
     ] {
         assert!(
             descriptions.iter().any(|(t, _)| t == target),
@@ -962,6 +971,20 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
     assert!(
         text_doc.contains("trust level"),
         "the description fact must carry the text that was written; got: {text_doc:?}"
+    );
+    // THE DECLARATION'S OWN TEXT, not merely a row under its name. `in_org` is the
+    // one whose target the loader mints from a rule head, so a target that named the
+    // wrong symbol — the enclosing namespace, say — would still satisfy the loop
+    // above if some other block happened to land there.
+    let (_, in_org_doc) = descriptions
+        .iter()
+        .find(|(t, _)| t == "guardians.in_org")
+        .expect("guardians.in_org must carry a description");
+    assert!(
+        in_org_doc.contains("the organisation's own"),
+        "the fact on the DECLARATION must carry the block written at `rule in_org` — \
+         a phrase no OTHER block in the example uses, so a target that picked up a \
+         neighbour's text would show here; got: {in_org_doc:?}"
     );
 }
 

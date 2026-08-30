@@ -1483,6 +1483,23 @@ pub enum LoadError {
         carrier: &'static str,
         span: Span,
     },
+    /// §4.1 (WI-20260830-VFAKK) — a `{< … >}` block on an unlabeled rule that STORES A
+    /// CLAUSE and declares no predicate: a body-less equality-family head, whose
+    /// clauses index under the CONNECTIVE (`<=>`, WI-898), so its subject owns none
+    /// and no symbol was declared to name in `DescriptionInfo.target`.
+    ///
+    /// §4.1's OTHER refusals for this rule are the converter's
+    /// (`parse::convert`'s `reject_description_without_target` — a `fact`, an unlabeled
+    /// `constraint`, an unlabeled BODIED rule), and they share this one's exact
+    /// sentence ([`crate::parse::error::description_without_target`]). This half is
+    /// HERE because the shape it excludes — proposal 061's body-less DECLARATION,
+    /// which does have a target — is [`rule_reading`]'s question and no other pass
+    /// can answer it.
+    DescriptionWithoutTarget {
+        /// The construct as the author wrote it, for the shared sentence.
+        kind: &'static str,
+        span: Span,
+    },
     Other {
         message: String,
     },
@@ -2138,6 +2155,7 @@ impl LoadError {
             | LoadError::EquationSubjectNamesAPredicate { span, .. }
             | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
+            | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::BareMemberCall { span, .. }
@@ -2788,6 +2806,13 @@ impl LoadError {
                     loc.format_start(*span),
                     name,
                     carrier
+                )
+            }
+            LoadError::DescriptionWithoutTarget { kind, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    crate::parse::error::description_without_target(kind)
                 )
             }
             LoadError::UndefinedAfterDefinePass {
@@ -3856,6 +3881,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "the body-less rule '{}' DECLARES the predicate and stores no clause. {} (at {}..{})",
                     name, carrier, span.start, span.end
+                )
+            }
+            LoadError::DescriptionWithoutTarget { kind, span } => {
+                write!(
+                    f,
+                    "{} (at {}..{})",
+                    crate::parse::error::description_without_target(kind),
+                    span.start,
+                    span.end
                 )
             }
             LoadError::UndefinedAfterDefinePass {
@@ -26043,12 +26077,18 @@ impl<'a> Loader<'a> {
         if r.label.is_some() {
             return Some("A citation label on it has nothing to cite.");
         }
-        // NO `descriptions` ARM, and its absence is a measurement rather than an
-        // omission (found by /code-review, which caught the arm being dead and its test
-        // row measuring the LABEL instead). A description block requires the label:
-        // unlabeled, the CONVERTER refuses it (WI-1072, "no stable target") so the file
-        // never parses; labeled, the arm above answers first. There is no third case,
-        // so a `descriptions` arm here could never render.
+        // STILL NO `descriptions` ARM, and WI-20260830-VFAKK changed WHY — the list
+        // above is what a declaration CANNOT hold, and a description block left it. A
+        // declaration has a target of its own: the predicate symbol pass 1 minted,
+        // which `load_rule` writes into `DescriptionInfo.target` below, so an
+        // UNLABELED block is now emitted rather than refused (§4.1). LABELED, the arm
+        // above still answers first — the label is what has nothing to cite, and the
+        // block rides on a rule that is refused whole — which leaves no case an arm
+        // here could render, the same conclusion the earlier note reached from the
+        // opposite premise (the converter refusing every unlabeled one). Reached by
+        // /code-review then, which caught this arm dead and its test row measuring the
+        // LABEL instead; the row still measures the label, and now that is the whole
+        // population.
         if r.meta.is_some() {
             return Some("A `[…]` tag on it has no clause to govern.");
         }
@@ -26095,13 +26135,40 @@ impl<'a> Loader<'a> {
         // spelling, so it introduces nothing and reads as `DeclaresNothing` — the
         // located WI-1075 refusal is the better message and must run first.
         match rule_reading(r, &self.parsed.symbols, &self.parsed.terms) {
-            RuleReading::Clause => {}
+            RuleReading::Clause => {
+                // §4.1's OTHER HALF (WI-20260830-VFAKK). The converter carries a
+                // `{< … >}` block on ANY body-less rule, because telling a 061
+                // DECLARATION from a body-less EQUATION head is THIS decider's
+                // question, and a second copy of it there is how a block comes to be
+                // admitted at one pass and dropped at the next. This is the arm with
+                // no target: a `<=>` head's clauses index under the CONNECTIVE
+                // (WI-898), so its subject declares no predicate and nothing was
+                // minted to put in `DescriptionInfo.target`. A LABEL gives it one, so
+                // the labeled spelling is untouched and emits below.
+                //
+                // THE GUARD IS THE LABEL AND THE BLOCK, deliberately NOT `body` as
+                // well. A bodied rule cannot reach here carrying a block today — the
+                // converter refuses that at the BLOCK's own span, which is the better
+                // location and is where WI-1072 put it — but a `body.is_none()` guard
+                // would turn that fact into a SILENT DROP the day the converter
+                // stopped refusing it. This shape never drops one; what it gives up
+                // is the right to name the connective in the message, so the `kind`
+                // is §4.1's own phrase, true of every shape that can reach this arm
+                // rather than only of the one that does. WI-948's "a name, not a
+                // verdict", applied to a diagnostic.
+                if r.label.is_none() && !r.descriptions.is_empty() {
+                    self.errors.push(LoadError::DescriptionWithoutTarget {
+                        kind: "an unlabeled rule that stores a clause",
+                        span: r.span,
+                    });
+                }
+            }
             RuleReading::Declaration => {
                 // A declaration stores no clause, so there is nothing for a citation
-                // handle, a description or a `[…]` tag to attach to. Refused rather
-                // than dropped: a label on a declaration defines a `Rule` symbol that
-                // `using` then finds nothing under, and both carriers were silently
-                // lost the moment this arm stopped asserting.
+                // handle or a `[…]` tag to attach to. Refused rather than dropped: a
+                // label on a declaration defines a `Rule` symbol that `using` then
+                // finds nothing under, and both carriers were silently lost the moment
+                // this arm stopped asserting.
                 if let Some(carrier) = self.declaration_clause_carrier(r) {
                     self.errors.push(LoadError::DeclarationCarriesClauseText {
                         name: rule_introduced_functor_name(
@@ -26165,22 +26232,42 @@ impl<'a> Loader<'a> {
                         // it walks, so a rule written above the operation would see a
                         // half-built table — the order dependence 061 exists to remove.
                         Some(sym) => {
-                            let def = self.kb.symbols.get(sym);
-                            if let Some(kind) = def
+                            let clash = self
+                                .kb
+                                .symbols
+                                .get(sym)
                                 .kinds()
                                 .iter()
                                 .find(|k| !DECLARABLE_BY_A_RULE.contains(k))
-                                .copied()
-                            {
-                                self.errors.push(LoadError::BodylessRuleDeclaresNothing {
-                                    detail: format!(
-                                        "`{name}` is already declared in this scope as a \
-                                         {kind:?}, so a body-less rule adds nothing to it \
-                                         — write `:- true` to make this a CLAUSE of it, \
-                                         or delete the line"
-                                    ),
-                                    span: r.span,
-                                });
+                                .copied();
+                            match clash {
+                                Some(kind) => {
+                                    self.errors.push(LoadError::BodylessRuleDeclaresNothing {
+                                        detail: format!(
+                                            "`{name}` is already declared in this scope as \
+                                             a {kind:?}, so a body-less rule adds nothing \
+                                             to it — write `:- true` to make this a CLAUSE \
+                                             of it, or delete the line"
+                                        ),
+                                        span: r.span,
+                                    });
+                                }
+                                // WI-20260830-VFAKK — THE DECLARATION'S OWN DESCRIPTION
+                                // TARGET, and `sym` is what makes it one: pass 1 minted
+                                // this predicate at this scope with a qualified name, so
+                                // it goes into `DescriptionInfo.target` through the very
+                                // path a sort, an entity or an operation takes
+                                // ([`Self::emit_own_descriptions`]) and reads back under
+                                // the same key a standalone `describe` would use.
+                                //
+                                // HERE AND NOT AT THE MATCH ARM'S HEAD, deliberately:
+                                // the two neighbours above are REFUSALS of the whole
+                                // rule, and a description emitted beside one would bank
+                                // a fact about a declaration the loader just rejected.
+                                // Only this branch has a declaration that stands.
+                                None => {
+                                    self.emit_own_descriptions(sym, &r.descriptions, domain)
+                                }
                             }
                         }
                     }

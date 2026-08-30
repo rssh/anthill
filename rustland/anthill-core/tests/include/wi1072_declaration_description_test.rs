@@ -9,6 +9,10 @@
 //!   emits `DescriptionInfo` whose `target` is that declaration's qualified name;
 //! * a description on an anonymous declaration (fact, unlabeled rule/constraint) is
 //!   refused during conversion because no stable citation/name target exists;
+//!   WI-20260830-VFAKK later narrowed the RULE half of that — a body-less rule is
+//!   proposal 061's DECLARATION and names a predicate, so it HAS a target and is
+//!   admitted (`wi_vfakk_declaration_description_test`). The row below keeps the
+//!   shape this suite actually refuses: an unlabeled rule with a BODY;
 //! * the four pre-existing stdlib entity blocks are recovered; and
 //! * sort/enum/operation/const are controls, unchanged by this extension.
 //!
@@ -119,6 +123,10 @@ fn anonymous_declaration_descriptions_are_refused_not_dropped() {
                  fact p(1)
                end"#,
         ),
+        // A BODY is what makes this one anonymous, not the missing label
+        // (WI-20260830-VFAKK): `rule p(1)` with no body DECLARES `p` and takes a
+        // block. `:- true` is the explicit empty body — an ASSERTION under 061 — so
+        // it stores a clause and has no target, which is why it is the fixture here.
         (
             "unlabeled rule",
             r#"namespace wi1072.anon_rule
