@@ -37385,6 +37385,179 @@ fn transitive_provider_spec_view_bindings(
     None
 }
 
+/// WI-20260829-GNPG7 — the provider view for the SUBTYPE relation: direct, else composed
+/// through the provision chain, but only once a chain is known to exist.
+///
+/// THE PRE-FILTER IS A PERFORMANCE GUARD AND NOTHING ELSE, and it is here rather than
+/// inside [`transitive_provider_spec_view_bindings`] because the two consumers have
+/// different traffic. The receiver-grounding callers (WI-495/WI-714) ask about a carrier
+/// they already know provides the spec; the subtype relation asks about EVERY pair of
+/// parameterized types whose bases differ, and the overwhelmingly common answer is "no
+/// relation at all". Answering that with the composing walk means reading provider facts
+/// and allocating a view per node of the actual's whole provision closure, on a relation
+/// that runs per type comparison.
+///
+/// MEASURED, in-process and paired, min of K full stdlib loads (72 files) in ONE process —
+/// which is the instrument, because the test suite's wall clock is dominated by other work
+/// and showed the ungated regression below as noise:
+///
+/// ```text
+/// single-hop (pre-ticket)   release  71.9 ms    debug  552.4 ms
+/// transitive, UNGATED       release 127.7 ms    debug  732.6 ms    (1.78x / 1.33x)
+/// transitive, gated (this)  release  69.0 ms    debug  544.6 ms    (no difference)
+/// ```
+///
+/// THE THIRD ROW IS "NO DIFFERENCE", NOT "4% FASTER". This machine's samples spread ~2x
+/// under contention, so single runs are worthless here: interleaved min-of-25 rounds put
+/// baseline at 72.0 / 82.0 ms and the gated version at 85.2 / 70.1 ms — the two rounds
+/// DISAGREE about which is faster, which is the honest way to say the difference is inside
+/// the noise. The ungated 127.7 ms is outside that band and reproduced on every sample,
+/// which is why it is reported as a real regression and this row is not reported as a win.
+///
+/// SEMANTICS-PRESERVING, not a heuristic: [`sort_provides`] walks `provides_out_edges` and
+/// the composer walks `directly_provided_specs`, and both read the same provider-index
+/// carrier buckets under the same filters — so the walk can only ever succeed where
+/// `sort_provides` is already true, and gating it skips exactly the calls that would have
+/// returned `None`. The one asymmetry runs the safe way: `provides_out_edges` also drops a
+/// non-live rule, so the filter is if anything the stricter of the two, and a provision
+/// from a dead rule is not one this relation should honour.
+fn subtype_provider_view(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    // The direct fact first — the hot path, and the answer for every carrier that
+    // declares the spec itself. Reached before the reachability walk so a one-hop
+    // provider pays nothing for the chain machinery.
+    if let Some(view) = provider_spec_view_bindings(kb, carrier, spec) {
+        return Some(view);
+    }
+    if !sort_provides(kb, carrier, spec) {
+        return None;
+    }
+    // AMBIGUITY IS ANSWERED `None`, NOT BY SOURCE ORDER.
+    // [`transitive_provider_spec_view_bindings`] returns the FIRST intermediate whose
+    // subtree reaches `spec` — fine for the receiver-grounding callers, which ask about a
+    // carrier already known to provide the spec through one route, and NOT fine here.
+    // DRIVEN: a `Carrier` providing two intermediates that bind one spec param differently
+    // (`MidA provides Spec[P = Int64]`, `MidB provides Spec[P = Bool]`) was accepted at
+    // `Spec[P = Bool]` or refused depending ONLY on which `provides` line came first —
+    // swapping the two lines and changing nothing else flipped the verdict. Before this
+    // ticket the shape was refused BOTH ways, since the subtype relation had no transitive
+    // route at all, so shipping first-match here would trade a uniform refusal for one
+    // decided by declaration order.
+    //
+    // WHY `None` AND NOT A LOUD REFUSAL, which is what the house style otherwise asks: this
+    // function returns `Option` into a `bool` subtype predicate and has no error channel —
+    // the same constraint [`provider_spec_view_bindings`] records for its own ~12 consumers
+    // ("whose 'loud' would read as an ordinary type mismatch"). `None` yields exactly that
+    // ordinary, LOCATED type mismatch at the argument, deterministically, and it is the
+    // conservative direction: this arm can only ever refuse more than first-match, never
+    // accept more.
+    //
+    // WHY NOT MERGE, the way the DIRECT reader does (WI-842 §4.9): merging is licensed
+    // there by `check_provision_binding_agreement`, which refuses a param bound two ways at
+    // LOAD — a guarantee that holds for one carrier's own provisions and NOT across two
+    // independent intermediate sorts, each of which is individually well-formed. Merging
+    // here would re-introduce the same silent per-param first-wins in different clothes.
+    // Whether such a carrier should instead be a load error, and whether an author should
+    // be able to select the route, is a design question: WI-20260829-GNPG7's delivery
+    // note names it.
+    // MERGED, NOT PICKED. Every reachable route contributes its bindings; a param two
+    // routes bind DIFFERENTLY answers `None`. Picking one route and only checking the
+    // others for conflicts was the first cut and it was NOT order-independent — found by
+    // /code-review, then DRIVEN: with `MidA provides Spec[P = Int64]` and `MidB provides
+    // Spec[Q = Bool]` the two views have DISJOINT labels, so they trivially "agreed" and
+    // the answer was whichever route came last. `Spec[Q = Bool]` loaded under one ordering
+    // of `Carrier`'s two `provides` lines and was refused under the other, and
+    // `Spec[P = Int64]` did the reverse — the exact defect that cut was written to remove.
+    // Merging is order-independent by construction: consumers look the view up by param
+    // SHORT NAME, so only the set matters, and the set is the same whichever route is
+    // walked first.
+    //
+    // This is the DIRECT reader's rule (`provider_spec_view_bindings`, WI-842 §4.9) applied
+    // one level up, and it needs its own licence because that one's does not reach here:
+    // there, merging is safe because `check_provision_binding_agreement` refuses a
+    // doubly-bound param at LOAD, a guarantee that holds for ONE carrier's own provisions
+    // and not across two independent intermediate sorts. So the conflict case cannot be
+    // assumed away and is answered `None` instead — the conservative direction, and the
+    // only one available to a `bool` predicate with no error channel.
+    let views = provision_route_views(kb, carrier, spec)?;
+    let mut merged: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for view in &views {
+        for (param, value) in view {
+            match merged.iter().find(|(mp, _)| same_label(kb, *mp, *param)) {
+                Some((_, seen)) if !provision_values_agree(kb, *seen, *value) => return None,
+                Some(_) => {}
+                None => merged.push((*param, *value)),
+            }
+        }
+    }
+    (!merged.is_empty()).then_some(merged)
+}
+
+/// Whether two routes' values for ONE spec param are the same binding.
+///
+/// `TermId` equality FIRST, which is the answer for every pair that came from one interned
+/// store — and then the canonical sort compare, because a spec bound to the same sort
+/// through two import scopes carries two `TermId`s for one type. Reading those as a
+/// disagreement would discard a legitimate merged view in exactly the multi-route shape
+/// this reader exists for (found by /code-review; the file's own `same_sort_canonical`
+/// comment at `parameterized_compatible_view` names the two-interned-copies case).
+/// Non-sort-ref values (a written row, a literal) fall back to `TermId` equality, which
+/// for hash-consed terms is structural.
+fn provision_values_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+    if a == b {
+        return true;
+    }
+    match (
+        super::load::sort_ref_functor(kb, a),
+        super::load::sort_ref_functor(kb, b),
+    ) {
+        (Some(sa), Some(sb)) => same_sort_canonical(kb, sa, sb),
+        _ => false,
+    }
+}
+
+/// Every composed provider view of `spec` reachable from `carrier`, one per DIRECT
+/// intermediate that reaches it. Used only by [`subtype_provider_view`] to tell one route
+/// from several; the ordinary readers take the first and are documented for it.
+fn provision_route_views(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+) -> Option<SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>> {
+    // REACHABILITY FIRST, COMPOSITION ONLY FOR THE ROUTES THAT REACH. The naive form —
+    // ask `transitive_provider_spec_view_bindings` per intermediate and keep the `Some`s —
+    // pays a composing walk for every spec the carrier declares, which for a carrier like
+    // `List` (six direct provisions) is six of them where first-match stopped at one.
+    // MEASURED: that cost 103.2 ms against a 71.9 ms baseline on the min-of-7 stdlib load;
+    // splitting the cheap question from the expensive one brings it back (see
+    // [`subtype_provider_view`]'s table). `sort_provides` is the same indexed edge walk the
+    // pre-filter uses, with no fact reads or view allocation per node.
+    let reaching: SmallVec<[Symbol; 2]> = directly_provided_specs(kb, carrier)
+        .into_iter()
+        .filter(|&intermediate| sort_provides(kb, intermediate, spec))
+        .collect();
+    // A REACHING ROUTE THAT CANNOT BE COMPOSED POISONS THE ANSWER, it does not vanish.
+    // `sort_provides` said this intermediate reaches the spec, so a `None` from either
+    // composition step is a route whose bindings are UNKNOWN, not a route that is absent —
+    // and dropping it would let the caller see "one route, nothing to disagree with" and
+    // accept a binding the unrepresentable route might contradict. Returning `None` for the
+    // whole lookup is the conservative reading (the caller then refuses the comparison),
+    // and it keeps this loop from being the silent `continue` the repo's principles warn
+    // about (found by /code-review).
+    let mut out: SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]> = SmallVec::new();
+    for intermediate in reaching {
+        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+        let outer = transitive_provider_spec_view_bindings(kb, intermediate, spec, &mut visited)?;
+        let inner = provider_spec_view_bindings(kb, carrier, intermediate)?;
+        out.push(compose_provision_views(kb, intermediate, &outer, &inner));
+    }
+    Some(out)
+}
+
+
 /// WI-842 (proposal 058 §4.9) — every carrier-keyed provision of `spec_sort` for
 /// `carrier_sym` is read, and their bindings MERGED, rather than returning the first
 /// provision's view.
@@ -51984,8 +52157,23 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     // widening this one to `same_sort_canonical` would be an untestable behavior change
     // — it could only ever differ for two interned copies of ONE sort, where the key
     // match below already resolves the bindings directly.
+    //
+    // WI-20260829-GNPG7 — TRANSITIVE, because the one-hop reader made this relation
+    // disagree with `sort_provides` about the same question. `sort_provides` (which the
+    // BARE-spec arms reach through `sort_provides_admissibly`) walks the whole provision
+    // chain; `provider_spec_view_bindings` reads a single DIRECT `SortProvidesInfo` fact.
+    // So `ti(c: Iterable)` accepted a `List[T = Row]` and `ti(c: Iterable[Element = Row])`
+    // refused the same argument — not because the parameter carried bindings, which is
+    // what the ticket read off its own table, but because `List` reaches `Iterable` in TWO
+    // hops (`List provides Stream`, `Stream provides Iterable`) and never declares it
+    // directly. MEASURED with the spec held fixed and only the hop count varied:
+    // `MutableStack`, which declares `provides Iterable[C = MutableStack[T], …]` ITSELF,
+    // was accepted at `Iterable[C = MutableStack[T = Row], Element = Row, E = {}]` — the
+    // fully-bound spec view naming its own carrier — while `List` was refused at the same
+    // shape. A bindings-carrying spec view is therefore not a distinct "view" the language
+    // refuses; it is admitted whenever the provision is direct.
     let cross_sort_provider = if actual_base != expected_base {
-        provider_spec_view_bindings(kb, actual_base, expected_base)
+        subtype_provider_view(kb, actual_base, expected_base)
     } else {
         None
     };
@@ -51996,6 +52184,18 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     // per-param comparison below sees the instance's row, not the canon vars
     // (a two-row provision `{ES, EF}` cannot pair against the expected row's
     // tails without it — two-tail-to-two-tail pairing is ambiguous).
+    //
+    // WI-20260829-9NJTX (found reviewing GNPG7, NOT repaired here — recorded because that
+    // ticket WIDENS its population): these binds go into the CALLER's `subst` and are not rolled
+    // back when the per-param loop below `return false`s, so a failed comparison can leave
+    // the actual base's canonical param vars bound. That is pre-existing — the `Some(pv)`
+    // arm further down clones into a `probe` for exactly this reason — but it used to run
+    // only for a DIRECTLY-providing actual, and now runs for any transitively-providing one
+    // too. NOT repaired because it could not be DRIVEN: the arms most likely to probe a
+    // comparison expecting it to fail (`Variance::Invariant`'s two directions,
+    // `Bivariant`'s `||`) already clone, so no fixture was found where the residue changes
+    // a later verdict. A repair here would be a change to a hot relation justified by
+    // nothing that fails without it.
     if cross_sort_provider.is_some() {
         for (ap, av) in &actual_bindings {
             let q = format!(
@@ -53317,7 +53517,20 @@ fn bare_provider_binding_precise<E: TermView>(
     };
     let mut carrier = actual_sym;
     let provider_view = loop {
-        if let Some(view) = provider_spec_view_bindings(kb, carrier, expected_base) {
+        // WI-20260829-GNPG7 — TRANSITIVE here for the same reason as
+        // `parameterized_compatible_view`'s `cross_sort_provider`, and this is the SECOND
+        // site of the one gap, not a separate one: both are the subtype relation asking
+        // "what does this carrier bind the spec's params to", and both asked it one hop
+        // deep while `sort_provides` answered the neighbouring "does it provide it at all"
+        // over the whole chain. MEASURED on the bare-actual side with the information
+        // held constant — `nil()` (bare `List`) conformed to `Stream[E = {}]`, one hop,
+        // and was refused at `Iterable[E = {}]`, two hops, for the same `E = {}` the same
+        // provision determines.
+        //
+        // NOT the same walk as the `strict_parent_sort` loop around it: that one climbs
+        // ENTITY→parent to find a carrier, this one composes provisions once a carrier is
+        // fixed. Nesting them is what makes an entity of a 2-hop provider work.
+        if let Some(view) = subtype_provider_view(kb, carrier, expected_base) {
             break view;
         }
         // Entity → parent sort. The chain is acyclic: `strict_parent_sort` is

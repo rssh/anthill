@@ -948,14 +948,40 @@ private class AnthillParserImpl(
     * WI-20260829-BAD3V — optionally a call-site type-arg bracket before those args
     * (`.name[T = Int](args)`).
     *
-    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT, which is the same narrowness
-    * rustland's `dot_application` production carries and for the same reason: a bare
-    * `?x.m [simp]` must keep reading its `[simp]` as the declaration's META BLOCK, and a
-    * `[bindings]` arm that did not require the `(` would swallow it as a positional
-    * `sortBinding` — the WI-881 trap that already costs a nullary `[simp]` head its
-    * parentheses. `instArgsList` takes no cut, so the first alternative backtracks
-    * cleanly to the second when the `(` is absent (rustland gets the same outcome from a
-    * declared GLR conflict letting the continuation decide). */
+    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT: a bare `?x.m [simp]` must keep
+    * reading its `[simp]` as the declaration's META BLOCK, and a `[bindings]` arm that did
+    * not require the `(` would swallow it as a positional `sortBinding` — the WI-881 trap
+    * that already costs a nullary `[simp]` head its parentheses. `instArgsList` takes no
+    * cut, so the first alternative backtracks cleanly to the second when the `(` is absent.
+    *
+    * IT IS NOT THE SAME TIE-BREAK AS RUSTLAND'S, and an earlier version of this comment
+    * claimed it was (found by /code-review). Rustland declares a GLR conflict and lets the
+    * continuation decide, with `prec.dynamic(1, $.meta_block)` biasing the tie toward the
+    * META reading; fastparse is ORDERED, so here the bracket alternative simply wins
+    * whenever it can parse. The two agree wherever nothing later supplies a `(` — which is
+    * every shape either grammar's tests had — and DIVERGE where a FOLLOWING rule entry
+    * supplies one across a newline:
+    *
+    *     sort S
+    *       rule {
+    *         ?x.m [simp]
+    *         (a, b)
+    *       }
+    *     end
+    *
+    * rustland reads three entries (`[simp]` staying this entry's meta block); this parser
+    * reads one call and refuses it as a bracketed dot. MEASURED on both.
+    *
+    * NO VALID PROGRAM IS KNOWN TO REACH IT, which is why the divergence is recorded rather
+    * than chased with a content-shape lookahead that would be a THIRD tie-break rule. Both
+    * implementations REFUSE the file above — rustland at conversion, "a rule head must be
+    * an atom, not a bare literal" — so what differs is which error an already-invalid
+    * program draws. For the entry to be valid the dot head would have to stand bodyless,
+    * and proposal 061 refuses a bodyless rule whose head functor is a desugaring's
+    * (`dot_apply`); give it a body and the meta block follows the BODY, not the dot, so the
+    * ambiguity does not arise. That is a bound reached by construction, not a proof: a
+    * shape nobody thought of would make this a real parity break, and the corpus row
+    * "Juxtaposed rule entries keep the meta-block bias" is where rustland's half is pinned. */
   private def fieldSeg[$: P]: P[DotSeg] =
     P("." ~ located(ident) ~ dotCallSuffix).map {
       case (name, span, (typeArgs, args)) => DotSeg.Field(name, span, args, typeArgs)
@@ -1016,9 +1042,11 @@ private class AnthillParserImpl(
     * own note) and this refusal covers that spelling too. The receiver-classification gap
     * is old; what is new is that one side gained a capability across it, so a `.anthill`
     * file adopting the companion-with-bracket spelling parses under rustland and NOT
-    * here. Nothing in the stdlib or the corpus writes it today (checked), and closing it
-    * means teaching this parser to tell an instantiation `Fn` from a call `Fn` — a change
-    * to `NameSuffix`, not to this refusal. */
+    * here — and kernel-language.md now states the rustland reading as the RULE, which is
+    * why this is a ticket (WI-20260829-4MHED) and not just a note. Nothing in the stdlib
+    * or the corpus writes it today (measured: 0 occurrences), and closing it means
+    * teaching this parser to tell an instantiation `Fn` from a call `Fn` — a change to
+    * `NameSuffix`, not to this refusal. */
   private def refuseDotTypeArgs(field: TermSymbol, fieldSpan: Span): Unit =
     val m = symbols.name(field)
     errors += ParseError(

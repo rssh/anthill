@@ -1814,6 +1814,22 @@ end
         List("simp"), src)
   }
 
+  test("WI-20260829-BAD3V: a juxtaposed entry's `(` reaches the bracket (divergence, pinned)") {
+    // NOT parity with rustland, and pinned so the difference is a decision rather than a
+    // surprise (found by /code-review). Rustland declares a GLR conflict biased toward the
+    // META reading, so it reads THREE entries here; fastparse is ordered, so the bracket
+    // alternative wins and this parses as one bracketed dot call, which is then refused.
+    //
+    // BOTH IMPLEMENTATIONS REFUSE THIS FILE — rustland at conversion ("a rule head must be
+    // an atom, not a bare literal") — so what diverges is which error an already-invalid
+    // program draws, and no VALID program is known to reach it (see `refuseDotTypeArgs`).
+    // If one is ever found, this row is the one that has to move.
+    val src = "sort S\n  rule {\n    ?x.m [simp]\n    (a, b)\n  }\nend\n"
+    val msgs = dotBracketErrors(src)
+    assert(msgs.head.contains("call-site type arguments are not supported on a dot call"),
+      s"expected the dot refusal; got: ${msgs.mkString("; ")}")
+  }
+
   test("WI-20260829-BAD3V: a bracket off a call does not parse") {
     // The other half of the narrowness: `?x.field[T = Int]` has no call after the `]`,
     // so nothing kills the meta-block reading and the bracket stays unpronounceable.

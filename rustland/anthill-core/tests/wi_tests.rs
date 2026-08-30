@@ -1516,3 +1516,6 @@ mod x13yv_map_map_chain_test;
 
 #[path = "include/wi_bad3v_dot_type_arg_bracket_test.rs"]
 mod wi_bad3v_dot_type_arg_bracket_test;
+
+#[path = "include/wi_gnpg7_transitive_provider_view_test.rs"]
+mod wi_gnpg7_transitive_provider_view_test;

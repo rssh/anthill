@@ -1799,13 +1799,22 @@ pub enum CallTypeArgsPosition {
     /// `constraint`, an operation's `requires` / `ensures` contract expression, an
     /// entity-constructor call.
     NoChannel,
-    /// WI-20260829-BAD3V — a DOT call, reached only through the IDENTIFIER-receiver
-    /// spelling (`xs.map[Dst = Int64](f)` where `xs` names a local). Its peer
-    /// `?xs.map[…](f)` is refused a phase earlier, in `push_fn_term`: that one parses as
-    /// a `dot_application`, so the converter can see it is a dot. THIS one parses with a
-    /// bare NAME callee and only becomes a dot call here, when the head segment turns
-    /// out to name a binder — which is why the converter's refusal structurally cannot
-    /// cover it and this position exists.
+    /// WI-20260829-BAD3V — a DOT call, reached through the spelling whose callee is a
+    /// bare NAME (`xs.map[Dst = Int64](f)`). Its peer `?xs.map[…](f)` is refused a phase
+    /// earlier, in `push_fn_term`: that one parses as a `dot_application`, so the
+    /// converter can see it is a dot. THIS one only becomes a dot call here, when
+    /// `dot_call_receiver_chain` proves a prefix of the callee denotes a VALUE — which is
+    /// why the converter's refusal structurally cannot cover it and this position exists.
+    ///
+    /// NOT ONLY A LOCAL BINDER, AND NOT ONLY AN OPERATION BODY. Both narrower readings
+    /// were written here first and both are wrong (found by /code-review, then DRIVEN):
+    /// `dot_call_receiver_chain`'s rung 3 also matches a bare-qualified RULE prefix
+    /// (WI-749), so `person_row.isEmpty[T = Int64]()` reaches this with no binder in
+    /// sight; and `convert_expr_term`, the walk that gets here, is called from a CONST
+    /// body as well as an operation body, so a `const` whose `let`-bound receiver takes a
+    /// bracket reaches it too. The refusal is right in every one of those cases — which
+    /// is why the fix was the doc and not the gate — but a later reader relying on
+    /// "a local, in an operation body" would be relying on something false.
     DotCall,
 }
 
@@ -1841,10 +1850,10 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
         // (`push_fn_term`'s dot refusal), because it is the same refusal about the same
         // shape reached down a different route — an author who writes the bracket on a
         // dot should not learn two different things depending on whether the receiver
-        // was a `?var` or a bare binder name. It names the applicative SHAPE and no
-        // position: this one IS in an operation body (that is the only place an
-        // identifier-receiver dot call arises), but saying so would make the two
-        // wordings diverge for nothing.
+        // was a `?var` or a bare name. It names the applicative SHAPE and no position,
+        // which is also the only wording that is TRUE everywhere this arm is reached: an
+        // operation body, a const body, and a rule-prefix receiver all get here (see
+        // `CallTypeArgsPosition::DotCall`).
         CallTypeArgsPosition::DotCall => format!(
             "call-site type arguments are not supported on a dot call — a dot carries \
              no channel for them, so the binding would be parsed and then silently \
@@ -19902,7 +19911,19 @@ impl<'a> Loader<'a> {
                         // rather than a namespace. `dot_call_receiver_chain` is the
                         // predicate that finds out, and it is `&self` — the same test the
                         // re-route makes, run for its verdict only.
-                        let ident_dot_bracket = named_args.len() != visible_named.len()
+                        // WI-20260829-BAD3V — KEYED ON THE SAME QUESTION THE SWEEP ASKS.
+                        // `named_args.len() != visible_named.len()` is true for ANY
+                        // non-effect-row `ParseAux` child, while
+                        // `check_unconsumed_call_type_args` tests `is_call_type_args_aux`.
+                        // Only `type_args` reaches a dotted `Fn` today, so the two agreed
+                        // by accident; a dotted call that ever carries another `ParseAux`
+                        // payload would draw a wrong "not supported on a dot call" AND have
+                        // its node marked consumed, silencing the sweep for a bracket
+                        // nobody read (found by /code-review). Asking `is_call_type_args_aux`
+                        // makes the refusing half and the sweeping half one question.
+                        let ident_dot_bracket = named_args
+                            .iter()
+                            .any(|&(_, tid)| self.is_call_type_args_aux(tid))
                             && name.rsplit_once('.').is_some_and(|(receiver_name, _)| {
                                 self.dot_call_receiver_chain(receiver_name, &name).is_some()
                             });

@@ -1832,22 +1832,41 @@ fn a_compound_expression_is_a_value_expression() {
     ]);
 }
 
-/// A SPEC-TYPED PARAMETER AND ITS CARRIER — the `through a provision chain` route, which
-/// turns out not to have one verdict. `List provides Stream provides Iterable`, so the
-/// edge is there either way; what decides admissibility is whether the parameter's spec
-/// type carries BINDINGS.
+/// A SPEC-TYPED PARAMETER AND ITS CARRIER — the `through a provision chain` route.
 ///
-/// RECORDED AS MEASURED FACTS, NOT AS GAPS. No row here says a verdict is wrong: which
-/// side is right is a design question (WI-20260829-GNPG7), and the table's job is to say
-/// what the loader does so that whichever way it is settled, the change is visible. That
-/// is why the refusing rows are `RefusesLocated` — a correct-as-far-as-anyone-knows
-/// refusal — and not `KnownGap`.
+/// WI-20260829-GNPG7 SETTLED THIS, AND THE TABLE IT WAS FILED FROM MEASURED THE WRONG
+/// AXIS. The reading recorded here was that "what decides admissibility is whether the
+/// parameter's spec type carries BINDINGS" — every bindings-carrying `Iterable` row
+/// refused while the bare one loaded, and `Stream` accepted both. That is a CONFOUND: the
+/// rows also differ in HOP COUNT, because `List` declares `provides Stream[T, {}]` and
+/// reaches `Iterable` only through `Stream provides Iterable`, while `List provides
+/// Stream` is direct.
 ///
-/// THE LINE IS THIN, which is why it is worth pinning: the stdlib relies on the
-/// permissive direction (`MappedStream`'s `source: Iterable[C = Source, …]` is fed a
-/// `Stream` by `Iterable.map`), and that works only because `Source` is an unbound sort
-/// param there. So the working case and the refusal differ only in whether the binding is
-/// a VARIABLE or a CONCRETE sort.
+/// THE ROW THAT SEPARATES THEM is the `MutableStack` pair below, added when the ticket was
+/// settled: `MutableStack` declares `provides Iterable[C = MutableStack[T], Element = T, E
+/// = {}]` ITSELF, and it is accepted at the FULLY-BOUND spec view naming its own carrier —
+/// the exact shape the "a bindings-carrying spec type is a distinct VIEW" reading says
+/// must be refused. Same spec, same binding shape, opposite verdict from `List`. So
+/// bindings were never the axis; transitivity was.
+///
+/// The cause was one relation with two readers: `sort_provides` (which the bare-spec arms
+/// reach through `sort_provides_admissibly`) walks the whole provision chain, while
+/// `provider_spec_view_bindings` read a single DIRECT fact. Both subtype sites now go
+/// through `transitive_provider_spec_view_bindings`, which already existed for exactly
+/// this chain (WI-714/WI-495).
+///
+/// ONE ROW STILL REFUSES, and it is a DIFFERENT defect with its own ticket
+/// (WI-20260829-XZMGC): the composed view maps the intermediate's
+/// PARAMS — `Element ↦ List.T` and `E ↦ {}` both compose, which is why
+/// `Iterable[Element = Row, E = {}]` loads — but keeps `C = Stream`, the intermediate's
+/// SELF-reference, verbatim. `compose_provision_views`' doc records that as deliberate,
+/// and it is harmless for the consumers that ground params off a receiver; the subtype
+/// relation is the one that COMPARES `C`, and `Iterable.iterator` on a `List` receives the
+/// `List`, so `C = List` is the answer it should get.
+///
+/// STILL MEASURED FACTS, NOT GAPS, for the same reason as before: the refusing row is
+/// `RefusesLocated` because the refusal is correct-as-far-as-the-composer-goes, and the
+/// table's job is to make the next move visible.
 #[test]
 fn a_spec_typed_parameter_and_its_carrier() {
     fn program_with(param: &str) -> String {
@@ -1868,22 +1887,37 @@ end
     let rows: &[(&str, &str, Verdict)] = &[
         ("bare spec name", "Iterable", Verdict::Loads),
         (
+            // THE ONE ROW STILL REFUSED, and no longer for "it carries bindings" — the
+            // row below carries one too and loads. `C` alone: the composed view keeps
+            // `Stream`, the intermediate's self-reference, where `List` belongs.
             "spec bound to its own carrier",
             "Iterable[C = List[T = Row], Element = Row, E = {}]",
             Verdict::RefusesLocated("expected Iterable[C = List[T = Row]"),
         ),
         (
-            // C is UNBOUND here, so this is not "naming the carrier makes a distinct
-            // view" — ANY binding is enough to refuse.
+            // WI-20260829-GNPG7: was refused, now LOADS. `Element` composes through
+            // `List provides Stream` + `Stream provides Iterable` to `List.T`, which
+            // this instance binds to `Row`.
             "spec with one binding, carrier unbound",
             "Iterable[Element = Row]",
-            Verdict::RefusesLocated("expected Iterable[Element = Row]"),
+            Verdict::Loads,
+        ),
+        (
+            // The same, with the effect row written too — `E` composes to the `{}` that
+            // `List provides Stream[T, {}]` supplies. Together with the row above this
+            // says the composition works for every spec param EXCEPT the carrier one.
+            "spec with every non-carrier binding",
+            "Iterable[Element = Row, E = {}]",
+            Verdict::Loads,
         ),
         // `Stream` accepts BOTH spellings, which is what makes the rows above an
         // asymmetry between two specs on one chain rather than a rule about spec params.
         ("bare Stream (CONTRAST)", "Stream", Verdict::Loads),
         (
-            "Stream WITH bindings (CONTRAST — the discriminator)",
+            // `List provides Stream` is DIRECT — one hop — which is why this row loaded
+            // even before WI-20260829-GNPG7, and why reading it as "Stream accepts
+            // bindings, Iterable does not" put the difference on the wrong axis.
+            "Stream WITH bindings (CONTRAST — one hop)",
             "Stream[T = Row, E = {}]",
             Verdict::Loads,
         ),
@@ -1891,6 +1925,45 @@ end
     let mut failures: Vec<String> = Vec::new();
     for (label, param, want) in rows {
         if let Err(e) = check_src(label, &program_with(param), *want) {
+            failures.push(e);
+        }
+    }
+
+    // THE DISCRIMINATOR — the pair the ticket's own table lacked, which is why it read
+    // BINDINGS as the axis. `MutableStack` declares `provides Iterable[C = MutableStack[T],
+    // Element = T, E = {}]` ITSELF (mutable_stack.anthill), so its route to `Iterable` is
+    // ONE hop where `List`'s is two. The spec is the same `Iterable` and the binding shapes
+    // are the same as the `List` rows above; only the hop count differs — and the FULLY
+    // BOUND row, naming its own carrier, loads. That is the shape a "spec-with-bindings is
+    // a structurally distinct VIEW" reading has to refuse, so this pair is what refutes it.
+    //
+    // BOTH ROWS PASS EITHER WAY across WI-20260829-GNPG7's change, by design: one hop needs
+    // no composition. They are the CONTROL — they say the transitive routing did not
+    // disturb the direct case, and they are why the `List` rows' movement is attributable
+    // to transitivity rather than to bindings.
+    let stack_program = |param: &str| -> String {
+        format!(
+            r#"
+namespace capmatrix_prov_stack
+  import anthill.prelude.{{Int64, Bool, MutableStack, Iterable}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  operation ti(c: {param}) -> Int64 = 1
+  operation c(rs: MutableStack[T = Row]) -> Int64 = ti(rs)
+end
+"#
+        )
+    };
+    for (label, param) in [
+        ("DIRECT provider, one binding", "Iterable[Element = Row]"),
+        (
+            "DIRECT provider, spec bound to its own carrier",
+            "Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
+        ),
+    ] {
+        if let Err(e) = check_src(label, &stack_program(param), Verdict::Loads) {
             failures.push(e);
         }
     }

@@ -376,6 +376,13 @@ fn a_companion_receiver_call_reads_its_bracket_as_type_arguments() {
     };
 
     let (functor, type_args) = shape("fact Map[K = String, V = Int64].empty[T = Int64](x)\n");
+    // THE RECEIVER'S BINDINGS ERASE, exactly as they do bracket-less, and /code-review read
+    // the newly-writable two-bracket spelling as CREATING a silent drop beside a read one.
+    // It does not: MEASURED, `Map[K = Bool, V = Bool].empty()` — no callee bracket at all —
+    // already loads clean against a `String` key and an `Int64` value, so the receiver
+    // bracket constrains nothing and does not even catch a direct contradiction. This
+    // ticket made the CALLEE bracket readable here and left that untouched; the inert
+    // receiver bracket is WI-20260829-W6JH0.
     assert_eq!(functor, "Map.empty", "the receiver's bindings erase, as they do bracket-less");
     assert_eq!(type_args.len(), 1, "the OUTER bracket is the call's type args");
     assert!(
