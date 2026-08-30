@@ -21,7 +21,9 @@
 -- boundaries beat prose about them.
 --
 -- The operative rule is therefore: an address written LITERALLY, INLINE, at the
--- call. See lib/email.anthill.
+-- call. The typer limit is WI-20260829-4S404 — cited HERE because this fixture is
+-- what demonstrates it, and because after `lib/email.anthill`'s header was trimmed
+-- this is the only place in the tree that names it.
 -- ================================================================
 sort guardians.agent.LetBoundTriage
   import anthill.prelude.{List, Error, External}
