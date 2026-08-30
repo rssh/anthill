@@ -1855,18 +1855,20 @@ fn a_compound_expression_is_a_value_expression() {
 /// through `transitive_provider_spec_view_bindings`, which already existed for exactly
 /// this chain (WI-714/WI-495).
 ///
-/// ONE ROW STILL REFUSES, and it is a DIFFERENT defect with its own ticket
-/// (WI-20260829-XZMGC): the composed view maps the intermediate's
-/// PARAMS — `Element ↦ List.T` and `E ↦ {}` both compose, which is why
-/// `Iterable[Element = Row, E = {}]` loads — but keeps `C = Stream`, the intermediate's
-/// SELF-reference, verbatim. `compose_provision_views`' doc records that as deliberate,
-/// and it is harmless for the consumers that ground params off a receiver; the subtype
-/// relation is the one that COMPARES `C`, and `Iterable.iterator` on a `List` receives the
-/// `List`, so `C = List` is the answer it should get.
+/// THE LAST ROW MOVED WITH WI-20260829-XZMGC, and its cause was a SECOND defect on the
+/// same chain: the composed view maps the intermediate's PARAMS — `Element ↦ List.T` and
+/// `E ↦ {}` both compose, which is why `Iterable[Element = Row, E = {}]` loaded first —
+/// but kept `C = Stream`, the intermediate's SELF-reference, verbatim.
+/// `compose_provision_views`' doc records that as deliberate and it stays so: none of its
+/// three receiver-grounding consumers reads `C`. The subtype relation is the one that
+/// COMPARES it, and `Iterable.iterator` on a `List` receives the `List` — so
+/// `subtype_provider_view` now excludes the carrier param from a COMPOSED view and each
+/// caller supplies the actual it has.
 ///
-/// STILL MEASURED FACTS, NOT GAPS, for the same reason as before: the refusing row is
-/// `RefusesLocated` because the refusal is correct-as-far-as-the-composer-goes, and the
-/// table's job is to make the next move visible.
+/// THE ROW BELOW IS THEREFORE A PAIR, and the second half is what nothing had named: the
+/// same artifact ACCEPTED a `List` at `Iterable[C = Stream]`, a spec view claiming the
+/// carrier is a `Stream`. A silent accept, invisible until someone asked the question from
+/// that side. It is a cell here now so it cannot go quiet again.
 #[test]
 fn a_spec_typed_parameter_and_its_carrier() {
     fn program_with(param: &str) -> String {
@@ -1887,12 +1889,29 @@ end
     let rows: &[(&str, &str, Verdict)] = &[
         ("bare spec name", "Iterable", Verdict::Loads),
         (
-            // THE ONE ROW STILL REFUSED, and no longer for "it carries bindings" — the
-            // row below carries one too and loads. `C` alone: the composed view keeps
-            // `Stream`, the intermediate's self-reference, where `List` belongs.
+            // WI-20260829-XZMGC: was refused, now LOADS. The composed view kept `Stream`,
+            // the intermediate's self-reference, where `List` belongs; the carrier param
+            // is now the ACTUAL's own type.
             "spec bound to its own carrier",
             "Iterable[C = List[T = Row], Element = Row, E = {}]",
-            Verdict::RefusesLocated("expected Iterable[C = List[T = Row]"),
+            Verdict::Loads,
+        ),
+        (
+            // THE OTHER HALF of the same artifact, and it went the other way: the view
+            // SAID the carrier was a `Stream`, so a `List` was ACCEPTED here. A silent
+            // accept, which no earlier row could see.
+            "spec bound to the INTERMEDIATE's carrier",
+            "Iterable[C = Stream]",
+            Verdict::RefusesLocated("expected Iterable[C = Stream]"),
+        ),
+        (
+            // The strength control: naming the right carrier with the WRONG argument
+            // still refuses, which is what makes the accepting row above a check and not
+            // a base-name match. Green at one hop before this ticket
+            // (`MutableStack[T = Bool]`, below); this is the two-hop twin.
+            "spec bound to its own carrier, WRONG argument",
+            "Iterable[C = List[T = Bool]]",
+            Verdict::RefusesLocated("expected Iterable[C = List[T = Bool]]"),
         ),
         (
             // WI-20260829-GNPG7: was refused, now LOADS. `Element` composes through
@@ -1937,10 +1956,13 @@ end
     // BOUND row, naming its own carrier, loads. That is the shape a "spec-with-bindings is
     // a structurally distinct VIEW" reading has to refuse, so this pair is what refutes it.
     //
-    // BOTH ROWS PASS EITHER WAY across WI-20260829-GNPG7's change, by design: one hop needs
-    // no composition. They are the CONTROL — they say the transitive routing did not
-    // disturb the direct case, and they are why the `List` rows' movement is attributable
-    // to transitivity rather than to bindings.
+    // BOTH ROWS PASS EITHER WAY across WI-20260829-GNPG7's change AND across
+    // WI-20260829-XZMGC's, by design: one hop needs no composition, so `subtype_provider_view`
+    // returns on its direct branch and neither the transitive routing nor the carrier-param
+    // exclusion is reached. They are the CONTROL — they say those changes did not disturb
+    // the direct case, and they are why the `List` rows' movement is attributable to
+    // composition rather than to bindings or to the carrier param meaning something new
+    // everywhere.
     let stack_program = |param: &str| -> String {
         format!(
             r#"
@@ -1967,9 +1989,20 @@ end
             failures.push(e);
         }
     }
+    // And the one-hop half of the strength control above: naming the right carrier with
+    // the WRONG argument refuses, and always has. It is the row the two-hop
+    // `Iterable[C = List[T = Bool]]` now matches — which is what says WI-20260829-XZMGC
+    // supplied the ACTUAL for the carrier param and not merely its base name.
+    if let Err(e) = check_src(
+        "DIRECT provider, own carrier, WRONG argument",
+        &stack_program("Iterable[C = MutableStack[T = Bool]]"),
+        Verdict::RefusesLocated("expected Iterable[C = MutableStack[T = Bool]]"),
+    ) {
+        failures.push(e);
+    }
     assert!(
         failures.is_empty(),
-        "{} spec-view row(s) moved — if WI-20260829-GNPG7 was settled, update these and \
+        "{} spec-view row(s) moved — if WI-20260829-XZMGC was settled, update these and \
          close it:\n\n{}",
         failures.len(),
         failures.join("\n\n"),

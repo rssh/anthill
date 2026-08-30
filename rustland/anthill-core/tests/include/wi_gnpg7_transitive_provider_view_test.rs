@@ -49,10 +49,12 @@
 //!     design. One hop needs no composition. It is the control that makes the rows above
 //!     attributable to transitivity rather than to bindings, and it is the row that
 //!     settles the ticket's design question.
-//!   * `the_carrier_param_of_a_composed_view_is_still_the_intermediate` — GREEN EITHER
-//!     WAY (refused before and after). It pins the ONE row that did not move and names
-//!     its separate cause, so the next reader does not re-derive it: see
-//!     WI-20260829-XZMGC.
+//!   * `the_carrier_param_of_a_composed_view_names_the_carrier` — the ONE row that did not
+//!     move with this ticket (refused before and after). Its separate cause was the
+//!     composed view keeping the intermediate's SELF-reference in the carrier param, and
+//!     WI-20260829-XZMGC closed it; the assertion is flipped to LOADS and the test kept, so
+//!     backing THIS ticket out still reddens it — for the original reason, the chain being
+//!     unreachable at all.
 //!
 //! MEASURED ACROSS THE WORKSPACE: routing both sites through the transitive reader moved
 //! exactly ONE test, `typer_capability_matrix_test::a_spec_typed_parameter_and_its_carrier`
@@ -247,23 +249,27 @@ end
     )));
 }
 
-/// THE ONE ROW THAT DID NOT MOVE, pinned with its cause so it is not re-derived as part of
-/// this ticket. `Stream provides Iterable[C = Stream, …]` binds `C` to STREAM ITSELF, and
-/// `compose_provision_views` substitutes the intermediate's PARAMS but keeps a
-/// non-param value verbatim — its own doc names `C ↦ Stream` as that case. So the composed
-/// view for `List` says `C = Stream`, and `Iterable.C` declares no variance, so the
-/// invariant check fails both directions against `List[T = Row]`.
+/// THE ONE ROW THAT DID NOT MOVE WITH THIS TICKET, kept as the boundary marker between the
+/// two defects on this chain. It refused BEFORE and AFTER the transitive routing — so it
+/// measures nothing about that routing — and it was closed separately by
+/// WI-20260829-XZMGC.
 ///
-/// Refused before AND after this ticket, so it measures nothing about the transitive
-/// routing — it is here as the boundary marker, and its fix is WI-20260829-XZMGC.
+/// The cause was the SECOND defect: `Stream provides Iterable[C = Stream, …]` binds `C` to
+/// STREAM ITSELF, and `compose_provision_views` substitutes the intermediate's PARAMS but
+/// keeps a non-param value verbatim — its own doc names `C ↦ Stream` as that case — so the
+/// composed view for `List` said `C = Stream`. `subtype_provider_view` now excludes the
+/// carrier param from a composed view and its callers supply the actual;
+/// `wi_xzmgc_composed_carrier_param_test` owns the rows.
+///
+/// KEPT AND FLIPPED rather than deleted, because the pairing is what makes THIS ticket's
+/// attribution legible: with the carrier binding still refusing, the four rows that moved
+/// here moved for transitivity alone. Backing out GNPG7 reddens it again — the argument is
+/// refused for the ORIGINAL reason, since a `List` reaches `Iterable` only through the
+/// chain.
 #[test]
-fn the_carrier_param_of_a_composed_view_is_still_the_intermediate() {
-    let errs = load_errors(&program(
+fn the_carrier_param_of_a_composed_view_names_the_carrier() {
+    expect_loaded(try_load_kb_with(&program(
         "Iterable[C = List[T = Row], Element = Row, E = {}]",
         "List[T = Row]",
-    ));
-    assert!(
-        errs.iter().any(|e| e.contains("expected Iterable[C = List[T = Row]")),
-        "the carrier binding is the remaining refusal (WI-20260829-XZMGC): {errs:?}"
-    );
+    )));
 }

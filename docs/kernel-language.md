@@ -1171,10 +1171,37 @@ capability existed and only the declared spelling of it did not. The two readers
 agree. A witness is a **conditional** instance, so the condition decides: the position
 is discharged by resolving the spec at the argument's own carrier — the same resolution
 dispatch performs — so a mapped stream over a `List` conforms to `FiniteCollection` and
-one over an infinite generator does not. Two boundaries stay: a spec type carrying
-**bindings** is a distinct view and is not widened here (only the bare spec name is), and
-the subtype relation has no call site, so a condition met only by the *caller's* own
-`requires` is not seen.
+one over an infinite generator does not. Two boundaries stay: the **witness** widening
+reaches only the bare spec name, so a witnessed carrier is not yet admitted at a spec type
+carrying bindings, and the subtype relation has no call site, so a condition met only by
+the *caller's* own `requires` is not seen. The first is the scope of *this* widening and
+not a claim that a bindings-carrying spec type is a distinct view — the next paragraph
+settles that it is not.
+
+**A spec type carrying BINDINGS is admissible wherever the provision supplies them, and
+the provision may be REACHED THROUGH A CHAIN** (WI-20260829-GNPG7). It was tempting to
+read a bound spec view as structurally distinct from its carrier — an author who wants
+one writes the conversion — and the measurement refutes it: `MutableStack` declares
+`provides Iterable[C = MutableStack[T], Element = T, E = {}]` itself, and a
+`MutableStack[T = Row]` is admissible at the fully-bound `Iterable[C = MutableStack[T =
+Row], Element = Row, E = {}]`, the very shape that reading has to refuse. What separated
+the accepting rows from the refusing ones was **hop count**, not bindings: `List` reaches
+`Iterable` only through `List provides Stream` + `Stream provides Iterable`, and the
+bindings-carrying arms read a single direct provision where the bare-spec arm already
+walked the whole chain. One relation cannot answer "does it provide" over the chain and
+"with what bindings" over one hop. Both now compose the chain, so a two-hop carrier
+conforms to a bound view exactly as a one-hop one does.
+
+**In a COMPOSED view the spec's carrier parameter is the VALUE'S OWN type**
+(WI-20260829-XZMGC). `Stream provides Iterable[C = Stream, …]` binds the carrier parameter
+to `Stream` **itself** — `C = Self`, spelled with the sort's own name — and composing that
+through `List provides Stream` substitutes the intermediate's *parameters* and leaves the
+self-reference standing, so the chain would claim a `List`'s `Iterable` carrier is a
+`Stream`. It is not: `C` is what `Iterable.iterator(c: C)` receives, and on a `List` that
+is the list. The composed view therefore does not state that parameter at all and the
+value's own type answers for it — which is what a *direct* provision already says, since
+it names its own carrier. Both signs of the error were live: `Iterable[C = List[T = Row]]`
+refused a `List[T = Row]`, and `Iterable[C = Stream]` accepted one.
 
 **`requires` and `provides` are BOTH chain entries, and they differ only in where the
 dictionary comes from** (WI-1110). `requires A[T]` says the `A` dictionary is **passed

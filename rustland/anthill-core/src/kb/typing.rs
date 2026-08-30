@@ -32240,6 +32240,20 @@ fn provision_carrier_sort(
 /// "self-representing" when the spec HAS a carrier parameter throws a written binding
 /// away. Only one of those can break a working program.
 ///
+/// THAT SAFETY ARGUMENT IS ABOUT THE CONSUMERS IT WAS WRITTEN FOR, and WI-20260829-XZMGC
+/// added one it does not cover. `subtype_provider_view` uses this answer to decide which
+/// composed binding to take OUT of a provider view and replace with the actual's own type
+/// — where a wrong answer is not "a provision left where it was" but a WRONG VALUE
+/// substituted for a correct one. MEASURED, found by /code-review: with `operation touch(c:
+/// Spec, x: P)` this predicate answers `P`, the ACCEPTED ARGUMENT (which is the rule, not a
+/// slip — see the paragraphs above), and a `Carrier[T = Int64]` reaching `Spec` through an
+/// intermediate was refused at `Spec[P = Int64]` with its whole type compared against
+/// `Int64`. That reader therefore does NOT rely on this answer alone: it also requires the
+/// composed value to be the intermediate's own self-naming ([`composed_self_reference`]),
+/// which a mis-identified element parameter's value is not. A NEW consumer owes the same
+/// second gate — this predicate answers "which parameter an operation takes", and that is
+/// not by itself "which parameter names the carrier".
+///
 /// Keyed and computed on the CANONICAL sort symbol: `operations_of_sort` re-filters on
 /// raw symbol equality and answers empty for a twin copy, where the parameter list
 /// beside it (`sort_type_params_as_pairs` → `type_param_syms_of`) canonicalizes — so an
@@ -36382,6 +36396,20 @@ fn transitive_carrier_for_param(
 /// verbatim un-substituted — `bind_spec_params_from_carrier_param` then skips it
 /// as non-ground non-ref and the param surfaces a LOUD `?_` rather than a
 /// silently-wrong bind (deep compound substitution is follow-up, cf. WI-380).
+///
+/// WI-20260829-XZMGC — THE VERBATIM CARRIER APPLICATION IS WRONG FOR ANYONE WHO READS IT,
+/// and this function keeps it anyway because its three consumers do not. `C ↦ Stream` is
+/// the INTERMEDIATE naming itself; the carrier of a composed view is the sort at the far
+/// end of the chain. CENSUSED: [`bind_spec_params_from_carrier`] drops it (a bare `Stream`
+/// takes the `ref_shape` arm and names no parameter of the carrier, so `concrete` is
+/// `None` — and it would drop a correct `List` too), [`bind_spec_params_from_carrier_param`]
+/// skips the carrier param by VarId (WI-593: it binds by argument unification), and
+/// [`bare_spec_arg_provision_projection`] skips it by VarId and substitutes the receiver's
+/// own type — its comment is a MEASUREMENT of this artifact escaping into
+/// `MappedStream[Source = Stream, …]`. The fourth reader, the SUBTYPE relation, is the one
+/// that compares it, and it excludes the parameter itself: see [`subtype_provider_view`].
+/// Emitting the right value here would need `kb.alloc` and therefore `&mut KnowledgeBase`
+/// through two read paths that discard the value.
 fn compose_provision_views(
     kb: &KnowledgeBase,
     intermediate: Symbol,
@@ -37550,16 +37578,53 @@ fn transitive_provider_spec_view_bindings(
 /// returned `None`. The one asymmetry runs the safe way: `provides_out_edges` also drops a
 /// non-live rule, so the filter is if anything the stricter of the two, and a provision
 /// from a dead rule is not one this relation should honour.
+///
+/// WI-20260829-XZMGC — THE RETURNED FLAG IS `true` WHEN THE SPEC'S CARRIER PARAMETER WAS
+/// TAKEN OUT OF A COMPOSED VIEW, and it means "that parameter is not in this view; the
+/// caller owns it". A composed view cannot state it: `Stream provides Iterable[C = Stream,
+/// …]` binds `C` to STREAM ITSELF, and [`compose_provision_views`] substitutes the
+/// intermediate's PARAMS and keeps everything else verbatim (its own doc names `C ↦ Stream`
+/// as exactly that case), so the composed view for `List` would say the carrier is a
+/// `Stream`. It is not: `C` is the value `Iterable.iterator(c: C)` receives, and `iterator`
+/// on a `List` receives the LIST. So the carrier param is EXCLUDED here (below) and each
+/// caller supplies THE ACTUAL'S OWN TYPE for it, which is the same rule
+/// [`bare_spec_arg_provision_projection`] already states and works around at its own site
+/// ("the spec's CARRIER parameter is the receiver's own type, by definition, and must not
+/// be read off the provision").
+///
+/// THE FLAG IS "WAS DROPPED", NOT "WAS COMPOSED", so the override replaces a mangled
+/// binding and never invents an absent one. A chain whose provisions bind no carrier
+/// parameter at all leaves the flag `false` and the expected binding refuses, exactly as
+/// before — silence is not the same claim as a wrong value, and reading it as one would
+/// widen a case this ticket measured nothing about.
+///
+/// EXCLUDED RATHER THAN REWRITTEN HERE, for two reasons. (1) The right value differs per
+/// caller — [`parameterized_compatible_view`] has the actual's full type
+/// (`List[T = Row]`), [`bare_provider_binding_precise`] has a bare sort — and emitting the
+/// weaker bare `Ref(carrier)` for both would open a hole the DIRECT case does not have:
+/// MEASURED, `MutableStack[T = Row]` is refused at `Iterable[C = MutableStack[T = Bool]]`,
+/// and a bare `C ↦ List` would ACCEPT `Iterable[C = List[T = Bool]]` for a `List[T = Row]`
+/// ((sort_ref, parameterized) on one base is compatible both directions). (2) The
+/// per-route value is meaningless, so it must not reach the merge below: two routes
+/// through two intermediates would each name THEMSELVES and be read as a disagreement.
+///
+/// THE DIRECT BRANCH IS UNTOUCHED (flag `false`, carrier param kept): a direct provision
+/// names its own carrier truthfully, and this is where the ticket's alternative route —
+/// recognizing the self-reference at the subtype site, from the composed view alone — was
+/// rejected. That reading is "an actual-side value that is a bare ref to a sort the actual
+/// provides", and it cannot tell the artifact from a provision that legitimately binds a
+/// param to a spec sort the carrier also provides. Splitting on the BRANCH needs no such
+/// recognition: only composition manufactures the self-reference.
 fn subtype_provider_view(
     kb: &KnowledgeBase,
     carrier: Symbol,
     spec: Symbol,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
     // The direct fact first — the hot path, and the answer for every carrier that
     // declares the spec itself. Reached before the reachability walk so a one-hop
     // provider pays nothing for the chain machinery.
     if let Some(view) = provider_spec_view_bindings(kb, carrier, spec) {
-        return Some(view);
+        return Some((view, false));
     }
     if !sort_provides(kb, carrier, spec) {
         return None;
@@ -37612,9 +37677,35 @@ fn subtype_provider_view(
     // assumed away and is answered `None` instead — the conservative direction, and the
     // only one available to a `bool` predicate with no error channel.
     let views = provision_route_views(kb, carrier, spec)?;
+    // WI-20260829-XZMGC — the spec's CARRIER parameter is dropped from a route whose value
+    // for it is the SELF-REFERENCE composition manufactured (see the header). `None` when
+    // the spec has no identifiable carrier param — then nothing is dropped and nothing is
+    // overridden downstream, which is the pre-ticket reading for that spec.
+    let carrier_vid =
+        spec_carrier_param(kb, spec).and_then(|p| type_param_vid_in_sort(kb, spec, p));
+    // THE ONE SORT ON THIS CHAIN THAT NAMES ITSELF as `spec`'s carrier — `Stream`, read
+    // from `List`. [`transitive_carrier_for_param`] is the existing owner of that walk (the
+    // eval path's "who owns the impl" question), and it is the whole of the value gate:
+    // the artifact is the composed view repeating THAT sort's self-naming, so the value
+    // must BE it. Hoisted out of the loop — one walk per composed lookup.
+    let self_naming = carrier_vid
+        .and_then(|cvid| transitive_carrier_for_param(kb, spec, cvid, carrier))
+        .filter(|owner| !same_sort_canonical(kb, *owner, carrier));
     let mut merged: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut dropped_carrier = false;
     for view in &views {
         for (param, value) in view {
+            // `Some(cvid)` on both sides, never `None == None`: a param whose vid does not
+            // resolve is not the carrier param, and a spec with no carrier param excludes
+            // nothing.
+            if let (Some(cvid), Some(owner)) = (carrier_vid, self_naming) {
+                if type_param_vid_in_sort(kb, spec, *param) == Some(cvid)
+                    && composed_self_reference(kb, owner, *value)
+                {
+                    dropped_carrier = true;
+                    continue;
+                }
+            }
             match merged.iter().find(|(mp, _)| same_label(kb, *mp, *param)) {
                 Some((_, seen)) if !provision_values_agree(kb, *seen, *value) => return None,
                 Some(_) => {}
@@ -37622,7 +37713,54 @@ fn subtype_provider_view(
             }
         }
     }
-    (!merged.is_empty()).then_some(merged)
+    // A ROUTE THAT KEPT THE PARAM WINS OVER ONE THAT DROPPED IT. Two routes can disagree
+    // about whether their carrier value is a manufactured self-reference; if any of them
+    // stated a real one it is in `merged`, and the caller must read that rather than
+    // substitute the actual over it.
+    let dropped_carrier = dropped_carrier
+        && !merged.iter().any(|(p, _)| {
+            carrier_vid.is_some() && type_param_vid_in_sort(kb, spec, *p) == carrier_vid
+        });
+    // AN EMPTY MERGE IS AN ANSWER WHEN THE CARRIER PARAM IS WHAT EMPTIED IT — for a spec
+    // whose only parameter is its carrier, the composed chain has said everything it can
+    // and the caller supplies that one binding itself. Keeping the flat `is_empty()`
+    // refusal here would have made THAT spec the one shape this ticket does not fix.
+    // Without a dropped carrier param an empty merge is the pre-ticket `None`.
+    (dropped_carrier || !merged.is_empty()).then_some((merged, dropped_carrier))
+}
+
+/// WI-20260829-XZMGC — is `value`, a COMPOSED view's binding for the spec's carrier param,
+/// the self-reference the composition manufactured rather than a claim anyone made?
+///
+/// It is when the value names `owner`: the sort on THIS carrier's provision chain that
+/// binds the carrier param to ITSELF (`Stream provides Iterable[C = Stream, …]`, read from
+/// `List`), which the caller resolves once through [`transitive_carrier_for_param`]. That
+/// is precisely `C = Self` spelled with the intermediate's name, and it is what
+/// [`compose_provision_views`] cannot substitute — it maps the intermediate's PARAMS, and
+/// this is not one.
+///
+/// THE VALUE GATE IS LOAD-BEARING, because the PARAMETER gate cannot carry the question
+/// alone: [`spec_carrier_param`] answers "the first declared type parameter some declared
+/// operation TAKES", which by design (WI-1077) reads an ACCEPTED ARGUMENT as the carrier —
+/// `operation touch(c: Spec, x: P)` files at `P`, the element. For such a spec the composed
+/// view's `P` is an ordinary composed binding and correct, and dropping it substituted the
+/// actual's whole type for the element type. MEASURED, found by /code-review:
+/// `Carrier[T = Int64]` was REFUSED at `Spec[P = Int64, Q = Int64]`, a program that loads
+/// on the pre-ticket tree.
+///
+/// AND "THE VALUE'S SORT SELF-PROVIDES THE SPEC" IS NOT THE GATE, which was the SECOND cut
+/// and the second review's finding. That property holds of any self-providing sort —
+/// `Int64 provides Combiner[T = Int64]` is the ordinary shape — so a mis-identified ELEMENT
+/// param whose value is such a sort was still dropped. DRIVEN, both signs, on a chain
+/// `Carrier provides Mid provides Spec[P = Elem]` with `Elem provides Spec[P = Elem]`:
+/// `Spec[P = Elem]` was REFUSED for a `Carrier` and `Spec[P = Carrier]` ACCEPTED, while the
+/// one-hop `Mid` answered the opposite to both — the composed path contradicting the direct
+/// path, which is the defect this ticket removes, relocated. Identity against the chain's
+/// OWN self-naming sort is the exact question: for that fixture there is none (no sort on
+/// `Carrier`'s chain binds `P` to itself), so nothing is dropped.
+fn composed_self_reference(kb: &KnowledgeBase, owner: Symbol, value: TermId) -> bool {
+    super::load::provides_spec_base_sym(kb, value)
+        .is_some_and(|base| same_sort_canonical(kb, base, owner))
 }
 
 /// Whether two routes' values for ONE spec param are the same binding.
@@ -42068,7 +42206,9 @@ fn bare_spec_arg_provision_projection(
     // writes the SPEC in that slot (`Stream provides Iterable[C = Stream, …]` — `C = Self`
     // spelled with the sort's own name), and composing it through a hop substitutes the
     // intermediate's PARAMS, not that self-reference, so it survives as the literal
-    // `Stream`. MEASURED: `mapped(xs, inc)` over a `List` inferred
+    // `Stream`. THE SAME SENTENCE IS THE SUBTYPE RELATION'S RULE (WI-20260829-XZMGC,
+    // [`subtype_provider_view`]) — this site stated it first, and measured it.
+    // MEASURED: `mapped(xs, inc)` over a `List` inferred
     // `MappedStream[Source = Stream, …]`, and the finiteness witness — gated on
     // `requires FiniteCollection[C = S]` — then asked whether the SPEC `Stream` is a
     // FiniteCollection and got no. Binding it to the receiver's type is right for a
@@ -52326,6 +52466,25 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     } else {
         None
     };
+    // WI-20260829-XZMGC — THE SPEC'S CARRIER PARAMETER, when the view above was COMPOSED
+    // through a provision chain and therefore does not carry one. `C` is the value
+    // `Iterable.iterator(c: C)` receives, and on a `List` that is THE LIST — so it is
+    // checked against `actual` itself, which is the strongest reading available here and
+    // the one the DIRECT case already gets (a direct `provides Iterable[C = MutableStack[T],
+    // …]` names its own carrier, and the WI-441 instantiation below grounds its `T` off
+    // this instance). MEASURED, and it is why the carrier param is not simply given the
+    // bare `Ref(actual_base)` inside `subtype_provider_view`: `MutableStack[T = Row]` is
+    // REFUSED at `Iterable[C = MutableStack[T = Bool]]`, and the bare form would have
+    // ACCEPTED the two-hop twin `Iterable[C = List[T = Bool]]` for a `List[T = Row]`.
+    //
+    // `None` for a direct view, for a same-base check, and for a spec with no identifiable
+    // carrier parameter — in each of those the view's own binding stands.
+    let carrier_param_is_ours = match &cross_sort_provider {
+        Some((_, true)) => spec_carrier_param(kb, expected_base)
+            .and_then(|p| type_param_vid_in_sort(kb, expected_base, p)),
+        _ => None,
+    };
+    let cross_sort_provider = cross_sort_provider.map(|(view, _)| view);
     // WI-441: the provider view's binding values carry the CARRIER's canonical
     // param vars (`provides Stream[T = T, E = {ES, EF}]` holds MappedStream's
     // own ES/EF alias vars). Instantiate them through THIS actual instance's
@@ -52452,6 +52611,20 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
         // one. **WI-1059** owns it, and the cost of the restrictive answer is measured
         // there (33 stdlib load errors, and only after patching BOTH carrier arms —
         // WI-1016).
+        // WI-20260829-XZMGC — the composed view's missing carrier param, checked against
+        // the ACTUAL itself. Placed ABOVE the `binding_for_param` lookup and not inside the
+        // `None` arm: the actual is a foreign sort here (this is the cross-sort branch), and
+        // a parameter of its own that happens to share the spec carrier's SHORT NAME would
+        // otherwise answer for it — the key match is by short name across two sorts, so that
+        // collision is a spelling coincidence, not a binding.
+        if let Some(cvid) = carrier_param_is_ours {
+            if type_param_vid_in_sort(kb, expected_base, *param) == Some(cvid) {
+                if !check_binding_by_variance(kb, subst, expected_base, *param, actual, ev) {
+                    return false;
+                }
+                continue;
+            }
+        }
         // WI-764: keyed via [`binding_for_param`] — raw identity here rejected a WRITTEN
         // `Relation[T = .., E = ..]` annotation against the very relation it describes.
         let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
@@ -54054,7 +54227,7 @@ fn bare_provider_binding_precise<E: TermView>(
         return false;
     };
     let mut carrier = actual_sym;
-    let provider_view = loop {
+    let (provider_view, carrier_param_is_ours) = loop {
         // WI-20260829-GNPG7 — TRANSITIVE here for the same reason as
         // `parameterized_compatible_view`'s `cross_sort_provider`, and this is the SECOND
         // site of the one gap, not a separate one: both are the subtype relation asking
@@ -54068,8 +54241,8 @@ fn bare_provider_binding_precise<E: TermView>(
         // NOT the same walk as the `strict_parent_sort` loop around it: that one climbs
         // ENTITY→parent to find a carrier, this one composes provisions once a carrier is
         // fixed. Nesting them is what makes an entity of a 2-hop provider work.
-        if let Some(view) = subtype_provider_view(kb, carrier, expected_base) {
-            break view;
+        if let Some(found) = subtype_provider_view(kb, carrier, expected_base) {
+            break found;
         }
         // Entity → parent sort. The chain is acyclic: `strict_parent_sort` is
         // the STRICT parent, so §6.3's eponymous self-edge never appears here.
@@ -54078,8 +54251,56 @@ fn bare_provider_binding_precise<E: TermView>(
         };
         carrier = parent_sym;
     };
+    // WI-20260829-XZMGC — the same rule as [`parameterized_compatible_view`]'s, spelled
+    // with the actual this site HAS: a composed view carries no carrier param, and here the
+    // actual is a BARE sort, so its own type is a bare sort ref. Allocated inside the
+    // composed branch only: this function is on the per-comparison subtype path and the
+    // direct branch must stay allocation-free.
+    //
+    // `carrier`, NOT `actual_sym`, AND THE DIFFERENCE IS OBSERVABLE — they part company
+    // when the entity→parent loop above climbed, i.e. the actual is an ENTITY of a
+    // providing sort. `Iterable.C` declares no variance so the check is INVARIANT, and no
+    // one value satisfies both spellings: MEASURED with a `boxed` argument, `Ref(carrier)`
+    // accepts `Iterable[C = Box]` and refuses `Iterable[C = boxed]`, `Ref(actual_sym)` does
+    // exactly the reverse. What decides is the DIRECT provision, which is the same question
+    // with no composition in it: a carrier providing `Iterable` ITSELF binds `C` to that
+    // carrier, so a `boxed` argument is accepted at `Iterable[C = DBox]` and refused at
+    // `Iterable[C = DBox.boxed]`. `carrier` agrees with that; `actual_sym` would contradict
+    // it. So the rule is the receiver's own type AS THE PROVISION SEES IT, and for an
+    // entity that is the sort the provision is filed at.
+    //
+    // NOT A CLAIM ABOUT THE OTHER SITE. [`parameterized_compatible_view`] has no
+    // entity→parent climb, so for an entity actual it finds no provider view at all and
+    // refuses every carrier spelling — MEASURED, `boxed[T = Int64]` at `Iterable[C = Box]`,
+    // `[C = Box[T = Int64]]`, `[C = boxed]` and `[C = boxed[T = Int64]]` are all refused,
+    // with this change and with it backed out. That asymmetry is the missing climb and is
+    // PRE-EXISTING; this ticket neither creates nor closes it. An earlier draft of this
+    // comment claimed the two sites agree here — they do not, and only the bare one has an
+    // answer to agree with. Found by /code-review.
+    let composed_carrier: Option<(VarId, TermId)> = if carrier_param_is_ours {
+        spec_carrier_param(kb, expected_base)
+            .and_then(|p| type_param_vid_in_sort(kb, expected_base, p))
+            .map(|vid| (vid, kb.alloc(Term::Ref(carrier))))
+    } else {
+        None
+    };
     let mut probe = subst.clone();
     for (param, ev) in &expected_bindings {
+        if let Some((cvid, self_ty)) = composed_carrier {
+            if type_param_vid_in_sort(kb, expected_base, *param) == Some(cvid) {
+                if !check_binding_by_variance(
+                    kb,
+                    &mut probe,
+                    expected_base,
+                    *param,
+                    &TermIdView(self_ty),
+                    ev,
+                ) {
+                    return false;
+                }
+                continue;
+            }
+        }
         let short = short_name_of(kb.local_name_of(*param));
         let Some(pv) = provider_view
             .iter()
