@@ -1519,3 +1519,6 @@ mod wi_bad3v_dot_type_arg_bracket_test;
 
 #[path = "include/wi_gnpg7_transitive_provider_view_test.rs"]
 mod wi_gnpg7_transitive_provider_view_test;
+
+#[path = "include/wi_9njtx_provider_instantiation_rollback_test.rs"]
+mod wi_9njtx_provider_instantiation_rollback_test;

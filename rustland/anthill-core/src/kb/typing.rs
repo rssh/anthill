@@ -52180,44 +52180,86 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
     // WI-441: the provider view's binding values carry the CARRIER's canonical
     // param vars (`provides Stream[T = T, E = {ES, EF}]` holds MappedStream's
     // own ES/EF alias vars). Instantiate them through THIS actual instance's
-    // bindings (ES := the instance's ES value, …) in the scratch subst, so the
-    // per-param comparison below sees the instance's row, not the canon vars
-    // (a two-row provision `{ES, EF}` cannot pair against the expected row's
-    // tails without it — two-tail-to-two-tail pairing is ambiguous).
+    // bindings (ES := the instance's ES value, …), so the per-param comparison
+    // below sees the instance's row, not the canon vars (a two-row provision
+    // `{ES, EF}` cannot pair against the expected row's tails without it —
+    // two-tail-to-two-tail pairing is ambiguous).
     //
-    // WI-20260829-9NJTX (found reviewing GNPG7, NOT repaired here — recorded because that
-    // ticket WIDENS its population): these binds go into the CALLER's `subst` and are not rolled
-    // back when the per-param loop below `return false`s, so a failed comparison can leave
-    // the actual base's canonical param vars bound. That is pre-existing — the `Some(pv)`
-    // arm further down clones into a `probe` for exactly this reason — but it used to run
-    // only for a DIRECTLY-providing actual, and now runs for any transitively-providing one
-    // too. NOT repaired because it could not be DRIVEN: the arms most likely to probe a
-    // comparison expecting it to fail (`Variance::Invariant`'s two directions,
-    // `Bivariant`'s `||`) already clone, so no fixture was found where the residue changes
-    // a later verdict. A repair here would be a change to a hot relation justified by
-    // nothing that fails without it.
-    if cross_sort_provider.is_some() {
-        for (ap, av) in &actual_bindings {
-            let q = format!(
-                "{}.{}",
-                kb.qualified_name_of(actual_base),
-                kb.local_name_of(*ap)
-            );
-            let Some(qsym) = kb.try_resolve_symbol(&q) else {
-                continue;
-            };
-            let Some(target) = resolve_sort_alias(kb, qsym) else {
-                continue;
-            };
-            let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
-                continue;
-            };
-            let vid = *vid;
-            if subst.resolve_as_value(vid).is_none() {
-                subst.bind_value(kb, vid, av.clone());
+    // WI-20260829-9NJTX — THE INSTANTIATION IS A REWRITE OF THE VIEW, NOT A FACT ABOUT THE
+    // CALLER'S WORLD, and it is applied here rather than published into `subst`. It used
+    // to `subst.bind_value` each canon var and let the comparison below resolve through
+    // it. Those binds outlive the comparison, and the var they name is the SORT's — one
+    // `List.T` shared by every `List` instance and every comparison in that substitution —
+    // so the FIRST instance compared won for all the rest. DRIVEN, both directions, by
+    // [`wi_9njtx_provider_instantiation_rollback_test`]:
+    //
+    //   * after a FAILED comparison (`List[T = Row]` at `Iterable[Element = Bool]`) the
+    //     binding stayed and the NEXT argument, `List[T = Int64]` at
+    //     `Iterable[Element = Int64]`, was refused against `Row` — a spurious second error
+    //     on a program with one mistake in it.
+    //   * after a SUCCEEDING one (`List[T = Row]` at `Iterable[Element = Row]`) it stayed
+    //     just the same, and refused the same well-typed second argument — a correct
+    //     program rejected. This is why the rollback-on-failure the ticket asked for is
+    //     NOT the repair: it leaves this row wrong. Measured — see the test's header.
+    //
+    // A scratch child of `subst` carries the binds instead. `with_parent` is what makes it
+    // a REWRITE: `bind_value` consults only the child's own map, so this instance's value
+    // SHADOWS anything the parent chain already says about the canon var, where the old
+    // `resolve_as_value(..).is_none()` guard deferred to it. The values are walked through
+    // that child once, up front, and the loop below compares the walked values on the
+    // caller's own `subst`, which the instantiation never touches.
+    //
+    // THE SHADOWING IS NOT A CORNER CASE and is worth the number: over `wi_tests` the canon
+    // var is ALREADY bound in the caller's chain on 46,107 of these iterations, and on
+    // 40,984 of those the inherited value DIFFERS from this instance's — chiefly
+    // `MappedStream` / `FilteredStream`, whose params other typer paths ground. Every one
+    // is a comparison that used to be decided against a foreign instance's value. The
+    // corpus is green either way, so the suite is not what justifies the direction; the
+    // instance being compared owning the meaning of its own parameter is.
+    //
+    // WHAT THE SHADOWING DOES NOT COVER: the three `continue`s below. A param whose
+    // qualified name does not resolve, whose alias is not a `SortAlias`, or whose alias
+    // target is not a `Var::Global` (a slot pinned concrete at declaration —
+    // [`sort_type_params_as_pairs`] filters for exactly the ones that are vars) binds
+    // nothing here, so it still resolves through the parent chain, which is the
+    // pre-WI-9NJTX reading for that param. They were inert while this loop only wrote into
+    // `subst`; they are load-bearing now. MEASURED across the whole workspace: ZERO
+    // firings, so nothing the corpus reaches falls through them — which is also why there
+    // is no `debug_assert` here. An assertion nothing can drive is not a guard, and the
+    // honest form of "unmeasured" is this sentence. Found by /code-review.
+    let cross_sort_provider = match cross_sort_provider {
+        None => None,
+        Some(view) => {
+            let mut instance = Substitution::with_parent(subst.clone());
+            for (ap, av) in &actual_bindings {
+                let q = format!(
+                    "{}.{}",
+                    kb.qualified_name_of(actual_base),
+                    kb.local_name_of(*ap)
+                );
+                let Some(qsym) = kb.try_resolve_symbol(&q) else {
+                    continue;
+                };
+                let Some(target) = resolve_sort_alias(kb, qsym) else {
+                    continue;
+                };
+                let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
+                    continue;
+                };
+                let vid = *vid;
+                instance.bind_value(kb, vid, av.clone());
             }
+            let mut instantiated: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for (p, v) in view {
+                // Deep, and then surfaced, for the reason WI-394 records at the arm that
+                // used to do this walk lazily: a `Value::Node` binding resolves to a bare
+                // var under `walk_type_deep` alone.
+                let walked = walk_type_deep(kb, &instance, v);
+                instantiated.push((p, surface_node_binding_to_term(kb, &instance, walked)));
+            }
+            Some(instantiated)
         }
-    }
+    };
     for (param, ev) in &expected_bindings {
         // The actual-side value to check against the expected binding `ev`:
         // normally the actual's OWN binding for `param`. WI-387 FIX 2: when the
@@ -52297,17 +52339,30 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                     }
                     Some(pv) => {
                         // WI-461: the provider value carries the carrier's canonical param
-                        // refs (`provides Stream[T, {}]` holds List's `T`), which the
-                        // instantiation above bound to THIS instance's bindings. Resolve it
-                        // through `subst` — deeply, so a `Ref(<carrier>.P)` chases its
-                        // `SortAlias` var to the bound value (`l.T`) — before the variance
-                        // check, so a concrete / NEUTRAL expected (`l.T`) compares against
-                        // the instance's value, not the raw canon ref. (A type-VAR expected
-                        // short-circuits via the wildcard either way, so the delivered
-                        // cross-sort cases — wi387/wi424/wi441 — are unaffected; their
-                        // expected bindings are vars.) Try the raw value first so this is
-                        // strictly additive: the resolved form is a fallback that can only
-                        // ACCEPT more, never reject what the raw value already accepted.
+                        // refs (`provides Stream[T, {}]` holds List's `T`), so a concrete /
+                        // NEUTRAL expected (`l.T`) must compare against the instance's
+                        // value and not the raw canon ref. That resolution is no longer
+                        // done here: WI-20260829-9NJTX moved it to the view itself, so `pv`
+                        // ARRIVES instantiated and deep-walked and this leg is the precise
+                        // one it already was in effect — the walk used to happen implicitly
+                        // through the canon binds the instantiation left in `subst`.
+                        //
+                        // THE SECOND LEG NOW FIRES ZERO TIMES, and that is the change
+                        // working rather than a branch to delete. MEASURED, both trees,
+                        // by logging `pvr != pv` at this site: before, it was reached
+                        // 10,313 times over `wi_tests` and resolved further on 59 of them,
+                        // ACCEPTING 39 bindings the first leg had rejected — because the
+                        // first leg was handed the raw canon ref and only ever walked it
+                        // shallowly. After, 13,149 reaches and `pvr != pv` is false on
+                        // every one: those 39 are now decided by the first leg, off the
+                        // value the view arrives already carrying.
+                        //
+                        // It is kept because the case it covers is not empty, only
+                        // unreached: the view is walked against a snapshot of `subst` taken
+                        // before this loop, and `subst` gains bindings DURING it (an
+                        // earlier param's comparison binds a var a later `pv` mentions).
+                        // Gated on `pvr != pv`, so it can only ever ACCEPT what the first
+                        // leg did not — never reject.
                         let mut probe = subst.clone();
                         if check_binding_by_variance(
                             kb,
@@ -52327,15 +52382,36 @@ fn parameterized_compatible_view<A: TermView, B: TermView>(
                             // of the bare var (which equals `pv` and would
                             // spuriously fail the binding).
                             let pvr = surface_node_binding_to_term(kb, subst, pvr);
-                            pvr != pv
-                                && check_binding_by_variance(
+                            // PROBE-AND-COMMIT, like the leg above and for the reason this
+                            // whole ticket is about: `check_binding_by_variance`'s
+                            // Covariant / Contravariant arms hand `subst` straight to
+                            // `types_compatible`, so a leg that binds a row tail and THEN
+                            // returns false used to leave that binding behind — the one
+                            // write on this arm still able to do so, in the function whose
+                            // contract is now that a failed comparison leaves nothing.
+                            // Latent, not observed: this leg is measured firing zero times
+                            // (see above), so the clone is on a path the corpus never
+                            // takes and no test moves either way. It is here so the arm's
+                            // two legs answer the same way, rather than because anything
+                            // failed without it. Found by /code-review.
+                            if pvr != pv {
+                                let mut probe = subst.clone();
+                                if check_binding_by_variance(
                                     kb,
-                                    subst,
+                                    &mut probe,
                                     expected_base,
                                     *param,
                                     &TermIdView(pvr),
                                     ev,
-                                )
+                                ) {
+                                    *subst = probe;
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         }
                     }
                     None => false,
