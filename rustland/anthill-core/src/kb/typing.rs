@@ -32547,8 +32547,26 @@ fn provisions_of_spec(
     spec_sort: Symbol,
 ) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    provides_rids_by_spec(kb, spec_canon)
-        .into_iter()
+    provisions_from_rids(kb, spec_canon, provides_rids_by_spec(kb, spec_canon))
+}
+
+/// WI-20260829-K0E8T — the DECODE half of [`provisions_of_spec`], over rids the caller
+/// has already fetched with [`provides_rids_by_spec`].
+///
+/// Split out for the one caller that must SEE the bucket before it decides to walk it:
+/// [`witness_provides_admissibly`]'s gate, which is entered on the failure path of every
+/// bare↔bare compatibility check and whose bucket is empty at 1263 of 1267 stdlib-load
+/// entries. Going through [`provisions_of_spec`] would make it canonicalize the spec a
+/// second time (an FQN string hash — that function's own first statement) and
+/// canonicalize the ACTUAL before it knows there is anything to compare it against. One
+/// decoder still, not two: this IS the body, and `provisions_of_spec` is now the
+/// canonicalize-and-fetch wrapper around it.
+fn provisions_from_rids(
+    kb: &KnowledgeBase,
+    spec_canon: Symbol,
+    rids: Vec<crate::kb::RuleId>,
+) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
+    rids.into_iter()
         .filter_map(move |rid| {
             if !kb.is_fact(rid) {
                 return None;
@@ -51807,7 +51825,7 @@ fn types_compatible_term_dispatch(
                     // is nothing for a hop to reach here either.
                     sort_sym_compatible(kb, ab, e)
                         || sort_provides_admissibly(kb, ab, e)
-                        || witness_provides_admissibly(kb, actual, ab, e)
+                        || witness_provides_admissibly(kb, WitnessActual::Term(actual), ab, e)
                 }
                 _ => false,
             }
@@ -53367,8 +53385,7 @@ fn bare_sort_compatible<A: TermView, B: TermView>(
     // is not; measured, an entity-typed value already arrives at this arm as its parent
     // sort, so the hop has nothing to reach and is left unwritten rather than shipped
     // untested.
-    let actual_term = kb.make_sort_ref(a);
-    if witness_provides_admissibly(kb, actual_term, a, e) {
+    if witness_provides_admissibly(kb, WitnessActual::Bare(a), a, e) {
         return true;
     }
     // WI-405 FACET B: resolve a structured (ground) alias on EITHER side and re-dispatch,
@@ -53391,6 +53408,161 @@ fn bare_sort_compatible<A: TermView, B: TermView>(
         }
     }
     false
+}
+
+/// WI-20260829-K0E8T — the witness leg's GATE must not allocate before it refuses.
+#[cfg(test)]
+mod k0e8t_witness_gate_test {
+    //! [`super::bare_sort_compatible`] ran `kb.make_sort_ref(a)` UNCONDITIONALLY, ahead
+    //! of the gate that answers `false` for 1263 of the 1267 entries a full `stdlib/`
+    //! load makes (the census is in [`super::witness_provides_admissibly`]'s doc). That
+    //! is not primarily a speed defect — 39 ns per compare, 47 µs of a 145 ms load — but
+    //! a HYGIENE one: `make_sort_ref` is `TermStore::alloc`, and on a hash-cons HIT
+    //! `alloc` still bumps a refcount that nothing on this path decrements, so every
+    //! refused compare left the actual sort's term one reference heavier, permanently.
+    //!
+    //! THE REFCOUNT IS THE OBSERVABLE, NOT `TermStore::len`. `Ref(Int64)` is interned
+    //! long before any of these compares run, so the eager mint added no SLOT — which is
+    //! exactly why the defect was invisible until it was counted.
+    //!
+    //! TWO BACK-OUTS, AND THE ROWS SEPARATE THEM — which is why row 3 exists at all:
+    //!
+    //!   * THE HOIST (`WitnessActual::Term(kb.make_sort_ref(a))` restored at the bare
+    //!     arm): rows 1 and 2 fail by exactly +1 per compare (MEASURED, 458 → 459), and
+    //!     so does row 3.
+    //!   * `find_sort_ref` ONLY (`Self::Bare(s) => kb.make_sort_ref(s)` in
+    //!     [`super::WitnessActual::term`]): row 3 alone fails, by exactly +10 for its 10
+    //!     compares (MEASURED, 8 → 18). Rows 1 and 2 pass — they refuse before the mint
+    //!     either way, which is the residual /code-review found in the first cut.
+    //!
+    //! WHAT PASSES EITHER WAY BY DESIGN: every `types_compatible` verdict the rows assert
+    //! — neither change answers a question differently, and a test that only checked the
+    //! verdict would measure nothing at all.
+    use super::{types_compatible, TermIdView};
+    use crate::intern::Symbol;
+    use crate::kb::subst::Substitution;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// `reps` bare↔bare compares of `actual_qn` against `expected_qn`, each asserted to
+    /// answer `expect`, with the refcount of the ACTUAL's `Ref` term either side. The
+    /// fixture's own `make_sort_ref` is included in `before`, so the pair differs only by
+    /// what the compares themselves minted.
+    fn refcount_across_compares(
+        kb: &mut KnowledgeBase,
+        actual_qn: &str,
+        expected_qn: &str,
+        expect: bool,
+        reps: usize,
+    ) -> (u32, u32) {
+        let (a, e) = (sym(kb, actual_qn), sym(kb, expected_qn));
+        let at = kb.make_sort_ref(a);
+        let et = kb.make_sort_ref(e);
+        let before = kb.terms.refcount(at);
+        for _ in 0..reps {
+            let mut subst = Substitution::new();
+            assert_eq!(
+                types_compatible(kb, &mut subst, &TermIdView(at), &TermIdView(et)),
+                expect,
+                "{actual_qn} <: {expected_qn} must answer {expect} for this row to \
+                 measure the path it names"
+            );
+        }
+        (before, kb.terms.refcount(at))
+    }
+
+    /// ROW 1 — THE COMMON SHAPE: the expected side is a sort nothing provides, so the
+    /// `by_spec_base` bucket is empty and the gate refuses off a single lookup, never
+    /// entering the decoder. 1263 of the 1267 stdlib-load entries are this row.
+    #[test]
+    fn a_gate_refusing_on_an_empty_bucket_mints_nothing() {
+        let mut kb = load_stdlib(None);
+        let (before, after) = refcount_across_compares(
+            &mut kb,
+            "anthill.prelude.Int64",
+            "anthill.prelude.String",
+            false,
+            1,
+        );
+        assert_eq!(
+            after, before,
+            "a refused compare re-minted `Ref(Int64)`: the mint is back ahead of the gate"
+        );
+    }
+
+    /// ROW 2 — THE GATE DOES REAL WORK AND STILL REFUSES. `FiniteCollection` is the very
+    /// spec WI-20260829-N01PY's leg exists for and carries 6 provisions in `stdlib/`,
+    /// none of them witnessed on `Int64`. Distinct from row 1 because the hoist has to
+    /// clear the WHOLE gate, not merely the bucket lookup: a repair that minted after the
+    /// emptiness check but before the provision walk would pass row 1 and fail here.
+    #[test]
+    fn a_gate_that_walks_provisions_and_refuses_mints_nothing() {
+        let mut kb = load_stdlib(None);
+        let (before, after) = refcount_across_compares(
+            &mut kb,
+            "anthill.prelude.Int64",
+            "anthill.prelude.FiniteCollection",
+            false,
+            1,
+        );
+        assert_eq!(
+            after, before,
+            "the provision walk found no witness row yet still minted `Ref(Int64)`"
+        );
+    }
+
+    /// A BARE WITNESSED CARRIER — the WI-20260829-N01PY shape, and the only one that
+    /// reaches [`super::WitnessActual::term`] at all. `Plain` has no type parameters, so
+    /// it compares at `(sort_ref, sort_ref)`; `PlainWitness` files the provision under
+    /// ITSELF, which is what makes the carrier-keyed `sort_provides_admissibly` miss and
+    /// the witness leg answer.
+    const WITNESSED: &str = r#"
+namespace k0e8t
+  sort Cap
+    sort C = ?
+    sort Element = ?
+    operation get(c: C) -> Element
+  end
+
+  sort Plain
+    import anthill.prelude.Int64
+    entity plain(v: Int64)
+  end
+
+  sort PlainWitness
+    import anthill.prelude.Int64
+    import k0e8t.{Cap, Plain}
+    import k0e8t.Plain.plain
+    provides Cap[C = Plain, Element = Int64]
+    operation get(p: Plain) -> Int64 = match p case plain(x) -> x
+  end
+end
+"#;
+
+    /// ROW 3 — AN ACCEPTED COMPARE, WHICH THE HOIST ALONE DOES NOT COVER. Rows 1 and 2
+    /// both refuse, so they are satisfied by a repair that merely moves the mint past the
+    /// gate; a compare that gets THROUGH the gate still calls
+    /// [`super::WitnessActual::term`], and `alloc` increfs on a hash-cons hit. Ten
+    /// compares of one pair, so the assertion is about GROWTH rather than a single
+    /// reference: with `make_sort_ref` alone the refcount rises by exactly 10.
+    ///
+    /// Found by /code-review, which named this as the uncovered residual of the first cut.
+    #[test]
+    fn an_accepted_witness_compare_does_not_grow_the_refcount() {
+        let mut kb = load_stdlib(Some(WITNESSED));
+        let (before, after) =
+            refcount_across_compares(&mut kb, "k0e8t.Plain", "k0e8t.Cap", true, 10);
+        assert_eq!(
+            after, before,
+            "an ACCEPTED witness compare increfs `Ref(Plain)` once per call — \
+             `find_sort_ref` is back to `make_sort_ref`"
+        );
+    }
 }
 
 /// Check if sort symbol A is compatible with sort symbol B:
@@ -53485,6 +53657,64 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
     false
 }
 
+/// WI-20260829-K0E8T — the ACTUAL side of a witness question, as its asker holds it.
+///
+/// Two variants because the arms that ask hold different things and the gate refuses
+/// nearly always. [`types_compatible_term_dispatch`]'s `(parameterized, sort_ref)` arm
+/// already HAS the actual's type term; [`bare_sort_compatible`] has only a sort SYMBOL
+/// and used to mint `Ref(a)` for it BEFORE the gate — 1214 times per stdlib load, every
+/// one for a question answered `false` a few lines later.
+///
+/// THE MINT IS CHEAP BUT UNBALANCED, which is the half that is not about speed.
+/// `make_sort_ref` is `TermStore::alloc(Term::Ref(a))`, and on a hash-cons HIT `alloc`
+/// still bumps a refcount that nothing on this path ever decrements — so a REFUSED
+/// compare left the actual sort's term one reference heavier than it found it, forever.
+/// The refcount is also the only observable: `Ref(Int64)` is long since interned, so the
+/// eager mint added no SLOT and `TermStore::len` could not see it. That is what
+/// `k0e8t_witness_gate_test` asserts, and what makes the defect invisible without it.
+///
+/// THE CARRIER IS A NUDGE, NOT A PROOF — the tests are the guard. There is no `TermId`
+/// to pass until [`Self::term`] is called, and it is called past the gate, so the eager
+/// mint is no longer the thing a caller reaches for. It is still WRITABLE:
+/// `WitnessActual::Term(kb.make_sort_ref(a))` at the bare arm compiles and reinstates the
+/// defect exactly (found by /code-review, which wrote it and ran it — an earlier version
+/// of this paragraph claimed "UNSPELLABLE", which is false). What actually catches that
+/// is `k0e8t_witness_gate_test`, and its module note says which rows move.
+enum WitnessActual {
+    /// The caller already holds the actual's type term.
+    Term(TermId),
+    /// A BARE actual, whose type term is `Ref(sym)` — minted only past the gate.
+    Bare(Symbol),
+}
+
+impl WitnessActual {
+    /// FIND BEFORE ALLOC, and that is what ends the unbounded growth rather than merely
+    /// narrowing its population. Hoisting the mint past the gate leaves the REFUSED
+    /// compares (all but 32 of 30,726,442 across the `anthill-core` suite) allocating
+    /// nothing at all — but an ACCEPTED one still ran `alloc`, which increfs on a
+    /// hash-cons HIT, and nothing on this path ever decrements. A program type-checking
+    /// the same witnessed pair repeatedly would add one reference per compare, without
+    /// bound, and pin that slot forever (found by /code-review; the first cut shipped the
+    /// hoist alone and left this).
+    ///
+    /// [`KnowledgeBase::find_sort_ref`] is WI-849's read-only half and answers `Some` for
+    /// every sort whose `Ref` is already interned — which, after the first compare of a
+    /// given carrier, is all of them. The `alloc` fallback is therefore bounded by the
+    /// number of DISTINCT carriers, once each, not by the number of compares.
+    ///
+    /// NOT INCREFFING IS SOUND HERE because the id does not outlive the call: it is the
+    /// re-entrancy key (removed on every exit) and one `goal_bindings` value handed to
+    /// `spec_resolves_at_bindings`, which answers a `bool` and retains nothing. Nor can
+    /// the slot be freed underneath it — type-checking retracts nothing, and the only
+    /// route to a free is `decref`, which is reached from retraction alone.
+    fn term(self, kb: &mut KnowledgeBase) -> TermId {
+        match self {
+            Self::Term(t) => t,
+            Self::Bare(s) => kb.find_sort_ref(s).unwrap_or_else(|| kb.make_sort_ref(s)),
+        }
+    }
+}
+
 /// WI-20260829-N01PY — provider admissibility THROUGH A WITNESS: the leg
 /// [`sort_provides_admissibly`] structurally cannot have.
 ///
@@ -53560,28 +53790,114 @@ fn sort_provides_admissibly(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym
 /// until the scope is actually threaded here — see the test file's module note, which
 /// says so at the list of what the back-out moves.
 ///
-/// THE GATE IS CHEAP AND COMES BEFORE ANY RESOLUTION. Nearly no `(carrier, spec)` pair
-/// has a witness keyed on that carrier, and `types_compatible` is hot — so the answer for
-/// the common pair is `false` off a memoized [`spec_carrier_param`] read plus one
-/// `by_spec_base` bucket scan, with [`resolve`] never entered. And the whole function is
-/// reached only AFTER `sort_sym_compatible` and [`sort_provides_admissibly`] have both
-/// refused, so it is purely a loosening: no accept that stood before changes, which is
-/// what the workspace-wide back-out says (6085 passed, 8 failed, all eight in
+/// THE GATE COMES BEFORE ANY RESOLUTION, and the whole function is reached only AFTER
+/// `sort_sym_compatible` and [`sort_provides_admissibly`] have both refused — so it is
+/// purely a loosening: no accept that stood before changes, which is what the
+/// workspace-wide back-out says (6085 passed, 8 failed, all eight in
 /// `n01py_witness_provision_subtype_test` and one capability-matrix table).
+///
+/// AND THE GATE IS CHEAP AT THE MEASURED POPULATION — WHICH IS A FACT ABOUT `stdlib/`,
+/// NOT ABOUT THIS CODE. The first version of this paragraph asserted neither half from a
+/// number: it read "`types_compatible` is hot" and priced the gate at "a memoized
+/// [`spec_carrier_param`] read plus one `by_spec_base` bucket scan" — wrong twice over,
+/// because `spec_carrier_param` runs AFTER the gate (the paragraph below says why it
+/// MUST), and nothing had been counted. WI-20260829-K0E8T counted it, over a full
+/// `stdlib/` load (`load_stdlib`, release; every row deterministic):
+///
+///   | `types_compatible` calls                          | 2797 |
+///   | ... reaching [`bare_sort_compatible`]             | 1238 |
+///   | ... falling through to this leg                   | 1214 |
+///   | THIS FUNCTION's entries, all three arms           | 1267 |
+///   | provision rids the gate looked at, TOTAL          |    4 |
+///   | provisions whose witness carrier MATCHED          |    0 |
+///   | entries with `provides_index` absent              |    0 |
+///
+/// `types_compatible` is therefore not hot in the sense the word carries — 2797 calls is
+/// ~19 per millisecond of a 145 ms load — and the `by_spec_base` bucket is EMPTY at 1263
+/// of the 1267 entries. This leg is 87% of every [`provisions_of_spec`]-shaped walk in
+/// the load (1267 of 1457) and 0.2% of the rids they decode (4 of 1924).
+///
+/// PRICED per compare (200k in-process iterations, min-of-9, release), the gate against
+/// the whole bare↔bare compare it rides on, BEFORE this ticket's repair:
+///
+///   | expected side is …                     | leg on | backed out | the gate |
+///   | a sort nothing provides (1263 of 1267) |  562ns |      395ns |    167ns |
+///   | `Stream` (6 provisions)                | 1599ns |      395ns |   1204ns |
+///   | `FiniteCollection` (6 provisions)      | 3093ns |      387ns |   2706ns |
+///
+/// BOTH READINGS ARE THE ANSWER, and the ticket asked for both. Times the population the
+/// leg is ~0.22 ms of a 145 ms load — 0.15%, which a paired in-process min-of-11
+/// whole-load A/B cannot resolve (143.5 / 143.9 / 139.8 ms for leg-on / lazy-mint /
+/// backed-out: three distributions that overlap completely). PER ENTRY it was 42% of the
+/// entire failed compare, and 3–7× it once the expected spec HAS provisions — so a
+/// program whose failed compares name `PartialEq` (22 provisions in `stdlib/`) rather
+/// than a plain sort pays a bill `stdlib/` does not.
+///
+/// WHAT K0E8T CHANGED, both behaviour-preserving, and neither justified by the load:
+///   * the bare arm no longer MINTS before the gate ([`WitnessActual`], which says what
+///     the mint costs and why the refcount is the observable);
+///   * `spec_canon` is threaded into [`provisions_from_rids`] and `actual_canon` is
+///     deferred past the emptiness check, so the common path does ONE
+///     `canonical_sort_sym` (an FQN string hash) where it did three, and never enters the
+///     decoder at all.
+///
+///   RE-MEASURED, all five arms PAIRED IN ONE PROCESS (200k iterations each, min-of-9,
+///   release), on the same common-shape pair — the gate column is that arm minus E:
+///
+///   | A  old gate, eager mint (what HEAD did) |  574.1 ns | 164.0 ns |
+///   | B  old gate, lazy mint                  |  537.0 ns | 126.9 ns |
+///   | C  new gate, eager mint                 |  500.9 ns |  90.8 ns |
+///   | D  new gate, lazy mint (SHIPPED)        |  463.6 ns |  53.5 ns |
+///   | E  leg backed out (control)             |  410.1 ns |    n/a   |
+///
+///   164 ns → 53.5 ns, and 40% of the failed compare → 13% of it. AND WHERE IT BUYS
+///   NOTHING, which is half the result: against `FiniteCollection` (6 provisions) the
+///   gate moves 2674 → 2597 ns, 3%, because the per-fact DECODE dominates and neither
+///   change touches it; and with `provides_index` absent all four arms sit at ~17.6 µs,
+///   because the scan returns all 96 facts so the emptiness check cannot fire. Both are
+///   by construction: what was removed is the EMPTY-bucket path's overhead, and that is
+///   the only population either repair was aimed at.
+///
+/// WHAT IT DID NOT DO: memoize the witness carriers per spec, which would collapse the
+/// gate to one `HashMap` lookup. At 0.15% of a load that buys nothing measurable and
+/// costs a new index with its own invalidation surface — the WI-954 failure mode, a stale
+/// index answering EMPTY. Revisit only against a program whose measured population is not
+/// `stdlib/`'s; the counts above are what to re-take first.
+///
+/// THE `build_provides_index`-ABSENT CASE IS PATHOLOGICAL AND ALL BUT UNREACHABLE — not
+/// unreachable, which is the correction a census bought. Before the index exists [`SymbolKeyedFactIndex::rids_or_scan`] returns EVERY
+/// `SortProvidesInfo` fact (96 in `stdlib/`) and the per-fact re-filter throws them all
+/// away: the same common-case compare costs 17505 ns with the leg against 7638 ns
+/// without — the gate alone 9867 ns, 59× its indexed cost. Note the BASELINE moves too,
+/// 395 → 7638 ns, because [`sort_provides_admissibly`] reads the same index: a
+/// missing index is expensive for the whole relation, not for this leg.
+///
+/// `provides_index` is `None` only between a load phase's start and
+/// `build_provides_index`, so the window is narrow: not one of the 1267 stdlib-load
+/// entries lands in it, and across the whole `anthill-core` suite it is hit TWICE in
+/// 30,726,442 entries (13 binaries, 5303 tests, 4381 threads) — 6.5e-8, but not the zero
+/// a smaller sample would have reported. NEITHER REPAIR ABOVE HELPS THERE, by
+/// construction: the scan returns all 96 facts, so the emptiness check cannot fire and
+/// the mint is noise against 10 µs. The price is recorded so a future pass that moves a
+/// `types_compatible` caller ahead of the index build knows what it would be paying.
 fn witness_provides_admissibly(
     kb: &mut KnowledgeBase,
-    actual: TermId,
+    actual: WitnessActual,
     actual_base: Symbol,
     expected_spec: Symbol,
 ) -> bool {
-    let actual_canon = kb.canonical_sort_sym(actual_base);
     let spec_canon = kb.canonical_sort_sym(expected_spec);
-    // THE GATE, and it is the cheap one: `provisions_of_spec` reads the WI-660
-    // `by_spec_base` bucket, and `witness_dispatch_carrier` is the ONE owner of the
-    // witness criterion (its `None` means the provision's carrier IS its provider — a
+    // THE GATE. Two steps, and the SPLIT is WI-20260829-K0E8T's: the WI-660
+    // `by_spec_base` bucket first, and only if it is non-empty the decode +
+    // `witness_dispatch_carrier` walk — that function being the ONE owner of the witness
+    // criterion (its `None` means the provision's carrier IS its provider — a
     // self-provision or an instance fact, both of which `sort_provides_admissibly` has
-    // already answered for). Nearly no `(carrier, spec)` pair has a witness, so the
-    // common answer is an empty `Vec` off one bucket read.
+    // already answered for). Reading the rids HERE rather than through
+    // [`provisions_of_spec`] is what lets `actual_canon` wait: at 1263 of 1267
+    // stdlib-load entries the bucket is empty, and canonicalizing the actual for a bucket
+    // with nothing in it is an FQN string hash spent on a decided question. The empty
+    // answer is now one `canonical_sort_sym` and one `HashMap` lookup, with no `Vec`
+    // allocated and the decoder never entered.
     //
     // AND IT MUST COME BEFORE [`spec_carrier_param`], which is not merely an ordering
     // preference — it is what keeps this leg from ENLARGING that function's POPULATION.
@@ -53598,7 +53914,12 @@ fn witness_provides_admissibly(
     // Behind the gate the population is exactly what it was: a spec with a provision whose
     // view is a `SortView`, which `witness_dispatch_carrier` already asks about.
     // Found by /code-review.
-    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provisions_of_spec(kb, expected_spec)
+    let rids = provides_rids_by_spec(kb, spec_canon);
+    if rids.is_empty() {
+        return false;
+    }
+    let actual_canon = kb.canonical_sort_sym(actual_base);
+    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provisions_from_rids(kb, spec_canon, rids)
         .filter_map(|(provider, spec_t, bindings)| {
             witness_dispatch_carrier(kb, expected_spec, provider, spec_t)
                 .filter(|c| *c == actual_canon)
@@ -53654,6 +53975,7 @@ fn witness_provides_admissibly(
     // ITSELF makes this question its own sub-question. See
     // `KnowledgeBase::witness_admissibility_in_flight` for the measured shape — the
     // borrow is dropped before `resolve` runs, and released on every exit below.
+    let actual = actual.term(kb);
     let key = (actual, spec_canon);
     if !kb.witness_admissibility_in_flight.borrow_mut().insert(key) {
         return false;

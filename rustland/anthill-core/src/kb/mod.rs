@@ -7932,6 +7932,22 @@ impl KnowledgeBase {
         self.alloc(Term::Ref(sort_sym))
     }
 
+    /// WI-20260829-K0E8T — [`Self::make_sort_ref`]'s READ-ONLY half: the `TermId` of an
+    /// ALREADY-INTERNED bare sort ref, or `None`. Delegates to `TermStore::find`, which
+    /// is the WI-849 answer to a caller that only wants to NAME a term rather than take
+    /// ownership of it: `alloc` bumps the refcount even on a hash-cons HIT, so a caller
+    /// that never decrements would inflate the count monotonically and keep the slot from
+    /// ever being released.
+    ///
+    /// It lives HERE, beside its writing twin, because the WI-361 canon — "a bare sort is
+    /// the term `Ref(S)` itself, no `sort_ref(name: …)` wrapper" — is a fact about the
+    /// shape, and a reader spelling `Term::Ref` for itself would be a second place to
+    /// change when that canon moves. One caller today: [`crate::kb::typing`]'s
+    /// `WitnessActual::term`, which says at its site why not increffing is sound there.
+    pub fn find_sort_ref(&self, sort_sym: Symbol) -> Option<TermId> {
+        self.terms.find(&Term::Ref(sort_sym))
+    }
+
     // ── WI-342: Value-carried (occurrence) type builders ───────────────
     //
     // Peers of the `make_*` `TermId` builders above, producing the
