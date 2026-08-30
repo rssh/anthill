@@ -7,12 +7,7 @@
 -- real integration binds one HTTP call, not one function per task.
 -- ================================================================
 
--- A prompt is a VALUE carrying a trust label — the injection IS prompt content,
--- so making the prompt a value makes the attack surface a value. The `Trust`
--- parameter has exactly one consumer, and that earns it: `Harness.generate`
--- demands `Prompt[Public]`, so generation may proceed only from a content-free
--- prompt. The constructor cannot forge it — `prompt(body: t)` takes its label
--- from `t` (measured).
+-- A prompt is a value carrying a trust label
 enum guardians.Prompt
   import guardians.{Text}
   sort Trust = ?
@@ -52,18 +47,6 @@ sort guardians.Llm
 
   sort C = ?
 
-  -- ANY prompt in; the reply is ALWAYS `Untrusted`. Never `?t` out.
-  --
-  -- This was `?t` in, `?t` out for one revision, and the exploit is kept as
-  -- rejected/minting.anthill: a Public prompt yielding Public text let a model
-  -- MINT releasable output and mail it. A model is not a pure transformation —
-  -- its output is text it chose, so the model itself joins into the label.
-  --
-  -- THE PARAMETER IS BARE for the same reason, and it is the rule this file
-  -- learned twice: WRITE NO VARIABLE WHERE NO RELATIONSHIP EXISTS. A `?t`
-  -- occurring once constrains nothing (measured — bare and `Prompt[?t]` accept
-  -- the same arguments) but reads as `T[?t] -> T[?t]`, the shape that means
-  -- "preserves the label", which this operation deliberately is not.
   operation complete(self: C, p: Prompt) -> LlmOutput
     effects {External, Error}
 end
