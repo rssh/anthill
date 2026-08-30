@@ -17,9 +17,14 @@ namespace guardians
   -- `Text[Untrusted]` for every prompt, so `-> Text[?t]` is refused (measured:
   -- docs/design/measured.md C10). The input could be widened to `Text[?t]` and is
   -- not — llm.anthill's rule: write no variable where no relationship exists.
+  -- ROW-POLYMORPHIC IN THE MODEL. An operation that takes ANY `Llm` has no
+  -- business asserting `External`: it performs whatever the carrier it is handed
+  -- performs. `llm.E` projects that off the parameter — the `Stream` shape
+  -- (`s.E`) — so `summarize` over `FakeLlm` is `{Error}` and over `LiveLlm` is
+  -- `{External, Error}`, and only the latter is barred from a `Branch` region.
   operation summarize(llm: Llm, msgs: List[T = Text[Untrusted]])
       -> LlmOutput
-    effects {External, Error} =
+    effects {llm.E, Error} =
       let content = join_texts(msgs)
       let p = prompt_with(
         instruction: text(raw: "Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable."),
@@ -32,5 +37,5 @@ namespace guardians
   -- host binding — the largest remaining fiction here.
   operation observe(llm: Llm, m: Message[Untrusted])
       -> List[T = Observed]
-    effects {External, Error}
+    effects {llm.E, Error}
 end

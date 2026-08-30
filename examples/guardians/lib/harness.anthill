@@ -8,7 +8,15 @@
 --   render_task  {Error}                        reads declarations; no model
 --   LiveLlm.open {Permission[Llm]}              the ACQUISITION (on the CARRIERS —
 --                                               `Llm` the spec declares no mint)
---   Llm.complete {External, Error}              the untrusted step
+--   Llm.complete {E, Error}                     the untrusted step. `E` is the
+--                                               CARRIER's row, not the spec's:
+--                                               `LiveLlm` instantiates it at
+--                                               `{External}`, `FakeLlm` at `{}`.
+--                                               Welded to `External` here it was a
+--                                               claim about every implementation
+--                                               that only one could honour.
+--   generate     {llm.E, Error}                 whatever model it was handed —
+--                                               generation touches no mailbox
 --   check        {External, Error,
 --                 -Permission[Llm]}             provably not steerable
 --
@@ -87,8 +95,23 @@ sort guardians.Harness
   -- The reply is `Untrusted` (a model's output always is), and `Source` carries
   -- no label at all: unverified-ness is a different axis, riding on the type
   -- being opaque with `Checker.check` its only elimination.
+  --
+  -- ROW-POLYMORPHIC IN THE MODEL. Generation touches no mailbox, so its only worldly
+  -- effect is the model's own — and `External` is a fact about `LiveLlm`, not about
+  -- being an `Llm`. Welded to the interface it forced `FakeLlm`, which leaves the
+  -- process untouched, to declare it too.
+  --
+  -- THE `Branch` STORY IS NOT YET TRUE, and is recorded here because the obvious
+  -- reading of this row is that it buys one. 054 bars `Branch × External`, so a
+  -- SEARCHING generator — try, check, backtrack — should now be writable against the
+  -- fixture and barred against the live model. MEASURED, it is not reachable: driving
+  -- it needs the caller's parameter typed at the CONCRETE carrier, and that spelling
+  -- is refused today by a coverage gap rather than by 054 (a non-empty row projected
+  -- off a concrete carrier stays one opaque merge term). WI-20260830-APWM3, whose
+  -- acceptance is exactly that test — including that the refusal must carry 054's own
+  -- diagnostic, since the row is refused for the wrong reason today.
   operation generate(self: C, llm: Llm, p: Prompt[Public]) -> Source
-    effects {External, Error}
+    effects {llm.E, Error}
 end
 
 sort guardians.Checker
@@ -120,7 +143,7 @@ namespace guardians
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: Symbol, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
-    effects {External, Error} =
+    effects {External, llm.E, Error} =
       let p = h.render_task(spec, tools, feedback)
       chk.check(h.generate(llm, p), spec)
 
@@ -133,8 +156,10 @@ namespace guardians
   --
   -- This is where the whole pipeline's model authority enters, ONCE, and the row
   -- says so. `attempt` above is the same round with the capability already in
-  -- hand: same `{External, Error}`, no `Permission`. The one line between
-  -- them is the entire difference between using authority and obtaining it.
+  -- hand: the same `{External, llm.E, Error}`, no `Permission`. The one line
+  -- between them is the entire difference between using authority and obtaining
+  -- it. (`External` on both is the CHECKER's, not the model's — `check` declares
+  -- it; the model's share is the `llm.E` beside it.)
   operation open_round(h: Harness, chk: Checker,
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
@@ -155,7 +180,7 @@ sort guardians.FileHarness
                         feedback: List[T = String]) -> Prompt[Public]
     effects {Error}
   operation generate(self: FileHarness, llm: Llm, p: Prompt[Public]) -> Source
-    effects {External, Error}
+    effects {llm.E, Error}
   provides Harness
 end
 

@@ -20,7 +20,7 @@ sort guardians.agent.ContentPrimedGenerator
 
   operation build(self: ContentPrimedGenerator, box: Mailbox,
                   h: Harness, llm: Llm) -> Source
-    effects {External, Error} =
+    effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let p = prompt_with(
         instruction: text(raw: "Given these emails, write me a triage agent."),

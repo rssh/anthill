@@ -424,7 +424,7 @@ triage can mail outside the organisation, whatever it does.
 
 **Control** — `fixtures/agent/internal_send.anthill`, ONE TOKEN away
 (`boss@ourcorp.com` for `it@othercorp.com`), which LOADS on the unchanged
-`{External, Error}` row. Two further edits, each reddening exactly one row
+`{External, llm.E, Error}` row. Two further edits, each reddening exactly one row
 and measured:
 
 | edit | red |
@@ -624,6 +624,16 @@ banks a SECOND `OperationInfo` row for `run`: the reported effects go from
 `[External, Error]` to
 `[External, Error, External, Error, Filesystem]`.
 
+> **STALE — the base row moved and this was NOT re-run.** `Triage.run` now declares
+> `{External, llm.E, Error}` (`lib/spec.anthill`), so the left-hand row above is no
+> longer what the load banks; the concatenation on the right is stale with it. The
+> POINT of the record — it loads, and a second row is banked rather than the first
+> being replaced — is untouched, which is why the entry stays. The two rendered rows
+> are what needs re-taking, by re-running this candidate through `check_candidate`
+> and reading `Accepted.budget`. Left flagged rather than rewritten from inference:
+> a measurement record restating a number nobody measured is worse than one that says
+> it is stale.
+
 **What it does NOT buy, and this is why the effect budget is not re-checked.** A
 widening carrier is refused with the identical message
 (`effects must not widen`) with and without the redeclaration present — the
@@ -647,7 +657,7 @@ loaded clean while implementing NOTHING was Accepted.
 
 **Measured, now.** `spec` is a `Symbol` reference, and
 `agent/good.anthill` yields `Accepted(carrier: guardians.agent.GoodTriage,
-spec: guardians.Triage, budget: [External, Error])`. A candidate that
+spec: guardians.Triage, budget: [External, llm.E, Error])`. A candidate that
 declares only under `guardians.agent.` and provides nothing is refused:
 `the candidate declares no carrier that provides 'guardians.Triage'`.
 

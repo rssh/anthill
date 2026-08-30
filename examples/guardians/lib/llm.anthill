@@ -41,14 +41,21 @@ sort guardians.LlmOutput
 end
 
 sort guardians.Llm
-  import anthill.prelude.{Error, External}
+  import anthill.prelude.{Error}
   import guardians.{Prompt, Text, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
   sort C = ?
+  -- WI-320 / proposal 045, the `Stream` shape: `External` is a fact about a
+  -- CARRIER, not about being an `Llm`, so the row is a parameter each carrier
+  -- instantiates. Welded on here it was a claim about every implementation that
+  -- only `LiveLlm` could honour — and it made `Branch` unusable with ANY model,
+  -- including the fixture, because 054's `Branch × External` exclusion fires on
+  -- the declared row and cannot see which carrier is behind it.
+  effects E = ?
 
   operation complete(self: C, p: Prompt) -> LlmOutput
-    effects {External, Error}
+    effects {E, Error}
 end
 
 -- ================================================================
@@ -107,11 +114,11 @@ sort guardians.LiveLlm
 
   operation complete(self: LiveLlm, p: Prompt) -> LlmOutput
     effects {External, Error}
-  provides Llm
+  provides Llm[E = {External}]
 end
 
 sort guardians.FakeLlm
-  import anthill.prelude.{String, Error, External, Permission}
+  import anthill.prelude.{String, Error, Permission}
   import guardians.{Llm, Prompt, Text, LlmOutput}
   import guardians.TrustLevel.{Untrusted}
 
@@ -125,8 +132,8 @@ sort guardians.FakeLlm
     effects {Permission[Llm]} = fake_llm(fixture: fixture)
 
   operation complete(self: FakeLlm, p: Prompt) -> LlmOutput
-    effects {External, Error}
-  provides Llm
+    effects {Error}
+  provides Llm[E = {}]
 end
 
 namespace guardians

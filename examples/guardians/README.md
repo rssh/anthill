@@ -59,7 +59,7 @@ effect`. `docs/design/measured.md` D1 records exactly what each half buys.
 
 ```
 rejected/outbox.anthill: run.effects (op-effects): expected declared:
-    [External, Error], got undeclared effect: Permission[T = Outbox]
+    [External, llm.E, Error], got undeclared effect: Permission[T = Outbox]
 ```
 The article's policy has two halves — *"forbid data flow from `fetch_email`'s
 result to the `body` parameter of `send_email` **with an external email address as

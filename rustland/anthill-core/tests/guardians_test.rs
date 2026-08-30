@@ -937,6 +937,71 @@ fn read_verdict(
     }
 }
 
+/// THE CARRIER'S ROW REACHES THE CALLER — which is what `guardians.Llm`'s `effects E = ?`
+/// buys, and the only thing this row measures.
+///
+/// `Harness.generate` touches no mailbox: its worldly effects are the model's own. With
+/// `External` welded to the INTERFACE that was a claim about every carrier, and
+/// `FakeLlm` — a fixture-backed double whose own comment says "nothing leaves the
+/// process" — had to declare it too. Now the carrier instantiates: `FakeLlm` at `E = {}`,
+/// `LiveLlm` at `E = {External}`, and a caller's declared row is checked against whichever
+/// it was handed.
+///
+/// WHAT THIS DOES **NOT** MEASURE, stated because an earlier version of this test claimed
+/// it and was wrong: proposal 054's `Branch × External` exclusion. MEASURED — with
+/// `effects {Error}` in place of `{Branch, Error}` both legs answer identically, so the
+/// `Branch` label was inert and the `LiveLlm` refusal came from ordinary row coverage.
+/// Driving 054 through a row projection needs the parameter typed at the CONCRETE carrier,
+/// and that spelling is refused today by a coverage gap rather than by 054 —
+/// WI-20260830-APWM3, whose acceptance is exactly that test.
+///
+/// WHAT FAILS WHEN IT IS BACKED OUT, and the back-out that ISOLATES is not the obvious
+/// one. MEASURED, both:
+///
+///   * `FakeLlm` re-claiming the world (`provides Llm[E = {External}]`, `complete` back to
+///     `{External, Error}`) reds THIS TEST AND NOTHING ELSE — 37 pass, 1 fails. That is the
+///     control, and the honest statement of what the row buys: a fixture that does not lie
+///     about touching the world.
+///   * Welding `effects {External, Error}` back onto `Llm.complete` is NOT a control. It
+///     breaks the TRUSTED BASE — `tasks.summarize`'s `{llm.E, Error}` cannot cover an
+///     unconditional `External` — so nearly every test in this file reds and the cascade
+///     measures nothing. Recorded because it is the back-out a reader reaches for first.
+#[test]
+fn a_carriers_effect_row_reaches_the_caller_that_was_handed_it() {
+    let caller = |carrier: &str| {
+        format!(
+            r#"
+sort guardians.agent.Caller
+  import anthill.prelude.{{Error}}
+  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.TrustLevel.{{Public}}
+  entity mk
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+    effects {{Error}} = h.generate(llm, p)
+end
+"#
+        )
+    };
+    let load = |carrier: &str| -> Result<(), Vec<String>> {
+        let mut owned = base_sources();
+        owned.push(caller(carrier));
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        common::try_load_kb_prepared_files(&refs, register_pipeline).map(|_| ())
+    };
+
+    // `E = {}` — a pure declared row suffices, because the fixture performs nothing.
+    load("FakeLlm")
+        .unwrap_or_else(|e| panic!("a fixture model incurs no effect to declare: {e:#?}"));
+
+    // `E = {External}` — the same body, the same declared row, refused because the
+    // carrier's row reached the caller.
+    let errs = load("LiveLlm").expect_err("a live model's `External` must reach the caller");
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: External")),
+        "expected `External` threaded through from `LiveLlm`'s instantiation; got: {errs:#?}"
+    );
+}
+
 #[test]
 fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
     // CONTROL for every refusal below. Without it they are consistent with a checker
@@ -955,7 +1020,12 @@ fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
     // The row REPORTED, read from the base before the candidate was loaded. Exact,
     // because the whole point of reading it from the base is that a candidate which
     // redeclares the spec cannot widen what the verdict cites.
-    assert_eq!(v.budget, vec!["External", "Error"]);
+    //
+    // `llm.E` IS THE THIRD MEMBER, and it is the verdict earning its keep: the agent's
+    // worldly effects are the mailbox's (`External`, from `Email.fetch`) PLUS whatever
+    // model it is handed. A budget that said only `External` would be asserting that a
+    // `Triage` performs the same effects against a fixture as against a frontier model.
+    assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
 }
 
 #[test]
@@ -1012,7 +1082,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
 
     let v = read_verdict(&interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
-    assert_eq!(v.budget, vec!["External", "Error"]);
+    assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
 }
 
 #[test]
@@ -1135,7 +1205,7 @@ sort guardians.agent.MisprojectingTriage
 
   operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Error} =
+    effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       Report(items:   verdicts_of(msgs.map(lambda m -> m.body).collect()),
              summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
@@ -1345,7 +1415,7 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
 
           operation run(self: TidyTriage, box: Mailbox, llm: Llm) -> Report
             ensures mentions_all(result)
-            effects {External, Error} =
+            effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
               Report(items:   verdicts_of(msgs),
                      summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
@@ -1442,7 +1512,7 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
 
           operation run(self: ShadowTriage, box: Mailbox, llm: Llm) -> Report
             ensures mentions_all(result)
-            effects {External, Error} =
+            effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
               Report(items:   verdicts_of(msgs),
                      summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))

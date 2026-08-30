@@ -56,7 +56,8 @@ guardians example against it is therefore worth something as evidence about
 
 ## Six candidates the rule rejects
 
-**`LLM` / `Model`.** Semantics: `{External, Error}`, and nothing more. Two
+**`LLM` / `Model`.** Semantics: `{E, Error}` where `E` is the CARRIER's row —
+`LiveLlm` instantiates it at `{External}`, `FakeLlm` at `{}` — and nothing more. Two
 calls may disagree with no tracked `Modify` between them, no replay is sound,
 the result is not equational — that is the whole increment, and `External`
 already names it. *Which* model, with *what* tool access, is authority, so it
@@ -358,11 +359,21 @@ asks *what licence does the runtime have here*. 054's "one effect, not one per
 capability" is an argument about the externality axis and never spoke to
 authority.
 
-**The example already gets this wrong, which is the evidence.**
-`guardians.FakeLlm.complete` declares `effects {External, Error}` —
-identical to `LiveLlm` — while touching nothing outside the process. Under the
-split it narrows to `{Permission[Model], Error}`: a legal override narrowing, and
-honest. A test can then assert the fake is not external, which today it cannot.
+**The example USED TO get this wrong, and that was the evidence — until an effect
+ROW made half of it expressible without the split.** `guardians.FakeLlm.complete`
+declared `effects {External, Error}`, identical to `LiveLlm`, while touching nothing
+outside the process. It now declares `{Error}` and instantiates `Llm`'s row at `{}`
+(`lib/llm.anthill`), and `a_carriers_effect_row_reaches_the_caller_that_was_handed_it`
+asserts exactly that — so the sentence that stood here, "a test can then assert the
+fake is not external, which today it cannot", is retired by measurement rather than
+by argument.
+
+WHAT THE ROW DID NOT BUY, which is what still argues for the split: the row makes
+`External` a fact about the CARRIER, but it does not separate the two QUESTIONS. A
+sandboxed live model still has to choose between declaring `External` it cannot
+perform and dropping a row its authority requires. `Permission` asks *may I*;
+`External` asks *what licence does the runtime have*. Parameterising one of them does
+not give you the other.
 
 It also simplifies the sandbox story. The conditional-effect spelling above
 makes the *mode* conditional; with the axes separated, a sandbox refutes

@@ -21,7 +21,7 @@ sort guardians.agent.LeakTriage
 
   operation run(self: LeakTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Error} =
+    effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let summary = summarize(llm, msgs.map(lambda m -> m.body).collect())
       let sent = Email.send(to: Address(local: "it", domain: "othercorp.com"),

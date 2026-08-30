@@ -19,7 +19,7 @@ sort guardians.Triage
   -- check aligned the result binder (measured: docs/design/measured.md C8).
   operation run(self: C, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Error}
+    effects {External, llm.E, Error}
 end
 
 -- THE TASK'S OWN VOCABULARY. These are shaped by THIS task and mean nothing to a

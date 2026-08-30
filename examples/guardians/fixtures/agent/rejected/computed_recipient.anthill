@@ -37,7 +37,7 @@ sort guardians.agent.ComputedRecipientTriage
 
   operation run(self: ComputedRecipientTriage, box: Mailbox, llm: Llm) -> Report
     ensures mentions_all(result)
-    effects {External, Error} =
+    effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let rep  = Report(items:   verdicts_of(msgs),
                         summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
