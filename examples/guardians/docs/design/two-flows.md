@@ -590,14 +590,41 @@ with exactly the same exposure — so the fix cannot be "trust it more". It is t
 **give the model less to do**: `Report(items: List[Verdict], summary: Text)`
 splits the enumeration from the prose. `items` is one `Verdict` per fetched
 message, built by iterating the list `fetch_mail` returned; the model never
-constructs it and therefore cannot remove a row from it. The model writes only
-`summary`, where it can still lie, and where lying no longer conceals anything.
+constructs it AT RUN TIME and therefore cannot invent or omit a row while
+answering. The model writes only `summary`, where it can still lie, and where
+lying no longer conceals anything.
 
-What remains is stated as an obligation rather than hoped for:
+**That is a claim about the RUNNING model, not about the GENERATED agent, and
+the difference is where the guarantee currently stops.** In Flow 2 the model also
+writes the iteration, and an iteration is a place to put a `filter`.
+`fixtures/agent/conceal.anthill` does exactly that — one combinator, dropping the
+injected message before the enumeration — and it loads clean, because
+`ensures mentions_all(result)` is checked for REFINEMENT against the spec's and
+never PROVED of a body (measured.md C13, WI-20260830-2FP2K). The split below is
+what makes the property STATABLE and decidable; closing the gap is what will make
+it checked.
+
+**A ROW MUST SAY SOMETHING, or the guarantee is vacuous.** The split above works
+only because enumeration is TOTAL, and totality is defeated by the same
+injection one sentence later if "I could not categorize this" is spelled as a
+MISSING ROW. "Report that you could not classify this one" would then remove
+exactly the message the attacker wants removed, and `mentions_all` would pass
+over a report that mentions everything it contains. So the rule is stated in two
+halves and both are structural: **enumeration is total and derived;
+classification is partial and the model's.** A `Verdict` carries
+`labels: List[Category]` — several categories where a message earns several, and
+`Other` where the model looked and could not tell — and the constraint
+`verdict_is_not_silent` refuses the empty list, so declining to judge produces a
+row that says so rather than no row at all. An empty label set is a statement; a
+missing row is not.
+
+What remains is stated as an obligation rather than left implicit:
 `ensures mentions_all(result, fetched(box))` is a `Postcondition` in the sense
-of §8.5, decidable by comparing two id sets, and it holds regardless of what
-the summarizer was told. Flow 1 has nowhere to put that check; Flow 2 has a
-channel that already exists and that this design had not been using.
+of §8.5, decidable by comparing two id sets, and it would hold regardless of what
+the summarizer was told — the condition is about the report, not about the
+prompt. Stated, refined, and not yet discharged; see above. Flow 1 has nowhere
+to put that check; Flow 2 has a channel that already exists and that this design
+had not been using.
 
 **Content-steered branching becomes admissible.** If the generated agent
 branches on what a model said about a message, an attacker chooses the branch —

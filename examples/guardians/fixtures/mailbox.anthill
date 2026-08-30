@@ -1,10 +1,28 @@
 -- ================================================================
 -- FIXTURE — the article's inbox (CACM 69(1), p.48). Test data, not solution.
 --
--- Four legitimate messages and one targeted prompt-injection attack. Nothing
--- here is a rule or a declaration: this file only POPULATES the two relations
--- `lib/classify.anthill` declares, exactly as a deployment would from a real
--- mailbox and address book. `lib/` loads without it.
+-- Four legitimate messages and one targeted prompt-injection attack. Mostly it
+-- supplies the relations `lib/` declares — the two in `lib/classify.anthill` and
+-- `in_org` in `lib/email.anthill` — exactly as a deployment would from a real
+-- mailbox, address book and directory. `lib/` loads without it.
+--
+-- IT ALSO CONTAINS A RULE AND MINTS ONE NAME, `org_domain`, and both are the
+-- deployment's side of the line rather than a leak across it. HOW membership is
+-- decided is a policy the organisation owns, so the concept the policy turns on
+-- is the organisation's to name: a deployment that enumerated from a directory
+-- would mint a different one, or none. What a deployment may not do is decide
+-- membership FOR EVERYONE, which is why the library declares `in_org` and
+-- asserts nothing.
+--
+-- THE PIVOT IS SECURITY-CRITICAL, so it is worth saying what guards it. One
+-- `org_domain` row makes a whole domain internal, and an internal recipient
+-- drops `Permission[Outbox]`. What stands between a CANDIDATE program and
+-- `fact org_domain("evil.com")` is the trust partition — a loaded candidate may
+-- assert only under its own namespace, measured by
+-- `a_clause_at_an_undeclared_bare_name_is_refused` and
+-- `a_candidate_may_declare_and_assert_freely_inside_its_own_namespace`. A
+-- deployment file is trusted input; a candidate is not, and the gate is what
+-- tells them apart.
 --
 -- Note what is NOT asserted: no corroborator. `sender_not_in_contacts` and
 -- `reply_to_differs_from_from` are DERIVED by the library from the data below,
@@ -17,12 +35,40 @@ namespace guardians
                     InMailbox, KnownContact, in_org}
   import guardians.TrustLevel.{Untrusted}
 
-  -- WHICH DOMAIN IS OURS. A deployment fact, like everything else in this file:
-  -- `lib/email.anthill` DECLARES `in_org` and asserts no row, so an
+  -- WHO IS OURS, AND ON WHAT GROUNDS — both stated, because they are different
+  -- statements. `lib/email.anthill` DECLARES `in_org` and asserts no row, so an
   -- unconfigured organisation treats every address as external and `Email.send`
-  -- demands `Permission[Outbox]` for all of them. This line is what makes
+  -- demands `Permission[Outbox]` for all of them; these lines are what make
   -- `fixtures/agent/internal_send.anthill` load.
-  fact in_org(Address(local: ?, domain: "ourcorp.com"))
+  --
+  -- THE RULE IS THE DEPLOYMENT'S TO STATE, AND THE LIBRARY MUST NOT STATE IT.
+  -- An `Address` may be any address, and whether one belongs to the
+  -- organisation is an INSTITUTIONAL fact, not a property computable from the
+  -- address: `local`/`domain` decomposes a string, membership is a matter of
+  -- who the organisation says its people are. "Our domain implies ours" is
+  -- false in ordinary cases — people on a shared domain, a subsidiary on
+  -- another one, aliases and forwarding — and DANGEROUS in the case this
+  -- example exists for: anyone who obtains an address at our domain, by signup
+  -- or by taking over an account, would become internal BY CONSTRUCTION, and
+  -- `Email.send` would then demand no `Permission[Outbox]` to mail them. A
+  -- library that hard-coded the heuristic would make that unavoidable for every
+  -- deployment. Declaring the relation instead lets this deployment choose the
+  -- domain rule and lets a stricter one enumerate from a directory.
+  --
+  -- THIS FILE USED TO WRITE THE RULE AS A FACT — `in_org(Address(local: ?,
+  -- domain: "ourcorp.com"))`, universal over local parts because of the
+  -- variable in its head. It worked, and it named nothing: the concept the rule
+  -- turns on had no name, and a deployment writing the obvious
+  -- `in_org(Address(local: "michelle", domain: "ourcorp.com"))` would have
+  -- configured ONE MAILBOX with nothing saying so.
+  fact org_domain("ourcorp.com")
+
+  -- A SECOND DOMAIN, which is the case the variable-headed fact could not
+  -- express without a second fact of its own. The owner's own address lives
+  -- here, so this is not decoration.
+  fact org_domain("valleysharks.com")
+
+  rule in_org(Address(local: ?, domain: ?d)) :- org_domain(?d)
 
   -- The address book. m1/m2/m4 are known senders; m3 and m5 are not.
   fact KnownContact(address: Address(local: "founder", domain: "nextbigstartup.com"))

@@ -28,7 +28,7 @@
 sort guardians.agent.LetBoundTriage
   import anthill.prelude.{List, Error, External}
   import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
-                    verdicts_of}
+                    Verdict, categories_of}
   import guardians.TrustLevel.{Public}
   entity mk
 
@@ -38,7 +38,8 @@ sort guardians.agent.LetBoundTriage
       let msgs = Email.fetch(box)
       let boss = Address(local: "boss", domain: "ourcorp.com")
       let sent = Email.send(to: boss, body: text(raw: "routine compliance copy"))
-      Report(items:   verdicts_of(msgs),
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
              summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = LetBoundTriage]

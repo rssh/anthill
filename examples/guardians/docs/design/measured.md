@@ -10,15 +10,28 @@ fires. **C1**, after WI-20260822-1MAGR (2026-08-23): `p3_spec_wrong_sig` and
 reuse — still loads clean. Every other verdict below is the 2026-08-22 reading
 against `3b980e5c` and was not re-run.
 
+**Five rows were added on 2026-08-30, run against the shipped example rather than
+a smoke file** (WI-20260830-N0PDV): **C2a**, why `Email.send`'s precondition is on
+`body` and not on `to`; **C11**, why the no-silent-verdict constraint is a
+quantified one; **C12**, why `in_org` carries no description block; **C13**, the
+concealment postcondition that is refined and never proved; and the `in_org`
+addition under **D4**, on writing a deployment's membership heuristic as a rule
+over a named relation rather than as a variable-headed fact. Four open defects
+came out of them — **WI-20260830-JM7A8** (C2a), **WI-20260830-DQD5W** (C11),
+**WI-20260830-VFAKK** (C12), **WI-20260830-2FP2K** (C13) — and C13 is the one
+that weakens a claim this example makes.
+
 **Spellings that changed after the runs, and nothing else did.** The marker sorts
 `Model` / `FrontierModel` were collapsed into the sorts one acquires, so a row
 reading `Permission[Model]` is `Permission[Llm]` today and `Permission[FrontierModel]`
 is `Permission[LiveLlm]`; the free operations `fetch_mail` / `send_email` became
 `Email.fetch` / `Email.send` when the mail declarations moved into
-`lib/email.anthill`; and `bodies_of` is gone, an agent writing
-`msgs.map(lambda m -> m.body).collect()` for itself. Signatures, rows and guards
-are unchanged, so every verdict below still reads as recorded. Where a CONTROL
-stopped being available, the entry says so — see D2.
+`lib/email.anthill`; and BOTH vocabulary projections are gone, an agent writing
+each for itself — `bodies_of` became `msgs.map(lambda m -> m.body).collect()`, and
+`verdicts_of` became `msgs.map(lambda m -> Verdict(message: m.id, labels:
+categories_of(m.id))).collect()`, leaving only the KB lookup declared (C13).
+Signatures, rows and guards are unchanged, so every verdict below still reads as
+recorded. Where a CONTROL stopped being available, the entry says so — see D2.
 
 Each entry is written the same way: **the scenario** (what an attacker or a bad
 generation is trying to do), **the flow**, **what fires**, **the control**, and
@@ -467,13 +480,46 @@ Everything else needs an authority `Triage.run` never grants. A genuinely dynami
 recipient belongs to the trusted harness, which can hold `Permission[Outbox]`
 where a generated agent cannot.
 
-**WHOSE FACT `in_org` IS.** `lib/email.anthill` DECLARES it (proposal 061)
-and asserts no row; `fixtures/mailbox.anthill` supplies it, like the inbox and the
-address book — `safety.anthill`'s principle, that the relation is the library's
-and the rows are a deployment's. The default is CLOSED: with no deployment
-loaded the relation is empty, every address is external, and even
-`internal_send.anthill` is refused. An unconfigured organisation grants nothing.
-Pinned by `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`.
+**WHOSE FACT `in_org` IS, AND WHOSE RULE.** `lib/email.anthill` DECLARES the
+relation (proposal 061) and asserts no row; `fixtures/mailbox.anthill` supplies
+it, like the inbox and the address book — `safety.anthill`'s principle, that the
+relation is the library's and the rows are a deployment's. The default is
+CLOSED: with no deployment loaded the relation is empty, every address is
+external, and even `internal_send.anthill` is refused. An unconfigured
+organisation grants nothing. Pinned by
+`the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`.
+
+**THE HEURISTIC IS THE DEPLOYMENT'S TOO, and that is a separate claim from the
+one above.** The fixture used to write the membership rule as a FACT with a
+variable in its head — `in_org(Address(local: ?, domain: "ourcorp.com"))`,
+universal over local parts. It worked and it named nothing: the concept the rule
+turns on had no name, and a deployment writing the obvious
+`in_org(Address(local: "michelle", domain: "ourcorp.com"))` would have configured
+ONE MAILBOX with nothing saying so. It now reads `fact org_domain("ourcorp.com")`
+plus `rule in_org(Address(local: ?, domain: ?d)) :- org_domain(?d)`, and a second
+domain is one more row rather than a restatement of the rule
+(`a_second_org_domain_is_internal_too`).
+
+The rule stays OUT of the library, and the reason is a modelling claim rather
+than tidiness: an `Address` may be any address, and whether one belongs to the
+organisation is an INSTITUTIONAL fact, not a property computable from the
+address. `local`/`domain` decomposes a string; membership is a matter of who the
+organisation says its people are. "Our domain implies ours" is false in ordinary
+cases — people on a shared domain, a subsidiary elsewhere, aliases and
+forwarding — and it is DANGEROUS in the case this example exists for: anyone who
+obtains an address at our domain, by signup or by taking over an account, becomes
+internal BY CONSTRUCTION, and `Email.send` then demands no `Permission[Outbox]`
+to mail them. A library that hard-coded the heuristic would make that unavoidable
+for every deployment; one that declares the relation lets a stricter deployment
+enumerate from a directory instead.
+
+**SPELLING TRAP, MEASURED.** The rule must destructure in its HEAD. Written the
+other way — `rule in_org(?a) :- ?a = Address(local: ?_, domain: ?d),
+org_domain(?d)` — it loads, and `in_org(?a)` answers with an UNDISCHARGED
+RESIDUAL rather than a solution: `=` is `PartialEq.eq`, a test that never binds
+(§8.3), so `?d` is never grounded. A floundering `in_org` under
+`external_addr(?a) :- not(in_org(?a))` is exactly the shape that must not be
+allowed to read as an answer.
 
 **WHY THIS IS NOT AN `ensures`,** which is where this design started. A
 postcondition would have been the obvious home for a safety statement, and it is
@@ -774,6 +820,64 @@ call whose argument type decides the label. It still cannot for a
 label-polymorphic wrapper: an undetermined label floats (WI-067 — never decide an
 obligation by absence), and a wrapper that declares no contract of its own
 swallows its callee's obligation rather than propagating it.
+
+## C2a · A value precondition and a value-guarded effect collide on the SAME argument
+
+**Scenario.** Give `Email.send` the boolean contract the article calls "an
+obligation the agent must discharge", and put it where it reads most naturally —
+on the recipient: `send(to: Address, …) requires deliverable(to)`, with the
+deployment supplying the rows.
+
+**It works, and it takes two other measurements out with it.** The controls hold
+— `good` and `internal_send` still load, `outbox` still names
+`Permission[T = Outbox]`, `leak` still names the label. But
+`rejected/computed_recipient.anthill` and `rejected/letbound_recipient.anthill`
+change diagnostic entirely:
+
+```
+type mismatch in guardians.Email.send.requires:
+  expected precondition `deliverable(who)` provable at the call site,
+  got unsatisfied precondition
+```
+
+and the `undeclared effect: Permission[T = Outbox]` line is GONE from both. Those
+two fixtures exist to measure the conditional permission's BOUNDARY — a recipient
+the checker cannot read keeps the effect (§5.5) — and after this they measure a
+precondition instead.
+
+**Why, and it is not an accident of ordering.** Both fixtures are refused today
+precisely because `to` is not statically readable: one is `choose_recipient`'s
+opaque result, the other a `let`-bound literal SLD will not ground. A precondition
+naming `to` is unprovable at exactly those two sites, for the same reason, and its
+diagnostic PREEMPTS the effect check — measured: the call's effects are not
+attributed once its precondition fails, though the DECLARED-row comparison (which
+reads declarations, not the body) still fires. Making `deliverable` total by
+negation — `deliverable(?a) :- not(blocked_addr(?a))` — does not help: NAF over an
+opaque term flounders, and a floundered obligation is unsatisfied.
+
+**Consequence, and it is the reason `releasable` is on `body`.** A value
+precondition and a value-guarded effect over the SAME argument fail together on
+the same programs, and the precondition wins the diagnostic. Over DIFFERENT
+arguments they compose: `requires releasable(body)` beside
+`Permission[Outbox] :- external_addr(to)` leaves every existing refusal's
+substring untouched and adds one fixture of its own
+(`rejected/uncleared_body.anthill`). The second constraint on the choice is that
+the precondition must be dischargeable from `lib/` ALONE — otherwise
+`the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`,
+which loads the library with no deployment, fails on the precondition instead of
+on the missing authority.
+
+**The article's `deliverable(to)` is therefore a placeholder that does not
+survive contact with this suite**, and the reason is worth stating: the argument a
+conditional permission guards is the argument a precondition cannot read.
+
+**The suppression itself is a defect, and it is filed.** The two failures are
+independent — one is a proof obligation over the KB, the other a row the body
+incurs — and reporting one while dropping the other leaves a diagnostic that
+looks complete. Isolated: a variant that ALSO declares `Filesystem` still reports
+"effects must not widen" beside the precondition error, so it is the CALL's
+inferred effects that go unattributed, not the operation's checks that stop.
+**WI-20260830-JM7A8.**
 
 ## C3 · A rule body cannot destructure a type argument
 
@@ -1149,6 +1253,146 @@ the summarizer only ever sees Untrusted mailbox text.
 
 ---
 
+## C11 · An empty label set can be refused, but only by a QUANTIFIED constraint
+
+**Scenario.** `Verdict(message: MessageId, labels: List[Category])` needs "a
+verdict must say something" as a load-time refusal, so that "I could not
+categorize this" has one spelling (`[Other]`) and not two.
+
+**The obvious spelling is INERT, and it loads clean.** An ordinary denial —
+`constraint verdict_is_not_silent: :- Verdict(…), isEmpty(?ls)` — is stored as
+reflected structure and **not registered with the guard engine** (§6.2, §8.4), so
+it rejects nothing. Only the quantified forms are enforced. (The headless
+spelling above is not even grammatical: a constraint body needs a head.)
+
+**The obvious PREDICATE is inert too, for a second and independent reason, and
+that one turned out to be a kernel defect.** Measured as rule-body goals, one
+file, one `List`:
+
+```
+rule has_a(?b) :- Box(items: ?ls), contains(?ls, "a")   →  1 solution
+rule len2(?b)  :- Box(items: ?ls), eq(length(?ls), 2)   →  1 solution
+rule empty(?b) :- Box(items: ?ls), isEmpty(?ls)         →  NO SOLUTIONS
+rule full(?b)  :- Box(items: ?ls), nonEmpty(?ls)        →  NO SOLUTIONS
+```
+
+`contains` and `length` are `List`'s OWN bodied operations and their relational
+views derive (WI-580); `isEmpty` / `nonEmpty` are `Iterable` SPEC operations
+reached through `List`'s provision, and theirs do not. Both spellings import
+cleanly — the goal simply has no clauses to try, and a goal with no clauses is
+FALSE rather than an error. **WI-20260830-DQD5W.**
+
+The consequence here is the one that makes it worth filing: `forall ?ls:
+Verdict(…, labels: ?ls) -: nonEmpty(?ls)` LOADS and then fires on **every**
+verdict, well-formed ones included, because the `-:` body can never hold. A
+constraint that rejects the whole world reads, from the acceptance test alone,
+exactly like one that works.
+
+**What works.** Emptiness is a STRUCTURAL question about a list, so ask it
+structurally, with the counting quantifier that is enforced:
+
+```
+constraint verdict_is_not_silent:
+  no ?m -: Verdict(message: ?m, labels: nil)
+```
+
+Measured both ways: with an empty-labelled verdict present the load fails naming
+`verdict_is_not_silent`; with every verdict carrying at least one category the
+same file loads. `a_verdict_that_says_nothing_is_refused_by_the_constraint` and
+`a_verdict_can_carry_two_categories` are the pair.
+
+**Scope, stated because the constraint's reach is narrower than the guarantee.**
+A guard sees ASSERTED facts. It refuses a `Verdict` fact written into the KB; it
+does not inspect the `List[Verdict]` a running agent builds. What keeps the
+report itself total is that the agent's enumeration is DERIVED from what
+`Email.fetch` returned, plus `ensures mentions_all(result)` over it — and C13
+records that the second half is not actually proved. The constraint is what stops
+the *representation* admitting a second, silent way to say nothing.
+
+## C12 · A body-less rule declaration cannot carry a description block
+
+**Scenario.** Part of moving this example's intent out of `--` comments and into
+`{< … >}` facts the KB can answer queries about. `in_org` is the declaration a
+reader most wants explained — the relation is the library's, the rows a
+deployment's — and it is a body-less `rule`.
+
+**Both spellings are refused, from opposite directions.** Unlabeled, the
+converter refuses the block:
+
+```
+description block on unlabeled rule has no stable target: descriptions name a
+declaration symbol or citation handle
+```
+
+Add the label §4.1 asks for, and proposal 061 refuses the label:
+
+```
+the body-less rule `in_org` DECLARES the predicate and stores no clause
+(proposal 061). A citation label on it has nothing to cite.
+```
+
+The `061` suggestion — "Add `:- true` to make it an assertion" — is not available
+here: `in_org(?a) :- true` makes **every** address internal, which is the one
+thing this declaration exists to avoid.
+
+**Control.** The other four sites take a block and produce the fact:
+`guardians.Text`, `guardians.Message`, `Triage.run` and `Email.send` each yield a
+`DescriptionInfo(target:, content:, index: 0)` row, read back by
+`the_intent_of_a_declaration_is_a_fact_in_the_kb`.
+
+**Consequence.** A predicate DECLARATION has no description target today, so the
+intent of `in_org` stays in `--`. That is a kernel gap rather than a choice about
+this example: 061 gives a body-less rule a symbol, and §4.1's requirement is a
+*citation handle* for a clause, which a declaration does not have and does not
+need in order to be described. **WI-20260830-VFAKK.**
+
+## C13 · The concealment postcondition is REFINED but never PROVED
+
+**Scenario.** The article's injection has two halves. The exfiltration half is
+answered by the label lattice (`rejected/leak.anthill`) and the target half by the
+conditional permission (`rejected/outbox.anthill`). The concealment half — "do not
+include this email in the summary" — is answered by `ensures mentions_all(result)`
+on `Triage.run`, which `two-flows.md` states as an obligation "rather than hoped
+for".
+
+**It loads clean.** `fixtures/agent/conceal.anthill` is `good.anthill` with one
+combinator added:
+
+```
+let kept = msgs.filter(lambda m -> neq(m.id, MessageId(value: "m5"))).collect()
+```
+
+so the report enumerates everything it kept and is silent about the message it
+dropped — which is m5, the injection. Nothing refuses it. It leaks nothing, mails
+nothing and asks for no authority, so no other tier has anything to say, and the
+one property meant to catch it does not run.
+
+**What DOES run, and the distinction is the finding.** Override REFINEMENT is
+checked: an implementation may not weaken the spec's `ensures`, and
+`a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition`
+measures that a same-named local predicate cannot discharge it — the binding is by
+SYMBOL. That is declaration against declaration. What is not done is proving the
+condition OF A BODY: §8.5 generates the obligation when an `Implementation` fact
+pairs with an operation, and discharging it is not on the load path.
+
+**What still holds, stated so the gap is not read as larger than it is.**
+Enumeration is DERIVED from what `Email.fetch` returned, so a model cannot invent
+a row, and every refusal in `rejected/` fires unchanged. The gap is one direction
+only: a generated agent can DROP a row with a combinator it writes itself.
+
+**This is what retired `verdicts_of`.** That declared operation carried the
+comment "the operation an agent MUST call to satisfy `mentions_all`; fabricating
+`items` instead fails the postcondition". Neither half was true — it took a
+`List[Message]` an agent may filter before the call, and nothing fails — and an
+agent can write the whole projection for itself, exactly as it can write the body
+projection that retired `bodies_of` (C10's neighbour). What remained after the
+projection came out is `categories_of`: a lookup into the knowledge base, which is
+the one thing an operation body genuinely cannot do. A declaration that reads as a
+guarantee the checker does not enforce is worse than no declaration.
+
+**WI-20260830-2FP2K** owns closing it; `conceal.anthill` is the fixture to invert
+rather than delete.
+
 # Summary
 
 | | run | verdict |
@@ -1177,6 +1421,10 @@ the summarizer only ever sees Untrusted mailbox text.
 | C4 | variance in the label slot | ⚠️ **corrected** — declarable via `Covariant` + a provides-chain |
 | C5 | computed region in `Modify[…]` | ❌ the slot takes a PLACE, and `glob(p)` names none (§5.6) |
 | C6 | type argument on a constructor | ❌ and desirable |
+| C2a | precondition vs guarded effect on the SAME argument | ❌ **defect** (WI-20260830-JM7A8) — the precondition's diagnostic preempts the effect check |
+| C11 | an empty label set refused by a QUANTIFIED constraint | ✅ fires — and a spec op's relational view does not derive: ❌ **defect** (WI-20260830-DQD5W) |
+| C12 | description block on a body-less rule declaration | ❌ **defect** (WI-20260830-VFAKK) — no description target exists |
+| C13 | `ensures mentions_all(result)` proved of a body | ❌ **gap** (WI-20260830-2FP2K) — refined against the spec, never proved; `conceal.anthill` is accepted |
 
 **C7 changed the picture, and then was fixed.** A1–A3 and B1–B4 are real and
 hold, but A1–A3 were all written over a single sort, and C7 was invisible to any
@@ -1194,7 +1442,21 @@ was invisible to a suite where no spec operation carries `ensures`.
 
 **A1–A3 and B1–B4 together are the design.** Data confinement and capability
 confinement are checked by independent mechanisms, each with an unbroken chain,
-and both hold on the current loader with nothing built. C1 is the one item on
-the critical path; C3–C6 shaped the design rather than blocking it, and C2 —
-recorded here as a design decision, on a stale §8.5 citation — turned out to be a
-defect and was fixed.
+and both hold on the current loader with nothing built. C3–C6 shaped the design
+rather than blocking it, and C2 — recorded here as a design decision, on a stale
+§8.5 citation — turned out to be a defect and was fixed.
+
+**TWO ITEMS ARE ON THE CRITICAL PATH NOW, not one.** C1 is the older of them.
+The newer is **C13**, and it is the more serious: `ensures mentions_all(result)`
+is the example's answer to the injection's CONCEALMENT half, and it is checked
+for refinement against the spec and never proved of a body. A generated agent
+that filters a message out of its own enumeration loads clean —
+`fixtures/agent/conceal.anthill` is that program, shipped and accepted. The other
+three new rows are ordinary defects that cost the example a spelling each
+(C2a, C11, C12); C13 costs it a claim.
+
+**THE TWO CONFINEMENT CHAINS ARE UNAFFECTED BY C13**, which is the reason it is a
+gap in one property rather than a hole in the design: `conceal.anthill` leaks
+nothing, mails nothing and asks for no authority, and every refusal in
+`rejected/` still fires. Data confinement and capability confinement are decided
+by the typer; the postcondition is not, and that is where the tier ends today.

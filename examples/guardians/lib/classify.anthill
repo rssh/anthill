@@ -19,10 +19,12 @@ namespace guardians
   -- operator (`+`, `<`, …) names its target outright and needs nothing; these call
   -- the same operations by NAME, and the implicit tier that answered them is gone.
   import anthill.prelude.PartialEq.{eq}
-  import guardians.{MessageId, Message, Address, Mailbox, Observed, Span, Feature}
+  import guardians.{MessageId, Message, Address, Mailbox, Observed, Span, Feature,
+                    Category}
   import guardians.Feature.{ForwardingInstruction, SecrecyInstruction,
                             CredentialRequest, PaymentRedirect,
                             UrgencyAppeal, InvestmentPitch, MeetingInvite}
+  import guardians.Category.{Suspicious, Ordinary, Other}
   import guardians.TrustLevel.{Untrusted}
 
   -- ---- the two inputs a deployment supplies ----
@@ -67,13 +69,41 @@ namespace guardians
 
   -- THE CLASSIFICATION. Model atom AND declared judgement AND a computed
   -- corroborator — three independent conditions for one verdict.
-  rule classified(?m, "Suspicious")
+  --
+  -- THE SECOND ARGUMENT IS A `Category`, NOT A STRING (lib/spec.anthill). As
+  -- string literals these three clauses agreed by spelling: a fourth written
+  -- `"suspicious"` would have loaded clean and derived a category nothing reads.
+  rule classified(?m, Suspicious)
     :- observed_feature(?m, ?f), manipulative(?f), corroborated(?m)
 
-  rule classified(?m, "Ordinary")
-    :- fetched_message(?m), not(suspicious(?m))
+  -- `Ordinary` NOW NEEDS AN OBSERVATION AS WELL, and the ADDITION is the point.
+  -- It used to read `fetched_message(?m), not(suspicious(?m))`, which called a
+  -- message the model never looked at ORDINARY — an all-clear derived from
+  -- silence. The third clause below is where those messages go instead.
+  --
+  -- `fetched_message` STAYS, and dropping it was a real defect for the length of
+  -- one review. `observed_message` is fed by `Observed` alone — the model's own
+  -- writable vocabulary — so an `Ordinary` clause anchored on it and nothing else
+  -- lets a model mint a full all-clear for a message that is not in the mailbox
+  -- at all, by observing an id it invented. Measured: with the anchor gone, an
+  -- `Observed` atom on `m99` produced `classified(m99, Ordinary)` beside the five
+  -- real rows. That is exactly what this file's header forbids — a verdict never
+  -- rests on the model alone — and it is the ONE clause where losing the anchor
+  -- is dangerous, since `Suspicious` reaches `InMailbox` through `corroborated`
+  -- and `Other` names `fetched_message` outright.
+  rule classified(?m, Ordinary)
+    :- fetched_message(?m), observed_message(?m), not(suspicious(?m))
 
-  rule suspicious(?m) :- classified(?m, "Suspicious")
+  -- CANNOT CATEGORIZE, SAID OUT LOUD. Fetched, and no observation to judge it
+  -- by. Together the three clauses are TOTAL over `fetched_message`, which is
+  -- what `verdict_is_not_silent` (lib/spec.anthill) demands of the report: a
+  -- message the model declined to look at still gets a row, and the row says so.
+  rule classified(?m, Other)
+    :- fetched_message(?m), not(observed_message(?m))
+
+  rule suspicious(?m) :- classified(?m, Suspicious)
+
+  rule observed_message(?m) :- observed_feature(?m, ?)
 
   -- Bridge from the model's span-anchored atom to the feature alone. Kept
   -- separate so the span can be checked independently of the verdict.

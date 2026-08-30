@@ -91,10 +91,10 @@ model. The capability is the SORT you acquire; there is no marker sort beside it
 | file | what |
 |---|---|
 | `lib/vocabulary.anthill` | the trust lattice and nothing else that is not it: `TrustLevel`, `Text[Trust]`, and the one remaining project effect kind (`Filesystem`) |
-| `lib/email.anthill` | the **email service** and every email-shaped declaration with it: `Message[Trust]`, `MessageId`, `Address`, `Mailbox`, the `Outbox` capability, `in_org`/`external_addr`, and `Email.fetch` / `Email.send` — the article's source and sink, adjacent |
+| `lib/email.anthill` | the **email service** and every email-shaped declaration with it: `Message[Trust]`, `MessageId`, `Address`, `Mailbox`, the `Outbox` capability, `in_org`/`external_addr`, `releasable`, and `Email.fetch` / `Email.send` — the article's source and sink, adjacent |
 | `lib/observe.anthill` | the **only** vocabulary the model may write at run time — a closed `Feature` enum with no constructor naming an address, a tool, or an action |
 | `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Llm]`-carrying `open`, answering in a sealed `LlmOutput` |
-| `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide — and what is SPECIFIC to it: `Report`, `Verdict`, `verdicts_of`, `choose_recipient`, `mentions_all` |
+| `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide — and what is SPECIFIC to it: `Category`, `Report`, `Verdict`, `categories_of`, `choose_recipient`, `mentions_all`, and the `verdict_is_not_silent` constraint |
 | `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Llm]` — it may not ACQUIRE a model; being handed one is harmless, since `LlmOutput` is unreadable |
 | `lib/tasks.anthill` | `summarize` and `observe`, built on the one primitive rather than bound per task |
 | `lib/classify.anthill` | what counts as suspicious — rules in the KB, not a prompt |
@@ -102,7 +102,8 @@ model. The capability is the SORT you acquire; there is no marker sort beside it
 | `lib/safety.anthill` | where the tiers compose: types produce facts, proofs consume them |
 | `fixtures/*.anthill` | the article's inbox, including the injected email |
 | `fixtures/agent/good.anthill`, `checker.anthill` | generated implementations that pass — the controls |
-| `fixtures/agent/rejected/` | eleven that must not, one per mechanism |
+| `fixtures/agent/conceal.anthill` | a generated implementation that CONCEALS and is accepted anyway — the honest record of C13, since `ensures mentions_all(result)` is refined against the spec but never proved of a body (WI-20260830-2FP2K) |
+| `fixtures/agent/rejected/` | thirteen that must not, one per mechanism |
 
 Design notes and the full measurement record are in `docs/design/`; the runnable
 probes behind the measurements live in `docs/measurements/guardians/` at the

@@ -27,6 +27,10 @@ end
 -- what they are required to. Not a hole (a sink demands a literal label, and
 -- `Text[Int64]` reaches nothing); the unsound part is only the claim that the
 -- parameter ranges over a lattice. WI-20260822-T70A2, proposal 062.
+{< Text carrying its trust level in a type parameter. `Trust` is an ordinary
+   type argument and unifies like any other, which is the whole
+   information-flow mechanism: a sink written `Text[Public]` cannot be reached
+   by a `Text[Untrusted]`, and no separate taint analysis is involved. >}
 enum guardians.Text
   import anthill.prelude.{String}
   sort Trust = ?

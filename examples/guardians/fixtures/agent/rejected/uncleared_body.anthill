@@ -1,0 +1,44 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY AN UNDISCHARGED
+-- PRECONDITION.
+--
+-- THE OTHER CONTRACT FORM, and the only fixture in the suite that measures it.
+-- Every other refusal here is decided by the TYPER — a taint label, an effect
+-- row, a name-resolution gate. This one is decided by a PROOF: `Email.send`
+-- carries `requires releasable(body)` (lib/email.anthill), and a precondition
+-- naming no spec is discharged at the CALL SITE from what the caller knows
+-- (§5.4). The obligation is the agent's, not the harness's — which is what
+-- makes it the form the article calls "an obligation the agent must discharge".
+--
+-- ONE TOKEN FROM ../internal_send.anthill: the same internal recipient, the
+-- same row, a different body. The recipient is `boss@ourcorp.com`, so the
+-- guard's negation is proved and no `Permission[Outbox]` is demanded — this
+-- program asks for no authority it was not granted, and is still refused.
+-- Without that separation a reader would read the two contract tiers as one
+-- mechanism.
+--
+-- WHAT IT ASKS FOR IS NOT ABSURD, which is why it is the right fixture: mailing
+-- a colleague a line of prose about the mailbox is the most natural thing a
+-- triage agent does. `Text[Public]` does not stop it — the string is a literal
+-- and carries no taint — so the label tier has nothing to say here. What stops
+-- it is that the organisation never cleared this sentence for release.
+-- ================================================================
+sort guardians.agent.UnclearedBodyTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    Verdict, categories_of}
+  import guardians.TrustLevel.{Public}
+  entity mk
+
+  operation run(self: UnclearedBodyTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: text(raw: "here is the mailbox summary"))
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = UnclearedBodyTriage]
+end
