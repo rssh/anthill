@@ -8471,13 +8471,17 @@ impl KnowledgeBase {
     /// the only thing standing between a rule body and a real side effect. A
     /// host-mapped op with a parametric row therefore keeps the strict reading.
     ///
-    /// ONE OWNER, because there are TWO readers and they must not drift: this gate,
-    /// and the LOAD-TIME [`super::load::would_derive_bool_relation`], which asks
-    /// "would this bodied op have had a Bool relational view?" to refuse a clause that
-    /// would SUPPRESS it (WI-939 item 4). A `would_derive_…` that still read
-    /// `!effects.is_empty()` would answer `false` for exactly the ops this ticket
-    /// admits, so an own-arity clause on one of them would load clean and silently
-    /// take the working reading away — the loss that check exists to refuse.
+    /// ONE OWNER, because there are THREE readers and they must not drift:
+    /// [`Self::bare_bodied_bool_relation`]; the LOAD-TIME
+    /// [`super::load::would_derive_bool_relation`], which asks "would this bodied op
+    /// have had a Bool relational view?" to refuse a clause that would SUPPRESS it
+    /// (WI-939 item 4) — a `would_derive_…` that still read `!effects.is_empty()` would
+    /// answer `false` for exactly the ops this admits, so an own-arity clause on one of
+    /// them would load clean and silently take the working reading away, the loss that
+    /// check exists to refuse; and, since WI-20260830-NX4FD,
+    /// [`Self::functional_relation_arity`], the ARITY+1 view. DQD5W admitted the first
+    /// two and left the third reading `!effects.is_empty()` on a measurement that has
+    /// since expired; that predicate's own doc carries the re-measurement.
     ///
     /// `sig` is passed rather than re-read so the caller keeps its by-ref borrow.
     pub(crate) fn effect_row_admits_relational_view(
@@ -8558,42 +8562,63 @@ impl KnowledgeBase {
     /// - **not a builtin** — a builtin has its own goal semantics and no body.
     /// - **has a runnable body** — the relation is DERIVED from it; there is
     ///   nothing to derive from a body-less spec op (it dispatches via WI-573).
-    /// - **effect-free** — an effectful body is not a logical relation, and the
-    ///   eval bridge's empty effect registry would suspend on one anyway.
+    /// - **effect-free**, as [`Self::effect_row_admits_relational_view`] defines it
+    ///   (the row's MEMBERS, not its length — see the paragraph below) — an effectful
+    ///   body is not a logical relation, and the eval bridge's empty effect registry
+    ///   would suspend on one anyway.
     /// - **rule-LESS** — precedence (design §3.3): a hand-written clause of the
     ///   same functor WINS while both exist, exactly as for the Bool view and for
     ///   the WI-669 prover seam. This is the one clause a reader is most likely to
     ///   drop; without it a hand-written relation would be shadowed by its own
     ///   op's derived view.
     ///
-    /// **THE EFFECT CLAUSE HERE IS A PLAIN `effects.is_empty()` AND IS DELIBERATELY
-    /// NOT THE BOOL SIBLING'S [`Self::effect_row_admits_relational_view`]** — the two
-    /// gates now DISAGREE about a PARAMETRIC row (`effects E` on a sort declaring
-    /// `effects E = ?`), and that asymmetry is measured rather than an oversight.
-    /// WI-20260830-DQD5W widened the Bool view for such a row and TRIED the same here;
-    /// backed out, because the widened branch cannot be driven and where it does fire
-    /// it answers WRONG:
+    /// **THE EFFECT CLAUSE READS [`Self::effect_row_admits_relational_view`], THE SAME
+    /// GATE AS THE BOOL SIBLING** (WI-20260830-NX4FD) — the row's MEMBERS, not its
+    /// length. A spec op declared over a row PARAMETER (`effects E` on a sort declaring
+    /// `effects E = ?`) has a one-member row that names no effect, and the carrier
+    /// instantiates it; the owning gate's doc carries the whole argument for why that
+    /// is safe for a BODIED operation and not for a host-mapped one.
     ///
-    ///   * `rule spec_len(?n) :- Box(items: ?ls), FiniteCollection.size(?ls, ?n)` still
-    ///     answers `[]` with the widening in, beside a `List.length(?ls, ?n)` that
-    ///     answers `Int(2)`. The hook now FIRES (`dispatched_relation_arity` returns
-    ///     `Some(1)`) and the bridge then suspends one level down on a DIFFERENT
-    ///     unresolvable slot: `FiniteCollection requires Iterable[C, Element, E]`, of
-    ///     which the argument pins only `C = List[String]`. Completing `Element`/`E`
-    ///     from the carrier's provision is the SORT half of `resolve_bridge_
-    ///     requirements`, which WI-1091 left untouched on purpose.
-    ///   * `rule flag(?r) :- Box(items: ?ls), Iterable.isEmpty(?ls, ?r)` — whose chain
-    ///     IS pinnable — answered ONE **DEFINITE** solution with `?r` still a free
-    ///     `Var`, over two Boxes whose true answers are `true` and `false`. That is the
-    ///     definite-looking wrong answer §5.3 warns about, traded for the honest zero.
+    /// WI-20260830-DQD5W widened only the Bool sibling and recorded TWO reasons for
+    /// stopping there. **BOTH WERE RE-MEASURED BEFORE THIS CHANGE AND ONE OF THEM HAD
+    /// GONE STALE**, which is why they are named here rather than deleted:
     ///
-    /// So the row-parameter admission stops at the Bool view until the sort half can
-    /// complete an open element — **WI-20260830-NX4FD** owns that, and carries both
-    /// measurements above. Widening this predicate ALSO moves `collect_covered_
-    /// calls` (WI-1040), which gates weaving on it precisely because
-    /// "`functional_relation_arity(..).is_some()`" is how it asks whether a woven goal
-    /// will have a reader — one more reason the two must be moved together and with a
-    /// measurement, not separately.
+    ///   * TRUE, and it is what half (2) of NX4FD fixes: with the effect clause alone
+    ///     widened, `rule spec_len(?n) :- Box(items: ?ls), FiniteCollection.size(?ls,
+    ///     ?n)` still answered `[]` beside a `List.length(?ls, ?n)` that answered
+    ///     `Int(2)`. The hook FIRES and the bridge suspends one level down:
+    ///     `FiniteCollection requires Iterable[C, Element, E]`, of which the argument
+    ///     `c: C` pins only `C`. `resolve_bridge_requirements`' SORT half now completes
+    ///     such an element from a sole provider and, failing that, keeps the slot as a
+    ///     recorded absence rather than aborting the call — see its `all_pinned` gate.
+    ///   * **STALE.** The note also said `rule flag(?r) :- Box(items: ?ls),
+    ///     Iterable.isEmpty(?ls, ?r)` answers "ONE **DEFINITE** solution with `?r`
+    ///     still a free `Var`, over two Boxes whose true answers are `true` and
+    ///     `false`". RE-MEASURED with the effect clause alone widened: it answers TWO
+    ///     definite solutions, `Bool(true)` and `Bool(false)`, correctly one per Box.
+    ///     That symptom is verbatim the UN-GATED Bool hook's, and DQD5W's own arity
+    ///     gate closed it in the same commit — the measurement was taken before its
+    ///     sibling fix landed and expired with it. Driven by
+    ///     `wi_nx4fd_functional_relation_row_param_test::a_parametric_row_op_whose_
+    ///     chain_needs_nothing_binds`.
+    ///
+    /// **THIS ALSO WIDENS `collect_covered_calls`** (WI-1040), which gates weaving on
+    /// `functional_relation_arity(..).is_some()` precisely because that is how it asks
+    /// whether a woven goal will have a reader. The two SHOULD move together — the
+    /// reader this predicate now recognizes is the reader that gate is about — and the
+    /// corpus is green either way. THAT LAST FACT IS NOT THE EVIDENCE, because WI-1040's
+    /// own doc records a green corpus missing exactly this kind of move (`require[
+    /// PartialEq[T]], eq(?x, ?y)`, ONE solution to ZERO). MEASURED instead, by
+    /// `the_woven_spelling_does_not_yet_receive_the_win`: over one `List`, the PLAIN
+    /// `size(?ls, ?n)` answers `Int(2)` and the WOVEN `require[FiniteCollection[…]],
+    /// size(?ls, ?n)` answers one INDEFINITE solution — the widened weave routes the
+    /// goal, the reduction comes back undecided, and the arity+1 site delays as WI-1040's
+    /// clause says it must. NOT a regression (with the effect clause backed out BOTH
+    /// spellings answer `[]`, so nothing working was taken away), but the `require`
+    /// spelling does not get the win, and the gap is the `require[X]` dictionary rather
+    /// than this view: the woven call carries a `FiniteCollection` dictionary whose own
+    /// `Iterable` sub-slot is the one this ticket had to complete-or-mark on the BRIDGE
+    /// path, and `find_dictionary` has not had that treatment.
     ///
     /// Cheap-gated for the per-goal hot path in the same order as the Bool gate:
     /// a builtin or a body-less predicate (the overwhelmingly common case) bails
@@ -8611,7 +8636,7 @@ impl KnowledgeBase {
             return None;
         }
         let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;
-        if !sig.effects.is_empty() {
+        if !self.effect_row_admits_relational_view(f, sig) {
             return None;
         }
         let params = sig.params.len();
@@ -8729,6 +8754,24 @@ impl KnowledgeBase {
             return None;
         }
         let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;
+        // EXEMPT FROM [`Self::effect_row_admits_relational_view`] ON PURPOSE, and this
+        // is the note rather than a call because the two ask different questions
+        // (raised by /code-review as latent drift after WI-20260830-NX4FD routed the
+        // sibling through that owner). The owner ADMITS a parametric row only for a
+        // BODIED op, and its whole safety argument is bodiedness: the eval bridge runs
+        // the body under an empty effect registry, so a carrier instantiating the row
+        // to a real effect raises and the call residualizes. THIS predicate's subject
+        // is body-less by definition — it dispatches to a carrier's implementation,
+        // which may be host-mapped Rust that raises nothing — so the argument does not
+        // carry, exactly as [`Self::host_op_reducible_at_a_value`]'s doc says it does
+        // not carry to a host function.
+        //
+        // Calling the owner here would answer IDENTICALLY today (its parametric branch
+        // is gated on `op_body_node(f).is_some()`, which is false for every op that
+        // reaches here) and would then widen SILENTLY if that body clause were ever
+        // relaxed. The strict spelling is the safe stale one; keep it, and re-derive
+        // this paragraph rather than the call if a body-less parametric row ever earns
+        // an admission of its own.
         if !sig.effects.is_empty() {
             return None;
         }

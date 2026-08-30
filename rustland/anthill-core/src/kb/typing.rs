@@ -22403,9 +22403,29 @@ pub enum UnavailableWhy {
     /// WI-869 — a SIBLING provision's condition, which this dispatch never searched
     /// for (`provider_slot_is_ours`). `provider` is the carrier whose other provision
     /// contributed the slot. Not a failure at all, and its own arm because the other
-    /// three would misattribute it: nothing is missing from the program, the body just
+    /// four would misattribute it: nothing is missing from the program, the body just
     /// named evidence its provision did not earn.
     NotThisDispatch { provider: Symbol },
+    /// WI-20260830-NX4FD — the ARGUMENT TYPES left a spec type-parameter of `goal`
+    /// abstract, so NO PROVIDER WAS SEARCHED FOR. Only [`resolve_bridge_requirements`]
+    /// produces it: that consumer pins the parent sort's parameters from the runtime
+    /// argument types alone, and an element the operation's parameters do not mention
+    /// (`FiniteCollection.Element`/`E` under `size(c: C)`) stays open. Its own arm for
+    /// [`Self::NotThisDispatch`]'s reason — the other four would misattribute it.
+    /// `NoProvider` in particular would be a FALSEHOOD here and its repair a
+    /// misdirection: `List` DOES provide `Iterable`, transitively through `Stream`, and
+    /// "declare a provider for it" is not what an author whose call under-determines a
+    /// slot has to do.
+    ///
+    /// FIELDLESS, unlike its four siblings, and that is a claim rather than an omission
+    /// (the first cut carried a `goal: Symbol` and /code-review was right that it was
+    /// decorative). The others carry the spec of the level that ACTUALLY failed, which
+    /// need not be the slot's own — `resolve_inner` forwards a sub-goal's failure
+    /// verbatim. This absence has no level below it: the bridge asks per slot and
+    /// nothing under it was searched, so the failing goal IS the slot's own spec, which
+    /// [`AbsenceRecord::Slot::spec`] already carries. A field that can only ever repeat
+    /// its neighbour is one a later reader will believe says something.
+    UnderDetermined,
 }
 
 /// WI-865 — the absence a `NoProvider` marker symbol records. Filed on the KB by
@@ -22501,6 +22521,8 @@ pub(crate) fn absence_marker_sym(kb: &mut KnowledgeBase, rec: AbsenceRecord) -> 
                 UnavailableWhy::NotThisDispatch { provider } => {
                     format!(" other provision of {}", kb.qualified_name_of(*provider))
                 }
+                // The name already leads with `spec_qn`, which IS this absence's goal.
+                UnavailableWhy::UnderDetermined => " unpinned".to_string(),
             };
             format!("{NO_PROVIDER_NAME}[{spec_qn}{depth}{detail}]")
         }
@@ -22819,8 +22841,12 @@ pub(crate) fn resolve_bridge_requirements(
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
-    // whole supply, as it always has: those slots are what the callee's sort-keyed
-    // dictionary layout is measured against, and half of them is not a dictionary. A
+    // whole supply: those slots are what the callee's sort-keyed dictionary layout is
+    // measured against, and half of them is not a dictionary. WI-20260830-NX4FD carved
+    // ONE case out of that — a slot the argument types leave UNDER-DETERMINED keeps its
+    // place as a recorded absence instead of aborting, which serves the same layout
+    // rule by a different means (see the `all_pinned` gate below); every other sort-half
+    // failure still aborts. A
     // failure in the OP half SKIPS THAT SLOT and keeps the rest, because widening this
     // chain must not be able to take away a sort-half supply that used to work. Without
     // the split, an operation whose own `requires` ranges over a parameter the arguments
@@ -22926,20 +22952,52 @@ pub(crate) fn resolve_bridge_requirements(
         // operations_own_requires` are the two rows; both are CAPABILITY tests (they
         // assert the doubled vector), not diagnostics.
         //
-        // THE SORT HALF IS UNTOUCHED, and deliberately: its slots are what the callee's
-        // dictionary LAYOUT is measured against, `unpinnable_impl_requirement_is_
-        // refused_before_it_can_run` pins the refusal, and widening it is a different
-        // question from the one this ticket measured.
-        if !all_pinned && !op_half {
-            return BridgeRequirements::Unresolvable {
-                detail: format!(
-                    "`{}` is not fully pinned by the argument types — a spec \
-                     type-parameter stayed abstract, and an abstract binding matches \
-                     ANY provider (which would build a WRONG dictionary)",
-                    format_goal(kb, &goal),
-                ),
-            };
-        }
+        // WI-20260830-NX4FD — THE SORT HALF TAKES THE COMPLETION TOO, and where no
+        // completion is unique it KEEPS ITS SLOT as a recorded absence instead of
+        // aborting the whole call. WI-1091 left it alone saying "its slots are what the
+        // callee's dictionary LAYOUT is measured against … widening it is a different
+        // question from the one this ticket measured"; that question is settled below,
+        // at the arm that places the node, and the LAYOUT argument is what decides HOW:
+        // the slot is kept, not skipped.
+        //
+        // `unpinnable_impl_requirement_is_refused_before_it_can_run` still pins the
+        // outer refusal and is UNMOVED — it asserts a LOAD-time verdict (the WI-325
+        // ladder refuses a body whose dictionary read no `requires` COVERS), so it
+        // never reached this gate.
+        //
+        // WHAT KEEPS THE WIDENING FROM OPENING A HOLE IS NOT THAT LADDER, and saying so
+        // here because the tidy version of this sentence is wrong and was written first:
+        // a body whose read IS covered by its sort's `requires` loads fine and can still
+        // meet a CALL that does not pin the slot (`G requires VectorSpace[V, F]` with
+        // `twice(a: V)`, called at a carrier providing no `VectorSpace` — MEASURED, it
+        // loads). The two arms are sound for TWO DIFFERENT reasons, and neither covers
+        // the other (raised by /code-review, which read the marker's argument as though
+        // it were asserted over both):
+        //
+        //  * THE MARKER ARM resolves NOTHING, so no dictionary is built at all and
+        //    `marker_refusal` refuses any read — the bridge then residualizes exactly
+        //    as the whole-call `Unresolvable` used to. Rows: `an_under_determined_slot_
+        //    with_no_completion_answers_nothing` (the read happens, the goal answers
+        //    nothing) and `spec_op_arity_plus_one_goal_binds_its_result` (the read never
+        //    happens — `size(c) = List.length(collect(c))` is same-sort `collect` plus a
+        //    concrete `List.length` — so the call that used to be refused now answers).
+        // COST, MEASURED, because the cheap bail this replaced was on the path
+        // `resolve_bridge_requirements`' own doc calls per-dispatch: across the whole
+        // `wi_tests` binary (3924 tests) this function is entered past the empty-chain
+        // bail 272 times, and 79 of those reach the completion attempt below. The
+        // removed early return saved one `unique_provider_completion` call, 79 times.
+        //
+        //  * THE COMPLETION ARM DOES resolve, and its soundness is
+        //    [`unique_provider_completion`]'s own: the goal it resolves is CONSTRUCTED
+        //    and fully pinned, a provider disagreeing on an element the arguments DID
+        //    pin is excluded, one that leaves an open element abstract forces `None`
+        //    outright, and a SECOND surviving completion forces `None` too. So the
+        //    dictionary taken is one the goal genuinely names, not one the wildcard
+        //    admitted. DRIVEN on a fixture that can tell exact from guessed:
+        //    `a_completion_selects_the_provider_the_pinned_element_names` (two ground
+        //    providers, the pinned element selects, and the two rows answer 11 and 22 —
+        //    a guess answers one number twice) and `rival_completions_leave_the_slot_
+        //    unfilled_rather_than_guess` (nothing pinned, two providers, no answer).
         // Empty scope: neither consumer has a caller frame to read (the bridge has no
         // frame at all; value-directed dispatch reached an impl the caller could not
         // pin, so no caller slot names it), so a slot can only resolve by
@@ -22963,6 +23021,74 @@ pub(crate) fn resolve_bridge_requirements(
         } else {
             match unique_provider_completion(kb, &goal, &scope, rung) {
                 Some(completed) => completed,
+                // WI-20260830-NX4FD — THE SORT HALF KEEPS ITS SLOT, AS A RECORDED
+                // ABSENCE, where it used to abort the whole call. The soundness
+                // argument above is untouched: nothing resolves an under-pinned goal,
+                // so no WRONG dictionary is built. What changes is only what an
+                // unbuildable slot COSTS — a marker that is loud at the read (WI-857)
+                // instead of a residualized call that could not run at all.
+                //
+                // THIS IS THE COMPILE-TIME PRODUCER'S OWN ANSWER, which is the whole
+                // argument for it. [`ResolvedRequiresNode::Unavailable`]'s doc names
+                // THIS EXACT SLOT as the shape the stdlib relies on it for:
+                // "`FiniteCollection requires Iterable[C = C]` holds for a `List`
+                // carrier only through `List provides Stream provides Iterable`, which
+                // no `Iterable[C = List[…]]` provision matches … Refusing to build the
+                // dictionary there would reject every program that dispatches such a
+                // spec op without ever reading the evidence (MEASURED: 33 tests)". The
+                // typer places a marker and 33 tests pass; the bridge returned
+                // `Unresolvable` and the same call answered NOTHING. Two producers of
+                // one dictionary disagreeing about one slot is the drift WI-857's "one
+                // owner for the three readers" discipline exists to refuse.
+                //
+                // MEASURED, and it is the ticket's acceptance row: `rule spec_len(?n)
+                // :- Box(items: ?ls), size(?ls, ?n)` answered `[]` beside a
+                // `length(?ls, ?n)` that answered `Int(2)`, because
+                // `FiniteCollection.size(c: C)` pins `C` from its argument and mentions
+                // neither `Element` nor `E`. `size`'s body is `List.length(collect(c))`
+                // — `collect` is a SAME-SORT call and `List.length` is concrete, so the
+                // `Iterable` slot is never read and the marker costs nothing.
+                //
+                // ONE CONSEQUENCE IS NOT DRIVEN, and it is written down rather than
+                // credited (raised by /code-review). This resolution's OTHER consumer,
+                // `requirements_for_value_directed_impl`, treated a sort-half
+                // `Unresolvable` as "enter unsupplied" — it reaches this function only
+                // with an EMPTY incoming channel, so nothing that was working is taken
+                // away — and now takes the `Resolved` branch instead, which leads the
+                // frame with a `__req_self` STAND-IN it previously had no channel for.
+                // That is not a marker and does not refuse: a stand-in is
+                // `stand_in_requirement`'s "the receiver VALUE may still say which
+                // impl", the invitation to the value-directed rescue that makes
+                // `interp.call` work on a `requires`-bearing sort at all. It is the
+                // right reading for this route — the bridge is an entry with no caller
+                // dictionary, exactly like a host entry — but NO ROW HERE DRIVES IT:
+                // every fixture in `wi_nx4fd_functional_relation_row_param_test` reaches
+                // this through the SLD bridge, and the corpus's 79 sort-half attempts
+                // (counted, of 272 calls that reach a non-empty chain in the whole
+                // `wi_tests` binary) moved nothing. Driving it needs a value-directed
+                // dispatch whose sort half is entirely under-determined; the host-entry
+                // route is not it, because `seed_entry_op_requirements` takes the OP
+                // half out of this resolution and leaves the sort half's stand-ins
+                // alone.
+                //
+                // NOT THE `other =>` ARM ONE MATCH DOWN, deliberately: that one says
+                // "these types do not pin a dictionary HERE" about a goal that was
+                // FULLY pinned and still found no provider, which is a claim about the
+                // program. This arm is about a goal no provider was ever searched for.
+                // Widening that one is a separate question with a separate population.
+                None if !op_half => {
+                    trees.push((
+                        *name,
+                        ResolvedRequiresNode::Unavailable {
+                            spec_sort: goal.spec_sort,
+                            why: UnavailableWhy::UnderDetermined,
+                            // The absence is at THIS slot's own level: nothing below it
+                            // was searched, so there is no deeper goal to attribute to.
+                            below: false,
+                        },
+                    ));
+                    continue;
+                }
                 None => continue,
             }
         };
@@ -23094,6 +23220,13 @@ pub(crate) fn dictionary_covers_target(
 
 /// WI-1091 — the one GROUND completion of `goal`'s un-pinned elements, when the spec's
 /// providers leave exactly one. `None` when they leave none or several.
+///
+/// WI-20260830-NX4FD — asked of BOTH halves of the chain now, not only the op half.
+/// The two differ in what a `None` MEANS, and that difference stays with the caller:
+/// an op-scoped slot is skipped (a body that never reads it must keep running), a
+/// sort-level one keeps its slot as a recorded absence (the callee's layout is
+/// measured against those slots). Nothing here changes with the half — a completion is
+/// exact or it does not exist.
 ///
 /// THE SHAPE THIS EXISTS FOR, measured: `operation twice[V, F](a: V) -> V requires
 /// VectorSpace[V, F]` entered from the HOST. The argument pins `V := Vec3`; nothing
@@ -25782,6 +25915,17 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
                      this dispatch took, so no provider was searched for it. This \
                      operation is not entitled to that evidence.",
                     kb.qualified_name_of(*provider),
+                ),
+                // WI-20260830-NX4FD. NO SLOT CLAUSE and no `below` split: this absence
+                // is only ever recorded AT its own slot (the bridge pins per slot, and
+                // there is no sub-goal walk to inherit a deeper failure from), so the
+                // "look one level down" clause would point at nothing.
+                UnavailableWhy::UnderDetermined => format!(
+                    "the argument types did not pin every type-parameter of \
+                     `{slot_qn}`, and its providers left no single completion for the \
+                     rest, so no provider was searched for this slot. Give the \
+                     operation a parameter that determines the element, or a provision \
+                     that decides it at this carrier."
                 ),
             }
         }

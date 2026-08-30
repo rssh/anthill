@@ -1534,3 +1534,6 @@ mod wi_dqd5w_spec_op_relational_view_test;
 
 #[path = "include/wi_vfakk_declaration_description_test.rs"]
 mod wi_vfakk_declaration_description_test;
+
+#[path = "include/wi_nx4fd_functional_relation_row_param_test.rs"]
+mod wi_nx4fd_functional_relation_row_param_test;
