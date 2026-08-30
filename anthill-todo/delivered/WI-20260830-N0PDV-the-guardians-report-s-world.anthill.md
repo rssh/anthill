@@ -3,9 +3,9 @@
 - id: WI-20260830-N0PDV-the-guardians-report-s-world
 - created: 2026-08-30T09:30:36Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-30T09:30:36Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-30T18:19:29Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -107,3 +107,28 @@ WHAT SURVIVES from the earlier draft: naming `org_domain` rather than hiding the
 ACCEPTANCE (PART 4): fixtures/mailbox.anthill asserts `fact org_domain("ourcorp.com")` and a `rule in_org(?a) :- ...` over it, and no variable-headed `in_org` fact remains; lib/email.anthill is UNCHANGED. CONTROLS: `an_internal_send_needs_no_permission` still ACCEPTED; `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed` still fires with the fixture withheld -- that test IS the closed default and must be re-checked against the new shape rather than merely kept green; `an_external_send_is_refused_by_the_conditional_permission` unchanged. NEW ROW WORTH ADDING: a second `fact org_domain(...)` makes a second domain internal -- the case the variable-headed fact could not express without a second fact of its own.
 
 DOWNSTREAM (PART 4). The article's section 3 listing (draft-guardians-sections.tex, block A2) shows the library side -- a bodyless `in_org` and `external_addr` by negation -- and a second listing shows a deployment supplying it both ways, by enumeration and by rule. The prose makes the same claim as the correction above.
+
+## Changes
+
+### 2026-08-30T18:20:07Z — feedback — claude
+
+DELIVERED in dc3eb4d9 / 4f7679fc. Tests green on a merged tree (confirmed by the user on a second machine); guardians 47/47, each new row back-out-verified to red exactly its own test.
+
+WHAT DIVERGED FROM THE TICKET, and each divergence is a measurement rather than a preference.
+
+PART 1 -- the OPEN SUB-QUESTION is settled twice over, and BOTH answers were needed. `is_empty` does not exist (the prelude spells it `isEmpty`), and the spelling the ticket proposed could not have worked for a second, independent reason: an ordinary denial is stored and NEVER REGISTERED with the guard engine (kernel §6.2/§8.4), so it is inert. Shipped: `constraint verdict_is_not_silent: no ?m -: Verdict(message: ?m, labels: nil)` -- a QUANTIFIED constraint testing emptiness STRUCTURALLY. measured.md C11. The `isEmpty`-as-a-goal failure turned out to be a kernel defect in its own right and is WI-20260830-DQD5W.
+
+Also: the FILES line over-estimated. No fixture constructed a `Verdict` literal, so `verdict_of`'s field rename was the whole of it -- until `verdicts_of` came out (below), which touched all nine.
+
+PART 2 -- four of the five sites take a block; `in_org` cannot. Unlabeled, §4.1 refuses ("no stable target"); labeled, proposal 061 refuses the label ("nothing to cite"). Its intent stays in `--`. measured.md C12, WI-20260830-VFAKK.
+
+PART 3 -- NEITHER of the ticket's two candidates survives its own controls, and the ticket was right to say the predicate was undecided. (a) `deliverable(to)`: unprovable at exactly the two fixtures whose recipient the checker cannot read, and its diagnostic PREEMPTS the effect check, so computed_recipient and letbound_recipient stop naming `Permission[Outbox]` -- they would keep passing with an updated substring while measuring something else. (b) `flows_to(?l, Public)`: needs `body: Text[Trust = ?l]`, which changes leak's substring AND downgrades a type guarantee to a contract obligation in the one place the example's headline rests on the type. Shipped a third: `requires releasable(body)` -- a DIFFERENT argument from the guarded one, so the two compose, and asserted in `lib/` because the one load with no deployment must still fail on the authority. measured.md C2a; the preemption is WI-20260830-JM7A8.
+
+PART 4 -- landmine the ticket's own snippet steps on: `rule in_org(?a) :- ?a = Address(local: ?_, domain: ?d), org_domain(?d)` loads and leaves an UNDISCHARGED RESIDUAL, because `=` is a test that never binds (§8.3). Destructure in the HEAD. A floundering `in_org` under `external_addr(?a) :- not(in_org(?a))` is the shape that must not read as an answer.
+
+SCOPE CHANGE, directed mid-work by the user: `verdicts_of` IS GONE. An agent writes the projection itself, exactly as it writes the body projection that retired `bodies_of`; only `categories_of` -- the KB lookup -- stays declared. Chasing its comment's second claim ("fabricating `items` fails the postcondition") found that the claim is FALSE and that the concealment guarantee is unenforced: WI-20260830-2FP2K, measured.md C13, `fixtures/agent/conceal.anthill` shipped as a fixture that conceals and is ACCEPTED.
+
+DEFECT INTRODUCED AND CAUGHT BY /code-review, recorded because the near-miss is the lesson: narrowing `Ordinary` to `observed_message(?m)` alone dropped its mailbox anchor, so an `Observed` atom on an invented id minted a full ALL-CLEAR for a message not in the mailbox -- the one thing classify.anthill's header forbids. Both classification tests I had written observed ids that WERE in the mailbox, so neither could catch it. Fixed, with the regression row.
+
+DOWNSTREAM STILL OPEN: the ICTERI-2026 article's section 3 listing shows `verdicts_of` and `deliverable(to)`; neither survived contact with the suite. Section 7 should also say that C13 is a gap rather than a delivered guarantee.
+
