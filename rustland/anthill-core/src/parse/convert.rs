@@ -24,8 +24,8 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
     out
 }
 
-use super::error::ParseError;
 use super::desugar_target as dt;
+use super::error::ParseError;
 use super::ir::*;
 
 /// The `why` clause [`Converter::check_label_unique`] reports for a repeated TUPLE
@@ -766,8 +766,7 @@ impl<'a> Converter<'a> {
         // interned under the text the AUTHOR WROTE — which is what the `unknown
         // functor` diagnostic then names.
         debug_assert!(
-            node.kind() != "absolute_name"
-                || self.text(node).starts_with(ABSOLUTE_PATH_MARKER),
+            node.kind() != "absolute_name" || self.text(node).starts_with(ABSOLUTE_PATH_MARKER),
             "an `absolute_name`'s head token must carry the marker into its text"
         );
         if node.kind() == "field_access" {
@@ -1354,17 +1353,15 @@ impl<'a> Converter<'a> {
         // `convert_name` flattens to `Map.empty` exactly as it does for the
         // bracket-less `Map[K = String].empty()`; the outer bracket is then this
         // call's type arguments, the reading `Map.empty[T = Int64]()` already has.
-        let type_args: Vec<SortBinding> = if matches!(
-            name_node.kind(),
-            "application" | "dot_application"
-        ) {
-            self.children_by_kind(name_node, "sort_binding")
-                .into_iter()
-                .map(|b| self.convert_sort_binding(b))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let type_args: Vec<SortBinding> =
+            if matches!(name_node.kind(), "application" | "dot_application") {
+                self.children_by_kind(name_node, "sort_binding")
+                    .into_iter()
+                    .map(|b| self.convert_sort_binding(b))
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // WI-20260829-W6JH0 — the COMPANION RECEIVER's bracket, form (3). It reaches
         // here having been ERASED from the functor: `collect_field_access_segments`

@@ -468,7 +468,11 @@ const HOST_FNS: &[(
     ("reflect_occurrence_term", 1, reflect_occurrence_term),
     ("reflect_occurrence_type", 1, reflect_occurrence_type),
     ("reflect_sub_occurrences", 1, reflect_sub_occurrences),
-    ("reflect_sub_occurrence_labels", 1, reflect_sub_occurrence_labels),
+    (
+        "reflect_sub_occurrence_labels",
+        1,
+        reflect_sub_occurrence_labels,
+    ),
     ("reflect_is_modifiable", 1, reflect_is_modifiable),
     ("kb_ambient", 0, kb_ambient),
     ("kb_loaded", 1, kb_loaded),
@@ -507,10 +511,14 @@ const HOST_FNS: &[(
 ///
 /// A miss in BOTH is still the WI-876 refusal at the caller, not a silent skip.
 fn host_fn_by_key(kb: &crate::kb::KnowledgeBase, key: &str) -> Option<HostFn> {
-    if let Some(hit) = HOST_FNS.iter().find(|&&(k, _, _)| k == key).map(|&(_, arity, f)| HostFn {
-        arity,
-        f: HostFnImpl::Static(f),
-    }) {
+    if let Some(hit) = HOST_FNS
+        .iter()
+        .find(|&&(k, _, _)| k == key)
+        .map(|&(_, arity, f)| HostFn {
+            arity,
+            f: HostFnImpl::Static(f),
+        })
+    {
         return Some(hit);
     }
     kb.host_fn_registry().get(key)
@@ -803,13 +811,10 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                         continue;
                     }
                     if short == field_name.as_str() {
-                        let val = receiver.pos_arg(interp.kb(), pos_cursor).map(|v| v.to_value());
-                        return absent_option_as_none(
-                            interp,
-                            *functor,
-                            field_name.as_str(),
-                            val,
-                        );
+                        let val = receiver
+                            .pos_arg(interp.kb(), pos_cursor)
+                            .map(|v| v.to_value());
+                        return absent_option_as_none(interp, *functor, field_name.as_str(), val);
                     }
                     pos_cursor += 1;
                 }
@@ -2273,7 +2278,9 @@ fn big_int_operand(
 
 fn string_contains(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, sub] = expect_args::<2>("String.contains", args)?;
-    Ok(Value::Bool(str_operand(i.kb(), &s)?.contains(str_operand(i.kb(), &sub)?.as_ref())))
+    Ok(Value::Bool(
+        str_operand(i.kb(), &s)?.contains(str_operand(i.kb(), &sub)?.as_ref()),
+    ))
 }
 
 /// THE ONE PLACE THE HOST PRIMITIVE DISAGREES WITH THE DECLARATION: `str::find`
@@ -2294,7 +2301,11 @@ fn string_index_of(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// the declaration specifies.
 fn string_replace(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, old, new] = expect_args::<3>("String.replace", args)?;
-    let (s, old, new) = (str_operand(i.kb(), &s)?, str_operand(i.kb(), &old)?, str_operand(i.kb(), &new)?);
+    let (s, old, new) = (
+        str_operand(i.kb(), &s)?,
+        str_operand(i.kb(), &old)?,
+        str_operand(i.kb(), &new)?,
+    );
     Ok(Value::Str(s.replace(old.as_ref(), new.as_ref())))
 }
 
@@ -2759,7 +2770,6 @@ fn relation_where_run(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
         columns,
     })
 }
-
 
 /// WI-1127 — name prefix for a PARAMETER hole in a row-condition recipe: the operand
 /// that is neither a column nor a literal (`eq(c.age, v)`, `eq(c.age, thirty())`).
@@ -3285,10 +3295,11 @@ fn relation_project_run(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // `Value::Str` entries today, so nothing drives the other carriers — but a
         // name is a string on all of them, and this was the one native-variant string
         // read left after the pass (found by /code-review).
-        let source_name = str_operand(interp.kb(), source).map_err(|_| EvalError::TypeMismatch {
-            expected: "a source column name (String) in the projection spec",
-            got: source.type_name().to_string(),
-        })?;
+        let source_name =
+            str_operand(interp.kb(), source).map_err(|_| EvalError::TypeMismatch {
+                expected: "a source column name (String) in the projection spec",
+                got: source.type_name().to_string(),
+            })?;
         let source_name = source_name.as_ref();
         // Resolve the source name to its canonical interned `Symbol`, then match `r`'s column
         // by SYMBOL equality — a column's name symbol is the canonical intern-map entry for
@@ -3366,10 +3377,7 @@ fn relation_rename(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
         // — so `p.rename(z: p.a)` re-keyed BOTH of them and returned a row with two `z`
         // columns and no `b`: a wrong row, disagreeing with the type `Rename` had computed,
         // and unanswerable to `row.b` downstream.
-        let Some(_) = columns
-            .iter()
-            .find(|(n, v)| n == src_name && v == src_vid)
-        else {
+        let Some(_) = columns.iter().find(|(n, v)| n == src_name && v == src_vid) else {
             let src = interp.kb.local_name_of(*src_name).to_string();
             return Err(EvalError::TypeMismatch {
                 // A PROGRAM error, not an evaluator-invariant one, so NOT `Internal` — the
@@ -5523,8 +5531,8 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
             .find(|(vid, _)| interp.kb.local_name_of(vid.name()) == name)
             .map(|(vid, _)| *vid)
     });
-    let bound: Option<Value> = found
-        .and_then(|vid| arena.with_subst(&handle, |s| interp.kb_mut().answer_binding(vid, s)));
+    let bound: Option<Value> =
+        found.and_then(|vid| arena.with_subst(&handle, |s| interp.kb_mut().answer_binding(vid, s)));
 
     match bound {
         Some(value) => Ok(Value::Entity {
@@ -5916,11 +5924,9 @@ fn map_key(
     kb: &mut crate::kb::KnowledgeBase,
     v: &Value,
 ) -> Result<super::map_arena::MapKey, EvalError> {
-    super::map_arena::MapKey::of_value_interning(kb, v).ok_or_else(|| {
-        EvalError::TypeMismatch {
-            expected: "Map key (Int / Bool / String / Symbol / Term)",
-            got: v.type_name().to_string(),
-        }
+    super::map_arena::MapKey::of_value_interning(kb, v).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Map key (Int / Bool / String / Symbol / Term)",
+        got: v.type_name().to_string(),
     })
 }
 
@@ -6713,8 +6719,8 @@ mod tests {
             .get(&sym)
             .cloned()
             .expect("register_on must bind the entry under its symbol");
-        let through_map = registered(&mut interp, &args)
-            .expect("the registered closure must be invocable");
+        let through_map =
+            registered(&mut interp, &args).expect("the registered closure must be invocable");
 
         assert_eq!(
             direct.as_int(),
@@ -6772,8 +6778,7 @@ mod tests {
 
     #[test]
     fn numeric_add_mixed_type_shows_both_in_message() {
-        let err =
-            numeric_add("Int64.add", &Value::Int(1), &Value::Float(2.0)).unwrap_err();
+        let err = numeric_add("Int64.add", &Value::Int(1), &Value::Float(2.0)).unwrap_err();
         match err {
             EvalError::TypeMismatch { got, .. } => {
                 assert!(
@@ -6942,7 +6947,10 @@ mod tests {
     /// five characters are the first five of six.
     #[test]
     fn a_narrow_digest_is_a_prefix_of_a_wider_one() {
-        assert_eq!(digest_base32("some input", 5), digest_base32("some input", 8)[..5]);
+        assert_eq!(
+            digest_base32("some input", 5),
+            digest_base32("some input", 8)[..5]
+        );
     }
 
     #[test]
@@ -6954,7 +6962,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for i in 0..1000 {
             assert!(
-                seen.insert(digest_base32(&format!("claude\n2026-08-17\nitem {i}\n0"), 5)),
+                seen.insert(digest_base32(
+                    &format!("claude\n2026-08-17\nitem {i}\n0"),
+                    5
+                )),
                 "collision at {i}"
             );
         }
@@ -6962,8 +6973,8 @@ mod tests {
 
     #[test]
     fn digest_refuses_a_width_it_cannot_supply() {
-        let err =
-            string_digest_base32(&mut dummy(), &[Value::Str("x".into()), Value::Int(16)]).unwrap_err();
+        let err = string_digest_base32(&mut dummy(), &[Value::Str("x".into()), Value::Int(16)])
+            .unwrap_err();
         assert!(matches!(err, EvalError::TypeMismatch { .. }));
     }
 }

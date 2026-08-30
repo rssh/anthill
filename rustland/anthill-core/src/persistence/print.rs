@@ -1592,7 +1592,11 @@ pub fn print_fact_omitting<V: TermSource + ?Sized>(
     else {
         return print_fact(view, term, meta);
     };
-    if omit.is_empty() || !named_args.iter().any(|(s, _)| omit.contains(&view.sym_name(*s))) {
+    if omit.is_empty()
+        || !named_args
+            .iter()
+            .any(|(s, _)| omit.contains(&view.sym_name(*s)))
+    {
         return print_fact(view, term, meta);
     }
     let printer = TermPrinter::reload_faithful(view);
@@ -1628,8 +1632,6 @@ pub fn print_fact_omitting<V: TermSource + ?Sized>(
     out.push('\n');
     out
 }
-
-
 
 #[cfg(test)]
 mod tests {

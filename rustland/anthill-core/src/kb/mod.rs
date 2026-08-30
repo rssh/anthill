@@ -4329,10 +4329,12 @@ impl KnowledgeBase {
             (Some(BuiltinTag::Not), 1) => {
                 SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
             }
-            (Some(BuiltinTag::PushChoice) | Some(BuiltinTag::PushAnd), 2) => SmallVec::from_slice(&[
-                slot(0, false, SlotReading::Proved),
-                slot(1, false, SlotReading::Proved),
-            ]),
+            (Some(BuiltinTag::PushChoice) | Some(BuiltinTag::PushAnd), 2) => {
+                SmallVec::from_slice(&[
+                    slot(0, false, SlotReading::Proved),
+                    slot(1, false, SlotReading::Proved),
+                ])
+            }
             _ => SmallVec::new(),
         }
     }
@@ -4590,8 +4592,7 @@ impl KnowledgeBase {
         // `and` itself, the way comma-separated atoms are. Descended into at ANY
         // commitment for that reason — including the body's top level, where a bare `or`
         // branch is not.
-        let entering_conj =
-            matches!(head, Some((f, a)) if self.is_goal_conjunction(f, a));
+        let entering_conj = matches!(head, Some((f, a)) if self.is_goal_conjunction(f, a));
         if under_not || entering_not || entering_conj {
             let child_under_not = under_not || entering_not;
             for (child, child_span) in self.body_goal_children(goal, span) {
@@ -4942,7 +4943,11 @@ impl KnowledgeBase {
             // in `check_metadata_head` (its `functor` read is `None` for them), so there
             // is no third case to answer here.
             match &head {
-                Value::Entity { functor, pos, named } => {
+                Value::Entity {
+                    functor,
+                    pos,
+                    named,
+                } => {
                     let labels: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
                     self.check_metadata_slots(*functor, pos.len(), &labels);
                 }
@@ -9012,7 +9017,9 @@ impl KnowledgeBase {
     /// message said so. Found by `/code-review` probing the loader's admission set against
     /// the typer's; no fixture reached it.
     pub fn is_unplaceable_constructor(&self, sym: Symbol) -> bool {
-        self.symbols.get(sym).has_kind(crate::intern::SymbolKind::Entity)
+        self.symbols
+            .get(sym)
+            .has_kind(crate::intern::SymbolKind::Entity)
             && !self.is_ambient_resource_name(sym)
     }
 

@@ -1455,7 +1455,9 @@ impl SymbolTable {
             if !seen.insert(s) {
                 continue;
             }
-            let Some(data) = self.scopes.get(&s) else { continue };
+            let Some(data) = self.scopes.get(&s) else {
+                continue;
+            };
             for inc in &data.parents {
                 if !inc.is_enclosing {
                     continue;
@@ -2625,7 +2627,10 @@ mod tests {
             },
         );
 
-        assert_eq!(st.resolve_in_scope("shade", user), ResolveResult::Found(shade));
+        assert_eq!(
+            st.resolve_in_scope("shade", user),
+            ResolveResult::Found(shade)
+        );
         assert_eq!(st.resolve_in_scope("Red", user), ResolveResult::Found(red));
     }
 

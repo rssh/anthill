@@ -65,9 +65,7 @@ use crate::kb::typing::get_named_arg;
 use crate::kb::{ClauseKind, KnowledgeBase, RuleId};
 use crate::span::Span;
 
-use super::document::{
-    self, AttrField, Document, DocumentMapping, SegmentKind,
-};
+use super::document::{self, AttrField, Document, DocumentMapping, SegmentKind};
 use super::print;
 use super::{PersistenceError, Store};
 
@@ -436,7 +434,10 @@ impl FileModel {
             let mut fields = doc.item.clone().unwrap_or_default();
             let mut by_named: HashMap<String, Vec<String>> = HashMap::new();
             for e in &doc.lists {
-                by_named.entry(e.named.clone()).or_default().push(e.value.clone());
+                by_named
+                    .entry(e.named.clone())
+                    .or_default()
+                    .push(e.value.clone());
             }
             fields.extend(document::list_fields(mapping, &by_named));
             out.push_str(&document::render_attributes(
@@ -543,7 +544,9 @@ impl DocModel {
         match &kind {
             // An entry goes after the last entry of its own container, so that
             // appending keeps a container's entries in one run.
-            SegmentKind::Entry { container, fields, .. } => {
+            SegmentKind::Entry {
+                container, fields, ..
+            } => {
                 let first = fields.first().cloned().unwrap_or_default();
                 let mut at = None;
                 for (i, s) in self.body.iter().enumerate() {
@@ -842,7 +845,10 @@ impl ItemPerFileStore {
                     // An UNCONVERTED file — right directory, right id, plain
                     // encoding — is a different fault with a different remedy.
                     let unconverted = self.mapping.is_some()
-                        && same_path(&path, &self.root.join(dir).join(format!("{id}{ITEM_PLAIN_SUFFIX}")));
+                        && same_path(
+                            &path,
+                            &self.root.join(dir).join(format!("{id}{ITEM_PLAIN_SUFFIX}")),
+                        );
                     self.faults.push(if unconverted {
                         LayoutFault::PlainItemFile {
                             path: path.clone(),
@@ -1083,13 +1089,15 @@ impl ItemPerFileStore {
     /// file has been recorded (a satellite may be read before its item).
     pub fn layout_faults(&self) -> Vec<LayoutFault> {
         let mut out = self.faults.clone();
-        out.extend(self.identity_collisions().into_iter().map(
-            |(prefix, first, second)| LayoutFault::IdCollision {
-                prefix,
-                first,
-                second,
-            },
-        ));
+        out.extend(
+            self.identity_collisions()
+                .into_iter()
+                .map(|(prefix, first, second)| LayoutFault::IdCollision {
+                    prefix,
+                    first,
+                    second,
+                }),
+        );
         for info in self.rows.values() {
             let Route::Satellite { item, functor } = &info.route else {
                 continue;
@@ -1100,14 +1108,12 @@ impl ItemPerFileStore {
                     functor: functor.clone(),
                     item: item.clone(),
                 }),
-                Some(home) if !same_path(home, &info.path) => {
-                    out.push(LayoutFault::MisfiledRow {
-                        found: info.path.clone(),
-                        expected: home.clone(),
-                        functor: functor.clone(),
-                        item: item.clone(),
-                    })
-                }
+                Some(home) if !same_path(home, &info.path) => out.push(LayoutFault::MisfiledRow {
+                    found: info.path.clone(),
+                    expected: home.clone(),
+                    functor: functor.clone(),
+                    item: item.clone(),
+                }),
                 Some(_) => {}
             }
         }
@@ -1270,7 +1276,10 @@ impl ItemPerFileStore {
         let mut moves = Vec::new();
         for (found, expected) in plan {
             self.relocate(&found, &expected)?;
-            write_file(&expected, &self.files[&expected].render(self.mapping.as_ref()))?;
+            write_file(
+                &expected,
+                &self.files[&expected].render(self.mapping.as_ref()),
+            )?;
             remove_file(&found)?;
             moves.push((found, expected));
         }
@@ -1305,7 +1314,11 @@ impl ItemPerFileStore {
             let LayoutFault::DocumentFault { path, blocking, .. } = fault else {
                 continue;
             };
-            let list = if *blocking { &mut blocked } else { &mut targets };
+            let list = if *blocking {
+                &mut blocked
+            } else {
+                &mut targets
+            };
             if !list.contains(path) {
                 list.push(path.clone());
             }
@@ -1379,8 +1392,12 @@ impl ItemPerFileStore {
             if let Some(id) =
                 get_named_arg(kb, named, &self.fields.id).and_then(|t| string_of(kb, t))
             {
-                let path: Vec<String> =
-                    self.fields.status.split('.').map(|s| s.to_string()).collect();
+                let path: Vec<String> = self
+                    .fields
+                    .status
+                    .split('.')
+                    .map(|s| s.to_string())
+                    .collect();
                 let status = document::value_at(kb, term, &path).ok_or_else(|| {
                     PersistenceError::Io(format!(
                         "`{functor_name}` carries `{}` = \"{id}\" but no `{}` field, and the \
@@ -1403,7 +1420,10 @@ impl ItemPerFileStore {
                 // would not find it there.
                 check_segment(&id, &format!("the `{}` field", self.fields.id))?;
                 let dir = snake_case(&dir);
-                check_segment(&dir, &format!("the `{}` field's functor", self.fields.status))?;
+                check_segment(
+                    &dir,
+                    &format!("the `{}` field's functor", self.fields.status),
+                )?;
                 return Ok(Route::Item { id, dir });
             }
 
@@ -1431,11 +1451,13 @@ impl ItemPerFileStore {
     fn path_of(&self, route: &Route) -> Result<PathBuf, PersistenceError> {
         match route {
             Route::Item { id, dir } => Ok(self.item_path(id, dir)),
-            Route::Satellite { item, functor } => self.by_item.get(item).cloned().ok_or_else(|| {
-                PersistenceError::Io(format!(
-                    "a `{functor}` row names `{item}`, which this store holds no file for"
-                ))
-            }),
+            Route::Satellite { item, functor } => {
+                self.by_item.get(item).cloned().ok_or_else(|| {
+                    PersistenceError::Io(format!(
+                        "a `{functor}` row names `{item}`, which this store holds no file for"
+                    ))
+                })
+            }
             Route::StoreLevel { functor } => Ok(self.root.join(format!("{functor}.anthill"))),
         }
     }
@@ -1486,13 +1508,14 @@ impl ItemPerFileStore {
                 fields,
             };
             let body = prose_field(kb, fact, &group.field)?.unwrap_or_default();
-            let body = document::demote_prose(
-                &body,
-                document::deepest_reserved_for(&kind, mapping.level),
-            )
-            .map_err(|e| {
-                PersistenceError::Io(format!("this row's `{}` cannot be written: {e}", group.field))
-            })?;
+            let body =
+                document::demote_prose(&body, document::deepest_reserved_for(&kind, mapping.level))
+                    .map_err(|e| {
+                        PersistenceError::Io(format!(
+                            "this row's `{}` cannot be written: {e}",
+                            group.field
+                        ))
+                    })?;
             return Ok(PendingRow::Entry { kind, body });
         }
         if mapping.item_functor() != Some(functor.as_str()) {
@@ -1511,7 +1534,10 @@ impl ItemPerFileStore {
             // An ABSENT optional field writes no chapter at all — which is
             // exactly what the reader turns back into `none`, by leaving the
             // field off the fact it hands the loader (§3.5).
-            let Some(value) = held.map(|v| prose_text(kb, v, &spec.field)).transpose()?.flatten()
+            let Some(value) = held
+                .map(|v| prose_text(kb, v, &spec.field))
+                .transpose()?
+                .flatten()
             else {
                 continue;
             };
@@ -1523,7 +1549,10 @@ impl ItemPerFileStore {
                 document::deepest_reserved_for(&kind, mapping.level),
             )
             .map_err(|e| {
-                PersistenceError::Io(format!("this row's `{}` cannot be written: {e}", spec.field))
+                PersistenceError::Io(format!(
+                    "this row's `{}` cannot be written: {e}",
+                    spec.field
+                ))
             })?;
             chapters.push((spec.named.clone(), value));
         }
@@ -1552,10 +1581,7 @@ impl ItemPerFileStore {
             SegmentKind::Field { name } => (mapping.level, name.clone()),
             SegmentKind::Entry {
                 kind: word, fields, ..
-            } => (
-                mapping.level + 1,
-                document::entry_heading(word, fields),
-            ),
+            } => (mapping.level + 1, document::entry_heading(word, fields)),
             other => {
                 return Err(PersistenceError::Io(format!(
                     "{}: {other:?} is not a chapter this store writes",
@@ -1648,9 +1674,9 @@ impl ItemPerFileStore {
                             .get(path)
                             .and_then(|m| m.doc.as_ref())
                             .and_then(|d| d.body.iter().find(|s| s.id == *id))
-                            .is_some_and(|s| {
-                                matches!(&s.kind, SegmentKind::Field { name } if name == named)
-                            })
+                            .is_some_and(
+                                |s| matches!(&s.kind, SegmentKind::Field { name } if name == named),
+                            )
                     });
                     ids.push(self.write_segment(path, at, &kind, body)?);
                 }
@@ -2026,8 +2052,7 @@ impl Store for ItemPerFileStore {
                 continue;
             }
             let path = moved.get(&r.path).unwrap_or(&r.path).clone();
-            let missing =
-                || PersistenceError::Io(format!("no model for {}", path.display()));
+            let missing = || PersistenceError::Io(format!("no model for {}", path.display()));
             let model = self.files.get_mut(&path).ok_or_else(missing)?;
             if let Some(at) = model.position_of(r.rule) {
                 model.drop_block(at);

@@ -146,8 +146,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 resolved_tree,
                 ..
             } => {
-                let caller_requires =
-                    chain_for(kb, &mut chain_cache, enclosing_sort, enclosing_op);
+                let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort, enclosing_op);
                 record_apply_within_concrete(
                     kb,
                     site,

@@ -1853,11 +1853,7 @@ impl Interpreter {
             self.push_op_scoped_slots(target, target, op_dicts, &mut reqs)?;
             if !reqs.is_empty() {
                 return self.dispatch_apply_with_requirements(
-                    target,
-                    reqs,
-                    type_args,
-                    pos_args,
-                    named_args,
+                    target, reqs, type_args, pos_args, named_args,
                 );
             }
         }
@@ -3092,7 +3088,9 @@ impl Interpreter {
             // whether the call was dispatched through a dictionary, spelled in a body,
             // or entered from the host — the same verdict those paths already give a
             // target the eq bridge declines to take at all.
-            crate::kb::resolve::PredicateProof::Undefined => Err(self.unrunnable_target_error(pred)),
+            crate::kb::resolve::PredicateProof::Undefined => {
+                Err(self.unrunnable_target_error(pred))
+            }
         }
     }
 

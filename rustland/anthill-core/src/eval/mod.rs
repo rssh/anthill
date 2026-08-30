@@ -1219,21 +1219,23 @@ impl Interpreter {
                     return Ok(());
                 }
             };
-        let seeded = self.frame_requirements_from_trees(parent, &trees).map_err(|f| {
-            EvalError::Internal(match f {
-                FrameReqFailure::CallerScopeSlot(name) => format!(
-                    "entry `{}`: requirement `{}` resolved to a caller-scope slot, but \
+        let seeded = self
+            .frame_requirements_from_trees(parent, &trees)
+            .map_err(|f| {
+                EvalError::Internal(match f {
+                    FrameReqFailure::CallerScopeSlot(name) => format!(
+                        "entry `{}`: requirement `{}` resolved to a caller-scope slot, but \
                      the resolution ran with no scope",
-                    self.kb.qualified_name_of(op_sym),
-                    self.kb.local_name_of(name),
-                ),
-                FrameReqFailure::NoDictionarySort => format!(
-                    "entry `{}`: cannot build any requirement dictionary — this KB never \
+                        self.kb.qualified_name_of(op_sym),
+                        self.kb.local_name_of(name),
+                    ),
+                    FrameReqFailure::NoDictionarySort => format!(
+                        "entry `{}`: cannot build any requirement dictionary — this KB never \
                      loaded `anthill.realization.runtime.Dictionary`",
-                    self.kb.qualified_name_of(op_sym),
-                ),
-            })
-        })?;
+                        self.kb.qualified_name_of(op_sym),
+                    ),
+                })
+            })?;
         out.extend(seeded.into_iter().filter(|(n, _)| op_names.contains(n)));
         Ok(())
     }
@@ -1736,24 +1738,23 @@ impl Interpreter {
                 let stream_arena = self.streams.clone();
                 match result {
                     Some((sol, rest)) => {
-                        stream_arena
-                            .with_source_mut(handle, |prev| {
-                                // Carry the layer forward onto the continuation — the
-                                // rest of the search reads the same scoped KB.
-                                let layer = match prev {
-                                    StreamSource::Resolver { layer, .. } => layer,
-                                    _ => unreachable!(
-                                        "WI-SPGBP: a pumped resolver slot holds a Resolver"
-                                    ),
-                                };
-                                (
-                                    StreamSource::Resolver {
-                                        search: Some(rest),
-                                        layer,
-                                    },
-                                    (),
-                                )
-                            });
+                        stream_arena.with_source_mut(handle, |prev| {
+                            // Carry the layer forward onto the continuation — the
+                            // rest of the search reads the same scoped KB.
+                            let layer = match prev {
+                                StreamSource::Resolver { layer, .. } => layer,
+                                _ => unreachable!(
+                                    "WI-SPGBP: a pumped resolver slot holds a Resolver"
+                                ),
+                            };
+                            (
+                                StreamSource::Resolver {
+                                    search: Some(rest),
+                                    layer,
+                                },
+                                (),
+                            )
+                        });
                         let solution = self.make_solution_value(sol)?;
                         Ok(Some((solution, handle.clone())))
                     }

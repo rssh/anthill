@@ -185,9 +185,9 @@ impl MapKey {
             return None;
         }
         let occ = std::rc::Rc::clone(occ);
-        Some(MapKey::Term(crate::kb::node_occurrence::occurrence_to_term(
-            kb, &occ,
-        )))
+        Some(MapKey::Term(
+            crate::kb::node_occurrence::occurrence_to_term(kb, &occ),
+        ))
     }
 
     /// The key back as a `Value` — what `Map.keys` / `Map.entries` hand out.

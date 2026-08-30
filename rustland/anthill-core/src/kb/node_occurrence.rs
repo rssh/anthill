@@ -8020,9 +8020,8 @@ mod tests {
         let mut symbols = SymbolTable::new();
         // The SHARED name, not a third copy of the literal: a rename must break this test
         // rather than leave it quietly asserting about a pass nothing stamps.
-        let macro_pass = PassId::from_symbol(
-            symbols.intern(crate::kb::occurrence::MACRO_EXPAND_PASS_NAME),
-        );
+        let macro_pass =
+            PassId::from_symbol(symbols.intern(crate::kb::occurrence::MACRO_EXPAND_PASS_NAME));
         let simp_pass = PassId::from_symbol(symbols.intern("anthill.kb.passes.simp"));
         let written = symbols.intern("written");
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 1);

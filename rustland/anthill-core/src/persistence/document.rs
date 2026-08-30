@@ -265,7 +265,9 @@ impl DocumentMapping {
 
     /// The slot one attribute key names, if any.
     pub fn slot_of(&self, functor: &str, key: &str) -> Option<AttrSlot> {
-        self.attribute_slots(functor).into_iter().find(|s| s.name == key)
+        self.attribute_slots(functor)
+            .into_iter()
+            .find(|s| s.name == key)
     }
 
     pub fn chapter_for(&self, functor: &str) -> Option<&ChapterSpec> {
@@ -329,7 +331,10 @@ impl DocumentMapping {
                 .position(|c| c.named == *name)
                 .map(|i| 1 + i)
                 .unwrap_or(usize::MAX - 1),
-            SegmentKind::Container { name } | SegmentKind::Entry { container: name, .. } => self
+            SegmentKind::Container { name }
+            | SegmentKind::Entry {
+                container: name, ..
+            } => self
                 .groups
                 .iter()
                 .position(|g| g.container == *name)
@@ -344,14 +349,18 @@ impl DocumentMapping {
     /// checked when it is read.
     pub fn check(&self) -> Result<(), String> {
         if self.level == 0 {
-            return Err("no `fact DocumentFormat(level:)`, so there is no structural level for \
+            return Err(
+                "no `fact DocumentFormat(level:)`, so there is no structural level for \
                         a chapter heading to sit at"
-                .to_string());
+                    .to_string(),
+            );
         }
         if self.attributes.is_empty() {
-            return Err("no `fact DocumentFormat(attributes:)`, so no chapter holds a \
+            return Err(
+                "no `fact DocumentFormat(attributes:)`, so no chapter holds a \
                         document's own fact"
-                .to_string());
+                    .to_string(),
+            );
         }
         let Some(item) = self.item_functor() else {
             return Err(
@@ -400,7 +409,8 @@ impl DocumentMapping {
             names.push(&c.named);
         }
         for g in &self.groups {
-            if self.chapters.iter().any(|c| c.named == g.container) || g.container == self.attributes
+            if self.chapters.iter().any(|c| c.named == g.container)
+                || g.container == self.attributes
             {
                 return Err(format!(
                     "`{}` is both a chapter and a container",
@@ -479,10 +489,7 @@ impl DocumentMapping {
                 .iter()
                 .any(|o| o.functor == c.functor && o.field == c.field)
             {
-                return Err(format!(
-                    "`{}.{}` is given two chapters",
-                    c.functor, c.field
-                ));
+                return Err(format!("`{}.{}` is given two chapters", c.functor, c.field));
             }
             if self.slot_of(&c.functor, &c.field).is_none() {
                 return Err(format!(
@@ -847,7 +854,9 @@ fn lines(source: &str) -> Vec<Line<'_>> {
             None => source.len(),
         };
         out.push(Line {
-            text: source[start..end].trim_end_matches('\n').trim_end_matches('\r'),
+            text: source[start..end]
+                .trim_end_matches('\n')
+                .trim_end_matches('\r'),
             start,
             end,
             number,
@@ -898,11 +907,14 @@ fn heading_of(line: &str) -> Option<(usize, &str)> {
     let text = rest.trim();
     let closing = text.len() - text.trim_end_matches('#').len();
     let head = &text[..text.len() - closing];
-    Some((level, if closing > 0 && (head.is_empty() || head.ends_with(' ')) {
-        head.trim()
-    } else {
-        text
-    }))
+    Some((
+        level,
+        if closing > 0 && (head.is_empty() || head.ends_with(' ')) {
+            head.trim()
+        } else {
+            text
+        },
+    ))
 }
 
 /// Read an item document.
@@ -1027,19 +1039,19 @@ pub fn read_document(source: &str, mapping: &DocumentMapping) -> Result<Document
             let Some(container) = container.clone() else {
                 continue;
             };
-            let kind = match parse_entry_heading(text, &container, mapping, line.number, &mut faults)
-            {
-                Ok(kind) => kind,
-                Err(message) => {
-                    faults.push(DocumentFault::blocking(format!(
-                        "line {}: {message}",
-                        line.number
-                    )));
-                    SegmentKind::Unread {
-                        heading: text.to_string(),
+            let kind =
+                match parse_entry_heading(text, &container, mapping, line.number, &mut faults) {
+                    Ok(kind) => kind,
+                    Err(message) => {
+                        faults.push(DocumentFault::blocking(format!(
+                            "line {}: {message}",
+                            line.number
+                        )));
+                        SegmentKind::Unread {
+                            heading: text.to_string(),
+                        }
                     }
-                }
-            };
+                };
             close_previous(&mut segments, line.start, source);
             segments.push(Segment {
                 kind,
@@ -1058,7 +1070,12 @@ pub fn read_document(source: &str, mapping: &DocumentMapping) -> Result<Document
         .iter()
         .find(|s| matches!(s.kind, SegmentKind::Attributes))
     {
-        Some(seg) => read_attributes(&source[seg.body.clone()], seg.body.start, source, &mut faults),
+        Some(seg) => read_attributes(
+            &source[seg.body.clone()],
+            seg.body.start,
+            source,
+            &mut faults,
+        ),
         None => {
             return Err(DocumentError::NoAttributes {
                 named: mapping.attributes.clone(),
@@ -1291,7 +1308,11 @@ fn trim_bodies(segments: &mut [Segment], source: &str) {
 /// handed to the ordinary parser: what the loader, the typer and every reader
 /// downstream see is the parse IR a plain `fact` file would have produced, which
 /// is what keeps this an encoding rather than a second front end.
-pub fn spell_read(value: &str, ty: &FieldType, mapping: &DocumentMapping) -> Result<String, String> {
+pub fn spell_read(
+    value: &str,
+    ty: &FieldType,
+    mapping: &DocumentMapping,
+) -> Result<String, String> {
     if let Some(inner) = value.strip_prefix('`') {
         let Some(term) = inner.strip_suffix('`') else {
             return Err(format!("`{value}` opens a backtick and never closes it"));
@@ -1315,9 +1336,10 @@ pub fn spell_read(value: &str, ty: &FieldType, mapping: &DocumentMapping) -> Res
             "true" | "false" => Ok(value.to_string()),
             _ => Err(format!("`{value}` is neither `true` nor `false`")),
         },
-        FieldType::Option(inner) => {
-            Ok(format!("some(value: {})", spell_read(value, inner, mapping)?))
-        }
+        FieldType::Option(inner) => Ok(format!(
+            "some(value: {})",
+            spell_read(value, inner, mapping)?
+        )),
         FieldType::List(inner) => {
             if value.is_empty() {
                 return Ok("[]".to_string());
@@ -1452,9 +1474,7 @@ pub fn is_absent(kb: &KnowledgeBase, term: TermId) -> bool {
             functor,
             pos_args,
             named_args,
-        } => {
-            kb.local_name_of(*functor) == "none" && pos_args.is_empty() && named_args.is_empty()
-        }
+        } => kb.local_name_of(*functor) == "none" && pos_args.is_empty() && named_args.is_empty(),
         _ => false,
     }
 }
@@ -1687,7 +1707,10 @@ pub fn document_facts(
                 // is a fault rather than a short fact: a `MirrorEntry` missing
                 // its target names no system, and inventing an empty one would
                 // make the row silently unmatchable at the next export.
-                let parts: Vec<&str> = e.trim().splitn(spec.fields.len(), ELEMENT_SEPARATOR).collect();
+                let parts: Vec<&str> = e
+                    .trim()
+                    .splitn(spec.fields.len(), ELEMENT_SEPARATOR)
+                    .collect();
                 if parts.len() != spec.fields.len() {
                     out.faults.push(DocumentFault::blocking(format!(
                         "line {}: `{}`: the element `{}` carries {} of `{}`'s {} written \
@@ -1792,7 +1815,8 @@ pub fn document_facts(
     for (field, record, inner) in &nested {
         args.push(format!("{field}: {record}({})", inner.join(", ")));
     }
-    out.source.push_str(&format!("fact {item}({})\n", args.join(", ")));
+    out.source
+        .push_str(&format!("fact {item}({})\n", args.join(", ")));
     for (slot, segment) in prose {
         out.prose.push(ProseBinding {
             fact: 0,
@@ -1943,7 +1967,10 @@ pub fn render_chapter(level: usize, heading: &str, body: &str) -> String {
 pub fn entry_heading(kind: &str, fields: &[String]) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(fields.len() + 1);
     for (i, f) in fields.iter().enumerate() {
-        parts.push(encode_heading_field(f, free_text_field(fields.len()) == Some(i)));
+        parts.push(encode_heading_field(
+            f,
+            free_text_field(fields.len()) == Some(i),
+        ));
         if i == 0 {
             parts.push(kind.to_string());
         }
@@ -2012,13 +2039,16 @@ pub fn decode_heading_field(text: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("`{text}` decodes to bytes that are not text"))
 }
 
-const B64_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(B64_ALPHABET[(n >> 18) as usize & 63] as char);
         out.push(B64_ALPHABET[(n >> 12) as usize & 63] as char);
@@ -2037,12 +2067,8 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    let value = |c: u8| -> Option<u32> {
-        B64_ALPHABET
-            .iter()
-            .position(|a| *a == c)
-            .map(|p| p as u32)
-    };
+    let value =
+        |c: u8| -> Option<u32> { B64_ALPHABET.iter().position(|a| *a == c).map(|p| p as u32) };
     let bytes: Vec<u8> = input.bytes().collect();
     if bytes.is_empty() || bytes.len() % 4 != 0 {
         return None;
@@ -2443,7 +2469,10 @@ fn unwrap_option(kb: &KnowledgeBase, value: TermId, ty: &FieldType) -> TermId {
 
 /// The attributes chapter's satellite-list fields, one per declared list that
 /// has elements. Elements arrive already spelled, in the order they were written.
-pub fn list_fields(mapping: &DocumentMapping, elements: &HashMap<String, Vec<String>>) -> Vec<AttrField> {
+pub fn list_fields(
+    mapping: &DocumentMapping,
+    elements: &HashMap<String, Vec<String>>,
+) -> Vec<AttrField> {
     let mut out = Vec::new();
     for spec in &mapping.lists {
         let Some(values) = elements.get(&spec.named) else {
@@ -2579,11 +2608,7 @@ mod tests {
                 },
                 FieldGroupSpec {
                     functor: "WorkItem".into(),
-                    fields: vec![
-                        "status".into(),
-                        "status_agent".into(),
-                        "status_at".into(),
-                    ],
+                    fields: vec!["status".into(), "status_agent".into(), "status_at".into()],
                 },
             ],
             scalar_forms: vec![ScalarFormSpec {
@@ -2792,8 +2817,10 @@ delivered.
         let facts = document_facts(&doc, &m, "id").expect("denotes");
 
         assert!(
-            facts.faults.iter().any(|f| f.blocking
-                && f.message.contains("target, entry")),
+            facts
+                .faults
+                .iter()
+                .any(|f| f.blocking && f.message.contains("target, entry")),
             "names the fields it wanted: {:#?}",
             facts.faults
         );
@@ -2843,7 +2870,10 @@ delivered.
         let facts = document_facts(&doc, &m, "id").expect("denotes");
 
         assert!(
-            facts.faults.iter().any(|f| f.blocking && f.message.contains("naming no fields")),
+            facts
+                .faults
+                .iter()
+                .any(|f| f.blocking && f.message.contains("naming no fields")),
             "a blocking fault, not a fact with only its key: {:#?}",
             facts.faults
         );
@@ -2921,7 +2951,9 @@ delivered.
         let doc = read_document(src, &mapping()).expect("reads");
         let facts = document_facts(&doc, &mapping(), "id").expect("denotes");
         assert!(
-            facts.source.contains("acceptance: [FactHolds(domain: \"kb\", pattern: p)]"),
+            facts
+                .source
+                .contains("acceptance: [FactHolds(domain: \"kb\", pattern: p)]"),
             "{}",
             facts.source
         );
@@ -2931,11 +2963,14 @@ delivered.
     /// and an author named `release — bot` round-trips with no encoding at all.
     #[test]
     fn a_heading_splits_from_the_left_so_its_last_field_is_free_text() {
-        let heading = entry_heading("feedback", &["2026-01-01T00:00:00Z".into(), "release — bot".into()]);
+        let heading = entry_heading(
+            "feedback",
+            &["2026-01-01T00:00:00Z".into(), "release — bot".into()],
+        );
         assert_eq!(heading, "2026-01-01T00:00:00Z — feedback — release — bot");
         let mut faults = Vec::new();
-        let kind = parse_entry_heading(&heading, "Changes", &mapping(), 1, &mut faults)
-            .expect("reads");
+        let kind =
+            parse_entry_heading(&heading, "Changes", &mapping(), 1, &mut faults).expect("reads");
         assert!(faults.is_empty(), "{faults:#?}");
         assert_eq!(
             kind,
@@ -2957,8 +2992,8 @@ delivered.
         assert!(!heading.contains('\n'), "{heading}");
         assert!(heading.contains(B64_PREFIX), "{heading}");
         let mut faults = Vec::new();
-        let kind = parse_entry_heading(&heading, "Changes", &mapping(), 1, &mut faults)
-            .expect("reads");
+        let kind =
+            parse_entry_heading(&heading, "Changes", &mapping(), 1, &mut faults).expect("reads");
         assert!(faults.is_empty(), "{faults:#?}");
         let SegmentKind::Entry { fields, .. } = kind else {
             panic!("not an entry")
@@ -3011,7 +3046,10 @@ delivered.
         };
         assert_eq!(fields[1], "bot#", "the author kept its last character");
         // …and the decoration form still works where CommonMark says it does.
-        assert_eq!(heading_of("## Attributes ##").expect("a heading").1, "Attributes");
+        assert_eq!(
+            heading_of("## Attributes ##").expect("a heading").1,
+            "Attributes"
+        );
     }
 
     /// §2 admits no region outside a chapter, and the check must not depend on
@@ -3081,7 +3119,10 @@ delivered.
     #[test]
     fn prose_with_an_unbalanced_fence_is_refused_before_it_is_written() {
         let err = demote_prose("text\n\n```\nnever closed\n", 2).unwrap_err();
-        assert!(matches!(err, DocumentError::UnclosedFence { .. }), "{err:?}");
+        assert!(
+            matches!(err, DocumentError::UnclosedFence { .. }),
+            "{err:?}"
+        );
     }
 
     /// The rendering test, not a character blacklist: an INTRAWORD `_` does not

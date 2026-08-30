@@ -1141,9 +1141,7 @@ impl<'a> RustCodegen<'a> {
         items
             .iter()
             .filter_map(|item| match item {
-                Item::SortWithBody(s)
-                    if s.items.iter().any(|i| matches!(i, Item::Entity(_))) =>
-                {
+                Item::SortWithBody(s) if s.items.iter().any(|i| matches!(i, Item::Entity(_))) => {
                     Some(self.resolve(&s.name))
                 }
                 _ => None,

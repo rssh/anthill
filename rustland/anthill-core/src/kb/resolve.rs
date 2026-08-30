@@ -1244,7 +1244,8 @@ impl SearchStream {
             // measured against a queue it was never counted on.
             if tag == BuiltinTag::PushAnd {
                 let subst = frame.subst.clone();
-                if let Some((goal_a, goal_b)) = Self::resolve_binary_goal_args(kb, &goal_val, &subst)
+                if let Some((goal_a, goal_b)) =
+                    Self::resolve_binary_goal_args(kb, &goal_val, &subst)
                 {
                     let f = self.stack.last_mut().unwrap();
                     f.goals.splice(0..1, [goal_a, goal_b]);
@@ -4620,8 +4621,9 @@ impl KnowledgeBase {
                 let ref_term = self.alloc(Term::Ref(sym));
                 self.finish_result(target, ref_term)
             }
-            crate::intern::ResolveResult::Ambiguous(_)
-            | crate::intern::ResolveResult::NotFound => BuiltinResult::Failure,
+            crate::intern::ResolveResult::Ambiguous(_) | crate::intern::ResolveResult::NotFound => {
+                BuiltinResult::Failure
+            }
         }
     }
 
@@ -7932,9 +7934,9 @@ impl KnowledgeBase {
         // clean bridge-mode suspend below.
         // Operands ride on the carrier they were proved on — see the identical note
         // in `bridge_op_to_eval` (WI-20260827-3ZNBC).
-        let Some(outcome) = self.run_in_bridge_interp(|interp| {
-            interp.call_op_bridged(target, &[a, b])
-        }) else {
+        let Some(outcome) =
+            self.run_in_bridge_interp(|interp| interp.call_op_bridged(target, &[a, b]))
+        else {
             return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };
         match outcome {
@@ -8768,10 +8770,8 @@ impl KnowledgeBase {
             // structural `unify` dropped it on `tag` — so the trade is a silently
             // incomplete DEFINITE set for a suspension that omits nothing.
             let residual = Value::Node(Rc::clone(&result_occ));
-            if (other_can_meet_an_override
-                && self.value_reaches_eq_override(&residual, subst))
-                || (other_reaches_partial_carrier
-                    && self.value_reaches_partial_carrier(&residual))
+            if (other_can_meet_an_override && self.value_reaches_eq_override(&residual, subst))
+                || (other_reaches_partial_carrier && self.value_reaches_partial_carrier(&residual))
             {
                 return None;
             }
@@ -9058,8 +9058,7 @@ impl KnowledgeBase {
                 // reason. The loader already refuses this shape at load time, so
                 // reaching it means a runtime-built term.
                 if !pos.is_empty() {
-                    let named_syms: SmallVec<[Symbol; 2]> =
-                        named.iter().map(|(s, _)| *s).collect();
+                    let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
                     match self.positional_to_named_plan(name, &named_syms, pos.len()) {
                         PositionalPlan::Skip => {}
                         PositionalPlan::Assign(fields) => {

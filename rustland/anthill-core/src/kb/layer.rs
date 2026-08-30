@@ -468,7 +468,8 @@ end
     /// over-restoring. `anthill.prelude.Option.some` is a prelude entity constructor, so
     /// it is defined long before any layer exists.
     fn base_name_resolves(kb: &KnowledgeBase) -> bool {
-        kb.try_resolve_symbol("anthill.prelude.Option.some").is_some()
+        kb.try_resolve_symbol("anthill.prelude.Option.some")
+            .is_some()
     }
 
     /// A LAYER'S `operation_map` MUST NOT OUTLIVE THE LAYER — WI-880, found by

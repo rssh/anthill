@@ -1,26 +1,48 @@
-# `cargo fmt` MUST NOT be allowed to reach `kb/typing.rs`.
+# No options set. This file exists for the comment.
 #
-# rustfmt reaches ~15.3 GB anonymous RSS on that one file and is OOM-killed, taking the
-# whole WSL VM down with it. MEASURED 2026-08-30, three times in a row:
+# WHY `cargo fmt` ONCE OOM-KILLED THE WHOLE 15.7 GB WSL VM, and why nothing here needs to
+# guard against it any more. The cause is NOT file size and NOT formatting — it is
+# `--check`'s diff emitter. MEASURED 2026-08-30 (WI-20260830-009H2):
 #
-#   Out of memory: Killed process 29945 (rustfmt) total-vm:20083328kB, anon-rss:15209636kB
-#   Out of memory: Killed process 1192  (rustfmt) total-vm:20083324kB, anon-rss:15344020kB
-#   Out of memory: Killed process 1421  (rustfmt) total-vm:20083328kB, anon-rss:15399148kB
+#   memory allocation of 20121126480 bytes failed
+#     10: diff::lines
+#     11: rustfmt_nightly::rustfmt_diff::make_diff
+#     12: <DiffEmitter as Emitter>::emit_formatted_file
 #
-# (`journalctl -b -1 | grep "Killed process"` — the record is in the JOURNAL, not `dmesg`,
-# which only ever shows the current boot and so is empty of the crash after the restart.)
-# `rustc`, `rust-lld` and `cargo` were killed ZERO times across both crashed boots: the
-# COMPILER is fine and the cache is irrelevant — this is rustfmt's own allocation on a
-# 3.7 MB / 72k-line source file, and it is superlinear in that size.
+# `--check` runs an LCS diff of input against formatted output, and the `diff` crate builds
+# a dense O(n x m) table. `kb/typing.rs` was 72451 lines in / 72564 out with ~641 differing
+# lines SCATTERED throughout, so the common prefix/suffix trim removed almost nothing:
+# ~70924^2 x 4 bytes = 20,121,126,480 — the panic's number, to the byte.
 #
-# This entry is the enforcement, replacing "remember not to run it". Without it the crash is
-# one `cargo fmt` away for anyone, and the command looks entirely routine.
+# The same file, same rustfmt, three emitters:
 #
-# CONSEQUENCE, stated so nobody reads silence as cleanliness: `typing.rs` is formatted BY
-# HAND and nothing checks it. Match the surrounding style when editing. To format a small
-# region, run `rustfmt` on a COPY of an extracted snippet under `(ulimit -v 4000000; …)` so a
-# blow-up kills that process alone.
+#   rustfmt --emit stdout   87 MB   0.60s     <- fine
+#   rustfmt --emit files    87 MB   0.60s     <- fine; this is what plain `cargo fmt` uses
+#   rustfmt --check         20 GB alloc       <- OOM
 #
-# The file's SIZE is a separate question with its own ticket (WI-20260830-009H2); splitting
-# it would not fix rustfmt, it would only move the threshold, so this entry stands either way.
-ignore = ["src/kb/typing.rs"]
+# So plain `cargo fmt` was never broken. Only `cargo fmt -- --check` was, and only because
+# the file was UNFORMATTED. Formatted, `--check` on that same file costs 92 MB / 0.45s.
+#
+# That is the trap this file used to set: an `ignore = ["src/kb/typing.rs"]` entry kept the
+# file hand-formatted, and being hand-formatted is exactly what made `--check` explode. The
+# ignore was load-bearing for the bomb, not against it. It is gone.
+#
+# WHAT IS AND IS NOT FORMATTED, stated so silence is not read as cleanliness. All of
+# `anthill-core/src/` is rustfmt-clean as of 2026-08-30. `anthill-core/tests/` is NOT: 118
+# files still differ (115 under `tests/include/`, plus `wi_tests.rs`, `guardians_test.rs` and
+# `common/mod.rs`), so
+#
+#   cargo fmt -p anthill-core -- --check
+#
+# runs to completion in 266 MB / 2.7s and exits 1, listing those files. It is safe to run
+# and it is NOT yet a CI gate. Making it one means formatting `anthill-core/tests/` too — that
+# was measured at 139 files and a net -3745 lines, and was deliberately NOT done here to
+# keep this change off every in-flight test branch.
+#
+# WHAT TO DO IF THE OOM COMES BACK: it can only come back by letting a very large file drift
+# far out of format again. `cargo fmt` (no `--check`) is always safe and always cheap — run
+# it, and `--check` is cheap again. Do NOT re-add an ignore; that re-arms it.
+#
+# NOTE the same mechanism bites below the OOM line elsewhere: `load.rs` (~30k lines) reached
+# 2.6 GB on `--check` while unformatted, which is why `src/` was formatted as a whole rather
+# than `typing.rs` alone — that narrower fix left `--check` at 2.7 GB.

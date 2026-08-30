@@ -577,10 +577,9 @@ impl std::fmt::Display for ExtentBindingError {
                 f,
                 "extent_bindings: `{role}` is not an ExtentRole; write `mirror()` or `owner()`"
             ),
-            ExtentBindingError::UnreadableCover => write!(
-                f,
-                "extent_bindings: a `covers` entry names no functor"
-            ),
+            ExtentBindingError::UnreadableCover => {
+                write!(f, "extent_bindings: a `covers` entry names no functor")
+            }
             ExtentBindingError::MalformedCovers => write!(
                 f,
                 "extent_bindings: `covers` is not a ground list; coverage decides which \
@@ -2609,7 +2608,9 @@ mod tests {
     fn define(kb: &mut KnowledgeBase, qname: &str) -> Symbol {
         let short = qname.rsplit('.').next().unwrap();
         let root_scope = kb.global_scope();
-        let (head, _) = qname.split_once('.').expect("a registration name is dotted");
+        let (head, _) = qname
+            .split_once('.')
+            .expect("a registration name is dotted");
         kb.symbols
             .define(head, head, SymbolKind::Namespace, root_scope);
         kb.symbols

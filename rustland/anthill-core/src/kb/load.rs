@@ -26,8 +26,8 @@ use crate::intern::{
     absolute_path_target, positional_label, positional_label_index, ImportOrigin, ResolveResult,
     ScopeId, ScopeInclusion, Symbol, SymbolDef, SymbolKind,
 };
-use crate::parse::ir::*;
 use crate::parse::desugar_target as dt;
+use crate::parse::ir::*;
 use crate::parse::pratt;
 use crate::span::{LineIndex, SourceId, SourceSpan, Span};
 
@@ -2552,8 +2552,10 @@ impl LoadError {
                 op,
                 reason,
             } => {
-                format!("'{}' provides '{}' but its own member '{}' does not fit '{}.{}': {}",
-                    carrier, spec, op, spec, op, reason)
+                format!(
+                    "'{}' provides '{}' but its own member '{}' does not fit '{}.{}': {}",
+                    carrier, spec, op, spec, op, reason
+                )
             }
             LoadError::IncompatibleInstanceBinding {
                 carrier,
@@ -2986,7 +2988,14 @@ impl LoadError {
                 site,
                 captured,
                 captured_origin,
-            } => name_capture_message(sort, construct, name, site, captured, captured_origin.as_ref()),
+            } => name_capture_message(
+                sort,
+                construct,
+                name,
+                site,
+                captured,
+                captured_origin.as_ref(),
+            ),
             LoadError::SecondaryEntryContent {
                 sort,
                 construct,
@@ -3273,7 +3282,11 @@ impl std::fmt::Display for LoadError {
                 op,
                 decl_site,
                 clause_sites,
-            } => write!(f, "{}", body_and_clauses_message(op, decl_site, clause_sites)),
+            } => write!(
+                f,
+                "{}",
+                body_and_clauses_message(op, decl_site, clause_sites)
+            ),
             LoadError::NameCapture {
                 sort,
                 construct,
@@ -3552,7 +3565,11 @@ impl std::fmt::Display for LoadError {
                 op,
                 derived_from,
             } => {
-                write!(f, "{}", unbacked_provider_operation_message(carrier, spec, op, derived_from.as_deref()))
+                write!(
+                    f,
+                    "{}",
+                    unbacked_provider_operation_message(carrier, spec, op, derived_from.as_deref())
+                )
             }
             LoadError::IncompatibleEqNonEq { carrier } => {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
@@ -4646,8 +4663,7 @@ pub fn scan_definitions_with_sources(
         // scope's predicate is itself refused. Asked per SITE, not per group: where every
         // subject in the group sits AT the owner, the ordinary text is still true.
         let equation_elsewhere = c.sites.iter().any(|&i| {
-            heads[i].introduced_by == RuleIntroduction::Equation
-                && c.owner != Some(heads[i].scope)
+            heads[i].introduced_by == RuleIntroduction::Equation && c.owner != Some(heads[i].scope)
         });
         errors.push(
             LoadError::NameIntroducedAtTwoVisibleScopes {
@@ -5039,10 +5055,10 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.BigInt.to_bigint",
     "anthill.prelude.BigInt.to_int",
     "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
-    "anthill.kernel.unify", // structural-unification primitive (`<=>` / `let` lift it)
-    "anthill.kernel.struct_eq", // structural identity test (`===`); proposal 051 / WI-615
+    "anthill.kernel.unify",       // structural-unification primitive (`<=>` / `let` lift it)
+    "anthill.kernel.struct_eq",   // structural identity test (`===`); proposal 051 / WI-615
     "anthill.kernel.find_dictionary", // rule-body requirement guard (`requires(X)`); WI-300
-    "anthill.kernel.cut", // cut control primitive (`!`); proposal 033.1 / WI-568
+    "anthill.kernel.cut",         // cut control primitive (`!`); proposal 033.1 / WI-568
     // Reflection result sorts — a reflection VOCABULARY queried bare (by short
     // name) from reflection infrastructure (the `anthill-stl` reflect bridge's
     // `SortQuery`, CLI reflection queries). Globally resolvable like the rest, and
@@ -5794,9 +5810,11 @@ fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: TermId) -> bool
 /// (`body: None`). That is 061's split point: `rule p(?x)` declares and
 /// `rule p(?x) :- true` asserts, so the two must never be fused.
 fn rule_body_is_empty_conjunction(r: &Rule, parse_terms: &SimpleTermStore) -> bool {
-    r.body
-        .as_ref()
-        .is_none_or(|goals| goals.iter().all(|&t| is_empty_conjunction_goal(parse_terms, t)))
+    r.body.as_ref().is_none_or(|goals| {
+        goals
+            .iter()
+            .all(|&t| is_empty_conjunction_goal(parse_terms, t))
+    })
 }
 
 /// The kinds a body-less rule's own mint can produce, and therefore the ones a
@@ -5968,8 +5986,7 @@ fn bodyless_declares_nothing_detail(
         );
     }
     let RuleHead::Term(tid) = &r.heads[0] else {
-        return "a `⊥` denial names no predicate, so there is nothing for it to declare"
-            .to_owned();
+        return "a `⊥` denial names no predicate, so there is nothing for it to declare".to_owned();
     };
     // THE SENTENCE DESCRIBES THE REACHABLE POPULATION, NOT THE PRODUCER SET, and the two
     // stopped coinciding when WI-20260822-AK2AJ made `typed_var` a third mint category
@@ -6493,7 +6510,6 @@ fn secondary_entry_message(
          address no sort occupies."
     )
 }
-
 
 /// WI-1000 — the sentence for [`LoadError::ProvidesClauseNeedsSort`]. One owner, for
 /// the reason [`duplicate_type_message`] states in full: `LoadError` renders through
@@ -7514,8 +7530,14 @@ impl ScopePass for DefinePass<'_> {
                     // follows them" — so each entry is an operation declaration here
                     // exactly as a free-standing one is.
                     record_decl_site(
-                        kb, source_id, op_sym, scope, &name, DeclCategory::Operation,
-                        "operation", op.span,
+                        kb,
+                        source_id,
+                        op_sym,
+                        scope,
+                        &name,
+                        DeclCategory::Operation,
+                        "operation",
+                        op.span,
                     );
                     let enclosing = scope;
                     scan_operation_params(kb, parse_sym, op, op_sym, enclosing, &qualified);
@@ -8704,7 +8726,10 @@ fn judge_secondary_entry_rules<'f>(
             .expect("a group is created with at least one member");
         let er = &entry_rules[first_k];
         // 1 — the DECLARATION form.
-        if let Some(&(k, _)) = members.iter().find(|&&(k, _)| entry_rules[k].is_declaration) {
+        if let Some(&(k, _)) = members
+            .iter()
+            .find(|&&(k, _)| entry_rules[k].is_declaration)
+        {
             errors.push(
                 secondary_entry_rule_error(&entry_rules[k], RULE_DECLARATION_REASON)
                     .located_in(files[entry_rules[k].file_idx]),
@@ -8806,7 +8831,10 @@ fn judge_secondary_entry_rules<'f>(
                 // resolution scope would report it as the type's own declaration.
                 None => {
                     let at = format!("'{}'", kb.scope_display_name(site.written_in));
-                    if !elsewhere.iter().any(|(f, w)| *f == site.file_idx && *w == at) {
+                    if !elsewhere
+                        .iter()
+                        .any(|(f, w)| *f == site.file_idx && *w == at)
+                    {
                         elsewhere.push((site.file_idx, at));
                     }
                 }
@@ -8832,7 +8860,10 @@ fn judge_secondary_entry_rules<'f>(
             }
             other_files.sort_unstable();
             for f in &other_files {
-                wheres.push(format!("another entry at this address is in {}", path_of(*f)));
+                wheres.push(format!(
+                    "another entry at this address is in {}",
+                    path_of(*f)
+                ));
             }
             elsewhere.sort();
             for (f, at) in &elsewhere {
@@ -8847,8 +8878,11 @@ fn judge_secondary_entry_rules<'f>(
                 }
             }
             errors.push(
-                secondary_entry_rule_error(er, predicate_spans_entries_reason(name, &wheres.join("; ")))
-                    .located_in(files[er.file_idx]),
+                secondary_entry_rule_error(
+                    er,
+                    predicate_spans_entries_reason(name, &wheres.join("; ")),
+                )
+                .located_in(files[er.file_idx]),
             );
             refused.insert((scope, name));
             continue;
@@ -9094,13 +9128,12 @@ fn wire_provides_scope_parent(
     if !provides_speaks_only_of_own_params(kb, parse_sym, spec, scope) {
         return;
     }
-    let resolved = kb
-        .symbols
-        .resolve_in_scope(&spec_name, scope)
-        .or_else(|| match kb.try_resolve_symbol(&spec_name) {
+    let resolved = kb.symbols.resolve_in_scope(&spec_name, scope).or_else(|| {
+        match kb.try_resolve_symbol(&spec_name) {
             Some(sym) => ResolveResult::Found(sym),
             None => ResolveResult::NotFound,
-        });
+        }
+    });
     if let ResolveResult::Found(sym) = resolved {
         if let Some(parent_scope) = parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
             // WI-20260825-N2865 — `add_provides_parent`, not `add_parent`: the same
@@ -9613,9 +9646,7 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
             // collected because a fact is a CLAUSE, which is what R3's condition (2)
             // counts.
             Item::Fact(f) => {
-                if let Some(subject) =
-                    fact_head_subject_name(f, self.parse_sym, self.parse_terms)
-                {
+                if let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms) {
                     self.clause(subject, f.span, scope, scope);
                 }
             }
@@ -11630,7 +11661,6 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
-
 /// WI-20260822-J38JE item 4 — the ONE wording of [`LoadError::ConstantInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
 /// the `TypeError` face the typer raises it through.
@@ -11774,10 +11804,7 @@ fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
         // since both report at the same declaration span. Deduping by functor alone
         // silenced the second until the first was fixed and the file reloaded.
         let mut seen: Vec<(&'static str, Symbol)> = Vec::new();
-        for (kind, clauses) in [
-            ("requires", &info.requires),
-            ("ensures", &info.ensures),
-        ] {
+        for (kind, clauses) in [("requires", &info.requires), ("ensures", &info.ensures)] {
             for clause in clauses {
                 for conjunct in super::typing::clause_conjuncts(kb, clause) {
                     // BOTH CARRIERS ARE CHECKED, at different depths, and the shallower
@@ -14468,7 +14495,8 @@ fn neq_supplier_is_the_carriers(
                 super::typing::carrier_own_op(kb, w, neq_index.eq_spec, neq_index.eq_short);
             // Matched by NAME on the witness ⇒ ask whose values it compares. Reached
             // any other way it is the provision's written binding ⇒ deliberate.
-            by_name != Some(cand.target) || member_operands_are_the_carrier(kb, carrier, cand.target)
+            by_name != Some(cand.target)
+                || member_operands_are_the_carrier(kb, carrier, cand.target)
         }
     }
 }
@@ -16144,7 +16172,15 @@ pub fn convert_query_term(
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
 ) -> TermId {
-    convert_query_term_expecting(kb, parse_terms, parse_symbols, parse_id, scope, var_map, None)
+    convert_query_term_expecting(
+        kb,
+        parse_terms,
+        parse_symbols,
+        parse_id,
+        scope,
+        var_map,
+        None,
+    )
 }
 
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
@@ -16192,17 +16228,12 @@ fn convert_query_term_expecting(
             // is the very scope a query resolves in, so a `<=>` in the pattern would be
             // captured by it — the same silent misresolution, at the one position with
             // no load-error channel to be loud from.
-            let kb_functor = minted_connective_symbol(
-                kb,
-                parse_symbols,
-                parse_terms,
-                parse_id,
-                functor,
-            )
-            .unwrap_or_else(|| {
-                let functor_name = parse_symbols.local_name(functor);
-                resolve_query_name(kb, functor_name, scope)
-            });
+            let kb_functor =
+                minted_connective_symbol(kb, parse_symbols, parse_terms, parse_id, functor)
+                    .unwrap_or_else(|| {
+                        let functor_name = parse_symbols.local_name(functor);
+                        resolve_query_name(kb, functor_name, scope)
+                    });
 
             // WI-1096: a `[…]` here becomes what the LOADER would have stored in this
             // position — same decision function, same declared-type hint — so a query
@@ -16241,17 +16272,14 @@ fn convert_query_term_expecting(
                 .iter()
                 .map(|&(sym, _)| kb.intern(parse_symbols.local_name(sym)))
                 .collect();
-            let pos_plan = match kb.positional_to_named_plan(
-                kb_functor,
-                &named_kb_syms,
-                pos_args.len(),
-            ) {
-                PositionalPlan::Assign(fields) => Some(fields),
-                // No schema / reflect-form ctor, or an over-arity query. A transient
-                // query has no load-error channel, so both leave the args positional
-                // (the query simply finds no match) and untyped by rank.
-                _ => None,
-            };
+            let pos_plan =
+                match kb.positional_to_named_plan(kb_functor, &named_kb_syms, pos_args.len()) {
+                    PositionalPlan::Assign(fields) => Some(fields),
+                    // No schema / reflect-form ctor, or an over-arity query. A transient
+                    // query has no load-error channel, so both leave the args positional
+                    // (the query simply finds no match) and untyped by rank.
+                    _ => None,
+                };
             let pos_field_type = |kb: &KnowledgeBase, i: usize| {
                 pos_plan
                     .as_ref()
@@ -23531,8 +23559,8 @@ impl<'a> Loader<'a> {
                 let mut any_node = false;
                 // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
                 // the loop, since it is a property of the head, not of a binding.
-                let modify_target = self.kb.try_resolve_symbol("anthill.prelude.Modify")
-                    == Some(sort_sym);
+                let modify_target =
+                    self.kb.try_resolve_symbol("anthill.prelude.Modify") == Some(sort_sym);
                 for b in bindings {
                     let bound_child = if modify_target {
                         self.type_expr_to_child_modify_target(&b.bound, span, owner)
@@ -25543,10 +25571,7 @@ impl<'a> Loader<'a> {
         // Spec[combine = f]` writes brackets and still leaves the carrier underivable,
         // so a bindings-derived test would say "write the brackets" at text that
         // has them.
-        let written_bare = matches!(
-            self.kb.get_term(fact_term),
-            Term::Ref(_) | Term::Ident(_)
-        );
+        let written_bare = matches!(self.kb.get_term(fact_term), Term::Ref(_) | Term::Ident(_));
         let (fact_functor, fact_pos_args, fact_named_args) = match self.kb.get_term(fact_term) {
             Term::Fn {
                 functor,

@@ -731,9 +731,9 @@ fn match_ctor_fields(
     let mut binds = Vec::new();
     let mut covered = vec![false; n];
     let take = |idx: usize,
-                    covered: &mut Vec<bool>,
-                    binds: &mut Vec<(Symbol, Rc<NodeOccurrence>)>,
-                    pat: &Rc<NodeOccurrence>|
+                covered: &mut Vec<bool>,
+                binds: &mut Vec<(Symbol, Rc<NodeOccurrence>)>,
+                pat: &Rc<NodeOccurrence>|
      -> Option<PatOutcome> {
         if covered[idx] {
             return Some(PatOutcome::No);
