@@ -53416,7 +53416,7 @@ mod k0e8t_witness_gate_test {
     //! [`super::bare_sort_compatible`] ran `kb.make_sort_ref(a)` UNCONDITIONALLY, ahead
     //! of the gate that answers `false` for 1263 of the 1267 entries a full `stdlib/`
     //! load makes (the census is in [`super::witness_provides_admissibly`]'s doc). That
-    //! is not primarily a speed defect — 39 ns per compare, 47 µs of a 145 ms load — but
+    //! is not primarily a speed defect — 41 ns per compare, 50 µs of a 168 ms load — but
     //! a HYGIENE one: `make_sort_ref` is `TermStore::alloc`, and on a hash-cons HIT
     //! `alloc` still bumps a refcount that nothing on this path decrements, so every
     //! refused compare left the actual sort's term one reference heavier, permanently.
@@ -53804,7 +53804,7 @@ impl WitnessActual {
 /// MUST), and nothing had been counted. WI-20260829-K0E8T counted it, over a full
 /// `stdlib/` load (`load_stdlib`, release; every row deterministic):
 ///
-///   | `types_compatible` calls                          | 2797 |
+///   | `types_compatible` calls                          | 2799 |
 ///   | ... reaching [`bare_sort_compatible`]             | 1238 |
 ///   | ... falling through to this leg                   | 1214 |
 ///   | THIS FUNCTION's entries, all three arms           | 1267 |
@@ -53812,26 +53812,29 @@ impl WitnessActual {
 ///   | provisions whose witness carrier MATCHED          |    0 |
 ///   | entries with `provides_index` absent              |    0 |
 ///
-/// `types_compatible` is therefore not hot in the sense the word carries — 2797 calls is
-/// ~19 per millisecond of a 145 ms load — and the `by_spec_base` bucket is EMPTY at 1263
-/// of the 1267 entries. This leg is 87% of every [`provisions_of_spec`]-shaped walk in
-/// the load (1267 of 1457) and 0.2% of the rids they decode (4 of 1924).
+/// `types_compatible` is therefore not hot in the sense the word carries — 2799 calls is
+/// ~17 per millisecond of a 168 ms load — and the `by_spec_base` bucket is EMPTY at 1263
+/// of the 1267 entries. BEFORE the split below, this leg was 87% of every
+/// [`provisions_of_spec`] call in the load (1267 of 1457) while accounting for 0.2% of
+/// the rids they decode (4 of 1924); after it, the load makes 194 such calls in all and
+/// the leg is TWO of them.
 ///
 /// PRICED per compare (200k in-process iterations, min-of-9, release), the gate against
 /// the whole bare↔bare compare it rides on, BEFORE this ticket's repair:
 ///
 ///   | expected side is …                     | leg on | backed out | the gate |
-///   | a sort nothing provides (1263 of 1267) |  562ns |      395ns |    167ns |
-///   | `Stream` (6 provisions)                | 1599ns |      395ns |   1204ns |
-///   | `FiniteCollection` (6 provisions)      | 3093ns |      387ns |   2706ns |
+///   | a sort nothing provides (1263 of 1267) |  566ns |      400ns |    166ns |
+///   | `Stream` (6 provisions)                | 1593ns |      406ns |   1186ns |
+///   | `FiniteCollection` (6 provisions)      | 3186ns |      396ns |   2790ns |
 ///
 /// BOTH READINGS ARE THE ANSWER, and the ticket asked for both. Times the population the
-/// leg is ~0.22 ms of a 145 ms load — 0.15%, which a paired in-process min-of-11
-/// whole-load A/B cannot resolve (143.5 / 143.9 / 139.8 ms for leg-on / lazy-mint /
-/// backed-out: three distributions that overlap completely). PER ENTRY it was 42% of the
-/// entire failed compare, and 3–7× it once the expected spec HAS provisions — so a
-/// program whose failed compares name `PartialEq` (22 provisions in `stdlib/`) rather
-/// than a plain sort pays a bill `stdlib/` does not.
+/// leg is ~0.21 ms of a 168 ms load — 0.13%, which a paired in-process min-of-11
+/// whole-load A/B cannot resolve (168.5 / 166.9 / 169.0 ms for shipped / eager-mint /
+/// backed-out: three distributions that overlap completely, and the CONTROL has the
+/// slowest minimum of the three). PER ENTRY it was 42% of the entire failed compare, and
+/// 3–7× it once the expected spec HAS provisions — so a program whose failed compares
+/// name `PartialEq` (22 provisions in `stdlib/`) rather than a plain sort pays a bill
+/// `stdlib/` does not.
 ///
 /// WHAT K0E8T CHANGED, both behaviour-preserving, and neither justified by the load:
 ///   * the bare arm no longer MINTS before the gate ([`WitnessActual`], which says what
@@ -53841,19 +53844,21 @@ impl WitnessActual {
 ///     `canonical_sort_sym` (an FQN string hash) where it did three, and never enters the
 ///     decoder at all.
 ///
-///   RE-MEASURED, all five arms PAIRED IN ONE PROCESS (200k iterations each, min-of-9,
-///   release), on the same common-shape pair — the gate column is that arm minus E:
+///   RE-MEASURED, all five arms PAIRED IN ONE PROCESS on the same common-shape pair.
+///   Per arm: the MINIMUM over five runs of a min-of-9 over 200k iterations — minimum,
+///   because contention only ADDS, and ONE run could not separate the arms (D's gate
+///   ranged 29–79 ns across three of them). The gate column is that arm minus E:
 ///
-///   | A  old gate, eager mint (what HEAD did) |  574.1 ns | 164.0 ns |
-///   | B  old gate, lazy mint                  |  537.0 ns | 126.9 ns |
-///   | C  new gate, eager mint                 |  500.9 ns |  90.8 ns |
-///   | D  new gate, lazy mint (SHIPPED)        |  463.6 ns |  53.5 ns |
-///   | E  leg backed out (control)             |  410.1 ns |    n/a   |
+///   | A  old gate, eager mint (what HEAD did) |  566.0 ns | 166.4 ns |
+///   | B  old gate, lazy mint                  |  525.1 ns | 125.5 ns |
+///   | C  new gate, eager mint                 |  492.9 ns |  93.3 ns |
+///   | D  new gate, lazy mint (SHIPPED)        |  451.4 ns |  51.8 ns |
+///   | E  leg backed out (control)             |  399.6 ns |    n/a   |
 ///
-///   164 ns → 53.5 ns, and 40% of the failed compare → 13% of it. AND WHERE IT BUYS
+///   166 ns → 52 ns, and 42% of the failed compare → 13% of it. AND WHERE IT BUYS
 ///   NOTHING, which is half the result: against `FiniteCollection` (6 provisions) the
-///   gate moves 2674 → 2597 ns, 3%, because the per-fact DECODE dominates and neither
-///   change touches it; and with `provides_index` absent all four arms sit at ~17.6 µs,
+///   gate moves 2790 → 2649 ns, 5%, because the per-fact DECODE dominates and neither
+///   change touches it; and with `provides_index` absent all four arms sit at ~18.1 µs,
 ///   because the scan returns all 96 facts so the emptiness check cannot fire. Both are
 ///   by construction: what was removed is the EMPTY-bucket path's overhead, and that is
 ///   the only population either repair was aimed at.
@@ -53867,16 +53872,20 @@ impl WitnessActual {
 /// THE `build_provides_index`-ABSENT CASE IS PATHOLOGICAL AND ALL BUT UNREACHABLE — not
 /// unreachable, which is the correction a census bought. Before the index exists [`SymbolKeyedFactIndex::rids_or_scan`] returns EVERY
 /// `SortProvidesInfo` fact (96 in `stdlib/`) and the per-fact re-filter throws them all
-/// away: the same common-case compare costs 17505 ns with the leg against 7638 ns
-/// without — the gate alone 9867 ns, 59× its indexed cost. Note the BASELINE moves too,
-/// 395 → 7638 ns, because [`sort_provides_admissibly`] reads the same index: a
+/// away: the same common-case compare costs 18058 ns with the leg against 8024 ns
+/// without — the gate alone 10035 ns, 193× the 52 ns it costs indexed. Note the BASELINE
+/// moves too, 400 → 8024 ns, because [`sort_provides_admissibly`] reads the same index: a
 /// missing index is expensive for the whole relation, not for this leg.
 ///
 /// `provides_index` is `None` only between a load phase's start and
 /// `build_provides_index`, so the window is narrow: not one of the 1267 stdlib-load
 /// entries lands in it, and across the whole `anthill-core` suite it is hit TWICE in
-/// 30,726,442 entries (13 binaries, 5303 tests, 4381 threads) — 6.5e-8, but not the zero
-/// a smaller sample would have reported. NEITHER REPAIR ABOVE HELPS THERE, by
+/// 30,726,442 entries — 6.5e-8, but not the zero a smaller sample would have reported.
+/// That suite figure is ANCHORED TO THE COMMIT IT WAS TAKEN AT, `fd2af338` (13 binaries,
+/// 5303 tests, 4381 threads); every other number here is re-taken on the base this change
+/// actually ships against. That rebase moved the LOAD (~143 → ~168 ms) and moved no
+/// census row and no per-compare column — the CONTROL arm moved with it, so it is the
+/// four typer commits underneath and not this change. NEITHER REPAIR ABOVE HELPS THERE, by
 /// construction: the scan returns all 96 facts, so the emptiness check cannot fire and
 /// the mint is noise against 10 µs. The price is recorded so a future pass that moves a
 /// `types_compatible` caller ahead of the index build knows what it would be paying.
