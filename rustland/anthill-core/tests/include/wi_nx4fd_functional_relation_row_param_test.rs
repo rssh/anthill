@@ -529,7 +529,7 @@ end
     );
 }
 
-/// THE WIDENING'S SECOND READER, DRIVEN — and what it does NOT yet deliver.
+/// THE WIDENING'S SECOND READER, DRIVEN — and RE-AIMED by WI-20260830-X9PB4.
 ///
 /// `collect_covered_calls` (WI-1040) gates weaving on
 /// `functional_relation_arity(..).is_some()`, so widening that predicate widens the
@@ -537,28 +537,33 @@ end
 /// population moved wrongly it took `require[PartialEq[T]], eq(?x, ?y)` from ONE
 /// solution to ZERO — a silent regression a green corpus did not catch — so
 /// /code-review was right that "the suite is green either way" is not evidence about
-/// it. MEASURED here instead, both spellings over one `List`:
+/// it. MEASURED here instead, both spellings over one `List`.
 ///
-///   * PLAIN `size(?ls, ?n)` — `Int(2)`, definite. The ticket's win.
-///   * WOVEN `require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)` — ONE
-///     INDEFINITE solution. The goal weaves (the hook now recognizes the callee) and
-///     the reduction comes back undecided, so the arity+1 site routes to `unify` and
-///     DELAYS, exactly as its WI-1040 clause says a woven call whose dictionary is
-///     not bound yet must.
+/// WHAT THIS ROW MEASURED WHEN NX4FD LANDED, kept because the sequence is the point:
+/// the PLAIN `size(?ls, ?n)` answered `Int(2)` and the WOVEN
+/// `require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)` answered ONE
+/// INDEFINITE solution — the goal wove (the hook now recognized the callee), the
+/// `find_dictionary` reduction came back undecided, and the arity+1 site routed to
+/// `unify` and DELAYED. NOT a regression, and that is the part that needed the
+/// back-out to establish: with the effect clause restored to
+/// `!sig.effects.is_empty()` BOTH spellings answered `[]`, so no working call was
+/// taken away — the two spellings, which had agreed at zero, disagreed.
 ///
-/// NOT A REGRESSION, and that is the part that needed the back-out to establish:
-/// with the effect clause restored to `!sig.effects.is_empty()` BOTH spellings answer
-/// `[]`. So no working call was taken away — the `require` spelling simply does not
-/// receive the win, and the two spellings, which agreed at zero, now disagree.
+/// WI-20260830-X9PB4 CLOSED IT, and NOT where this row predicted. The note here said
+/// "the `Iterable` sub-slot … `find_dictionary` has not had [the bridge's]
+/// treatment"; the sub-slot was never reached. `require[X]`'s bracket is stripped at
+/// convert, so the goal is rebuilt from the WITNESS call — and
+/// `FiniteCollection.size(c: C)` names `C` and not `Element`, which the goal then
+/// OMITTED rather than carrying as a wildcard. An omitted type param is
+/// discriminating, so `List provides FiniteCollection[C = List[T], Element = T,
+/// E = {}]` was rejected and the TOP-LEVEL goal had zero candidates. See
+/// `wi_x9pb4_require_dictionary_element_test`, which owns the mechanism and the
+/// controls; this row now asserts only the EQUALITY the two spellings must have.
 ///
-/// THE GAP IS THE `require[X]` DICTIONARY, not this view: the woven call carries the
-/// clause's `FiniteCollection` dictionary, whose own `Iterable` sub-slot is the very
-/// one this ticket had to complete-or-mark on the bridge path, and `find_dictionary`
-/// has not had that treatment. Owned by its own item; this row is here so the gap is
-/// DRIVEN rather than parked in a note, and it must be re-aimed to expect `Int(2)` on
-/// both spellings when that lands.
+/// It still fails when NX4FD's effect clause is backed out — both spellings answer
+/// `[]`, so `assert_eq!` holds but the plain-spelling assertion above it does not.
 #[test]
-fn the_woven_spelling_does_not_yet_receive_the_win() {
+fn the_woven_spelling_receives_the_win() {
     let src = r#"
 namespace nx4fd_weave
   import anthill.prelude.{List, String, Bool, Int64, FiniteCollection}
@@ -578,25 +583,18 @@ namespace nx4fd_weave
 end
 "#;
     let mut kb = load_kb_with(src);
-    let plain = definite_unary(&mut kb, "nx4fd_weave.answer_plain");
-    assert!(
-        matches!(plain.as_slice(), [Value::Int(2)]),
+    let plain = ints(&mut kb, "nx4fd_weave.answer_plain");
+    assert_eq!(
+        plain,
+        vec![2],
         "the PLAIN spelling is the ticket's win and must answer 2 — without it the \
-         arm below measures nothing. Got {plain:?}"
+         equality below is satisfied by two spellings that both answer nothing"
     );
-    let woven = query_unary(&mut kb, "nx4fd_weave.answer_woven");
-    assert!(
-        woven.iter().all(|(_, definite)| !definite),
-        "the woven spelling must not report a DEFINITE answer it did not compute; a \
-         definite solution here would be the `unify` site binding the result to the \
-         call term. Got {woven:?}"
-    );
-    assert!(
-        !woven.is_empty(),
-        "…and it must DELAY rather than silently answer nothing: a woven call whose \
-         dictionary is not bound is what WI-1040's `unify` clause exists to keep \
-         suspending. If this now answers `Int(2)`, the `require[X]` dictionary gap \
-         has been closed and this whole row should be re-aimed at equality with the \
-         plain spelling. Got {woven:?}"
+    let woven = ints(&mut kb, "nx4fd_weave.answer_woven");
+    assert_eq!(
+        woven, plain,
+        "the WOVEN spelling must answer exactly what the plain one does. `[]` here is \
+         this row's pre-X9PB4 reading — the woven call's dictionary was never built, \
+         so the only solution was an INDEFINITE one the arity+1 site delayed on"
     );
 }

@@ -257,6 +257,23 @@ binding with no new machinery. The encoding, settled (2026-08-07):
   precisely because a bare `T` as a term argument would hit scope resolution with
   no binding in a free rule; un-stripping must route the decoration where a bare
   name is legitimately a type Var (WI-849). Which concrete channel is §10 item 1.
+- **The elements the witness does not name ride as WILDCARDS, never omitted**
+  (WI-20260830-X9PB4). The bullet above is why the goal must be rebuilt from the
+  witness call's carried types at all; a spec parameter that no witness parameter's
+  declared type mentions is then bound by nothing. It is emitted as the spec's own
+  parameter reference — WI-507's *present but abstract* form — because the two
+  readings are opposite ones at the matcher: an **omitted** type param is
+  DISCRIMINATING (`collect_provides_candidates` rejects the candidate outright, so a
+  concrete `fact Eq[T = Int]` cannot answer a bare `Eq` goal — wi325 / wi237), while
+  a wildcard matches a provider's own parameter, which is universally quantified and
+  so discriminates nothing, and is still refused against a concrete binding. Omitting
+  it made `FiniteCollection[C = List[T = String]]` — a spec `List` provides outright,
+  as `FiniteCollection[C = List[T], Element = T, E = {}]` — answer *no impl provides
+  FiniteCollection*, so `require[FiniteCollection[…]], size(?ls, ?n)` delayed where
+  the same goal without the `require` answered. Effect-row parameters are excluded:
+  an omitted row is already non-discriminating at the matcher
+  (`sort_param_is_effect_row`, for WI-387/WI-714's reason — a row is the observation
+  effect, not carrier identity), which is a different owner for the same question.
 
 **The anchor rule.** The record is compiled from an **anchor** that grounds the
 spec's params: a covered body call (the witness — the guard tier's existing
@@ -487,7 +504,12 @@ Items 2 and 5 are **settled and delivered** (item 2's eval half by WI-1045);
    specs. The constraint is fixed — a bare name there is a type Var (WI-849),
    never a scope-resolved ref; only the carrier is to pick. `require[X]` strips its
    type-args at convert exactly as `requires(X)` does, for the same stated reason,
-   so the duplicate-spec-base hard error still stands.
+   so the duplicate-spec-base hard error still stands. WI-20260830-X9PB4 removed one
+   CONSEQUENCE of the stripping without closing the item: a spec parameter the witness
+   call does not name is now emitted as a wildcard rather than omitted (§5), so the
+   goal is well-formed for the matcher — but the bracket's own values are still not
+   read, and writing `require[FiniteCollection[C = List[T = String], Element = String]]`
+   still says nothing the witness did not.
 2. **[SETTLED — one representation, no conversion] The dictionary carrier.** The
    item offered two settlements ("both carriers key alike" or "one converts at
    entry"). **Neither: there is one representation.** §9 is the rule — one functor,

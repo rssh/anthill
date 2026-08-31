@@ -59187,7 +59187,9 @@ pub(crate) fn fetch_dictionary(
         FindDictOutcome::Fire => {}
         other => return FindDictFetch::Guard(other),
     }
-    let Some(goal) = witness_sort_goal(kb, spec_sort, op_functor, &arg_types) else {
+    let Some(WitnessGoal { goal, synthesized }) =
+        witness_sort_goal(kb, spec_sort, op_functor, &arg_types)
+    else {
         return FindDictFetch::Undecided {
             detail: format!(
                 "`{}` has no recorded signature, so the witness arguments' carried types \
@@ -59214,16 +59216,29 @@ pub(crate) fn fetch_dictionary(
                     .into(),
             },
         },
-        ResolutionResult::Ambiguous { goal_text, tie, .. } => FindDictFetch::Defect {
-            detail: format!(
+        ResolutionResult::Ambiguous { goal_text, tie, .. } => {
+            let detail = format!(
                 "two providers answer `{goal_text}` at run time: {}",
                 tie.candidates
                     .iter()
                     .map(|s| kb.qualified_name_of(*s).to_string())
                     .collect::<Vec<_>>()
                     .join(", "),
-            ),
-        },
+            );
+            // WI-20260830-X9PB4 — A TIE IS ONLY A DEFECT WHEN THE GOAL WAS THE WITNESS'S
+            // OWN. `Defect`'s contract is "overlap is refused at typing/load, so reaching
+            // this means the coherence machinery let one through", and that reading needs
+            // the goal to be decided ENTIRELY by the carried types. Where an element was
+            // SYNTHESIZED because no witness parameter named it, two providers may tie on
+            // exactly that element — which is not overlap and not a defect — so the honest
+            // verdict is "cannot decide", and the caller delays as it did before the
+            // wildcard existed. See [`WitnessGoal`] for the measurement.
+            if synthesized {
+                FindDictFetch::Undecided { detail }
+            } else {
+                FindDictFetch::Defect { detail }
+            }
+        }
         // The guard said the carrier PROVIDES the spec and instance synthesis then
         // found no tree. The two readers are not the same oracle — `sort_provides`
         // sees a WI-450 witness-sort provision and a denoted/value-fact provision
@@ -59264,18 +59279,46 @@ pub(crate) fn fetch_dictionary(
 ///
 /// `None` only when the operation has no recorded signature — the same condition
 /// under which the guard itself declines.
+///
+/// WHAT READS THIS, censused because WI-20260830-X9PB4 widened what it emits: ONE
+/// caller, [`fetch_dictionary`], which itself has ONE — `read_dictionary_into`, the
+/// `out` arm of `builtin_find_dictionary`. So this producer is reached only from
+/// `require[X]` / `?d = require[X]`; WI-300's check-only `requires(X)` takes
+/// [`find_dictionary_guard`], which builds no [`SortGoal`] at all and is untouched by
+/// anything decided here.
+///
+/// AND THE OTHER PRODUCER OF A [`SortGoal`] STILL OMITS, which is the right question to
+/// ask (raised by /code-review) and is answered by measurement rather than by symmetry.
+/// [`sort_goal_from_subst`] — the typer's, feeding `dispatch_spec_op_cached`,
+/// `CalleeSlotSource::Dispatch` and the receiver-carrier path — drops a spec param σ
+/// does not resolve. It is NOT the same question:
+///
+///  * There an unresolved param is a FLEX VAR the typer may still pin; here nothing
+///    more will ever arrive, because the goal is rebuilt from runtime values at the
+///    moment the goal runs.
+///  * The compile-time route has a mechanism this one does not — an un-pinnable SLOT
+///    becomes WI-857's `Unavailable` marker inside a dictionary that still gets built.
+///    `fetch_dictionary`'s goal IS the whole dictionary, so there is no slot to mark.
+///
+/// MEASURED rather than argued, on the shape this ticket is about: the same spec, the
+/// same provision (`Leaf provides Desc[T = Leaf[N], Note = N]`) and the same carrier,
+/// dispatched with NO `require` at all, answers `Int(7)` on the typer path — so the two
+/// producers are not observably in disagreement about it. Whether they should be one
+/// producer anyway is a separate question with its own population, recorded here and
+/// not credited to this ticket.
 fn witness_sort_goal(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_types: &[Value],
-) -> Option<SortGoal> {
+) -> Option<WitnessGoal> {
     let rec = super::op_info::lookup_operation_info(kb, op_functor)?;
     let type_params = kb.type_params_of_sort(spec_sort);
     let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     let mut carrier: Option<GoalCarrier> = None;
+    let mut synthesized = false;
     for (i, (_pname, pty)) in rec.params.iter().enumerate() {
         if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
             continue;
@@ -59317,11 +59360,122 @@ fn witness_sort_goal(
             bindings.push((key, tid));
         }
     }
-    Some(SortGoal {
-        spec_sort,
-        bindings,
-        carrier,
+    // WI-20260830-X9PB4 — THE SPEC'S REMAINING ELEMENTS RIDE AS WILDCARDS, and they must
+    // ride rather than be OMITTED because the two readings are opposite ones.
+    //
+    // `FiniteCollection.size(c: C)` names `C` and no other element, so the loop above
+    // built `FiniteCollection[C = List[T = String]]` for
+    // `require[FiniteCollection[C = List[T = String]]]` — `Element` simply absent. An
+    // ABSENT type param is DISCRIMINATING at [`collect_provides_candidates`] ("a concrete
+    // `T = Int` on `fact Eq[T = Int]` … else every concrete `Eq` impl would match a bare
+    // `Eq` goal"), so `List provides FiniteCollection[C = List[T], Element = T, E = {}]`
+    // was rejected on the element the goal never had an opinion about: ZERO candidates,
+    // `NoMatch`, `Undecided`, and the woven call delayed where the plain spelling
+    // answered `Int(2)`.
+    //
+    // A PRESENT-BUT-ABSTRACT one is the leniency WI-507 already established for exactly
+    // this shape, and its own doc names it: "a carrier-only `clear(c)` pins only the
+    // carrier `C`, so the spec's sibling `Element` arrives as `Ref(Sort.Element)` —
+    // matches any impl-param binding WITHOUT constraining it: the concrete carrier
+    // already pins the shared impl param `T`, and this sibling is whatever that pinning
+    // implies via the provider's `provides` fact". That is this goal, one producer over:
+    // the carrier is concrete and the sibling is not. `goal_from_requires_entry` gets the
+    // same shape for free — a written `requires Iterable[C = C, Element = Element, E = E]`
+    // spells every element — and this producer, which rebuilds the goal from the witness
+    // call because [`crate::parse::convert`]'s `lower_require` strips the bracket's type
+    // arguments, is the one that had to synthesize them.
+    //
+    // NOT A WEAKER MATCH: a wildcard is refused against a CONCRETE candidate binding
+    // (`fact Eq[T = Int64]` at a wildcard `T` still fails `dispatch_values_match`), so
+    // the coherence rule the strict reject protects — wi325 / wi237 — is untouched. What
+    // it admits is a candidate whose value for the element is its OWN parameter, which
+    // is universally quantified and therefore cannot discriminate anything.
+    //
+    // EFFECT-ROW PARAMS ARE LEFT OUT, deliberately: an omitted row is ALREADY
+    // non-discriminating at the matcher (`sort_param_is_effect_row` skips it there, for
+    // WI-387/WI-714's reason — "a row is the observation effect, not carrier identity"),
+    // so that question has an owner and a wildcard here would take it away from it and
+    // answer it differently.
+    //
+    // MEASURED, on a purpose-built fixture, because the WHOLE 3934-test binary passes
+    // with this guard removed and a green corpus is therefore no evidence about it:
+    // `provides Walk[C = Src, E = Error]` — a provision writing a CONCRETE non-empty row
+    // — keeps answering `require[Walk[C]]` with the guard and STOPS with it dropped, its
+    // `?d` falling to one indefinite solution, because `Ref(Walk.E)` reaches
+    // `dispatch_values_match` against the written `Error` and the two sort symbols
+    // differ. The `E = {}` sibling is unmoved either way, which is what makes that a
+    // measurement rather than an un-drivable fixture.
+    // `wi_x9pb4_require_dictionary_element_test::an_effect_row_element_is_left_to_its_
+    // own_owner` drives both arms.
+    for short in kb.type_params_of_sort(spec_sort) {
+        if sort_param_is_effect_row(kb, spec_sort, &short) {
+            continue;
+        }
+        if bindings
+            .iter()
+            .any(|(k, _)| kb.local_name_of(*k) == short.as_str())
+        {
+            continue;
+        }
+        // `type_params_of_sort` just listed this name, so the qualified symbol is
+        // expected to resolve; a miss leaves the element ABSENT, which is exactly the
+        // pre-ticket reading, and is the same `continue` the sibling goal producer
+        // [`sort_goal_from_subst`] takes on the same lookup. Not made loud here because
+        // that would be a NEW refusal on a shape neither producer has ever seen fail —
+        // the two must keep answering one way.
+        let Some(qualified) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
+            continue;
+        };
+        // The KEY spelling is the one the pinned loop above uses — the bare short-name
+        // symbol when one is registered, else the spec-qualified parameter — so a
+        // wildcard and a pinned binding are keyed alike and `goal_binding_value` reads
+        // both by local name.
+        let key = kb.try_resolve_symbol(&short).unwrap_or(qualified);
+        // The spec's OWN parameter symbol as the value — `is_type_param_value`'s
+        // wildcard, the same term a written `requires Spec[Element = Element]` clause
+        // carries for an element its author did not pin.
+        let wildcard = kb.alloc(Term::Ref(qualified));
+        bindings.push((key, wildcard));
+        synthesized = true;
+    }
+    Some(WitnessGoal {
+        goal: SortGoal {
+            spec_sort,
+            bindings,
+            carrier,
+        },
+        synthesized,
     })
+}
+
+/// WI-20260830-X9PB4 — [`witness_sort_goal`]'s answer, and WHETHER IT HAD TO INVENT
+/// PART OF IT.
+///
+/// The flag exists because one downstream verdict turns on it and nothing else can
+/// recover it. `fetch_dictionary` maps a resolution TIE to
+/// [`FindDictFetch::Defect`] — "overlap was typing/load's to refuse, so reaching this
+/// means the coherence machinery let one through", loud in debug. That reading holds
+/// only while the goal is decided ENTIRELY by the witness call's carried types: a tie
+/// then really is two providers claiming one carried type. A goal carrying a
+/// SYNTHESIZED wildcard is not decided entirely by them — two providers may tie on
+/// precisely the element nobody named, which is no defect at all — so that tie is
+/// [`FindDictFetch::Undecided`] instead, and the call delays exactly as it did before
+/// the wildcard existed.
+///
+/// MEASURED, and it is a regression this ticket introduced and then closed rather
+/// than a hypothetical: `Carrier provides MidA` + `Carrier provides MidB`, each
+/// `provides Spec[C = Mid?, Note = <its own N>]`, made
+/// `require[Spec[C]], Spec.probe(carrier(), ?r)` fire
+/// `debug_assert!(false, "find_dictionary: two providers answer …")` — an abort in
+/// every debug build, on a program with no overlap. With the wildcard loop backed out
+/// the same program answered ONE INDEFINITE solution. Driven by
+/// `wi_x9pb4_require_dictionary_element_test::a_tie_on_a_synthesized_element_delays_
+/// rather_than_reporting_a_defect`.
+struct WitnessGoal {
+    goal: SortGoal,
+    /// True iff some spec element was minted as a wildcard because no witness
+    /// parameter named it.
+    synthesized: bool,
 }
 
 /// WI-1040 — a resolved provider tree as the dictionary.

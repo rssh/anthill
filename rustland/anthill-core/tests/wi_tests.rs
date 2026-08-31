@@ -1537,3 +1537,6 @@ mod wi_vfakk_declaration_description_test;
 
 #[path = "include/wi_nx4fd_functional_relation_row_param_test.rs"]
 mod wi_nx4fd_functional_relation_row_param_test;
+
+#[path = "include/wi_x9pb4_require_dictionary_element_test.rs"]
+mod wi_x9pb4_require_dictionary_element_test;

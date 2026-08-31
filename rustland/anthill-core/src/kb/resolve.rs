@@ -8609,16 +8609,28 @@ impl KnowledgeBase {
     /// corpus is green either way. THAT LAST FACT IS NOT THE EVIDENCE, because WI-1040's
     /// own doc records a green corpus missing exactly this kind of move (`require[
     /// PartialEq[T]], eq(?x, ?y)`, ONE solution to ZERO). MEASURED instead, by
-    /// `the_woven_spelling_does_not_yet_receive_the_win`: over one `List`, the PLAIN
-    /// `size(?ls, ?n)` answers `Int(2)` and the WOVEN `require[FiniteCollection[…]],
-    /// size(?ls, ?n)` answers one INDEFINITE solution — the widened weave routes the
-    /// goal, the reduction comes back undecided, and the arity+1 site delays as WI-1040's
-    /// clause says it must. NOT a regression (with the effect clause backed out BOTH
-    /// spellings answer `[]`, so nothing working was taken away), but the `require`
-    /// spelling does not get the win, and the gap is the `require[X]` dictionary rather
-    /// than this view: the woven call carries a `FiniteCollection` dictionary whose own
-    /// `Iterable` sub-slot is the one this ticket had to complete-or-mark on the BRIDGE
-    /// path, and `find_dictionary` has not had that treatment.
+    /// `the_woven_spelling_receives_the_win`: over one `List`, the PLAIN
+    /// `size(?ls, ?n)` and the WOVEN `require[FiniteCollection[…]], size(?ls, ?n)` must
+    /// answer the SAME thing.
+    ///
+    /// WHEN THIS TICKET LANDED THEY DID NOT, and the row asserted the inequality: the
+    /// plain spelling answered `Int(2)` and the woven one ONE INDEFINITE solution — the
+    /// widened weave routed the goal, the `find_dictionary` reduction came back
+    /// undecided, and the arity+1 site delayed as WI-1040's clause says it must. NOT a
+    /// regression (with the effect clause backed out BOTH spellings answered `[]`, so
+    /// nothing working was taken away); the `require` spelling simply did not get the
+    /// win, and the gap was `find_dictionary`'s, not this view's.
+    ///
+    /// WI-20260830-X9PB4 CLOSED IT, and the diagnosis recorded here was WRONG about
+    /// where — kept corrected rather than deleted, because the wrong reading is the
+    /// one a reader arrives with. This paragraph said "the `Iterable` sub-slot … is the
+    /// one this ticket had to complete-or-mark on the BRIDGE path, and
+    /// `find_dictionary` has not had that treatment". The sub-slot was never reached:
+    /// the TOP-LEVEL goal had zero candidates, because `require[X]`'s bracket is
+    /// stripped at convert and the goal is rebuilt from the WITNESS call, which for
+    /// `FiniteCollection.size(c: C)` names `C` and OMITS `Element` — and an omitted type
+    /// param is discriminating. `witness_sort_goal` now carries an un-named element as
+    /// WI-507's wildcard; see `wi_x9pb4_require_dictionary_element_test`.
     ///
     /// Cheap-gated for the per-goal hot path in the same order as the Bool gate:
     /// a builtin or a body-less predicate (the overwhelmingly common case) bails
