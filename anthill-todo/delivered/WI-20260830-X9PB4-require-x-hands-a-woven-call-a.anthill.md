@@ -70,3 +70,17 @@ Severity LOW and CONSERVATIVE — no wrong answer is produced, the coherence SIG
 
 WHAT TO MEASURE FIRST, because the claim is exactly the shape that dissolves: build a tie whose disagreement is on a PINNED element with a synthesized element present elsewhere in the same goal, and check whether it reports `Defect` today. If it does, the flag is not as coarse as the finding says. If it does not, the fixture named above is the witness and the per-element repair needs its own control — a tie that genuinely IS on the synthesized element must still delay.
 
+### 2026-08-31T16:08:20Z — feedback — user
+
+SECOND /code-review PASS SHARPENED THE EARLIER FINDING AND RAISED IT TO MEDIUM. Still NOT verified by me — measure before acting, per the earlier note.
+
+The mechanism, stated more precisely than before: `witness_sort_goal` sets `synthesized = true` if ANY spec element was minted as a wildcard, and `fetch_dictionary` then maps EVERY `Ambiguous` to `Undecided` instead of `Defect`. So the flag is per-GOAL, not per-element.
+
+THE SCENARIO IT NAMES (build this first): spec `Spec[C, Note]` with witness `probe(c: C)`; `A provides Spec[C = Foo, Note = X]` and `B provides Spec[C = Foo, Note = Y]`. The two tie on the PINNED `C = Foo` — a genuine two-route overlap the coherence machinery should refuse at load — but because `Note` was synthesized the tie reports `Undecided`, the call silently delays, and `debug_assert!(false, "find_dictionary: …")` (resolve.rs) never fires.
+
+WHY IT IS WORTH MEASURING RATHER THAN FILING AND FORGETTING: most witnesses name only the carrier, so if the reading is right the `Defect` channel is off for effectively every `require[X]` goal — an invariant check gone dark, which is exactly the class WI-20260830-X9PB4 itself was about (a `debug_assert!(false)` marked UNREACHABLE that a widened candidate list made reachable).
+
+PROPOSED PREDICATE (also unverified): "does the tie turn on a SYNTHESIZED key" — compare the tied candidates' bindings on the PINNED keys only — rather than "was some key synthesized". A control is needed in the other direction too: a tie that genuinely IS on the synthesized element must still delay, which is what this ticket's `a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect` fixture pins.
+
+Both review passes ran over commit e5a4ea12 as a neighbour of unrelated work; neither built the scenario above.
+

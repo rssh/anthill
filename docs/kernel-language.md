@@ -2413,11 +2413,21 @@ read through the projection to hold. Two are:
   against a fixture at `E = {}` and refused against a live model at
   `E = {External}` — one row, written once, and the carrier decides.
 
-The **registration** rule below is the deliberate exception, and it is stated
-there: a receiver projection names no kind at the position it is written, so it
-is not judged against `fact Effect[T = K]`. The `Modify`-target rule (§5.6) and
-the declared-row self-contradiction check read elements the same un-projected
-way; WI-20260831-RSRP5 is where whether they should is decided.
+The **registration** rule below is not an exception to this and never was, and
+WI-20260831-RSRP5 settled why. It exempts "a receiver projection (`s.E`)" on the
+ground that such a position names no kind — which is right, because the kind is
+named where the ROW is written, and *that* is where it is judged: a carrier's
+`provides Spec[E = {…}]` binding and a sort's bound alias `effects E = K` are
+each checked for a registered kind and for a lawful `Modify` target, so a label
+cannot reach a projection without having passed both. The same holds for §5.6's
+`Modify`-target rule. A row element is therefore judged once, at its origin,
+rather than again at every operation that projects it — which is also the only
+place a diagnostic can name the line the author wrote.
+
+A row bound by a **written type argument** at a use site (`s: Spec[E = {…}]`) is
+the third way to make a projection concrete, and it does not work today at all:
+the binding reaches the declared row and not the call, so the operation is
+refused `undeclared effect: ?_`. WI-20260831-PYNS2.
 
 **Guarded effects** (proposal 048, WI-478/WI-067) qualify one row element, not
 the whole row. The bare spelling admits one guard term so an outer comma still

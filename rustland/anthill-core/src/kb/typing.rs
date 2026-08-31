@@ -34694,7 +34694,28 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
     let mut errors = Vec::new();
     let mut reported: HashSet<(Symbol, String)> = HashSet::new();
     for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
-        for e in &effects {
+        // WI-20260831-RSRP5: through [`effect_element_labels`], for the reason its doc
+        // gives — a bound alias (`effects E = Modify[Thing]`) and a row behind one were
+        // both invisible here while the sibling registration gate followed the alias.
+        // Same fact, same route, two answers.
+        //
+        // THE WRITTEN ELEMENT IS KEPT BESIDE THE LABEL IT RESOLVES TO, because the
+        // refusal has to be findable in the source. Following the alias means the label
+        // is `Modify[Thing]` while the author wrote `effects {E}` — a message naming only
+        // the resolved form points at a string that appears nowhere in their file. The
+        // sibling registration gate prints both halves ("declares effect `E`, but `Beep`
+        // is not a REGISTERED effect kind"), which is what makes it actionable, and this
+        // now does the same. (/code-review)
+        let elements: Vec<(Value, Value)> = effects
+            .iter()
+            .flat_map(|e| {
+                effect_element_labels(kb, e, keys.label)
+                    .into_iter()
+                    .map(|l| (e.clone(), l))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (written, e) in &elements {
             let (label_value, kind) = match classify_modify_target(kb, e, modify, &keys) {
                 Some(pair) => pair,
                 None => continue,
@@ -34711,9 +34732,18 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
             if !reported.insert((op_sym, label.clone())) {
                 continue;
             }
+            // WI-20260831-RSRP5 (/code-review): "`E`, which names `Modify[Thing]`," when
+            // the two differ, so the message names the token the author can find in their
+            // file as well as the label it resolves to. Identical forms print once.
+            let written = type_display_name_value(kb, written);
+            let named_as = if written == label {
+                format!("`{label}`")
+            } else {
+                format!("`{written}`, which names `{label}`,")
+            };
             errors.push(super::load::LoadError::Other {
                 message: format!(
-                    "operation `{}` declares effect `{}`, {} — a `Modify` target is a \
+                    "operation `{}` declares effect {} {} — a `Modify` target is a \
                      PLACE: anything that DENOTES a value, i.e. a parameter, `result`, a \
                      field path off one, a value-producing zero-arg operation, or a \
                      NULLARY CONSTRUCTOR naming an ambient resource \
@@ -34722,7 +34752,7 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
                      binds a type parameter to a TYPE, never to a place. Name the place \
                      that is mutated (e.g. `Modify[target]`).",
                     kb.qualified_name_of(op_sym),
-                    label,
+                    named_as,
                     detail,
                 ),
             });
@@ -34984,6 +35014,14 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     let mut errors = Vec::new();
     let mut reported: HashSet<(Symbol, Symbol)> = HashSet::new();
     for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+        // WI-20260831-RSRP5 — STILL PEEL-ONLY HERE, and that is a measurement, not an
+        // omission. Routing this gate through [`effect_element_labels`] like its two
+        // siblings was built and BACKED OUT: the alias half is already inside
+        // [`effect_label_kind`], which has followed `sort X = Y` since
+        // WI-20260823-VM3YB, and the ROW half targets a shape the grammar cannot
+        // express — see the residue paragraph on `effect_label_kind`. The wiring
+        // survived its own back-out with every test green, which is the definition of a
+        // branch that fires nowhere.
         for e in &effects {
             let label = peel_effect_atom(kb, e, label_key);
             let Some(kind) = effect_label_kind(kb, &label) else {
@@ -35044,24 +35082,332 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 /// the prelude's row parameters are all holes, so nothing in the tree exercised the
 /// distinction.
 ///
-/// RESIDUE, recorded rather than fixed: a binding whose target is an effect ROW rather
-/// than a single label (`sort E = {A, B}`) heads as [`TypeHead::EffectsRows`] and its
-/// ELEMENTS go unjudged. No such declaration exists in the tree, and reaching them means
-/// exploding a row here — the same walk `explode_incurred_effect_row` owns — which is a
-/// widening this ticket has no population to measure.
+/// THE RESIDUE THIS ONCE RECORDED IS CLOSED BY MEASUREMENT, not by code
+/// (WI-20260831-RSRP5). It read: "a binding whose target is an effect ROW rather than a
+/// single label (`sort E = {A, B}`) heads as [`TypeHead::EffectsRows`] and its ELEMENTS
+/// go unjudged. No such declaration exists in the tree" — and the reason none exists is
+/// that the shape IS NOT WRITABLE. `effects_sort_item`'s grammar is `effects <name> =
+/// <_type>` (`tree-sitter-anthill/grammar.js`), and a row is not a `_type`: both
+/// `sort E = {Zip, Error}` and `effects E = merge(Zap, Error)` are PARSE ERRORS. So there
+/// are no elements to reach, and the row-explosion this note asked for would be a walk
+/// over a case no program can present. Exploding a row that arrives some OTHER way is
+/// still needed and still happens — a `provides Spec[E = {…}]` binding is one, and
+/// [`check_provision_row_bindings`] explodes it — but not here.
 fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
+    match type_head(kb, &resolve_effect_label_alias(kb, label)?) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+        _ => None,
+    }
+}
+
+/// WI-20260831-RSRP5 — AN EFFECT LABEL WRITTEN IN A `provides` ROW BINDING IS JUDGED
+/// THERE, by the same two rules that judge one written in an operation's own row.
+///
+/// THE ROUTE THE PER-LABEL GATES COULD NOT SEE, and the reason it is closed HERE rather
+/// than by widening them. A carrier binds a spec's row parameter — `LiveLlm provides
+/// Llm[E = {External}]` — and every operation that projects `llm.E` then carries those
+/// labels. MEASURED: `provides Spec[E = {Modify[Thing]}]` (a TYPE-targeted `Modify`) and
+/// `provides Spec[E = {Beep}]` (an unregistered kind) BOTH LOADED CLEAN, judged by
+/// nothing, while the identical labels written in an operation row were refused.
+///
+/// WHY THE BINDING AND NOT THE PROJECTION. This ticket was filed to teach the per-label
+/// gates to read a projection through, the way WI-20260830-APWM3 taught the op-effects
+/// coverage check and 054's exclusion. Measuring the population changed the answer: a
+/// label can only reach a projected row by being WRITTEN somewhere, and for a carrier's
+/// row parameter that somewhere is this binding. Judging it here therefore covers the
+/// projection route ENTIRELY, and does it better — one site instead of every caller, a
+/// diagnostic that points at the line the author wrote, and a verdict for a carrier no
+/// caller has projected yet.
+///
+/// IT ALSO LEAVES `docs/kernel-language.md` §5.5 TRUE AS WRITTEN. That section exempts
+/// "a receiver projection (`s.E`)" from the registration rule, on the ground that it
+/// names no kind. Read as "the projection names no kind OF ITS OWN — the kind is named
+/// at the binding, and judged there", the exemption is exactly right, and the widening
+/// this ticket first proposed would have contradicted it.
+///
+/// ONLY ROW PARAMETERS ARE JUDGED, and the filter is the DECLARATION rather than the
+/// binding's shape. `effects E = ?` lowers to `sort E = ?` plus `requires
+/// EffectsRuntime[Effects = E]` (`prelude/effects-runtime.anthill`), so a row parameter
+/// is identified by that anchor and nothing else — see [`effect_row_params_of_spec`].
+/// Filtering on the VALUE looking row-shaped was the obvious alternative and is wrong in
+/// BOTH directions: it MISSES the brace-less `provides Spec[E = Beep]`, which loads and
+/// binds a row just as much (measured), and it would judge whatever a TYPE parameter
+/// happened to be bound to — `provides Spec[C = Int64]` refused for `Int64` not being a
+/// registered effect kind.
+///
+/// Reported once per (carrier, spec, label) so a re-presented file's second
+/// `SortProvidesInfo` fact (WI-1049) does not read as two errors.
+pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+    let effect_sym = kb.try_resolve_symbol("anthill.prelude.Effect");
+    let modify = kb.try_resolve_symbol("anthill.prelude.Modify");
+    if effect_sym.is_none() && modify.is_none() {
+        // Neither rule can be stated in this KB — no prelude `Effect`, no prelude
+        // `Modify`. Mirrors each sibling gate's own bail.
+        return Vec::new();
+    }
+    let keys = ModifyTargetKeys::new(kb);
+    let registered = effect_sym.and_then(|es| {
+        // `Effect`'s sole declared type parameter, read from the DECLARATION — the same
+        // sourcing [`check_effect_registration`] uses, so renaming it in effects.anthill
+        // moves both ends together. `None` (no parameter) makes this half inert here
+        // rather than duplicating that gate's loud bootstrap refusal.
+        let param = kb.type_params_of_sort(es).first().map(|n| kb.intern(n))?;
+        Some(registered_effect_kinds(kb, es, param))
+    });
+
+    // Snapshot first: the judging walk below mutates `kb` (interning, row explosion).
+    struct RowBinding {
+        carrier: Symbol,
+        spec: Symbol,
+        /// WI-20260831-RSRP5 (/code-review) — WHICH row parameter this binds. A spec may
+        /// declare more than one (`effects E = ?` beside `effects F = ?`), and without it
+        /// two bad bindings of the SAME label deduped to ONE message that named neither
+        /// slot — measured on `provides TwoRows[E = {Beep}, F = {Beep}]`, which reported
+        /// once. It is in the dedup key AND in the message, because a reader who cannot
+        /// see which half is wrong cannot fix the right one.
+        param: Symbol,
+        value: Value,
+    }
+    let mut bindings: Vec<RowBinding> = Vec::new();
+    // WI-20260831-RSRP5 (/code-review) — MEMOIZED PER SPEC, not per provision. The lookup
+    // walks the spec's whole `requires` chain and scans each entry's keys, and a spec with
+    // N providers was walking the identical chain N times on a pass that already visits
+    // every provision in the KB. Keyed on the spec base, which is what the answer depends
+    // on.
+    let mut row_params_by_spec: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
+    for row in all_provisions(kb) {
+        let Some((spec_base, named)) = unwrap_spec_view(kb, row.spec_view) else {
+            continue;
+        };
+        let row_params = match row_params_by_spec.get(&spec_base) {
+            Some(cached) => cached.clone(),
+            None => {
+                let computed = effect_row_params_of_spec(kb, spec_base);
+                row_params_by_spec.insert(spec_base, computed.clone());
+                computed
+            }
+        };
+        if row_params.is_empty() {
+            continue;
+        }
+        let spec_qn = kb.qualified_name_of(spec_base).to_string();
+        for (k, v) in &named {
+            let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) else {
+                continue;
+            };
+            if !row_params.iter().any(|p| *p == param) {
+                continue;
+            }
+            bindings.push(RowBinding {
+                carrier: row.provider,
+                spec: spec_base,
+                param,
+                value: Value::term(*v),
+            });
+        }
+    }
+
+    let mut errors = Vec::new();
+    let mut reported: HashSet<(Symbol, Symbol, Symbol, String)> = HashSet::new();
+    for b in &bindings {
+        for label in effect_element_labels(kb, &b.value, keys.label) {
+            let display = type_display_name_value(kb, &label);
+            if !reported.insert((b.carrier, b.spec, b.param, display.clone())) {
+                continue;
+            }
+            let carrier_qn = kb.qualified_name_of(b.carrier).to_string();
+            let spec_qn = kb.qualified_name_of(b.spec).to_string();
+            let slot = kb.local_name_of(b.param).to_string();
+            if let Some((_, kind)) = classify_modify_target(kb, &label, modify, &keys) {
+                let detail = match kind {
+                    ModifyTarget::Place => None,
+                    ModifyTarget::Type => Some("whose target is a TYPE"),
+                    ModifyTarget::Missing => Some("which names no target at all"),
+                };
+                if let Some(detail) = detail {
+                    errors.push(super::load::LoadError::Other {
+                        message: format!(
+                            "`{carrier_qn} provides {spec_qn}` binds `{slot}` to an effect \
+                             row containing `{display}`, {detail} — a `Modify` target is a \
+                             PLACE, not a type (kernel-language.md §5.6). A row binding is \
+                             not a signature, so the places a SIGNATURE offers are not \
+                             available here: there is no parameter to name, and no \
+                             `result`. What IS available is an ambient resource — a \
+                             NULLARY CONSTRUCTOR that denotes one (`Modify[clock]` over an \
+                             `entity clock`), which is the §5.6 form written for exactly \
+                             this position. Every operation that projects this row carries \
+                             the label, so it is judged where it is written."
+                        ),
+                    });
+                    continue;
+                }
+            }
+            let Some(registered) = registered.as_ref() else {
+                continue;
+            };
+            let Some(kind) = effect_label_kind(kb, &label) else {
+                continue;
+            };
+            if registered.contains(&kb.canonical_sort_sym(kind)) {
+                continue;
+            }
+            let short = kb.local_name_of(kind).to_string();
+            let kind_qn = kb.qualified_name_of(kind).to_string();
+            errors.push(super::load::LoadError::Other {
+                message: format!(
+                    "`{carrier_qn} provides {spec_qn}` binds `{slot}` to an effect row \
+                     containing `{display}`, but `{kind_qn}` is not a REGISTERED effect \
+                     kind — \
+                     nothing in the knowledge base says that sort is an effect, so this \
+                     binding names a label the kernel never admitted and a misspelling of \
+                     it would read as a new effect rather than as an error. Effect labels \
+                     are OPEN (kernel-language.md §5.5) — any sort may be one — but \
+                     becoming one is a declaration, written where `{short}` is in scope: \
+                     `fact Effect[T = {short}]` in the namespace that declares it, or \
+                     `provides Effect[T = {short}]` inside the sort that declares it. If \
+                     the label is a typo, fix the spelling."
+                ),
+            });
+        }
+    }
+    errors
+}
+
+/// WI-20260831-RSRP5 — WHICH OF `spec`'S TYPE PARAMETERS ARE EFFECT-ROW PARAMETERS.
+///
+/// `effects E = ?` is sugar: it lowers to `sort E = ?` PLUS `requires
+/// EffectsRuntime[Effects = E]` (`stdlib/anthill/prelude/effects-runtime.anthill`, which
+/// states the equivalence in those words). The sort parameter it mints is
+/// indistinguishable from an ordinary `sort C = ?` — same `SortAlias(_, Var)` shape, same
+/// entry in `type_params_of_sort` — so the ANCHOR is the only thing that says which
+/// parameter carries a row, and reading it is what keeps
+/// [`check_provision_row_bindings`] off a type parameter's binding.
+fn effect_row_params_of_spec(kb: &mut KnowledgeBase, spec: Symbol) -> Vec<Symbol> {
+    let Some(anchor) = effects_runtime_sym(kb) else {
+        return Vec::new();
+    };
+    // BY LOCAL NAME, not an interned `Symbol`: the anchor's `Effects` key was resolved
+    // in the requires clause's own scope, and `kb.intern("Effects")` mints/finds a
+    // symbol that need not be that one — the WI-422 class of silent miss, and MEASURED
+    // as one here (the chain held `SortView[Effects = E]` and the symbol lookup found
+    // nothing in it).
+    direct_requires_chain(kb, spec)
+        .iter()
+        .filter(|entry| same_sort_canonical(kb, entry.required_sort, anchor))
+        .filter_map(|entry| {
+            let key = *entry
+                .spec
+                .named_keys(kb)
+                .iter()
+                .find(|k| kb.local_name_of(**k) == "Effects")?;
+            let bound = named_child_value(kb, &entry.spec, key)?;
+            match type_head(kb, &bound) {
+                TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// WI-20260831-RSRP5 — THE LABELS AN EFFECT-ROW ELEMENT ULTIMATELY NAMES: presence
+/// wrappers peeled, `sort X = Y` aliases followed, and any ROW it bottoms out in
+/// exploded into its members (each of which is put through the same walk).
+///
+/// THE ONE PLACE THE ELEMENT/LABEL GAP IS CLOSED. Every per-label gate over an effect
+/// row asks a question about a LABEL — "is this `Modify`'s target a place?", "is this a
+/// registered kind?" — of a list that holds ELEMENTS, and the two are the same thing
+/// only in the simplest spelling. Three ways they come apart, all measured:
+///
+///   * a PRESENCE WRAPPER — `present(label: L)` / `-L` / `L :- g`, handled by
+///     [`peel_effect_atom`] since WI-20260823-VM3YB;
+///   * an ALIAS — `effects E = Modify[Thing]` names the label `E`, and a gate asking
+///     `effect_is_modify` of `E` answers no. [`check_effect_registration`] followed the
+///     chain, [`check_modify_targets`] did not, so the same sort was refused for an
+///     unregistered label and admitted for a type-targeted `Modify`;
+///   * a ROW — `sort E = {A, B}`, whose members went unjudged by BOTH. That was recorded
+///     as residue on [`effect_label_kind`] ("reaching them means exploding a row here …
+///     a widening this ticket has no population to measure"); the walk it wanted is
+///     [`explode_declared_effect_row`], which WI-20260830-APWM3 built for the op-effects
+///     reader. This is that residue closed, not a new ambition.
+///
+/// ABSENCES COME BACK TOO, as their bare labels. A gate asking "is this a REGISTERED
+/// kind" or "is this `Modify` target a PLACE" wants the same answer for `-X` as for `X`:
+/// a denial naming an unregistered label is as much a misspelling as a presence naming
+/// one, and `peel_effect_atom` has always peeled a top-level `absent` for exactly that
+/// reason. A gate that must tell presence from absence — the uninhabitable-row check —
+/// does its own decomposition and does not come through here.
+///
+/// DEPTH-BOUNDED, because a row reached through an alias may name another alias. The
+/// bound is a backstop against a cyclic declaration, which is malformed and which this
+/// walk owns no verdict for; on overflow it returns what it has, so a gate judges the
+/// labels it could reach rather than silently judging none.
+pub(crate) fn effect_element_labels(
+    kb: &mut KnowledgeBase,
+    e: &Value,
+    label_key: Symbol,
+) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let mut stack: Vec<(Value, u32)> = vec![(e.clone(), 0)];
+    while let Some((cur, depth)) = stack.pop() {
+        if depth > EFFECT_ELEMENT_DEPTH_LIMIT {
+            out.push(cur);
+            continue;
+        }
+        let peeled = peel_effect_atom(kb, &cur, label_key);
+        let Some(resolved) = resolve_effect_label_alias(kb, &peeled) else {
+            // Cyclic alias chain: judge the label as written rather than dropping it.
+            out.push(peeled);
+            continue;
+        };
+        match explode_declared_effect_row(kb, &resolved) {
+            Some((present, absent)) => {
+                for l in present.into_iter().chain(absent) {
+                    stack.push((l, depth + 1));
+                }
+            }
+            None => out.push(resolved),
+        }
+    }
+    out
+}
+
+/// How deep [`effect_element_labels`] follows alias-then-row nesting. Generous: the
+/// deepest shape in the tree is one row behind one alias.
+const EFFECT_ELEMENT_DEPTH_LIMIT: u32 = 8;
+
+/// WI-20260831-RSRP5 — FOLLOW A LABEL'S `sort X = Y` ALIAS CHAIN to the value it names.
+/// The walk [`effect_label_kind`] has always done, split out because a second gate needs
+/// the resolved VALUE and not just its base symbol.
+///
+/// A BOUND ROW ALIAS IS A LABEL WEARING A NAME. `sort S ... effects E = Modify[Thing]`
+/// declares `E` as a name for that label (`docs/kernel-language.md` §5.5: "A **bound**
+/// alias is followed rather than exempted — `effects E = Kind`, like `sort X = Kind`, is
+/// a name for `Kind` and is judged as one"), and an operation of `S` then writes
+/// `effects {E}`. Every per-label gate therefore has to walk the chain before asking its
+/// question, or it judges the NAME instead of the label.
+///
+/// [`check_effect_registration`] always did; [`check_modify_targets`] did not, and that
+/// asymmetry was the measured gap — `effects E = Modify[Thing]` on a sort put a
+/// TYPE-targeted `Modify` into every one of its operations' rows and the "a `Modify`
+/// target is a PLACE" refusal never fired, while the same sort with an UNREGISTERED
+/// label was refused. Same route, same fact, two answers.
+///
+/// `None` on chain overflow only — a non-sort head (a row var, an arrow) is returned
+/// AS IS, since it is a label this walk has nothing to do to, not a failure. That split
+/// is why the return is `Option<Value>` and not `Value`: the overflow case is a
+/// malformed (cyclic) declaration this walk owns no verdict for, and withholding is the
+/// conservative answer there rather than a silent skip of something judgeable.
+fn resolve_effect_label_alias(kb: &KnowledgeBase, label: &Value) -> Option<Value> {
     let mut cur = label.clone();
     // An alias chain is finite by construction; the bound is a backstop against a cyclic
-    // one, which is a malformed declaration this pass does not own a verdict for —
-    // withholding the refusal is the conservative answer there, not a silent skip of a
-    // case that could be judged.
+    // one — see the doc above.
     for _ in 0..ALIAS_CHAIN_LIMIT {
         let base = match type_head(kb, &cur) {
             TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
-            _ => return None,
+            _ => return Some(cur),
         };
         match resolve_sort_alias(kb, base) {
-            None => return Some(base),
+            None => return Some(cur),
             Some(target) => cur = Value::term(target),
         }
     }
@@ -35155,6 +35501,16 @@ fn classify_modify_target(
     modify: Option<Symbol>,
     keys: &ModifyTargetKeys,
 ) -> Option<(Value, ModifyTarget)> {
+    // WI-20260831-RSRP5 — NO ALIAS WALK HERE, deliberately, and it was measured before it
+    // was removed. A bound row alias (`effects E = Modify[Thing]`) does have to be
+    // followed before this predicate can answer, but every caller now arrives through
+    // [`effect_element_labels`], which follows it (and explodes a row behind it) as one
+    // walk. Adding a second resolution inside this function made the route-B fixture pass
+    // and then survived its own back-out — the sign of a branch that fires nowhere. The
+    // one call site that still passes a RAW element ([`check_override_refinement`]'s
+    // `malformed_modify`) is dead by construction for the reason recorded at it: the
+    // shape it screens for no longer loads, because [`check_modify_targets`] — through
+    // that same walk — refuses it first.
     let label = peel_effect_atom(kb, e, keys.label);
     if !effect_is_modify(kb, &label, modify) {
         return None;

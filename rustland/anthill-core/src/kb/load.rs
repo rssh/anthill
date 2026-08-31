@@ -11947,8 +11947,9 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// declare no effects and reject through the host channel. (Other reflect
 /// occurrence ops return `Term`/`List`/`Option`, not a bare occurrence, so they are
 /// not macros — see `is_macro`'s container exclusion.)
-fn check_macro_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
+fn check_macro_purity(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     let error_sym = kb.try_resolve_symbol("anthill.prelude.Error");
+    let label_key = kb.intern("label");
     let mut errors = Vec::new();
     let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     // `all_operation_effects` yields one row PER FACT — a spec op and its impl are
@@ -11960,7 +11961,21 @@ fn check_macro_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
         if !super::typing::is_macro(kb, op) {
             continue;
         }
-        let impure = effects.iter().any(|e| {
+        // WI-20260831-RSRP5 — THROUGH THE ALIAS AND THE ROW, like every other per-label
+        // gate. This one's blindness pointed the OTHER way: it refuses anything that is
+        // not `Error`, so a PURE macro declaring `effects {E}` under `effects E = Error`
+        // was refused as impure while the literal `{Error}` spelling loaded. A loud false
+        // refusal rather than the silent admission the sibling gates had — which is why
+        // it survived — but the same defect, and drivable
+        // (`a_macros_pure_row_is_recognized_through_a_bound_alias`). The corpus census
+        // that came with this ticket found exactly two macros (`Relation.conjoin_of`,
+        // `Relation.guarded_of`), both declaring an EMPTY row, so nothing in the tree
+        // exercised it either way.
+        let labels: Vec<crate::eval::value::Value> = effects
+            .iter()
+            .flat_map(|e| super::typing::effect_element_labels(kb, e, label_key))
+            .collect();
+        let impure = labels.iter().any(|e| {
             !error_sym.is_some_and(|es| super::typing::effect_label_names_sort(kb, e, es))
         });
         if impure && reported.insert(op) {
@@ -12579,6 +12594,15 @@ fn load_phase_inner(
     // registration pass because both ask a question of an operation's own declared row.
     all_errors.extend(super::typing::check_declared_row_contradiction(kb));
     mark!("check_declared_row_contradiction");
+
+    // WI-20260831-RSRP5: the same two rules, applied where a CARRIER writes an effect
+    // row — `provides Spec[E = {…}]`. Every operation projecting that row carries its
+    // labels, so this is where a type-targeted `Modify` or an unregistered kind is
+    // refused; see `check_provision_row_bindings` for why the binding and not the
+    // projection. After the two gates it mirrors, so a program that breaks the rule in
+    // BOTH places reads its operation-row diagnostic first.
+    all_errors.extend(super::typing::check_provision_row_bindings(kb));
+    mark!("check_provision_row_bindings");
     // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so

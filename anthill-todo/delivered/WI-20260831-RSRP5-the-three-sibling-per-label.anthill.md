@@ -3,9 +3,9 @@
 - id: WI-20260831-RSRP5-the-three-sibling-per-label
 - created: 2026-08-31T13:50:22Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-31T13:50:22Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-08-31T16:18:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -51,4 +51,33 @@ Fixed in APWM3's own commit, since a change that breaks a gate owns it. Two thin
 The gate's "AS DECLARED / empty substitution" stance was NOT breached and needed no renegotiation: that stance is about a type-parameter INSTANTIATION, which arrives at a call and is WI-705's. A receiver projection reads the type a parameter is DECLARED with, in the same signature.
 
 REMAINING SCOPE IS TWO GATES, not three: `check_modify_targets` and `check_effect_registration`. The spec-exemption note in the earlier feedback applies to the registration one only.
+
+### 2026-08-31T16:18:47Z — feedback — user
+
+DELIVERY RECORD. Rust 6226 passed / 0 failed; scaland 524 / 0 (untouched — it has no typing or effects module at all, so there is nothing to mirror; 78 files, zero mention `Effect`).
+
+THE CENSUS CHANGED THE FIX, and that is the main result. This ticket asked to teach the per-label gates to read a PROJECTION through. Enumerating how a concrete row actually REACHES a projection gave three routes:
+
+  A  `provides Spec[E = {bad}]`  a carrier's row binding   judged by NOTHING  ->  refused AT THE BINDING
+  B  `effects E = bad`           a sort's bound alias      registration refused, Modify did not  ->  both refuse
+  C  a written type argument     `s: Spec[E = {…}]`        not measurable  ->  unchanged, filed as WI-20260831-PYNS2
+
+A label can only reach a projected row by being WRITTEN somewhere, so judging it at the binding covers the projection route ENTIRELY — one site instead of every caller, a diagnostic naming the line the author wrote, and a verdict for a carrier no caller has projected yet. NOT VACUOUS: instrumented, the new pass inspects 20 real row bindings on a guardians load (the whole prelude Stream/FiniteCollection family plus both `Llm` carriers) and passes all of them.
+
+IT ALSO SETTLES THE SPEC QUESTION the earlier feedback raised, WITHOUT editing the exemption. §5.5 exempts "a receiver projection (`s.E`)" from the registration rule because it names no kind — which is right once the kind is judged where the ROW is written. §5.5 now says so, and points at PYNS2 for route C.
+
+THREE THINGS BUILT AND THEN DELETED, each because it survived its own back-out:
+  1. an alias walk inside `classify_modify_target` — made the route-B test pass, then the test still passed with it removed (the caller already resolves the alias);
+  2. wiring `check_effect_registration` onto the shared walk — reds NOTHING. Its alias half already lives in `effect_label_kind`; its row half targets `sort E = {A, B}`, which I measured is a PARSE ERROR. That closes the residue recorded on `effect_label_kind` ("no population to measure") with the reason: the shape is not writable;
+  3. my first three back-outs, which were too coarse — dropping `peel_effect_atom` as well made `check_effect_registration` refuse the stdlib's seven guarded `Error[DivisionByZero]` rows, reddening everything including my own control. The sharp matrix is in the test file's header.
+
+THE MACRO CENSUS THIS TICKET ASKED FOR: exactly two macros exist (`Relation.conjoin_of`, `Relation.guarded_of`), both with EMPTY rows. Nearly left it on that basis — but the shape is drivable and the blindness points the OTHER way: `check_macro_purity` WRONGLY REFUSES a pure macro whose `Error` is reached through an alias. Fixed, with the literal spelling as control.
+
+/code-review RAISED FOUR FINDINGS ON THIS WORK; all four fixed, two of them verified by me on their own fixtures first:
+  * my new `Modify` diagnostic told the author "a row binding cannot name a place" — FALSE, and contradicted by `ModifyTarget::Place => None` two lines above it. MEASURED: `provides Spec[E = {Modify[clock2]}]` over a nullary ambient constructor LOADS. Message rewritten to name that form as the repair; `a_nullary_ambient_place_is_lawful_in_a_row_binding` pins it.
+  * the dedup key dropped the row PARAMETER, so `provides TwoRows[E = {Beep}, F = {Beep}]` reported ONCE, naming neither slot. MEASURED (1 error; now 2). Param is in the key and the message.
+  * `check_modify_targets` printed only the RESOLVED label, so an author who wrote `effects {E}` was shown `Modify[Thing]` — a token absent from their file. Now "`E`, which names `Modify[T = Thing2]`", asserted in the test.
+  * `effect_row_params_of_spec` was recomputed per PROVISION; memoized per spec.
+
+A fifth finding is about WI-20260830-X9PB4 (a neighbouring commit), recorded as feedback there rather than fixed here.
 
