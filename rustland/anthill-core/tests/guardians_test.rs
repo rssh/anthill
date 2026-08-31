@@ -1484,8 +1484,9 @@ fn read_verdict(
 /// `effects {Error}` in place of `{Branch, Error}` both legs answer identically, so the
 /// `Branch` label was inert and the `LiveLlm` refusal came from ordinary row coverage.
 /// Driving 054 through a row projection needs the parameter typed at the CONCRETE carrier,
-/// and that spelling is refused today by a coverage gap rather than by 054 —
-/// WI-20260830-APWM3, whose acceptance is exactly that test.
+/// which WI-20260830-APWM3 made writable; that test is the next one in this file, and it
+/// is where 054 is actually driven. This row stays a LITERAL-`{Error}` coverage check,
+/// which is the other half and still worth its own measurement.
 ///
 /// WHAT FAILS WHEN IT IS BACKED OUT, and the back-out that ISOLATES is not the obvious
 /// one. MEASURED, both:
@@ -1531,6 +1532,130 @@ end
     assert!(
         errs.iter().any(|e| e.contains("undeclared effect: External")),
         "expected `External` threaded through from `LiveLlm`'s instantiation; got: {errs:#?}"
+    );
+}
+
+/// WI-20260830-APWM3 — A ROW PROJECTED OFF A **CONCRETE** CARRIER IS A SET OF LABELS,
+/// AND 054 STILL BARS `Branch × External` THROUGH IT.
+///
+/// The test the row above says it cannot be: `Harness.generate` declares
+/// `effects {llm.E, Error}`, and a caller that names the CONCRETE carrier is where a
+/// projected row stops being a variable and becomes `{External}`. Two things had to hold
+/// at once for that spelling to be writable, and they pull in opposite directions —
+/// hence one test with two rows that must fail for DIFFERENT reasons.
+///
+/// ROW (1) IS THE GAP CLOSED. `effects {llm.E, Error}` at `llm: LiveLlm` used to be
+/// refused `expected declared: [{merge[left = present[label = External], right =
+/// empty_row]}, Error], got undeclared effect: External` — the projection RESOLVED, and
+/// the coverage comparison then asked "is `External` among the declared members" of a
+/// list holding that whole merge as ONE member. So the only row that loaded at a concrete
+/// carrier was the OVER-declared literal one (`{External, Error}`), which is the opposite
+/// of what `effects E = ?` is for.
+///
+/// ROW (2) IS THE EVASION THAT OPENS WHEN IT CLOSES, and it is the reason the two halves
+/// could not ship apart. `check_branch_external_exclusion` matches a row's LITERAL
+/// labels, so it never saw the `External` inside `llm.E`; `{Branch, llm.E, Error}` was
+/// refused only by the coverage gap above. Fix coverage alone and that row LOADS — a
+/// `Branch` region performing `External`, which 054 says can never be made sound.
+///
+/// THE DIAGNOSTIC TEXT IS ASSERTED, NOT MERELY THE REFUSAL, because this row was
+/// ALREADY refused before the fix and would stay red through a change that fixed
+/// nothing. Only the message separates "054 fired" from "coverage fired".
+///
+/// WHAT FAILS WHEN IT IS BACKED OUT — TWO AXES, TWO BACK-OUTS, each isolating to THIS
+/// test and nothing else in the file. The five rows, measured on all three trees:
+///
+/// ```text
+///                                    delivered    un-flatten     exclusion reads
+///                                                 coverage       the RAW row
+///   Llm      {llm.E, Error}          LOADS        LOADS          LOADS
+///   FakeLlm  {llm.E, Error}          LOADS        LOADS          LOADS
+///   LiveLlm  {llm.E, Error}          LOADS        REFUSED-cov    LOADS
+///   FakeLlm  {Branch, llm.E, Error}  LOADS        LOADS          LOADS
+///   LiveLlm  {Branch, llm.E, Error}  REFUSED-054  REFUSED-cov    LOADS
+/// ```
+///
+///   * Un-flatten the declared side (`explode_declared_effect_row` returning the atom
+///     whole at the op-effects coverage site) moves ROW (1) and NOTHING ELSE.
+///   * Un-read the exclusion (`declared_row_labels_read_through` returning its argument)
+///     moves ROW (2) and NOTHING ELSE — and it moves it by LOADING CLEAN, which is the
+///     evasion.
+///
+/// ROW (2) IS RED UNDER BOTH, BY DIFFERENT ASSERTIONS, which is why its message is
+/// asserted twice: `expect_err` catches the second back-out, and "the refusal must be
+/// 054's" catches the first, where the row is still refused but by coverage.
+///
+/// THE THREE INVARIANT ROWS ARE CONTROLS, and their invariance is the point rather than
+/// a gap in coverage. Rows 1 and 2 say the defect was specific to a NON-EMPTY concrete
+/// instantiation — an abstract receiver has nothing to flatten and `E = {}` flattens to
+/// nothing, which is exactly why the gap survived so long. Row 4 is the one that makes
+/// ROW (2) mean anything at all: without it, "refused at `LiveLlm`" is equally consistent
+/// with a gate that rejects any row mentioning `Branch`. 054 excludes a CO-OCCURRENCE,
+/// and the same row at `E = {}` must load — it does, on every tree.
+#[test]
+fn a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external() {
+    let caller = |carrier: &str, effects: &str| {
+        format!(
+            r#"
+sort guardians.agent.Caller
+  import anthill.prelude.{{Error, Branch}}
+  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.TrustLevel.{{Public}}
+  entity mk
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+    effects {effects} = h.generate(llm, p)
+end
+"#
+        )
+    };
+    let load = |carrier: &str, effects: &str| -> Result<(), Vec<String>> {
+        let mut owned = base_sources();
+        owned.push(caller(carrier, effects));
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        common::try_load_kb_prepared_files(&refs, register_pipeline).map(|_| ())
+    };
+
+    // ── the projection axis: ABSTRACT / EMPTY-CONCRETE / NON-EMPTY-CONCRETE ──
+    // The first two loaded before this ticket too and are stated as controls: they are
+    // what proves the defect was specific to a NON-EMPTY concrete instantiation rather
+    // than to projections in general.
+    load("Llm", "{llm.E, Error}")
+        .unwrap_or_else(|e| panic!("an ABSTRACT receiver's row var: {e:#?}"));
+    load("FakeLlm", "{llm.E, Error}")
+        .unwrap_or_else(|e| panic!("a concrete carrier at `E = {{}}`: {e:#?}"));
+
+    // ROW (1) — the gap closed.
+    load("LiveLlm", "{llm.E, Error}").unwrap_or_else(|e| {
+        panic!(
+            "`effects {{llm.E, Error}}` at `llm: LiveLlm` must LOAD — the projection \
+             resolves to `{{External}}`, which is exactly the row the body incurs; got: {e:#?}"
+        )
+    });
+
+    // THE CONTROL FOR ROW (2): `Branch` beside a row that flattens to NOTHING is not a
+    // co-occurrence, so it must load. Without this, row (2) cannot distinguish 054 from
+    // a gate that bars `Branch` outright.
+    load("FakeLlm", "{Branch, llm.E, Error}").unwrap_or_else(|e| {
+        panic!(
+            "`Branch` beside an EMPTY projected row is not `Branch × External` and must \
+             load — 054 excludes a co-occurrence, not the `Branch` label; got: {e:#?}"
+        )
+    });
+
+    // ROW (2) — refused, and refused BY 054.
+    let errs = load("LiveLlm", "{Branch, llm.E, Error}")
+        .expect_err("`Branch` beside a projected `{External}` must be refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("at most one of `Branch` / `External`")),
+        "the refusal must be 054's `Branch × External` exclusion, NOT a coverage error — \
+         a coverage error here is the pre-WI-20260830-APWM3 behaviour, which refused this \
+         row for the wrong reason and left the evasion open; got: {errs:#?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("undeclared effect")),
+        "no coverage error may survive beside the 054 refusal — the projected row IS \
+         covered; got: {errs:#?}"
     );
 }
 
@@ -2138,4 +2263,85 @@ fn a_clause_at_an_undeclared_bare_name_is_refused() {
             .any(|e| e.contains("asserts a fact at `Note`, a name it did not declare")),
         "expected the containment rule to refuse the bare-name clause; got: {errs:#?}"
     );
+}
+
+/// WI-20260830-APWM3 — A DENIAL IS NOT EVADED BY PROJECTING THE LABEL IT DENIES.
+///
+/// `effects {llm.E, Error, -External}` at `llm: LiveLlm` says two incompatible things:
+/// the projection PRESENTS `External` (the carrier binds `E = {External}`) and the `-X`
+/// DENIES it. It is the literal `{External, Error, -External}` in another spelling, and
+/// `check_declared_row_contradiction` has refused that literal since WI-20260825-CBRSW.
+///
+/// THIS TEST EXISTS BECAUSE THE PROJECTED SPELLING ESCAPED, AND BECAUSE APWM3 IS WHAT
+/// LET IT. Before that ticket the row was refused BY ACCIDENT, one pass downstream: the
+/// op-effects coverage check could not match the body's incurred `External` against the
+/// un-flattened merge term, fell through to the denial arm, and reported a violated `-X`.
+/// APWM3 taught that check to flatten — so the match succeeded, no denial arm ran, and
+/// the program LOADED with a body performing `External` under a row forbidding it. Found
+/// by /code-review on the delivering diff, measured as loading, and fixed in the same
+/// commit by discharging the projection where the verdict belongs.
+///
+/// THE TWO OTHER CARRIERS ARE THE CONTROLS, and they are why this cannot be satisfied by
+/// simply refusing any row with a `-X` beside a projection. Neither PRESENTS the denied
+/// label, so neither contradicts: `FakeLlm` binds `E = {}`, and an abstract `Llm` leaves
+/// a row variable that no instantiation has yet filled (a contradiction an instantiation
+/// creates is WI-705's, at the call). Both must load, and do.
+///
+/// WHAT FAILS WHEN IT IS BACKED OUT — two independent halves, each measured:
+///
+///   * `eliminate_declared_row_projections` returning its argument in
+///     `check_declared_row_contradiction`: the `LiveLlm` projected row LOADS. The literal
+///     row stays refused, which is exactly the asymmetry that made this a hole.
+///   * `effect_value_is_row_shaped` back to the hand-written local-name list that gate
+///     carried: the projected row LOADS AGAIN, because the eliminated element is an
+///     `effects_rows` WRAPPER whose local name is `EffectsRows` — a spelling the list got
+///     wrong, so the element matched no arm and contributed nothing in silence. Latent
+///     while every element was written bare; the elimination is what made it live.
+#[test]
+fn a_denial_is_not_evaded_by_projecting_the_label_it_denies() {
+    let caller = |carrier: &str, effects: &str| {
+        format!(
+            r#"
+sort guardians.agent.Caller
+  import anthill.prelude.{{Error, External}}
+  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.TrustLevel.{{Public}}
+  entity mk
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+    effects {effects} = h.generate(llm, p)
+end
+"#
+        )
+    };
+    let load = |carrier: &str, effects: &str| -> Result<(), Vec<String>> {
+        let mut owned = base_sources();
+        owned.push(caller(carrier, effects));
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        common::try_load_kb_prepared_files(&refs, register_pipeline).map(|_| ())
+    };
+    let admits_and_lacks = "both ADMITS and LACKS `External`";
+
+    // THE CONTROL, and the reason this assertion is not just "a projected row was
+    // refused": the SAME contradiction spelled literally, which this pass has always
+    // refused. The projected form must reach the same verdict by the same message.
+    let literal = load("LiveLlm", "{External, Error, -External}")
+        .expect_err("the literal `{External, -External}` is refused");
+    assert!(
+        literal.iter().any(|e| e.contains(admits_and_lacks)),
+        "the literal control must be the uninhabitable-row refusal; got: {literal:#?}"
+    );
+
+    let projected = load("LiveLlm", "{llm.E, Error, -External}")
+        .expect_err("a projected `{External}` beside `-External` is the same contradiction");
+    assert!(
+        projected.iter().any(|e| e.contains(admits_and_lacks)),
+        "the PROJECTED spelling must reach the same verdict as the literal one — anything \
+         else means the denial can be evaded by writing the label as `llm.E`; got: {projected:#?}"
+    );
+
+    // NEITHER CONTROL PRESENTS THE DENIED LABEL, so neither is a contradiction.
+    load("FakeLlm", "{llm.E, Error, -External}")
+        .unwrap_or_else(|e| panic!("`-External` beside a row that binds `E = {{}}`: {e:#?}"));
+    load("Llm", "{llm.E, Error, -External}")
+        .unwrap_or_else(|e| panic!("`-External` beside an UNINSTANTIATED row var: {e:#?}"));
 }

@@ -148,6 +148,28 @@ pub fn all_operation_effects(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<Value>)> {
         .collect()
 }
 
+/// WI-20260830-APWM3 — `(symbol, params, declared effects)` per `OperationInfo` FACT,
+/// PAIRED. [`all_operation_params`] and [`all_operation_effects`] each walk the facts
+/// alone, and a reader that needs both cannot zip them: they are keyed by SYMBOL and a
+/// symbol may carry more than one fact (a spec op and its impl), so the pairing has to
+/// happen at the fact. The Branch×External gate needs exactly this — it reads the row,
+/// and reading a row written as a projection (`effects {llm.E}`) means eliminating it
+/// against THAT fact's own parameter types.
+pub fn all_operation_params_and_effects(
+    kb: &KnowledgeBase,
+) -> Vec<(Symbol, Vec<(Symbol, Value)>, Vec<Value>)> {
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .map(|(op_sym, head)| {
+            (
+                op_sym,
+                extract_params(kb, head_field(kb, head, "params")),
+                effects_of_head(kb, head),
+            )
+        })
+        .collect()
+}
+
 /// `(op_sym, &head)` for every `OperationInfo` FACT — the shared walk behind
 /// [`all_operation_params`] / [`all_operation_effects`]. ONE entry PER FACT (a spec op
 /// and its impl are separate facts, each with its own signature); each `&Value` head

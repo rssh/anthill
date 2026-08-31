@@ -2388,6 +2388,37 @@ label and `+label` both assert presence, while `-label` records a lacks
 constraint. These spellings are accepted both after an operation's `effects`
 keyword and after an arrow type's `@`.
 
+**A row ELEMENT may be a projection, and it stands for the row it resolves to —
+not for one label** (WI-20260830-APWM3). `operation ask(llm: Llm, p: Prompt)
+effects {llm.E, Error}` reads its worldly effects off the model it was handed,
+and what that element contributes is decided by the RECEIVER'S TYPE, not by the
+element's spelling:
+
+| `llm`'s type | `llm.E` contributes |
+|---|---|
+| `Llm` — the spec, `effects E = ?` still a hole | a row variable, propagated as one |
+| a carrier binding `E = {}` | nothing |
+| a carrier binding `E = {External}` | `External` |
+
+So an element and a label are not the same thing: one projected element may
+stand for several labels or for none, and a rule stated about labels has to be
+read through the projection to hold. Two are:
+
+- the **coverage** of a body's incurred effects against its declaration — the
+  body of `ask` may perform `External` exactly when the carrier it was handed
+  admits it, so the row above is neither over- nor under-declared at any
+  carrier; and
+- proposal 054's **`Branch` × `External`** exclusion, which is what makes that
+  row worth writing. `{Branch, llm.E, Error}` is a searching operation, legal
+  against a fixture at `E = {}` and refused against a live model at
+  `E = {External}` — one row, written once, and the carrier decides.
+
+The **registration** rule below is the deliberate exception, and it is stated
+there: a receiver projection names no kind at the position it is written, so it
+is not judged against `fact Effect[T = K]`. The `Modify`-target rule (§5.6) and
+the declared-row self-contradiction check read elements the same un-projected
+way; WI-20260831-RSRP5 is where whether they should is decided.
+
 **Guarded effects** (proposal 048, WI-478/WI-067) qualify one row element, not
 the whole row. The bare spelling admits one guard term so an outer comma still
 separates row elements; parentheses delimit a conjunctive `RuleBody`:

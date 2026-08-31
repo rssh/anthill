@@ -34766,7 +34766,25 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
     let subst = Substitution::new();
     let mut errors = Vec::new();
     let mut reported: HashSet<Symbol> = HashSet::new();
-    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+    for (op_sym, params, effects) in super::op_info::all_operation_params_and_effects(kb) {
+        // WI-20260830-APWM3 — PROJECTIONS DISCHARGED FIRST, and this is a correction that
+        // ticket owed rather than a widening it chose. A clash SPANNING a projection —
+        // `effects {llm.E, -External}` where `llm: LiveLlm` and `LiveLlm provides
+        // Llm[E = {External}]` — used to be caught downstream by accident: the op-effects
+        // coverage check could not match the incurred `External` against the un-flattened
+        // merge term, fell through to the denial arm, and reported it as a violated `-X`.
+        // APWM3 taught that check to flatten, so the match succeeded and the program
+        // LOADED — a body performing `External` under a row that denies it. MEASURED
+        // both ways; `a_denial_is_not_evaded_by_projecting_the_label_it_denies` is that
+        // program, and the literal `{External, -External}` this pass already refused is
+        // its control.
+        //
+        // The elimination does NOT breach the "AS DECLARED" stance above. That stance is
+        // about a TYPE-PARAMETER INSTANTIATION, which arrives at a CALL and is WI-705's;
+        // a receiver projection reads the type a parameter is DECLARED with, written in
+        // the same signature. `{llm.E, -External}` is uninhabitable as written, at every
+        // call, with nothing instantiated.
+        let effects = eliminate_declared_row_projections(kb, op_sym, &params, &effects);
         // Accumulate ACROSS the atom list, not per atom: a clash may span two elements
         // (`effects {E}, -X`) as well as sit inside one written row. A non-decomposable
         // element contributes nothing — it has its own diagnostic path and must neither
@@ -34787,18 +34805,20 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
             // default spelling, §5.5). Anything else — a malformed element — contributes
             // nothing: it has its own diagnostic path and must neither mask nor fabricate
             // a clash here.
-            let row_shaped = matches!(
-                resolved_functor_name(kb, e),
-                Some(
-                    "empty_row"
-                        | "present"
-                        | "guarded"
-                        | "absent"
-                        | "open"
-                        | "merge"
-                        | "effects_rows"
-                )
-            );
+            //
+            // WI-20260830-APWM3 — CLASSIFIED BY THE SHARED PREDICATE, which keeps the
+            // rule above and fixes the one spelling that was wrong. This list was
+            // hand-written and read the LOCAL name, where the `effects_rows` WRAPPER's
+            // local name is `EffectsRows` — so a wrapped row matched no arm, was not a
+            // TYPE head either, and contributed NOTHING, in silence. Latent while every
+            // element was written bare; live the moment the elimination above began
+            // producing wrapped rows, and MEASURED as such — the first cut of that fix
+            // still let `{llm.E, -External}` load. [`effect_value_is_row_shaped`] reads
+            // the QUALIFIED functor, so it also stops a user sort named `merge` from
+            // being taken for the kernel algebra, and it is the same predicate the
+            // op-effects reader uses — the two cannot drift into disagreeing about what
+            // a row is.
+            let row_shaped = effect_value_is_row_shaped(kb, e);
             if row_shaped {
                 if let Some((p, _tails, a)) = decompose_effect_row_raw(kb, &subst, e) {
                     present.extend(p);
@@ -41128,6 +41148,32 @@ fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value) -> Value {
 /// Absent atoms are DROPPED: they are constraints on the row, not effects
 /// the body incurs.
 fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Vec<Value>> {
+    let row = effect_value_as_row(kb, effect)?;
+    let subst = Substitution::new();
+    let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
+    let mut atoms = present;
+    for t in tails {
+        atoms.push(Value::term(t));
+    }
+    Some(atoms)
+}
+
+/// IS THIS EFFECT VALUE A ROW, and if so what is it as a canonical `effects_rows(…)`?
+/// `None` for an ordinary label (`Modify[c]`, `Error`, a bare row var), which its
+/// callers compare atom-to-atom.
+///
+/// Split out of [`explode_incurred_effect_row`] by WI-20260830-APWM3 so the DECLARED
+/// side ([`explode_declared_effect_row`]) classifies by exactly the same predicate the
+/// INCURRED side does. The two are compared against each other, so a shape one calls a
+/// row and the other calls a label is precisely the mismatch this pair exists to avoid
+/// — the same argument [`wrap_bare_effect_expr_as_row`]'s doc makes for sharing the
+/// WRAP between a call's effect producer and its reader.
+///
+/// Row-shaped = the `effects_rows` wrapper OR a bare `EffectExpression` node
+/// (`merge`/`present`/`absent`/`open`/`empty_row`), matched by QUALIFIED functor so a
+/// user sort that merely shares the short name `merge` is not misclassified. A bound
+/// row var walks to the bare form.
+fn effect_value_as_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Value> {
     let is_rows_wrapper = matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"));
     // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
     // functor symbol off either spelling so the empty row is still recognized
@@ -41145,24 +41191,63 @@ fn explode_incurred_effect_row(kb: &mut KnowledgeBase, effect: &Value) -> Option
     if !is_rows_wrapper && !head_is_row_expr {
         return None;
     }
-    let row: Value = if is_rows_wrapper {
-        effect.clone()
-    } else {
-        // Wrap the bare EffectExpression so `decompose_effect_row` sees the
-        // canonical `effects_rows(…)` shape. Infallible: `head_is_row_expr` above
-        // already says this IS a row, and a row has two carriers (WI-20260820-CTD6D
-        // — [`wrap_bare_effect_expr_as_row`]'s doc carries the census). The `None`
-        // this arm used to be able to produce was read by the caller as "not a row",
-        // which is the pre-WI-441 leak.
-        wrap_bare_effect_expr_as_row(kb, effect)
-    };
+    if is_rows_wrapper {
+        return Some(effect.clone());
+    }
+    // Wrap the bare EffectExpression so `decompose_effect_row` sees the
+    // canonical `effects_rows(…)` shape. Infallible: `head_is_row_expr` above
+    // already says this IS a row, and a row has two carriers (WI-20260820-CTD6D
+    // — [`wrap_bare_effect_expr_as_row`]'s doc carries the census). The `None`
+    // this arm used to be able to produce was read by the caller as "not a row",
+    // which is the pre-WI-441 leak.
+    Some(wrap_bare_effect_expr_as_row(kb, effect))
+}
+
+/// WI-20260830-APWM3 — the DECLARED twin of [`explode_incurred_effect_row`]: flatten one
+/// declared effect atom into `(atoms that ADMIT an incurred effect, ABSENT labels)`.
+/// `None` when the atom is not row-shaped, and the caller then keeps it whole — exactly
+/// as the incurred side does.
+///
+/// THE DEFECT IT CLOSES. A declared atom is a ROW whenever it was written as a
+/// projection off a parameter (`effects {llm.E, Error}`) and the parameter's type is
+/// CONCRETE: `llm: LiveLlm` with `LiveLlm provides Llm[E = {External}]` eliminates
+/// `llm.E` to `merge[left = present[label = External], right = empty_row]`. The
+/// coverage comparison then asked "is the incurred label `External` among the declared
+/// members" of a list holding that merge as ONE OPAQUE MEMBER, and answered no —
+/// `expected declared: [{merge[…]}, Error], got undeclared effect: External`. Only a
+/// NON-EMPTY CONCRETE instantiation trips it: an abstract receiver leaves a row var
+/// with nothing to flatten, and `E = {}` flattens to nothing. So the only row that
+/// loaded at a concrete carrier was the OVER-declared literal one (`{External, Error}`),
+/// which is the opposite of what row polymorphism is for.
+///
+/// THE MIRROR DIRECTION WAS ALREADY FIXED, which is why this is a gap and not a design
+/// choice: WI-375 decomposes an `effects_rows(…)` wrapper on the BODY side precisely so
+/// "the effect machinery sees flat labels, not the wrapper as one opaque effect". Same
+/// reading, other side of the same comparison.
+///
+/// THE THREE BUCKETS, and why absences ride along rather than being dropped as they are
+/// on the incurred side. An incurred `absent` is not an effect anything performs, so
+/// [`explode_incurred_effect_row`] drops it; a DECLARED one is proposal 064's negative
+/// claim (`-Permission[Model]`) and has its own reader — the denied-effect diagnostic.
+/// Returning both buckets is what keeps a `-X` buried inside a projected row visible to
+/// that reader; scanning the un-flattened list for a top-level `absent` functor (what
+/// this replaced) could not see one.
+///
+/// A TAIL VAR IS AN ADMITTING ATOM, not a label: a declared row ending in an open tail
+/// admits whatever binds there, and the incurred side explodes its own tails the same
+/// way, so the two meet as equal vars.
+fn explode_declared_effect_row(
+    kb: &mut KnowledgeBase,
+    effect: &Value,
+) -> Option<(Vec<Value>, Vec<Value>)> {
+    let row = effect_value_as_row(kb, effect)?;
     let subst = Substitution::new();
-    let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
+    let (present, tails, absent) = decompose_effect_row(kb, &subst, &row)?;
     let mut atoms = present;
     for t in tails {
         atoms.push(Value::term(t));
     }
-    Some(atoms)
+    Some((atoms, absent))
 }
 
 /// WI-440: two effect labels match modulo POSITIONAL binder alignment.
@@ -60073,6 +60158,137 @@ pub(super) fn effect_label_names_sort(kb: &KnowledgeBase, label: &Value, sort: S
     }
 }
 
+/// WI-20260830-APWM3 — one operation's declared effect row AS THE PER-LABEL GATES MUST
+/// READ IT: every projection eliminated against the operation's own parameter types, then
+/// every resulting ROW flattened to its member labels.
+///
+/// A per-label gate over `all_operation_effects` asks a question about LABELS ("is this
+/// one `External`?", "is this `Modify`'s target a place?"), and the list it walks holds
+/// ELEMENTS. The two coincide only while every element is written as a bare label. They
+/// come apart at a projection: `effects {llm.E, Error}` is two elements and, once `llm`'s
+/// type is concrete, three labels — and the element carrying the third answers every
+/// per-label question with "no". Both steps are needed and neither suffices:
+/// ELIMINATION turns `llm.E` into the row `{External}`, FLATTENING turns that row into
+/// the label `External`.
+///
+/// ORDER OF THE OUTPUT IS THE DECLARED ORDER, elements expanded in place. No caller
+/// depends on it, but a diagnostic built from this list should read like the row.
+///
+/// WHAT IT COSTS: a row of bare labels — the overwhelming majority — pays two whole-list
+/// scans and allocates nothing. A row carrying a PROJECTION or any row-shaped element
+/// pays a `decompose_effect_row` per such element, and "row-shaped" INCLUDES a single
+/// `guarded` atom, so the WI-818 partial primitives (`Stream.head`, `Stream.tail`,
+/// `List.head`) take the flattening path on every load even though none of them projects
+/// anything. That is a handful of operations per KB against a pass that already walks
+/// every `OperationInfo` fact, so it is stated rather than optimized — but stated,
+/// because an earlier draft of this doc claimed "no allocation" for exactly that
+/// population and would have misled the next person sizing this pass (/code-review).
+///
+/// AN ELIMINATION FAILURE KEEPS THE RAW ELEMENT, deliberately: see
+/// [`check_branch_external_exclusion`]'s doc for why this reader does not also own that
+/// diagnostic.
+///
+/// TWO SIBLINGS STILL READ THE RAW ROW: [`check_modify_targets`] and
+/// [`check_effect_registration`] ask the same per-label question of the same facts, so a
+/// `Modify[T]` or an unregistered kind reached only through a projection is invisible to
+/// each. They are left alone because this ticket's change does not worsen them, and
+/// because the registration one has a SPEC EXEMPTION to renegotiate first
+/// (`docs/kernel-language.md` §5.5 lists "a receiver projection (`s.E`)" among the
+/// positions that name no kind). WI-20260831-RSRP5 decides both.
+///
+/// THE THIRD SIBLING IS FIXED HERE, and the difference is the whole rule for when a
+/// deferral is legitimate: [`check_declared_row_contradiction`] was made WRONG by this
+/// ticket, not merely left blind by it. Flattening the declared side removed an
+/// accidental refusal — `{llm.E, -External}` had been caught downstream as a violated
+/// denial, and once the coverage match succeeded nothing caught it at all. A change that
+/// breaks a gate owns that gate; it takes [`eliminate_declared_row_projections`], the
+/// half of this function it needs. Found by /code-review, measured loading, and
+/// `a_denial_is_not_evaded_by_projecting_the_label_it_denies` is the program.
+fn declared_row_labels_read_through(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    params: &[(Symbol, Value)],
+    effects: &[Value],
+) -> Vec<Value> {
+    let eliminated = eliminate_declared_row_projections(kb, op_sym, params, effects);
+    if !eliminated.iter().any(|e| effect_value_is_row_shaped(kb, e)) {
+        return eliminated;
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for e in eliminated {
+        match explode_declared_effect_row(kb, &e) {
+            // The ABSENT half is dropped: a per-label gate asks about labels the row
+            // PRESENTS, and `-X` is the row promising X is not performed. Reading it as a
+            // present label would make `effects {Branch, -External}` — a row that
+            // explicitly forbids the co-occurrence — read as the co-occurrence itself.
+            // A gate that must see BOTH halves does its own decomposition off the
+            // eliminated elements ([`check_declared_row_contradiction`]).
+            Some((admitting, _absent)) => out.extend(admitting),
+            None => out.push(e),
+        }
+    }
+    out
+}
+
+/// WI-20260830-APWM3 — THE FIRST HALF OF [`declared_row_labels_read_through`], on its own
+/// because the two gates that need it need DIFFERENT second halves. Discharge each
+/// declared element's receiver projections against the operation's own parameter types,
+/// leaving the elements otherwise as declared.
+///
+/// [`check_branch_external_exclusion`] wants the result FLATTENED TO PRESENT LABELS —
+/// its question is "which labels does this row perform". [`check_declared_row_contradiction`]
+/// wants the elements themselves, because it decomposes present AND absent across the
+/// whole list with its own measured classification, and an absence is half of the
+/// question it asks. Sharing only the elimination is what lets each keep its own reading.
+///
+/// AN ELIMINATION FAILURE KEEPS THE RAW ELEMENT, deliberately — see
+/// [`check_branch_external_exclusion`]'s doc for why neither of these readers also owns
+/// that diagnostic.
+///
+/// COST: one [`value_contains_projection`] walk per element, and nothing else, for the
+/// overwhelming majority of rows — a projection in an effect row is rare. The walk is
+/// what the whole-list pre-check tests, so a row with none allocates nothing.
+fn eliminate_declared_row_projections(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    params: &[(Symbol, Value)],
+    effects: &[Value],
+) -> Vec<Value> {
+    if !effects.iter().any(|e| value_contains_projection(kb, e)) {
+        return effects.to_vec();
+    }
+    let param_map: HashMap<Symbol, Value> = params.iter().cloned().collect();
+    let ctx = TypeErrorContext::OperationEffects { op_name: op_sym };
+    let span = kb.functor_span(op_sym).map(|s| s.span);
+    effects
+        .iter()
+        .map(|e| {
+            if !value_contains_projection(kb, e) {
+                return e.clone();
+            }
+            eliminate_type_projections(kb, e, &param_map, None, &ctx, span)
+                .unwrap_or_else(|_| e.clone())
+        })
+        .collect()
+}
+
+/// Is this declared effect element a ROW (rather than one label)? The `&KnowledgeBase`
+/// twin of [`effect_value_as_row`]'s classification, for a caller that only needs the
+/// question answered — [`declared_row_labels_read_through`]'s fast path, which must not
+/// take the `&mut` wrap just to decide it has nothing to do.
+fn effect_value_is_row_shaped(kb: &KnowledgeBase, effect: &Value) -> bool {
+    if matches!(type_dispatch_name_view(kb, effect), Some("effects_rows")) {
+        return true;
+    }
+    effect.head(kb).functor_sym().is_some_and(|sym| {
+        matches!(
+            kb.qualified_name_of(sym)
+                .strip_prefix("anthill.prelude.EffectExpression."),
+            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
+        )
+    })
+}
+
 /// WI-701 / proposal 054 §"`Branch` and `External`": a `Branch` region may not
 /// perform `External`, so the typer REJECTS a declared effect row that carries both.
 ///
@@ -60097,11 +60313,29 @@ pub(super) fn effect_label_names_sort(kb: &KnowledgeBase, label: &Value, sort: S
 /// where the search has committed to its solutions (the sound sandwich: read the
 /// world before the search, search over tracked state only, write after the commit).
 ///
-/// Walks every `OperationInfo` fact (via [`all_operation_effects`], NOT the
+/// Walks every `OperationInfo` fact (via [`all_operation_params_and_effects`], NOT the
 /// first-fact-only cache) so a spec AND its impl are each checked; a diagnostic is
 /// emitted once per offending op symbol. Inert on a KB without the `External` prelude
 /// (WI-699) — nothing can carry the label, so there is nothing to exclude.
-fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
+///
+/// READS EACH ROW THROUGH ITS PROJECTIONS (WI-20260830-APWM3), which is what makes the
+/// gate hold at a concrete carrier rather than only on a literal row. `effects {Branch,
+/// llm.E, Error}` with `llm: LiveLlm` and `LiveLlm provides Llm[E = {External}]` PRESENTS
+/// both labels, and the un-eliminated `llm.E` names neither — so this gate saw only
+/// `Branch` and admitted it. It did not matter while the sibling coverage check refused
+/// that row for its own (wrong) reason; closing that gap is precisely what turned this
+/// blindness into a live evasion, which is why the two moved in one commit. The evasion
+/// is not theoretical: it is a `Branch` region performing `External`, the one thing 054
+/// says can never be made sound.
+///
+/// THE ELIMINATION IS A READ, NOT A VERDICT. An un-dischargeable projection (`effects
+/// s.Nonexistent`) keeps its raw atom here and is judged as one — this gate does not
+/// report it. The well-formedness verdict for a broken signature projection belongs to
+/// the body pass (`effect_proj_failed`), and raising it a second time here would make one
+/// defect print two errors. What that leaves open is a BODY-LESS operation whose effect
+/// projection names nothing: no pass eliminates its row, so no pass refuses it. That gap
+/// predates this ticket and is untouched by it.
+fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     let (Some(branch_sym), Some(external_sym)) = (
         kb.try_resolve_symbol("anthill.prelude.Branch"),
@@ -60110,7 +60344,8 @@ fn check_branch_external_exclusion(kb: &KnowledgeBase) -> Vec<TypeError> {
         return errors;
     };
     let mut reported: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-    for (op_sym, effects) in super::op_info::all_operation_effects(kb) {
+    for (op_sym, params, effects) in super::op_info::all_operation_params_and_effects(kb) {
+        let effects = declared_row_labels_read_through(kb, op_sym, &params, &effects);
         let has_branch = effects
             .iter()
             .any(|e| effect_label_names_sort(kb, e, branch_sym));
@@ -63338,16 +63573,18 @@ fn check_operation_bodies(
                 // message, whose two halves must be comparable — printing the written form
                 // beside a resolved incurred effect is what made the pre-WI-441 version
                 // report `expected [E], got ?_` for a row that matched.
+                //
+                // WI-20260830-APWM3: FLATTENED FIRST. A declared atom that is itself a
+                // ROW — which is what an `effects {llm.E, …}` projection becomes as
+                // soon as the receiver's type is concrete — contributes its MEMBERS,
+                // not itself; see [`explode_declared_effect_row`] for the defect and
+                // for why the absences ride out of the same walk instead of a separate
+                // top-level `absent` scan. A non-row atom is kept whole, so a plain
+                // label, a denoted `Modify[c]` and a bare row var compare exactly as
+                // before.
                 let canon_subst = (*op.rigidify).clone();
-                let declared_canon: Vec<Value> = effective_effects
-                    .iter()
-                    .map(|e| walk_type_deep_value(kb, &canon_subst, e))
-                    .collect();
                 let atom_label_key = kb.intern("label");
-                let declared_display: Vec<String> = effective_effects
-                    .iter()
-                    .map(|e| effect_atom_display(kb, e, atom_label_key))
-                    .collect();
+                let mut declared_canon: Vec<Value> = Vec::new();
                 // WI-20260825-CBRSW — the DENIED atoms of the declared row, kept apart
                 // so an effect the row explicitly forbids is not reported as one the
                 // author merely forgot to declare. The two have different repairs: an
@@ -63355,12 +63592,35 @@ fn check_operation_bodies(
                 // cannot be — the row says the body must not perform it. Proposal 064's
                 // whole value is in that negative claim, so it gets its own message.
                 let mut declared_absent: Vec<Value> = Vec::new();
+                // THE DISPLAY IS BUILT FROM THE SAME FLATTENING, which is the rule the
+                // pre-APWM3 note here already stated for the elimination — "a
+                // diagnostic names the atoms AS DISCHARGED" — carried one step
+                // further. The two halves of this message must be comparable, and
+                // printing `{merge[left = present[label = External], right =
+                // empty_row]}` beside an incurred `External` is the un-comparable
+                // rendering that made the gap read as a mystery rather than as the
+                // over-declaration it asks for. Absences keep their written `-X` form
+                // via [`effect_atom_display`].
+                let mut declared_display: Vec<String> = Vec::new();
                 for e in &effective_effects {
-                    if resolved_functor_name(kb, e) != Some("absent") {
-                        continue;
-                    }
-                    if let Some(l) = named_child_value(kb, e, atom_label_key) {
-                        declared_absent.push(walk_type_deep_value(kb, &canon_subst, &l));
+                    match explode_declared_effect_row(kb, e) {
+                        Some((admitting, absent)) => {
+                            for a in &admitting {
+                                declared_display.push(effect_atom_display(kb, a, atom_label_key));
+                                declared_canon.push(walk_type_deep_value(kb, &canon_subst, a));
+                            }
+                            for l in &absent {
+                                declared_display.push(format!(
+                                    "-{}",
+                                    type_display_name_value(kb, l)
+                                ));
+                                declared_absent.push(walk_type_deep_value(kb, &canon_subst, l));
+                            }
+                        }
+                        None => {
+                            declared_display.push(effect_atom_display(kb, e, atom_label_key));
+                            declared_canon.push(walk_type_deep_value(kb, &canon_subst, e));
+                        }
                     }
                 }
                 for effect in &ext_effects {
@@ -63390,6 +63650,29 @@ fn check_operation_bodies(
                         // device (WI-067), not a body-side obligation — the
                         // author's asserted claim, exactly as for the body-less
                         // partial primitive `div`.
+                        //
+                        // WI-20260830-APWM3 LEFT THAT SECOND LEG FIRING NOWHERE, and it
+                        // is kept deliberately rather than by oversight. `guarded` is
+                        // row-shaped, so [`explode_declared_effect_row`] now flattens a
+                        // top-level `L :- g` to `L` via `decompose_effect_row`'s guarded
+                        // arm — which states the SAME conservative-presence rule — and
+                        // the direct compare above answers first. MEASURED across the
+                        // whole suite: 19 312 firings with the flattening backed out
+                        // (`Stream.head`, `Stream.tail`, `List.head` — the WI-818
+                        // primitives themselves), 0 with it in. What is left to it is the
+                        // atom the explode DECLINES: `decompose_effect_row` returns
+                        // `None` on a row whose own present/absent sets clash
+                        // ([`row_self_contradiction`]), and the un-flattened atom then
+                        // reaches here whole. A single written element cannot be that
+                        // row — an `effects {a, b}` group loads as SEPARATE atoms, so a
+                        // guarded one decomposes alone and never clashes — but a
+                        // PROJECTED row carrying `{L :- g, -L}` from a carrier binding
+                        // can be, and that shape was not constructible to drive here.
+                        // So this is a narrow, measured, un-driven guard, and the
+                        // asymmetry decides it: keeping it costs one qualified-name
+                        // compare on a path already failing, and dropping it would
+                        // refuse `Stream.head` outright if any decline path exists that
+                        // this reading missed.
                         let declared = declared_canon.iter().any(|d| {
                             views_structurally_equal(kb, &comp_canon, d)
                                 || guarded_effect_label(kb, d).is_some_and(|lbl| {

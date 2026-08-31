@@ -60,3 +60,13 @@ EIGHT ROWS in `wi_x9pb4_require_dictionary_element_test`. FOUR fail on back-out 
 
 6. THE NEW TEST FILE WAS UNTRACKED while `wi_tests.rs` already named it — a tree where `cargo test -p anthill-core` would not compile for anyone else. `git add`ed.
 
+### 2026-08-31T14:38:18Z — feedback — user
+
+/code-review FINDING ON THE DELIVERED COMMIT (e5a4ea12), raised while reviewing an unrelated diff that shared the file. NOT VERIFIED BY ME — recorded here so it is not lost, and so whoever picks it up knows to measure it first rather than take it on faith.
+
+CLAIM: `typing.rs` — `WitnessGoal::synthesized` is GOAL-WIDE, so one synthesized wildcard anywhere in the goal downgrades EVERY `Ambiguous` verdict to `Undecided`, including a tie decided entirely on PINNED elements. The reviewer names this ticket's own fixture as such a case: in `a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect`, `Carrier provides MidA` and `Carrier provides MidB` both reach `Spec` at the pinned `C` (via `types_lesseq`), and `Note` merely fails to break the tie — so a genuine two-route overlap on the carrier is reported as "cannot decide" and the call silently delays, where the `Defect` / `debug_assert!` channel was the intended signal.
+
+Severity LOW and CONSERVATIVE — no wrong answer is produced, the coherence SIGNAL is lost. Suggested repair: a per-element check ("is the candidates' disagreement on a synthesized binding?") rather than a goal-wide flag.
+
+WHAT TO MEASURE FIRST, because the claim is exactly the shape that dissolves: build a tie whose disagreement is on a PINNED element with a synthesized element present elsewhere in the same goal, and check whether it reports `Defect` today. If it does, the flag is not as coarse as the finding says. If it does not, the fixture named above is the witness and the per-element repair needs its own control — a tie that genuinely IS on the synthesized element must still delay.
+

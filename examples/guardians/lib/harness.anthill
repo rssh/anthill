@@ -101,15 +101,17 @@ sort guardians.Harness
   -- being an `Llm`. Welded to the interface it forced `FakeLlm`, which leaves the
   -- process untouched, to declare it too.
   --
-  -- THE `Branch` STORY IS NOT YET TRUE, and is recorded here because the obvious
-  -- reading of this row is that it buys one. 054 bars `Branch × External`, so a
-  -- SEARCHING generator — try, check, backtrack — should now be writable against the
-  -- fixture and barred against the live model. MEASURED, it is not reachable: driving
-  -- it needs the caller's parameter typed at the CONCRETE carrier, and that spelling
-  -- is refused today by a coverage gap rather than by 054 (a non-empty row projected
-  -- off a concrete carrier stays one opaque merge term). WI-20260830-APWM3, whose
-  -- acceptance is exactly that test — including that the refusal must carry 054's own
-  -- diagnostic, since the row is refused for the wrong reason today.
+  -- AND THE `Branch` STORY IS THE SECOND HALF OF WHAT THAT BUYS. 054 bars
+  -- `Branch × External`, so a SEARCHING generator — try, check, backtrack — is
+  -- writable against the fixture and barred against the live model, from ONE row
+  -- written once here. Driving it needs the caller's parameter typed at the CONCRETE
+  -- carrier (`llm: LiveLlm`), where `llm.E` stops being a variable and becomes
+  -- `{External}`; until WI-20260830-APWM3 that spelling was refused by a coverage gap
+  -- rather than by 054 — a non-empty projected row was compared as one opaque merge
+  -- term — which made the `Branch` label inert. Both halves are measured together in
+  -- `a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external`
+  -- (`rustland/anthill-core/tests/guardians_test.rs`), including that the same row at
+  -- `FakeLlm`'s `E = {}` still loads: 054 excludes the CO-OCCURRENCE, not `Branch`.
   operation generate(self: C, llm: Llm, p: Prompt[Public]) -> Source
     effects {llm.E, Error}
 end
