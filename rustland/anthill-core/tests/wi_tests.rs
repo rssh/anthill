@@ -1543,3 +1543,6 @@ mod wi_x9pb4_require_dictionary_element_test;
 
 #[path = "include/wi_rsrp5_effect_label_routes_test.rs"]
 mod wi_rsrp5_effect_label_routes_test;
+
+#[path = "include/wi_pyns2_written_row_type_argument_test.rs"]
+mod wi_pyns2_written_row_type_argument_test;

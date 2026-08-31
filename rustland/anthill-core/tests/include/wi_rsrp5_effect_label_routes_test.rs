@@ -19,23 +19,36 @@
 //! |---|---|---|---|
 //! | A | `provides Spec[E = {bad}]` — a carrier's row binding | judged by NOTHING | refused AT THE BINDING |
 //! | B | `effects E = bad` — a sort's bound row alias | registration refused, `Modify` did not | both refuse |
-//! | C | a written type argument in a signature | not measurable — see below | unchanged |
+//! | C | a written type argument in a signature | not measurable (see below) | judged by NOTHING |
+//!
+//! (Row C's verdict is later than this ticket: WI-20260831-PYNS2 made the route drivable,
+//! and it turned out to be unjudged. Filed as WI-20260831-V25N3 — see below.)
 //!
 //! Route A is the finding. A label can only reach a projected row by being WRITTEN
 //! somewhere, and for a carrier's row parameter that somewhere is the binding — so
-//! judging it there covers the projection route ENTIRELY, with a better diagnostic (it
-//! names the line the author wrote, not a distant caller) and a verdict for a carrier no
-//! caller has projected yet. It also leaves `docs/kernel-language.md` §5.5's exemption of
+//! judging it there covers THAT origin entirely (route C is a second origin and is not
+//! covered; see below), with a better diagnostic (it names the line the author wrote, not
+//! a distant caller) and a verdict for a carrier no caller has projected yet. It also leaves `docs/kernel-language.md` §5.5's exemption of
 //! "a receiver projection (`s.E`)" TRUE AS WRITTEN, which the widening first proposed
 //! would have contradicted.
 //!
-//! ROUTE C IS NOT MEASURABLE AND IS NOT CLAIMED. `operation ask(s: Spec[E = {…}]) effects
-//! {s.E}` calling `Spec.go(s, …)` is refused `got undeclared effect: ?_` — and its
-//! CONTROL, the same shape with a benign `E = {}` or `E = {Error}`, is refused
-//! identically. A written row type-argument does not reach the call's effect
-//! instantiation, which is a separate defect (WI-20260831-PYNS2) and swallows any verdict
-//! this ticket's gates would give. Recorded so the next reader does not mistake the
-//! refusal for these gates working.
+//! ROUTE C WAS NOT MEASURABLE WHEN THIS WAS WRITTEN, AND NOW IS. `operation ask(s: Spec[E
+//! = {…}]) effects {s.E}` calling `Spec.go(s, …)` was refused `got undeclared effect: ?_`
+//! — and so was its CONTROL at a benign `E = {}` or `E = {Error}` — because a written row
+//! type-argument did not reach the call's effect instantiation. That was a separate defect
+//! and it swallowed any verdict this ticket's gates would have given.
+//!
+//! WI-20260831-PYNS2 FIXED IT, and the route is now drivable: the fixture above loads, and
+//! it turned out the refusal was never universal — a spec with a CARRIER already accepted
+//! the shape, so route C had been reachable all along wherever a spec was implemented.
+//!
+//! IT IS JUDGED BY NOTHING, which this ticket's argument requires it to be judged by
+//! something: `operation ask(s: Spec[E = {Beep}], …)` and `… [E = {Modify[Thing]}]` both
+//! LOAD CLEAN, at labels the two gates above refuse in a `provides` binding. So the "a
+//! label can only reach a projected row by being WRITTEN somewhere, and that somewhere is
+//! judged" claim holds for routes A and B and NOT for C. Measured on guardians' `Llm` too,
+//! where it predates PYNS2. Filed as WI-20260831-V25N3 rather than fixed here, because the
+//! work is the census of type positions a row can be written in, not the gate.
 //!
 //! ## What fails when it is backed out
 //!

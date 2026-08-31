@@ -16719,13 +16719,15 @@ fn check_apply_iter(
             // LOOKS authoritative.
             let recv_carrier =
                 receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
-            let carrier = statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym);
+            let carrier =
+                statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym, Some(spec_sort));
             // WI-1093: the SELF-RECEIVER half alone, which is what
             // `dispatch_spec_op_cached` discriminates on — the carrier-param shape rides
             // in the per-call `subst` instead, so passing it here would put it in the goal
             // TWICE. Same reading as the body-less block's `carrier_sym`, and named the
             // same way there.
-            let self_recv_carrier = statically_pinned_carrier(kb, &recv_carrier, None);
+            let self_recv_carrier =
+                statically_pinned_carrier(kb, &recv_carrier, None, Some(spec_sort));
             if let Some(carrier_sym) = carrier.as_ref().map(|c| c.sort) {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
@@ -17447,10 +17449,11 @@ fn check_apply_iter(
             // goal is built from (sort AND the receiver's own arguments), `carrier_sym` its
             // sort alone, for the readers that ask only about carrier identity. Derived and
             // not re-asked, so the two cannot name different carriers.
-            let dispatch_carrier = statically_pinned_carrier(kb, &carrier, None);
+            let dispatch_carrier = statically_pinned_carrier(kb, &carrier, None, Some(spec_sort));
             let carrier_sym = dispatch_carrier.as_ref().map(|c| c.sort);
             let pinned_carrier =
-                statically_pinned_carrier(kb, &carrier, carrier_param_sym).map(|c| c.sort);
+                statically_pinned_carrier(kb, &carrier, carrier_param_sym, Some(spec_sort))
+                    .map(|c| c.sort);
             if matches!(&carrier_param_info, Some((.., true, _)))
                 || (carrier_param_sym.is_some() && pinned_carrier.is_none())
             {
@@ -19311,16 +19314,35 @@ pub(crate) fn supplier_tie_repair(
 /// The two inputs are never both informative: `carrier_param_receiver` is consulted only
 /// when there is no self-receiver (the shapes are mutually exclusive at the classifier),
 /// so the fallback runs exactly when the first arm is `NotApplicable`.
+///
+/// `spec_sort` is the spec whose operation is being called, and it is what the REFLEXIVE
+/// clause below reads — see there. Every caller has it; `None` is for a caller that
+/// passes no carrier param at all, where the clause cannot apply.
 fn statically_pinned_carrier(
     kb: &KnowledgeBase,
     self_receiver: &ReceiverCarrier,
     carrier_param: Option<Symbol>,
+    spec_sort: Option<Symbol>,
 ) -> Option<GoalCarrier> {
     match self_receiver {
         // WI-20260828-EKWDC: the self-receiver form's arguments come with it — see
         // [`GoalCarrier`].
         ReceiverCarrier::Concrete(c) => Some(c.clone()),
         ReceiverCarrier::Abstract | ReceiverCarrier::NotApplicable => carrier_param
+            // WI-20260831-PYNS2 — THE REFLEXIVE CARRIER, asked directly instead of through
+            // the provider census. `carrier_is_abstract_spec` was standing in for "is this
+            // an abstract spec value?", and its PROVIDER leg is what made it answer `true`
+            // for a spec. Once WI-609's reflexive arm stopped needing a provider, a spec
+            // NOTHING provides reached this filter, answered `false`, and was reported as a
+            // statically pinned CONCRETE carrier — the exact mis-pin the WI-608 leg above
+            // exists to prevent, stated in its own words ("its runtime value is some
+            // concrete provider"). Benign as measured (a spec with no providers has no
+            // competing supplier to mis-pin TO, and both readers agreed either way), but
+            // the invariant was false, so it is asked rather than argued. `None` for the
+            // callers that pass no carrier param — the clause cannot matter there.
+            .filter(|&c| {
+                Some(kb.canonical_sort_sym(c)) != spec_sort.map(|s| kb.canonical_sort_sym(s))
+            })
             .filter(|&c| !carrier_is_abstract_spec(kb, c))
             // NO ARGUMENTS, and none are missing: the carrier-PARAM shape's carrier IS
             // a spec binding, so whatever the receiver wrote at it is already
@@ -28122,6 +28144,14 @@ fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
 /// name based, so canonical-insensitive); `carrier_sym` is canonicalized before the
 /// provider check so a non-canonical interning of the same logical sort still
 /// matches its `SortProvidesInfo` facts.
+///
+/// WI-20260831-PYNS2 — ONE CALLER DELIBERATELY ASKS ITS QUESTION ABOVE THIS PREDICATE.
+/// [`carrier_param_receiver`]'s WI-609 REFLEXIVE arm (carrier == the spec declaring the
+/// called operation) keeps the constructor leg and drops the PROVIDER one, because
+/// spec-hood is settled there by construction and the "non-spec sort" the provider leg
+/// guards against cannot be the answer. Under the whole predicate, a spec no carrier
+/// provides YET could not read its own row parameter off a receiver's written type
+/// argument. Every other caller wants both legs.
 fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) -> bool {
     let canon = kb.canonical_sort_sym(carrier_sym);
     !kb.sort_has_constructors(canon) && spec_has_any_providers(kb, canon)
@@ -37533,9 +37563,6 @@ fn carrier_param_receiver(
                 // dispatch — the carrier-param twin of the WI-598/601 self-receiver
                 // abstract-spec deferral (both keyed on `carrier_is_abstract_spec`).
                 .or_else(|| {
-                    if !carrier_is_abstract_spec(kb, carrier_sym) {
-                        return None;
-                    }
                     // WI-609: REFLEXIVE — the receiver's carrier IS the op's own spec
                     // (`collect(c: C)` on `c : FiniteCollection`, spec_sort == carrier_sym).
                     // A spec doesn't provide itself, so there is no view to build; the spec's
@@ -37543,8 +37570,32 @@ fn carrier_param_receiver(
                     // `bind_spec_params_from_carrier_param`'s reflexive branch. Return an
                     // EMPTY view (marked transitive → defer to eval) to engage that path and
                     // the abstract-spec deferral gate.
-                    if kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort) {
-                        return Some((SmallVec::new(), true));
+                    //
+                    // WI-20260831-PYNS2 — ASKED ABOVE [`carrier_is_abstract_spec`], whose
+                    // PROVIDER leg this case has already answered. That leg exists to keep a
+                    // constructor-less but NON-SPEC sort from being read as an interface
+                    // ("none today", says its doc) — and here the carrier IS the sort that
+                    // DECLARES the operation being called, so spec-hood is settled by
+                    // construction and the census of who implements it says nothing about it.
+                    // Under the gate, a spec no carrier provides YET could not read its own
+                    // row off the receiver: `ask(s: Spec[E = {Error}], …) = Spec.go(s, …)`
+                    // left `Spec.E` unbound and the call incurred `?_`, refused against a
+                    // declared row that had eliminated the SAME binding correctly. The
+                    // constructor leg is kept: a carrier with a representation of its own is
+                    // not an abstract value and must not take the eval deferral.
+                    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+                    if carrier_canon == kb.canonical_sort_sym(spec_sort) {
+                        // The reflexive arm keeps `carrier_is_abstract_spec`'s OTHER leg
+                        // and returns rather than falling through: with carrier == spec the
+                        // WI-608 view below asks whether the spec requires ITSELF, so the
+                        // fall-through answered `None` for a constructor-bearing carrier
+                        // anyway — and asking here keeps `sort_has_constructors`, which
+                        // SCANS every qualified name (WI-1027), to one evaluation.
+                        return (!kb.sort_has_constructors(carrier_canon))
+                            .then(|| (SmallVec::new(), true));
+                    }
+                    if !carrier_is_abstract_spec(kb, carrier_sym) {
+                        return None;
                     }
                     // WI-608: REQUIRES — the carrier `requires` the op's spec.
                     abstract_spec_required_view(kb, spec_sort, carrier_sym).map(|v| (v, true))

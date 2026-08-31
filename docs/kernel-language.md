@@ -2425,9 +2425,18 @@ rather than again at every operation that projects it — which is also the only
 place a diagnostic can name the line the author wrote.
 
 A row bound by a **written type argument** at a use site (`s: Spec[E = {…}]`) is
-the third way to make a projection concrete, and it does not work today at all:
-the binding reaches the declared row and not the call, so the operation is
-refused `undeclared effect: ?_`. WI-20260831-PYNS2.
+the third way to make a projection concrete, and it is read on BOTH sides of the
+operation: by the declared row's `s.E`, and by the call that incurs the spec op's
+own row. So `effects {s.E, Error} = Spec.go(s, p)` loads at any binding the
+receiver was given, and a declared row omitting a label that binding admits is
+refused naming that label. WI-20260831-PYNS2, whose test file records the one
+receiver shape still outside this — a sort with constructors of its own that
+also declares a carrier parameter, where nothing tells a carrier argument from an
+element one.
+
+The judged-at-its-origin rule above does NOT yet reach this third way: a label
+written in a signature's type argument (`s: Spec[E = {Beep}]`) is checked neither
+for a registered kind nor for a lawful `Modify` target. WI-20260831-V25N3.
 
 **Guarded effects** (proposal 048, WI-478/WI-067) qualify one row element, not
 the whole row. The bare spelling admits one guard term so an outer comma still
