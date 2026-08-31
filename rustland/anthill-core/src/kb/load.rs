@@ -5049,6 +5049,8 @@ pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLitera
 ///
 /// `push_choice` (the kernel disjunction primitive that `or` lifts) is here too:
 /// it is a globally-visible language primitive, named bare from any namespace.
+/// That is what separates it from the two neighbours that left: a converter mint can
+/// take an address, and `push_choice` is written by a person, so it cannot.
 /// The reflection `*Info` result sorts are here as well — a reflection vocabulary
 /// queried bare by reflection infrastructure (the `anthill-stl` bridge / CLI);
 /// `reflect/typing.anthill` still imports them explicitly (the fallback is below
@@ -5091,8 +5093,26 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
     "anthill.kernel.unify",       // structural-unification primitive (`<=>` / `let` lift it)
     "anthill.kernel.struct_eq",   // structural identity test (`===`); proposal 051 / WI-615
-    "anthill.kernel.find_dictionary", // rule-body requirement guard (`requires(X)`); WI-300
-    "anthill.kernel.cut",         // cut control primitive (`!`); proposal 033.1 / WI-568
+    // `find_dictionary` and `cut` left for `crate::parse::desugar_target`: both are
+    // CONVERTER MINTS, so they carry an address and need no rung. `unify` and
+    // `struct_eq` above are the SAME shape and have not been migrated — the rule and
+    // the open remainder are stated once, in that module.
+    //
+    // REMOVING A ROW IS A BEHAVIOUR CHANGE AT THE RULE HEAD, not only at the mint, and
+    // that is the half a reader misses: a head is RESOLVED, not declared, so while the
+    // row stood a `rule cut(?x) :- …` reached the kernel primitive THROUGH this tier and
+    // added a clause to it. With the row gone the ladder finds nothing and the head
+    // introduces a local name instead. Driven by
+    // `kernel_mint_address_test::a_rule_head_named_cut_introduces_a_local_name`,
+    // which is the only row that fails if these two rows come back. Raised by
+    // `/code-review`, against a comment that had claimed nothing downstream read the
+    // short name.
+    //
+    // `push_choice` above is NOT the same case and stays: it is not minted at all, it
+    // is pre-declared by `register_stdlib_scopes`, and it IS written bare — in CLI
+    // QUERY PATTERNS (wi917 / wi863 / wi1047), which run at `<global>` with no scope
+    // and no import line. That is the `resolve_name_in_kb` rung, and retiring it is the
+    // same open question as the reflection sorts below, not a rename.
     // Reflection result sorts — a reflection VOCABULARY queried bare (by short
     // name) from reflection infrastructure (the `anthill-stl` reflect bridge's
     // `SortQuery`, CLI reflection queries). Globally resolvable like the rest, and

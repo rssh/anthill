@@ -147,45 +147,65 @@ fn a_desugared_field_access_carries_its_address() {
 /// IT IS NOT REDUNDANT WITH THE ROWS BELOW, and the reason is the split registration:
 /// `register_stdlib_scopes` pre-defines the literal carriers and the `Expr` entities in
 /// Rust, but NOT `anthill.reflect.field_access`, which exists only because
-/// `stdlib/anthill/reflect/reflect.anthill` declares it. So the ten addresses are kept
+/// `stdlib/anthill/reflect/reflect.anthill` declares it. So those addresses are kept
 /// in step by two different mechanisms, and a rename in either now surfaces as an
 /// unrelated downstream typing error rather than a named orphan report. This row is
 /// what names it.
+///
+/// VACUOUS FOR EVERY BUILTIN-TAGGED NAME, WHICH IS MOST OF WHAT IT WALKS. This is the
+/// row's real coverage and it is worth stating exactly, because the number is not small.
+/// `try_resolve_symbol` is a bare `by_qualified_name` lookup and `register_builtin_tag`
+/// INSERTS INTO THAT SAME MAP during bootstrap, defining a missing name rather than
+/// skipping it. So for any name `register_builtin_tags` registers, the filter provably
+/// cannot return `None` and the row cannot fail.
+///
+/// COUNTED, over the 27 names walked here: **16 are vacuous** — `field_access`,
+/// `Expr.ho_apply`, `cut` and `find_dictionary` from `desugar_target`; eleven of the
+/// twelve `SPEC_OP_FUNCTORS` (all but `Additive.neg`); and `kernel.not`. **11 can
+/// actually fail** — the eight remaining desugar targets (the literal carriers, the
+/// `Expr` binder forms, `dot_apply`), `Additive.neg`, `kernel.or` and `kernel.and`.
+///
+/// WHAT THAT COSTS: delete `operation cut()` from `kernel.anthill`, or rename
+/// `anthill.reflect.field_access` in reflect.anthill, and this row stays green while the
+/// symbol degrades to a signature-less bootstrap mint. The row still earns its place for
+/// the 11 — a wrong address there is caught nowhere else — but it is not the watchdog
+/// its name suggests for the other 16. Closing that needs the row to assert a
+/// DECLARATION (a `decl_sites` entry) rather than mere resolvability, which is a
+/// different test than this one. Counted by `/code-review`; this diff added two of the
+/// vacuous rows and had claimed the opposite at this site.
 ///
 /// FAILS IF a constant is edited without its declaration, in either place. Raised by
 /// `/code-review`, which caught the module doc claiming "nothing has to be kept in
 /// step" — true of the mint-vs-table duplication that was deleted, false of this.
 #[test]
 fn every_desugar_target_is_declared_by_the_standard_load() {
-    use anthill_core::parse::desugar_target as dt;
     let kb = load_stdlib_kb();
+    // WALKS `dt::ALL` rather than a hand-copied mirror (raised by `/code-review`): a
+    // constant added to the module without a row here was simply never checked for
+    // being an orphan, which is the failure this test is named after.
+    //
     // WI-20260825-KD9SW — THE TWELVE SPEC-OP ADDRESSES WALK HERE TOO. A minted operator
     // names its target outright now, so `..anthill.prelude.Additive.add` has exactly the
     // property this test exists for: a rename in the library surfaces at every USE site
     // as "unknown functor" and never as a named orphan. `NEG_FUNCTOR` has no other
     // coverage at all — a prefix `-` on a non-literal does not parse (WI-529), so no
     // program can drive it and this row is the only thing that would catch a wrong
-    // address. Found by `/code-review`: the pratt-side doc claimed this test covered them
-    // while it walked `desugar_target`'s ten alone.
-    let targets: Vec<&str> = [
-        dt::FIELD_ACCESS,
-        dt::HO_APPLY,
-        dt::DOT_APPLY,
-        dt::SET_LITERAL,
-        dt::LIST_LITERAL,
-        dt::TUPLE_LITERAL,
-        dt::MATCH_EXPR,
-        dt::IF_EXPR,
-        dt::LET_EXPR,
-        dt::LAMBDA_EXPR,
-    ]
-    .into_iter()
-    .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
-    // WI-20260825-P9Y67: the boolean connectives carry addresses too, at
-    // `anthill.kernel` rather than a prelude spec. Same claim, same row — an
-    // address that denotes nothing is the failure this test exists to name.
-    .chain(anthill_core::parse::pratt::CONNECTIVE_FUNCTORS.iter().copied())
-    .collect();
+    // address. (The pratt-side doc once claimed this test covered them while it walked
+    // `desugar_target`'s ten by hand; it walks `dt::ALL` now, so that is fixed rather
+    // than merely reported.)
+    let targets: Vec<&str> = anthill_core::parse::desugar_target::ALL
+        .iter()
+        .copied()
+        .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
+        // WI-20260825-P9Y67: the boolean connectives carry addresses too, at
+        // `anthill.kernel` rather than a prelude spec. Same claim, same row — an
+        // address that denotes nothing is the failure this test exists to name.
+        .chain(
+            anthill_core::parse::pratt::CONNECTIVE_FUNCTORS
+                .iter()
+                .copied(),
+        )
+        .collect();
     let orphans: Vec<&str> = targets
         .iter()
         .copied()

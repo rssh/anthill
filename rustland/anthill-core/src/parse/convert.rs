@@ -571,9 +571,18 @@ impl<'a> Converter<'a> {
     /// It exists so those five do NOT have to `mark_minted` by hand. They allocated
     /// directly before, and a marker whose mint is a separate line a future edit can
     /// omit is the exact defect WI-20260822-AKKWF closes — three of these five were
-    /// un-minted, and the loader panicked on a user call for each. Every marker in the
-    /// tree now goes through one of these two factories, so "did the builder remember"
-    /// is not a question anyone has to ask.
+    /// un-minted, and the loader panicked on a user call for each. Every marker that
+    /// NEEDS provenance goes through one of these two factories, so "did the builder
+    /// remember" is not a question anyone has to ask.
+    ///
+    /// NOT EVERY DESUGAR TARGET IS SUCH A MARKER, and this doc said "every marker in the
+    /// tree" until `desugar_target::{CUT, FIND_DICTIONARY}` made the overstatement
+    /// visible. Those two mint through `alloc_fn_term` and carry NO mint flag, which is
+    /// correct rather than an omission: provenance exists to separate a synthesized node
+    /// from a same-spelled WRITTEN one, and `!` / `requires(X)` have no written spelling
+    /// to be confused with — their unspellable `..` address already does the separating.
+    /// No `is_minted` reader can reach them (each is gated on a connective / arrow /
+    /// `typed_var` name). Raised by `/code-review`.
     fn alloc_marker_term_with_named(
         &mut self,
         functor_name: &str,
@@ -1165,11 +1174,14 @@ impl<'a> Converter<'a> {
             "cut" => {
                 // proposal 033.1 / WI-568: `!` is the cut control primitive — a
                 // nullary `cut` goal. The resolver bakes the enclosing rule's
-                // barrier into it (as an arg) when the rule body is opened; the
-                // short name resolves to `anthill.kernel.cut` via the implicit
-                // kernel vocabulary, so no import is needed. Rejected in head
-                // position by the loader.
-                results.push(self.alloc_fn_term("cut", SmallVec::new(), span));
+                // barrier into it (as an arg) when the rule body is opened, keying
+                // on `BuiltinTag::Cut` and never on the spelling. Rejected in head
+                // position at PARSE time by `convert_rule_heads`, on the node kind —
+                // not by the loader, as this comment used to say.
+                //
+                // The mint names its target outright; why, and what the short spelling
+                // cost, is in `desugar_target`.
+                results.push(self.alloc_fn_term(dt::CUT, SmallVec::new(), span));
             }
             "nested_implication" => {
                 // Rare in expression contexts (rule bodies only) — stays
@@ -3447,7 +3459,9 @@ impl<'a> Converter<'a> {
             .require_spec_arg(require_tid)
             .expect("lower_require called on a non-`require[…]` term");
         let base = self.strip_spec_type_args(spec_arg);
-        let functor = self.intern("find_dictionary");
+        // The address, not the short name — see `desugar_target`. The other producer
+        // of this functor is `rewrite_requires_goal` below.
+        let functor = self.intern(dt::FIND_DICTIONARY);
         let out_label = self.intern(crate::kb::typing::REQUIREMENT_OUT_LABEL);
         self.terms.alloc(
             Term::Fn {
@@ -3626,7 +3640,10 @@ impl<'a> Converter<'a> {
         let base = self.strip_spec_type_args(spec_arg);
         let mut args: SmallVec<[TermId; 4]> = SmallVec::new();
         args.push(base);
-        self.alloc_fn_term("find_dictionary", args, span)
+        // The address, as at `lower_require` (the `require[X]` producer): the typer
+        // asks for this relation by qualified name, so the address is what the two
+        // ends were agreeing on through a table in the middle.
+        self.alloc_fn_term(dt::FIND_DICTIONARY, args, span)
     }
 
     /// The spec instance with any `[…]` type-argument bindings removed. A

@@ -1,9 +1,62 @@
 //! WI-20260825-5W3RJ — THE ADDRESSES THE CONVERTER DESUGARS INTO.
 //!
 //! `match` / `if` / `let` / `lambda`, member access, the higher-order and dotted
-//! application forms, and the `[…]` / `{…}` / `(…)` literals are SYNTHESIZED: the
-//! converter builds a `Term::Fn` for each, and its functor has to denote a declaration
-//! in `anthill.reflect`. These constants are what it names.
+//! application forms, the `[…]` / `{…}` / `(…)` literals, `!` and `requires(X)` /
+//! `require[X]` are SYNTHESIZED: the converter builds a `Term::Fn` for each, and its
+//! functor has to denote something the loader can resolve. These constants are what it
+//! names.
+//!
+//! # Two namespaces, and three ways the target comes to exist
+//!
+//! Most targets are reflect VOCABULARY — the reified shape of a source form. Two are
+//! `anthill.kernel` CONTROL primitives: [`CUT`] (`!`) and [`FIND_DICTIONARY`]
+//! (`requires(X)` / `require[X]`). The namespace follows what the form denotes; the
+//! minting mechanism is the same.
+//!
+//! WHAT IS *NOT* THE SAME IS HOW THE TARGET GETS DEFINED, and an earlier draft of this
+//! section asserted a uniformity that does not hold. Three mechanisms, not two:
+//!   1. `load::register_stdlib_scopes` pre-defines the literal carriers and the `Expr`
+//!      entities in Rust.
+//!   2. `stdlib/anthill/reflect/reflect.anthill` declares `field_access`;
+//!      `stdlib/anthill/kernel/kernel.anthill` declares `operation cut() -> Bool`.
+//!   3. `KnowledgeBase::register_builtin_tags` DEFINES a missing qualified name rather
+//!      than skipping it (`kb/mod.rs`), which is the only thing that defines
+//!      [`FIND_DICTIONARY`] — **no `.anthill` file declares it anywhere**, so for that
+//!      one member "names a declaration" is false and "names a bootstrap-minted symbol"
+//!      is the truth. `load.rs` records the same fact at `find_dictionary`'s own site.
+//! Mechanism 3 is also why [`CUT`]'s row in the orphan watchdog is WEAKER than
+//! `FIELD_ACCESS`'s: deleting `operation cut()` from kernel.anthill leaves the symbol
+//! minted and the test green. Said at that row too.
+//!
+//! # These are not the last of the tier
+//!
+//! `CUT` and `FIND_DICTIONARY` replaced two `PRELUDE_QUALIFIED` rows, and a draft of
+//! this doc called them "the last two converter mints that still depended on that
+//! fallback". THAT IS WRONG, and it is worth stating because the mistake closes a class
+//! that is still open: [`crate::parse::pratt::UNIFY_FUNCTOR`] and
+//! [`crate::parse::pratt::STRUCT_EQ_FUNCTOR`] are ALSO short converter mints resolved by
+//! the tier — `<=>`, `===` and a goal-position `let` name no functor either. They are
+//! the same shape and were simply not migrated here. `unify` additionally has a real
+//! same-named rival in the stdlib (`anthill.reflect.unify`, a 3-arg reflection
+//! operation), so its capture hazard is one `import` line away rather than
+//! hypothetical. Found by `/code-review`.
+//!
+//! Everything downstream keys on a [`crate::kb::resolve::BuiltinTag`] registered by
+//! QUALIFIED name, never on the short spelling, so the address lands on the same symbol
+//! the tier was reaching and reaches it one rung higher. Consumers outside the converter
+//! read the address through [`qualified`] rather than writing it out.
+//!
+//! ONE THING THE HIGHER RUNG ADDS: A VISIBILITY GATE. The absolute rung runs
+//! `resolve_dotted_in_kb`, which filters on `internal_visible_from`; the implicit tier it
+//! replaced was a raw `by_qualified_name` lookup with no filter at all. Inert today —
+//! nothing in `anthill.kernel` is marked `internal` — but the consequence is sharp if
+//! that changes, and `kernel.anthill`'s own header ("Resolver primitives. Not for
+//! application code") is a standing invitation to mark it: every `!` in every user
+//! namespace would become a ForbiddenInternalAccess error citing `..anthill.kernel.cut`,
+//! a string the author never typed, at the span of a one-character operator. Under the
+//! tier the same edit was a no-op. Raised by `/code-review`; recorded rather than
+//! guarded, because the guard would be a special case in the resolver and the marking
+//! is the thing that should not happen.
 //!
 //! # Why a full name and not a short one
 //!
@@ -21,14 +74,12 @@
 //!
 //! THAT IS NOT THE SAME AS "nothing has to be kept in step", and an earlier draft of
 //! this doc said so wrongly. What went away is the DUPLICATION — a lookup keyed on a
-//! name produced elsewhere. These constants still have to name declarations that exist,
-//! and they are supplied by two mechanisms: `load::register_stdlib_scopes` pre-defines
-//! the literal carriers and the `Expr` entities in Rust, while `field_access` exists
-//! only because `stdlib/anthill/reflect/reflect.anthill` declares it. A rename in either
-//! surfaces at the USE site rather than as a named orphan, so
+//! name produced elsewhere. Each constant still has to name something that exists, by
+//! one of the three mechanisms above, and
 //! `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`
-//! is the row that names it. Raised by `/code-review`. `Loader::ExprBuilderSyms` already resolved this same vocabulary this
-//! same way — the short-name rung was the duplicate of it, not the mechanism.
+//! is the row that names a miss. `Loader::ExprBuilderSyms` already resolved this same
+//! vocabulary this same way — the short-name rung was the duplicate of it, not the
+//! mechanism.
 //!
 //! # THE `..` MARKER IS LOAD-BEARING, and an unmarked path does NOT do this
 //!
@@ -60,6 +111,14 @@
 //! `SimpleTermStore::is_minted` may compare to the constant directly — provenance has
 //! already excluded the written spelling there.)
 //!
+//! EXCEPT FOR THE TWO KERNEL CONTROL TARGETS, where the rule INVERTS and [`is`] is the
+//! wrong tool. `!` and `requires(X)` name no functor, so there is no written spelling
+//! that means them: a user's `cut(…)` is an ordinary unrelated call, and admitting it
+//! would reinstate the capture these addresses removed. Compare to [`CUT`] /
+//! [`FIND_DICTIONARY`] directly — safe because `..` is unspellable. [`is`] asserts
+//! against the misuse rather than trusting this paragraph. Raised by `/code-review`,
+//! which found the module telling a reader to walk into the bug.
+//!
 //! THE READERS ARE NOT ALL IN THE LOADER, and a census that assumes so misses the ones
 //! that cost most. `persistence::print` compares a functor name too, and it runs over a
 //! `ParsedFile` as well as a KB — so with `==` the parse-side print of `[1, 2]` stopped
@@ -74,7 +133,11 @@
 //! functor, not just `ListLiteral`. Only `[…]` is surface-printed today, so no other
 //! form reaches a print where the disagreement matters — but the failure it produces is
 //! a retracted fact silently left on disk, so the boundary is worth knowing: keying the
-//! parse view on the last segment would close it once instead of per name. Raised by
+//! parse view on the last segment would close it once instead of per name. [`CUT`] and
+//! [`FIND_DICTIONARY`] widen the affected set without changing that boundary: the KB
+//! view prints their SHORT names, so a rendered rule body still reads `cut(0)` /
+//! `find_dictionary(Eq)` — text that no longer re-parses bare from any namespace. Rules
+//! are not surface-printed, so this is display-only today. Raised by
 //! `/code-review`; not changed here because `sym_name`'s contract has readers well
 //! outside this concern and narrowing it needs its own census.
 
@@ -99,11 +162,73 @@ pub const LET_EXPR: &str = "..anthill.reflect.Expr.let_expr";
 /// `\p -> b`
 pub const LAMBDA_EXPR: &str = "..anthill.reflect.Expr.lambda_expr";
 
+/// `!` in goal position — the cut control primitive (proposal 033.1 / WI-568). Minted
+/// NULLARY; the resolver bakes the rule's barrier into it and keys on
+/// [`crate::kb::resolve::BuiltinTag::Cut`].
+pub const CUT: &str = "..anthill.kernel.cut";
+
+/// `requires(X)` and `require[X]` — the rule-body requirement guard (WI-300, proposal
+/// 060 §1). Both spellings lower here, differing only in an `out:` named argument; keyed
+/// downstream by [`crate::kb::resolve::BuiltinTag::FindDictionary`] and by the typer,
+/// which reads this constant through [`qualified`].
+pub const FIND_DICTIONARY: &str = "..anthill.kernel.find_dictionary";
+
+/// The kernel CONTROL targets — the subset [`is`] must never be asked about.
+///
+/// Their surface forms (`!`, `requires(X)`) name no functor, so unlike the reflect
+/// vocabulary they have no legitimate written spelling: a user's `cut(…)` is an
+/// ordinary unrelated call, and admitting it is the capture this module exists to make
+/// unrepresentable. Read by [`is`]'s guard.
+const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY];
+
+/// EVERY desugar target, so a reader that must cover the set does not hand-copy it.
+///
+/// `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`
+/// walks this; before it existed that test held a literal mirror of the constants, and a
+/// constant added without a matching row was simply never checked for being an orphan —
+/// the failure the test is named after. Peer of
+/// [`crate::parse::pratt::SPEC_OP_FUNCTORS`] / [`crate::parse::pratt::CONNECTIVE_FUNCTORS`],
+/// which the same test already chains. Found by `/code-review`.
+pub const ALL: &[&str] = &[
+    FIELD_ACCESS,
+    HO_APPLY,
+    DOT_APPLY,
+    SET_LITERAL,
+    LIST_LITERAL,
+    TUPLE_LITERAL,
+    MATCH_EXPR,
+    IF_EXPR,
+    LET_EXPR,
+    LAMBDA_EXPR,
+    CUT,
+    FIND_DICTIONARY,
+];
+
 /// The short spelling of a desugar target — its last segment, which is the name a user
 /// can still write and the local name the resolved symbol carries. The `..` marker rides
 /// on the HEAD segment, so it never reaches this.
 pub fn short(target: &str) -> &str {
     target.rsplit('.').next().unwrap_or(target)
+}
+
+/// The desugar target as an ORDINARY qualified name — the `..` marker stripped.
+///
+/// This is what a consumer OUTSIDE the converter needs. The constants carry the marker
+/// because the converter mints a name for the resolver to read, but
+/// `KnowledgeBase::try_resolve_symbol` and `register_builtin_tag` take the plain
+/// qualified name, so without this every such site wrote the address out by hand — four
+/// hand-synced literals for `FIND_DICTIONARY` alone, which is the duplication the tier
+/// row's deletion was supposed to remove rather than relocate. Found by `/code-review`.
+///
+/// Delegates to [`crate::intern::absolute_path_target`] rather than stripping the marker
+/// here, because that function's doc claims to be its SOLE reader and the claim is worth
+/// more than the line it saves. Total for every constant here, and CHECKED rather than
+/// asserted: `kernel_mint_address_test::every_desugar_target_carries_the_absolute_marker`
+/// walks [`ALL`] for the marker. Passing an unmarked name is a programming error and
+/// panics; no input a program can write reaches it.
+pub fn qualified(target: &str) -> &str {
+    crate::intern::absolute_path_target(target)
+        .expect("a desugar target is written with the absolute-path marker")
 }
 
 /// Does the parse-level functor name `name` denote the desugar target `target`?
@@ -113,5 +238,23 @@ pub fn short(target: &str) -> &str {
 /// reader asking about the SHAPE means both. Readers gated on `is_minted` have already
 /// excluded the written spelling and compare to the constant directly instead.
 pub fn is(name: &str, target: &str) -> bool {
+    // NOT FOR THE KERNEL CONTROL TARGETS. Admitting the short spelling is right for
+    // reflect vocabulary — a hand-written `field_access(…)` is the same SHAPE — and
+    // exactly wrong for `!` / `requires(X)`, whose surface forms name no functor: there
+    // a user's `cut(…)` is an unrelated call, and reading it as the primitive
+    // reinstates the capture the addresses were introduced to remove. Caught by
+    // `/code-review` as a contract that would have been followed into the bug.
+    // A PLAIN `assert!`, not `debug_assert!`: the misuse it catches produces a silent
+    // wrong answer (a user's `cut(...)` read as the control primitive), and WI-1122
+    // records what a release-only gap costs. The cost is two STRING comparisons against
+    // 22- and 33-byte constants (`<[&str]>::contains` compares contents, not pointers),
+    // on a call that already does two of its own — negligible, but stated correctly:
+    // this comment said "pointer comparisons" until `/code-review` read the impl, and a
+    // mis-sized load cost is what WI-653 had to re-diagnose.
+    assert!(
+        !KERNEL_CONTROL.contains(&target),
+        "desugar_target::is admits the short spelling and must not be used for a kernel \
+         control target ({target}); compare to the constant directly"
+    );
     name == target || name == short(target)
 }

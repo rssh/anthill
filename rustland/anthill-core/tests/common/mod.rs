@@ -293,6 +293,51 @@ fn try_load_kb_named_prepared(
     }
 }
 
+/// The stdlib WITHOUT the Rust host bindings, parsed once — the peer of
+/// [`STDLIB_PARSED`] for the configuration that must not see `anthill-stl`'s bindings.
+static STDLIB_ONLY_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
+    std::sync::LazyLock::new(|| {
+        let files = collect_anthill_files(&stdlib_dir());
+        assert!(!files.is_empty(), "stdlib empty");
+        files
+            .iter()
+            .map(|p| {
+                let src = std::fs::read_to_string(p)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+                parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            })
+            .collect()
+    });
+
+/// [`load_kb_with`] MINUS the Rust host bindings: the stdlib files and `source`, in ONE
+/// `load_all`.
+///
+/// WHY THIS EXISTS AS ITS OWN RECIPE, since two neighbours nearly serve and neither
+/// does. `load_kb_with` also loads `rustland/anthill-stl/anthill/*.anthill`, and for a
+/// fixture that turns on which carriers provide a spec that is not a superset but a
+/// different world — measured at `WI-20260831-QF5JT`, where a `requires(PartialEq[T])`
+/// guard stops discriminating by carrier once those bindings are present.
+/// `load_stdlib_kb_with_source` drops the bindings but loads the user file in a SECOND
+/// pass (`load_stdlib`, then `load`), which is not the same as one `load_all` over both:
+/// driven, the same guard fixture answers 0 for EVERY carrier that way, i.e. the fixture
+/// goes dead rather than discriminating.
+///
+/// `wi300_rule_body_requires_test` and `cut_test` each hand-roll exactly this sequence;
+/// they are left as found, and a new caller should use this instead of adding a fourth
+/// copy.
+#[allow(dead_code)]
+pub fn load_kb_with_stdlib_only(source: &str) -> KnowledgeBase {
+    let user = parse::parse(source).expect("parse user source");
+    let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_ONLY_PARSED.iter().collect();
+    refs.push(&user);
+    let mut kb = KnowledgeBase::new();
+    expect_loaded(
+        load::load_all(&mut kb, &refs, &NullResolver)
+            .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()),
+    );
+    kb
+}
+
 /// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.
 ///
 /// [`try_load_kb_with_files`]'s sources are path-less, so a diagnostic that NAMES the

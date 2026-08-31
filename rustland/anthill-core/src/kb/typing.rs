@@ -64691,7 +64691,9 @@ fn type_rule_bodies(
 ///     dispatch through (Tier B, deferred).
 fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
-    let Some(fd_sym) = kb.try_resolve_symbol("anthill.kernel.find_dictionary") else {
+    let Some(fd_sym) = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
+        crate::parse::desugar_target::FIND_DICTIONARY,
+    )) else {
         return errors; // builtin not registered — nothing to rewrite
     };
     // An un-rewritten guard is a `find_dictionary` with exactly one positional arg
@@ -64847,7 +64849,9 @@ fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     // Absent when the builtin is unregistered (a minimal KB); then no rule can
     // carry a declared `requires`, so `declared` simply stays empty.
-    let fd_sym = kb.try_resolve_symbol("anthill.kernel.find_dictionary");
+    let fd_sym = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
+        crate::parse::desugar_target::FIND_DICTIONARY,
+    ));
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body

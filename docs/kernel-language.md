@@ -1702,6 +1702,8 @@ These illustrate the `<=>` equational-rule *mechanism*. In the current prelude s
 | a resolver **builtin** or scoping marker (`unify`, `find_dictionary`, `forall_impl`, …) | that builtin's own goal semantics |
 | a **non-`Bool`** term that is not a relation — a non-`Bool` operation, a non-boolean constant | a **load error**: it denotes no truth, so it can never match |
 
+Of the builtins in the resolver-builtin row, `unify` and `forall_impl` are reachable **bare**; `find_dictionary` is not. It left the implicit prelude with `cut` (§8.6), so it is written as `requires(X)` / `require[X]`, or under an explicit import.
+
 `not`, `or` and `and` are not an exception to the condition reading, and §6.6 is not in tension with it. All three names at a goal position resolve to the **resolver primitives** before anything is typed, so they never become `Bool` expressions there at all — the redirection is a rule about *names*, applied first. (`and` was the exception until WI-20260822-J38JE, for want of a `kernel.and` to be redirected TO; §6.6 named the comma and `a & b` was refused. `push_and` supplied the primitive and the three are symmetric now.) A genuine `Bool`-valued `and` of two `Bool` **values** is still a condition like any other — the conjunction reading **subsumes** it rather than competing with it (§6.6).
 
 "A goal the resolver expects" means one it **proves**: the body's atoms, a `not` negand, an `or` / `push_choice` branch, a bounded quantifier's body, a discharge's **consequent**. A discharge's **antecedents** are not among them — a hypothesis *declares* the predicate the consequent proves against, so the slot binds rather than proves, and nothing above reads it.
@@ -4333,14 +4335,22 @@ same-spelled top-level path instead.
 
 **The lowest rung is the implicit prelude, and only that.** It is the user-facing
 vocabulary available in every namespace with no `import` line: the fundamental
-constructors (`cons`, `nil`, `some`, `none`), the operator targets (`add`, `eq`, `gt`,
-`div`, …), the resolver primitives (`unify`, `struct_eq`, `push_choice`, `find_dictionary`,
-`cut`) and the reflection result sorts. The logic operators `not` / `or` / `and` were in it
-until WI-20260826-XED22 and are not: their OPERATORS name their target absolutely (§5.5),
-so the tier served only the written spelling, and a written `or(…)` / `and(…)` now takes an
-import. It sits at the **bottom** of the ladder, which is what lets a
-user name shadow one without conflict: a local declaration or an explicit import is
-found first, so a user's own `add` wins and can never go *ambiguous* against it.
+constructors (`cons`, `nil`, `some`, `none`), the `BigInt` conversions, the resolver
+primitives `unify`, `struct_eq` and `push_choice`, and the reflection result sorts. It
+sits at the **bottom** of the ladder, which is what lets a user name shadow one without
+conflict: a local declaration or an explicit import is found first, so a user's own name
+wins and can never go *ambiguous* against a member.
+
+**What has left it, and the rule that decides.** A name belongs on this rung only if a
+PERSON writes it bare. A functor the CONVERTER supplies for a surface form that names
+none takes an *address* instead — see **Synthesized forms** below, which owns that rule
+and its consequences. `not` / `or` / `and` left in WI-20260826-XED22 once their
+operators carried addresses, so a written `or(…)` / `and(…)` takes an import. The twelve **operator targets** (`add`, `eq`, `gt`,
+`div`, …) left in WI-20260825-KD9SW on the same rule, so a written `gt(a, b)` takes an
+import too. `find_dictionary` and `cut` left most recently and cost no import at all,
+because neither has a surface spelling to migrate: `requires(X)` / `require[X]` and `!`
+are the ways to mean them, and a written name still works under an explicit import.
+`unify` and `struct_eq` are the same case and have **not** left yet.
 
 **A member reached through a `provides` CONVERSION answers to its head's address**
 (WI-20260825-X9RRN). A spec's `provides` is a conversion — "hold a `Numeric[T]` and you
@@ -4397,14 +4407,27 @@ the operation *parameter* an eponymous `sort Foo` / `operation Foo(X: …)` pair
 to be checked. A sort's type PARAMETERS are sorts and stay nameable through both readings.
 
 **Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
-`if`, `let`, `\`, member access and the `[…]` / `{…}` / `(…)` literals are *desugared*:
-the converter builds a term whose functor is the reflect declaration's **absolute path**
-— `..anthill.reflect.Expr.if_expr`, `..anthill.reflect.field_access`,
-`..anthill.reflect.ListLiteral` — so it is resolved by qualified name, with no scope walk
-at all. Three consequences follow, and each of them used to be a rule of its own:
+`if`, `let`, `\`, member access, the `[…]` / `{…}` / `(…)` literals, `!` and
+`requires(X)` / `require[X]` are *desugared*: the converter builds a term whose functor
+is the target's **absolute path** — `..anthill.reflect.Expr.if_expr`,
+`..anthill.reflect.field_access`, `..anthill.kernel.cut`,
+`..anthill.kernel.find_dictionary` — so it is resolved by qualified name, with no scope
+walk at all. The namespace follows what the form denotes: a reified *shape* is reflect
+vocabulary, while `!` and the requirement guard are kernel *control*. The mechanism does
+not vary with it.
+
+*Target*, not *declaration*: most of these addresses name a declaration, but
+`find_dictionary` names a symbol the bootstrap mints and no `.anthill` file declares, so
+it carries no signature and no arity. The distinction matters when asking what a rename
+would break — for that one, nothing in the library is holding the name up.
+
+Three consequences follow, and each of them used to be a rule of its own:
 
 - **A user's same-spelled name cannot capture a desugaring.** `entity wildcard(…)` or
-  `operation field_access(…)` in scope is simply a different name. **The `..` marker is
+  `operation field_access(…)` in scope is simply a different name. The stakes are
+  clearest at the control primitives, where a capture changes an answer instead of
+  producing an error: under the short spelling a namespace declaring `operation cut()`
+  took the `!`, which then loaded clean and stopped cutting. **The `..` marker is
   what buys this, and an unmarked path would not**: an ordinary `a.b.c` takes the
   relative, head-qualified reading, so its *head* segment runs `resolve_in_scope` and a
   namespace or sort named `anthill` is exactly the rung at which the desugaring would be

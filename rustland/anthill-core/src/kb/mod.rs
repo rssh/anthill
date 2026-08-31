@@ -9181,14 +9181,20 @@ impl KnowledgeBase {
         // Resolver primitives (proposal 033 / 033.1 / 049)
         self.register_builtin_tag("anthill.kernel.push_choice", BuiltinTag::PushChoice);
         self.register_builtin_tag("anthill.kernel.push_and", BuiltinTag::PushAnd);
-        self.register_builtin_tag("anthill.kernel.cut", BuiltinTag::Cut);
+        self.register_builtin_tag(
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::CUT),
+            BuiltinTag::Cut,
+        );
         self.register_builtin_tag("anthill.kernel.unify", BuiltinTag::Unify);
         // WI-300 — rule-body requirement guard. A rule-body `requires(X)` desugars
         // (converter) to `find_dictionary(X)`; the typer sweep rewrites the argument
         // to carry spec X's base symbol plus the rule vars that ground its
         // type-parameters. Guard tier: checks `provides` at the current binding,
         // suspends-as-residual on an under-determined carrier.
-        self.register_builtin_tag("anthill.kernel.find_dictionary", BuiltinTag::FindDictionary);
+        self.register_builtin_tag(
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::FIND_DICTIONARY),
+            BuiltinTag::FindDictionary,
+        );
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then

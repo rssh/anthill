@@ -98,7 +98,12 @@ namespace anthill.kernel
   -- the `!` are untouched. Surface syntax is the bare `!` goal; the resolver
   -- opens it to a barrier-tagged `cut(B)` when the rule body is entered (B is
   -- the enclosing invocation's barrier, parallel to De Bruijn-var opening), so
-  -- the nullary declaration here is the user-facing face. Special-cased in the
+  -- the nullary declaration here is what the `!` RESOLVES TO, and `!` is the
+  -- normal way to mean it. A written `cut()` still works UNDER AN IMPORT — the
+  -- primitive is keyed on this symbol, not on a spelling — but no longer resolves
+  -- bare: rustland's converter names this declaration's address, so the implicit
+  -- prelude no longer carries the short name. (scaland still mints the short `cut`
+  -- and defines no `anthill.kernel.cut`; the port is behind here.) Special-cased in the
   -- resolver (its effect is on the choice-point stack, not on σ), never
   -- dispatched. See proposal 033.1 (docs/proposals/033-resolver-primitives-and-disjunction.md
   -- §Future work) / WI-568.

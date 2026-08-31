@@ -182,9 +182,18 @@ pub const SPEC_OP_FUNCTORS: &[&str] = &[
 /// [`EQUATION_FUNCTORS`].
 ///
 /// `EQ_FUNCTOR` is one of [`SPEC_OP_FUNCTORS`] and so carries an ADDRESS, while `unify`
-/// and `struct_eq` are KERNEL primitives and stay short. Every reader of this family
-/// compares against these constants rather than against a spelling, which is what lets
-/// the list be mixed without a second rule.
+/// and `struct_eq` stay SHORT and are resolved by the implicit tier. Every reader of
+/// this family compares against these constants rather than against a spelling, which is
+/// what lets the list be mixed without a second rule.
+///
+/// BEING A KERNEL PRIMITIVE IS NOT THE REASON THEY ARE SHORT, though this doc said so
+/// until `crate::parse::desugar_target::CUT` / `FIND_DICTIONARY` disproved it: those are
+/// kernel primitives WITH addresses. The two here are short because they have not been
+/// migrated, and they are the same shape as the two that were — converter mints for
+/// surface forms (`<=>`, `===`, a goal-position `let`) that name no functor. `unify` is
+/// the sharper case: `anthill.reflect.unify` is a real, unrelated 3-arg operation in the
+/// stdlib, so an `import anthill.reflect.{unify}` puts a rival in scope ABOVE the tier.
+/// Raised by `/code-review` against the change that migrated the other two.
 pub const EQ_FUNCTOR: &str = "..anthill.prelude.PartialEq.eq";
 pub const UNIFY_FUNCTOR: &str = "unify";
 pub const STRUCT_EQ_FUNCTOR: &str = "struct_eq";
