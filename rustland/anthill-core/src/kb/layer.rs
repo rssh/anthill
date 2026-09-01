@@ -372,7 +372,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         //
         // FOUND BY /code-review, and the comment this replaced justified the omission
         // with a claim that is FALSE: "a layer does not run the post-load pass". It
-        // does — `kb_loaded` reaches `load_incremental` -> `load_phase_inner` ->
+        // does — `kb_loaded` reaches `load_all` into a live KB -> `load_phase_inner` ->
         // `build_host_op_mappings` -> `set_host_op_mappings`. The worst case is not a
         // stale registration but a POISONED base: a layer whose `operation_map` names an
         // unknown `host_fn` memoizes the refusal (the whole point of caching the `Err`),
@@ -460,7 +460,7 @@ end
 
     fn load_layer_src(kb: &mut KnowledgeBase) {
         let parsed = parse::parse(LAYER_SRC).expect("parse layer fixture");
-        if let Err(errs) = load::load_incremental(kb, &[&parsed], &NullResolver) {
+        if let Err(errs) = load::load_all(kb, &[&parsed], &NullResolver) {
             panic!(
                 "layer load errors: {:?}",
                 errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
@@ -564,7 +564,7 @@ end
         let snap = kb.snapshot_scoped();
         let parsed = parse::parse(BROKEN_BINDING).expect("parse broken binding");
         assert!(
-            load::load_incremental(&mut kb, &[&parsed], &NullResolver).is_ok(),
+            load::load_all(&mut kb, &[&parsed], &NullResolver).is_ok(),
             "an unknown `host_fn` is NOT a load error — the loader cannot know which \
              functions a runtime exposes. If this starts failing the fixture no longer \
              reaches the memo and the last assertion means nothing"

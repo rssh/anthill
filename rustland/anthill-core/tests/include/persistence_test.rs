@@ -88,7 +88,7 @@ fn round_trip_escapes_preserve_content() {
         let parsed = parse::parse(&printed1)
             .unwrap_or_else(|e| panic!("re-parse failed for {original:?}: {e:?}"));
         let mut kb2 = KnowledgeBase::new();
-        load::load(&mut kb2, &parsed, &NullResolver)
+        load::load_all(&mut kb2, &[&parsed], &NullResolver)
             .unwrap_or_else(|e| panic!("load failed for {original:?}: {e:?}"));
 
         // Pull the round-tripped fact and reprint via the second KB.
@@ -149,7 +149,8 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
     let parsed = parse::parse(&printed1)
         .expect("entity-with-strings fact should parse after printer escapes");
     let mut kb2 = KnowledgeBase::new();
-    load::load(&mut kb2, &parsed, &NullResolver).expect("entity-with-strings fact should load");
+    load::load_all(&mut kb2, &[&parsed], &NullResolver)
+        .expect("entity-with-strings fact should load");
 
     let acc_sym = kb2.intern("Account");
     let rules = kb2.rules_by_functor(acc_sym);
@@ -343,7 +344,7 @@ fn full_round_trip() {
 
     let mut kb2 = KnowledgeBase::new();
     for pf in &parsed_files {
-        load::load(&mut kb2, pf, &NullResolver).expect("load should succeed");
+        load::load_all(&mut kb2, &[pf], &NullResolver).expect("load should succeed");
     }
 
     // Step 4: Verify facts in the new KB.
@@ -521,7 +522,7 @@ fn retract_preserves_inter_fact_text() {
     let parsed = read_anthill_dir_parsed(dir.path());
     let mut kb = KnowledgeBase::new();
     for pf in &parsed {
-        load::load(&mut kb, pf, &NullResolver).unwrap();
+        load::load_all(&mut kb, &[pf], &NullResolver).unwrap();
     }
 
     // Find the rule for B by walking live clauses and matching the printed head.

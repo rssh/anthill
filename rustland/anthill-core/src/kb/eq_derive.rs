@@ -226,7 +226,7 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
 /// unbacked `nonEqRefl` from being refused *as it is created*; but the FACT then
 /// persists, and the NEXT `load_phase_inner` runs that check again with the row
 /// already in the relation, this time reaching it FIRST. MEASURED at 51d17d22 (so:
-/// pre-WI-1098, and unchanged by it): `load_stdlib` then `load_incremental` over the
+/// pre-WI-1098, and unchanged by it): `load_stdlib` then `load_all` into a live KB over the
 /// full stdlib + host closure refused all five derived-`NonEq` carriers. So the
 /// placement is no longer load-bearing on its own — every row asserted below is
 /// MARKED (`mark_unbacked_derived_provision`) and the coverage walk skips it by that

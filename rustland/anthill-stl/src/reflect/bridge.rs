@@ -1142,7 +1142,7 @@ mod tests {
     fn load_source_bridge(source: &str) -> KbBridge {
         let parsed = parse::parse(source).expect("parse failed");
         let mut kb = KnowledgeBase::new();
-        load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+        load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
         KbBridge::new(kb)
     }
 

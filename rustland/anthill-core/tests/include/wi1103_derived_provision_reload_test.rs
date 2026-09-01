@@ -6,7 +6,7 @@
 //! to op-backing. That placement protects the row being CREATED and not the row that
 //! already EXISTS: the fact persists in the KB, and the next `load_phase_inner` walks
 //! it BEFORE `eq_derive` re-runs. MEASURED at 51d17d22 — `load_stdlib` then
-//! `load_incremental` over the full stdlib + host closure refused five carriers
+//! `load_all` into a live KB over the full stdlib + host closure refused five carriers
 //! (`anthill.reflect.Expr`, `TermRepr`, `LiteralRepr`, `anthill.geometry.EulerAngles`,
 //! `Vec3`), i.e. a KB that had just loaded clean could not be loaded into again.
 //!
@@ -95,13 +95,13 @@ fn phase_one_full_closure() -> KnowledgeBase {
     let parsed = parse_files(&files);
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("phase 1: full-closure stdlib load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("phase 1: full-closure stdlib load");
     kb
 }
 
 fn load_phase_two(kb: &mut KnowledgeBase, src: &str) -> Result<(), Vec<String>> {
     let user = parse::parse(src).expect("parse user source");
-    load::load_incremental(kb, &[&user], &NullResolver)
+    load::load_all(kb, &[&user], &NullResolver)
         .map(|_| ())
         .map_err(|errs| errs.iter().map(|e| e.to_string()).collect())
 }
@@ -233,7 +233,10 @@ fn derived_noneq_rows_survive_the_next_phase_unchanged() {
     // ... and the ONLY new row is phase 2's own composite, which reaches the same
     // Float leaf through the phase-1 carrier it wraps. An empty diff here would mean
     // the fixture stopped exercising this phase's derivation.
-    let fresh: Vec<&String> = after_two.iter().filter(|s| !after_one.contains(s)).collect();
+    let fresh: Vec<&String> = after_two
+        .iter()
+        .filter(|s| !after_one.contains(s))
+        .collect();
     assert_eq!(
         fresh,
         vec![&"SortProvidesInfo(sort_ref: Reading, spec: SortView(NonEq, T: Reading))".to_string()],

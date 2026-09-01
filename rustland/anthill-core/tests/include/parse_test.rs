@@ -27,7 +27,6 @@ use anthill_core::parse;
 use anthill_core::parse::desugar_target as dt;
 use anthill_core::parse::ir::*;
 
-
 use crate::common::{collect_anthill_files, stdlib_dir};
 use anthill_core::kb::ClauseKind;
 
@@ -106,7 +105,7 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
     let mut kb = KnowledgeBase::new();
     let src = "operation g[n](x: Int64) -> Int64\noperation f(x: Int64) -> Int64 = g[3](x)\n";
     let parsed = parse::parse(src).expect("parse failed");
-    crate::common::expect_loaded(load::load(&mut kb, &parsed, &NullResolver));
+    crate::common::expect_loaded(load::load_all(&mut kb, &[&parsed], &NullResolver));
 }
 
 #[test]
@@ -161,7 +160,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
         let mut kb = KnowledgeBase::new();
         let full = format!("{MODIFY}{src}");
         let parsed = parse::parse(&full).map_err(|e| format!("parse: {e:?}"))?;
-        load::load(&mut kb, &parsed, &NullResolver).map_err(|e| format!("load: {e:?}"))?;
+        load::load_all(&mut kb, &[&parsed], &NullResolver).map_err(|e| format!("load: {e:?}"))?;
         let sym = kb
             .try_resolve_symbol("f")
             .ok_or("operation `f` not found")?;
@@ -837,7 +836,7 @@ fn load_namespace_into_kb() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Should have facts: Namespace(banking), Entity(Account)
     assert!(kb.fact_count() >= 2);
@@ -852,7 +851,7 @@ fn load_sort_with_body_registers_entity_of() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Find the Nat and zero sort terms (use resolve_qualified_name_term for user-defined names)
     let nat_term = kb.resolve_qualified_name_term("Nat");
@@ -888,7 +887,7 @@ fn load_fact_and_query_by_sort() {
     let source = r#"fact parent("alice", "bob") [trust: axiom]"#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let fact_sort = ClauseKind::Fact;
     let facts = kb.clauses_of_kind(fact_sort);
@@ -919,7 +918,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Check we have facts of various sorts
     let ns_sort = ClauseKind::Namespace;
@@ -963,7 +962,7 @@ fn load_workitem_and_query() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
     let wi_sym = kb.intern("WorkItem");
@@ -1000,7 +999,7 @@ fact parent("bob", "charlie")
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let parent_sym = kb.intern("parent");
     let results = kb.rules_by_functor(parent_sym);
@@ -1025,7 +1024,21 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test's subject is what the
+    // LOADER builds, and the fixture is incomplete above the loader on purpose
+    // (its `requires gt(...)` / `ensures eq(...)` name goals the fixture never defines). That partial shape used to come from `load::load`, whose
+    // callers could not see it; it is now a named option at the call site. The
+    // verdict is still READ (WI-966) — the load must succeed as far as it goes.
+    load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
 
     // Operations should be registered as facts with sort "Operation"
     let op_sort = ClauseKind::Operation;
@@ -1117,7 +1130,7 @@ sort Store {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_sort = ClauseKind::Operation;
     let ops = kb.clauses_of_kind(op_sort);
@@ -1184,7 +1197,7 @@ fn load_operation_with_abstract_effect() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_sort = ClauseKind::Operation;
     let ops = kb.clauses_of_kind(op_sort);
@@ -1223,7 +1236,7 @@ fn retract_fact() {
     let source = r#"fact parent("alice", "bob")"#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // WI-922: this counted `by_sort[Fact]`. That bucket now also holds the
     // loader's own `Fact`-kinded clauses (the `EffectsRuntime` bridge), which
@@ -1251,7 +1264,7 @@ fn member_facts_for_sort_with_body() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let members = kb.rules_by_functor(member_info);
@@ -1294,7 +1307,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let account_domain = kb.resolve_qualified_name_sym("Account");
@@ -1326,7 +1339,7 @@ fn member_facts_for_namespace() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let banking_domain = kb.resolve_qualified_name_sym("banking");
@@ -1358,7 +1371,7 @@ fn member_facts_queryable_by_domain() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let option_term = kb.resolve_qualified_name_term("Option");
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
@@ -1394,7 +1407,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
@@ -1444,7 +1457,7 @@ fn reflection_inventory_schemas_survive_an_empty_relation() {
     let source = "namespace empty_ns\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let member_info = kb.resolve_symbol("anthill.reflect.MemberInfo");
     let description_info = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
@@ -1540,7 +1553,7 @@ sort Ord {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Check that a Requirement fact exists
     let req_sort = ClauseKind::Requirement;
@@ -1998,7 +2011,7 @@ fn load_describe_emits_desc_fact() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2040,7 +2053,7 @@ fn load_abstract_sort_description_emits_desc_fact() {
     let source = "sort Money = ? {< Monetary amount >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2118,7 +2131,7 @@ fn load_variable_description_emits_fact() {
     let source = "rule test: foo(?x {< the x value >}?) :- true\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2217,7 +2230,7 @@ fn load_describe_multiple_blocks_emits_facts() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2252,7 +2265,7 @@ fn load_abstract_sort_multiple_descriptions_emits_facts() {
     let source = "sort Money = ? {< Monetary amount >} {< Used in banking >}?\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2272,7 +2285,7 @@ sort WorkStatus {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let desc_sym = kb.resolve_symbol("anthill.reflect.DescriptionInfo");
     let descs = kb.rules_by_functor(desc_sym);
@@ -2424,7 +2437,7 @@ fn load_operation_with_variable_types() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_sort = ClauseKind::Operation;
     let ops = kb.clauses_of_kind(op_sort);
@@ -2442,7 +2455,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved import");
 
     let import_errors: Vec<_> = errors.iter().filter(|e| {
@@ -2464,7 +2477,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved wildcard import");
 
     let import_errors: Vec<_> = errors.iter().filter(|e| {
@@ -2497,7 +2510,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
 
     if let Err(errors) = &result {
         let import_errors: Vec<_> = errors
@@ -2529,7 +2542,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved selective import");
 
     let import_errors: Vec<_> = errors
@@ -2551,7 +2564,7 @@ fn unresolved_name_is_hard_error() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved type");
 
     // Should have UnresolvedName errors for "Nonexistent"
@@ -2588,7 +2601,7 @@ fn distinct_scopes_sharing_a_short_name_both_report() {
                   namespace lib\n  sort Item\n    operation describe(y: GhostType) -> Int64 = 0\n  end\nend\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let errors = load::load(&mut kb, &parsed, &NullResolver)
+    let errors = load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect_err("expected unresolved-name errors for GhostType");
     let count = errors
         .iter()
@@ -2613,7 +2626,7 @@ sort Ord {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load should succeed with all names resolved");
 }
 
@@ -2631,7 +2644,7 @@ fn namespace_scoped_sorts_resolve() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load should succeed: B is visible from C via namespace A");
 
     // Verify requirement is registered
@@ -2659,7 +2672,7 @@ sort B {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("circular requires should not panic");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("circular requires should not panic");
 
     // Both sorts should exist
     let a_term = kb.resolve_qualified_name_term("A");
@@ -2754,7 +2767,7 @@ fn dotted_name_creates_intermediate_namespaces() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Check that `a` and `a.b` are registered as Namespace symbols
     assert!(
@@ -2827,7 +2840,7 @@ fn dotted_namespace_creates_hierarchy() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     assert!(
         kb.has_qualified_name("a"),
@@ -2893,7 +2906,7 @@ fn nested_items_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Sort Eq at top level
     assert!(kb.has_qualified_name("Eq"), "sort Eq should be registered");
@@ -2924,7 +2937,7 @@ fn nested_items_in_dotted_sort_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     assert!(
         kb.has_qualified_name("anthill.prelude.Eq"),
@@ -2953,7 +2966,7 @@ fn nested_items_in_namespace_have_qualified_names() {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     assert!(
         kb.has_qualified_name("anthill.reflect"),
@@ -2985,7 +2998,7 @@ fn load_abstract_sort_variable_emits_sort_alias() {
     let source = "sort T = ?Element\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let sort_sort = ClauseKind::Sort;
     let facts = kb.clauses_of_kind(sort_sort);
@@ -3021,7 +3034,7 @@ fn load_abstract_sort_anonymous_variable_emits_sort_alias() {
     let source = "sort T = ?\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let sort_sort = ClauseKind::Sort;
     let facts = kb.clauses_of_kind(sort_sort);
@@ -3053,7 +3066,7 @@ fn load_abstract_sort_shared_variables() {
     let source = "sort A = ?X\nsort B = ?X\n";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let sort_sort = ClauseKind::Sort;
     let facts = kb.clauses_of_kind(sort_sort);
@@ -3236,14 +3249,20 @@ fn fmt_ir_term(
 fn parse_multi_operator_chain() {
     // ?a + ?b * ?c → add(?a, mul(?b, ?c)): mul binds tighter than add
     let (terms, symbols, term) = parse_term_ir("?a + ?b * ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(?a, ..anthill.prelude.Multiplicative.mul(?b, ?c))");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "..anthill.prelude.Additive.add(?a, ..anthill.prelude.Multiplicative.mul(?b, ?c))"
+    );
 }
 
 #[test]
 fn parse_left_assoc_add() {
     // ?a + ?b + ?c → add(add(?a, ?b), ?c): left-associative
     let (terms, symbols, term) = parse_term_ir("?a + ?b + ?c");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.Additive.add(..anthill.prelude.Additive.add(?a, ?b), ?c)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "..anthill.prelude.Additive.add(..anthill.prelude.Additive.add(?a, ?b), ?c)"
+    );
 }
 
 #[test]
@@ -3326,7 +3345,10 @@ fn parse_prefix_not() {
     // `..anthill.kernel.not` — a RESOLVER PRIMITIVE, where `+`'s address is a prelude
     // SPEC op. Written short, minted-at-a-spec, minted-at-the-kernel, all three legible.
     let (terms, symbols, term) = parse_term_ir("add(!?a, ?b)");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "add(..anthill.kernel.not(?a), ?b)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "add(..anthill.kernel.not(?a), ?b)"
+    );
 }
 
 #[test]
@@ -3342,10 +3364,16 @@ fn parse_prefix_in_infix() {
 #[test]
 fn parse_new_operators() {
     let (terms, symbols, term) = parse_term_ir("?a | ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.kernel.or(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "..anthill.kernel.or(?a, ?b)"
+    );
 
     let (terms, symbols, term) = parse_term_ir("?a != ?b");
-    assert_eq!(fmt_ir_term(&terms, &symbols, term), "..anthill.prelude.PartialEq.neq(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, term),
+        "..anthill.prelude.PartialEq.neq(?a, ?b)"
+    );
 }
 
 #[test]
@@ -3369,28 +3397,52 @@ fn parse_binary_arrow() {
 fn parse_existing_infix_unchanged() {
     // Verify backward compatibility: single-operator expressions produce same output
     let (t, s, h) = parse_term_ir("?a + ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Additive.add(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.Additive.add(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a * ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Multiplicative.mul(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.Multiplicative.mul(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a = ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialEq.eq(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.PartialEq.eq(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a > ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.gt(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.PartialOrd.gt(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a >= ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.gte(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.PartialOrd.gte(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a < ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.lt(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.PartialOrd.lt(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a <= ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.PartialOrd.lte(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.PartialOrd.lte(?a, ?b)"
+    );
 
     let (t, s, h) = parse_term_ir("?a - ?b");
-    assert_eq!(fmt_ir_term(&t, &s, h), "..anthill.prelude.Additive.sub(?a, ?b)");
+    assert_eq!(
+        fmt_ir_term(&t, &s, h),
+        "..anthill.prelude.Additive.sub(?a, ?b)"
+    );
 }
 
 // ── Set literal tests ─────────────────────────────────────────
@@ -3853,7 +3905,7 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
     fn callback_field_names(src: &str) -> Vec<String> {
         let mut kb = KnowledgeBase::new();
         let parsed = parse::parse(src).expect("parse");
-        load::load(&mut kb, &parsed, &NullResolver).expect("load");
+        load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load");
         let sym = kb.try_resolve_symbol("foo").expect("op foo");
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("opinfo");
         // The single param `f`, a (ground) arrow type — WI-341 Stage A: param
@@ -3962,7 +4014,7 @@ sort Host {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Drill OperationInfo for `run` to find parameter `f`'s arrow type
     // — that's where the effect set lands.
@@ -4105,10 +4157,10 @@ sort Host
     let parsed_plus = parse::parse(&source_plus).expect("`+E` parse failed");
 
     let mut kb_bare = KnowledgeBase::new();
-    load::load(&mut kb_bare, &parsed_bare, &NullResolver).expect("bare load failed");
+    load::load_all(&mut kb_bare, &[&parsed_bare], &NullResolver).expect("bare load failed");
 
     let mut kb_plus = KnowledgeBase::new();
-    load::load(&mut kb_plus, &parsed_plus, &NullResolver).expect("`+E` load failed");
+    load::load_all(&mut kb_plus, &[&parsed_plus], &NullResolver).expect("`+E` load failed");
 
     // Build the canonical effects rows from the same input set in both
     // KBs; they should match the post-load operation's effects.
@@ -4174,7 +4226,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // The reflect-side effects list still uses cons. Walk it and verify
     // the head element is an `absent(...)` EffectExpression atom.
@@ -4228,10 +4280,10 @@ sort Host
     let parsed_braced = parse::parse(&source_braced).expect("braced parse failed");
 
     let mut kb_merge = KnowledgeBase::new();
-    load::load(&mut kb_merge, &parsed_merge, &NullResolver).expect("merge load failed");
+    load::load_all(&mut kb_merge, &[&parsed_merge], &NullResolver).expect("merge load failed");
 
     let mut kb_braced = KnowledgeBase::new();
-    load::load(&mut kb_braced, &parsed_braced, &NullResolver).expect("braced load failed");
+    load::load_all(&mut kb_braced, &[&parsed_braced], &NullResolver).expect("braced load failed");
 
     // Count cons cells in both effects lists — should be 2 each.
     fn count_cons(kb: &KnowledgeBase, tid: anthill_core::kb::term::TermId) -> usize {
@@ -4361,7 +4413,7 @@ end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     // Ring is an algebraic spec (no entity constructors), classified as Abstract
@@ -4474,7 +4526,7 @@ fact Polynom[Int64]
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     let polynom_term = kb.resolve_qualified_name_term("Polynom");
@@ -4526,7 +4578,7 @@ end
     }
 
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let ring_term = kb.resolve_qualified_name_term("Ring");
     assert_eq!(
@@ -5528,7 +5580,21 @@ sort Math {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test's subject is what the
+    // LOADER builds, and the fixture is incomplete above the loader on purpose
+    // (its body calls a bare `add`, which dot dispatch refuses). That partial shape used to come from `load::load`, whose
+    // callers could not see it; it is now a named option at the call site. The
+    // verdict is still READ (WI-966) — the load must succeed as far as it goes.
+    load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
 
     let double_sym = kb
         .try_resolve_symbol("Math.double")
@@ -5553,7 +5619,21 @@ sort Math {
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test's subject is what the
+    // LOADER builds, and the fixture is incomplete above the loader on purpose
+    // (its receiver `?xs` resolves to no sort). That partial shape used to come from `load::load`, whose
+    // callers could not see it; it is now a named option at the call site. The
+    // verdict is still READ (WI-966) — the load must succeed as far as it goes.
+    load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
 
     let f_sym = kb
         .try_resolve_symbol("Math.f")
@@ -5582,7 +5662,7 @@ fn incorrect_program_error_includes_line_number() {
     //            line 1              line 2                          line 3
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     let errors = result.expect_err("expected load errors for unresolved type");
 
     let unresolved: Vec<_> = errors.iter().filter(|e| {
@@ -5629,7 +5709,7 @@ fn parse_workitem_description_with_unicode_punctuation() {
     let parsed = parse::parse(source).expect("WorkItem fact with unicode punctuation must parse");
     assert_eq!(parsed.items.len(), 1);
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load of unicode-description WorkItem must succeed");
 }
 
@@ -5654,7 +5734,7 @@ fn parse_description_containing_status_open_substring() {
     assert_eq!(parsed.items.len(), 1);
 
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load");
 
     // Sanity: the description's String literal carries the embedded
     // `status: Open` verbatim; the *fact's* status field is just `Open`.
@@ -5907,7 +5987,7 @@ fn assert_var_id(kb: &KnowledgeBase, term: TermId) -> u32 {
 fn load_op_type_param_resolves_bare_name_to_var() {
     let parsed = parse::parse("operation identity[T](x: T) -> T\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "identity");
     let return_type = named_arg(&kb, op_info, "return_type");
@@ -5920,7 +6000,7 @@ fn load_op_type_param_shares_var_across_param_and_return() {
     // throughout the operation.
     let parsed = parse::parse("operation identity[A](x: A) -> A\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "identity");
     let params_list = named_arg(&kb, op_info, "params");
@@ -5942,7 +6022,7 @@ fn load_op_type_param_shares_var_across_param_and_return() {
 fn load_op_distinct_type_params_get_distinct_vars() {
     let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> A\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "pair");
     let params_list = named_arg(&kb, op_info, "params");
@@ -5964,7 +6044,7 @@ operation just[A](x: A) -> Box[A]
 ";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "just");
     let params_list = named_arg(&kb, op_info, "params");
@@ -5987,7 +6067,7 @@ operation just[A](x: A) -> Box[A]
 fn load_op_without_type_params_unaffected() {
     let parsed = parse::parse("operation length(x: Int64) -> Int64\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     let op_info = find_operation_info(&mut kb, "length");
     let return_type = named_arg(&kb, op_info, "return_type");
@@ -6012,8 +6092,21 @@ end
     let parsed = parse::parse(src).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     // Pre-fix this panicked with index-out-of-bounds in convert_term.
-    load::load(&mut kb, &parsed, &NullResolver)
-        .expect("load should succeed (1-arg dot_apply falls through, no panic)");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test's subject is what the
+    // LOADER builds, and the fixture is incomplete above the loader on purpose
+    // (a user-written `dot_apply` is a post-elaboration form). That partial shape used to come from `load::load`, whose
+    // callers could not see it; it is now a named option at the call site. The
+    // verdict is still READ (WI-966) — the load must succeed as far as it goes.
+    load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
 }
 
 #[test]

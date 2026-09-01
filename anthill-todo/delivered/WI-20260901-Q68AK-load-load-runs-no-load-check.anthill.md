@@ -3,9 +3,9 @@
 - id: WI-20260901-Q68AK-load-load-runs-no-load-check
 - created: 2026-09-01T08:05:19Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-01T08:05:19Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-01T11:48:28Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -98,4 +98,25 @@ UNBLOCKED (2026-09-01). WI-20260901-7ZZ1Z is delivered, and its answer removes t
 SO THE MIGRATION SHRINKS. Of the 51 failures measured for the swap, the single REVERSE-direction one is gone: that was `conditional_spec_field_rejects_eq_list_of_non_eq_elements`, and it now passes through `load_all` on its own. What remains is 48 mechanical migrations (tests that load a deliberately ill-typed source, expect the load to SUCCEED, then drive `type_check_sorts` themselves — rewrite each to assert the load `Err`) plus two tests whose subject IS `load` and which retire with it (`wi1112…a_single_file_load_does_not_read_a_stale_index` and EA6KS's `a_check_less_load_entry_point_records_no_load_check_work`, taking `LoadCheckMarks` and `restore_load_check_marks` with them).
 
 RE-MEASURE THE 51 BEFORE STARTING: that count was taken before the WI-274 repair landed, so the mechanical rewrite of `load::load(kb, p, r)` to `load_all(kb, &[p], r)` should be re-run and re-classified rather than trusted from here.
+
+### 2026-09-01T11:48:04Z — feedback — user
+
+DELIVERED as `LoadOptions`, not as a plain deletion — the USER's design (2026-09-01), and it is better than removal alone.
+
+WHAT SHIPPED. `pub fn load` is gone, and with it `load_stdlib` and `load_incremental` (one-line delegations to `load_all` since WI-967). The partial shape it provided is now `load_all_with(kb, files, resolver, LoadOptions { run_typer: false })` on the ONE pipeline. Public loading API: `load_all` (defaults), `load_all_with` (explicit options), `load_all_per_file` (same pipeline, per-file results) — five names for three behaviours became three functions for three behaviours, and 20 call sites now SAY at the point of use that they take the partial path, where `load`'s partialness was visible nowhere.
+
+THE OPTION IS STRICTLY BETTER THAN THE FUNCTION IT REPLACED, and this is the part worth keeping. `run_typer: false` stops immediately BEFORE `type_check_sorts`, so everything the typer reads is already built — the sort-ops table, the provider/requires indexes, `derive_forwarded_provisions`, `eq_derive::derive_total_eq`. A hand-driven `type_check_sorts` therefore sees exactly the KB the pipeline's own call would. `load` stopped far earlier (right after `resolve_instantiations`), and that gap is precisely what let WI-20260901-7ZZ1Z ship: a test asserting a refusal that held only because the equality derivation had not run. The new stop point cannot produce that class of disagreement.
+
+MIGRATION, re-measured after 7ZZ1Z landed rather than trusted from the earlier count: 50 failures, not 51. 27 were the exact `load_with_result` + hand-driven `type_check_sorts` pair and moved mechanically to reading the load's verdict. 4 drive the typer themselves because their subject is the TYPED `TypeError` (entity/field SYMBOLS, a resolvable span) which the load boundary flattens to strings — those take `run_typer: false`. 9 more load fixtures that are incomplete for the passes above the loader, same option, applied ONE TEST AT A TIME. The two tests whose subject WAS `load` did not retire: `wi1112_requires_index_tests` and EA6KS's `a_check_less_load_entry_point_records_no_load_check_work` both repoint to the partial option, which is the shape they were always about. `LoadCheckMarks` survives for the same reason — the partial path still writes two registries only a check reads.
+
+/code-review FOUND SEVEN, ALL REAL, ALL FIXED:
+  1. `load_all_with(` does NOT contain `load_all(`, so WI-966's discard recogniser could not see the new entry point — the guard covered LESS than before. Literal added, plus a corpus row.
+  2. The `*_untyped` helpers returned `LoadResult::default()` on error, so `defined_sorts` was `[]`, the caller's `type_check_sorts` checked NOTHING, and every downstream `is_empty()` assertion passed VACUOUSLY over a KB that never loaded — WI-966's own class wearing a returned-verdict disguise. Both helpers now `expect` the partial load; the suite passing is what says those fixtures really do load clean up to the typer.
+  3. `restore_load_check_marks`'s doc claimed the registry cannot shrink because `load_phase_inner` "does NOT capture these marks" — true when the capturer was `load`, FALSE once `load_phase_inner` became the capturer. Rewritten to state the real guarantee (the partial return sits ABOVE the drain) and what breaks if a drain is hoisted.
+  4. Eight doc sites still named the removed functions, three as broken intra-doc links and two as load-bearing arguments citing a sibling that no longer exists. Fixed; 57 prose mentions of `load_incremental` renamed.
+  5. `load_with_result` now types inside the load, so two tests' "first pass" comments described a pass that no longer happens there. Corrected rather than left to mislead.
+  6. My blanket rename had renamed three LOCAL `fn load_stdlib()` test helpers to `load_all()`. Restored.
+  7. Formatting from my own scripted edits. Fixed — and note `rustfmt` on the 38 touched files inflated the diff by ~480 lines of UNRELATED reformatting (the tree is not rustfmt-clean), so two files were reverted and hand-edited instead.
+
+RESULT: rustland 6251 passed / 0 failed, count unchanged; scaland 524 / 0.
 

@@ -1154,7 +1154,7 @@ fn the_legitimate_acquisition_path_is_accepted() {
     //
     // ACCUMULATED PER NAME, NOT KEYED BY IT. `all_operation_effects` yields one
     // entry PER FACT, and WI-1049 records that one operation symbol can carry
-    // several — `load_incremental` banks a second `OperationInfo` for a
+    // several — a second `load_all` into a live KB banks another `OperationInfo` for a
     // type-parameter-bearing op. Collecting into a map would silently keep the
     // last, so a duplicate could decide the negative assertions below and this
     // test would go quiet exactly where it is meant to be loud.

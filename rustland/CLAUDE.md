@@ -119,14 +119,20 @@ Integration tests in `anthill-core/tests/` follow:
    `register_builtin_tags` is `pub(crate)` and has exactly one caller.
    `eval::builtins::register_standard_builtins` is a DIFFERENT function — it binds
    host fns on an `Interpreter`, and you DO call it per fresh interpreter (WI-968).
-3. READ the loader's verdict — never `let _ = load_all(..)`. A discarded `Err` is
+3. Need the file in the KB *without* the checks? `load_all_with(.., LoadOptions {
+   run_typer: false, .. })` — it stops immediately before the typer, so everything the
+   typer reads is built and a hand-driven `type_check_sorts` cannot disagree with the
+   pipeline's own. There is no separate single-file `load` any more (WI-20260901-Q68AK);
+   it was a second copy of the prologue and its earlier stop point is what let a shipped
+   test assert a refusal the real pipeline never makes (WI-20260901-7ZZ1Z).
+4. READ the loader's verdict — never `let _ = load_all(..)`. A discarded `Err` is
    not a worse message, it is no guard: the test then asserts over a KB that never
    finished loading, and stays green. `common::expect_loaded` to fail on it,
    `common::expect_load_errors` to PIN it when the fixture is dirty on purpose, or
    a named `*_lenient` helper. `load_kb_with` panics on load errors in all three
    test crates. Enforced by `wi966_loader_verdict_test` (WI-966).
-4. Build query term, call `kb.resolve(&[query], &config)`
-5. Assert on `solutions.len()`, `subst.resolve_with_term(var)`, `kb.reify(var, &subst)`
+5. Build query term, call `kb.resolve(&[query], &config)`
+6. Assert on `solutions.len()`, `subst.resolve_with_term(var)`, `kb.reify(var, &subst)`
 
 ## Conventions
 

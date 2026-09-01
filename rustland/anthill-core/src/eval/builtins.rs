@@ -3951,17 +3951,17 @@ fn kb_loaded(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 
     let snapshot = interp.kb.snapshot_scoped();
     let refs: Vec<&crate::parse::ir::ParsedFile> = parsed.iter().collect();
-    match crate::kb::load::load_incremental(&mut interp.kb, &refs, &crate::kb::load::NullResolver) {
+    match crate::kb::load::load_all(&mut interp.kb, &refs, &crate::kb::load::NullResolver) {
         Ok(_) => {
             // The layer can OVERRIDE what the base declared, so the interpreter's memos
             // have to go on the way IN as well as on the way out (`sweep_layers` clears
             // them again on the discard). `op_body_cache` and `const_cache` are keyed by
-            // `Symbol` and are not touched by `load_incremental` — a base operation whose
+            // `Symbol` and are not touched by `load_all` into a live KB — a base operation whose
             // body was cached before the layer would otherwise keep running the base's
             // version of a definition the layer just replaced.
             //
             // The KB's OWN caches are the loader's business, not this function's: a layer
-            // load IS `load_incremental`, which every embedder already runs against a
+            // load IS `load_all` into a live KB, which every embedder already runs against a
             // live KB, so whatever invalidation it does is the established contract here
             // too. These two are the pair no loader ever sees.
             interp.op_body_cache.clear();

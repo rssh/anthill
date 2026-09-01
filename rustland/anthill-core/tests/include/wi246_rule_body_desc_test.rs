@@ -44,7 +44,20 @@ end
 "#;
     let mut kb = KnowledgeBase::new();
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: the subject here is what the
+    // LOADER records, over a fixture that is incomplete for the passes above it on
+    // purpose. The retired `load::load` is what this used to reach for; the option
+    // says it at the call site, and the verdict is still READ (WI-966).
+    load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
 
     assert!(
         has_description_fact(&kb, "the input value"),

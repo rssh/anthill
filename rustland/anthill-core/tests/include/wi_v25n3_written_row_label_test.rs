@@ -72,7 +72,7 @@
 //!
 //! THE TWO FACT SOURCES HAVE NO BATCH BOUNDARY of their own — only the site registry is
 //! drained per load — so each clause fact is CLAIMED ONCE PER KB
-//! (`claim_row_binding_clause`). Without it a `load_incremental` of a clean file into a
+//! (`claim_row_binding_clause`). Without it a `load_all` into a live KB of a clean file into a
 //! KB already holding an offending clause re-reported that clause, failing a batch over a
 //! file it was never given.
 //!
@@ -283,7 +283,10 @@ namespace test.v25n3.ok
     effects {s.E, Error} = Spec.go(s, p)
 end
 "#;
-    expect_loads("a registered kind in a parameter's row type-argument", &[OUT, SPEC, src]);
+    expect_loads(
+        "a registered kind in a parameter's row type-argument",
+        &[OUT, SPEC, src],
+    );
 }
 
 /// THE FALSE-POSITIVE CONTROL, AT THE NEW SITE — RSRP5's
@@ -331,7 +334,10 @@ end
     );
     expect_refused(
         "the row binding beside a TYPE-parameter binding is still judged",
-        &["is not a REGISTERED effect kind", "effect-row parameter `E`"],
+        &[
+            "is not a REGISTERED effect kind",
+            "effect-row parameter `E`",
+        ],
         &[OUT, SPEC, bad],
     );
 }
@@ -419,7 +425,10 @@ end
 "#;
     expect_refused(
         "a row nested inside a provides binding",
-        &["is not a REGISTERED effect kind", "effect-row parameter `E`"],
+        &[
+            "is not a REGISTERED effect kind",
+            "effect-row parameter `E`",
+        ],
         &[OUT, SPEC, src],
     );
 }
@@ -757,8 +766,16 @@ namespace test.v25n3.twob
 end
 "#;
     for (what, src, kinds) in [
-        ("a sort's `requires` beside its `provides`", sort_level, ["provides", "requires"]),
-        ("an operation's `requires` beside its `ensures`", op_level, ["`requires` clause", "`ensures` clause"]),
+        (
+            "a sort's `requires` beside its `provides`",
+            sort_level,
+            ["provides", "requires"],
+        ),
+        (
+            "an operation's `requires` beside its `ensures`",
+            op_level,
+            ["`requires` clause", "`ensures` clause"],
+        ),
     ] {
         let errs = load_errors(&[OUT, SPEC, src]);
         let rows: Vec<&String> = errs
@@ -779,12 +796,15 @@ end
     }
 }
 
-/// A CHECK-LESS LOAD ENTRY POINT RECORDS NO LOAD-CHECK WORK.
+/// A CHECK-LESS LOAD RECORDS NO LOAD-CHECK WORK.
 ///
-/// `load::load` — the single-file entry — runs the item walk without ever reaching
-/// `load_phase_inner`, so NO load check runs over what it loaded. Two registries the walk
+/// `LoadOptions { run_typer: false }` stops the phase before the typer, so none of the
+/// checks below that line run over what it loaded. (It was `load::load` — a separate
+/// single-file entry point — until WI-20260901-Q68AK folded the partial shape into an
+/// option on the one pipeline; the rule and both measurements are unchanged, and the
+/// registries are restored at the same place.) Two registries the walk
 /// writes are read only by a check, and leaving either changed hands the NEXT batch work
-/// it did not do: measured, a `load_incremental` of one unrelated clean sort failed with
+/// it did not do: measured, a `load_all` into a live KB of one unrelated clean sort failed with
 /// refusals naming a file it was never given. `KnowledgeBase::restore_load_check_marks`
 /// is the rollback; both halves are asserted here because they are two registries with
 /// one rule, and they came from opposite directions (/code-review).
@@ -896,20 +916,28 @@ end
         );
 
         let solo = parse::parse(offender).expect("parse offender");
-        let mid = errs_of(load::load(&mut kb, &solo, &NullResolver));
+        let mid = errs_of(load::load_all_with(
+            &mut kb,
+            &[&solo],
+            &NullResolver,
+            load::LoadOptions {
+                run_typer: false,
+                ..Default::default()
+            },
+        ));
         assert_eq!(
             judged(&mid),
             0,
-            "{half}: `load` runs no load check, so it reports none of these itself; \
+            "{half}: a partial load runs no load check, so it reports none of these itself; \
              got: {mid:#?}"
         );
 
         let later = parse::parse(unrelated).expect("parse later");
-        let third = errs_of(load::load_incremental(&mut kb, &[&later], &NullResolver));
+        let third = errs_of(load::load_all(&mut kb, &[&later], &NullResolver));
         assert_eq!(
             judged(&third),
             0,
-            "{half}: a batch of one unrelated sort must not inherit `load`'s work; \
+            "{half}: a batch of one unrelated sort must not inherit the partial load's work; \
              got: {third:#?}"
         );
     }
@@ -923,7 +951,7 @@ end
 /// other's control:
 ///
 /// * A BATCH THAT PRESENTS NOTHING must report nothing. Without
-///   `claim_row_binding_clause`, a `load_incremental` of a clean unrelated file into a KB
+///   `claim_row_binding_clause`, a `load_all` into a live KB of a clean unrelated file into a KB
 ///   that already holds an offending clause re-reported it — a batch failing over a file
 ///   it was never given (WI-20260831-V25N3, measured).
 /// * A BATCH THAT RE-PRESENTS THE FILE must report it again. The claim alone gets this
@@ -1053,7 +1081,7 @@ end
     );
 
     let later = parse::parse(unrelated).expect("parse later");
-    let second: Vec<String> = match load::load_incremental(&mut kb, &[&later], &NullResolver) {
+    let second: Vec<String> = match load::load_all(&mut kb, &[&later], &NullResolver) {
         Ok(_) => vec![],
         Err(e) => e.iter().map(|x| x.to_string()).collect(),
     };
@@ -1064,7 +1092,7 @@ end
     );
 
     let again = parse::parse(bad).expect("parse re-presented");
-    let third: Vec<String> = match load::load_incremental(&mut kb, &[&again], &NullResolver) {
+    let third: Vec<String> = match load::load_all(&mut kb, &[&again], &NullResolver) {
         Ok(_) => vec![],
         Err(e) => e.iter().map(|x| x.to_string()).collect(),
     };

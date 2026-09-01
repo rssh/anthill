@@ -44,7 +44,26 @@ fn load_stdlib_kb() -> KnowledgeBase {
 /// Load user source on top of an existing KB (stdlib already loaded).
 fn load_source(kb: &mut KnowledgeBase, source: &str) {
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(kb, &[&parsed], &NullResolver).expect("load failed");
+}
+
+/// WI-20260901-Q68AK — [`load_source`] that stops before the typer, and RETURNS the
+/// loader's verdict rather than expecting a clean load (WI-966: the reader is named).
+///
+/// For a test whose subject is what the LOADER records — a rule's parsed shape, a
+/// provision's satisfaction facts — over a fixture that is deliberately incomplete for
+/// the passes above it. The retired `load::load` is what these used to reach for; the
+/// difference is that the partialness is now visible at the call site and stops at a
+/// point where everything the typer reads is already built.
+fn load_source_untyped(kb: &mut KnowledgeBase, source: &str) -> Vec<load::LoadError> {
+    let parsed = parse::parse(source).expect("parse failed");
+    let options = load::LoadOptions {
+        run_typer: false,
+        ..Default::default()
+    };
+    load::load_all_with(kb, &[&parsed], &NullResolver, options)
+        .err()
+        .unwrap_or_default()
 }
 
 /// Get the functor symbol from a name term (resolve_qualified_name_term returns a nullary Fn).
@@ -524,7 +543,11 @@ namespace test.wi344_provides
 end
 "#;
     let mut kb = load_stdlib_kb();
-    load_source(&mut kb, source);
+    // The fixture's provider is deliberately unbacked (`cmp` has no impl), which
+    // `check_provider_operations` refuses ABOVE the typer — so stopping before the
+    // typer does not help and the verdict is bound and named instead (WI-966). The
+    // subject is the SATISFACTION FACTS the provision records, asserted below.
+    let _loader_diagnostics = load_source_untyped(&mut kb, source);
 
     let var_carrier = make_var(&mut kb, "carrier");
     let var_spec = make_var(&mut kb, "spec");
@@ -1658,7 +1681,7 @@ fn wi295_cross_namespace_rule_predicate_import_resolves() {
         "end\n",
     );
     let parsed = parse::parse(source).expect("parse wi295 source");
-    let errs = load::load(&mut kb, &parsed, &NullResolver)
+    let errs = load::load_all(&mut kb, &[&parsed], &NullResolver)
         .err()
         .unwrap_or_default();
     let has_unresolved = errs.iter().any(|e| {
@@ -1700,7 +1723,7 @@ fn typing_pass_spec_parses_and_loads() {
         panic!("typing_pass_spec.anthill has {} parse errors", errs.len());
     });
 
-    let result = load::load(&mut kb, &parsed, &NullResolver);
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver);
     if let Err(errs) = &result {
         for e in errs {
             eprintln!("load error: {e}");
@@ -2355,8 +2378,7 @@ end
 
 fact Thing(name: 42)
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 where String expected"
@@ -2389,8 +2411,7 @@ end
 
 fact Thing(count: "hello")
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect String where Int64 expected"
@@ -2427,8 +2448,7 @@ end
 
 fact Box(color: Square)
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Shape entity where Color expected, got: {:?}",
@@ -2476,8 +2496,7 @@ end
 fn type_check_error_reports_line_number() {
     let source = "sort Item\n  entity Thing(count: Int64)\nend\n\nfact Thing(count: \"hello\")\n";
     //            line 1        line 2                    line 3  line 4  line 5
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect String where Int64 expected"
@@ -2506,8 +2525,7 @@ fn type_check_error_reports_line_number() {
 #[test]
 fn typer_error_is_file_located() {
     let source = "sort Item\n  entity Thing(count: Int64)\nend\n\nfact Thing(count: \"hello\")\n";
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let tm = errors
         .iter()
         .find(|e| matches!(e.peel(), load::LoadError::TypeMismatch { .. }))
@@ -2557,11 +2575,16 @@ sort Box
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    // First pass: type + rewrite `Box.put`'s `b.cell` to `field_access`.
+    // WI-20260901-Q68AK — the rewrite of `Box.put`'s `b.cell` to `field_access` now
+    // happens INSIDE the load (the retired `load::load` ran no typer, so this call was
+    // the first pass; `load_all` types as part of loading). So this call is already a
+    // RE-type over a rewritten body, and its cleanliness is the first half of the same
+    // assertion the second call makes — kept because it localises a regression to the
+    // pass that broke.
     let errors1 = type_check_sorts(&mut kb, &result.defined_sorts);
     assert!(
         errors1.is_empty(),
-        "first type-check should be clean, got: {:?}",
+        "re-type over the loaded (already rewritten) body should be clean, got: {:?}",
         errors1
     );
     // Re-type-check with no sort owning `Box.put`: the free-op sweep re-visits
@@ -2601,8 +2624,7 @@ sort Math
   operation one() -> String = 1
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 body vs String return type"
@@ -2646,8 +2668,7 @@ sort Math
   operation wrong(x: Int64) -> String = x
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 var vs String return type, got: {:?}",
@@ -2824,8 +2845,7 @@ sort Logic
   operation pick(b: Bool) -> String = if b then 1 else 0
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 branches vs String return, got: {:?}",
@@ -2895,8 +2915,7 @@ sort Palette
     case Blue -> 2
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 match body vs String return, got: {:?}",
@@ -5518,10 +5537,60 @@ end
 // type_check_sorts (unified pass) tests
 // ══════════════════════════════════════════════════════════════════
 
+/// WI-20260901-Q68AK — the load diagnostics for the stdlib plus `source`.
+///
+/// Replaces the `load_with_result` + hand-driven `type_check_sorts` pair these tests used
+/// to spell. That pair existed because `load::load` ran NO check, so a test had to drive
+/// the typer itself; with that entry point gone the typer runs inside the load and a test
+/// asserting a type diagnostic reads the LOAD's verdict. Same KB recipe as every other
+/// test (`try_load_kb_with_files` -> `load_all`), so these cannot drift onto a different
+/// pipeline than the suite around them.
+fn load_type_errors(source: &str) -> Vec<load::LoadError> {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    match load::load_all(&mut kb, &[&parsed], &NullResolver) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors,
+    }
+}
+
 fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
+    (kb, result)
+}
+
+/// WI-20260901-Q68AK — load `source` but STOP BEFORE THE TYPER, for the handful of tests
+/// whose subject is what `type_check_sorts` itself produces: the TYPED `TypeError`, with
+/// its entity/field SYMBOLS and its span, which the load boundary flattens to strings
+/// (`LoadError::TypeMismatch` carries `entity_name: String`, and its own doc calls the
+/// variant lossy). Those tests must drive the typer themselves, so the load must not have
+/// driven it first.
+///
+/// `run_typer: false` and NOT the retired `load::load`, which is what this replaces. That
+/// entry point stopped far earlier — before the sort-ops table, the provider indexes and
+/// `eq_derive::derive_total_eq` — so its hand-driven typer ran on a half-built KB and
+/// could DISAGREE with the pipeline's own: WI-20260901-7ZZ1Z was a shipped test asserting
+/// a refusal that held only because the equality derivation had not run. Stopping
+/// immediately before the typer means the typer sees exactly the KB `load_all` would have
+/// given it, so the two cannot answer differently.
+///
+/// The load is EXPECTED to succeed as far as it goes: these fixtures are dirty for the
+/// TYPER, never for the loader.
+fn load_untyped(source: &str) -> (KnowledgeBase, LoadResult) {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    let options = load::LoadOptions {
+        run_typer: false,
+        ..Default::default()
+    };
+    // EXPECT, not tolerate — see `common::load_stdlib_kb_untyped` for why the tolerant
+    // form was worse than a panic: with no `LoadResult` the caller's `defined_sorts` is
+    // `[]`, so its `type_check_sorts` checks nothing and an emptiness assertion passes
+    // over a KB that never loaded (/code-review).
+    let result = load::load_all_with(&mut kb, &[&parsed], &NullResolver, options)
+        .expect("partial load (up to the typer) must succeed");
     (kb, result)
 }
 
@@ -5554,8 +5623,7 @@ sort Item
 end
 fact Thing(count: "hello")
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect String where Int64 expected"
@@ -5649,8 +5717,7 @@ sort Math
   operation get_name() -> String = 42
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "should detect Int64 body vs String return"
@@ -5686,8 +5753,7 @@ sort Container
 end
 fact Box(items: cons(head: "hello", tail: nil))
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "String in List[T=Int64] should be detected, got: {:?}",
@@ -5704,7 +5770,7 @@ sort MySort
 end
 fact Foo(x: "wrong")
 "#;
-    let (mut kb, result) = load_with_result(source);
+    let (mut kb, result) = load_untyped(source);
     // Only check user sorts, not stdlib
     assert!(
         !result.defined_sorts.is_empty(),
@@ -5804,7 +5870,9 @@ rule bigint_induction(?P)
     );
 
     let mut kb = load_stdlib_kb();
-    load_source(&mut kb, source);
+    // The fixture's `sub` is undefined on purpose — the subject is the rule's PARSED
+    // shape, not its goals' backing.
+    let _loader_diagnostics = load_source_untyped(&mut kb, source);
 
     let ind_sym = kb.try_resolve_symbol("bigint_induction");
     assert!(ind_sym.is_some(), "bigint_induction should be defined");
@@ -5934,8 +6002,7 @@ sort Mixed
   rule bad(?x) :- Foo(name: ?x), Bar(count: ?x)
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "?x used as String and Int64 should be detected, got: {:?}",
@@ -6020,8 +6087,7 @@ sort TestSort
   rule test(?P, ?x) :- ?P(?x, ?x)
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "duplicate var in ho_apply should be rejected, got: {:?}",
@@ -6176,8 +6242,7 @@ sort Container
 end
 fact Holder(ints: cons(head: "wrong", tail: nil), strings: cons(head: 42, tail: nil))
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "swapped types should be detected, got: {:?}",
@@ -6215,8 +6280,7 @@ sort TestSort
 end
 fact Holder(items: cons(head: 42, tail: nil))
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "cons(head: 42) in List[T=String] field should detect Int64 vs String mismatch"
@@ -6267,8 +6331,7 @@ sort Test
     end
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let match_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("missing"))
@@ -6300,8 +6363,7 @@ namespace test.wi036_ok
   fact Holder(item: widget(7))
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6330,8 +6392,7 @@ namespace test.wi036_bad
   fact Holder(item: gadget(3))
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6369,8 +6430,7 @@ namespace test.wi344_ok
   operation as_comparable(w: Widget) -> Comparable = w
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let op_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("as_comparable"))
@@ -6400,8 +6460,7 @@ namespace test.wi344_bad
   operation as_comparable(g: Gadget) -> Comparable = g
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let op_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("as_comparable"))
@@ -6438,8 +6497,7 @@ namespace test.wi344_binding_mismatch
   operation as_cmp_gadget(w: Widget) -> Comparable[T = Gadget] = w
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let op_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("as_cmp_gadget"))
@@ -6473,8 +6531,7 @@ namespace test.wi036_list_ok
   fact Holder(items: [widget(7)])
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6508,8 +6565,7 @@ namespace test.wi036_list_bad
   fact Holder(items: [gadget(3)])
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6542,8 +6598,7 @@ namespace test.wi036_pspec
   fact Holder(item: widget(7))
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6584,8 +6639,7 @@ namespace test.wi274_mismatch
   fact Holder(item: widget(7))
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     let field_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("Holder"))
@@ -6735,7 +6789,7 @@ sort Item
 end
 fact Thing(count: "oops")
 "#;
-    let (mut kb, result) = load_with_result(source);
+    let (mut kb, result) = load_untyped(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
     match &errors[0] {
@@ -6765,7 +6819,7 @@ sort Test
     "hello"
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
+    let (mut kb, result) = load_untyped(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     let return_err = errors
         .iter()
@@ -6802,7 +6856,7 @@ end
 #[test]
 fn typed_span_resolves_to_source_position() {
     let source = "sort Item\n  entity Thing(count: Int64)\nend\nfact Thing(count: \"oops\")\n";
-    let (mut kb, result) = load_with_result(source);
+    let (mut kb, result) = load_untyped(source);
     let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
     let span = errors[0].span(&kb);
     assert!(
@@ -7185,8 +7239,7 @@ sort Demo
   operation tester() -> Box[T = String] = make_box[Int64]()
 end
 "#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = load_type_errors(source);
     assert!(
         !errors.is_empty(),
         "Box[T = Int64] from call should not unify with Box[T = String] expected return"

@@ -49,7 +49,20 @@ fn load_stdlib_and_project_kb() -> KnowledgeBase {
 fn load_with_stdlib(source: &str) -> (KnowledgeBase, LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: the subject here is what the
+    // LOADER records, over a fixture that is incomplete for the passes above it on
+    // purpose. The retired `load::load` is what this used to reach for; the option
+    // says it at the call site, and the verdict is still READ (WI-966).
+    let result = load::load_all_with(
+        &mut kb,
+        &[&parsed],
+        &NullResolver,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+    )
+    .expect("load failed");
     (kb, result)
 }
 
@@ -62,7 +75,7 @@ fn store_anthill_typechecks() {
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill");
     let store_src = std::fs::read_to_string(&store_path).expect("read store.anthill");
     let parsed = parse::parse(&store_src).expect("parse store.anthill");
-    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load store.anthill");
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load store.anthill");
     let errors = type_check_sorts(&mut kb, &result.defined_sorts);
     let effect_errors: Vec<_> = errors
         .iter()

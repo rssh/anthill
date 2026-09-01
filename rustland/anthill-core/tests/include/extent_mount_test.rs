@@ -276,7 +276,7 @@ fn source_fact_for_owned_functor_refused_at_load() {
     refs.push(&base_parsed);
 
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("phase-1 load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("phase-1 load");
 
     // Phase 2: mount WorkItem, THEN load a file that seeds a resident fact for it.
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");
@@ -293,7 +293,7 @@ end
 "#,
     )
     .expect("parse offending");
-    let errs = load::load_incremental(&mut kb, &[&offending], &NullResolver)
+    let errs = load::load_all(&mut kb, &[&offending], &NullResolver)
         .expect_err("a resident fact for a mounted functor must be refused at load");
     assert!(
         errs.iter()
@@ -319,7 +319,7 @@ fn source_rule_for_owned_functor_refused_at_load() {
     refs.push(&base_parsed);
 
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("phase-1 load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("phase-1 load");
 
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");
     let id_field = kb.intern("id");
@@ -336,7 +336,7 @@ end
 "#,
     )
     .expect("parse offending rule");
-    let errs = load::load_incremental(&mut kb, &[&offending], &NullResolver)
+    let errs = load::load_all(&mut kb, &[&offending], &NullResolver)
         .expect_err("a resident bodied rule for a mounted functor must be refused at load");
     assert!(
         errs.iter().any(|e| {

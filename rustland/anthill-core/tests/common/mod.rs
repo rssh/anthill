@@ -395,7 +395,10 @@ pub fn parses_clean(src: &str) {
 #[allow(dead_code)]
 pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
     let joined = errs.join(" | ");
-    assert!(!errs.is_empty(), "{why}: expected a refusal, got a clean load");
+    assert!(
+        !errs.is_empty(),
+        "{why}: expected a refusal, got a clean load"
+    );
     for t in tokens {
         assert!(
             joined.contains(t),
@@ -497,7 +500,7 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
 
@@ -536,7 +539,41 @@ pub fn load_stdlib_kb_with_source(
 ) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
+    (kb, result)
+}
+
+/// WI-20260901-Q68AK — [`load_stdlib_kb_with_source`] that STOPS BEFORE THE TYPER and
+/// RETURNS the loader's verdict instead of expecting a clean load.
+///
+/// For a test that drives `type_check_sorts` itself — because its subject is what the
+/// TYPER produces, or because its fixture is refused by a pass above the loader on
+/// purpose. The retired `load::load` is what these reached for; it stopped far earlier
+/// (before the sort-ops table, the provider indexes and `eq_derive::derive_total_eq`), so
+/// a hand-driven typer ran on a half-built KB and could disagree with the pipeline's own
+/// — WI-20260901-7ZZ1Z was a shipped test asserting a refusal that held only because the
+/// equality derivation had not run. Stopping immediately before the typer removes that
+/// whole class: the typer sees exactly the KB `load_all` would have handed it.
+///
+/// The verdict is EXPECTED, not returned: see the body for why a tolerant version made
+/// every downstream emptiness assertion vacuous.
+#[allow(dead_code)]
+pub fn load_stdlib_kb_untyped(source: &str) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
+    let mut kb = load_stdlib_kb();
+    let parsed = parse::parse(source).expect("parse failed");
+    let options = load::LoadOptions {
+        run_typer: false,
+        ..Default::default()
+    };
+    // EXPECT, not tolerate. These fixtures are dirty for the TYPER, never for the
+    // loader, so an error here is a real failure — and the tolerant version was
+    // WORSE THAN A PANIC: on `Err` there is no `LoadResult`, so `defined_sorts`
+    // would be `[]`, the caller's `type_check_sorts` would check NOTHING, and every
+    // `errors.is_empty()` assertion downstream would pass VACUOUSLY over a KB that
+    // never loaded. That is the exact class WI-966 exists to stop, wearing a
+    // returned-verdict disguise (/code-review).
+    let result = load::load_all_with(&mut kb, &[&parsed], &NullResolver, options)
+        .expect("partial load (up to the typer) must succeed");
     (kb, result)
 }
 
@@ -814,8 +851,9 @@ pub fn list_column_strings(kb: &KnowledgeBase, v: &eval::Value) -> Vec<String> {
         .into_iter()
         .map(|h| {
             let col = sole_column(&h);
-            scalar_str(kb, &col)
-                .unwrap_or_else(|| panic!("list_column_strings: expected a String column, got {col:?}"))
+            scalar_str(kb, &col).unwrap_or_else(|| {
+                panic!("list_column_strings: expected a String column, got {col:?}")
+            })
         })
         .collect()
 }
@@ -828,8 +866,9 @@ pub fn list_column_ints(kb: &KnowledgeBase, v: &eval::Value) -> Vec<i64> {
         .into_iter()
         .map(|h| {
             let col = sole_column(&h);
-            scalar_int(kb, &col)
-                .unwrap_or_else(|| panic!("list_column_ints: expected an Int64 column, got {col:?}"))
+            scalar_int(kb, &col).unwrap_or_else(|| {
+                panic!("list_column_ints: expected an Int64 column, got {col:?}")
+            })
         })
         .collect()
 }
@@ -841,10 +880,7 @@ pub fn list_column_ints(kb: &KnowledgeBase, v: &eval::Value) -> Vec<i64> {
 /// as an empty `Functor` (WI-436/WI-511), so both spellings must be accepted or `nil` /
 /// `none` answer `None` here while `some(1)` answers a symbol.
 #[allow(dead_code)]
-pub fn entity_functor(
-    kb: &KnowledgeBase,
-    v: &eval::Value,
-) -> Option<anthill_core::intern::Symbol> {
+pub fn entity_functor(kb: &KnowledgeBase, v: &eval::Value) -> Option<anthill_core::intern::Symbol> {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Functor {
@@ -895,7 +931,9 @@ pub fn entity_field(
     }
     v.pos_arg(kb, pos_rank)
         .map(|item| item.to_value())
-        .unwrap_or_else(|| panic!("entity_field: no field `{name}` and no pos[{pos_rank}] on {v:?}"))
+        .unwrap_or_else(|| {
+            panic!("entity_field: no field `{name}` and no pos[{pos_rank}] on {v:?}")
+        })
 }
 
 /// A SCALAR read through the carrier-neutral view: `ViewHead::Const`.

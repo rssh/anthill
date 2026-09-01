@@ -283,7 +283,11 @@ fn the_resolution_reaches_a_nested_position() {
         (1, 1),
         "CONTROL: the parenthesized nested spelling"
     );
-    assert_eq!(counts(&mut kb, "ej5f5.nest_green2()"), (1, 1), "the bare twin");
+    assert_eq!(
+        counts(&mut kb, "ej5f5.nest_green2()"),
+        (1, 1),
+        "the bare twin"
+    );
     assert_eq!(
         counts(&mut kb, "ej5f5.nest_green1()"),
         (0, 0),
@@ -332,7 +336,11 @@ fn a_bare_name_naming_a_constructor_with_fields_is_still_a_binder() {
 #[test]
 fn a_binder_arm_still_catches_every_constructor() {
     let mut kb = crate::common::load_kb_with(SRC);
-    assert_eq!(counts(&mut kb, "ej5f5.binder_red1()"), (1, 1), "its own arm");
+    assert_eq!(
+        counts(&mut kb, "ej5f5.binder_red1()"),
+        (1, 1),
+        "its own arm"
+    );
     assert_eq!(
         counts(&mut kb, "ej5f5.binder_grn9()"),
         (1, 1),
@@ -423,7 +431,10 @@ fn an_arm_body_naming_the_bare_name_still_resolves() {
 #[test]
 fn the_annotation_opt_out_reaches_the_exhaustiveness_check_too() {
     let missing = |source: &str| -> Vec<String> {
-        let (mut kb, result) = crate::common::load_stdlib_kb_with_source(source);
+        // WI-20260901-Q68AK — STOPS BEFORE THE TYPER, because this test drives
+        // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+        // The verdict is bound, not discarded (WI-966).
+        let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
         anthill_core::kb::typing::type_check_sorts(&mut kb, &result.defined_sorts)
             .iter()
             .map(|e| format!("{e}"))

@@ -323,7 +323,7 @@ fn two_identical_files_are_two_declarations() {
 }
 
 /// CONTROL — passes either way BY DESIGN, and it is what a fact-count verdict
-/// would have BROKEN. `load_incremental` re-presents already-loaded files, and
+/// would have BROKEN. `load_all` into a live KB re-presents already-loaded files, and
 /// every type-parameter-bearing operation then banks a SECOND `OperationInfo`
 /// (`load_operation` mints a `fresh_var` per declared type parameter, so the
 /// re-emitted head cannot hash-cons to the first). Clearing the declaration log at
@@ -347,7 +347,7 @@ fn re_presenting_the_same_files_is_not_a_duplicate() {
         .collect();
     parsed.push(parse::parse(src).unwrap());
     let refs: Vec<_> = parsed.iter().collect();
-    let errs = match load::load_incremental(&mut kb, &refs, &NullResolver) {
+    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => Vec::new(),
         Err(e) => e.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
     };

@@ -39,7 +39,7 @@ end
 "#;
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load should accept `effects Modify[result]`");
 }
 
@@ -57,7 +57,7 @@ end
 "#;
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load should accept `effects Modify[result]` with params");
 }
 
@@ -76,7 +76,7 @@ end
 "#;
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(&mut kb, &parsed, &NullResolver)
+    load::load_all(&mut kb, &[&parsed], &NullResolver)
         .expect("load should accept per-component `Modify[result.a]` / `Modify[result.b]`");
 }
 
@@ -93,7 +93,7 @@ end
 "#;
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let errors = match load::load(&mut kb, &parsed, &NullResolver) {
+    let errors = match load::load_all(&mut kb, &[&parsed], &NullResolver) {
         Ok(_) => panic!("loading an operation with param named 'result' should error"),
         Err(errs) => errs,
     };

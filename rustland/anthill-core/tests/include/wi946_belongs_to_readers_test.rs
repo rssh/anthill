@@ -48,7 +48,10 @@ use std::rc::Rc;
 
 /// Typed field/return errors for a source loaded on top of the stdlib.
 fn typed_errors(source: &str) -> Vec<TypeError> {
-    let (mut kb, result) = crate::common::load_stdlib_kb_with_source(source);
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER, because this test drives
+    // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+    // The verdict is bound, not discarded (WI-966).
+    let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
     type_check_sorts_typed(&mut kb, &result.defined_sorts)
 }
 
@@ -75,7 +78,10 @@ sort Shape
   entity Circle(r: Float)
 end
 "#;
-    let (kb, _r) = crate::common::load_stdlib_kb_with_source(source);
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test drives
+    // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+    // The verdict is bound, not discarded (WI-966).
+    let (kb, _r) = crate::common::load_stdlib_kb_untyped(source);
     let sym = |n: &str| {
         kb.try_resolve_symbol(n)
             .unwrap_or_else(|| panic!("no symbol {n}"))
@@ -389,7 +395,10 @@ fn an_eponymous_parametric_build_refuses_a_wrong_binding() {
 /// `a_built_parametric_value_carries_its_binding` is the subject test this site's own
 /// instruction asked for.
 fn built_value_type_is_parameterized(source: &str, ctor_qn: &str) -> bool {
-    let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(source);
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test drives
+    // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+    // The verdict is bound, not discarded (WI-966).
+    let (mut kb, _r) = crate::common::load_stdlib_kb_untyped(source);
     let ctor = kb
         .try_resolve_symbol(ctor_qn)
         .unwrap_or_else(|| panic!("no ctor {ctor_qn}"));
@@ -465,7 +474,10 @@ fn a_built_parametric_value_carries_its_binding() {
             "wi946.valuebuild.eponymous.Box",
         ),
     ] {
-        let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(src);
+        // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test drives
+        // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+        // The verdict is bound, not discarded (WI-966).
+        let (mut kb, _r) = crate::common::load_stdlib_kb_untyped(src);
         let ctor = kb.try_resolve_symbol(ctor_qn).expect("ctor");
         let (field, _) = kb.entity_field_types(ctor).expect("field schema")[0].clone();
         let value = EvalValue::Entity {
@@ -638,7 +650,10 @@ end
 /// this specialized path is the one that must reduce — and it only reduces if the
 /// FIRST arm's pattern is a definite non-match against the argument's head.
 fn synthesizes_at(source: &str, op_qn: &str, ctor_qn: &str, field: &str) -> bool {
-    let (mut kb, _r) = crate::common::load_stdlib_kb_with_source(source);
+    // WI-20260901-Q68AK — STOPS BEFORE THE TYPER: this test drives
+    // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+    // The verdict is bound, not discarded (WI-966).
+    let (mut kb, _r) = crate::common::load_stdlib_kb_untyped(source);
     let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
     let op = kb
         .try_resolve_symbol(op_qn)
@@ -742,7 +757,10 @@ end
 #[test]
 fn probe_pattern_var_ctor_fallback_is_unreachable() {
     let missing = |source: &str| -> Vec<String> {
-        let (mut kb, result) = crate::common::load_stdlib_kb_with_source(source);
+        // WI-20260901-Q68AK — STOPS BEFORE THE TYPER, because this test drives
+        // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
+        // The verdict is bound, not discarded (WI-966).
+        let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
         type_check_sorts(&mut kb, &result.defined_sorts)
             .iter()
             .map(|e| format!("{e}"))

@@ -4741,7 +4741,8 @@ end
         );
     }
 
-    /// THE OTHER DOOR. [`crate::kb::load::load`] — the single-file entry point — asserts
+    /// THE OTHER DOOR. the PARTIAL load path (`LoadOptions { run_typer: false }`, which replaced the
+    /// retired single-file `load::load`) asserts
     /// `SortRequiresInfo` twice over (`load_requires_decl`, then
     /// `resolve_requires_bindings`' retract-and-re-assert) and NEVER reaches
     /// `type_check_sorts`, so nothing downstream of it would correct an index it
@@ -4779,11 +4780,23 @@ namespace test.wi1112b
 end
 "#;
         let parsed = crate::parse::parse(src).expect("parse fixture");
-        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+        // WI-20260901-Q68AK — the PARTIAL path, which is what `load::load` used to be.
+        // `build_requires_index` runs inside `type_check_sorts`, so `run_typer: false` is
+        // the shape with no rebuild point — the one this pair is about.
+        load::load_all_with(
+            &mut kb,
+            &[&parsed],
+            &NullResolver,
+            load::LoadOptions {
+                run_typer: false,
+                ..Default::default()
+            },
+        )
+        .expect("partial load");
 
         assert!(
             kb.requires_index.is_none(),
-            "`load` asserts into the relation and has no rebuild point, so it must leave \
+            "a partial load asserts into the relation and has no rebuild point, so it must leave \
              the index dropped",
         );
         let client = kb
@@ -4792,7 +4805,7 @@ end
         let spec = kb.try_resolve_symbol("test.wi1112b.Spec").expect("Spec");
         assert!(
             entries(&kb, client).iter().any(|(r, _)| *r == spec),
-            "`Client requires Spec[T = Int64]`, declared through the single-file entry \
+            "`Client requires Spec[T = Int64]`, declared through the partial entry \
              point, must be in the chain",
         );
     }
@@ -4855,7 +4868,19 @@ namespace test.wi1112c
 end
 "#;
         let parsed = crate::parse::parse(src).expect("parse fixture");
-        load::load(&mut kb, &parsed, &NullResolver).expect("single-file load");
+        // WI-20260901-Q68AK — the PARTIAL path, which is what `load::load` used to be.
+        // `build_requires_index` runs inside `type_check_sorts`, so `run_typer: false` is
+        // the shape with no rebuild point — the one this pair is about.
+        load::load_all_with(
+            &mut kb,
+            &[&parsed],
+            &NullResolver,
+            load::LoadOptions {
+                run_typer: false,
+                ..Default::default()
+            },
+        )
+        .expect("partial load");
 
         let after = requires_tree(&mut kb, carrier);
         assert!(

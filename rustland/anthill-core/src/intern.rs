@@ -563,7 +563,7 @@ pub enum ImportOrigin {
     /// the file-local rule — it has no file to be local to.
     Builtin,
     /// Written in one file. [`SourceId`] and not a load-slice index because it must
-    /// be stable across load PHASES and outlive the slice: `load_incremental`'s second
+    /// be stable across load PHASES and outlive the slice: `load_all` into a live KB's second
     /// phase, and the CLI's query scan, both index from 0 again, so a slice position
     /// would silently alias one file onto another. It is also the identity every
     /// `SourceSpan` already carries, so an occurrence can name its own file without a
@@ -1102,7 +1102,7 @@ impl SymbolTable {
         sym: Symbol,
         origin: ImportOrigin,
     ) {
-        // IDEMPOTENT, for the reason [`Self::add_parent`] is (WI-994): `load_incremental`
+        // IDEMPOTENT, for the reason [`Self::add_parent`] is (WI-994): `load_all` into a live KB
         // re-scans files already in the KB, re-running every import, and an unguarded
         // push would grow this list without bound across reloads.
         let writes = self
@@ -1418,7 +1418,7 @@ impl SymbolTable {
     /// only lengthens the list every failed local lookup scans.
     ///
     /// Load-bearing since the variant-exposure link stopped being gated on the
-    /// symbol being FRESH: `load_incremental` re-scanning files already in the KB
+    /// symbol being FRESH: `load_all` into a live KB re-scanning files already in the KB
     /// re-runs every declaration, so without this each reload would push another
     /// copy of every such link — `anthill.prelude` 28 → 56 exposure parents on the
     /// second load, and unbounded in the number of loads. `is_new` had been
@@ -2791,7 +2791,7 @@ mod tests {
     }
 
     /// WI-994 — a scope's parents are a SET. Re-declaring one link must not grow
-    /// the list: `load_incremental` re-scans files already in the KB, and the
+    /// the list: `load_all` into a live KB re-scans files already in the KB, and the
     /// variant-exposure link is no longer gated on the symbol being fresh, so
     /// every reload re-offers every such link. Measured control: delete the
     /// `contains` guard in `add_parent` and the first assertion below reads 3.

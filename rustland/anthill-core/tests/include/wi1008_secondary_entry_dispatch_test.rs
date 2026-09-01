@@ -406,7 +406,7 @@ end
     );
 }
 
-/// THE PASS MUST BE IDEMPOTENT, because `load_incremental` relies on it: its doc
+/// THE PASS MUST BE IDEMPOTENT, because `load_all` into a live KB relies on it: its doc
 /// states that re-running `resolve_instantiations` over an already-finalized KB must
 /// not retract or re-assert stdlib facts, and this pass now runs inside it.
 ///

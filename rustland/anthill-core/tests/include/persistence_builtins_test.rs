@@ -121,7 +121,7 @@ fn persist_then_flush_writes_fact_to_disk() {
     let parsed_files = crate::common::read_anthill_dir_parsed(&root);
     let mut kb2 = KnowledgeBase::new();
     for pf in &parsed_files {
-        load::load(&mut kb2, pf, &NullResolver).expect("load");
+        load::load_all(&mut kb2, &[pf], &NullResolver).expect("load");
     }
     // Find the Foo fact by walking facts under the default Fact sort.
     // After the reload, "Foo" gets a fresh symbol in kb2's namespace; we

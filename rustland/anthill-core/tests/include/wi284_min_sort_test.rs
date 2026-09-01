@@ -43,7 +43,7 @@ fn load_kb() -> KnowledgeBase {
 
     let color =
         parse::parse("sort Color {\n  entity red\n  entity green\n}\n").expect("parse Color");
-    load::load(&mut kb, &color, &NullResolver).expect("Color load failed");
+    load::load_all(&mut kb, &[&color], &NullResolver).expect("Color load failed");
     kb
 }
 

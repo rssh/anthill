@@ -33,7 +33,7 @@ fn stdlib_kb() -> KnowledgeBase {
 
 fn load_src(kb: &mut KnowledgeBase, source: &str) {
     let parsed = parse::parse(source).expect("parse failed");
-    load::load(kb, &parsed, &NullResolver).expect("load failed");
+    load::load_all(kb, &[&parsed], &NullResolver).expect("load failed");
 }
 
 /// Resolve an op's body occurrence root by qualified name.

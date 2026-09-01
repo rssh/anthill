@@ -147,7 +147,7 @@ fn int_value(v: Value) -> i64 {
 }
 
 /// The errors from loading `batches` one after another into one KB — a STAGED load, which
-/// `load_incremental` is (an alias of `load_all`, so each batch runs its own
+/// a second `load_all` into a live KB is (each batch runs its own
 /// `scan_definitions`). The only way to reach a target minted by an EARLIER scan, which is
 /// where a name carrying two rule-introduced roles becomes reachable.
 fn staged_load_errors(batches: &[&str]) -> Vec<String> {
@@ -157,7 +157,7 @@ fn staged_load_errors(batches: &[&str]) -> Vec<String> {
     for b in batches {
         let parsed = anthill_core::parse::parse(b).expect("parse");
         let refs = vec![&parsed];
-        if let Err(e) = load::load_incremental(&mut kb, &refs, &NullResolver) {
+        if let Err(e) = load::load_all(&mut kb, &refs, &NullResolver) {
             errs.extend(e.iter().map(|x| x.to_string()));
         }
     }

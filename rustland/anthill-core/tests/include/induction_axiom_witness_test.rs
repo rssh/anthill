@@ -100,7 +100,7 @@ fn induction_registration_is_idempotent_across_loads() {
         .collect();
     parsed.push(parse::parse(src).unwrap());
     let refs: Vec<_> = parsed.iter().collect();
-    crate::common::expect_loaded(load::load_incremental(&mut kb, &refs, &NullResolver));
+    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
     let count2 = proof_records(&mut kb)
         .iter()
         .filter(|r| r.contains("test.induction_idem.Mode.induction"))

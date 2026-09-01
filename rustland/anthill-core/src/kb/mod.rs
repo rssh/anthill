@@ -981,7 +981,7 @@ pub struct KnowledgeBase {
     ///
     /// PER LOAD PHASE, cleared at the top of `load::load_phase_inner` beside the
     /// WI-659/660/671 index resets, and that is load-bearing rather than tidy: a
-    /// `load_incremental` re-load converts every already-loaded declaration a
+    /// `load_all` into a live KB re-load converts every already-loaded declaration a
     /// second time, so a log that outlived the phase would read two declarations of
     /// every operation and refuse a clean re-load. Within one phase the count needs
     /// no de-duplication — two entries are two `Item::Operation`s in the program as
@@ -1006,7 +1006,7 @@ pub struct KnowledgeBase {
     /// names the captured declaration's line off this same log.
     ///
     /// PER SCAN, cleared at the top of `load::scan_definitions_with_sources` — the
-    /// pass that fills it — so a `load_incremental` second phase, or a standalone
+    /// pass that fills it — so a `load_all` into a live KB second phase, or a standalone
     /// query scan, starts from empty rather than re-checking declarations an earlier
     /// phase already ruled on.
     pub(crate) decl_sites: Vec<load::DeclSite>,
@@ -1388,7 +1388,7 @@ pub struct KnowledgeBase {
     // deciding at the lowering would silently pass every derived case.
     //
     // Push-only WITHIN a load; drained ONCE PER LOAD by `load_phase_inner`
-    // (`take_parameterized_type_sites`) so a second `load_incremental` into the same KB
+    // (`take_parameterized_type_sites`) so a second `load_all` into a live KB into the same KB
     // re-checks only ITS OWN sites. Leaving them would re-walk and re-report every
     // earlier batch's sites — the reason the sibling `resolved_requires_facts` below
     // exists.
@@ -1408,7 +1408,7 @@ pub struct KnowledgeBase {
     // ITS TWO FACT SOURCES WALK THE WHOLE KB, unlike its third — the
     // `parameterized_type_sites` registry is DRAINED per load, so a site is judged in
     // the batch that wrote it and never again. The spec-clause and contract-clause walks
-    // have no such boundary, so a `load_incremental` of a CLEAN file into a KB that
+    // have no such boundary, so a `load_all` into a live KB of a CLEAN file into a KB that
     // already holds an offending clause re-reported that clause: MEASURED, a second
     // batch containing one unrelated sort failed with an error about a file it was not
     // given. This is the same per-ROW, cross-phase question `resolved_requires_facts`
@@ -1423,7 +1423,7 @@ pub struct KnowledgeBase {
     // defeats hash-consing; a `SortProvidesInfo` / `SortRequiresInfo` /
     // `ProvidesConditionInfo` head carries no such var, nor does an `OperationInfo` head
     // for an op declaring no bracket parameters. Believing it cost a load-blocking
-    // refusal: MEASURED, the same file re-presented to `load_incremental` came back Ok
+    // refusal: MEASURED, the same file re-presented to `load_all` into a live KB came back Ok
     // with zero errors — WI-20260901-EA6KS.)
     //
     // SO THE CLAIM IS DROPPED WHEN THE LOADER RE-PRESENTS THE FACT, and
@@ -1446,7 +1446,7 @@ pub struct KnowledgeBase {
     /// so the rows it asserts were never walked. That protects the row being CREATED
     /// and not the row that already EXISTS: the fact persists in the KB, and every
     /// later `load_phase_inner` walks it BEFORE `eq_derive` re-runs, so a KB that
-    /// loaded clean could not be loaded into again (`load_stdlib` + `load_incremental`
+    /// loaded clean could not be loaded into again (`load_stdlib` + `load_all` into a live KB
     /// over the full closure died on WI-664's own derived rows, five of them).
     /// Keyed by RuleId, exactly like the sibling `resolved_requires_facts` above and
     /// for the same reason: the question is per-ROW and crosses phases.
@@ -1607,7 +1607,7 @@ pub struct KnowledgeBase {
     // real: a sort's type PARAMETERS are fixed at load (059 R3 refuses a binder
     // in a secondary entry), but its OPERATIONS are not — 059 R2 lets a
     // secondary entry add one, which is what `merge_secondary_entry_operations`
-    // exists to fold in, and `load_incremental` re-runs that phase on an
+    // exists to fold in, and `load_all` into a live KB re-runs that phase on an
     // already-populated KB. That pass therefore CLEARS this map; it is the only
     // writer of a sort's operation list after load, so it is the only
     // invalidation point.
@@ -1759,23 +1759,25 @@ pub struct KnowledgeBase {
 /// by [`KnowledgeBase::load_check_marks`] and put back by
 /// [`KnowledgeBase::restore_load_check_marks`].
 ///
-/// BOTH REGISTRIES ARE WRITTEN BY THE ITEM WALK AND READ ONLY BY A CHECK, and
-/// [`load::load`] — the single-file entry point — runs the walk without ever reaching
-/// `load_phase_inner`, so no check runs over what it loaded. Leaving what it wrote in
+/// BOTH REGISTRIES ARE WRITTEN BY THE ITEM WALK AND READ ONLY BY A CHECK, and a load
+/// with [`LoadOptions { run_typer: false }`](load::LoadOptions) stops before those checks
+/// run. (Until WI-20260901-Q68AK that partial shape was a separate `load::load` entry
+/// point; folding it into an option changed where the capture lives, not the rule.) Leaving what it wrote in
 /// place hands the NEXT batch work it did not do, and BOTH were measured doing exactly
 /// that, each against its own control:
 ///
 /// * `judged_row_binding_clauses`. The walk DROPS claims
 ///   ([`KnowledgeBase::note_metadata_fact_presented`]) and only the check re-adds them,
-///   so a `load` of an offending file left every one of its clauses un-claimed: a later
-///   `load_incremental` of an unrelated clean file then reported 2 refusals naming a file
+///   so a partial load of an offending file left every one of its clauses un-claimed: a later
+///   `load_all` into a live KB of an unrelated clean file then reported 2 refusals naming a file
 ///   it was never given. Introduced by that drop — backing it out takes the same fixture
 ///   to 0.
 /// * `parameterized_type_sites`. Push-only within a load and drained ONCE by
 ///   `load_phase_inner`, so a `load`'s sites simply waited: the next batch drained them
 ///   and reported 1 refusal for the earlier file. PRE-EXISTING — measured identical with
 ///   the claim-drop backed out — and fixed here because the alternative is source 1 and
-///   source 2 of one check answering "what does `load` mean" two different ways, which is
+///   source 2 of one check answering "what does a partial load mean" two different ways,
+///   which is
 ///   the defect this ticket is about.
 ///
 /// THE TWO HALVES COST DIFFERENT THINGS, and the site half DOES drop a refusal — saying
@@ -1786,22 +1788,21 @@ pub struct KnowledgeBase {
 /// * The claim half loses NOTHING. Restoring it returns the exact behaviour that stood
 ///   before the drop above existed: the clause facts are still in the KB and still
 ///   claimed, and the batch that presented them is still the batch that judged them.
-/// * The site half DROPS TWO REFUSALS for a file loaded through [`load::load`] — the
+/// * The site half DROPS TWO REFUSALS for a file loaded partially — the
 ///   WI-644 use-site `requires Eq` one and this check's own source-1 one — where before
 ///   they surfaced in whichever later batch happened to drain the registry. They are not
 ///   relocated; nothing judges them. That is a real loss and it is the lesser one: the
-///   alternative is that a `load_incremental` of a clean unrelated file FAILS, which is
+///   alternative is that a `load_all` into a live KB of a clean unrelated file FAILS, which is
 ///   the outcome WI-20260831-V25N3 was filed for, and it makes the entry point unusable
-///   in exactly the incremental workflow it exists to serve. `load` already runs none of
-///   `load_phase_inner`'s ~20 checks; the site registry was the one piece of check work it
-///   left lying around for someone else to be blamed for, so this makes it uniformly
-///   check-free rather than check-free-with-one-booby-trap.
+///   in exactly the incremental workflow it exists to serve. A partial load already runs
+///   none of the checks below its stop point; the site registry was the one piece of check
+///   work it left lying around for someone else to be blamed for, so this makes it
+///   uniformly check-free rather than check-free-with-one-booby-trap.
 ///
-/// THE THIRD OPTION IS THE RIGHT ONE AND IS NOT THIS TICKET'S: `load` could run those two
-/// checks over its OWN drained sites. It cannot today — `check_use_site_requires_eq` reads
-/// `eq_derive`'s derived `NonEq` rows, which this entry point never derives, so it would
-/// answer a Float composite WRONGLY rather than not at all. Owned by
-/// WI-20260901-Q68AK-load-load-runs-no-load-check.
+/// A PARTIAL LOAD COULD IN PRINCIPLE RUN THOSE TWO CHECKS over its own drained sites, and
+/// deliberately does not: `check_use_site_requires_eq` reads `eq_derive::run`'s derived
+/// `NonEq` rows, which stand BELOW the stop point, so it would answer a Float composite
+/// WRONGLY rather than not at all. A false refusal is worse than a missing one.
 pub(crate) struct LoadCheckMarks {
     judged_row_binding_clauses: HashSet<RuleId>,
     parameterized_type_sites: usize,
@@ -2171,15 +2172,24 @@ impl KnowledgeBase {
         } = marks;
         self.judged_row_binding_clauses = judged_row_binding_clauses;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
-        // pending sites, and this restores what it found rather than what it wants. The
-        // registry is push-only between a capture and its restore — only
-        // `take_parameterized_type_sites` shortens it, and that runs in `load_phase_inner`,
-        // which is exactly the entry point that does NOT capture these marks.
+        // pending sites, and this restores what it found rather than what it wants.
+        //
+        // THE PUSH-ONLY WINDOW IS AN ORDERING, NOT A CALLER (/code-review). This used to
+        // say the registry cannot shrink because `take_parameterized_type_sites` runs in
+        // `load_phase_inner`, "which is exactly the entry point that does NOT capture
+        // these marks" — true when the capturer was the separate `load::load`, and FALSE
+        // since WI-20260901-Q68AK made `load_phase_inner` itself the capturer. What holds
+        // it now is that the `run_typer: false` return sits ABOVE the drain: hoist the
+        // drain (or add a second one) above that return and the truncate silently becomes
+        // a no-op, leaking this batch's sites into the next load — the cross-batch
+        // refusal WI-20260831-V25N3 and WI-20260901-EA6KS were both filed for. The
+        // `debug_assert` is the only thing that would say so, and only in debug.
         debug_assert!(
             self.parameterized_type_sites.len() >= parameterized_type_sites,
             "the site registry shrank between capture and restore"
         );
-        self.parameterized_type_sites.truncate(parameterized_type_sites);
+        self.parameterized_type_sites
+            .truncate(parameterized_type_sites);
     }
 
     /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
@@ -9125,7 +9135,7 @@ impl KnowledgeBase {
     }
 
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so
-    /// a later `load_incremental` into this KB checks only its own sites instead
+    /// a later `load_all` into a live KB into this KB checks only its own sites instead
     /// of re-walking (and re-reporting) every batch loaded before it.
     pub(crate) fn take_parameterized_type_sites(&mut self) -> Vec<ParameterizedSite> {
         std::mem::take(&mut self.parameterized_type_sites)

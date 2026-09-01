@@ -33,7 +33,7 @@ fn parse_files(paths: &[std::path::PathBuf]) -> Vec<anthill_core::parse::ir::Par
 ///
 /// CONTROL — MEASURED by backing the WI-1103 change out (the
 /// `is_unbacked_derived_provision` skip in `check_provider_operations`): the two
-/// callers of this helper that go on to `load_incremental`
+/// callers of this helper that go on to `load_all` into a live KB
 /// (`load_incremental_does_not_touch_stdlib_facts`, and the sibling closure in
 /// `load_incremental_equivalent_to_load_all`) FAIL with five
 /// `UnbackedProviderOperation`s. `resolve_instantiations_is_idempotent` and
@@ -47,7 +47,7 @@ fn load_stdlib_kb() -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
 
@@ -109,7 +109,7 @@ namespace test.increment
 end
 "#;
 
-/// WI-967 — `load_incremental` bootstraps like every other load entry point.
+/// WI-967 — `load_all` into a live KB bootstraps like every other load entry point.
 ///
 /// It used to be the ONE entry point that skipped `register_prelude`, on the
 /// assumption that it is only ever reached second. Nothing enforced that, and
@@ -118,7 +118,7 @@ end
 /// no prior load, no caller-side registration.
 ///
 /// CONTROL — this test is the evidence for that one behaviour change; it FAILS
-/// when `load_incremental` is reverted to `load_phase(kb, files, resolver)`.
+/// when `load_all` into a live KB is reverted to `load_phase(kb, files, resolver)`.
 /// Every other test in this file passes either way by design, because they all
 /// call `load_stdlib` first, which bootstraps. So does the whole 4000-test
 /// suite: the WI-967 deletion of the redundant caller-side `register_prelude` /
@@ -141,7 +141,7 @@ end
 
     let mut kb = KnowledgeBase::new();
     // FIRST call into the KB — no register_prelude, no load_stdlib, nothing.
-    load::load_incremental(&mut kb, &[&user], &NullResolver)
+    load::load_all(&mut kb, &[&user], &NullResolver)
         .expect("load_incremental must bootstrap a fresh KB, not leave kernel names unresolved");
 
     // Both halves of bootstrap must have run.
@@ -174,7 +174,7 @@ end
 
 /// WI-1103 — also over the FULL closure (see [`load_stdlib_kb`] for why, and for the
 /// measured back-out). One of this file's two CONTROLs for that change: it FAILS at
-/// the `load_incremental` line without it, because `check_provider_operations`
+/// the `load_all` into a live KB line without it, because `check_provider_operations`
 /// re-walks phase 1's derived `NonEq` rows and refuses all five.
 #[test]
 fn load_incremental_equivalent_to_load_all() {
@@ -192,8 +192,8 @@ fn load_incremental_equivalent_to_load_all() {
     // Build KB-B via load_stdlib then load_incremental.
     let mut kb_b = KnowledgeBase::new();
     let stdlib_refs: Vec<&_> = stdlib_parsed.iter().collect();
-    load::load_stdlib(&mut kb_b, &stdlib_refs, &NullResolver).expect("stdlib load");
-    load::load_incremental(&mut kb_b, &[&user_parsed], &NullResolver).expect("incremental load");
+    load::load_all(&mut kb_b, &stdlib_refs, &NullResolver).expect("stdlib load");
+    load::load_all(&mut kb_b, &[&user_parsed], &NullResolver).expect("incremental load");
 
     // Compare canonical SortRequiresInfo fact sets.
     let a = canonical_requires_facts(&kb_a);
@@ -237,7 +237,7 @@ fn load_incremental_does_not_touch_stdlib_facts() {
     );
 
     let user = parse::parse(USER_SOURCE).expect("parse user");
-    load::load_incremental(&mut kb, &[&user], &NullResolver).expect("incremental");
+    load::load_all(&mut kb, &[&user], &NullResolver).expect("incremental");
 
     for (rid, head) in &pre {
         assert!(

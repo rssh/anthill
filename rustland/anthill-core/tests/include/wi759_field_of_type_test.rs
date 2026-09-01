@@ -41,20 +41,24 @@ fn load_stdlib_kb() -> KnowledgeBase {
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
     let mut kb = KnowledgeBase::new();
-    load::load_stdlib(&mut kb, &refs, &NullResolver).expect("stdlib load");
+    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
 
 fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
     let mut kb = load_stdlib_kb();
     let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load(&mut kb, &parsed, &NullResolver).expect("load failed");
+    let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
     (kb, result)
 }
 
-/// Type-check `source`'s own sorts, then RE-type-check with no sort owning the ops — the
-/// free-op sweep re-visits the already-rewritten bodies, the same path an incremental load
-/// takes. Returns the second pass's errors.
+/// Re-type-check `source`'s own sorts, then re-type again with no sort owning the ops —
+/// the free-op sweep re-visits the already-rewritten bodies, the same path a second
+/// `load_all` into a live KB takes. Returns the last pass's errors.
+///
+/// WI-20260901-Q68AK — BOTH calls are re-types now. The rewrite happens inside the load
+/// (`load_all` types as part of loading); the retired `load::load` ran no typer, which is
+/// what made the first call here the original pass.
 fn retype_errors(source: &str) -> Vec<String> {
     let (mut kb, result) = load_with_result(source);
     let first = type_check_sorts(&mut kb, &result.defined_sorts);

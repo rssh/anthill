@@ -1334,7 +1334,7 @@ pub enum LoadError {
     /// refuses nothing that exists.
     ///
     /// "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as the binding decision it reads
-    /// from is (`load_incremental` is an alias of `load_all`, so each batch runs its own
+    /// from is (`load_all` into a live KB is an alias of `load_all`, so each batch runs its own
     /// `scan_definitions`). A predicate assembled across two BATCHES is therefore not
     /// caught: the earlier batch's heads are already minted, so the later batch's denote
     /// and never become candidates. Same boundary, same reason — the guarantee is over
@@ -4475,7 +4475,7 @@ pub fn scan_definitions_with_sources(
     let mut ledger = DeclLedger::default();
     // WI-999 — the capture ledger is per SCAN, and this is the pass that fills it.
     // Clearing here rather than in `load_phase_inner` covers every entry point that
-    // scans (the CLI's query scan, `load_incremental`'s second phase, a test's
+    // scans (the CLI's query scan, `load_all` into a live KB's second phase, a test's
     // hand-built IR), so `check_name_captures` never re-judges a declaration an
     // earlier phase already ruled on — the same reason WI-1049 resets `op_decl_sites`.
     kb.decl_sites.clear();
@@ -4597,7 +4597,7 @@ pub fn scan_definitions_with_sources(
     // the finished program, the same answer whichever file or line came first.
     //
     // "THE PROGRAM" IS THE FILES OF THIS SCAN, and a STAGED load has more than one.
-    // `load_incremental` is an alias of `load_all`, so each batch runs its own
+    // `load_all` into a live KB is an alias of `load_all`, so each batch runs its own
     // `scan_definitions` and a head decided in an earlier one cannot be re-decided —
     // the symbol is already minted. Load `namespace demo { sort Rec { rule p(2) } }`
     // first and `namespace demo { rule p(1) }` second and the two stay separate, where
@@ -4894,7 +4894,7 @@ pub fn scan_definitions_with_sources(
     // message can name.
     //
     // "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as everything else in this pass is
-    // (`load_incremental` is an alias of `load_all`, so each batch runs its own
+    // (`load_all` into a live KB is an alias of `load_all`, so each batch runs its own
     // `scan_definitions`). A predicate assembled across two BATCHES is therefore not
     // caught: the earlier batch's heads are already minted, so the later batch's denote.
     {
@@ -7366,7 +7366,7 @@ impl ScopePass for DefinePass<'_> {
                 // Pinned in `wi979_declaration_order_test`.
                 //
                 // `add_parent` is idempotent (WI-994) — required here, not incidental:
-                // `load_incremental` re-scans files already in the KB, so an un-gated
+                // `load_all` into a live KB re-scans files already in the KB, so an un-gated
                 // link is re-offered on every reload.
                 //
                 // WI-M460D — `add_exposure_parent`, the ONLY producer of the edge the
@@ -10288,9 +10288,8 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[("SortAlias", "SortAlias"), ("meta", 
 /// only caller), the `TermView` field keys, and the WI-320 bridge fact. Two
 /// rules cover every caller:
 ///
-/// 1. **About to load? Do NOT call this.** Every load entry point — [`load`],
-///    [`load_all`], [`load_all_per_file`], and the [`load_stdlib`] /
-///    [`load_incremental`] aliases — calls it first. Before WI-967 the "house
+/// 1. **About to load? Do NOT call this.** Every load entry point — [`load_all`],
+///    [`load_all_with`] and [`load_all_per_file`] — calls it first. Before WI-967 the "house
 ///    pre-registering "house sequence" ran BOTH this and the builtin-tag pass
 ///    twice, at 172 files; being idempotent is exactly what kept that invisible.
 /// 2. **Never loading? Call it yourself** — a hand-built KB that needs kernel
@@ -10416,7 +10415,7 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
 ///
 /// **Idempotency** — `register_prelude` is called more than once on the same KB
 /// whenever that KB is loaded into more than once (`load_stdlib` then
-/// `load_incremental`, or two `load_all`s), since every load entry point
+/// `load_all` into a live KB, or two `load_all`s), since every load entry point
 /// bootstraps. Until WI-967 it was re-entered far more often than that: the
 /// "house sequence" at 172 files pre-registered and then called `load_all`,
 /// which re-entered `register_prelude` itself. Those caller-side lines are gone;
@@ -11569,93 +11568,35 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
 // Phase 2: Load into KB
 // ══════════════════════════════════════════════════════════════════
 
-/// Load a parsed file into the knowledge base.
+/// WI-20260901-Q68AK — what a load phase should DO, beyond which files it is given.
 ///
-/// Scans definitions first, then loads facts into the KB.
-pub fn load(
-    kb: &mut KnowledgeBase,
-    parsed: &ParsedFile,
-    resolver: &dyn SourceResolver,
-) -> Result<LoadResult, Vec<LoadError>> {
-    register_prelude(kb);
-    // WI-1112 — the requires-chain derived state that [`load_phase_inner`] drops at ITS
-    // start, and this entry point needs it MORE: it asserts into BOTH relations the chain
-    // is built from — `SortRequiresInfo` (every `Loader::load_requires_decl` below, then
-    // `resolve_instantiations`' retract-and-re-assert) and `SortProvidesInfo` (every
-    // `load_provides_clause`, read back by `self_supplied_entries`) — and never reaches a
-    // `type_check_sorts` to rebuild, nor any of the mid-pipeline invalidations
-    // `load_phase_inner` makes. So on a KB that already went through `load_all`, an
-    // inherited index would be live, stale, and never corrected, and the chain memos
-    // `check_provider_requires` warmed would be served across this file's writes.
-    //
-    // THE WHOLE CALL, not `kb.requires_index = None`: the index and those memos have one
-    // lifetime by construction (see `KnowledgeBase::invalidate_requires_chain_cache`), and
-    // poking the field alone would half-invalidate — establishing a one-invalidation-point
-    // rule and then being the first site to route around it.
-    //
-    // A PAIR, because the two calls cover different windows. This one makes the item
-    // walk's own reads scan the live relation instead of an index inherited from a prior
-    // `load_all`; the one after `resolve_instantiations` drops what the walk memoized off
-    // a relation that pass then RETRACTS AND RE-ASSERTS. MEASURED: the two WI-1112 `load`
-    // fixtures are satisfied by EITHER call alone — backing out one leaves them green,
-    // backing out both fails them — so what is driven is the pair, and each half is kept
-    // for the window the corpus happens not to read in. `load_phase_inner` covers the
-    // same two windows with its start-of-phase reset and its three mid-pipeline
-    // invalidations; this entry point has neither, which is why both go here.
-    kb.invalidate_requires_chain_cache();
-    // WI-20260901-EA6KS — this entry point runs NO load check, so it must record none.
-    // The item walk below writes two registries that only a check reads, and both were
-    // measured handing the next batch a refusal about a file that batch was never given.
-    // Put back at every exit; see [`crate::kb::LoadCheckMarks`] for the two measurements.
-    let check_marks = kb.load_check_marks();
-    let source_ids = register_sources(kb, &[parsed]);
-    let mut all_errors =
-        scan_definitions_with_sources(kb, &[parsed], &source_ids, ImportAttribution::PerFile);
-    kb.resolve_builtins();
-    let mut loaded_paths = HashSet::new();
-    let mut all_sorts = Vec::new();
-    let mut all_fact_ids = Vec::new();
-    // WI-936 — declarations before conversion, for the one file this entry point loads.
-    let source_id = source_ids[0];
-    kb.symbols.set_asking_file(Some(source_id));
-    all_errors.extend(declare_file_field_types(
-        kb,
-        parsed,
-        resolver,
-        &mut loaded_paths,
-        source_id,
-    ));
-    let load_result = load_with_visited(kb, parsed, resolver, &mut loaded_paths, source_id);
-    kb.symbols.set_asking_file(None);
-    match load_result {
-        Ok(result) => {
-            all_sorts.extend(result.defined_sorts);
-            all_fact_ids.extend(result.fact_rule_ids);
-        }
-        Err(errs) => all_errors.extend(errs),
-    }
-    resolve_instantiations(kb);
-    // WI-1112 — the closing half of the pair at the top of this function: everything this
-    // entry point writes to `SortRequiresInfo` / `SortProvidesInfo` is written by now
-    // (`resolve_instantiations` is the last, and it RETRACTS as well as asserts), so drop
-    // whatever the item walk memoized off the pre-completion relation. `load_phase_inner`'s
-    // counterpart is the `invalidate_requires_chain_cache` after `eq_derive::run`; here
-    // there is no later pass and no rebuild, so this is the last word — the index stays
-    // `None` from here, which is this entry point's correct steady state.
-    kb.invalidate_requires_chain_cache();
-    // WI-20260901-EA6KS — the closing half of the capture at the top. AFTER
-    // `resolve_instantiations`, which is itself one of the writers (its
-    // retract-and-re-assert calls `note_metadata_fact_presented`), and on BOTH exits
-    // because an errored load leaves the KB just as written-to as a clean one.
-    kb.restore_load_check_marks(check_marks);
-    if all_errors.is_empty() {
-        Ok(LoadResult {
-            defined_sorts: all_sorts,
-            fact_rule_ids: all_fact_ids,
-            warnings: Vec::new(),
-        })
-    } else {
-        Err(all_errors)
+/// The defaults are the whole pipeline, so `LoadOptions::default()` is exactly what
+/// [`load_all`] has always done and an added field must default to today's behaviour.
+///
+/// THIS REPLACED A SECOND ENTRY POINT. There used to be a `pub fn load` that loaded ONE
+/// file and ran none of the post-load passes — a hand-maintained copy of
+/// [`load_phase_inner`]'s prologue, whose partialness was visible nowhere at its call sites and which drifted
+/// four times, each drift found by a bug (WI-967 bootstrap panic, WI-1112 stale requires
+/// index, WI-20260901-EA6KS's two check registries). One pipeline with a named option
+/// says the same thing where the caller can see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoadOptions {
+    /// Run [`typing::type_check_sorts`](super::typing::type_check_sorts) and everything
+    /// downstream of it. `false` stops the phase immediately BEFORE the typer, leaving a
+    /// loaded-but-untyped KB for a caller that will drive the typer itself.
+    ///
+    /// STOPPING HERE AND NOT EARLIER IS THE POINT. Everything the typer reads is built by
+    /// then — the sort-ops table, the provider/requires indexes, `derive_forwarded_provisions`
+    /// and `eq_derive::derive_total_eq` — so a hand-driven `type_check_sorts` sees the same
+    /// KB this function's own call would. The retired `load` stopped far earlier, which is
+    /// why its typer could DISAGREE with the pipeline's: WI-20260901-7ZZ1Z was a shipped
+    /// test asserting a refusal that only held because `derive_total_eq` had not run.
+    pub run_typer: bool,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self { run_typer: true }
     }
 }
 
@@ -11670,53 +11611,28 @@ pub fn load_all(
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
 ) -> Result<LoadResult, Vec<LoadError>> {
+    load_all_with(kb, files, resolver, LoadOptions::default())
+}
+
+/// [`load_all`] with explicit [`LoadOptions`] — see that type for what each one turns off
+/// and why the partial shape is an option here rather than a second entry point.
+pub fn load_all_with(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+    options: LoadOptions,
+) -> Result<LoadResult, Vec<LoadError>> {
     register_prelude(kb);
-    load_phase(kb, files, resolver)
-}
-
-/// Alias of [`load_all`]. Named for clarity when loading stdlib as the first
-/// phase of an incremental workflow; subsequent files can then be added via
-/// [`load_incremental`] without reprocessing already-finalized facts.
-pub fn load_stdlib(
-    kb: &mut KnowledgeBase,
-    files: &[&ParsedFile],
-    resolver: &dyn SourceResolver,
-) -> Result<LoadResult, Vec<LoadError>> {
-    load_all(kb, files, resolver)
-}
-
-/// Load additional files on top of an already-populated KB. Relies on
-/// `resolve_instantiations` being idempotent (`resolved_requires_facts` guard)
-/// so stdlib facts are not retracted or reasserted. The returned
-/// `LoadResult.defined_sorts` contains only sorts defined in `files`.
-///
-/// Alias of [`load_all`], like [`load_stdlib`] — the name carries the INTENT
-/// (phase 2 of a staged load), not a different mechanism.
-///
-/// WI-967 REMOVED the one thing that did differ: this function used to skip
-/// [`register_prelude`], the sole asymmetry among the load entry points. Skipping
-/// was never protective — `register_prelude` is idempotent, and `load_all` is
-/// called on an already-bootstrapped KB throughout the suite (3476 measured
-/// arrivals) — while the cost was real and unguarded: nothing enforced "second
-/// phase only", and reaching this entry point FIRST did not degrade, it PANICKED
-/// mid-load (`resolve_symbol: 'anthill.reflect.Expr.match_expr' is not a resolved
-/// symbol`, measured). Now every load entry point bootstraps and the rule has no
-/// exceptions. Driven by `incremental_load_test::load_incremental_bootstraps_a_fresh_kb`,
-/// which is also the CONTROL for this change.
-pub fn load_incremental(
-    kb: &mut KnowledgeBase,
-    files: &[&ParsedFile],
-    resolver: &dyn SourceResolver,
-) -> Result<LoadResult, Vec<LoadError>> {
-    load_all(kb, files, resolver)
+    load_phase(kb, files, resolver, options)
 }
 
 fn load_phase(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
+    options: LoadOptions,
 ) -> Result<LoadResult, Vec<LoadError>> {
-    load_phase_inner(kb, files, resolver).map(|(merged, _)| merged)
+    load_phase_inner(kb, files, resolver, options).map(|(merged, _)| merged)
 }
 
 /// Same as [`load_phase`] but also returns each file's individual
@@ -11730,7 +11646,7 @@ pub fn load_all_per_file(
     resolver: &dyn SourceResolver,
 ) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
     register_prelude(kb);
-    load_phase_inner(kb, files, resolver)
+    load_phase_inner(kb, files, resolver, LoadOptions::default())
 }
 
 /// WI-1034 — the ONE wording of [`LoadError::UndefinedRuleBodyGoal`], shared by the
@@ -11835,7 +11751,7 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
 /// name only phase 2 declares IS refused at phase 1. That is the ordering promise
 /// made explicit rather than a limitation discovered later: the normal path hands
 /// every file to one `load_all` (cross-file mutual recursion is what
-/// `scan_definitions` exists for), and `load_incremental`'s phase 1 is the stdlib,
+/// `scan_definitions` exists for), and `load_all` into a live KB's phase 1 is the stdlib,
 /// which references nothing a user file supplies. A caller that genuinely needs the
 /// forward reference must load both files in one phase.
 fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
@@ -12261,20 +12177,24 @@ fn load_phase_inner(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     resolver: &dyn SourceResolver,
+    options: LoadOptions,
 ) -> Result<(LoadResult, Vec<LoadResult>), Vec<LoadError>> {
     // WI-659 — reset the SortAlias index at the START of every load phase. It is
     // rebuilt at this phase's type-check (`build_sort_alias_index`); clearing it
     // first means load-time `resolve_sort_alias` calls in this phase fall back to
     // the scan — seeing THIS phase's freshly-asserted aliases — instead of reading a
-    // stale index left by a prior phase. Load-bearing for `load_incremental`:
+    // stale index left by a prior phase. Load-bearing for `load_all` into a live KB:
     // `resolve_sort_alias`'s fast path has no fallback-on-miss, so a phase-2 alias
     // absent from the phase-1 index would otherwise silently resolve to `None`/the
     // wrong var. A no-op on the first (or only) load — the field starts `None`.
+    // WI-20260901-Q68AK — captured ONLY on the partial path, where a check will not run
+    // to consume them; the clone is not free and the full pipeline has no use for it.
+    let check_marks = (!options.run_typer).then(|| kb.load_check_marks());
     kb.sort_alias_index = None;
     // WI-1049 — same reset, and it is what makes the duplicate-operation refusal
     // mean anything: the log takes one entry per `Item::Operation` THIS phase
     // converts, and `check_duplicate_operation_declarations` reads its COUNT. Carry
-    // a prior phase's entries in and a clean `load_incremental` re-load of
+    // a prior phase's entries in and a clean `load_all` into a live KB re-load of
     // already-loaded files reads two declarations of every operation and refuses
     // the lot.
     kb.op_decl_sites.clear();
@@ -12291,7 +12211,7 @@ fn load_phase_inner(
     // (`build_sort_info_index`); clearing it first makes this phase's load-time SortInfo
     // lookups fall back to the live scan (seeing THIS phase's freshly-asserted SortInfo
     // facts) instead of a stale index from a prior phase — load-bearing for
-    // `load_incremental`. SortInfo is untouched by eq_derive, so unlike `provides_index`
+    // `load_all` into a live KB. SortInfo is untouched by eq_derive, so unlike `provides_index`
     // this is the only invalidation THIS phase needs. WI-1008: it is no longer the only
     // one in the crate — `merge_secondary_entry_operations` re-asserts SortInfo records
     // and drops the index itself, which is what covers the `load` entry point, where
@@ -12304,10 +12224,14 @@ fn load_phase_inner(
     // silently stops existing. Clearing it makes the load-time lookups scan the live
     // relation until the rebuild.
     //
-    // THE RULE IS PER ENTRY POINT, NOT PER PHASE — [`load`] carries the identical line,
-    // for the reason WI-1008 records for `sort_info_index` ("which is what covers the
-    // `load` entry point, where this line does not run"): both entry points assert into
-    // this relation, and `load` never reaches a `build_requires_index` to correct itself.
+    // THE SIBLING THIS CITED IS GONE (WI-20260901-Q68AK, /code-review). It read "the rule
+    // is PER ENTRY POINT, not per phase — `load` carries the identical line", because the
+    // retired single-file entry point asserted into this relation and never reached a
+    // `build_requires_index` to correct itself. There is one phase now, and the case the
+    // line still covers is the PARTIAL one: `LoadOptions { run_typer: false }` returns
+    // before `build_requires_index` (which runs inside `type_check_sorts`), so the reset
+    // here is what leaves that path a dropped index rather than a stale one —
+    // `wi1112_requires_index_tests` drives exactly that.
     // MEASURED: with THIS line backed out the full workspace stays green, and so does a
     // scan-vs-index disagreement detector wired into every `collect_sort_requires` call
     // across all 29 test binaries — no fixture reads the chain in this phase's pre-typer
@@ -12562,6 +12486,28 @@ fn load_phase_inner(
     // a mark on a provider whose provision `eq_derive` has not asserted yet.
     super::defaults::seed_default_provider_index(kb);
     mark!("seed_default_provider_index");
+    // WI-20260901-Q68AK — `run_typer: false` stops HERE, with everything the typer reads
+    // already built. The two registries below this line are written by the item walk and
+    // read ONLY by a check that will now not run, so they are put back: leaving them
+    // hands the NEXT batch work it did not do, measured as a refusal naming a file that
+    // batch was never given. See [`crate::kb::LoadCheckMarks`] for both measurements.
+    if !options.run_typer {
+        if let Some(marks) = check_marks {
+            kb.restore_load_check_marks(marks);
+        }
+        return if all_errors.is_empty() {
+            Ok((
+                LoadResult {
+                    defined_sorts: all_sorts,
+                    fact_rule_ids: all_fact_ids,
+                    warnings: all_warnings,
+                },
+                per_file,
+            ))
+        } else {
+            Err(all_errors)
+        };
+    }
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
@@ -12662,7 +12608,7 @@ fn load_phase_inner(
     // type is recorded at the type lowerings; both the use-site `requires Eq` check and
     // the written-row-label check read the SAME batch. Drained here rather than by
     // either check, because a check that drained would leave the other silently seeing
-    // nothing — and a `load_incremental` must still re-check only its OWN sites, which
+    // nothing — and a `load_all` into a live KB must still re-check only its OWN sites, which
     // one drain per load preserves.
     let written_type_sites = kb.take_parameterized_type_sites();
     // WI-644: use-site `requires Eq` — an entity field type `Map[K = Float]` (a
@@ -13113,7 +13059,7 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // it. APPENDING rather than rebuilding from the member facts keeps the pass a
         // pure EXTENSION of what `emit_sort_info` wrote: the existing prefix is
         // byte-stable, so no reader's view of an unaffected sort can shift, and a
-        // second run has nothing to add — which is the idempotence `load_incremental`
+        // second run has nothing to add — which is the idempotence `load_all` into a live KB
         // relies on (`rerunning_the_pass_rewrites_nothing`).
         let mut ops: Vec<Symbol> = super::typing::list_to_vec(kb, ops_tid)
             .into_iter()
@@ -13173,7 +13119,7 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // from the operations this pass just rewrote: a secondary entry adding an
         // operation which takes a type parameter can turn a spec with no carrier
         // parameter into one that has it. Without this, a KB loaded in two batches
-        // (`load_incremental` / `load_all_per_file`, which re-run this phase on an
+        // (`load_all` into a live KB / `load_all_per_file`, which re-run this phase on an
         // already-populated KB) would answer from a memo taken before the entry existed,
         // and the same program would classify differently depending on how it was
         // loaded. Cleared wholesale rather than per sort: this pass is gated on a
@@ -13219,7 +13165,7 @@ fn build_base_substitutions(kb: &mut KnowledgeBase) {
 
             // Memoized: a sort whose base substitution a PRIOR phase already built is
             // skipped. WI-1008 — this now sits behind a non-memoized step 0
-            // ([`merge_secondary_entry_operations`]), so under `load_incremental` a sort
+            // ([`merge_secondary_entry_operations`]), so under `load_all` into a live KB a sort
             // that GAINS an operation in a later phase (059's secondary entry is the
             // first mechanism that lets an already-loaded sort do so) has its
             // `SortInfo.operations` completed while its base substitution keeps the
@@ -15051,7 +14997,7 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
 ///   * the `OperationInfo` FACT count, which the ticket proposed on the premise
 ///     that it "survives the same file being scanned twice". MEASURED FALSE: the
 ///     three `*_idempotent_across_loads` suites re-present the stdlib through
-///     `load_incremental`, and every type-parameter-bearing operation banks a
+///     `load_all` into a live KB, and every type-parameter-bearing operation banks a
 ///     SECOND `OperationInfo` — `load_operation` mints a `fresh_var` per declared
 ///     type parameter, so the re-emitted head differs from the first and cannot
 ///     hash-cons to it. A fact-count verdict refuses a clean re-load. The fact
@@ -15290,7 +15236,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// name may also carry clauses — a `[simp]` equation loads under its operation's own
 /// functor — and within one phase the declaration is the site the author wants, so
 /// the fallback is not reached for it. Across phases it can be: `decl_sites` is
-/// cleared at the top of every `load_phase_inner`, so under `load_incremental` a
+/// cleared at the top of every `load_phase_inner`, so under `load_all` into a live KB a
 /// captured name DECLARED in an earlier phase is absent from the ledger and, if it
 /// carries clauses, is reported by one of them.
 ///
@@ -15353,7 +15299,7 @@ fn captured_origin(
 ///
 /// WHICH ENTRY POINTS RUN IT, stated because the boundary is inherited rather than
 /// chosen: every whole-KB check lives in [`load_phase_inner`], which [`load_all`] /
-/// [`load_incremental`] reach and the single-file [`load`] does not. So `load` sees
+/// [`load_all` into a live KB] reach and the single-file [`load`] does not. So `load` sees
 /// no capture refusal, exactly as it sees no duplicate-operation refusal (WI-1049) —
 /// one boundary for the whole family, not a gap this check opened.
 ///
@@ -26424,9 +26370,7 @@ impl<'a> Loader<'a> {
                                 // rule, and a description emitted beside one would bank
                                 // a fact about a declaration the loader just rejected.
                                 // Only this branch has a declaration that stands.
-                                None => {
-                                    self.emit_own_descriptions(sym, &r.descriptions, domain)
-                                }
+                                None => self.emit_own_descriptions(sym, &r.descriptions, domain),
                             }
                         }
                     }
@@ -30042,7 +29986,7 @@ rule at_the_top(1)
     fn the_same_file_loads_clean_through_the_whole_pipeline() {
         let mut kb = KnowledgeBase::new();
         let file = parsed();
-        let result = load(&mut kb, &file, &NullResolver);
+        let result = load_all(&mut kb, &[&file], &NullResolver);
         let errors = result.err().unwrap_or_default();
         assert_eq!(
             missed(&errors),
@@ -30288,7 +30232,7 @@ end
     fn a_clause_is_filed_under_the_owner_of_the_scope_it_is_written_in() {
         let mut kb = KnowledgeBase::new();
         let file = parse::parse(SRC).expect("parse");
-        load(&mut kb, &file, &NullResolver).expect("fixture loads clean");
+        load_all(&mut kb, &[&file], &NullResolver).expect("fixture loads clean");
 
         let domain_of = |kb: &KnowledgeBase, qn: &str| -> String {
             let sym = kb
@@ -30402,7 +30346,10 @@ end
     fn member_resolves_in(src: &str, sort_qn: &str, member: &str) -> bool {
         let mut kb = KnowledgeBase::new();
         let file = parse::parse(src).expect("parse");
-        let _ = load(&mut kb, &file, &NullResolver);
+        // The verdict is BOUND, not discarded (WI-966): this fixture is ambiguous on
+        // purpose and reports one error, and the question below is about the scope
+        // link the load still built.
+        let _load_diagnostics = load_all(&mut kb, &[&file], &NullResolver);
         let sort = kb
             .try_resolve_symbol(sort_qn)
             .unwrap_or_else(|| panic!("no {sort_qn}"));
@@ -30441,7 +30388,7 @@ mod wi351_place_tests {
     //! `result` (`OpResult`). `provenance` and `is_result_binder` are functions
     //! of this kind (no side-table). Public *resolution* is also covered by
     //! `tests/include/wi351_callback_place_test.rs`.
-    use super::{load, NullResolver};
+    use super::{load_all, NullResolver};
     use crate::intern::SymbolKind;
     use crate::kb::KnowledgeBase;
     use crate::parse;
@@ -30452,7 +30399,7 @@ mod wi351_place_tests {
     fn load_op(src: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
         let parsed = parse::parse(src).expect("parse");
-        load(&mut kb, &parsed, &NullResolver).expect("load");
+        load_all(&mut kb, &[&parsed], &NullResolver).expect("load");
         kb
     }
 

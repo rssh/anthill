@@ -45,7 +45,7 @@ use crate::kb::KnowledgeBase;
 /// * The MARKS are just the pre-layer lengths of two append-only vectors, so they stay
 ///   true for the layer's whole life.
 /// * `declared` cannot be derived later. `KnowledgeBase::decl_sites` is a PER-SCAN
-///   ledger — the next `load_incremental` clears it — so reading it after a second
+///   ledger — the next `load_all` into a live KB clears it — so reading it after a second
 ///   `loaded(…)` would answer about the wrong layer. Copying it at push time is what
 ///   makes the answer this layer's.
 ///

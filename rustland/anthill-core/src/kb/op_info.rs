@@ -15,10 +15,10 @@ use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
 use super::term::{Term, TermId, Var};
-use super::RuleId;
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::typing::list_to_vec;
 use super::KnowledgeBase;
+use super::RuleId;
 
 /// Full `OperationInfo` view for one operation symbol.
 ///
@@ -212,7 +212,7 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
 /// [`operation_info_fact_heads`] with each fact's own `RuleId` — for a reader whose
 /// question is per-FACT and crosses loads, so it needs an identity for the row rather
 /// than for the operation. WI-20260831-V25N3's written-row-label walk is the one: it
-/// claims each fact once per KB so a `load_incremental` does not re-report an earlier
+/// claims each fact once per KB so a `load_all` into a live KB does not re-report an earlier
 /// batch's clause, and the loader drops that claim when it re-presents the fact
 /// (`KnowledgeBase::note_metadata_fact_presented`) so a re-presented file is refused
 /// again.
@@ -241,7 +241,7 @@ fn operation_info_fact_rows(kb: &KnowledgeBase) -> Vec<(RuleId, Symbol, &Value)>
 /// from whichever fact the walk reaches FIRST.
 ///
 /// NOT A DUPLICATE-DECLARATION VERDICT, and the distinction is measured, not
-/// cautionary: `load_incremental` re-presents already-loaded files, and every
+/// cautionary: `load_all` into a live KB re-presents already-loaded files, and every
 /// type-parameter-bearing operation then banks a SECOND fact — `load_operation`
 /// mints a `fresh_var` per declared type parameter, so the re-emitted head cannot
 /// hash-cons to the first. One clean re-load, two facts, one declaration.

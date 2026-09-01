@@ -34822,7 +34822,7 @@ fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> Value {
 /// Runs over every `OperationInfo` FACT's declared row — one per fact, so a spec op and
 /// its impl are each judged (WI-701) — after all operations load, like its neighbours
 /// `check_const_purity` / `check_macro_purity`. Reported once per (operation, label):
-/// `load_incremental` banks a second fact for a type-parameter-bearing operation
+/// `load_all` into a live KB banks a second fact for a type-parameter-bearing operation
 /// (WI-1049), and one declaration must not read as two errors.
 pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     let Some(modify_sym) = kb.try_resolve_symbol("anthill.prelude.Modify") else {
@@ -34927,7 +34927,7 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<super::load::LoadErro
 /// type. A contradiction THERE is the shape WI-705 does catch, at the call that
 /// instantiates it.
 ///
-/// Reported once per operation — `load_incremental` banks a second `OperationInfo` fact
+/// Reported once per operation — `load_all` into a live KB banks a second `OperationInfo` fact
 /// for a type-parameter-bearing operation (WI-1049), and one declaration must not read as
 /// two errors.
 pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
@@ -35108,7 +35108,7 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
 /// Load-blocking, on this ticket's own evidence: an unregistered label produces no
 /// runtime failure — it propagates, composes and discharges exactly like a registered
 /// one — so there is no later site to be loud at. Reported once per (operation, kind) for
-/// the same reason [`check_modify_targets`] is: `load_incremental` banks a second
+/// the same reason [`check_modify_targets`] is: `load_all` into a live KB banks a second
 /// `OperationInfo` fact for a type-parameter-bearing operation (WI-1049), and one
 /// declaration must not read as two errors.
 ///
@@ -35369,7 +35369,7 @@ pub(crate) fn check_written_row_bindings(
     for clause in all_spec_clause_views(kb) {
         // ONCE PER KB, not once per load (/code-review). This walk has no batch
         // boundary of its own — unlike source 1, whose registry is drained per load — so
-        // a `load_incremental` of a CLEAN file into a KB already holding an offending
+        // a `load_all` into a live KB of a CLEAN file into a KB already holding an offending
         // clause re-reported it: MEASURED, a second batch of one unrelated sort failed
         // with an error naming a file it was never given. The claim is DROPPED again
         // when the loader re-presents the fact, which is the other direction and needs
@@ -35492,18 +35492,17 @@ pub(crate) fn check_written_row_bindings(
     // `provides`-only diagnostic when the owner keyed it. The SPAN is in the key beside
     // it because two written type arguments in one signature share the constant site
     // origin and are separated by nothing else.
-    let mut reported: HashSet<(String, Option<crate::span::SourceSpan>, Symbol, Symbol, String)> =
-        HashSet::new();
+    let mut reported: HashSet<(
+        String,
+        Option<crate::span::SourceSpan>,
+        Symbol,
+        Symbol,
+        String,
+    )> = HashSet::new();
     for b in &bindings {
         for label in effect_element_labels(kb, &b.value, keys.label) {
             let display = type_display_name_value(kb, &label);
-            if !reported.insert((
-                b.origin.clone(),
-                b.span,
-                b.spec,
-                b.param,
-                display.clone(),
-            )) {
+            if !reported.insert((b.origin.clone(), b.span, b.spec, b.param, display.clone())) {
                 continue;
             }
             let spec_qn = kb.qualified_name_of(b.spec).to_string();
@@ -62598,7 +62597,7 @@ fn open_existential_return(
 /// typing-time caller can precede this pass; a KB that is loaded and lowered WITHOUT ever
 /// type-checking is outside every entry point the CLI and the test harness use.
 ///
-/// RE-RUNNABLE, which `load_incremental` needs: `build_op_signatures` rewrites each cached
+/// RE-RUNNABLE, which `load_all` into a live KB needs: `build_op_signatures` rewrites each cached
 /// signature from its `OperationInfo` fact unconditionally, so a second type-check starts from
 /// the author's declaration again rather than from this pass's output. Nothing here has to be
 /// idempotent against its own result.
@@ -62774,7 +62773,7 @@ fn elaborate_self_ties(kb: &mut KnowledgeBase, sort_names: &[Symbol]) {
 ///
 /// IDEMPOTENT, WHICH THE SIGNATURE HALF DOES NOT HAVE TO BE. Nothing reconstructs this registry
 /// from facts the way `build_op_signatures` reconstructs each cached signature, so a second
-/// type-check (`load_incremental`) sees this pass's own output. It is a fixpoint: an
+/// type-check (`load_all` into a live KB) sees this pass's own output. It is a fixpoint: an
 /// already-elaborated slot holds the sort's parameter var, which is a `Ref`-carried type
 /// reference rather than a flexible variable, so [`SlotPosition::written_slot_is_unwritten`]
 /// leaves it. DRIVEN by `wi1082_…::the_field_tie_is_a_fixpoint`, which type-checks one KB twice
@@ -64496,10 +64495,8 @@ fn check_operation_bodies(
                                 declared_canon.push(walk_type_deep_value(kb, &canon_subst, a));
                             }
                             for l in &absent {
-                                declared_display.push(format!(
-                                    "-{}",
-                                    type_display_name_value(kb, l)
-                                ));
+                                declared_display
+                                    .push(format!("-{}", type_display_name_value(kb, l)));
                                 declared_absent.push(walk_type_deep_value(kb, &canon_subst, l));
                             }
                         }

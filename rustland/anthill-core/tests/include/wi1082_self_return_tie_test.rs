@@ -455,7 +455,9 @@ fn a_bare_self_parameter_is_left_to_the_canonical_channel() {
          \x20 operation n() -> Int64 = length(labels(cons(head: 1, tail: nil)))\n\
          end\n",
     );
-    let n = interp.call("test.wi1082.mapped.n", &[]).expect("mapElems runs");
+    let n = interp
+        .call("test.wi1082.mapped.n", &[])
+        .expect("mapElems runs");
     assert!(
         matches!(n, Value::Int(1)),
         "`mapElems` reverses at `Dst`, a DIFFERENT element from its enclosing `T`; got {n:?}",
@@ -464,7 +466,7 @@ fn a_bare_self_parameter_is_left_to_the_canonical_channel() {
 
 /// THE FIELD REWRITE IS A FIXPOINT, which it has to be: unlike the signature cache — rebuilt
 /// from the `OperationInfo` facts on every type-check — `entity_field_types` is mutated in
-/// place, so a second type-check (what `load_incremental` performs) reads this pass's own
+/// place, so a second type-check (what `load_all` into a live KB performs) reads this pass's own
 /// output. An already-elaborated slot holds the sort's parameter, which is not a flexible
 /// variable, so it is left alone.
 ///
@@ -485,14 +487,20 @@ fn the_field_tie_is_a_fixpoint() {
     let ctor = kb
         .try_resolve_symbol("test.wi1082.fix.Box.node")
         .expect("the constructor is defined");
-    let before = format!("{:?}", kb.entity_field_types(ctor).expect("fields").to_vec());
+    let before = format!(
+        "{:?}",
+        kb.entity_field_types(ctor).expect("fields").to_vec()
+    );
     let sorts: Vec<_> = kb
         .try_resolve_symbol("test.wi1082.fix.Box")
         .into_iter()
         .collect();
     let errs = anthill_core::kb::typing::type_check_sorts(&mut kb, &sorts);
     assert!(errs.is_empty(), "the re-check must stay clean: {errs:?}");
-    let after = format!("{:?}", kb.entity_field_types(ctor).expect("fields").to_vec());
+    let after = format!(
+        "{:?}",
+        kb.entity_field_types(ctor).expect("fields").to_vec()
+    );
     assert_eq!(
         before, after,
         "a second type-check must leave an already-elaborated field type alone",
@@ -532,7 +540,10 @@ fn a_self_returning_member_result_shares_the_receivers_parameter() {
         \x20   m\n\
         end\n";
     let member = SRC
-        .replace("MEMBER", "operation pick(p: DataProvider) -> DataProvider = p")
+        .replace(
+            "MEMBER",
+            "operation pick(p: DataProvider) -> DataProvider = p",
+        )
         .replace("FREE", "")
         .replace("CALL", "DataProvider.pick(p)");
     assert!(

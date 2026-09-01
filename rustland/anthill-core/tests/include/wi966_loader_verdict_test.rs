@@ -43,6 +43,12 @@ fn discards_a_loader_verdict(line: &str) -> bool {
     }
     [
         "load_all(",
+        // WI-20260901-Q68AK — `load_all_with(` does NOT contain `load_all(` (the next
+        // char is `_`), so the new entry point needed its own literal or it would have
+        // been the one loader call this guard could not see. The two retired spellings
+        // below stay: the guard costs nothing for a name that no longer exists, and
+        // re-introducing one must not re-open the hole.
+        "load_all_with(",
         "load_incremental(",
         "load::load(",
         "scan_definitions(",
@@ -121,6 +127,7 @@ fn the_recogniser_fires_on_the_pattern_and_not_on_prose() {
         "    let _ = load::load_all(&mut kb, &refs, &NullResolver);",
         "let _ = load::load_incremental(&mut kb, &refs, &NullResolver);",
         "    let _ = load::load(&mut kb, &parsed, &NullResolver);",
+        "let _ = load::load_all_with(&mut kb, &refs, &NullResolver, opts);",
         "    let _ = load::scan_definitions(&mut kb, &[&parsed]);",
     ] {
         assert!(discards_a_loader_verdict(fires), "must flag: {fires}");
