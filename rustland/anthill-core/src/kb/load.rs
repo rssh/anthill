@@ -20241,6 +20241,33 @@ impl<'a> Loader<'a> {
                         // the same call for the same reason.) A dot CALL's named args
                         // are unaffected — `p.m(a: 1)` is a call, not a field access,
                         // and that path threads them into the `DotApply` frame.
+                        // WI-20260824-6RXGD MEASURED THIS CONJUNCT AGAINST §8.6 AND THE
+                        // TWO DISAGREE — recorded, not changed (user decision 2026-09-01).
+                        // `dt::is` admits the SHORT spelling, so a hand-written
+                        // `field_access(q, x)` that resolves to NOTHING lands here and is
+                        // lowered as the accessor. Driven: in an operation body it answers
+                        // 7 where `q.x` answers 7, while the byte-analogous `foo_access(q,
+                        // x)` is a load error; the SAME spelling as a rule-body goal is a
+                        // load error naming the missing import, and in a query pattern it
+                        // is an ordinary bare intern. One spelling, three positions, and
+                        // this is the only one that rescues it. `dot_apply` behaves
+                        // identically (driven, also 7) through its own two arms in this
+                        // file.
+                        // The spec says the opposite in three bullets — "A user's
+                        // same-spelled name cannot capture a desugaring", "No name is
+                        // reserved", "provenance, not spelling, decides that". What it
+                        // describes is `name == dt::FIELD_ACCESS` here, and narrowing to
+                        // that makes arm and control agree (driven, one word). Corpus:
+                        // ZERO hand-written short-spelling calls, so neither reading
+                        // migrates anything. WI-20260901-92VA4 owns the decision. Not
+                        // narrowed here because the objection that
+                        // blocked it — the narrow gate removed the three re-routes below
+                        // with no working replacement — is what 6RXGD delivered instead
+                        // (`wi6rxgd_field_access_call_test`: the DECLARED operation is now
+                        // callable). Narrowing `dt::is` itself is NOT the fix either: its
+                        // short arm is load-bearing on the KB view, where `local_name_of`
+                        // yields the short name. This is a per-caller narrowing on the
+                        // PARSE view, and `dot_apply`'s two arms in this file need it too.
                         if dt::is(&name, dt::FIELD_ACCESS) && named_args.is_empty() {
                             if self.try_identifier_dot_field(
                                 parse_id,

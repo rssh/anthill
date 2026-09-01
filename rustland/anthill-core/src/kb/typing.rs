@@ -4520,6 +4520,42 @@ fn type_error_detail(e: &TypeError) -> String {
     }
 }
 
+/// WI-20260824-6RXGD — the GROUND twin of a written value-in-type LITERAL type argument,
+/// or `None` for every other shape.
+///
+/// A denoted written in a type-argument bracket (`field_access[Name = "x"](…)`,
+/// `Vec[N = 3]`) arrives as a `Value::Node`: `Loader::type_expr_to_value` mints any
+/// denoted-bearing type on that carrier because a denoted can carry POISON — a value
+/// occurrence referring to a parameter, as in `Modify[c]`. A LITERAL carries none, and a
+/// binding to a Node is unreadable by a term-backed callee: the `TermId` deep σ-walk that
+/// resolves a return type mentioning the parameter stops at a non-`Term` binding (WI-394).
+/// [`synthesize_field_access`] already builds its own `Name` argument ground for that
+/// reason; this gives the surface channel the same shape, so a call a person writes binds
+/// where the compiler's own rewrite does.
+///
+/// NOT A CARRIER RULE CHANGE. Only this one call site re-grounds, and only a closed
+/// literal — every other consumer of the written type still sees the Node it saw before,
+/// including `lower_value_or_gate`, whose WI-366 gate reads term-representability to decide
+/// whether a `provides Foo[Int64, 3]` clause is reported as unresolved rather than silently
+/// accepted.
+fn ground_literal_denoted(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
+    let Value::Node(occ) = v else {
+        return None;
+    };
+    let NodeKind::Type(TypeNode::Denoted { value }) = &occ.kind else {
+        return None;
+    };
+    let NodeKind::Expr {
+        expr: Expr::Const(lit),
+        ..
+    } = &value.kind
+    else {
+        return None;
+    };
+    let lit_term = kb.alloc(Term::Const(lit.clone()));
+    Some(Value::term(kb.make_denoted(lit_term)))
+}
+
 /// WI-759 — the string a `denoted` value-in-type carries, or `None` for any other type form.
 /// Carrier-neutral: the denoted's inner value rides as an occurrence from the typer's own
 /// synthesis and as a hash-consed term from a written `[Name = "f"]` type argument.
@@ -5730,6 +5766,34 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
             };
             format!("?{}", kb.local_name_of(name_sym))
         }
+        // WI-20260824-6RXGD — THE OTHER HALF OF THE CARRIER PAIRING. This function and
+        // [`type_display_name_occ`] claim, in both their docs, to render arm-for-arm; the
+        // Node side has rendered a value-in-type LITERAL through `literal_display` since
+        // WI-404, and the term side had no `Term::Const` arm, so the same denoted fell to
+        // the `{:?}` below and printed `TermId(8960)` — the id, not even the term's Debug.
+        //
+        // ADDED BECAUSE THIS TICKET MADE IT DRIVABLE, which is the part a reader should
+        // not have to reconstruct: [`ground_literal_denoted`] puts a `Term::Const` denoted
+        // into σ for every written type-argument bracket, so a MISMATCH renders one.
+        // Driven on an ordinary op with no `field_access` in sight —
+        // `mk[T, N]() -> Vec[T = T, N = N]` called as
+        // `use2() -> Vec[T = Int64, N = 4] = mk[Int64, 3]()` — which reported
+        // `got Vec[T = Int64, N = TermId(8960)]` without this arm and `N = 3` with it.
+        // That is precisely the message WI-404 exists to keep legible, and its own tests
+        // stay green either way because none of them writes a call bracket:
+        // `wi6rxgd_field_access_call_test::a_written_literal_bracket_renders_its_literal`
+        // is the row that fails when this arm is removed.
+        // (An earlier draft of this comment asserted the opposite — that nothing could
+        // drive it. `/code-review` built the fixture above and disproved it.)
+        //
+        // IT IS ALSO A SORT KEY, not only a message. `build_canonical_effects_rows`
+        // (kb/mod.rs) orders effect atoms by `sort_by_cached_key(type_display_name)`, and
+        // the `Term::Var` arm below already says in as many words that a `{:?}` key
+        // "would embed allocation-order indices and break the canonical-form-
+        // stable-across-runs claim" of that function. A `Term::Const` atom was keyed
+        // exactly that way. No test pins it, so this is a latent fix stated rather than
+        // claimed as measured.
+        Term::Const(lit) => literal_display(lit),
         _ => format!("{:?}", ty),
     }
 }
@@ -23856,7 +23920,36 @@ fn seed_op_type_args(
             // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
             // so unify it directly — a value-in-type arg (`Value::Node`) unifies
             // cross-carrier through the typer's view dispatch, no re-ground.
-            unify_types(kb, subst, &TermIdView(param), value);
+            //
+            // WI-20260824-6RXGD — EXCEPT A CLOSED LITERAL, which is re-grounded first.
+            // The unify succeeds either way; what fails is READING the binding back.
+            // A callee whose RETURN type mentions the parameter
+            // (`field_access[R, Name](…) -> FieldOf[T = R, Name = Name]`) is term-backed,
+            // so the binding is resolved by the `TermId` deep σ-walk, and that walk STOPS
+            // at a non-`Term` binding (WI-394) — leaving `Name` an unresolved var and the
+            // return type a residual (`FieldOf[T = P, Name = ?Name]`) for every spelling a
+            // caller can write. `synthesize_field_access` already grounds its own `Name`
+            // argument for exactly this reason and says so at that site; this is the same
+            // fix for the channel a PERSON writes, which had no route to it at all.
+            //
+            // ONLY A CLOSED LITERAL, and the narrowness is the point. The carrier rule
+            // (`Loader::type_expr_to_value`) mints a denoted-bearing type as a
+            // `Value::Node` because a denoted can carry POISON — a value occurrence
+            // referring to a parameter, `Modify[c]`. A literal carries none, which is the
+            // argument `synthesize_field_access` makes. Re-grounding at the LOADER instead
+            // (`TypeExpr::Denoted`, which is emitted for literals ONLY) was measured and
+            // REJECTED: it silently un-gates `wi366_value_in_type_facts_test::
+            // provides_block_value_in_type_spec_loads_without_panic`, because
+            // `lower_value_or_gate` decides by whether the value is term-representable —
+            // so `provides Foo[Int64, 3]` would stop reporting the WI-366 "not yet
+            // resolved" diagnostic and start silently accepting an unresolved clause.
+            let grounded = ground_literal_denoted(kb, value);
+            unify_types(
+                kb,
+                subst,
+                &TermIdView(param),
+                grounded.as_ref().unwrap_or(value),
+            );
         }
         let Some(spec_sort) = target.slot_spec() else {
             continue;

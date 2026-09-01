@@ -573,6 +573,9 @@ mod wi476_scope_chain_test;
 #[path = "include/wi040_reserved_vocab_test.rs"]
 mod wi040_reserved_vocab_test;
 
+#[path = "include/wi6rxgd_field_access_call_test.rs"]
+mod wi6rxgd_field_access_call_test;
+
 #[path = "include/kernel_mint_address_test.rs"]
 mod kernel_mint_address_test;
 

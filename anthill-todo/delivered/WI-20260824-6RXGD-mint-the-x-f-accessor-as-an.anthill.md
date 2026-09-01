@@ -3,11 +3,11 @@
 - id: WI-20260824-6RXGD-mint-the-x-f-accessor-as-an
 - created: 2026-08-24T10:21:45Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-24T10:21:45Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-01T16:17:40Z
 
-- acceptance: cargo-test, scaland-sbt-test
+- acceptance: cargo-test
 
 ## Description
 
@@ -74,4 +74,126 @@ SECOND /code-review — FIVE FINDINGS AGAINST THE DELIVERED field_access WORK, a
 5. THE SUPPLY MAKES `UnresolvedImport` UNABLE TO FAIL FOR THIS ONE NAME. The selective-import resolver's strategy 2 climbs to `<global>`, where the vocabulary already bound `field_access`, so the existence test always succeeds. DRIVEN with a sibling control: `-i 'mylib10.{kind}'` correctly errors "unresolved import"; the byte-identical `-i 'mylib10.{field_access}'` exits 0 and silently binds `anthill.reflect.field_access`. A typo or mis-import of a user's own `field_access` is now unreportable — a loud error became a silent wrong binding.
 
 ALSO: `body_specialize.rs:799` and its mirrored copy in `anthill-smt-gen/src/lib.rs:1679` — the `|| == "field_access"` fallback arms are now unreachable, AND an unresolved mint bare-interns as `..anthill.reflect.field_access`, matching neither string, so both accessor recognizers fail CLOSED and silently.
+
+### 2026-09-01T16:17:39Z — feedback — user
+
+DELIVERED 2026-09-01 (claude) — BUT NOT AS THIS TICKET'S TEXT DESCRIBES, and the whole
+opening is now historical. Read this note first; the ticket above is the 2026-08-24 record.
+
+THE TICKET'S OWN SUBJECT HAD ALREADY SHIPPED, under two other tickets, and neither of them
+is named above. `..anthill.reflect.field_access` entered the code in ceb203b7
+(WI-20260825-5W3RJ, "a desugared functor names its target, absolutely"), and
+WI-20260831-S66VH generalized it to twelve addresses in `parse::desugar_target`.
+6RXGD's OWN delivery was never committed: `git log -S'QUERY_VOCABULARY' --all` finds that
+string only in this file's prose, never in a `.rs`. So the three feedback notes above
+describe a tree that does not exist, and the five review findings had to be re-measured
+rather than worked from.
+
+RE-MEASURED, ALL FIVE:
+ #2 (`dot_apply` left bare) — CLOSED BY CONSTRUCTION. `DOT_APPLY` carries an address now.
+    Driven: a user's `operation dot_apply(a,b) = 999` and `operation field_access(a,b) = 888`
+    are BOTH reached by written calls (999 / 888). Symmetric again.
+ #4, #5 (`QUERY_VOCABULARY` precedence; unfailable `UnresolvedImport`) — MOOT. That code
+    never landed. `wi040_reserved_vocab_test` took the opposite route and its rows are
+    inverted to say so: the qualified spelling is required.
+ #1 (the host-name ladder had a THIRD reader) — CONFIRMED, and now general rather than
+    about one name. `KnowledgeBase::resolve_name_in_global` answers NotFound for
+    `field_access`, `dot_apply` and `ListLiteral`, Found for `SortInfo` and `cons`, and
+    Found for both QUALIFIED spellings of the accessor. So a host-supplied name must be
+    spelled qualified — the same decision `wi040` made for query patterns, reached
+    independently. Not re-litigated here.
+ #3 (a hand-written accessor) — INVERTED, and this is what the ticket became. The
+    capability came BACK with S66VH's `desugar_target::is`, whose third arm admits the
+    SHORT spelling. What is still broken is the other half of #3: the repair §8.6
+    prescribes — import the declared operation and call it — did not load, in ANY spelling.
+
+WHAT WAS FIXED: `anthill.reflect.field_access` IS CALLABLE BY HAND.
+`operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name]`
+takes the selector name TWICE, once per channel, because there are no singleton types — its
+own doc says so. Every hand-written spelling came back `FieldOf[T = P, Name = ?Name]`, an
+irreducible residual: `[Name = "x"]`, the positional `[P, "x"]`, and a written
+`FieldOf[…]` annotation alike.
+
+THE CAUSE WAS A CARRIER, NOT THE SIGNATURE, and the tree already stated it. A denoted
+written in a bracket rides as a `Value::Node` (`Loader::type_expr_to_value`, because a
+denoted may carry poison — `Modify[c]`), and the `TermId` deep σ-walk that resolves a
+term-backed return type STOPS at a non-`Term` binding (WI-394).
+`typing::synthesize_field_access` — what `q.x` rewrites to — already grounds its own `Name`
+argument for exactly that reason and says so at the site. The channel a PERSON writes had no
+route to it. `typing::ground_literal_denoted` gives it one, at `seed_op_type_args`, for a
+CLOSED LITERAL only.
+
+TWO WIDER REPAIRS WERE BUILT AND REJECTED ON MEASUREMENT, not on taste:
+ - RE-GROUND AT THE LOADER (`TypeExpr::Denoted`, which is emitted for literals ONLY, so it
+   looked like the general fix). Full workspace: 2 failures.
+   `wi366_value_in_type_facts_test::provides_block_value_in_type_spec_loads_without_panic`
+   went red because `lower_value_or_gate` decides by term-representability — so
+   `provides Foo[Int64, 3]` STOPPED reporting the WI-366 "not yet resolved" diagnostic and
+   started silently accepting an unresolved clause. That is the silent-skip the gate exists
+   to prevent, and it is what disqualified the repair.
+   `wi404_denoted_self_conformance_test::differing_denoted_literal_rejected` went red too,
+   rendering `Name = TermId(16082)` — a SECOND, pre-existing defect the repair exposed:
+   `type_display_name` has no `Term::Const` arm while its Node peer's `denoted_value_display`
+   does, and both docs claim the two are paired arm-for-arm. SEE THE REVIEW BELOW: I first
+   recorded that arm as undrivable and left it, and that was wrong.
+ - TEACH THE σ-WALK to follow a Node binding (WI-394's stop). Not built: it widens a hot
+   resolution relation to fix one channel, and the narrow repair makes the surface channel
+   do what the synthesized one already does.
+
+/code-review (high) FOUND FOUR THINGS, and the first one is the important one.
+ 1. THE NARROW REPAIR MAKES THAT `Term::Const` ARM DRIVABLE — my comment saying nothing
+    could drive it was FALSE, and this diff is what falsified it. Grounding a written
+    bracket's literal puts a `Term::Const` denoted into σ for EVERY operation with a
+    value-in-type parameter, not only `field_access`. Re-driven independently on a fixture
+    with no `field_access` in it — `mk[T, N]() -> Vec[T = T, N = N]` called as
+    `use2() -> Vec[T = Int64, N = 4] = mk[Int64, 3]()` — which reported
+    `got Vec[T = Int64, N = TermId(8960)]`. That is exactly the illegibility WI-404 exists
+    to prevent, and every WI-404 row is green either way because none of them writes a CALL
+    bracket. FIXED: the one-line `Term::Const(lit) => literal_display(lit)` arm, with
+    `a_written_literal_bracket_renders_its_literal` as its own control (that row, and only
+    that row, fails when the arm is removed).
+ 2. THE NEW DOC BLOCK STOLE `denoted_name`'S DOC — inserted above the new function, which
+    sits above the old one, so the WI-759 three-liner headed the wrong function and
+    `denoted_name` was left undocumented. Invisible to the compiler and the suite. Restored.
+    (Same footgun as two earlier sessions; anchoring a doc insert on a `fn` line is what
+    does it.)
+ 3. `an_annotation_written_by_hand_still_does_not_reduce` did NOT pin the rendering, though
+    its doc claimed to: its denoted comes from an ANNOTATION, rides the Node carrier, and is
+    green with the change backed out. Doc corrected; the claim moved to the row that earns
+    it.
+ 4. The 2026-08-25 note's closing paragraph ("this ticket's `scaland-sbt-test` acceptance is
+    therefore UNMET") is SUPERSEDED — the acceptance attribute is now `cargo-test` and the
+    port is WI-20260901-ERF7T.
+
+TESTS: `wi6rxgd_field_access_call_test`, six rows. THE CONTROL IS `ground_literal_denoted`
+returning `None`: three rows fail — the two calls stop type-checking with
+`expected Int64, got FieldOf[T = P, Name = ?Name]`, and
+`a_name_the_receiver_does_not_have_is_refused` fails because its refusal changes from
+"`P` has no field `zz`" (the name was READ) to the same `?Name` residual (the name was never
+read). That third row is what separates "resolved" from "made to disappear"; the first two
+alone cannot. `the_dot_form_is_unaffected` passes either way BY DESIGN — the representation
+control that bounds the change to the written bracket. Measured, not asserted.
+`a_written_literal_bracket_renders_its_literal` has a SEPARATE control — the `Term::Const`
+arm — and needs both halves: grounding puts the denoted where a diagnostic reaches it, the
+arm renders it.
+Full workspace green.
+
+NOT DONE, AND WHERE IT WENT:
+ - The BARE SHORT SPELLING still takes the accessor ladder, and §8.6 says three times that
+   it must not. Driven with a control: `field_access(q, x)` answers 7 in an operation body
+   where `foo_access(q, x)` is a load error; the same spelling is a loud error as a
+   rule-body goal and a bare intern in a query pattern. `dot_apply` behaves identically.
+   Corpus: ZERO hand-written short-spelling calls. Recorded AT the rescue site (kb/load.rs,
+   the accessor arm) and owned by WI-20260901-92VA4 — which side moves is a decision, and
+   the objection that used to block narrowing is what this ticket removed.
+ - SCALAND: split out as WI-20260901-ERF7T, and this ticket's `scaland-sbt-test` acceptance
+   dropped (user, 2026-09-01). The port is no longer "mint `field_access` absolutely" — it
+   is the whole twelve-address mechanism plus the `ExprMarker` question.
+ - A `FieldOf[…]` a user writes in their OWN return-type annotation is not a
+   `CtorReduceSite` and stays unreduced. Pinned by
+   `an_annotation_written_by_hand_still_does_not_reduce` rather than left as prose; a caller
+   does not need it, since declaring the field's concrete type is what works.
+ - The WI-366 gate and the loader's carrier rule are UNCHANGED. Only `seed_op_type_args`
+   re-grounds, and only a closed literal, so every other consumer of a written type still
+   sees the Node it saw before.
 
