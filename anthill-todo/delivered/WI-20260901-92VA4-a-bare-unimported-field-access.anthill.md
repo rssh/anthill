@@ -188,3 +188,11 @@ therefore drive the functor refusal through `(q, q)`. Filed as
 WI-20260901-P3CZV, with the three fixtures and an explicit "not diagnosed" — and with the
 census warning that a fix which reports MORE errors is a corpus-wide change.
 
+### 2026-09-01T18:39:13Z — feedback — user
+
+CORRECTION 2026-09-01 (claude), to this ticket's own delivery note. Its closing paragraph said the typer 'reports ONE error per operation body, innermost first'. FALSE. Driven after the user asked whether it is really the first error: errors accumulate freely — two sibling faults report both, two broken operations report both, a broken op body and a broken rule body report both, three faults on distinct branches report three.
+
+What actually happens is that a broken DESCENDANT swallows the diagnostics its ANCESTORS would have raised. My two original fixtures (`aaa_no(bbb_no(q))`, `foo_access(q, x)`) were both ancestor/descendant pairs, so an ancestor-only suppression policy looked like a one-error policy. Two agreeing fixtures were not a mechanism.
+
+The conclusion this ticket drew is UNCHANGED and still correct: `field_access(q, x)` is reported against `x` and never names the functor, which is why `wi92va4_written_accessor_test` drives the refusal through `(q, q)`. Only the stated reason was wrong. `wi92va4_written_accessor_test`'s header is corrected in place, and WI-20260901-P3CZV's description is replaced with the measured shape — including the control that separates the suppression that is CORRECT (an op-return mismatch, which reads the child's type) from the two that are not (`unknown functor` and arity, which do not).
+

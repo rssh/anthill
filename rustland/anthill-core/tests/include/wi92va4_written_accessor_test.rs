@@ -57,13 +57,25 @@
 //! not in August: the objection that blocked it was that it removed a capability with no
 //! working replacement.
 //!
-//! NOT CLOSED HERE: the typer reports ONE error per operation body, innermost first, so
-//! `field_access(q, x)` — a bare identifier in the field slot — is reported against `x`
-//! rather than against the functor. That is general and pre-existing (`foo_access(q, x)`
-//! behaves identically, measured), so the rows below drive the functor refusal through
-//! `(q, q)`, where the functor error is the one reported. Filed as WI-20260901-P3CZV with
-//! its three fixtures, an explicit "not diagnosed", and the census warning that a fix
-//! reporting MORE errors is a corpus-wide change.
+//! NOT CLOSED HERE: a broken SUBEXPRESSION swallows every diagnostic its ANCESTORS would
+//! have raised, so `field_access(q, x)` — a bare identifier in the field slot, which is the
+//! likeliest way to write this by hand — is reported against `x` and never names the
+//! functor. The rows below therefore drive the functor refusal through `(q, q)`, where no
+//! descendant fails and the functor error is the one reported.
+//!
+//! AN EARLIER DRAFT OF THIS PARAGRAPH SAID "the typer reports ONE error per operation body,
+//! innermost first". That is FALSE and is corrected here rather than edited away, because
+//! the way it was wrong is reusable: it was filed from two fixtures that were both
+//! ancestor/descendant pairs, so a policy suppressing only ANCESTORS looked like a policy
+//! reporting only one error. Siblings inverted it on the first try —
+//! `two(aaa_no(1), bbb_no(1))` reports BOTH, two broken operations report both, and a
+//! broken op body plus a broken rule body report both.
+//!
+//! The live question is narrower and is WI-20260901-P3CZV's: suppression is CORRECT for an
+//! ancestor diagnostic that reads the child's type (an op-return mismatch has nothing true
+//! to say once the body has none) and WRONG for the two that do not — `unknown functor` and
+//! ARITY, both withheld anyway, both measured with a control showing they fire when the
+//! child is clean.
 
 use crate::common::{interp_for, scalar_int, try_load_kb_with};
 
