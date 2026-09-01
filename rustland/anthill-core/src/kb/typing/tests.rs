@@ -316,6 +316,7 @@ mod wi323_pattern_type_ann_walker_tests {
     use crate::intern::Symbol;
     use crate::kb::term::{Literal, Var};
     use crate::kb::KnowledgeBase;
+    use crate::parse::desugar_target as dt;
     use crate::span::{SourceId, SourceSpan};
     use std::rc::Rc;
 
@@ -350,7 +351,7 @@ mod wi323_pattern_type_ann_walker_tests {
     #[test]
     fn ho_apply_in_let_pattern_type_ann_triggers_violation() {
         let mut kb = KnowledgeBase::new();
-        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let ho_apply_sym = kb.intern(dt::qualified(dt::HO_APPLY));
         let rule_sym = kb.intern("test_rule");
         let pat_name = kb.intern("p");
         let span = make_span();
@@ -394,7 +395,7 @@ mod wi323_pattern_type_ann_walker_tests {
     #[test]
     fn occurrence_contains_functor_descends_into_pattern_type_ann() {
         let mut kb = KnowledgeBase::new();
-        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let ho_apply_sym = kb.intern(dt::qualified(dt::HO_APPLY));
         let pat_name = kb.intern("p");
         let span = make_span();
 
@@ -425,7 +426,7 @@ mod wi323_pattern_type_ann_walker_tests {
     #[test]
     fn witness_a_expr_root_finds_functor_in_pattern_annotation() {
         let mut kb = KnowledgeBase::new();
-        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let ho_apply_sym = kb.intern(dt::qualified(dt::HO_APPLY));
         let pat_name = kb.intern("p");
         let span = make_span();
 
@@ -459,7 +460,7 @@ mod wi323_pattern_type_ann_walker_tests {
     #[test]
     fn witness_b_nested_pattern_terminates() {
         let mut kb = KnowledgeBase::new();
-        let ho_apply_sym = kb.intern("anthill.reflect.Expr.ho_apply");
+        let ho_apply_sym = kb.intern(dt::qualified(dt::HO_APPLY));
         let c = kb.intern("C");
         let span = make_span();
 

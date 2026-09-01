@@ -28,6 +28,7 @@ use super::RuleId;
 use crate::eval::value::Value;
 use crate::eval::{EvalConfig, EvalError, Interpreter};
 use crate::intern::Symbol;
+use crate::parse::desugar_target as dt;
 
 /// WI-625 gap 1: max eval↔SLD bridge crossings before
 /// [`KnowledgeBase::bridge_op_to_eval`] residualizes instead of recursing
@@ -2440,7 +2441,7 @@ impl SearchStream {
                 functor: Some(f),
                 pos_arity,
                 ..
-            } if kb.local_name_of(f) == "ho_apply" => pos_arity,
+            } if kb.local_name_of(f) == dt::short(dt::HO_APPLY) => pos_arity,
             _ => return None,
         };
         if pos_arity == 0 {
@@ -5228,7 +5229,7 @@ impl KnowledgeBase {
     /// reflect meta-constructors are NOT ordered products: their named args carry
     /// no source-order meaning and must be canonicalized for discrim matching.
     pub(crate) fn is_ordered_product_functor(&self, functor: Symbol) -> bool {
-        self.qualified_name_of(functor) == "anthill.reflect.TupleLiteral"
+        self.qualified_name_of(functor) == dt::qualified(dt::TUPLE_LITERAL)
     }
 
     /// WI-851: the supplied named labels that name NO DECLARED FIELD of `functor` —
@@ -13223,7 +13224,7 @@ mod tests {
 
         let result_sym = kb.intern("?result");
         let result_vid = kb.fresh_var(result_sym);
-        let fa_sym = kb.resolve_symbol("anthill.reflect.field_access");
+        let fa_sym = kb.resolve_symbol(dt::qualified(dt::FIELD_ACCESS));
         let span = SourceSpan::new(SourceId::from_raw(0), 0, 4);
 
         // `Point(x: 42)` as a RUNTIME value — never interned, its field an
@@ -13345,7 +13346,7 @@ mod tests {
         kb.assert_fact_value(Value::Term { id: fact }, ClauseKind::Fact, domain, None);
 
         // `ho_apply(<the symbol, as a SymbolRef value>, 1)`.
-        let ha_sym = kb.resolve_symbol("anthill.reflect.Expr.ho_apply");
+        let ha_sym = kb.resolve_symbol(dt::qualified(dt::HO_APPLY));
         let goal = Value::Node(NodeOccurrence::new_expr(
             Expr::Apply {
                 recv_type: None,
@@ -13469,7 +13470,7 @@ mod tests {
             named_args: SmallVec::from_slice(&[(x_field, inner)]),
         });
         let field = kb.alloc(Term::Const(Literal::String("x".into())));
-        let fa = kb.resolve_symbol("anthill.reflect.field_access");
+        let fa = kb.resolve_symbol(dt::qualified(dt::FIELD_ACCESS));
         let goal = kb.alloc(Term::Fn {
             functor: fa,
             pos_args: SmallVec::from_slice(&[recv, field, r_term]),

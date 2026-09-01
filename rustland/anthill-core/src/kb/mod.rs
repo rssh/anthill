@@ -43,6 +43,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
+use crate::parse::desugar_target as dt;
 use crate::span::{SourceRegistry, SourceSpan};
 use discrim::SubstTree;
 use node_occurrence::NodeOccurrence;
@@ -9176,8 +9177,8 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin_tag("anthill.reflect.kind", BuiltinTag::Kind);
         self.register_builtin_tag("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
-        self.register_builtin_tag("anthill.reflect.field_access", BuiltinTag::FieldAccess);
-        self.register_builtin_tag("anthill.reflect.Expr.ho_apply", BuiltinTag::HoApply);
+        self.register_builtin_tag(dt::qualified(dt::FIELD_ACCESS), BuiltinTag::FieldAccess);
+        self.register_builtin_tag(dt::qualified(dt::HO_APPLY), BuiltinTag::HoApply);
         // Resolver primitives (proposal 033 / 033.1 / 049)
         self.register_builtin_tag("anthill.kernel.push_choice", BuiltinTag::PushChoice);
         self.register_builtin_tag("anthill.kernel.push_and", BuiltinTag::PushAnd);
@@ -10568,7 +10569,7 @@ mod tests {
 
         let mut kb = KnowledgeBase::new();
         crate::kb::load::register_prelude(&mut kb);
-        let tl = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+        let tl = kb.resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
         let domain = kb.intern("test");
         let kind = ClauseKind::Fact;
         let sigma = subst::Substitution::new();

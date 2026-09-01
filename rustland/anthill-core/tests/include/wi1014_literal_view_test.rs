@@ -33,6 +33,7 @@ use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal, Te
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
 
@@ -70,7 +71,7 @@ fn int_occ(n: i64) -> Rc<NodeOccurrence> {
 /// The TERM twin for `{n}`, built exactly as `try_occurrence_to_term`'s WI-559
 /// arm does: `occ_build_fn(kb, SetLiteral, elems, &[])` → elements POSITIONAL.
 fn set_term(kb: &mut KnowledgeBase, n: i64) -> TermId {
-    let f = kb.try_resolve_symbol("anthill.reflect.SetLiteral").unwrap();
+    let f = kb.try_resolve_symbol(dt::qualified(dt::SET_LITERAL)).unwrap();
     let elem = kb.alloc(Term::Const(Literal::Int(n)));
     kb.alloc(Term::Fn {
         functor: f,
@@ -223,7 +224,7 @@ fn set_literal_cross_carrier_discrim_match() {
 fn tuple_literal_reads_its_twin_and_order_stays_identity() {
     let mut kb = stdlib_kb();
     let f = kb
-        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
         .unwrap();
     let (a, b) = (kb.intern("acomp"), kb.intern("bcomp"));
 
@@ -288,7 +289,10 @@ fn tuple_literal_reads_its_twin_and_order_stays_identity() {
 #[test]
 fn no_stored_clause_was_ever_literal_headed() {
     let kb = stdlib_kb();
-    for name in ["anthill.reflect.SetLiteral", "anthill.reflect.TupleLiteral"] {
+    for name in [
+        dt::qualified(dt::SET_LITERAL),
+        dt::qualified(dt::TUPLE_LITERAL),
+    ] {
         let sym = kb.try_resolve_symbol(name).expect("declared by the stdlib");
         let probe = Value::Entity {
             functor: sym,
@@ -324,7 +328,7 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
 
     let mut kb = stdlib_kb();
     let tl = kb
-        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
         .unwrap();
     assert!(
         kb.entity_field_names(tl).is_some(),
@@ -342,7 +346,7 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
     };
     let recv = tuple_occ([(comp, 42), (kb.intern("ycomp"), 7)]);
     let fa = kb
-        .try_resolve_symbol("anthill.reflect.field_access")
+        .try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS))
         .unwrap();
     let goal = Value::Node(occ(Expr::Apply {
         recv_type: None,
@@ -391,7 +395,7 @@ fn a_tuple_literal_occurrence_receiver_projects_its_component() {
 fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
     let mut kb = stdlib_kb();
     let f = kb
-        .try_resolve_symbol("anthill.reflect.TupleLiteral")
+        .try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
         .unwrap();
 
     let node = occ(Expr::TupleLit {

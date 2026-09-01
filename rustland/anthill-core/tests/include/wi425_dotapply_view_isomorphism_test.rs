@@ -24,6 +24,7 @@ use anthill_core::kb::term_view::{views_structurally_equal, TermView, ViewHead};
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 use anthill_core::span::SourceSpan;
 use smallvec::SmallVec;
 
@@ -61,7 +62,7 @@ fn fn_term(kb: &mut KnowledgeBase, functor: Symbol, named: &[(Symbol, TermId)]) 
 ///                   ApplyArg(name: some(value: Ref(k)), value: 2)])`.
 fn dot_term(kb: &mut KnowledgeBase, pos_value: TermId) -> TermId {
     let dot_apply = kb
-        .try_resolve_symbol("anthill.reflect.Expr.dot_apply")
+        .try_resolve_symbol(dt::qualified(dt::DOT_APPLY))
         .unwrap();
     let apply_arg = kb.try_resolve_symbol("anthill.reflect.ApplyArg").unwrap();
     let cons = kb.try_resolve_symbol("anthill.prelude.List.cons").unwrap();

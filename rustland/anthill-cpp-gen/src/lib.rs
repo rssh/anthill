@@ -56,6 +56,7 @@ use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::{TermIdView, TermView};
 use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse::desugar_target as dt;
 
 // ── Templates ────────────────────────────────────────────────────────
 //
@@ -3243,7 +3244,7 @@ fn lower_node(
             // field_access(object, field) is the desugared form of
             // `obj.field` — emit dot syntax. The second arg is a
             // var_ref pointing at the field identifier.
-            if fn_qn == "anthill.reflect.field_access" {
+            if fn_qn == dt::qualified(dt::FIELD_ACCESS) {
                 let combined = combined_args(pos_args, named_args);
                 if combined.len() != 2 {
                     return Err(CppCodegenError {
@@ -3317,10 +3318,9 @@ fn lower_node(
         Expr::Constructor { name, pos_args, named_args, .. } => {
             let name_qn = kb.qualified_name_of(*name).to_string();
             // List/Tuple/Set literals → uniform brace-init.
-            if matches!(name_qn.as_str(),
-                "anthill.reflect.ListLiteral"
-                | "anthill.reflect.TupleLiteral"
-                | "anthill.reflect.SetLiteral")
+            if name_qn == dt::qualified(dt::LIST_LITERAL)
+                || name_qn == dt::qualified(dt::TUPLE_LITERAL)
+                || name_qn == dt::qualified(dt::SET_LITERAL)
             {
                 let mut parts = Vec::new();
                 for a in combined_args(pos_args, named_args) {

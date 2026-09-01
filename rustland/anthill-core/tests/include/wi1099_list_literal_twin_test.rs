@@ -115,6 +115,7 @@ use anthill_core::kb::{ClauseKind, KnowledgeBase};
 use anthill_core::persistence::file_store::{FileConvention, FileStore};
 use anthill_core::persistence::print;
 use anthill_core::persistence::Store;
+use anthill_core::parse::desugar_target as dt;
 use smallvec::SmallVec;
 
 /// The DEFINITE solutions of a unary rule — a conditional one is an undischarged
@@ -449,9 +450,9 @@ fn a_flat_list_literal_survives_persist_and_reload() {
     assert_eq!(
         before,
         vec![
-            "anthill.reflect.ListLiteral/2p0n".to_string(),
+            format!("{}/2p0n", dt::qualified(dt::LIST_LITERAL)),
             "anthill.prelude.List.cons/0p2n".to_string(),
-            "anthill.reflect.ListLiteral/0p0n".to_string(),
+            format!("{}/0p0n", dt::qualified(dt::LIST_LITERAL)),
         ],
         "the three terms this row is about are genuinely different in the KB — \
          the premise of the whole half",
@@ -541,7 +542,7 @@ fn a_persisted_literal_is_still_retractable() {
     let mut store = FileStore::new(dir.path().to_path_buf(), FileConvention::Flat);
     let mut kb = crate::common::load_kb_with(RT_SRC);
 
-    let list_literal = kb.resolve_symbol("anthill.reflect.ListLiteral");
+    let list_literal = kb.resolve_symbol(dt::qualified(dt::LIST_LITERAL));
     let one = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
     let two = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(2)));
     let flat = kb.alloc(Term::Fn {

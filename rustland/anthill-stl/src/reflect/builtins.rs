@@ -1311,6 +1311,7 @@ mod tests {
     use anthill_core::kb::load::{self, NullResolver};
     use anthill_core::kb::KnowledgeBase;
     use anthill_core::parse;
+    use anthill_core::parse::desugar_target as dt;
 
     // WI-747: the walk is the shared `anthill_core::fs_util`.
     fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
@@ -1900,7 +1901,7 @@ end
         };
         let result = interp
             .call(
-                "anthill.reflect.field_access",
+                dt::qualified(dt::FIELD_ACCESS),
                 &[pt, Value::Str("x".to_string())],
             )
             .expect("field_access must still route to the production implementation");

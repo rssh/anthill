@@ -22,6 +22,7 @@ use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead,
 use super::{KnowledgeBase, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
 use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
+use crate::parse::desugar_target as dt;
 use crate::span::Span;
 
 /// The typer's own unit tests, moved out of this file (WI-20260830-009H2) so that
@@ -11649,14 +11650,14 @@ fn visit_type(
                         let by_sym = *name == tl;
                         debug_assert_eq!(
                             by_sym,
-                            kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral",
+                            kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL),
                             "WI-657(6): tuple_literal_sym Symbol-compare diverged from the \
                              qualified-name compare for constructor `{}`",
                             kb.qualified_name_of(*name),
                         );
                         by_sym
                     }
-                    None => kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral",
+                    None => kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL),
                 }
             }
             let has_call_field = pos_args
@@ -11724,7 +11725,7 @@ fn visit_type(
             // WI-20260826-JSFHG: when THIS build is itself a tuple literal, its components'
             // declared types live in the expected TUPLE, not in `field_types` (the
             // `TupleLiteral` entity declares none). See [`tuple_component_expected`].
-            let self_is_tuple_lit = kb.qualified_name_of(name) == "anthill.reflect.TupleLiteral";
+            let self_is_tuple_lit = kb.qualified_name_of(name) == dt::qualified(dt::TUPLE_LITERAL);
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
@@ -14335,7 +14336,7 @@ fn synthesize_field_access(
     field_name: &str,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<Rc<NodeOccurrence>, Option<TypeError>> {
-    let Some(fa_sym) = kb.try_resolve_symbol("anthill.reflect.field_access") else {
+    let Some(fa_sym) = kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) else {
         return Err(None);
     };
     let name_param = lookup_operation_info_full(kb, fa_sym)
@@ -14353,9 +14354,10 @@ fn synthesize_field_access(
                 },
                 Some(occ.span.span),
                 &format!(
-                    "`anthill.reflect.field_access` must declare a `{}` type parameter — the \
-                     channel a field projection's name travels to type position through",
-                    FIELD_OF_NAME_OPERAND
+                    "`{}` must declare a `{}` type parameter — the channel a field \
+                     projection's name travels to type position through",
+                    dt::qualified(dt::FIELD_ACCESS),
+                    FIELD_OF_NAME_OPERAND,
                 ),
             ))
         })?;
@@ -40638,7 +40640,7 @@ fn synthesize_named_tuple_literal(
     ty: Value,
 ) -> Rc<NodeOccurrence> {
     let pass = super::simp_rewrite::simp_pass(kb);
-    let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+    let functor = kb.resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
     let occ = NodeOccurrence::synthesized_expr(
         Expr::Constructor {
             name: functor,
@@ -43499,7 +43501,7 @@ fn check_constructor_iter(
     // path below would type them as `sort_ref(TupleLiteral)` — which
     // doesn't unify with `Unit` or with a named-tuple type. Route to
     // tuple semantics instead.
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::TUPLE_LITERAL) {
         return check_tuple_literal_constructor(
             kb,
             env,
@@ -43524,7 +43526,7 @@ fn check_constructor_iter(
     // whose qualified name is itself, which `canonical_sort_sym` never folds onto
     // the prelude sort, so a literal consumed as a Stream (`collect([1,2,3])`)
     // missed the carrier provider lookup. See the `ListLit` build frame.
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::LIST_LITERAL) {
         return check_seq_literal_constructor(
             kb,
             env,
@@ -43534,7 +43536,7 @@ fn check_constructor_iter(
             "anthill.prelude.List",
         );
     }
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::SET_LITERAL) {
         return check_seq_literal_constructor(
             kb,
             env,
@@ -45183,7 +45185,7 @@ fn stable_receiver_path(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
             ..
         } if named_args.is_empty()
             && pos_args.len() == 2
-            && kb.try_resolve_symbol("anthill.reflect.field_access") == Some(*functor) =>
+            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
         {
             let field_name = match pos_args[1].as_expr() {
                 Some(Expr::Const(Literal::String(s))) => s.clone(),
@@ -45448,7 +45450,7 @@ fn term_place_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
         Term::Fn {
             functor, pos_args, ..
         } if !pos_args.is_empty()
-            && kb.try_resolve_symbol("anthill.reflect.field_access") == Some(*functor) =>
+            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
         {
             term_place_head_sym(kb, pos_args[0])
         }
@@ -46022,7 +46024,7 @@ fn resolve_receiver_path_type(
     // head with the same three keys, which is exactly what makes the neutral read
     // possible: `head` / `named_arg` see through either carrier, so the verdict no
     // longer depends on which one the type is written on (WI-425).
-    if let Some(dot_sym) = kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply") {
+    if let Some(dot_sym) = kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY)) {
         let is_dot = matches!(
             receiver.head(kb),
             ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
@@ -58315,7 +58317,7 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         // fallthrough below would classify it as a parameterized type over a
         // phantom sort named `dot_apply` (and `sort_functor_of_view` would report
         // that as a real sort head).
-        "anthill.reflect.Expr.dot_apply" => TypeHead::Error,
+        qualified if qualified == dt::qualified(dt::DOT_APPLY) => TypeHead::Error,
         // An ordinary (non-meta-ctor) bare `Ref(S)` is the sort reference; a
         // `Fn{S, named}` with bindings is a parameterized type; a no-arg `Fn{S}`
         // of an ordinary sort is malformed (a bare sort is `Ref(S)`, never `Fn{S}`).
@@ -58759,7 +58761,7 @@ fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
         NodeKind::Expr {
             expr: Expr::Constructor { name, .. },
             ..
-        } if kb.qualified_name_of(*name) == "anthill.reflect.TupleLiteral"
+        } if kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL)
     ) || matches!(
         &arg.kind,
         NodeKind::Expr {
@@ -58918,13 +58920,13 @@ fn constructor_value_type(
     // `Unit` / a named tuple / `List[T]` / `Set[T]`. Route to the aggregate / sequence
     // type so the value-typer and the occurrence-typer agree (no drift — the whole
     // point of the typed-value substrate).
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.TupleLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::TUPLE_LITERAL) {
         return tuple_value_type(kb, pos_child_types.to_vec(), named_child_types.to_vec());
     }
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.ListLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::LIST_LITERAL) {
         return seq_literal_value_type(kb, "anthill.prelude.List", pos_child_types);
     }
-    if kb.qualified_name_of(ctor_sym) == "anthill.reflect.SetLiteral" {
+    if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::SET_LITERAL) {
         return seq_literal_value_type(kb, "anthill.prelude.Set", pos_child_types);
     }
 
@@ -60304,7 +60306,7 @@ fn type_check_sorts_collect(
     // per-constructor-arg `is_tuple_lit` compares a `Symbol` rather than the long
     // qualified-name string. Reflect is fully loaded by now; `None` (reflect-less
     // KB) leaves `is_tuple_lit` on its exact string fallback.
-    kb.tuple_literal_sym = kb.try_resolve_symbol("anthill.reflect.TupleLiteral");
+    kb.tuple_literal_sym = kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
@@ -64209,7 +64211,7 @@ fn collect_covered_entities(
 /// Validate that rules conform to the hereditary Harrop pattern fragment.
 /// This ensures higher-order unification remains decidable.
 fn check_pattern_fragment(kb: &KnowledgeBase, sort_name: Symbol, errors: &mut Vec<TypeError>) {
-    let ho_apply_sym = match kb.try_resolve_symbol("anthill.reflect.Expr.ho_apply") {
+    let ho_apply_sym = match kb.try_resolve_symbol(dt::qualified(dt::HO_APPLY)) {
         Some(s) => s,
         None => return,
     };

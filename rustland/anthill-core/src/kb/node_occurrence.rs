@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::intern::Symbol;
+use crate::parse::desugar_target as dt;
 use crate::span::SourceSpan;
 
 pub use super::occurrence::PassId;
@@ -3564,7 +3565,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             named_args,
         }) if pos_args.is_empty() && named_args.is_empty() => {
             let recv = try_occurrence_to_term(kb, receiver)?;
-            let dot_apply = kb.resolve_symbol("anthill.reflect.Expr.dot_apply");
+            let dot_apply = kb.resolve_symbol(dt::qualified(dt::DOT_APPLY));
             let name_ref = kb.alloc(Term::Ref(*name));
             let args_nil = kb.build_list(&[]);
             let (k_receiver, k_name, k_args) =
@@ -3618,7 +3619,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // non-desugared list literal round-trips through the term store instead
         // of asserting to ⊥. Pure data, legitimately hash-consable.
         Some(Expr::ListLit(elems)) => {
-            let functor = kb.resolve_symbol("anthill.reflect.ListLiteral");
+            let functor = kb.resolve_symbol(dt::qualified(dt::LIST_LITERAL));
             return occ_build_fn(kb, functor, elems, &[]);
         }
         // WI-559: a set literal `{…}` reifies to its `SetLiteral(…)` term twin
@@ -3627,7 +3628,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // set literal reaching reify fell to the `_ => None` non-goal arm and
         // hit `occurrence_to_term`'s debug_assert / silent ⊥.
         Some(Expr::SetLit(elems)) => {
-            let functor = kb.resolve_symbol("anthill.reflect.SetLiteral");
+            let functor = kb.resolve_symbol(dt::qualified(dt::SET_LITERAL));
             return occ_build_fn(kb, functor, elems, &[]);
         }
         // WI-559: a tuple literal `(…)` reifies to its `TupleLiteral(…)` term
@@ -3656,7 +3657,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // the two lists is empty and this is just source order — which is the
         // tuple's identity, WI-788.)
         Some(Expr::TupleLit { positional, named }) => {
-            let functor = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+            let functor = kb.resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
             let mut all: Vec<(Symbol, Rc<NodeOccurrence>)> = named.clone();
             for (i, child) in positional.iter().enumerate() {
                 let label = kb.intern(&crate::intern::positional_label(i));
@@ -6607,6 +6608,52 @@ mod tests {
         SourceSpan::new(SourceId::from_raw(0), 0, 10)
     }
 
+    /// S66VH RESIDUE, MADE LOUD RATHER THAN LEFT SILENT.
+    ///
+    /// Eight desugar-target addresses are still hand-written in this file, and one
+    /// more in `resolve::bounded_list_elements`, because they are `match` PATTERNS
+    /// (`materialize_from_handle`'s dispatch, `is_reflect_form_functor`'s membership
+    /// list, `Some("ListLiteral")` in the spine walk) and a pattern cannot call
+    /// `dt::short`. `short` is not a `const fn` — it is `rsplit`, and making it one
+    /// would need `unsafe` slicing for no gain — so those arms cannot source the
+    /// address the way every other site in the tree now does.
+    ///
+    /// This row is what stops that residue from drifting SILENTLY. It DRIVES
+    /// `expr_form_key` — the very function whose output those arms match on — with
+    /// each canonical address, and asserts the arm string. Rename a target in
+    /// `desugar_target`, or move one out of its namespace, without editing the arms
+    /// and this FAILS naming the address; today the arm would simply go dead and
+    /// materialization would fall through to the generic `Expr::Apply` with nothing
+    /// said anywhere. The eight arms and the `resolve.rs` one share one currency
+    /// (`local_name_of` / last-segment), so this covers both files.
+    ///
+    /// NOT A CONTROL FOR THE SWEEP: it passes with S66VH wholly backed out, because
+    /// it measures the short-name arms and not the qualified-address migration. The
+    /// sweep's control is `wi040_reserved_vocab_test`'s declaration assertion.
+    #[test]
+    fn the_hand_written_dispatch_arms_still_key_off_their_addresses() {
+        for (target, arm) in [
+            (dt::IF_EXPR, "if_expr"),
+            (dt::LET_EXPR, "let_expr"),
+            (dt::LAMBDA_EXPR, "lambda_expr"),
+            (dt::MATCH_EXPR, "match_expr"),
+            (dt::DOT_APPLY, "dot_apply"),
+            (dt::LIST_LITERAL, "ListLiteral"),
+            (dt::SET_LITERAL, "SetLiteral"),
+            (dt::TUPLE_LITERAL, "TupleLiteral"),
+        ] {
+            let qn = dt::qualified(target);
+            assert_eq!(
+                expr_form_key(qn, dt::short(target)),
+                arm,
+                "`{qn}` no longer keys the `{arm}` arm; that arm is a hand-written \
+                 match pattern in materialize_from_handle / is_reflect_form_functor \
+                 (and, for ListLiteral, resolve::bounded_list_elements) and must be \
+                 edited together with the address",
+            );
+        }
+    }
+
     #[test]
     fn build_expr_apply() {
         let mut symbols = SymbolTable::new();
@@ -6759,7 +6806,7 @@ mod tests {
         // empty arg list and the receiver materialized as a child.
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
-        let dot = kb.intern("dot_apply");
+        let dot = kb.intern(dt::short(dt::DOT_APPLY));
         let name = kb.intern("size");
         let receiver_key = kb.intern("receiver");
         let name_key = kb.intern("name");
@@ -6799,7 +6846,7 @@ mod tests {
         // method call `recv.name(arg)` — round-trips with its positional arg.
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
-        let dot = kb.intern("dot_apply");
+        let dot = kb.intern(dt::short(dt::DOT_APPLY));
         let name = kb.intern("map");
         let receiver_key = kb.intern("receiver");
         let name_key = kb.intern("name");
@@ -8136,7 +8183,7 @@ mod tests {
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
-        let set_sym = kb.resolve_symbol("anthill.reflect.SetLiteral");
+        let set_sym = kb.resolve_symbol(dt::qualified(dt::SET_LITERAL));
         let a = kb.alloc(Term::Const(Literal::Int(1)));
         let b = kb.alloc(Term::Const(Literal::Int(2)));
         let set_tid = kb.alloc(Term::Fn {
@@ -8178,7 +8225,7 @@ mod tests {
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
         register_prelude(&mut kb);
-        let tuple_sym = kb.resolve_symbol("anthill.reflect.TupleLiteral");
+        let tuple_sym = kb.resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
         // The converter encodes positional surface `(a, b)` as `_1`/`_2` labels
         // (convert.rs `intern_positional_label`), so build that exact shape.
         let k1 = kb.intern("_1");

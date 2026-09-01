@@ -31,6 +31,7 @@
 //! `join_run`'s reuse of that face, 12 passed).
 
 use anthill_core::eval::Value;
+use anthill_core::parse::desugar_target as dt;
 
 /// `trigger` declares BOTH faces, as a real client does: the `...args: R`
 /// parameter is what makes `trigger(5, a: 7)` a well-formed call at all (WI-727),
@@ -363,14 +364,16 @@ end
     let parsed = anthill_core::parse::parse(BARE).expect("parse");
     let mut kb = anthill_core::kb::KnowledgeBase::new();
     assert!(
-        kb.try_resolve_symbol("anthill.reflect.TupleLiteral").is_none(),
+        kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
+            .is_none(),
         "the control: a KB that has loaded nothing does NOT have the constructor, \
          so this test's arm is the bootstrap and not a tautology",
     );
     anthill_core::kb::load::load_all(&mut kb, &[&parsed], &anthill_core::kb::load::NullResolver)
         .unwrap_or_else(|e| panic!("bare load: {e:?}"));
     assert!(
-        kb.try_resolve_symbol("anthill.reflect.TupleLiteral").is_some(),
+        kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
+            .is_some(),
         "a bare load must still define the capture record constructor — \
          `fold_capture_redex` resolves it outright",
     );

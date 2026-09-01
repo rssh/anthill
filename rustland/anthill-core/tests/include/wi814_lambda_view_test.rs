@@ -30,6 +30,7 @@ use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal, Te
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
 
@@ -82,7 +83,7 @@ fn fn_term(kb: &mut KnowledgeBase, functor: Symbol, named: &[(Symbol, TermId)]) 
 /// unannotated `wildcard` nullary.
 fn lambda_term(kb: &mut KnowledgeBase, binder: Symbol) -> TermId {
     let lambda = kb
-        .try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
+        .try_resolve_symbol(dt::qualified(dt::LAMBDA_EXPR))
         .unwrap();
     let var_pattern = kb
         .try_resolve_symbol("anthill.reflect.Pattern.var_pattern")
@@ -384,19 +385,19 @@ fn control_flow_forms_read_as_their_loader_twins() {
         (
             "if",
             &if_occ,
-            "anthill.reflect.Expr.if_expr",
+            dt::qualified(dt::IF_EXPR),
             &["cond", "then_branch", "else_branch"][..],
         ),
         (
             "let",
             &let_occ,
-            "anthill.reflect.Expr.let_expr",
+            dt::qualified(dt::LET_EXPR),
             &["pattern", "value", "body"][..],
         ),
         (
             "match",
             &match_occ,
-            "anthill.reflect.Expr.match_expr",
+            dt::qualified(dt::MATCH_EXPR),
             &["scrutinee", "branches"][..],
         ),
     ] {
@@ -643,9 +644,9 @@ fn control_flow_views_are_isomorphic_to_loader_twins() {
     // nested in its argument list would be a borrow error.
     let r = |kb: &KnowledgeBase, n: &str| kb.try_resolve_symbol(n).unwrap();
     let (s_if, s_let, s_match, s_proof) = (
-        r(&kb, "anthill.reflect.Expr.if_expr"),
-        r(&kb, "anthill.reflect.Expr.let_expr"),
-        r(&kb, "anthill.reflect.Expr.match_expr"),
+        r(&kb, dt::qualified(dt::IF_EXPR)),
+        r(&kb, dt::qualified(dt::LET_EXPR)),
+        r(&kb, dt::qualified(dt::MATCH_EXPR)),
         r(&kb, "anthill.reflect.Expr.proof_stmt"),
     );
     let (s_branch, s_varpat, s_wild, s_vref) = (

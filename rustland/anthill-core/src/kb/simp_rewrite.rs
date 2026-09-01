@@ -53,6 +53,7 @@ use smallvec::SmallVec;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
+use crate::parse::desugar_target as dt;
 
 use super::load::meta_has_flag;
 use super::node_occurrence::{self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin};
@@ -884,10 +885,20 @@ fn fold_capture_redex(
     // Resolved outright, not `try_`-ed. This function's `None` means ONE thing — this
     // redex does not match — and an unresolvable constructor is not that; declining
     // would make the rule silently never fire, with nothing said anywhere. The
-    // constructor is DEFINED by `register_prelude`, which every load path runs before
-    // any rule loads (`load::CAPTURE_RECORD_CONSTRUCTOR` carries the measurement), so
-    // this is total; if that ever stops holding, `resolve_symbol` says so by name.
-    let tuple_sym = kb.resolve_symbol(super::load::CAPTURE_RECORD_CONSTRUCTOR);
+    // constructor is DEFINED by `register_prelude` (through `register_stdlib_scopes`,
+    // beside `SetLiteral` / `ListLiteral`), which every load path runs before any rule
+    // loads — so this is total with no stdlib at all; if that ever stops holding,
+    // `resolve_symbol` says so by name. MEASURED both ways by
+    // `wi1129_rule_head_capture_test::the_capture_record_constructor_is_bootstrapped`:
+    // absent on a `KnowledgeBase::new()`, present after a bare `load_all`.
+    //
+    // `dt::qualified`, NOT the bare `dt::TUPLE_LITERAL` constant: the constant carries
+    // the absolute-path marker, which is the address the converter WRITES and which
+    // DEFINES nothing — `register_stdlib_scopes` defines the plain qualified name, so
+    // resolving the marked spelling here would panic. (This warning outlived the
+    // `load::CAPTURE_RECORD_CONSTRUCTOR` constant that used to carry it; S66VH retired
+    // the constant as a second hand-written address and kept the reasoning.)
+    let tuple_sym = kb.resolve_symbol(dt::qualified(dt::TUPLE_LITERAL));
     let pass = simp_pass(kb);
     let record = NodeOccurrence::synthesized_expr(
         Expr::Constructor {
@@ -1225,16 +1236,20 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 /// rule (`rule dr: dot_apply(?e, m, ?x) <=> rhs [simp]`) loads as. The one owner of
 /// the qualified name *for rule-shape tests*, so the site that FIRES dot rules
 /// (`typing::try_fire_dot_rule`) and the site that REFUSES a typed pattern bound on
-/// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. (The
-/// same string is also spelled by the declarative reflect tables — `KERNEL_VOCAB`,
-/// `ExprBuilderSyms`, `term_view`'s field map — which this does not claim to own.)
+/// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. S66VH
+/// routes this and the declarative reflect tables (`ExprBuilderSyms`, `term_view`'s
+/// field map, `eval`'s `ReflectSymbols`) through [`dt`], the address owner — so this
+/// no longer owns a string anyone else spells. NOT EVERY consumer: the short-name
+/// `match` ARMS in `node_occurrence` and `resolve::bounded_list_elements` cannot call
+/// a function in a pattern and stay hand-written, guarded instead by
+/// `node_occurrence::tests::the_hand_written_dispatch_arms_still_key_off_their_addresses`.
 ///
 /// `None` only if the reflect vocabulary is absent. `register_prelude` →
 /// `register_stdlib_scopes` DEFINES this symbol (it does not wait for
 /// `reflect.anthill` to load), so every KB built the documented way resolves it
 /// before any rule loads — the `Option` is the reader's honesty, not a live case.
 pub(super) fn dot_apply_head_sym(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.Expr.dot_apply")
+    kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY))
 }
 
 /// WI-903 — would the TYPER's dot-rule site FIRE `rid`? Exactly the two conditions

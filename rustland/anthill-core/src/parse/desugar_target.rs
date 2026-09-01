@@ -44,7 +44,22 @@
 //! Everything downstream keys on a [`crate::kb::resolve::BuiltinTag`] registered by
 //! QUALIFIED name, never on the short spelling, so the address lands on the same symbol
 //! the tier was reaching and reaches it one rung higher. Consumers outside the converter
-//! read the address through [`qualified`] rather than writing it out.
+//! read the address through [`qualified`] rather than writing it out. S66VH completed
+//! that rule for the ten reflect targets: symbol resolution, bootstrap definitions,
+//! shape comparisons, eval/codegen recognizers and their unit tests all source the
+//! address here. The two dual-spelling field-access recognizers named by S66VH use
+//! [`is`] instead.
+//!
+//! ONE RESIDUE, AND IT IS NOT A MISS — it is a language limit, stated here so the next
+//! reader does not conclude the sweep is total and walk past the drift. Nine short
+//! spellings are still hand-written as `match` PATTERNS: eight in
+//! `kb::node_occurrence` (`materialize_from_handle`'s dispatch and
+//! `is_reflect_form_functor`'s membership list) and `Some("ListLiteral")` in
+//! `kb::resolve::bounded_list_elements`. A pattern cannot call [`short`], and [`short`]
+//! cannot be a `const fn` without `unsafe` slicing. They are held to the addresses by
+//! `node_occurrence::tests::the_hand_written_dispatch_arms_still_key_off_their_addresses`,
+//! which drives the real dispatch-key function so a rename fails LOUDLY there rather
+//! than quietly disabling an arm. Raised by `/code-review`.
 //!
 //! ONE THING THE HIGHER RUNG ADDS: A VISIBILITY GATE. The absolute rung runs
 //! `resolve_dotted_in_kb`, which filters on `internal_visible_from`; the implicit tier it
@@ -178,8 +193,21 @@ pub const FIND_DICTIONARY: &str = "..anthill.kernel.find_dictionary";
 /// Their surface forms (`!`, `requires(X)`) name no functor, so unlike the reflect
 /// vocabulary they have no legitimate written spelling: a user's `cut(…)` is an
 /// ordinary unrelated call, and admitting it is the capture this module exists to make
-/// unrepresentable. Read by [`is`]'s guard.
+/// unrepresentable. Read by [`is`]'s guard and, from outside, by
+/// [`is_kernel_control`].
 const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY];
+
+/// Is `target` one of the kernel CONTROL targets rather than reflect vocabulary?
+///
+/// The partition itself, published so a consumer does not have to re-derive it. S66VH's
+/// `/code-review` caught `wi040_reserved_vocab_test` re-deriving it as
+/// `qualified(target).starts_with("anthill.reflect.")` — which is true today and is a
+/// SILENT SKIP the moment a reflect target moves namespace or a third kernel control
+/// appears: the row would quietly stop covering it while reading as though it did. The
+/// set is the authority, the namespace is a coincidence of it.
+pub fn is_kernel_control(target: &str) -> bool {
+    KERNEL_CONTROL.contains(&target)
+}
 
 /// EVERY desugar target, so a reader that must cover the set does not hand-copy it.
 ///
@@ -216,9 +244,13 @@ pub fn short(target: &str) -> &str {
 /// This is what a consumer OUTSIDE the converter needs. The constants carry the marker
 /// because the converter mints a name for the resolver to read, but
 /// `KnowledgeBase::try_resolve_symbol` and `register_builtin_tag` take the plain
-/// qualified name, so without this every such site wrote the address out by hand — four
-/// hand-synced literals for `FIND_DICTIONARY` alone, which is the duplication the tier
-/// row's deletion was supposed to remove rather than relocate. Found by `/code-review`.
+/// qualified name, so without this every such site wrote the address out by hand. S66VH
+/// retired the reflect ten's live resolution/comparison sites — the ticket measured 54
+/// in the qualified currency, and `/code-review` on the delivering diff found five more
+/// in the SHORT currency (`load.rs`'s `ho_apply` intern fallback and its
+/// `TypeExpr::Tuple` base name, `resolve.rs`'s `ho_apply` recognizer, two test
+/// interns), which read [`short`]. WI-909 had already routed the four
+/// `FIND_DICTIONARY` sites. Found by `/code-review`.
 ///
 /// Delegates to [`crate::intern::absolute_path_target`] rather than stripping the marker
 /// here, because that function's doc claims to be its SOLE reader and the claim is worth
@@ -226,17 +258,48 @@ pub fn short(target: &str) -> &str {
 /// asserted: `kernel_mint_address_test::every_desugar_target_carries_the_absolute_marker`
 /// walks [`ALL`] for the marker. Passing an unmarked name is a programming error and
 /// panics; no input a program can write reaches it.
+///
+/// CALLED ON PER-NODE TYPER PATHS (`type_head`, `constructor_value_type`,
+/// `check_constructor_iter`, …), which `/code-review` flagged against `kb/mod.rs`'s note
+/// that `tuple_literal_sym` exists to avoid per-call string work on exactly those paths.
+/// The comparison it feeds — `qualified_name_of(sym) == …`, a symbol-table lookup plus a
+/// 30-byte `str` compare — was already there and dominates; what this adds is one
+/// `strip_prefix` on a `&'static str`. The `Symbol`-compare fast paths that actually
+/// answer WI-653's concern (`tuple_literal_sym`, `dot_apply_head_sym`) are unchanged and
+/// still run first where they exist. Restructuring the remaining name-compares into
+/// symbol-compares is a real improvement and a different ticket; it is not what a naming
+/// sweep should do to a hot path unmeasured.
 pub fn qualified(target: &str) -> &str {
     crate::intern::absolute_path_target(target)
         .expect("a desugar target is written with the absolute-path marker")
 }
 
-/// Does the parse-level functor name `name` denote the desugar target `target`?
+/// Does the functor name `name` denote the desugar target `target`?
 ///
-/// TRUE FOR BOTH SPELLINGS, and that is the point: the converter's own nodes carry the
-/// address, a user writing `field_access(…)` by hand carries the short name, and a
-/// reader asking about the SHAPE means both. Readers gated on `is_minted` have already
-/// excluded the written spelling and compare to the constant directly instead.
+/// TRUE FOR EVERY CARRIER spelling, and that is the point: the converter's own nodes
+/// carry the marked address, a resolved KB symbol reports the ordinary qualified name,
+/// and a user writing `field_access(…)` by hand carries the short name. A reader asking
+/// about the SHAPE means all three. Readers gated on `is_minted` have already excluded
+/// the written spelling and compare to the constant directly instead.
+///
+/// THE MIDDLE ARM IS NEW IN S66VH AND IT WIDENS SEVEN PRE-EXISTING CALLERS, which
+/// `/code-review` was right to make explicit rather than let ride as a side effect of
+/// two migrations. Two callers needed it — `body_specialize::field_access_parts` and
+/// smt-gen's mirror read `qualified_name_of` — but `is` has no per-caller currency, so
+/// the loader's parse-name sites (`load.rs` 19060 / 19939 / 20117 / 20559 / 20676) and
+/// `persistence::print`'s two list-literal rows admit the plain qualified spelling now
+/// as well. On the KB view nothing changes: `local_name_of` yields the short name, so
+/// the middle arm is unreachable there. On the PARSE view it is reachable, and the
+/// answer it gives is the RIGHT one: a source file writing
+/// `anthill.reflect.ListLiteral(1, 2)` in full already resolves through the absolute
+/// rung and is already lowered by `load::list_literal_lowering`
+/// (`wi040_reserved_vocab_test::query_pattern_list_literal_needs_its_address` measures
+/// the resolve), so printing it as `[1, 2]` narrows the parse-view/KB-view gap that
+/// `print.rs`'s own comment complains about instead of widening it. The one visible
+/// consequence: a fact hand-authored in that fully-qualified spelling gets a different
+/// content-addressed retract key than it did before. No producer writes it — a
+/// round-trip persist prints from the KB view, i.e. the short name — so only a
+/// hand-written file is affected.
 pub fn is(name: &str, target: &str) -> bool {
     // NOT FOR THE KERNEL CONTROL TARGETS. Admitting the short spelling is right for
     // reflect vocabulary — a hand-written `field_access(…)` is the same SHAPE — and
@@ -248,13 +311,64 @@ pub fn is(name: &str, target: &str) -> bool {
     // wrong answer (a user's `cut(...)` read as the control primitive), and WI-1122
     // records what a release-only gap costs. The cost is two STRING comparisons against
     // 22- and 33-byte constants (`<[&str]>::contains` compares contents, not pointers),
-    // on a call that already does two of its own — negligible, but stated correctly:
-    // this comment said "pointer comparisons" until `/code-review` read the impl, and a
-    // mis-sized load cost is what WI-653 had to re-diagnose.
+    // on a call that already does three of its own PLUS the `strip_prefix` inside
+    // `qualified` — negligible, but stated correctly: this comment said "pointer
+    // comparisons" until `/code-review` read the impl, then undercounted the third
+    // comparison and the `qualified` call until it read the impl again, and a mis-sized
+    // load cost is what WI-653 had to re-diagnose.
     assert!(
         !KERNEL_CONTROL.contains(&target),
         "desugar_target::is admits the short spelling and must not be used for a kernel \
          control target ({target}); compare to the constant directly"
     );
-    name == target || name == short(target)
+    name == target || name == qualified(target) || name == short(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The SMT WI-681 path supplies `KnowledgeBase::qualified_name_of` here, while the
+    /// parse and persistence paths supply the other two carriers.
+    ///
+    /// THE BACK-OUT IS IN `is`, NOT IN THIS TEST. The doc here used to say "removing
+    /// the middle assertion" made qualified field access fall through — which is not a
+    /// control at all, since deleting an assertion cannot change production behaviour.
+    /// What backs the change out is deleting `name == qualified(target)` from [`is`];
+    /// that reds the middle row here and, more to the point, reds
+    /// `body_specialize::s66vh_field_access_recognizer_tests`, which DRIVES one of the
+    /// two recognizers the arm was added for (the other is smt-gen's, out of this
+    /// crate's reach). The first and last rows pass either way and are the
+    /// representation control.
+    #[test]
+    fn reflect_shape_recognition_accepts_every_name_carrier() {
+        assert!(is(FIELD_ACCESS, FIELD_ACCESS));
+        assert!(is(qualified(FIELD_ACCESS), FIELD_ACCESS));
+        assert!(is(short(FIELD_ACCESS), FIELD_ACCESS));
+    }
+
+    /// A kernel control target must never reach [`is`] — the short spelling it admits
+    /// is a user's unrelated `cut(…)`. The `assert!` is a plain one precisely so this
+    /// holds in release; this row is what says so out loud.
+    #[test]
+    #[should_panic(expected = "must not be used for a kernel control target")]
+    fn a_kernel_control_target_is_refused_by_is() {
+        let _ = is(qualified(CUT), CUT);
+    }
+
+    /// Every target's short spelling is its last segment and carries no marker — the
+    /// property `node_occurrence`'s hand-written `match` arms depend on, and the one
+    /// `is`'s third arm must not collide with.
+    #[test]
+    fn every_target_short_name_is_its_last_segment() {
+        for target in ALL {
+            let q = qualified(target);
+            assert!(!short(target).contains('.'), "{target}: short name is a segment");
+            assert!(!q.starts_with(".."), "{target}: qualified name drops the marker");
+            assert!(
+                q.ends_with(short(target)),
+                "{target}: short name is the tail of the qualified name",
+            );
+        }
+    }
 }

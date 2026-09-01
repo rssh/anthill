@@ -38,6 +38,7 @@ use super::{EvalError, Interpreter, Value};
 // WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`as_int64`, `as_bool`, …)
 // every scalar builtin below reads its arguments through.
 use crate::kb::term_view::TermView;
+use crate::parse::desugar_target as dt;
 
 /// Register the standard-library builtins. Symbols that don't resolve in the
 /// current KB (stdlib partially loaded, e.g. a minimal test harness) are
@@ -742,7 +743,7 @@ where
 /// rewritten call runs inside an operation body.)
 fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term_view::{TermView, ViewHead};
-    let [receiver, field] = expect_args::<2>("anthill.reflect.field_access", args)?;
+    let [receiver, field] = expect_args::<2>(dt::qualified(dt::FIELD_ACCESS), args)?;
     // The SELECTOR reads carrier-neutrally too (WI-20260827-3ZNBC): the typer
     // splices it as a literal today, but `make_apply`-built reflect calls can hand
     // this a term-carried name, and a selector is a string on every carrier.

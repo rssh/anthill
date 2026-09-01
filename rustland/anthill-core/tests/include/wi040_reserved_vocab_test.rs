@@ -29,6 +29,7 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 
 use crate::common::query_pattern_functor_qn;
 
@@ -89,12 +90,17 @@ fn query_pattern_bare_field_access_no_longer_resolves() {
 #[test]
 fn query_pattern_qualified_field_access_resolves() {
     let mut kb = load_stdlib_kb();
+    let query = format!(
+        "{}(object: ?o, field: ?f)",
+        dt::qualified(dt::FIELD_ACCESS)
+    );
     let qn = query_pattern_functor_qn(
         &mut kb,
-        "anthill.reflect.field_access(object: ?o, field: ?f)",
+        &query,
     );
     assert_eq!(
-        qn, "anthill.reflect.field_access",
+        qn,
+        dt::qualified(dt::FIELD_ACCESS),
         "the qualified spelling resolves by qualified name, with no tier involved; \
          got {qn:?}"
     );
@@ -110,8 +116,11 @@ fn query_pattern_list_literal_needs_its_address() {
         "bare: an ordinary unimported name"
     );
     assert_eq!(
-        query_pattern_functor_qn(&mut kb, "anthill.reflect.ListLiteral(?x)"),
-        "anthill.reflect.ListLiteral",
+        query_pattern_functor_qn(
+            &mut kb,
+            &format!("{}(?x)", dt::qualified(dt::LIST_LITERAL)),
+        ),
+        dt::qualified(dt::LIST_LITERAL),
         "qualified: resolves through the absolute rung"
     );
 }
@@ -152,27 +161,17 @@ fn a_desugared_field_access_carries_its_address() {
 /// unrelated downstream typing error rather than a named orphan report. This row is
 /// what names it.
 ///
-/// VACUOUS FOR EVERY BUILTIN-TAGGED NAME, WHICH IS MOST OF WHAT IT WALKS. This is the
-/// row's real coverage and it is worth stating exactly, because the number is not small.
-/// `try_resolve_symbol` is a bare `by_qualified_name` lookup and `register_builtin_tag`
-/// INSERTS INTO THAT SAME MAP during bootstrap, defining a missing name rather than
-/// skipping it. So for any name `register_builtin_tags` registers, the filter provably
-/// cannot return `None` and the row cannot fail.
+/// RESOLVABILITY ALONE IS VACUOUS FOR BUILTIN-TAGGED NAMES: `register_builtin_tag`
+/// inserts a missing qualified name into the same map `try_resolve_symbol` reads. The
+/// second assertion therefore checks the ten reflect targets against the defining
+/// scan's DECLARATION ledger. A bootstrap definition or builtin tag cannot satisfy it.
+/// Rename `ListLiteral` (or `field_access`) in `reflect.anthill` without updating the
+/// canonical address and this row now fails naming that address; before S66VH it loaded
+/// clean because `register_stdlib_scopes` / `register_builtin_tags` masked the orphan.
 ///
-/// COUNTED, over the 27 names walked here: **16 are vacuous** — `field_access`,
-/// `Expr.ho_apply`, `cut` and `find_dictionary` from `desugar_target`; eleven of the
-/// twelve `SPEC_OP_FUNCTORS` (all but `Additive.neg`); and `kernel.not`. **11 can
-/// actually fail** — the eight remaining desugar targets (the literal carriers, the
-/// `Expr` binder forms, `dot_apply`), `Additive.neg`, `kernel.or` and `kernel.and`.
-///
-/// WHAT THAT COSTS: delete `operation cut()` from `kernel.anthill`, or rename
-/// `anthill.reflect.field_access` in reflect.anthill, and this row stays green while the
-/// symbol degrades to a signature-less bootstrap mint. The row still earns its place for
-/// the 11 — a wrong address there is caught nowhere else — but it is not the watchdog
-/// its name suggests for the other 16. Closing that needs the row to assert a
-/// DECLARATION (a `decl_sites` entry) rather than mere resolvability, which is a
-/// different test than this one. Counted by `/code-review`; this diff added two of the
-/// vacuous rows and had claimed the opposite at this site.
+/// The two kernel controls deliberately stay outside that declaration assertion:
+/// `find_dictionary` has no source declaration at all, while `cut` does. Making their
+/// existence policy uniform is not part of the reflect-address sweep.
 ///
 /// FAILS IF a constant is edited without its declaration, in either place. Raised by
 /// `/code-review`, which caught the module doc claiming "nothing has to be kept in
@@ -193,7 +192,7 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
     // address. (The pratt-side doc once claimed this test covered them while it walked
     // `desugar_target`'s ten by hand; it walks `dt::ALL` now, so that is fixed rather
     // than merely reported.)
-    let targets: Vec<&str> = anthill_core::parse::desugar_target::ALL
+    let targets: Vec<&str> = dt::ALL
         .iter()
         .copied()
         .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
@@ -219,6 +218,33 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
         "these desugar targets resolve to nothing after a standard load, so every \
          program using the surface form they lower would fail at its USE site with a \
          diagnostic that names neither the form nor this list: {orphans:?}"
+    );
+
+    // S66VH CONTROL: this is the assertion that inverts under the requested rename.
+    // `register_stdlib_scopes` defines nine of these names and builtin-tag bootstrap
+    // defines the tenth, so symbol-table existence cannot distinguish a declaration
+    // from a stale Rust-side address. `declared_symbols_of_last_scan` can: it is the
+    // pass-1 ledger of what the `.anthill` sources actually declared.
+    let declared: std::collections::HashSet<_> =
+        kb.declared_symbols_of_last_scan().into_iter().collect();
+    // The exclusion is the PARTITION (`dt::is_kernel_control`), not a namespace-prefix
+    // test on the address. `/code-review` caught the prefix version: it is true today
+    // and silently drops any reflect target that ever moves namespace, leaving the row
+    // reading as though it still covered it.
+    let undeclared_reflect_targets: Vec<&str> = dt::ALL
+        .iter()
+        .copied()
+        .filter(|target| !dt::is_kernel_control(target))
+        .filter(|target| {
+            kb.try_resolve_symbol(dt::qualified(target))
+                .map_or(true, |sym| !declared.contains(&sym))
+        })
+        .collect();
+    assert!(
+        undeclared_reflect_targets.is_empty(),
+        "these reflect desugar target addresses have no declaration in the standard \
+         sources; bootstrap registration only masks the stale address: \
+         {undeclared_reflect_targets:?}"
     );
 }
 

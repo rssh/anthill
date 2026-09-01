@@ -4985,24 +4985,6 @@ pub fn scan_definitions_with_sources(
     errors
 }
 
-/// WI-1129 (proposal 056 §2.3): the constructor a rule-head VARIADIC CAPTURE builds
-/// its record with — the same one the operation face uses
-/// (`typing::synthesize_named_tuple_literal`), so a macro reads either face's record
-/// through one shape.
-///
-/// `simp_rewrite::fold_capture_redex` resolves it OUTRIGHT rather than `try_`-ing it,
-/// because that function's `None` already means one thing — "this redex does not
-/// match" — and an unresolvable constructor is not that; declining would make a
-/// capture rule silently never fire, with nothing said anywhere. What makes the
-/// outright resolve total is that the name is DEFINED by [`register_prelude`]
-/// (through `register_stdlib_scopes`, beside `SetLiteral` / `ListLiteral`), which
-/// every load path runs before any rule loads — so it is present with no stdlib at
-/// all. NOT [`crate::parse::desugar_target::TUPLE_LITERAL`], which is the address the
-/// converter WRITES and defines nothing. MEASURED both ways by
-/// `wi1129_rule_head_capture_test::the_capture_record_constructor_is_bootstrapped` —
-/// absent on a `KnowledgeBase::new()`, present after a bare `load_all`.
-pub(crate) const CAPTURE_RECORD_CONSTRUCTOR: &str = "anthill.reflect.TupleLiteral";
-
 /// WI-521: the implicit PRELUDE — user-facing names auto-available in every
 /// namespace without an `import` line: the fundamental constructors, the
 /// arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`, …, via
@@ -9746,7 +9728,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::Simple(name) => join_segments(parse_sym, &name.segments),
         TypeExpr::Parameterized { name, .. } => join_segments(parse_sym, &name.segments),
         TypeExpr::Variable { .. } => "?".to_owned(),
-        TypeExpr::Tuple(_) => "TupleLiteral".to_owned(),
+        TypeExpr::Tuple(_) => dt::short(dt::TUPLE_LITERAL).to_owned(),
         TypeExpr::Arrow { effects, .. } if !effects.is_empty() => "arrow_effect".to_owned(),
         TypeExpr::Arrow { .. } => "arrow".to_owned(),
         TypeExpr::Denoted(_) => "denoted".to_owned(),
@@ -11152,20 +11134,20 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     // `anthill.reflect.ListLiteral`, and this is what the absolute rung finds when no
     // stdlib has been read. So the returned symbols are intentionally unused.
     kb.symbols.define(
-        "SetLiteral",
-        "anthill.reflect.SetLiteral",
+        dt::short(dt::SET_LITERAL),
+        dt::qualified(dt::SET_LITERAL),
         SymbolKind::Entity,
         reflect_scope,
     );
     kb.symbols.define(
-        "TupleLiteral",
-        "anthill.reflect.TupleLiteral",
+        dt::short(dt::TUPLE_LITERAL),
+        dt::qualified(dt::TUPLE_LITERAL),
         SymbolKind::Entity,
         reflect_scope,
     );
     kb.symbols.define(
-        "ListLiteral",
-        "anthill.reflect.ListLiteral",
+        dt::short(dt::LIST_LITERAL),
+        dt::qualified(dt::LIST_LITERAL),
         SymbolKind::Entity,
         reflect_scope,
     );
@@ -11195,26 +11177,26 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         },
     );
     kb.symbols.define(
-        "match_expr",
-        "anthill.reflect.Expr.match_expr",
+        dt::short(dt::MATCH_EXPR),
+        dt::qualified(dt::MATCH_EXPR),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "if_expr",
-        "anthill.reflect.Expr.if_expr",
+        dt::short(dt::IF_EXPR),
+        dt::qualified(dt::IF_EXPR),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "let_expr",
-        "anthill.reflect.Expr.let_expr",
+        dt::short(dt::LET_EXPR),
+        dt::qualified(dt::LET_EXPR),
         SymbolKind::Entity,
         expr_scope,
     );
     kb.symbols.define(
-        "lambda_expr",
-        "anthill.reflect.Expr.lambda_expr",
+        dt::short(dt::LAMBDA_EXPR),
+        dt::qualified(dt::LAMBDA_EXPR),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -11231,8 +11213,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         expr_scope,
     );
     kb.symbols.define(
-        "ho_apply",
-        "anthill.reflect.Expr.ho_apply",
+        dt::short(dt::HO_APPLY),
+        dt::qualified(dt::HO_APPLY),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -11243,8 +11225,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         expr_scope,
     );
     kb.symbols.define(
-        "dot_apply",
-        "anthill.reflect.Expr.dot_apply",
+        dt::short(dt::DOT_APPLY),
+        dt::qualified(dt::DOT_APPLY),
         SymbolKind::Entity,
         expr_scope,
     );
@@ -16200,7 +16182,7 @@ fn list_literal_lowering(
 ) -> Option<Option<TermId>> {
     if !from_bracket_surface
         || has_named_args
-        || kb.qualified_name_of(functor) != "anthill.reflect.ListLiteral"
+        || kb.qualified_name_of(functor) != dt::qualified(dt::LIST_LITERAL)
     {
         return None;
     }
@@ -17761,17 +17743,17 @@ struct ExprBuilderSyms {
 impl ExprBuilderSyms {
     fn new(kb: &mut KnowledgeBase) -> Self {
         Self {
-            match_expr: kb.resolve_symbol("anthill.reflect.Expr.match_expr"),
+            match_expr: kb.resolve_symbol(dt::qualified(dt::MATCH_EXPR)),
             match_branch: kb.resolve_symbol("anthill.reflect.MatchBranch"),
-            if_expr: kb.resolve_symbol("anthill.reflect.Expr.if_expr"),
-            let_expr: kb.resolve_symbol("anthill.reflect.Expr.let_expr"),
-            lambda: kb.resolve_symbol("anthill.reflect.Expr.lambda_expr"),
+            if_expr: kb.resolve_symbol(dt::qualified(dt::IF_EXPR)),
+            let_expr: kb.resolve_symbol(dt::qualified(dt::LET_EXPR)),
+            lambda: kb.resolve_symbol(dt::qualified(dt::LAMBDA_EXPR)),
             proof_stmt: kb.resolve_symbol("anthill.reflect.Expr.proof_stmt"),
             constructor_pattern: kb.resolve_symbol("anthill.reflect.Pattern.constructor_pattern"),
             tuple_pattern: kb.resolve_symbol("anthill.reflect.Pattern.tuple_pattern"),
             constructor: kb.resolve_symbol("anthill.reflect.Expr.constructor"),
             apply: kb.resolve_symbol("anthill.reflect.Expr.apply"),
-            dot_apply: kb.resolve_symbol("anthill.reflect.Expr.dot_apply"),
+            dot_apply: kb.resolve_symbol(dt::qualified(dt::DOT_APPLY)),
             apply_arg: kb.resolve_symbol("anthill.reflect.ApplyArg"),
             k_scrutinee: kb.intern("scrutinee"),
             k_branches: kb.intern("branches"),
@@ -24946,9 +24928,9 @@ impl<'a> Loader<'a> {
             .kb
             .symbols
             .by_qualified_name
-            .get("anthill.reflect.Expr.ho_apply")
+            .get(dt::qualified(dt::HO_APPLY))
             .copied()
-            .unwrap_or_else(|| self.kb.intern("ho_apply"));
+            .unwrap_or_else(|| self.kb.intern(dt::short(dt::HO_APPLY)));
         let tuple_sym = self.kb.intern("tuple");
         let forall_impl_sym = self.kb.intern("forall_impl");
 

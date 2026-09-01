@@ -15,6 +15,7 @@ use anthill_core::kb::term::{Term, Var, VarId};
 use anthill_core::kb::typing::{sort_functor_of_view, value_type_term};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 
 fn load_kb() -> KnowledgeBase {
     let dir = crate::common::stdlib_dir();
@@ -238,7 +239,7 @@ fn value_type_term_of_list_literal_is_list_of_int() {
     let subst = Substitution::new();
     let lit = literal_value(
         &kb,
-        "anthill.reflect.ListLiteral",
+        dt::qualified(dt::LIST_LITERAL),
         vec![Value::Int(1), Value::Int(2), Value::Int(3)],
     );
     let ty = value_type_term(&mut kb, &subst, &lit);
@@ -255,7 +256,7 @@ fn value_type_term_of_set_literal_is_set_of_int() {
     let subst = Substitution::new();
     let lit = literal_value(
         &kb,
-        "anthill.reflect.SetLiteral",
+        dt::qualified(dt::SET_LITERAL),
         vec![Value::Int(1), Value::Int(2)],
     );
     let ty = value_type_term(&mut kb, &subst, &lit);
@@ -272,7 +273,7 @@ fn value_type_term_of_set_literal_is_set_of_int() {
 fn value_type_term_of_empty_tuple_literal_is_unit() {
     let mut kb = load_kb();
     let subst = Substitution::new();
-    let lit = literal_value(&kb, "anthill.reflect.TupleLiteral", vec![]);
+    let lit = literal_value(&kb, dt::qualified(dt::TUPLE_LITERAL), vec![]);
     let ty = value_type_term(&mut kb, &subst, &lit);
     let head = sort_functor_of_view(&kb, &ty).expect("() has a sort head");
     assert_sort_named(&kb, head, "Unit");

@@ -30,6 +30,7 @@ use smallvec::SmallVec;
 
 use crate::eval::pattern::functor_matches;
 use crate::intern::{Symbol, SymbolKind};
+use crate::parse::desugar_target as dt;
 use crate::span::SourceSpan;
 
 use super::node_occurrence::{Expr, MatchBranch, NodeOccurrence, Pattern};
@@ -895,7 +896,7 @@ pub(crate) fn field_access_parts(
     pos_args: &[Rc<NodeOccurrence>],
 ) -> Option<(Rc<NodeOccurrence>, String)> {
     let qn = kb.qualified_name_of(functor);
-    if qn != "anthill.reflect.field_access" && qn != "field_access" {
+    if !dt::is(qn, dt::FIELD_ACCESS) {
         return None;
     }
     let [obj, field] = pos_args else { return None };
@@ -1722,5 +1723,71 @@ impl KnowledgeBase {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod s66vh_field_access_recognizer_tests {
+    use super::*;
+    use crate::kb::load::register_prelude;
+    use crate::kb::term::Literal;
+    use crate::span::{SourceId, SourceSpan};
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 1)
+    }
+
+    fn parts_for(kb: &KnowledgeBase, functor: Symbol) -> Option<(Rc<NodeOccurrence>, String)> {
+        let recv = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span(), None);
+        let field = NodeOccurrence::new_expr(
+            Expr::Const(Literal::String("x".to_string())),
+            span(),
+            None,
+        );
+        field_access_parts(kb, functor, &[recv, field])
+    }
+
+    /// S66VH: this recognizer is one of the exactly TWO sites `dt::is`'s
+    /// `name == qualified(target)` arm was added for (its twin is
+    /// `anthill-smt-gen`'s `as_field_access`, which cannot be reached from this
+    /// crate). It reads `KnowledgeBase::qualified_name_of`, so the name it hands
+    /// `is` is the ORDINARY qualified name — neither the marked address the
+    /// converter mints nor the short spelling a user writes, and before S66VH the
+    /// two-arm `is` matched neither of those to it.
+    ///
+    /// BACK-OUT: delete `name == qualified(target)` from `desugar_target::is` and
+    /// the `qualified` row below fails — a resolved `field_access` application
+    /// stops being recognized, so `skeletonize` and the WI-714 `where` compiler
+    /// stop seeing a column projection, silently. The `short` row and the
+    /// `unrelated` control pass either way and are what make the qualified row
+    /// mean the ARM rather than the function.
+    #[test]
+    fn a_resolved_field_access_is_recognized_through_its_qualified_name() {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+
+        let resolved = kb.resolve_symbol(dt::qualified(dt::FIELD_ACCESS));
+        assert_eq!(
+            kb.qualified_name_of(resolved),
+            dt::qualified(dt::FIELD_ACCESS),
+            "premise: the resolved symbol reports the plain qualified name, which is \
+             the carrier this recognizer actually sees",
+        );
+        let (_, field) = parts_for(&kb, resolved).expect(
+            "the qualified carrier must be recognized — this is the S66VH arm",
+        );
+        assert_eq!(field, "x");
+
+        let hand_written = kb.intern(dt::short(dt::FIELD_ACCESS));
+        assert!(
+            parts_for(&kb, hand_written).is_some(),
+            "control: the short spelling was already admitted before S66VH",
+        );
+
+        let unrelated = kb.intern("not_a_projection");
+        assert!(
+            parts_for(&kb, unrelated).is_none(),
+            "control: an unrelated functor is still not a field access",
+        );
     }
 }

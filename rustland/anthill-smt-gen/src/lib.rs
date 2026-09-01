@@ -29,6 +29,7 @@ use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::{KnowledgeBase, ProgramClause};
+use anthill_core::parse::desugar_target as dt;
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -1681,7 +1682,7 @@ impl<'kb> Emitter<'kb> {
             _ => {
                 let (functor, pos_args, _named) = occ_as_fn(occ)?;
                 let op = self.kb.qualified_name_of(functor);
-                if op == "anthill.reflect.field_access" || op == "field_access" {
+                if dt::is(op, dt::FIELD_ACCESS) {
                     if let [obj, field] = pos_args {
                         let field_name = match field.as_expr()? {
                             Expr::Ref(s) | Expr::Ident(s) => self.kb.local_name_of(*s).to_string(),

@@ -23,6 +23,7 @@ use std::collections::HashMap;
 
 use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
+use crate::parse::desugar_target as dt;
 
 pub use error::{macro_rejection_message, render_raised_payload, EvalError};
 pub use eval::value_functor;
@@ -165,10 +166,10 @@ impl ReflectSymbols {
             bool_lit: r("anthill.reflect.Expr.bool_lit"),
             var_ref: r("anthill.reflect.Expr.var_ref"),
             apply: r("anthill.reflect.Expr.apply"),
-            if_expr: r("anthill.reflect.Expr.if_expr"),
-            let_expr: r("anthill.reflect.Expr.let_expr"),
-            match_expr: r("anthill.reflect.Expr.match_expr"),
-            lambda: r("anthill.reflect.Expr.lambda_expr"),
+            if_expr: r(dt::qualified(dt::IF_EXPR)),
+            let_expr: r(dt::qualified(dt::LET_EXPR)),
+            match_expr: r(dt::qualified(dt::MATCH_EXPR)),
+            lambda: r(dt::qualified(dt::LAMBDA_EXPR)),
             constructor: r("anthill.reflect.Expr.constructor"),
             apply_within: r("anthill.reflect.Expr.apply_within"),
             ho_apply_within: r("anthill.reflect.Expr.ho_apply_within"),
@@ -182,9 +183,9 @@ impl ReflectSymbols {
             constructor_pattern: r("anthill.reflect.Pattern.constructor_pattern"),
             tuple_pattern: r("anthill.reflect.Pattern.tuple_pattern"),
 
-            list_literal: r("anthill.reflect.ListLiteral"),
-            tuple_literal: r("anthill.reflect.TupleLiteral"),
-            set_literal: r("anthill.reflect.SetLiteral"),
+            list_literal: r(dt::qualified(dt::LIST_LITERAL)),
+            tuple_literal: r(dt::qualified(dt::TUPLE_LITERAL)),
+            set_literal: r(dt::qualified(dt::SET_LITERAL)),
             cons: r("anthill.prelude.List.cons"),
             nil: r("anthill.prelude.List.nil"),
             solution_definite: r("anthill.reflect.Solution.definite"),

@@ -19,6 +19,7 @@ use std::rc::Rc;
 
 use crate::eval::value::Value;
 use crate::intern::Symbol;
+use crate::parse::desugar_target as dt;
 
 use super::node_occurrence::{
     EffectExprNode, Expr, MatchBranch, NodeOccurrence, Pattern, TypeChild, TypeNode,
@@ -451,7 +452,7 @@ fn apply_type_args_child(
 /// — the bounded-quant collection walk, a `[simp]` LHS — walks a list literal in
 /// ANY carrier, instead of the former `Opaque` collapse that forced a lowering.
 fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.ListLiteral")
+    kb.try_resolve_symbol(dt::qualified(dt::LIST_LITERAL))
 }
 
 /// The `SetLiteral` / `TupleLiteral` functor symbols — WI-1014, the two siblings
@@ -468,11 +469,11 @@ fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
 /// view mirroring the comment instead of the code would have disagreed with the
 /// twin on arity.)
 fn set_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.SetLiteral")
+    kb.try_resolve_symbol(dt::qualified(dt::SET_LITERAL))
 }
 
 fn tuple_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
-    kb.try_resolve_symbol("anthill.reflect.TupleLiteral")
+    kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
 }
 
 // ── Lambda ↔ `lambda_expr` term isomorphism (WI-814) ────────────
@@ -588,18 +589,15 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
     Some(match expr {
         // WI-278 / WI-397 / WI-425 — always arity-3, `args = nil` for a bare
         // field access.
-        Expr::DotApply { .. } => (
-            "anthill.reflect.Expr.dot_apply",
-            &["receiver", "name", "args"],
-        ),
+        Expr::DotApply { .. } => (dt::qualified(dt::DOT_APPLY), &["receiver", "name", "args"]),
         // WI-537.
         Expr::VarRef { .. } => ("anthill.reflect.Expr.var_ref", &["name"]),
         // WI-814 — `LoadBuildFrame::Lambda`.
-        Expr::Lambda { .. } => ("anthill.reflect.Expr.lambda_expr", &["param", "body"]),
+        Expr::Lambda { .. } => (dt::qualified(dt::LAMBDA_EXPR), &["param", "body"]),
         // WI-814 — `LoadBuildFrame::IfExpr`. Binds nothing at all; it was opaque
         // only because no `[simp]` LHS had ever needed it.
         Expr::If { .. } => (
-            "anthill.reflect.Expr.if_expr",
+            dt::qualified(dt::IF_EXPR),
             &["cond", "then_branch", "else_branch"],
         ),
         // WI-814 — `LoadBuildFrame::LetExpr`, exactly THREE keys, unconditionally.
@@ -625,10 +623,7 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         // so the annotation CAN be restored to the `let_expr` term and to this
         // key list. The older "a denoted type cannot be hash-consed" reasoning is
         // out of date and must not be repeated here.
-        Expr::Let { .. } => (
-            "anthill.reflect.Expr.let_expr",
-            &["pattern", "value", "body"],
-        ),
+        Expr::Let { .. } => (dt::qualified(dt::LET_EXPR), &["pattern", "value", "body"]),
         // WI-814 — `LoadBuildFrame::ProofStmt`, in its push order
         // `target, strategy?, using, body, conclude?`.
         //
@@ -662,10 +657,7 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         ),
         // WI-814 — `LoadBuildFrame::MatchExpr`; `branches` is a `List[MatchBranch]`
         // cons/nil spine (see [`match_branches_child`]).
-        Expr::Match { .. } => (
-            "anthill.reflect.Expr.match_expr",
-            &["scrutinee", "branches"],
-        ),
+        Expr::Match { .. } => (dt::qualified(dt::MATCH_EXPR), &["scrutinee", "branches"]),
         _ => return None,
     })
 }

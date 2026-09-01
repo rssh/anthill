@@ -3,9 +3,9 @@
 - id: WI-20260831-S66VH-ten-of-the-twelve-desugar
 - created: 2026-08-31T18:13:34Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-31T18:13:34Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-09-01T09:28:33Z
 
 - acceptance: cargo-test
 

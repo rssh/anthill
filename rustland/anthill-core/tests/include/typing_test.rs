@@ -9,6 +9,7 @@ use anthill_core::kb::KnowledgeBase;
 /// to verify typing rules: is_entity_of, refines, type_compatible, list_contains,
 /// extract_sort_ref, sort_requires, sort_has_param.
 use anthill_core::parse;
+use anthill_core::parse::desugar_target as dt;
 
 use anthill_core::kb::ClauseKind;
 use smallvec::SmallVec;
@@ -1464,7 +1465,7 @@ fn field_access_entity_extracts_field() {
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(
         &mut kb,
-        "anthill.reflect.field_access",
+        dt::qualified(dt::FIELD_ACCESS),
         &[env_term, field_ident, result_tid],
     );
 
@@ -1503,7 +1504,7 @@ fn field_access_delays_on_unbound_object() {
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(
         &mut kb,
-        "anthill.reflect.field_access",
+        dt::qualified(dt::FIELD_ACCESS),
         &[obj_tid, field_ident, result_tid],
     );
 
@@ -1553,7 +1554,7 @@ fn field_access_fails_on_bad_field() {
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(
         &mut kb,
-        "anthill.reflect.field_access",
+        dt::qualified(dt::FIELD_ACCESS),
         &[env_term, field_ident, result_tid],
     );
 
@@ -1599,7 +1600,7 @@ fn field_access_sort_component() {
     let result_tid = kb.alloc(Term::Var(Var::Global(result_var)));
     let goal = make_goal(
         &mut kb,
-        "anthill.reflect.field_access",
+        dt::qualified(dt::FIELD_ACCESS),
         &[monoid_term, field_ident, result_tid],
     );
 

@@ -17,6 +17,7 @@ use smallvec::SmallVec;
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
+use anthill_core::parse::desugar_target as dt;
 
 use crate::common::load_kb_with;
 
@@ -29,7 +30,7 @@ fn build_lambda(kb: &mut KnowledgeBase, body: TermId) -> TermId {
     // Construct a `lambda(param: <wildcard>, body: <body>)` term that
     // ignores its argument and reduces to `body`.
     let lambda_sym = kb
-        .try_resolve_symbol("anthill.reflect.Expr.lambda_expr")
+        .try_resolve_symbol(dt::qualified(dt::LAMBDA_EXPR))
         .expect("Expr.lambda_expr registered");
     let wildcard_sym = kb
         .try_resolve_symbol("anthill.reflect.Pattern.wildcard")
@@ -205,7 +206,7 @@ fn closure_invocation_installs_snapshotted_requirements_in_callee_frame() {
 
     let let_sym = interp
         .kb()
-        .try_resolve_symbol("anthill.reflect.Expr.let_expr")
+        .try_resolve_symbol(dt::qualified(dt::LET_EXPR))
         .unwrap();
     let pattern_field = interp.kb_mut().intern("pattern");
     let body_field = interp.kb_mut().intern("body");
