@@ -91,3 +91,11 @@ WHAT ELSE THE REMOVAL SHOULD TAKE WITH IT. `load` is a hand-maintained COPY of `
 
 SEPARATE, AND ALSO THE USER'S CALL (2026-09-01): the API carries THREE PUBLIC NAMES FOR ONE FUNCTION. `load_stdlib` (51 call sites) and `load_incremental` (19) have identical signatures to `load_all` (228) and bodies that are a single delegating call to it — WI-967 removed the last behavioural difference and left the names. Collapsing them into `load_all` is 70 mechanical renames with zero behaviour change. `load_all_per_file` (3 sites) stays: its return type is genuinely different. End state: ONE checked loader, its per-file variant, and nothing else.
 
+### 2026-09-01T10:00:40Z — feedback — user
+
+UNBLOCKED (2026-09-01). WI-20260901-7ZZ1Z is delivered, and its answer removes the block entirely: there was no live bug for `load::load` to be the sole detector of. That test was detecting its OWN fixture — its "non-equatable" element sort was an entity with one `Int64` field, which `eq_derive::derive_total_eq` correctly derives `Eq` for, and it read as non-equatable only because `load` skips the derivation. Both halves of the pair now run through `load_all` and the element is made non-equatable by a `Float` field instead of by its name.
+
+SO THE MIGRATION SHRINKS. Of the 51 failures measured for the swap, the single REVERSE-direction one is gone: that was `conditional_spec_field_rejects_eq_list_of_non_eq_elements`, and it now passes through `load_all` on its own. What remains is 48 mechanical migrations (tests that load a deliberately ill-typed source, expect the load to SUCCEED, then drive `type_check_sorts` themselves — rewrite each to assert the load `Err`) plus two tests whose subject IS `load` and which retire with it (`wi1112…a_single_file_load_does_not_read_a_stale_index` and EA6KS's `a_check_less_load_entry_point_records_no_load_check_work`, taking `LoadCheckMarks` and `restore_load_check_marks` with them).
+
+RE-MEASURE THE 51 BEFORE STARTING: that count was taken before the WI-274 repair landed, so the mechanical rewrite of `load::load(kb, p, r)` to `load_all(kb, &[p], r)` should be re-run and re-classified rather than trusted from here.
+

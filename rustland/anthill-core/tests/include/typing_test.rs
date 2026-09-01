@@ -6594,72 +6594,86 @@ end
         "Widget provides Comparable only at T = Widget, so a Comparable[T = Gadget] field must reject a Widget value, got: {:?}", errors);
 }
 
-// WI-274: conditional provider. `EqList` provides Eq for a list whose
-// elements provide Eq (`fact Eq[T = List[T = A]]` guarded by `requires
-// Eq[T = A]`). A field `Eq[T = List[T = Int64]]` is accepted because the
-// resolver descends the requires chain and finds Int64 provides Eq.
-#[test]
-fn conditional_spec_field_accepts_eq_list_of_eq_elements() {
-    let source = r#"
-namespace test.wi274_list_ok
-  import anthill.prelude.{Eq, List, Int64}
+// WI-274: conditional provider. `EqList` provides Eq for a list whose elements provide
+// Eq (`provides Eq[T = List[T = A]]` guarded by `requires Eq[T = A]`), and the resolver
+// descends that guard, so the ELEMENT type decides. The pair below varies exactly that
+// and nothing else.
+//
+// BOTH GO THROUGH `load_all` — the route every caller takes — and that is the repair
+// (WI-20260901-7ZZ1Z). They used to load through `load::load` and then drive
+// `type_check_sorts` by hand, and the refusing half PASSED FOR A FALSE REASON: its
+// element was `sort NonEq { entity ne(id: Int64) }`, which is TOTALLY EQUATABLE —
+// `eq_derive::derive_total_eq` derives `Eq` for it, before the typer — so `Eq[T =
+// List[T = NonEq]]` genuinely holds and refusing it was wrong. The test only saw a
+// refusal because `load::load` runs none of `load_phase_inner`'s passes, including the
+// derivation, so NOTHING was equatable on that route and the pair could not discriminate
+// at all. The name asserted a property the sort did not have.
+//
+// MEASURED, the four cells that separate the two axes (element equatable? x route?):
+//
+//   element `id: Int64`  (Eq, derived)      load(): refuse   load_all: ACCEPT
+//   element `id: Float`  (genuinely NonEq)  load(): refuse   load_all: REFUSE
+//
+// `load_all` discriminates; `load` refuses both. So the element is now made
+// non-equatable the way the kernel actually decides it — a `Float` field, which
+// `eq_derive`'s classification makes `NonEq` (module header: "is `NonEq` (partial) if
+// any field is `NonEq` (reaches an IEEE `Float`)") — rather than by naming.
+fn conditional_eqlist_source(ns: &str, elem_field: &str, elem_value: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Eq, List, Int64, Float}}
   fact Eq[T = Int64]
+  sort Elem
+    entity ne(id: {elem_field})
+  end
   sort EqList
     sort A = ?
     requires Eq[T = A]
-    fact Eq[T = List[T = A]]
+    provides Eq[T = List[T = A]]
   end
   sort Box
-    entity Holder(item: Eq[T = List[T = Int64]])
+    entity Holder(item: Eq[T = List[T = Elem]])
   end
-  fact Holder(item: [1, 2, 3])
+  fact Holder(item: [ne({elem_value})])
 end
-"#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors
-        .iter()
-        .filter(|e| format!("{}", e).contains("Holder"))
-        .collect();
-    assert!(field_errors.is_empty(),
-        "Int64 provides Eq, so Eq[T = List[T = Int64]] should type-check via the conditional EqList provider, got: {:?}", errors);
+"#
+    )
 }
 
-// WI-274: the binding precision discriminates the element type. The
-// same `EqList` conditional provider does *not* satisfy `Eq[T = List[T
-// = NonEq]]`, because NonEq provides no Eq instance — the requires
-// subgoal `Eq[T = NonEq]` fails. Base-only validation could not tell
-// these apart (both are "List provides Eq").
+/// Errors from loading `source` the way callers do — `load_all`, whole pipeline.
+fn conditional_eqlist_errors(source: &str) -> Vec<String> {
+    crate::common::try_load_kb_with_files(&[source])
+        .err()
+        .unwrap_or_default()
+}
+
+#[test]
+fn conditional_spec_field_accepts_eq_list_of_eq_elements() {
+    // `Elem`'s only field is `Int64`, which has `Eq`, so `Elem` is Total and
+    // `derive_total_eq` gives it `Eq` — the conditional provider's guard is satisfied.
+    let errs = conditional_eqlist_errors(&conditional_eqlist_source("test.wi274_ok", "Int64", "1"));
+    let field: Vec<&String> = errs.iter().filter(|e| e.contains("Holder")).collect();
+    assert!(
+        field.is_empty(),
+        "Elem is equatable, so Eq[T = List[T = Elem]] must type-check through the \
+         conditional EqList provider; got: {errs:#?}"
+    );
+}
+
 #[test]
 fn conditional_spec_field_rejects_eq_list_of_non_eq_elements() {
-    let source = r#"
-namespace test.wi274_list_bad
-  import anthill.prelude.{Eq, List, Int64}
-  fact Eq[T = Int64]
-  sort NonEq
-    entity ne(id: Int64)
-  end
-  sort EqList
-    sort A = ?
-    requires Eq[T = A]
-    fact Eq[T = List[T = A]]
-  end
-  sort Box
-    entity Holder(item: Eq[T = List[T = NonEq]])
-  end
-  fact Holder(item: [ne(1)])
-end
-"#;
-    let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
-    let field_errors: Vec<_> = errors
-        .iter()
-        .filter(|e| format!("{}", e).contains("Holder"))
-        .collect();
+    // The SAME source with ONE token changed: the element's field is `Float`, so `Elem`
+    // reaches an IEEE float and is classified `NonEq`. The guard `Eq[T = A]` now fails,
+    // and binding precision is what makes the two cases differ — base-only validation
+    // could not tell them apart (both are "List provides Eq").
+    let errs =
+        conditional_eqlist_errors(&conditional_eqlist_source("test.wi274_bad", "Float", "1.0"));
+    let field: Vec<&String> = errs.iter().filter(|e| e.contains("Holder")).collect();
     assert!(
-        !field_errors.is_empty(),
-        "NonEq provides no Eq, so Eq[T = List[T = NonEq]] must be rejected, got: {:?}",
-        errors
+        !field.is_empty(),
+        "Elem reaches a Float and so provides no Eq; Eq[T = List[T = Elem]] must be \
+         refused; got: {errs:#?}"
     );
 }
 
