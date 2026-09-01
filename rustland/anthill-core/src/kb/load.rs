@@ -6135,7 +6135,34 @@ fn bodyless_declares_nothing_detail(
                 `?a + ?b` carries `add`), not a name the rule introduces"
             .to_owned();
     }
-    let Term::Fn { functor, .. } = parse_terms.get(*tid) else {
+    // A BARE NAME NO LONGER REACHES THIS ARM (WI-20260821-P85Z7): `head_subject_name`
+    // reads a `Term::Ident` head as an application of arity 0, so `rule holdsq` DECLARES
+    // and this walk must not claim it names no predicate. What still reaches it is a
+    // bare VARIABLE head (`rule ?x`) — MEASURED, and the only shape that does: a bare
+    // LITERAL (`rule 42`, `rule true`) is refused earlier with its own sentence, and
+    // every other non-`Fn` parse node was named above.
+    // THE SAME NULLARY READING THE VERDICT TAKES (WI-20260821-P85Z7). A bare name is an
+    // application of arity 0, so a `Term::Ident` head carries a NAME and the qualified
+    // check below must run for it — `head_subject_name` reads it that way and this walk
+    // has to agree or the two describe different rules.
+    //
+    // MEASURED WITH THE ARM MISSING, and found by `/code-review` on this ticket's own
+    // diff: `rule ..nosuchxyz` (body-less) fell through to "its head is not a functor
+    // application" while `rule ..nosuchxyz()` got "`..nosuchxyz` is a QUALIFIED name …"
+    // — two spellings of one head, two different explanations of one verdict, which is
+    // the exact defect this ticket exists to remove, surviving in the diagnostic.
+    //
+    // NOT GATED ON THE PREDICATE PATH, unlike `head_subject_name`'s arm, and that is a
+    // reachability statement rather than a difference of policy: an equation subject is
+    // reached only through [`parse_equation_lhs`], which needs a MINTED connective head
+    // — a `Term::Fn` — and a body-less connective head reads as `RuleReading::Clause`
+    // anyway, so it never arrives here.
+    //
+    // WHAT STILL REACHES THE FALLTHROUGH is a bare VARIABLE head (`rule ?x`), which
+    // `wi_fqc85_rule_declaration_test` drives. A bare LITERAL (`rule 42`, `rule true`)
+    // is refused earlier with its own sentence, and every other non-`Fn` parse node is
+    // named above.
+    let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(*tid) else {
         return "its head is not a functor application, so it names no predicate".to_owned();
     };
     let name = parse_sym.local_name(*functor);
@@ -6304,8 +6331,38 @@ fn head_subject_name<'a>(
     if parse_terms.is_minted(subject) {
         return None;
     }
-    let Term::Fn { functor, .. } = parse_terms.get(subject) else {
-        return None;
+    let functor = match parse_terms.get(subject) {
+        Term::Fn { functor, .. } => functor,
+        // A PAREN-LESS NULLARY PREDICATE HEAD — `rule holds :- base(1)` — IS AN
+        // APPLICATION OF ARITY 0 (WI-20260821-P85Z7). The parser gives a bare name a
+        // `Term::Ident` rather than a zero-argument `Term::Fn`, and reading only the
+        // `Fn` shape here made the two spellings of one nullary predicate opposite
+        // programs: `rule shared_pl()` scoped where it was written, while `rule
+        // shared_pl` introduced NOTHING ANYWHERE and fell to `remap_name_str`'s bare
+        // `intern(name)` — one global name two scopes' same-spelled heads then share,
+        // with the loser's clause answering inside the winner's scope. MEASURED before
+        // the arm: `rule shared_pl :- b(999)` at top level beside `namespace nsx { rule
+        // shared_pl :- bn(1) }` loaded clean, `shared_pl` answered `true` from the
+        // namespace's clause, and NEITHER `shared_pl` NOR `nsx.shared_pl` resolved to a
+        // symbol. That is WI-894's defect class, which §"A rule-introduced functor is
+        // scoped where it is written" exists to stop; the nullary spelling never
+        // entered the fix.
+        //
+        // THE PREDICATE PATH ONLY, and this is the case the one function used to fuse.
+        // An EQUATION's bare LHS is the opposite rule and must stay `None`: §5.3 says a
+        // `[simp]` head is an APPLICATION, so `rule tau <=> …` matches no redex and
+        // fires nothing — minting `tau` here would stamp it `EquationFunctor` and make
+        // a citation of it report "defined by equations … no defining equation can be
+        // found" about a name that never had one. `rule tau() <=> …` is the spelling
+        // that defines, and it reaches the `Fn` arm above.
+        //
+        // NOT `Term::Ref`: `ref_term` is a written `Ref(a.b)`, a REFERENCE to a
+        // declared name rather than a head introducing one. A DOTTED paren-less head
+        // (`nsx.shared_pl`) never reaches this arm either — the converter folds a
+        // multi-segment `name` into a minted `field_access` chain, which the mint guard
+        // above already refuses.
+        Term::Ident(sym) if introduced_by == RuleIntroduction::Predicate => sym,
+        _ => return None,
     };
     Some((parse_sym.local_name(*functor), introduced_by))
 }
@@ -26221,9 +26278,21 @@ impl<'a> Loader<'a> {
         // WI-1075: the same refusal the fact path makes, for the same reason — see
         // [`Self::refuse_unresolvable_absolute_head`]. Applied to every head, since a
         // multi-head rule may spell the marker on any of them.
+        //
+        // BOTH NULLARY SPELLINGS (WI-20260821-P85Z7). A paren-less head is a
+        // `Term::Ident`, not a zero-argument `Term::Fn`, so reading only the `Fn` shape
+        // here gave the two spellings of one marked nullary head opposite verdicts:
+        // MEASURED, `rule ..nosuch() :- b(1)` was refused — "unresolved name
+        // '..nosuch'" — while `rule ..nosuch :- b(1)` LOADED CLEAN and stored its
+        // clause on the WI-476 bare intern, under a symbol nothing can cite. That is the
+        // silence this refusal exists for, reached by dropping two characters. A
+        // RESOLVABLE `..tgt` is untouched by either spelling: measured, both land their
+        // clause on the top-level predicate (2 clauses, not 1).
         for h in &r.heads {
             if let RuleHead::Term(tid) = h {
-                if let Term::Fn { functor, .. } = self.parsed.terms.get(*tid) {
+                if let Term::Fn { functor, .. } | Term::Ident(functor) =
+                    self.parsed.terms.get(*tid)
+                {
                     let (functor, span) = (*functor, self.parsed.terms.span(*tid));
                     self.refuse_unresolvable_absolute_head(functor, span);
                 }

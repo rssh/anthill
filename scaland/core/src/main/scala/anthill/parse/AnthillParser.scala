@@ -2235,9 +2235,23 @@ private class AnthillParserImpl(
   /** One rule, spanning its own text — WITHOUT closing the variable scope, because a
     * rule is not always the whole construct its `?x`s belong to: a `proofStep` carries
     * the same scope on into its `using …/by …` tail. The two callers each say where
-    * their scope ends by calling `resetVarScope` themselves. */
+    * their scope ends by calling `resetVarScope` themselves.
+    *
+    * THE LABEL'S COLON IS NOT THE ARROW'S (WI-20260821-P85Z7). `:-` is one token, and
+    * `(simpleName ~ ":")` ate its first character: `rule pl :- bb(1)` parsed as the
+    * LABEL `pl` with `- bb(1)` for a head and NO body — measured, the symbol table
+    * held `Resolved(pl, …, Rule, …)` where a nullary predicate belonged, `pl` carried
+    * zero clauses, and a goal citing it answered nothing while `rule pl() :- bb(1)`
+    * answered. Two spellings of one nullary predicate, opposite programs, which is
+    * this ticket's shape reached one layer lower than rustland's.
+    *
+    * `!":-"` AND NOT `!"-"` AFTER THE COLON: a prefix-minus head is a real production
+    * ([[prefixOp]]), so `lbl: -x :- …` must keep its label. What is rejected is only
+    * the two characters together, which is the same maximal-munch decision rustland's
+    * tree-sitter tokenizer makes for free. `lbl:-x`, written with no space, is
+    * therefore the arrow — as it is there. */
   private def ruleWithSpan[$: P]: P[Rule] =
-    P(located((simpleName ~ ":").? ~ ruleArrowChoice ~ metaBlock.?)).map {
+    P(located((simpleName ~ !":-" ~ ":").? ~ ruleArrowChoice ~ metaBlock.?)).map {
       case ((label, (heads, body), meta), span) => Rule(label, heads, body, meta, span)
     }
 

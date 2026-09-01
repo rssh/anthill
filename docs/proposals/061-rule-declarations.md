@@ -38,16 +38,22 @@ because a proposal keeps its own record:
    The **test** corpus is a separate population the draft did not count: 116 further
    sites across 31 Rust fixture files.
 5. **A body-less rule that can declare NOTHING is refused** — a `⊥` denial, a multi-head
-   rule, a qualified head, a paren-less nullary, a name ANOTHER CONSTRUCT already declares
+   rule, a qualified head, a name ANOTHER CONSTRUCT already declares
    in that scope (measured: `operation has(x) -> Bool` beside `rule has(?x)` loaded clean
    with a `Goal` kind merged onto the operation's own symbol), and a head the defining
    pass never reaches (a `provides … language … end` block's interior) — as is a
    declaration carrying a label, a `[…]` tag, a `[t]` introducer or a typed column. The
    draft does not name any of these; each would otherwise have become a silent drop, and
-   two (WI-20260821-W9SD3's qualified head, WI-20260821-P85Z7's paren-less nullary) are
-   filed silences the refusal now covers in their body-less spelling. The last two were
+   one (WI-20260821-W9SD3's qualified head) is a
+   filed silence the refusal now covers in its body-less spelling. The last two were
    found by `/code-review` after the first version of each guard shipped — the
    never-reached one had asked the resolution LADDER, which any prelude name satisfies.
+
+   A **paren-less nullary** head was on that list and is not any more. It was refused for
+   a SHAPE reason and not a 061 one — the head named no predicate at any arity, so there
+   was nothing to declare — and WI-20260821-P85Z7 made a bare name an application of
+   arity 0, after which `rule holdsq` DECLARES exactly as `rule holdsq()` does. The
+   refusal was this rule reporting P85Z7's defect in the one arity 061 happened to reach.
 6. **A declaration does not opt every visible scope into appending clauses (C666A).**
    The draft's unqualified "contributes a clause to whatever it lands on" was too wide
    after 845G7 made ownership explicit. A predicate imported by name or reached through

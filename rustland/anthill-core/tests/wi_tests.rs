@@ -1555,3 +1555,6 @@ mod wi_v25n3_written_row_label_test;
 
 #[path = "include/wi_jm7a8_precondition_effect_test.rs"]
 mod wi_jm7a8_precondition_effect_test;
+
+#[path = "include/wi_p85z7_paren_less_nullary_head_test.rs"]
+mod wi_p85z7_paren_less_nullary_head_test;

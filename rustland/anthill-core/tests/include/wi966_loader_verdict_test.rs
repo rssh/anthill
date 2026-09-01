@@ -49,6 +49,14 @@ fn discards_a_loader_verdict(line: &str) -> bool {
         // below stay: the guard costs nothing for a name that no longer exists, and
         // re-introducing one must not re-open the hole.
         "load_all_with(",
+        // The SAME argument, applied to the other entry point it also missed:
+        // `load_all_per_file(` does not contain `load_all(` either. It is `pub`, it is a
+        // loader entry point, and `anthill-todo` calls it twice — so `let _ =
+        // load_all_per_file(…)` was the one discarded verdict this guard could not see.
+        // Found by `/code-review` while WI-20260821-P85Z7 was in flight; no site needed
+        // fixing, which is exactly why the guard has to carry the name now rather than
+        // when one appears.
+        "load_all_per_file(",
         "load_incremental(",
         "load::load(",
         "scan_definitions(",

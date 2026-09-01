@@ -724,6 +724,11 @@ object Loader:
     *    one — otherwise `rule String.isEmpty(?s) <=> true` defines a symbol whose
     *    SHORT name is literally `String.isEmpty`.
     *
+    * A BARE NAME IS AN APPLICATION OF ARITY 0 on the PREDICATE path (P85Z7): `rule
+    * holds :- base(1)` introduces `holds`, scoped where it is written, exactly as
+    * `rule holds()` does. On the EQUATION path it introduces nothing, deliberately —
+    * a `[simp]` head is an application, so a bare subject matches no redex.
+    *
     * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) =
     * ?t`) that is the LHS; for a predicate head it is the head itself. This is the one
     * place the two part ways, and the answer travels with the name so a second walk
@@ -745,6 +750,20 @@ object Loader:
     fileTerms.get(subject) match
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
+        if name.contains('.') then None else Some((name, kind))
+      // A PAREN-LESS NULLARY PREDICATE HEAD is an application of arity 0 (rustland
+      // WI-20260821-P85Z7). The parser gives a bare name a `Term.Ident`, not a
+      // zero-argument `Term.Fn`, so reading only the `Fn` shape made the two spellings
+      // of one nullary predicate opposite programs: `rule holds()` scoped where it was
+      // written, `rule holds` introduced NOTHING ANYWHERE and fell to the bare intern —
+      // one global name two scopes' same-spelled heads then share, WI-894's defect
+      // class. The EQUATION path stays `None`: a `[simp]` head is an APPLICATION, so
+      // `rule tau <=> …` matches no redex and fires nothing, and minting `tau` would
+      // stamp it `EquationFunctor` for a law that can never run. A dotted paren-less
+      // head never reaches here — the converter folds a multi-segment name into a
+      // MINTED `field_access` chain, refused above.
+      case id: Term.Ident if kind == SymbolKind.Goal =>
+        val name = fileSym.name(id.sym)
         if name.contains('.') then None else Some((name, kind))
       case _ => None
 

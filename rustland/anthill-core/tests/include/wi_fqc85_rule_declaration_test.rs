@@ -36,13 +36,24 @@
 //!
 //! * **THE DECLARATION READING** — in `Loader::load_rule`, drop the `return` at the end
 //!   of the `RuleReading::Declaration` arm so a body-less head asserts again (the
-//!   pre-061 reading). **14 rows fail**: six here (`a_body_less_rule_declares_and_-
-//!   asserts_nothing`, `a_declaration_gives_an_inner_scope_its_own_predicate`, and the
+//!   pre-061 reading). **23 rows fail**: SEVEN here (`a_body_less_rule_declares_and_-
+//!   asserts_nothing`, `a_declaration_gives_an_inner_scope_its_own_predicate`,
+//!   `a_body_less_bare_nullary_head_declares_its_predicate`, and the
 //!   four multi-file rows' declared arms, whose counts move because the declaration
-//!   itself now stores a clause) and eight in wi980.
+//!   itself now stores a clause) and SIXTEEN in wi980.
 //! * **THE PASS-1 MINT** — in `scan_rule`, gate the `rule_reading(..) == Declaration`
 //!   mint off, so a declaration introduces nothing and pass 3 decides the name as
-//!   before. **12 rows fail**: five here, seven in wi980.
+//!   before. **21 rows fail**: five here, SIXTEEN in wi980. The bare-nullary row is
+//!   NOT among them, and that is the axis talking: with the pass-1 mint gone, pass 3's
+//!   `scan_rule_goal` mints the same name off the same head, so the predicate still
+//!   exists with no clauses.
+//!
+//!   BOTH wi980 FIGURES WERE RE-MEASURED HERE AND BOTH HAD GONE STALE — they read
+//!   "eight" and "seven" and the run says sixteen for each. The drift is not
+//!   WI-20260821-P85Z7's: its change touches only a paren-less nullary head, and wi980
+//!   writes none. It is what a stated back-out costs when a neighbouring ticket widens
+//!   what the same line decides; the fqc85 halves (six→seven, five) were re-measured in
+//!   the same run and are exact.
 //! * **THE EMPTY CONJUNCTION** — in `load_rule`'s body loop, gate off the
 //!   `is_empty_conjunction_goal` skip, so `:- true` carries a constant goal. **It felled
 //!   24 rows when 061 shipped, and it fells NONE of them now** — WI-20260822-J38JE gave
@@ -240,8 +251,14 @@ fn a_body_less_rule_that_can_declare_nothing_is_refused() {
     // FOUR SHAPES THAT NAME NO PREDICATE, each with the CONTROL that separates "this
     // shape is refused" from "this shape never loaded". Under 061 each of them would
     // assert nothing AND declare nothing, so the refusal is the loud reading of a
-    // silent drop — and for two of them (the qualified head, the paren-less nullary) the
-    // silence it replaces is a filed defect: WI-20260821-W9SD3 and WI-20260821-P85Z7.
+    // silent drop — and for one of them (the qualified head) the silence it replaces is
+    // a filed defect, WI-20260821-W9SD3.
+    //
+    // THE FOURTH IS NOT THE SAME FOURTH. It was a paren-less nullary head until
+    // WI-20260821-P85Z7 made a bare name an application of arity 0, after which that
+    // head NAMES its predicate and declares it — the row moved to
+    // [`a_body_less_bare_nullary_head_declares_its_predicate`] with its counts, and a
+    // bare VARIABLE head took the slot (the note above that row says why it belongs).
     //
     // BACKED OUT (`rule_reading` answers `Clause` where it answers `DeclaresNothing`):
     // this row FAILS, and it is the ONLY one that does. It passes under every other
@@ -261,9 +278,22 @@ fn a_body_less_rule_that_can_declare_nothing_is_refused() {
             "a qualified name REFERENCES, it never introduces",
             "namespace fqc85.n2\n  rule fqc85.n2.other(1)\nend\n",
         ),
+        // A PAREN-LESS NULLARY head used to be the fourth row here — `rule holdsq` with
+        // no body. It is now a DECLARATION
+        // ([`a_body_less_bare_nullary_head_declares_its_predicate`]): WI-20260821-P85Z7
+        // made a bare name a nullary APPLICATION, so the head names its predicate and
+        // 061's reading applies to it like any other. The refusal it used to get was
+        // this file reporting the shape defect P85Z7 owned, in the one arity where 061
+        // happened to reach it.
+        //
+        // WHAT TOOK ITS PLACE is the shape that now reaches
+        // `bodyless_declares_nothing_detail`'s "not a functor application" arm ALONE — a
+        // bare VARIABLE head. It is driven here because that message's accuracy is what
+        // P85Z7 moved: a bare NAME can no longer produce it, and a claim about which
+        // shape can must have a row.
         (
-            "a paren-less nullary head carries no functor",
-            "namespace fqc85.n3\n  rule holdsq\nend\n",
+            "a bare variable head names no predicate",
+            "namespace fqc85.n3\n  rule ?x\nend\n",
         ),
     ] {
         let errs = crate::common::try_load_kb_with(src)
@@ -275,18 +305,72 @@ fn a_body_less_rule_that_can_declare_nothing_is_refused() {
         );
     }
 
-    // THE CONTROLS — the same three shapes that CAN carry a body, with one. Each loads.
+    // THE CONTROLS — the same shapes that CAN carry a body, with one. Each loads.
     // (The `⊥` control is a bodied denial, which is what a denial is for.)
+    //
+    // A THIRD CONTROL, "bodied paren-less nullary", was DELETED with the refusal row it
+    // paired with: a bodied `rule holdsq :- base(1)` is now the CLAUSE arm of
+    // [`a_body_less_bare_nullary_head_declares_its_predicate`], where it is asserted by
+    // a clause count and an answer count rather than by loading.
     for (label, src) in [
         ("bodied denial", "namespace fqc85.c0\n  rule base(1) :- true\n  rule ⊥ :- base(9)\nend\n"),
         ("bodied multi-head", "namespace fqc85.c1\n  rule lawq: aq(1), bq(2) :- true\nend\n"),
-        (
-            "bodied paren-less nullary",
-            "namespace fqc85.c3\n  rule base(1) :- true\n  rule holdsq :- base(1)\nend\n",
-        ),
     ] {
         crate::common::try_load_kb_with(src)
             .unwrap_or_else(|errs| panic!("{label} must load: {errs:#?}"));
+    }
+}
+
+/// WI-20260821-P85Z7 — 061'S READING REACHES THE PAREN-LESS NULLARY HEAD. `rule holdsq`
+/// with no body used to be REFUSED here ("its head is not a functor application"), for a
+/// shape reason and not a 061 one: the head named no predicate at any arity, so there was
+/// nothing to declare. A bare name is now an application of arity 0, so the declaration
+/// reading applies to it exactly as to `rule holdsq()` — the spelling that always
+/// declared.
+///
+/// BOTH SPELLINGS IN ONE LOOP, deliberately: the whole of P85Z7 is that the two used to
+/// be different programs, so a row asserting only the bare one could not say they now
+/// agree.
+///
+/// BACKED OUT (P85Z7's `Term::Ident` arm in `head_subject_name`): the BARE arm fails on
+/// its first assertion — `load_kb_with` panics with "a rule with no body DECLARES a
+/// predicate … its head is not a functor application". The PARENS arm is unmoved.
+#[test]
+fn a_body_less_bare_nullary_head_declares_its_predicate() {
+    for (label, head) in [("bare", "holdsq"), ("parens", "holdsq()")] {
+        let mut kb = crate::common::load_kb_with(&format!(
+            "namespace fqc85.nul{label}\n  rule {head}\n  rule usesq(1) :- {head}\nend\n"
+        ));
+        assert_eq!(
+            clauses(&kb, &format!("fqc85.nul{label}.holdsq")),
+            Some(0),
+            "{label}: the predicate EXISTS and holds no clause — a declaration, not a fact"
+        );
+        assert_eq!(
+            answers(&mut kb, &format!("fqc85.nul{label}.usesq(?x)")),
+            0,
+            "{label}: and its reader answers nothing, which is what makes it a declaration"
+        );
+    }
+
+    // THE CONTROL — the same two spellings with a CLAUSE. `Some(1)` against `Some(0)`
+    // above is what separates "declared" from "declared and asserted"; without it the
+    // row would pass for a predicate the loader never reached.
+    for (label, head) in [("bare", "holdsq"), ("parens", "holdsq()")] {
+        let mut kb = crate::common::load_kb_with(&format!(
+            "namespace fqc85.cla{label}\n  fact bq(1)\n  rule {head} :- bq(1)\n  \
+             rule usesq(1) :- {head}\nend\n"
+        ));
+        assert_eq!(
+            clauses(&kb, &format!("fqc85.cla{label}.holdsq")),
+            Some(1),
+            "{label}: the clause lands on the declared predicate"
+        );
+        assert_eq!(
+            answers(&mut kb, &format!("fqc85.cla{label}.usesq(?x)")),
+            1,
+            "{label}"
+        );
     }
 }
 
