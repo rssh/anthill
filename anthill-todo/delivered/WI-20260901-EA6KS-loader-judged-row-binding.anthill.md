@@ -3,9 +3,9 @@
 - id: WI-20260901-EA6KS-loader-judged-row-binding
 - created: 2026-09-01T05:38:34Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-01T05:38:34Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-01T08:17:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

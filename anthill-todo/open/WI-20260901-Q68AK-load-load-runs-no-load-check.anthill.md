@@ -34,3 +34,60 @@ WHICHEVER IS CHOSEN, the doc block on `LoadCheckMarks` (kb/mod.rs) records the c
 
 ACCEPTANCE: `pub fn load`'s own doc states what it checks and what it does not, in those words. If (a): a file loaded through `load` that writes `Map[K = Float]` or a bad row label in a signature is REFUSED by `load` itself, with a fixture driving each, and the Float-composite case is asserted to answer the same way it does under `load_all` (the wrong-answer trap above is the thing to pin). If (b) or (c): the two dropped refusals are named on the entry point as a known, contracted gap, and `a_check_less_load_entry_point_records_no_load_check_work` cites the contract rather than just the behaviour. Regression: nothing in the workspace suite changes verdict.
 
+## Changes
+
+### 2026-09-01T08:24:53Z — feedback — user
+
+REACHABILITY VERIFIED, and it is STRONGER than the ticket says: there are ZERO production callers of `load::load` in the workspace, not one. Every call site is a test.
+
+  rustland/anthill-core   89 (tests/include/*, tests/common/mod.rs, src/kb/typing/tests.rs)
+  rustland/anthill-stl     1 (reflect/bridge.rs:1145 — inside `#[cfg(test)] mod tests`,
+                             opened at bridge.rs:1134, so it is a test despite living
+                             under src/)
+
+Nothing in `anthill-cli`, `anthill-todo`, `anthill-stl`'s runtime, or `anthill-core`'s own
+non-test code calls it. Checked by grepping `load::load(` across `rustland/` and reading
+the enclosing item for the one `src/` hit.
+
+WHAT THAT DOES AND DOES NOT SETTLE. It removes the "a live embedder depends on the current
+behaviour" objection to (a) and (c), which is the objection that would have made this
+expensive. It does NOT make (c) a rename: the function is `pub` in a library crate, so
+demoting it to `pub(crate)` is a breaking API change AND is blocked in-tree by the
+`anthill-stl` test, which is in a different crate and so needs the `pub`. Converting that
+one caller to `load_all` is not mechanical either — several of the 89 use this entry point
+PRECISELY because it runs no checks (`wi966_loader_verdict_test` is about the loader's
+verdict), so a blanket swap would change what those tests measure.
+
+So the practical shape is: (b) is nearly done already — the rollback and the full trade are
+in `LoadCheckMarks`, and what remains is one honest sentence on `pub fn load`'s own doc.
+(a) and (c) are both now affordable, and the 89 callers are the real cost centre for
+either, not the API surface.
+
+### 2026-09-01T08:55:54Z — feedback — user
+
+DECIDED BY THE USER (2026-09-01): REMOVE `load`. Not rename, not contract — the API should not carry two single-file loaders, and "make it right" means one loading pipeline.
+
+BLOCKED ON WI-20260901-7ZZ1Z. Removing `load` today would delete the sole detector of a live bug: `typing_test::conditional_spec_field_rejects_eq_list_of_non_eq_elements` catches a WI-274 violation ONLY because it loads through the partial loader and drives `type_check_sorts` by hand. Through `load_all` the same program loads clean. Settle that verdict first.
+
+THE REMOVAL COST, MEASURED. All ~90 `load::load(kb, parsed, r)` call sites were mechanically rewritten to `load_all(kb, &[parsed], r)`. It COMPILES CLEAN. The suite goes 6251/0 -> 6200 passed / 51 failed. Classified by panic reason, all 51:
+
+    48   `load_all` REPORTED an error `load` did not — it is STRICTER. These tests
+         load a deliberately ill-typed source, expect the load to SUCCEED, then call
+         `type_check_sorts` themselves and assert the diagnostic. Migration is
+         mechanical: assert the load `Err` instead. 34 are in `typing_test`, 6 in
+         `wi946_belongs_to_readers_test` (via `common::load_stdlib_kb_with_source`),
+         4 in `parse_test` (of 64 — the other 60 pass unchanged).
+     1   `kb::typing::tests::wi1112_requires_index_tests::a_single_file_load_does_not_read_a_stale_index`
+         — its SUBJECT is `load`'s own path (WI-1112 fixed a stale-index bug there).
+         It retires with the function; nothing to migrate.
+     1   `wi_v25n3_written_row_label_test::a_check_less_load_entry_point_records_no_load_check_work`
+         — EA6KS's own fixture, asserting `load` reports nothing. Retires too, and
+         `LoadCheckMarks` + `restore_load_check_marks` go with it: they exist ONLY to
+         roll back what this entry point leaves behind.
+     1   `typing_test::conditional_spec_field_rejects_eq_list_of_non_eq_elements`
+         — the REVERSE direction, and the blocker above.
+
+WHAT ELSE THE REMOVAL SHOULD TAKE WITH IT. `load` is a hand-maintained COPY of `load_phase_inner`'s prologue, not a delegation — it re-spells register_sources / scan_definitions_with_sources / resolve_builtins / declare_file_field_types / load_with_visited / resolve_instantiations for one file. Every invariant the real pipeline maintains has had to be re-established in the copy by hand, each discovered by a bug: WI-967 (bootstrap panic), WI-1112 (stale requires index), and EA6KS's two registries. Deleting the copy is the point of the exercise; deleting only the `pub` name would leave it.
+
+SEPARATE, AND ALSO THE USER'S CALL (2026-09-01): the API carries THREE PUBLIC NAMES FOR ONE FUNCTION. `load_stdlib` (51 call sites) and `load_incremental` (19) have identical signatures to `load_all` (228) and bodies that are a single delegating call to it — WI-967 removed the last behavioural difference and left the names. Collapsing them into `load_all` is 70 mechanical renames with zero behaviour change. `load_all_per_file` (3 sites) stays: its return type is genuinely different. End state: ONE checked loader, its per-file variant, and nothing else.
+
