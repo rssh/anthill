@@ -57,7 +57,8 @@
 //! not in August: the objection that blocked it was that it removed a capability with no
 //! working replacement.
 //!
-//! NOT CLOSED HERE: a broken SUBEXPRESSION swallows every diagnostic its ANCESTORS would
+//! A CONSEQUENCE WORTH KNOWING, and settled rather than left open: a broken SUBEXPRESSION
+//! swallows every diagnostic its ANCESTORS would
 //! have raised, so `field_access(q, x)` — a bare identifier in the field slot, which is the
 //! likeliest way to write this by hand — is reported against `x` and never names the
 //! functor. The rows below therefore drive the functor refusal through `(q, q)`, where no
@@ -71,11 +72,16 @@
 //! `two(aaa_no(1), bbb_no(1))` reports BOTH, two broken operations report both, and a
 //! broken op body plus a broken rule body report both.
 //!
-//! The live question is narrower and is WI-20260901-P3CZV's: suppression is CORRECT for an
-//! ancestor diagnostic that reads the child's type (an op-return mismatch has nothing true
-//! to say once the body has none) and WRONG for the two that do not — `unknown functor` and
-//! ARITY, both withheld anyway, both measured with a control showing they fire when the
-//! child is clean.
+//! WI-20260901-P3CZV asked whether that suppression should change and was CLOSED after
+//! measuring it (user, 2026-09-01), so this paragraph is the end of the matter and not a
+//! pointer to open work. The verdict, because it is the reusable part: the suppression
+//! returns ONE OF SEVERAL INDEPENDENT TRUE ERRORS rather than hiding a real one. In
+//! `field_access(q, x)` neither fault causes the other — `x` names nothing in any reading,
+//! and the functor is unresolved whatever `x` is — so nothing spurious is shown and nothing
+//! is lost: fix the child, the ancestor's error appears. The suppression that fires most is
+//! the one that SHOULD, an op-return mismatch having nothing true to say once the body has
+//! no type. Against that, reporting more errors is a corpus-wide change to every test
+//! asserting `errs.len()`. P3CZV's closing note carries the fixtures.
 
 use crate::common::{interp_for, scalar_int, try_load_kb_with};
 
