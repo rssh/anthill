@@ -1,0 +1,40 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY BOTH CONTRACT TIERS
+-- AT ONE CALL.
+--
+-- THE TWO TIERS ARE INDEPENDENT, AND THIS IS WHERE THAT IS MEASURED. `Email.send`
+-- carries both (lib/email.anthill): a `requires releasable(body)` proved from the
+-- KB at the call site, and a `Permission[Outbox]` guarded on the recipient and
+-- decided by the typer. `rejected/outbox.anthill` breaks the row tier alone — an
+-- external recipient, a cleared body. `rejected/uncleared_body.anthill` breaks the
+-- proof tier alone — an internal recipient, a body the organisation never cleared.
+-- This one is the single token from each: an external recipient AND an uncleared
+-- body, at the SAME call, and BOTH refusals must appear in ONE load.
+--
+-- WHY IT IS A FIXTURE AND NOT A FOOTNOTE. Until WI-20260830-JM7A8 they did not.
+-- An unsatisfied precondition aborted the call's typing before its effect row was
+-- built, so the effect was never attributed and the `Permission[Outbox]` line
+-- simply vanished — leaving one diagnostic that read as the complete account of
+-- what was wrong with the program. A reader who repaired the body would then be
+-- told about the recipient, one load later. measured.md C2a is the measurement
+-- that found the suppression; this file is what keeps it from coming back.
+-- ================================================================
+sort guardians.agent.UnclearedExternalTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    Verdict, categories_of}
+  import guardians.TrustLevel.{Public}
+  entity mk
+
+  operation run(self: UnclearedExternalTriage, box: Mailbox, llm: Llm) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "it", domain: "othercorp.com"),
+                            body: text(raw: "here is the mailbox summary"))
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = UnclearedExternalTriage]
+end

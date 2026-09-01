@@ -2208,6 +2208,12 @@ checks them** (proposal 058 §8's split; WI-539 and WI-448 respectively).
   act on a decided obligation, never on an undetermined one). It is also what §8.5
   turns into a proof obligation.
 
+  **An unsatisfied precondition does not suppress the same call's other verdicts**
+  (WI-20260830-JM7A8). A precondition is proved from the KB; the call's effects are read
+  off the callee's declaration and checked against §5.5's row. The two are independent,
+  so a call that fails both is reported for both in one load, and a diagnostic list is
+  never silently truncated at the first contract failure.
+
   **What the caller knows includes the argument's TYPE** (WI-9PGCM). A value
   precondition may name a variable bound in a *parameter type* rather than among the
   value parameters — `send(body: Text[L = ?l]) requires flows_to(?l, Public)`, where

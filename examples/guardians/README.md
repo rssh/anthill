@@ -103,7 +103,7 @@ model. The capability is the SORT you acquire; there is no marker sort beside it
 | `fixtures/*.anthill` | the article's inbox, including the injected email |
 | `fixtures/agent/good.anthill`, `checker.anthill` | generated implementations that pass — the controls |
 | `fixtures/agent/conceal.anthill` | a generated implementation that CONCEALS and is accepted anyway — the honest record of C13, since `ensures mentions_all(result)` is refined against the spec but never proved of a body (WI-20260830-2FP2K) |
-| `fixtures/agent/rejected/` | thirteen that must not, one per mechanism |
+| `fixtures/agent/rejected/` | fourteen that must not — thirteen one per mechanism, and `uncleared_external.anthill`, which breaks two at once and must report BOTH |
 
 Design notes and the full measurement record are in `docs/design/`; the runnable
 probes behind the measurements live in `docs/measurements/guardians/` at the

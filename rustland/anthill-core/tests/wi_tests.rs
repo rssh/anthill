@@ -1552,3 +1552,6 @@ mod wi_pyns2_written_row_type_argument_test;
 
 #[path = "include/wi_v25n3_written_row_label_test.rs"]
 mod wi_v25n3_written_row_label_test;
+
+#[path = "include/wi_jm7a8_precondition_effect_test.rs"]
+mod wi_jm7a8_precondition_effect_test;

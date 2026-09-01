@@ -2081,6 +2081,46 @@ pub struct TypingEnv {
     /// implicit — see the loud-over-silent principle).
     rule_body_dispatch: bool,
     pub diagnostics: Vec<String>,
+    /// WI-20260830-JM7A8 — WHERE A VALUE PRECONDITION'S FAILURE IS RECORDED INSTEAD OF
+    /// RAISED, so the SAME call's effects are still attributed and an independent effect
+    /// violation at that call is still reported.
+    ///
+    /// The two verdicts are independent: a precondition is a proof obligation over the
+    /// KB, an effect is a row the body incurs, and the call's effects are read off the
+    /// callee's DECLARATION and do not depend on the precondition holding. Raising the
+    /// precondition as an `Err` from [`check_apply_iter`] aborts the call's typing before
+    /// the effect row is built, so the body result is `Err`, `check_operation_bodies`
+    /// takes its error-only arm, and the op-boundary coverage check never runs — one
+    /// diagnostic reported, the other silently dropped, and the survivor looks complete.
+    ///
+    /// `None` IS THE DEFAULT AND MEANS "RAISE", which is what makes this safe rather than
+    /// a silent swallow: a sink exists only where a DRAINER installed one
+    /// ([`Self::collect_deferred_preconditions`], called once per operation body by
+    /// `check_operation_bodies`, drained by it in both arms). Every other entry into the
+    /// typer — the rule-body dispatch walk, the public `type_check_expr` shim — carries
+    /// `None` and keeps the hard `Err` it has always had. The gate is therefore the
+    /// consumer's own question ("is anyone going to report this?"), not a re-reading of
+    /// some neighbouring predicate.
+    ///
+    /// SHARED ACROSS EVERY CLONE (`Rc<RefCell<…>>`), AND THE `Err` ARM IS WHY. A by-value
+    /// channel could only be read back out of the walk's `TypeResult` — and a body that
+    /// failed to type produces no `TypeResult` at all, so the precondition it recorded on
+    /// the way in would have nowhere to come from. A shared sink is reachable from the
+    /// operation's OWN handle whatever the walk returned, which is what lets the drain
+    /// sit after the match instead of inside its `Ok` arm.
+    ///
+    /// THE OTHER REASON THIS CARRIER LOOKED NECESSARY IS NOT ONE, and it is recorded
+    /// because it is the natural guess: the build frames return the FRAME's env, so an
+    /// argument's own `TypingEnv` is dropped (which is why the neighbouring
+    /// [`Self::diagnostics`] channel was not reused). MEASURED, a by-value field survives
+    /// that anyway — a Visit that binds nothing hands its children the same
+    /// `Rc<TypingEnv>`, so an argument's write already lands in the allocation the parent
+    /// clones out. `wi_jm7a8_precondition_effect_test`'s header carries the three
+    /// back-outs and which fixture each one reds.
+    ///
+    /// Op-scoped by construction: `check_operation_bodies` builds a fresh `TypingEnv` per
+    /// body, so nothing leaks between operations.
+    deferred_preconditions: Option<Rc<std::cell::RefCell<Vec<TypeError>>>>,
 }
 
 impl TypingEnv {
@@ -2100,6 +2140,47 @@ impl TypingEnv {
             debruijn_types: Rc::new(HashMap::new()),
             rule_body_dispatch: false,
             diagnostics: Vec::new(),
+            // WI-20260830-JM7A8: OFF by default — see the field doc. Only a caller that
+            // drains installs a sink.
+            deferred_preconditions: None,
+        }
+    }
+
+    /// WI-20260830-JM7A8 — install this body's sink for deferred value-precondition
+    /// failures. The caller MUST drain it ([`Self::take_deferred_preconditions`]) on
+    /// every path out of the body check, including the one where the body failed to type
+    /// for an unrelated reason.
+    ///
+    /// `pub(crate)`, WITH THE REST OF `TypingEnv` PUBLIC, because installing without
+    /// draining is the one way to lose a diagnostic here and there is no compile-time
+    /// guard against it (review-found). Keeping the pair inside the crate bounds the
+    /// obligation to the one caller that owns it — `check_operation_bodies` — instead of
+    /// resting it on a doc contract an out-of-crate caller never reads. Nothing outside
+    /// `typing.rs` calls either half; the public typer entries (`type_check_expr`,
+    /// `type_check_node`) build envs with no sink and keep the hard `Err`.
+    pub(crate) fn collect_deferred_preconditions(&mut self) {
+        self.deferred_preconditions = Some(Rc::new(std::cell::RefCell::new(Vec::new())));
+    }
+
+    /// WI-20260830-JM7A8 — hand a precondition failure to this body's sink. Returns
+    /// `None` when the sink took it (the caller continues, so the call's effects are
+    /// still attributed) and hands the error BACK when there is no sink, so the only way
+    /// to lose one is to install a sink and not drain it.
+    fn defer_precondition(&self, err: TypeError) -> Option<TypeError> {
+        match &self.deferred_preconditions {
+            Some(sink) => {
+                sink.borrow_mut().push(err);
+                None
+            }
+            None => Some(err),
+        }
+    }
+
+    /// WI-20260830-JM7A8 — take what this body deferred, leaving the sink empty.
+    pub(crate) fn take_deferred_preconditions(&self) -> Vec<TypeError> {
+        match &self.deferred_preconditions {
+            Some(sink) => std::mem::take(&mut *sink.borrow_mut()),
+            None => Vec::new(),
         }
     }
 
@@ -16412,12 +16493,25 @@ fn check_apply_iter(
                         },
                     };
                     let clause = goal_in_source_spelling(kb, &judged);
-                    return Err(TypeError::UnsatisfiedPrecondition {
+                    let err = TypeError::UnsatisfiedPrecondition {
                         span,
                         op: fn_sym,
                         clause,
                         kind,
-                    });
+                    };
+                    // WI-20260830-JM7A8: RECORDED, NOT RAISED, wherever a drainer is
+                    // installed — see [`TypingEnv::deferred_preconditions`]. Raising
+                    // aborts this call before its effect row is built, and the op
+                    // boundary then reports the precondition INSTEAD OF an undeclared
+                    // effect the same call incurs, not beside it. The two are
+                    // independent — a proof obligation over the KB and a row the body
+                    // incurs — so both are owed. The remaining clauses are NOT judged
+                    // (`break`, exactly where the `return` stood): a call reported one
+                    // unsatisfied precondition before this change and reports one now.
+                    match env.defer_precondition(err) {
+                        None => break,
+                        Some(err) => return Err(err),
+                    }
                 }
             }
         }
@@ -63979,6 +64073,13 @@ fn check_operation_bodies(
         }
         cur_src = Some(op.body_node.span.source);
         let mut env = TypingEnv::empty();
+        // WI-20260830-JM7A8 — this pass is the DRAINER for value-precondition failures,
+        // so it installs the sink. `check_apply_iter` then records them and keeps typing
+        // the call, which is what leaves the call's effects attributed and the
+        // op-boundary coverage check below able to run. Drained after the body match on
+        // BOTH arms — a body that also failed to type for an unrelated reason still owes
+        // the precondition diagnostic.
+        env.collect_deferred_preconditions();
         // WI-221: snapshot the enclosing sort + its requires chain so
         // defer-to-requirement detection in `check_apply` runs from a
         // cached chain instead of re-walking SortRequiresInfo per call.
@@ -64202,6 +64303,13 @@ fn check_operation_bodies(
         // is the one place holding both the clauses and the `rigidify` that puts them in
         // the body's vocabulary.
         let gamma0 = op_requires_gamma(kb, &op.requires, &op.rigidify);
+        // WI-20260830-JM7A8: where THIS op's errors start, so the preconditions its body
+        // deferred can be spliced back in AHEAD of the op-boundary verdicts below rather
+        // than trailing them. A precondition names a CALL and carries that call's span;
+        // the return/effect errors are the operation's own. Reading them in that order is
+        // what the single-diagnostic output looked like before this ticket, with the
+        // second verdict added rather than the first moved.
+        let op_err_mark = errors.len();
         match type_check_node_gated_in_gamma(
             kb,
             &env,
@@ -64516,6 +64624,16 @@ fn check_operation_bodies(
                     errors.push(e);
                 }
             }
+        }
+        // WI-20260830-JM7A8 — DRAIN, on both arms. A body whose call carried an
+        // unsatisfied precondition typed fine otherwise and lands in `Ok`; one that ALSO
+        // failed for an unrelated reason lands in `Err` and still owes this diagnostic,
+        // so the drain sits after the match rather than inside either arm. `sources` is
+        // tagged lazily by COUNT at the top of the next iteration, so a splice inside
+        // this op's own range is attributed to this op's file exactly as a push is.
+        let deferred = env.take_deferred_preconditions();
+        if !deferred.is_empty() {
+            errors.splice(op_err_mark..op_err_mark, deferred);
         }
     }
     // WI-745: flush the last op's errors and restore the `sources`/`errors`

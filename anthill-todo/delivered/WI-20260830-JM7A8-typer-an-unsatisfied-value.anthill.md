@@ -3,9 +3,9 @@
 - id: WI-20260830-JM7A8-typer-an-unsatisfied-value
 - created: 2026-08-30T11:56:12Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-08-30T11:56:12Z
+- status_at: 2026-09-01T05:48:58Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

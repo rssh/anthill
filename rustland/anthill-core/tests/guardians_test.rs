@@ -592,6 +592,19 @@ fn an_external_send_is_refused_by_the_conditional_permission() {
     // declare it (a widening). NO generated triage can mail outside, and that is
     // a property of the spec rather than of this agent.
     assert_refused("outbox", "undeclared effect: Permission[T = Outbox]");
+    // AND IT IS THE ONLY ERROR. The body it mails is the line the organisation cleared,
+    // so `Email.send`'s `requires releasable(body)` discharges and the proof tier has
+    // nothing to say: one broken rule, one diagnostic. Asserted because
+    // `both_contract_tiers_report_at_one_call` names this row as its control, and a
+    // control that does not count is consistent with a checker reporting both tiers for
+    // every refusal.
+    let errs = errors_for("outbox");
+    assert_eq!(
+        errs.len(),
+        1,
+        "a cleared-body program breaking only the row tier owes exactly one \
+         diagnostic; got: {errs:#?}"
+    );
 }
 
 #[test]
@@ -1021,6 +1034,52 @@ fn an_uncleared_body_is_refused_by_the_send_precondition() {
         errs.iter().any(|e| e.contains("releasable")),
         "the diagnostic must name the precondition that could not be proved; got: \
          {errs:#?}"
+    );
+    // AND IT IS THE ONLY ERROR, which is the control for the row below. The recipient is
+    // internal, so `external_addr` is refuted and no `Permission[Outbox]` is incurred:
+    // one broken rule, one diagnostic. Without this assertion the row below could pass
+    // against a checker that reports the effect unconditionally.
+    assert_eq!(
+        errs.len(),
+        1,
+        "a cleared-row program breaking only the proof tier owes exactly one \
+         diagnostic; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn both_contract_tiers_report_at_one_call() {
+    // THE TWO TIERS ARE INDEPENDENT, AND BOTH ARE OWED IN ONE LOAD.
+    // `rejected/uncleared_external.anthill` is one token from EACH of its neighbours: the
+    // external recipient of `rejected/outbox.anthill` and the uncleared body of
+    // `rejected/uncleared_body.anthill`, at the same `Email.send`. A `requires` clause is
+    // proved from the KB (§5.4) and an effect row is decided by the typer (§5.5); neither
+    // verdict is evidence about the other, so a program that breaks both must be told
+    // about both.
+    //
+    // WHAT FAILS WHEN IT IS BACKED OUT: this row is what WI-20260830-JM7A8 closed, and it
+    // is red on the tree before it. An unsatisfied precondition aborted the call's typing
+    // before its effect row was built, so `Permission[Outbox]` was never attributed and
+    // the second assertion below found nothing — while the first stayed green, which is
+    // exactly why the loss was invisible.
+    //
+    // ITS CONTROLS ARE THE TWO NEIGHBOURS, each of which asserts a count of ONE:
+    // `an_external_send_is_refused_by_the_conditional_permission` (row tier alone) and
+    // `an_uncleared_body_is_refused_by_the_send_precondition` (proof tier alone). Without
+    // them this row is consistent with a checker that emits both diagnostics for every
+    // refusal.
+    let errs = errors_for("uncleared_external");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("unsatisfied precondition") && e.contains("releasable")),
+        "the proof tier: the organisation never cleared this body; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("undeclared effect: Permission[T = Outbox]")),
+        "the row tier: `Triage.run` grants no authority to mail outside, and this call \
+         demands it — dropping this line while keeping the one above leaves a \
+         diagnostic that reads as the complete account of what is wrong; got: {errs:#?}"
     );
 }
 

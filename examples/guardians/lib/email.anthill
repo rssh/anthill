@@ -102,17 +102,20 @@ sort guardians.Email
   -- catches a body the organisation never cleared (rejected/uncleared_body.anthill).
   --
   -- WHY THE PRECONDITION IS ON `body` AND NOT ON `to`, which is where the
-  -- obvious `deliverable(to)` would put it. MEASURED: a precondition naming
-  -- `to` is unprovable at exactly the two call sites whose recipient the
-  -- checker cannot read — rejected/computed_recipient.anthill and
-  -- rejected/letbound_recipient.anthill — and its diagnostic PREEMPTS the
-  -- effect check there, so both fixtures stop reporting the missing
-  -- `Permission[Outbox]` and stop measuring the conditional permission they
-  -- exist for. A value precondition and a value-guarded effect over the SAME
-  -- argument collide; over different arguments they compose. The preemption is
-  -- itself a defect — WI-20260830-JM7A8, measured.md C2a — but the argument
-  -- choice here is right either way: a precondition on `to` would duplicate what
-  -- the guard already decides.
+  -- obvious `deliverable(to)` would put it. TWO reasons, and only the second
+  -- still bites. The first was a defect and is FIXED: a precondition naming `to`
+  -- is unprovable at exactly the two call sites whose recipient the checker
+  -- cannot read — rejected/computed_recipient.anthill and
+  -- rejected/letbound_recipient.anthill — and its diagnostic used to PREEMPT the
+  -- effect check there, so both fixtures stopped reporting the missing
+  -- `Permission[Outbox]` and stopped measuring the conditional permission they
+  -- exist for. WI-20260830-JM7A8 closed that, and measured.md C2a carries the
+  -- re-run: both lines now arrive in one load, and
+  -- rejected/uncleared_external.anthill is the fixture that keeps them arriving.
+  -- What remains is the reason that does not depend on a defect: a precondition
+  -- on `to` would DUPLICATE what the guard already decides, and it would still
+  -- have to be dischargeable from lib/ alone — see the placement note on
+  -- `releasable` above.
   {< Send one message. Demands `Permission[Outbox]` only when the recipient is
      outside the organisation, and only ever carries a body the organisation has
      cleared for release. >}

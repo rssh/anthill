@@ -25,7 +25,8 @@ of them — **WI-20260830-JM7A8** (C2a), **WI-20260830-DQD5W** (C11),
 that weakens a claim this example makes. DQD5W is closed (C11's re-run above, which
 also corrects that entry's own diagnosis and spun off WI-20260830-NX4FD), and so is
 VFAKK: `in_org` and `releasable` now carry their blocks, and C12 records the split
-that admits them. JM7A8 and 2FP2K are open.
+that admits them. JM7A8 is closed too — C2a's own experiment is re-run above and
+both diagnostics now arrive in one load. 2FP2K is open.
 
 **Spellings that changed after the runs, and nothing else did.** The marker sorts
 `Model` / `FrontierModel` were collapsed into the sorts one acquires, so a row
@@ -877,13 +878,44 @@ on the missing authority.
 survive contact with this suite**, and the reason is worth stating: the argument a
 conditional permission guards is the argument a precondition cannot read.
 
-**The suppression itself is a defect, and it is filed.** The two failures are
-independent — one is a proof obligation over the KB, the other a row the body
-incurs — and reporting one while dropping the other leaves a diagnostic that
-looks complete. Isolated: a variant that ALSO declares `Filesystem` still reports
-"effects must not widen" beside the precondition error, so it is the CALL's
-inferred effects that go unattributed, not the operation's checks that stop.
-**WI-20260830-JM7A8.**
+**The suppression itself was a defect, and it is FIXED — WI-20260830-JM7A8.** The
+two failures are independent — one is a proof obligation over the KB, the other a
+row the body incurs — and reporting one while dropping the other left a
+diagnostic that looked complete. It was isolated to the CALL's inferred effects:
+a variant that ALSO declared `Filesystem` still reported "effects must not widen"
+beside the precondition error, so the operation's checks were not stopping; the
+call's effects were simply never attributed, because raising the precondition as
+an error aborted the call's typing before its effect row was built. A value
+precondition is now RECORDED at the call and the call keeps typing, so both
+verdicts arrive in one load.
+
+**Re-measured after the fix, on this entry's own experiment.** With
+`requires deliverable(to)` in place of `requires releasable(body)` and the
+deployment supplying the rows, `rejected/computed_recipient.anthill` and
+`rejected/letbound_recipient.anthill` now report BOTH lines:
+
+```
+type mismatch in guardians.Email.send.requires:
+  expected precondition `deliverable(who)` provable at the call site,
+  got unsatisfied precondition
+type mismatch in run.effects (op-effects):
+  expected declared: [External, llm.E, Error],
+  got undeclared effect: Permission[T = Outbox]
+```
+
+**The argument choice below is unchanged, and the reason it survives the fix is
+the second constraint, not the first.** `releasable` stays on `body` because the
+precondition must be dischargeable from `lib/` ALONE
+(`the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`
+loads the library with no deployment), and because a precondition on `to` would
+duplicate what the guard already decides. What the fix removed is the COLLISION:
+the two tiers over the same argument no longer cost a measurement.
+
+**And the property has its own fixture now**, so it is kept rather than argued:
+`rejected/uncleared_external.anthill` breaks both tiers at one call — an external
+recipient and an uncleared body — and
+`both_contract_tiers_report_at_one_call` asserts both diagnostics, against the
+two single-tier neighbours which each assert a count of ONE.
 
 ## C3 · A rule body cannot destructure a type argument
 
