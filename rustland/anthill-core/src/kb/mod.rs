@@ -1434,6 +1434,15 @@ pub struct KnowledgeBase {
     // `eq_derive::run` re-asserts its derived `SortProvidesInfo` rows on EVERY load
     // through `assert_fact_carrier`, and un-claiming those would re-report a row in a
     // batch that presented nothing, which is the bug this set exists to fix.
+    //
+    // AND A CHECK-LESS LOAD CLAIMS THE WHOLE RELATION AT ITS RETURN (WI-20260901-47VWX,
+    // `typing::claim_written_row_bindings`). Dropping the claim is only half of what such
+    // a load does to this set; the other half is the clause facts it CREATES, whose
+    // RuleIds were in no earlier snapshot and which therefore stayed unclaimed for the
+    // next batch to judge. That half cannot be keyed on the loader's own writers — a
+    // forwarded provision is derived by `typing::derive_forwarded_provisions`, above the
+    // stop and through `assert_fact_carrier` — so it is keyed on the READER's walk
+    // instead. See [`crate::kb::typing::RowBindingRun`].
     judged_row_binding_clauses: HashSet<RuleId>,
 
     /// WI-1103 — the `SortProvidesInfo` rows [`eq_derive::run`] asserts (a Partial
@@ -1759,52 +1768,40 @@ pub struct KnowledgeBase {
 /// by [`KnowledgeBase::load_check_marks`] and put back by
 /// [`KnowledgeBase::restore_load_check_marks`].
 ///
-/// BOTH REGISTRIES ARE WRITTEN BY THE ITEM WALK AND READ ONLY BY A CHECK, and a load
-/// with [`LoadOptions { run_typer: false }`](load::LoadOptions) stops before those checks
-/// run. (Until WI-20260901-Q68AK that partial shape was a separate `load::load` entry
-/// point; folding it into an option changed where the capture lives, not the rule.) Leaving what it wrote in
-/// place hands the NEXT batch work it did not do, and BOTH were measured doing exactly
-/// that, each against its own control:
+/// THE REGISTRY IS WRITTEN BY THE ITEM WALK AND READ ONLY BY A CHECK, and a load with
+/// [`LoadOptions { run_typer: false }`](load::LoadOptions) stops before those checks run.
+/// (Until WI-20260901-Q68AK that partial shape was a separate `load::load` entry point;
+/// folding it into an option changed where the capture lives, not the rule.) Leaving what
+/// it wrote in place hands the NEXT batch work it did not do, measured:
+/// `parameterized_type_sites` is push-only within a load and drained ONCE by
+/// `load_phase_inner`, so a partial load's sites simply waited — the next batch drained
+/// them and reported 1 refusal for the earlier file.
 ///
-/// * `judged_row_binding_clauses`. The walk DROPS claims
-///   ([`KnowledgeBase::note_metadata_fact_presented`]) and only the check re-adds them,
-///   so a partial load of an offending file left every one of its clauses un-claimed: a later
-///   `load_all` into a live KB of an unrelated clean file then reported 2 refusals naming a file
-///   it was never given. Introduced by that drop — backing it out takes the same fixture
-///   to 0.
-/// * `parameterized_type_sites`. Push-only within a load and drained ONCE by
-///   `load_phase_inner`, so a `load`'s sites simply waited: the next batch drained them
-///   and reported 1 refusal for the earlier file. PRE-EXISTING — measured identical with
-///   the claim-drop backed out — and fixed here because the alternative is source 1 and
-///   source 2 of one check answering "what does a partial load mean" two different ways,
-///   which is
-///   the defect this ticket is about.
+/// THE CLAIM HALF LEFT THIS STRUCT AT WI-20260901-47VWX, and where it went is the point.
+/// It used to snapshot and restore `judged_row_binding_clauses`, which neutralized a
+/// claim the partial load DROPPED and was silent about a clause fact it CREATED: a fresh
+/// RuleId was never in the snapshot, so restoring left it unclaimed and the next
+/// `load_all` of a clean unrelated file judged it and refused, naming a file it was never
+/// handed — the very symptom this struct's doc claimed the restore removed. The repair is
+/// [`crate::kb::typing::claim_written_row_bindings`], a run of the check's OWN walk that
+/// claims and judges nothing, and it subsumes the restore: a clause whose claim the load
+/// dropped is a clause in the KB, so the walk re-claims it. A SNAPSHOT WAS THE WRONG
+/// SHAPE for that half — it can only put back what was already there — and the site half
+/// keeps it because a site registry genuinely is restored to what the load found.
 ///
-/// THE TWO HALVES COST DIFFERENT THINGS, and the site half DOES drop a refusal — saying
-/// otherwise would be the comfortable version of this note (/code-review caught the first
-/// draft claiming "nothing that was being reported stops being reported", which its own
-/// second bullet contradicts).
-///
-/// * The claim half loses NOTHING. Restoring it returns the exact behaviour that stood
-///   before the drop above existed: the clause facts are still in the KB and still
-///   claimed, and the batch that presented them is still the batch that judged them.
-/// * The site half DROPS TWO REFUSALS for a file loaded partially — the
-///   WI-644 use-site `requires Eq` one and this check's own source-1 one — where before
-///   they surfaced in whichever later batch happened to drain the registry. They are not
-///   relocated; nothing judges them. That is a real loss and it is the lesser one: the
-///   alternative is that a `load_all` into a live KB of a clean unrelated file FAILS, which is
-///   the outcome WI-20260831-V25N3 was filed for, and it makes the entry point unusable
-///   in exactly the incremental workflow it exists to serve. A partial load already runs
-///   none of the checks below its stop point; the site registry was the one piece of check
-///   work it left lying around for someone else to be blamed for, so this makes it
-///   uniformly check-free rather than check-free-with-one-booby-trap.
+/// THE SITE HALF DROPS A REFUSAL for a file loaded partially — the WI-644 use-site
+/// `requires Eq` one and the written-row check's own site-sourced one — where before they
+/// surfaced in whichever later batch happened to drain the registry. They are not
+/// relocated; nothing judges them. That is a real loss and it is the lesser one: the
+/// alternative is that a `load_all` into a live KB of a clean unrelated file FAILS, which
+/// is the outcome WI-20260831-V25N3 was filed for, and it makes the entry point unusable
+/// in exactly the incremental workflow it exists to serve.
 ///
 /// A PARTIAL LOAD COULD IN PRINCIPLE RUN THOSE TWO CHECKS over its own drained sites, and
 /// deliberately does not: `check_use_site_requires_eq` reads `eq_derive::run`'s derived
 /// `NonEq` rows, which stand BELOW the stop point, so it would answer a Float composite
 /// WRONGLY rather than not at all. A false refusal is worse than a missing one.
 pub(crate) struct LoadCheckMarks {
-    judged_row_binding_clauses: HashSet<RuleId>,
     parameterized_type_sites: usize,
 }
 
@@ -2148,6 +2145,12 @@ impl KnowledgeBase {
     /// load, so the batch fails and there is no later batch to be silently short-changed
     /// — and it is not reachable from a test, which loads the real prelude, so this is
     /// recorded rather than guarded. A guard nothing can drive would be the worse trade.
+    ///
+    /// IT IS THE ONLY ADDER, and both of its callers are one walk: the judging run and
+    /// the `ClaimOnly` run a check-less load makes at its return
+    /// ([`crate::kb::typing::RowBindingRun`], WI-20260901-47VWX). That is deliberate —
+    /// a second enumerator of "the clauses this check judges" is a census that drifts,
+    /// and the first two attempts at the check-less load's claim were exactly that.
     pub(crate) fn claim_row_binding_clause(&mut self, rid: RuleId) -> bool {
         self.judged_row_binding_clauses.insert(rid)
     }
@@ -2155,11 +2158,11 @@ impl KnowledgeBase {
     /// WI-20260901-EA6KS — capture what the LOAD CHECKS have recorded so far, so an
     /// entry point that runs none of them can put it back.
     ///
-    /// See [`LoadCheckMarks`] for which registries those are and why leaving them
-    /// changed is a live fail-open.
+    /// ONE REGISTRY since WI-20260901-47VWX, not two: see [`LoadCheckMarks`] for what it
+    /// is, why leaving it changed is a live fail-open, and why the clause half is a claim
+    /// rather than a restore and so cannot live here.
     pub(crate) fn load_check_marks(&self) -> LoadCheckMarks {
         LoadCheckMarks {
-            judged_row_binding_clauses: self.judged_row_binding_clauses.clone(),
             parameterized_type_sites: self.parameterized_type_sites.len(),
         }
     }
@@ -2167,10 +2170,8 @@ impl KnowledgeBase {
     /// WI-20260901-EA6KS — restore what [`Self::load_check_marks`] captured.
     pub(crate) fn restore_load_check_marks(&mut self, marks: LoadCheckMarks) {
         let LoadCheckMarks {
-            judged_row_binding_clauses,
             parameterized_type_sites,
         } = marks;
-        self.judged_row_binding_clauses = judged_row_binding_clauses;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
         // pending sites, and this restores what it found rather than what it wants.
         //
@@ -2215,6 +2216,7 @@ impl KnowledgeBase {
     pub(crate) fn note_metadata_fact_presented(&mut self, rid: RuleId) {
         self.judged_row_binding_clauses.remove(&rid);
     }
+
 
     /// WI-1103 — was this `SortProvidesInfo` row DERIVED by [`eq_derive::run`], i.e.
     /// is it exempt from the provider-coverage op-backing walk? See

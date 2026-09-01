@@ -12570,14 +12570,24 @@ fn load_phase_inner(
     super::defaults::seed_default_provider_index(kb);
     mark!("seed_default_provider_index");
     // WI-20260901-Q68AK — `run_typer: false` stops HERE, with everything the typer reads
-    // already built. The two registries below this line are written by the item walk and
-    // read ONLY by a check that will now not run, so they are put back: leaving them
-    // hands the NEXT batch work it did not do, measured as a refusal naming a file that
-    // batch was never given. See [`crate::kb::LoadCheckMarks`] for both measurements.
+    // already built. What the item walk left for a check that will now not run is settled
+    // in two lines, and they pull in OPPOSITE directions (WI-20260901-47VWX):
+    //
+    // * the SITE registry is put back to what this load found, because a site is judged
+    //   by the batch that wrote it and this batch will not (`restore_load_check_marks`);
+    // * every row-binding CLAUSE in the KB is claimed, because a clause fact has no batch
+    //   boundary of its own — leave one this load created unclaimed and the next full
+    //   `load_all` walks the whole KB, judges it, and refuses naming a file that batch
+    //   was never given (`claim_written_row_bindings`). Measured at 4 refusals in a later
+    //   batch of one clean unrelated sort, one per clause producer, and a 5th from
+    //   `derive_forwarded_provisions` that no census of the loader's own writers caught.
+    //
+    // See [`crate::kb::LoadCheckMarks`] and [`super::typing::RowBindingRun`].
     if !options.run_typer {
         if let Some(marks) = check_marks {
             kb.restore_load_check_marks(marks);
         }
+        super::typing::claim_written_row_bindings(kb);
         return if all_errors.is_empty() {
             Ok((
                 LoadResult {
@@ -12745,6 +12755,7 @@ fn load_phase_inner(
     all_errors.extend(super::typing::check_written_row_bindings(
         kb,
         &written_type_sites,
+        super::typing::RowBindingRun::Judge,
     ));
     mark!("check_written_row_bindings");
     // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose

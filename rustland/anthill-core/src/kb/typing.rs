@@ -35356,6 +35356,68 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
     }
 }
 
+/// WI-20260901-47VWX — WHAT A RUN OF [`check_written_row_bindings`] IS FOR.
+///
+/// The check does two things in one walk, and only one of them is a verdict: it RECORDS
+/// which clause facts it has seen (`KnowledgeBase::claim_row_binding_clause`, because two
+/// of its three sources walk the whole KB with no batch boundary) and it JUDGES the ones
+/// it has not. A load that runs no checks still needs the first half — otherwise the
+/// clause facts IT created stay unclaimed and the next batch judges them, failing over a
+/// file it was never handed.
+///
+/// SO THE CHECK-LESS LOAD RUNS THIS WALK, NOT A COPY OF IT. Every earlier attempt at this
+/// keyed on a PRODUCER — restore the claims the load dropped (WI-20260901-EA6KS), then
+/// also claim what its declaration walk PRESENTED — and each was a census of writers that
+/// the next writer escaped: `derive_forwarded_provisions` asserts a `SortProvidesInfo` row
+/// through `assert_fact_carrier`, above the stop and through no presentation, and MEASURED
+/// leaked a refusal about `test.v47vwx.fwd` into a later batch of one clean unrelated sort
+/// with the presentation-keyed repair in place. Borrowing the READER's population instead
+/// is what makes that unreachable: a producer this check cannot see is one it cannot
+/// judge either. A SECOND ENUMERATOR WOULD BE THE SAME MISTAKE — hence one walk with a
+/// mode rather than a claim-only copy of the two source loops, which is a census of the
+/// check's own sources and drifts the first time a fourth is added.
+pub(crate) enum RowBindingRun {
+    /// Judge every clause not yet seen — and claim it, as before.
+    Judge,
+    /// Claim every clause not yet seen and judge NOTHING: the settlement a
+    /// `LoadOptions { run_typer: false }` load owes at its return.
+    ///
+    /// IT DOES DROP A REFUSAL, and saying otherwise would be the comfortable version of
+    /// this note. Before it, a clause written by a check-less load WAS eventually
+    /// reported — by whichever later batch first ran the check, blamed on a file that
+    /// batch was never given. That refusal is not relocated; nothing judges it. The
+    /// trade is the SITE half's, made twice for one reason
+    /// ([`crate::kb::LoadCheckMarks`]): the alternative is that a `load_all` of a clean
+    /// unrelated file FAILS, which makes the entry point unusable in the incremental
+    /// workflow it exists to serve. It is also the lesser loss because the file is not
+    /// silently blessed — a later batch that RE-PRESENTS it drops the claims through
+    /// `KnowledgeBase::note_metadata_fact_presented` and is refused normally, which is
+    /// what `a_check_less_load_claims_the_clauses_it_wrote`'s fourth batch pins.
+    ///
+    /// IT IS NOT A LANGUAGE-LEVEL NARROWING, so `docs/kernel-language.md` §5.5's "every
+    /// position that writes a row is checked" stands unamended: §5.5 states what the
+    /// CHECK decides, and this run does not weaken the check — it declines to charge one
+    /// batch's clauses to another. A caller that loads a file through the ordinary
+    /// pipeline meets every refusal §5.5 promises; `run_typer: false` is a library option
+    /// that runs no check at all, and a language spec that had to enumerate it would be
+    /// describing the loader instead of the language.
+    ClaimOnly,
+}
+
+/// WI-20260901-47VWX — claim every row-binding clause in the KB without judging one, for
+/// a load that will run no check. See [`RowBindingRun::ClaimOnly`].
+///
+/// IT IS A WHOLE-KB WALK, and that is affordable rather than assumed so: MEASURED at
+/// 390 µs on a stdlib-sized KB in a debug build, against a load of the same KB in the
+/// hundreds of milliseconds. It runs only on the `run_typer: false` path.
+pub(crate) fn claim_written_row_bindings(kb: &mut KnowledgeBase) {
+    let errs = check_written_row_bindings(kb, &[], RowBindingRun::ClaimOnly);
+    debug_assert!(
+        errs.is_empty(),
+        "a ClaimOnly run judges nothing, so it can produce no diagnostic"
+    );
+}
+
 /// WI-20260831-RSRP5 / WI-20260831-V25N3 — AN EFFECT LABEL IS JUDGED WHERE THE ROW IS
 /// WRITTEN, at every position a row can be written in.
 ///
@@ -35434,16 +35496,25 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
 pub(crate) fn check_written_row_bindings(
     kb: &mut KnowledgeBase,
     sites: &[crate::kb::ParameterizedSite],
+    run: RowBindingRun,
 ) -> Vec<super::load::LoadError> {
+    let judging = matches!(run, RowBindingRun::Judge);
     let effect_sym = kb.try_resolve_symbol("anthill.prelude.Effect");
     let modify = kb.try_resolve_symbol("anthill.prelude.Modify");
-    if effect_sym.is_none() && modify.is_none() {
+    if judging && effect_sym.is_none() && modify.is_none() {
         // Neither rule can be stated in this KB — no prelude `Effect`, no prelude
         // `Modify`. Mirrors each sibling gate's own bail.
+        //
+        // A `ClaimOnly` RUN DOES NOT TAKE IT, and the asymmetry is the point: a judging
+        // run that bails has judged nothing, so a later batch judging those clauses is
+        // the FIRST judgement and belongs to it. A check-less load will never judge
+        // them, in this batch or any other, so its claim stands whether or not the two
+        // rules can be stated here — otherwise a partial load into a prelude-less KB
+        // hands its clauses to whichever later batch first has a prelude.
         return Vec::new();
     }
     let keys = ModifyTargetKeys::new(kb);
-    let registered = effect_sym.and_then(|es| {
+    let registered = effect_sym.filter(|_| judging).and_then(|es| {
         // `Effect`'s sole declared type parameter, read from the DECLARATION — the same
         // sourcing [`check_effect_registration`] uses, so renaming it in effects.anthill
         // moves both ends together. `None` (no parameter) makes this half inert here
@@ -35493,6 +35564,9 @@ pub(crate) fn check_written_row_bindings(
         if !kb.claim_row_binding_clause(clause.rid) {
             continue;
         }
+        if !judging {
+            continue;
+        }
         let Some((spec_base, named)) = unwrap_spec_view(kb, clause.spec_view) else {
             continue;
         };
@@ -35529,7 +35603,12 @@ pub(crate) fn check_written_row_bindings(
     }
 
     // ── Source 1: every written parameterized type ───────────────────────────
-    for site in sites {
+    // NOT WALKED BY A `ClaimOnly` RUN, and that is not an optimization: a site carries no
+    // per-KB claim to leave behind (its registry is drained per load, and a check-less
+    // load's sites are truncated away by `restore_load_check_marks`), so there is nothing
+    // here for a later batch to inherit. The caller passes `&[]` anyway; this says why
+    // that is the right argument rather than an empty-looking accident.
+    for site in sites.iter().filter(|_| judging) {
         let row_params = row_params_of(kb, site.base, &mut row_params_by_spec);
         if row_params.is_empty() {
             continue;
@@ -35575,6 +35654,9 @@ pub(crate) fn check_written_row_bindings(
         // (the assert dedups onto the claimed id), so see
         // `KnowledgeBase::note_metadata_fact_presented`, which is what drops it.
         if !kb.claim_row_binding_clause(rid) {
+            continue;
+        }
+        if !judging {
             continue;
         }
         let mut found: Vec<(&'static str, Symbol, Symbol, Value)> = Vec::new();
