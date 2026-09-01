@@ -1428,12 +1428,35 @@ impl TypeError {
                 actual_type: "unknown".to_string(),
                 span: self.span(kb),
             },
+            // WI-20260901-92VA4 — SAYS WHAT THE RULE BODY SAYS. The phrase "unknown
+            // functor" is kept verbatim and in place: ~15 assertions match on it, and
+            // `wi557::genuinely_unknown_bare_functor_stays_terse` uses it to separate this
+            // from WI-565's `BareMemberCall` member hint. What is added around it is the
+            // census and the repair, from the same two functions
+            // `undefined_rule_body_goal_message` reads — so an author who writes
+            // `field_access(q, q)` in an operation body and one who writes it as a
+            // rule-body goal are told the same thing about the same name. Before 92VA4 the
+            // operation body did not reach this at all for that spelling: the accessor
+            // ladder rescued it (`kb/load.rs`, the `is_minted` gate).
+            //
+            // NOT MERGED INTO `UndefinedRuleBodyGoal`. That variant's sentence states a
+            // consequence this position does not have ("the rule it is written in can
+            // never fire"), and this one is a `TypeMismatch` carrying the `.apply` field
+            // slot its readers key on.
             TypeError::UnknownApplyFunctor { name, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.local_name_of(*name).to_string(),
                 field_name: "apply".to_string(),
                 expected_type: "known operation or arrow-typed variable".to_string(),
-                actual_type: "unknown functor".to_string(),
+                actual_type: if kb.symbol_declares_nothing(*name) {
+                    format!(
+                        "unknown functor — {}. {}",
+                        crate::kb::load::no_declaration_census(),
+                        crate::kb::load::undefined_name_repair(kb.local_name_of(*name)),
+                    )
+                } else {
+                    "unknown functor".to_string()
+                },
                 span: self.span(kb),
             },
             TypeError::UndefinedDataFunctor { name, .. } => LoadError::UndefinedRuleBodyTerm {

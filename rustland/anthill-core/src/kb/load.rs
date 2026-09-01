@@ -11721,12 +11721,38 @@ pub fn load_all_per_file(
 /// two rules headed `PartialOrd.gte` and `PartialOrd.lte`, and the message then reads
 /// as though a PRELUDE rule were broken. Measured on `safety_gps.anthill:347`. The
 /// span already points at the goal's own text, which is where the author must look.
+/// WI-20260901-92VA4 — THE ONE WORDING of "nothing is declared under this name".
+///
+/// THREE MESSAGES, AND THEY SHARE DIFFERENT AMOUNTS — stated exactly, because an earlier
+/// draft of this doc claimed all three read both helpers and `/code-review` found that
+/// [`undefined_contract_goal_message`] still carried its own copy of the repair:
+///
+///   * [`undefined_rule_body_goal_message`] reads BOTH.
+///   * [`undefined_contract_goal_message`] reads [`undefined_name_repair`] only — its
+///     census is deliberately different ("…carries that name", covering a clause position
+///     that was never resolved at all), so sharing that half would change its meaning.
+///   * the operation-body `UnknownApplyFunctor` rendering (`typing.rs`) reads BOTH, and
+///     ONLY when [`KnowledgeBase::symbol_declares_nothing`] holds — that variant fires on
+///     a wider condition, so an applied sort or parameter reaches it with the name
+///     declared and must not be told otherwise.
+///
+/// Two functions rather than one sentence because the operation-body message puts them
+/// either side of its own "unknown functor" phrase, which ~15 assertions match on.
+pub(crate) fn no_declaration_census() -> &'static str {
+    "no rule, fact, operation, entity, const or builtin is declared under that name"
+}
+
+/// The repair, named once — see [`no_declaration_census`].
+pub(crate) fn undefined_name_repair(functor: &str) -> String {
+    format!("Fix the spelling, or import the namespace that declares `{functor}`.")
+}
+
 fn undefined_rule_body_goal_message(functor: &str) -> String {
     format!(
-        "rule-body goal `{functor}` names nothing: no rule, fact, operation, entity, \
-         const or builtin is declared under that name, so this goal can NEVER match and \
-         the rule it is written in can never fire. Fix the spelling, or import the \
-         namespace that declares `{functor}`."
+        "rule-body goal `{functor}` names nothing: {}, so this goal can NEVER match and \
+         the rule it is written in can never fire. {}",
+        no_declaration_census(),
+        undefined_name_repair(functor),
     )
 }
 
@@ -11746,8 +11772,8 @@ fn undefined_contract_goal_message(functor: &str, op: &str, clause: &str) -> Str
          merely inert: override refinement compares contract clauses by structure, so an \
          undeclared name matches another undeclared name of the same spelling and \
          mismatches every declared one — deciding whether a provider is accepted on a \
-         name that denotes nothing. Fix the spelling, or import the namespace that \
-         declares `{functor}`."
+         name that denotes nothing. {}",
+        undefined_name_repair(functor),
     )
 }
 
@@ -20241,34 +20267,36 @@ impl<'a> Loader<'a> {
                         // the same call for the same reason.) A dot CALL's named args
                         // are unaffected — `p.m(a: 1)` is a call, not a field access,
                         // and that path threads them into the `DotApply` frame.
-                        // WI-20260824-6RXGD MEASURED THIS CONJUNCT AGAINST §8.6 AND THE
-                        // TWO DISAGREE — recorded, not changed (user decision 2026-09-01).
-                        // `dt::is` admits the SHORT spelling, so a hand-written
-                        // `field_access(q, x)` that resolves to NOTHING lands here and is
-                        // lowered as the accessor. Driven: in an operation body it answers
-                        // 7 where `q.x` answers 7, while the byte-analogous `foo_access(q,
-                        // x)` is a load error; the SAME spelling as a rule-body goal is a
-                        // load error naming the missing import, and in a query pattern it
-                        // is an ordinary bare intern. One spelling, three positions, and
-                        // this is the only one that rescues it. `dot_apply` behaves
-                        // identically (driven, also 7) through its own two arms in this
-                        // file.
-                        // The spec says the opposite in three bullets — "A user's
-                        // same-spelled name cannot capture a desugaring", "No name is
-                        // reserved", "provenance, not spelling, decides that". What it
-                        // describes is `name == dt::FIELD_ACCESS` here, and narrowing to
-                        // that makes arm and control agree (driven, one word). Corpus:
-                        // ZERO hand-written short-spelling calls, so neither reading
-                        // migrates anything. WI-20260901-92VA4 owns the decision. Not
-                        // narrowed here because the objection that
-                        // blocked it — the narrow gate removed the three re-routes below
-                        // with no working replacement — is what 6RXGD delivered instead
-                        // (`wi6rxgd_field_access_call_test`: the DECLARED operation is now
-                        // callable). Narrowing `dt::is` itself is NOT the fix either: its
-                        // short arm is load-bearing on the KB view, where `local_name_of`
-                        // yields the short name. This is a per-caller narrowing on the
-                        // PARSE view, and `dot_apply`'s two arms in this file need it too.
-                        if dt::is(&name, dt::FIELD_ACCESS) && named_args.is_empty() {
+                        // WI-20260901-92VA4 — PROVENANCE, NOT SPELLING, exactly as §8.6
+                        // words it. `dt::is` admits the SHORT name, so before this a
+                        // hand-written `field_access(q, x)` that resolved to NOTHING landed
+                        // here and was lowered as the accessor: driven, it answered 7 where
+                        // `q.x` answers 7, while the byte-analogous `foo_access(q, x)` was a
+                        // load error and the SAME spelling as a rule-body goal was a load
+                        // error naming the missing import. One spelling, three positions,
+                        // and this was the only one that rescued it. The fully-qualified
+                        // `anthill.reflect.field_access(q, x)` was rescued too, and is now a
+                        // call to the declared operation — which §6.7 says it is, and which
+                        // WI-20260824-6RXGD made work (`wi6rxgd_field_access_call_test`).
+                        //
+                        // THE `is_minted` GATE IS THE IDIOM `desugar_target` PRESCRIBES —
+                        // "every reader whose arm is already gated on `is_minted` may
+                        // compare to the constant directly" — and the `..` address alone
+                        // would answer the same, since it is unspellable. Both are written
+                        // because the gate is the CLAIM and the constant is the identity.
+                        //
+                        // `dot_apply` IS NOT THE SAME QUESTION AND IS DELIBERATELY LEFT
+                        // ALONE, which is the half 92VA4's own text got wrong. §5.3 gives
+                        // the author that spelling — "a sort-scoped law written against the
+                        // method-call form, `rule dr: dot_apply(?receiver, member, ?x) = …
+                        // [simp]`" — so its two arms in this file take a SHAPE guard, not a
+                        // mint gate, and their comments record the 8 tests that fall if one
+                        // is added. §6.7 gives `field_access` no written form at all: it is
+                        // "a call to whatever `field_access` denotes at that scope".
+                        if self.parsed.terms.is_minted(parse_id)
+                            && name == dt::FIELD_ACCESS
+                            && named_args.is_empty()
+                        {
                             if self.try_identifier_dot_field(
                                 parse_id,
                                 &pos_args,

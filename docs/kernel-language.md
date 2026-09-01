@@ -4467,6 +4467,24 @@ names**, exactly as every other file does: a meta-rule matching an occurrence wr
 `import anthill.reflect.{occurrence_term}` and `import anthill.reflect.Expr.{int_lit}`
 before it can use them. There is no vocabulary that resolves from anywhere.
 
+**One of these names does have a written surface form** (WI-20260901-92VA4). §5.3 gives the
+author `dot_apply(?receiver, member, ?x)` as the applicative spelling of a sort-scoped dot
+rule, so a term of exactly that *shape* — two or more positional arguments with an
+**identifier** in the name slot — **is** that form. `field_access` has no such surface form,
+so a hand-written `field_access(o, f)` is an ordinary call and nothing more, whether it is
+spelled short or qualified. The asymmetry is about which forms the language gives an author
+a way to *write*: the loader reads **provenance** for the accessor and a **shape** for the
+dot rule, and neither reads a list of reserved spellings.
+
+The shape rule is *only* a shape rule, and it does not defer to a declaration. A program
+that declares its own `operation dot_apply(a, b)` still cannot reach it by writing
+`dot_apply(x, y)` with identifiers in both slots — that spelling is the dot rule form and
+dispatches as `x.y`; the declaration is reachable at any other shape (`dot_apply(1, 2)`,
+whose name slot is not an identifier). This is a wart, not a design: it is the one place
+where the third bullet above holds only up to a shape. Recorded here rather than smoothed
+over, because the spelling is a documented surface and its exception is what an author
+writing a dot rule would otherwise discover by accident.
+
 This reaches **persisted facts** too, and the obligation is the reader's. A store writes
 bare `fact …` lines with no header of its own — no `namespace`, no `import` — so a fact
 whose term carries reflection vocabulary reloads correctly only into a scope that

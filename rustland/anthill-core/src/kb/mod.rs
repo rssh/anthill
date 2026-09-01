@@ -3999,9 +3999,27 @@ impl KnowledgeBase {
         if crate::kb::resolve::is_scoping_marker(self.local_name_of(sym), pos_arity) {
             return None;
         }
-        let defined =
-            self.kind_of(sym).is_some() || self.rules_by_functor_iter(sym).next().is_some();
-        (!defined).then_some(sym)
+        self.symbol_declares_nothing(sym).then_some(sym)
+    }
+
+    /// Is NOTHING declared under `sym` — no `kind_of` role (sort, entity, operation,
+    /// const, param, field, …) and no clause indexed by it?
+    ///
+    /// WI-20260901-92VA4 — extracted from [`Self::undefined_functor`], which is still its
+    /// only other caller, so the two cannot disagree about what "declared" means. The
+    /// second caller is the operation-body `UnknownApplyFunctor` diagnostic, which appends
+    /// the "nothing is declared under that name" census ONLY when this holds: that variant
+    /// fires on a WIDER condition than this one (its own doc: "neither a known operation, a
+    /// constructor, nor a var-bound arrow type"), so an applied sort `S(1)` or an applied
+    /// parameter `n(1)` reaches it with the name perfectly well declared. Saying the census
+    /// there would be a false sentence about a name the author can see three lines up —
+    /// found by `/code-review`, which drove both.
+    ///
+    /// Takes a SYMBOL, where `undefined_functor` takes a goal view: the head read
+    /// (`goal_head_sym_arity`) and the scoping-marker exemption belong to the goal
+    /// question and not to this one.
+    pub fn symbol_declares_nothing(&self, sym: Symbol) -> bool {
+        self.kind_of(sym).is_none() && self.rules_by_functor_iter(sym).next().is_none()
     }
 
     /// The `(functor symbol, positional arity)` of a GOAL's head, or `None` for a head
