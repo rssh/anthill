@@ -222,6 +222,24 @@ fn unbacked_provider_operation_detail(
     )
 }
 
+/// WI-20260831-V25N3 — ONE rendering for [`LoadError::WrittenEffectRowLabel`], shared by
+/// the located and the bare face so the two cannot drift. `origin` completes "written in
+/// …" and `detail` carries the rule-specific half; both are built by the pass, which is
+/// the only thing that knows which of the two rules fired and where.
+fn written_effect_row_label_message(
+    spec: &str,
+    param: &str,
+    label: &str,
+    origin: &str,
+    detail: &str,
+) -> String {
+    format!(
+        "{origin} binds `{spec}`'s effect-row parameter `{param}` to a row containing \
+         `{label}`, {detail} Every operation that projects this row carries the label, so \
+         it is judged where the ROW is written (kernel-language.md §5.5)."
+    )
+}
+
 /// A diagnostic that BLOCKS the load — every variant, without exception. A
 /// `load_all` `Err` means the program will not run: callers print and exit,
 /// they do not triage.
@@ -538,6 +556,46 @@ pub enum LoadError {
     /// the check is opt-in — a carrier that provides neither is unconstrained.
     IncompatibleEqNonEq {
         carrier: String,
+    },
+    /// WI-20260831-V25N3 — an effect label written in a ROW TYPE-ARGUMENT
+    /// (`s: Spec[E = {Beep}]`) that names no registered kind, or a `Modify` whose
+    /// target is not a place. §5.5 judges a row element ONCE, AT ITS ORIGIN, so a
+    /// projection of it (`s.E`) may be exempt; this is one of the origins.
+    ///
+    /// Its own variant rather than [`LoadError::Other`] because the refusal carries a
+    /// SPAN — the base name of the instantiation the author wrote — and `Other` has
+    /// nowhere to put one, which is the whole reason judging at the origin beats
+    /// judging at every projection.
+    ///
+    /// THE SPAN IS PRESENT FOR A WRITTEN TYPE ARGUMENT AND ABSENT FOR A CLAUSE, and that
+    /// is a limit rather than a choice (/code-review). A `provides` / `requires` /
+    /// `provides … :-` clause and an operation's contract clause reach the check as
+    /// FACTS, and the two span tables that might have located them were built and
+    /// measured answering `None` for exactly these symbols — `functor_span` keys off a
+    /// converted `Term::Fn` functor (a name APPLIED in a body, not a declaration) and
+    /// `rule_head_span` is empty for a loader-emitted metadata fact. Those refusals name
+    /// the owner and the clause keyword instead, which is enough to grep for and not
+    /// enough to click.
+    WrittenEffectRowLabel {
+        /// The sort whose row parameter is bound (`test.Spec`), qualified.
+        spec: String,
+        /// The row parameter the row is bound to (`E`), short.
+        param: String,
+        /// The offending label as written, rendered (`Beep`, `Modify[T = Thing]`).
+        label: String,
+        /// WHERE the row was written, as the subject of the sentence: a spec clause
+        /// renders as ``test.C provides test.Spec``, an operation's contract clause as
+        /// ``test.ask`'s `requires` clause`, and a written type argument says only that
+        /// much — its SPAN is what locates it. Built by the pass, which is the only
+        /// thing that knows which source the binding came through.
+        origin: String,
+        /// Why it is refused and how to repair it — the rule-specific half.
+        detail: String,
+        /// The base name's own span, for a written type argument. `None` for every
+        /// FACT-sourced origin — a spec clause and an operation's contract clause both
+        /// arrive as facts, and neither span table answers for them; see this variant's
+        /// own note.
+        span: Option<Span>,
     },
     /// WI-644 / WI-835: a parametric sort with a `requires Eq[param]` clause is
     /// instantiated — ANYWHERE the type is written: an entity field, an operation
@@ -2161,6 +2219,7 @@ impl LoadError {
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
+            | LoadError::WrittenEffectRowLabel { span, .. }
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::AmbiguousSpecOpDispatch { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
@@ -2467,6 +2526,20 @@ impl LoadError {
             } => {
                 let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a carrier that provides `NonEq` (its equality is not reflexive — e.g. IEEE `nan != nan`), so it is not a lawful key. Bind `{}` to a lawful key type (`TotalFloat` for floats) instead of '{}'.",
                     container, spec, param, param, carrier, param, carrier);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
+            LoadError::WrittenEffectRowLabel {
+                spec,
+                param,
+                label,
+                origin,
+                detail,
+                span,
+            } => {
+                let msg = written_effect_row_label_message(spec, param, label, origin, detail);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -3617,6 +3690,20 @@ impl std::fmt::Display for LoadError {
                 // `check_use_site_requires_eq`'s per-site `SourceSpan` key.
                 let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
                     container, spec, param, param, carrier);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
+            }
+            LoadError::WrittenEffectRowLabel {
+                spec,
+                param,
+                label,
+                origin,
+                detail,
+                span,
+            } => {
+                let msg = written_effect_row_label_message(spec, param, label, origin, detail);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
                     None => write!(f, "{}", msg),
@@ -12561,11 +12648,21 @@ fn load_phase_inner(
     // the author wrote nothing, so there is no later site to be loud at.
     all_errors.extend(super::defaults::build_default_provider_index(kb));
     mark!("build_default_provider_index");
+    // WI-835 / WI-20260831-V25N3 — ONE DRAIN, TWO READERS. Every written parameterized
+    // type is recorded at the type lowerings; both the use-site `requires Eq` check and
+    // the written-row-label check read the SAME batch. Drained here rather than by
+    // either check, because a check that drained would leave the other silently seeing
+    // nothing — and a `load_incremental` must still re-check only its OWN sites, which
+    // one drain per load preserves.
+    let written_type_sites = kb.take_parameterized_type_sites();
     // WI-644: use-site `requires Eq` — an entity field type `Map[K = Float]` (a
     // parametric sort `requires Eq[K]` bound to a `NonEq` carrier) is a load error,
     // not a silent wrong answer. After eq_derive so a Float-composite's derived
     // NonEq is visible.
-    all_errors.extend(super::typing::check_use_site_requires_eq(kb));
+    all_errors.extend(super::typing::check_use_site_requires_eq(
+        kb,
+        &written_type_sites,
+    ));
     mark!("check_use_site_requires_eq");
     // WI-347: operation-override refinement — a carrier's own op overriding a
     // spec op must refine it (effects no wider; pre/post next). Load-blocking
@@ -12597,14 +12694,20 @@ fn load_phase_inner(
     all_errors.extend(super::typing::check_declared_row_contradiction(kb));
     mark!("check_declared_row_contradiction");
 
-    // WI-20260831-RSRP5: the same two rules, applied where a CARRIER writes an effect
-    // row — `provides Spec[E = {…}]`. Every operation projecting that row carries its
-    // labels, so this is where a type-targeted `Modify` or an unregistered kind is
-    // refused; see `check_provision_row_bindings` for why the binding and not the
-    // projection. After the two gates it mirrors, so a program that breaks the rule in
-    // BOTH places reads its operation-row diagnostic first.
-    all_errors.extend(super::typing::check_provision_row_bindings(kb));
-    mark!("check_provision_row_bindings");
+    // WI-20260831-RSRP5 / WI-20260831-V25N3: the same two rules, applied wherever a ROW
+    // is WRITTEN — a carrier's `provides Spec[E = {…}]`, a sort's `requires`, a
+    // provision condition, and every written type argument (a signature's parameter and
+    // return types, an entity field, a `sort S = …` alias, a `const`, a body
+    // annotation). Every operation projecting such a row carries its labels, so this is
+    // where a type-targeted `Modify` or an unregistered kind is refused; see
+    // `check_written_row_bindings` for why the binding and not the projection. After the
+    // two gates it mirrors, so a program that breaks the rule in BOTH places reads its
+    // operation-row diagnostic first.
+    all_errors.extend(super::typing::check_written_row_bindings(
+        kb,
+        &written_type_sites,
+    ));
+    mark!("check_written_row_bindings");
     // Proposal 039 / WI-084: the const purity gate. An anthill-bodied const whose
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so
@@ -23667,13 +23770,13 @@ impl<'a> Loader<'a> {
                 // relation `eq_derive::run` has not built yet.
                 //
                 // BEFORE the `any_node` split, and from `child_bindings` rather than
-                // the assembled term, so a denoted binding removes only ITSELF. The
-                // ground branch alone left `Map[K = Float, V = Buf[T = Int64, N = 3]]`
-                // unchecked: the literal `3` poisons the whole type to `Value::Node`,
-                // and `K = Float` went with it — an unrelated value-in-type argument
-                // silently disabling the lawful-key check. The WI-709 check above is
-                // branch-blind for the same reason; these two must not disagree about
-                // which instantiations they see.
+                // the assembled term, so a denoted binding stays a binding of ITS OWN.
+                // The ground branch alone left `Map[K = Float, V = Buf[T = Int64, N =
+                // 3]]` unchecked: the literal `3` poisons the whole type to
+                // `Value::Node`, and `K = Float` went with it — an unrelated
+                // value-in-type argument silently disabling the lawful-key check. The
+                // WI-709 check above is branch-blind for the same reason; these two must
+                // not disagree about which instantiations they see.
                 //
                 // The base name's OWN span (`type_expr_span`, that rule's owner), not
                 // the threaded `span` — that one is the whole annotation's, so a NESTED
@@ -23684,9 +23787,13 @@ impl<'a> Loader<'a> {
                         base: sort_sym,
                         bindings: child_bindings
                             .iter()
-                            .filter_map(|(s, c)| match c {
-                                node_occurrence::TypeChild::Ground(t) => Some((*s, *t)),
-                                node_occurrence::TypeChild::Node(_) => None,
+                            .map(|(s, c)| match c {
+                                node_occurrence::TypeChild::Ground(t) => {
+                                    (*s, crate::eval::value::Value::term(*t))
+                                }
+                                node_occurrence::TypeChild::Node(n) => {
+                                    (*s, crate::eval::value::Value::Node(n.clone()))
+                                }
                             })
                             .collect(),
                         span: self.type_expr_span(ty),
@@ -24110,18 +24217,13 @@ impl<'a> Loader<'a> {
                 // this arm and that one are two `TypeExpr::Parameterized` lowerings, so
                 // recording at only one let a Float key written in a spec clause load
                 // clean. `named` already has positionals mapped onto declared params,
-                // matching the other recorder; a non-`Term` value (a denoted, or a
-                // nested `SortView`) is dropped per binding, never per site.
+                // matching the other recorder. WI-20260831-V25N3: every binding is
+                // recorded CARRIER-FAITHFULLY (a denoted one included) and each consumer
+                // filters by its OWN rule — see `ParameterizedSite::bindings`.
                 self.kb
                     .record_parameterized_type_site(crate::kb::ParameterizedSite {
                         base: base_sym,
-                        bindings: named
-                            .iter()
-                            .filter_map(|(s, v)| match v {
-                                Value::Term { id, .. } => Some((*s, *id)),
-                                _ => None,
-                            })
-                            .collect(),
+                        bindings: named.iter().map(|(s, v)| (*s, v.clone())).collect(),
                         span: self.type_expr_span(ty),
                     });
                 self.assemble_binding_value(base_sym, named, pos)

@@ -628,12 +628,25 @@ pub(crate) struct SortOpsTable {
 pub(crate) struct ParameterizedSite {
     /// The sort being instantiated (`anthill.prelude.Map`).
     pub base: Symbol,
-    /// Bindings whose value is a ground TYPE, by DECLARED parameter name
-    /// (positionals already mapped). A `denoted` binding is omitted: it stands a
-    /// VALUE in a type-argument position, so it carries no `requires Spec[param]`
-    /// obligation — omitting just that binding, rather than the whole site, is
-    /// what keeps its carrier-bound siblings checked.
-    pub bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// EVERY binding, by DECLARED parameter name (positionals already mapped),
+    /// CARRIER-FAITHFULLY: a ground type as `Value::Term`, a `denoted`-bearing one
+    /// (`Modify[clock]`, `Vector[Int64, 3]`) as the `Value::Node` it actually is.
+    ///
+    /// WI-20260831-V25N3 WIDENED THIS FROM GROUND-ONLY, and the reason is that ONE
+    /// FIELD WAS ANSWERING TWO QUESTIONS. WI-835 recorded only `TermId`s, on the
+    /// ground that "a `denoted` binding stands a VALUE in a type-argument position,
+    /// so it carries no `requires Spec[param]` obligation" — true of the `Eq`-key
+    /// question, and FALSE of "what row did the author write". A row is poisoned to
+    /// `Value::Node` by ONE denoted element, so `Spec[E = {Beep, Modify[clock]}]`
+    /// dropped its whole `E` binding and the unregistered `Beep` beside the lawful
+    /// place went unjudged — MEASURED loading clean, while the same row in a
+    /// `provides` clause was refused.
+    ///
+    /// So the field records what was WRITTEN and each consumer applies its own
+    /// filter: [`crate::kb::typing::check_use_site_requires_eq`] keeps its
+    /// ground-only reading explicitly (a denoted binding names no carrier to look
+    /// up), and `check_written_row_bindings` reads every one.
+    pub bindings: SmallVec<[(Symbol, crate::eval::value::Value); 2]>,
     /// Where the base name was written, for a `path:line:col` diagnostic. Carries
     /// the `SourceId`: byte offsets alone repeat across files.
     pub span: SourceSpan,
@@ -1374,15 +1387,38 @@ pub struct KnowledgeBase {
     // `SortProvidesInfo`, and a Float-composite key's `NonEq` comes from it, so
     // deciding at the lowering would silently pass every derived case.
     //
-    // Push-only WITHIN a load; drained by the check (`take_parameterized_type_sites`)
-    // so a second `load_incremental` into the same KB re-checks only ITS OWN sites.
-    // Leaving them would re-walk and re-report every earlier batch's sites — the
-    // reason the sibling `resolved_requires_facts` below exists.
+    // Push-only WITHIN a load; drained ONCE PER LOAD by `load_phase_inner`
+    // (`take_parameterized_type_sites`) so a second `load_incremental` into the same KB
+    // re-checks only ITS OWN sites. Leaving them would re-walk and re-report every
+    // earlier batch's sites — the reason the sibling `resolved_requires_facts` below
+    // exists.
+    //
+    // THE DRAIN IS THE CALLER'S, not a check's (WI-20260831-V25N3): TWO checks read this
+    // batch now — `check_use_site_requires_eq` and `check_written_row_bindings` — and
+    // whichever one drained would have left the other silently seeing nothing.
     parameterized_type_sites: Vec<ParameterizedSite>,
 
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
     resolved_requires_facts: HashSet<RuleId>,
+
+    // WI-20260831-V25N3 — the clause facts `typing::check_written_row_bindings` has
+    // ALREADY JUDGED for written effect-row labels, by RuleId.
+    //
+    // ITS TWO FACT SOURCES WALK THE WHOLE KB, unlike its third — the
+    // `parameterized_type_sites` registry is DRAINED per load, so a site is judged in
+    // the batch that wrote it and never again. The spec-clause and contract-clause walks
+    // have no such boundary, so a `load_incremental` of a CLEAN file into a KB that
+    // already holds an offending clause re-reported that clause: MEASURED, a second
+    // batch containing one unrelated sort failed with an error about a file it was not
+    // given. This is the same per-ROW, cross-phase question `resolved_requires_facts`
+    // above answers, keyed the same way.
+    //
+    // A RE-PRESENTED FILE IS STILL JUDGED, and must be: `load_incremental` re-scans
+    // files already in the KB and banks a SECOND fact for each (WI-1049), with a NEW
+    // RuleId — so the batch that re-presents a bad clause reports it, and only the batch
+    // that does not present it at all skips it.
+    judged_row_binding_clauses: HashSet<RuleId>,
 
     /// WI-1103 — the `SortProvidesInfo` rows [`eq_derive::run`] asserts (a Partial
     /// composite's derived `NonEq` + `PartialEq`). `check_provider_operations` skips
@@ -1864,6 +1900,7 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
+            judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
             derived_provision_origin: std::collections::HashMap::new(),
             sources: SourceRegistry::new(),
@@ -2024,6 +2061,13 @@ impl KnowledgeBase {
     /// Mark a (post-reassert) SortRequiresInfo RuleId as finalized.
     pub fn mark_requires_resolved(&mut self, rid: RuleId) {
         self.resolved_requires_facts.insert(rid);
+    }
+
+    /// WI-20260831-V25N3 — claim `rid` for the written-row-label walk, returning `true`
+    /// the FIRST time it is seen and `false` afterwards. See
+    /// [`Self::judged_row_binding_clauses`] for why the question is per-row.
+    pub(crate) fn claim_row_binding_clause(&mut self, rid: RuleId) -> bool {
+        self.judged_row_binding_clauses.insert(rid)
     }
 
     /// WI-1103 — was this `SortProvidesInfo` row DERIVED by [`eq_derive::run`], i.e.

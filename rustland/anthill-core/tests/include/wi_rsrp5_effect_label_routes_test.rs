@@ -22,12 +22,16 @@
 //! | C | a written type argument in a signature | not measurable (see below) | judged by NOTHING |
 //!
 //! (Row C's verdict is later than this ticket: WI-20260831-PYNS2 made the route drivable,
-//! and it turned out to be unjudged. Filed as WI-20260831-V25N3 — see below.)
+//! and it turned out to be unjudged. WI-20260831-V25N3 closed it — and closed a hole in
+//! route A the same census found, a row nested INSIDE a `provides` binding
+//! (`provides Box[T = Spec[E = {…}]]`), which this ticket's provision walk never looked
+//! into. The pass the two route-A tests below drive is now
+//! `check_written_row_bindings`, whose provision walk is unchanged; see below.)
 //!
 //! Route A is the finding. A label can only reach a projected row by being WRITTEN
 //! somewhere, and for a carrier's row parameter that somewhere is the binding — so
-//! judging it there covers THAT origin entirely (route C is a second origin and is not
-//! covered; see below), with a better diagnostic (it names the line the author wrote, not
+//! judging it there covers THAT origin entirely (route C is a second origin, covered
+//! later by WI-20260831-V25N3), with a better diagnostic (it names the line the author wrote, not
 //! a distant caller) and a verdict for a carrier no caller has projected yet. It also leaves `docs/kernel-language.md` §5.5's exemption of
 //! "a receiver projection (`s.E`)" TRUE AS WRITTEN, which the widening first proposed
 //! would have contradicted.
@@ -42,13 +46,15 @@
 //! it turned out the refusal was never universal — a spec with a CARRIER already accepted
 //! the shape, so route C had been reachable all along wherever a spec was implemented.
 //!
-//! IT IS JUDGED BY NOTHING, which this ticket's argument requires it to be judged by
+//! IT WAS JUDGED BY NOTHING, which this ticket's argument requires it to be judged by
 //! something: `operation ask(s: Spec[E = {Beep}], …)` and `… [E = {Modify[Thing]}]` both
-//! LOAD CLEAN, at labels the two gates above refuse in a `provides` binding. So the "a
+//! LOADED CLEAN, at labels the two gates above refuse in a `provides` binding. So the "a
 //! label can only reach a projected row by being WRITTEN somewhere, and that somewhere is
-//! judged" claim holds for routes A and B and NOT for C. Measured on guardians' `Llm` too,
+//! judged" claim held for routes A and B and NOT for C. Measured on guardians' `Llm` too,
 //! where it predates PYNS2. Filed as WI-20260831-V25N3 rather than fixed here, because the
-//! work is the census of type positions a row can be written in, not the gate.
+//! work is the census of type positions a row can be written in, not the gate — and that
+//! is what V25N3 did: the judging half below is reused verbatim, over two more sources.
+//! `wi_v25n3_written_row_label_test.rs` carries the census.
 //!
 //! ## What fails when it is backed out
 //!
@@ -59,8 +65,11 @@
 //!
 //! ```text
 //!   back-out (sharp)                              reds
-//!   provision-binding pass inert                  both route-A tests
-//!   provision-binding pass peel-only              both route-A tests
+//!   (the "provision-binding pass" is now the SPEC-CLAUSE source of
+//!    `check_written_row_bindings`; WI-20260831-V25N3 renamed the pass and added two
+//!    more sources, and left this walk unchanged)
+//!   the spec-clause source inert                  both route-A tests
+//!   the spec-clause source peel-only              both route-A tests
 //!   check_modify_targets peel-only                the route-B `Modify` test
 //!   check_macro_purity peel-only                  the macro test
 //!   check_effect_registration peel-only           NOTHING  <- so it was reverted
@@ -432,11 +441,28 @@ namespace test.rsrp5.two
 end
 "#;
     let errs = load_errors(&[two]);
-    for slot in ["`E` to an effect row", "`F` to an effect row"] {
+    // The SLOT WORDING is WI-20260831-V25N3's — that ticket gave the refusal its own
+    // `LoadError` variant with a shared rendering, and every origin now reads
+    // "…'s effect-row parameter `E`". The assertion is otherwise this ticket's: one
+    // message per slot, each naming its own.
+    for slot in [
+        "effect-row parameter `E`",
+        "effect-row parameter `F`",
+    ] {
         assert!(
             errs.iter().any(|e| e.contains(slot)),
             "each bad row binding must name its own slot — expected one mentioning \
              {slot}; got: {errs:#?}"
         );
     }
+    // TWO messages, not one mentioning both — the dedup key is what this test dates, and
+    // a single message carrying both slot names would satisfy the loop above.
+    let reported = errs
+        .iter()
+        .filter(|e| e.contains("is not a REGISTERED effect kind"))
+        .count();
+    assert_eq!(
+        reported, 2,
+        "one refusal per bad row parameter; got: {errs:#?}"
+    );
 }

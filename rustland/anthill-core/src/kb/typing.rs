@@ -31216,7 +31216,10 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
 /// (3) A container type the author never WRITES — one the typer infers at a call
 /// site — has no written instantiation to record; the declared signature it flows
 /// into or out of is what carries the refusal.
-pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+pub(crate) fn check_use_site_requires_eq(
+    kb: &mut KnowledgeBase,
+    sites: &[crate::kb::ParameterizedSite],
+) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let (Some(eq_sym), Some(noneq_sym)) = (
         kb.try_resolve_symbol("anthill.prelude.Eq"),
@@ -31226,9 +31229,10 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
     };
     let eq_canon = kb.canonical_sort_sym(eq_sym);
 
-    // Every written parameterized type instantiation. DRAINED, so a later
-    // `load_incremental` into this KB re-checks only its own sites.
-    let sites = kb.take_parameterized_type_sites();
+    // WI-20260831-V25N3: the sites arrive from the caller's single drain (see
+    // `load_phase_inner`), not from a drain of this pass's own — the written-row-label
+    // check reads the SAME batch, and whichever check drained would have left the other
+    // seeing nothing.
 
     let mut errors = Vec::new();
     // Per SITE, not per (container, carrier) pair: two `Map[K = Float]`s in two
@@ -31250,10 +31254,20 @@ pub fn check_use_site_requires_eq(kb: &mut KnowledgeBase) -> Vec<super::load::Lo
         // `K = Float`), so this is a rename, not a re-derivation — re-deriving it
         // here would duplicate that mapping and, since the recorded bindings are
         // always named, leave the positional half unreachable.
+        //
+        // GROUND-ONLY, and that filter is this check's OWN (WI-20260831-V25N3 widened
+        // the recorded bindings to carry a denoted one too). A `denoted` binding stands
+        // a VALUE in a type-argument position — it names no carrier whose `NonEq`
+        // provisions could be looked up — so it never contributed here and still does
+        // not; dropping just that binding, rather than the whole site, is what keeps
+        // `Map[K = Float, V = Buf[T = Int64, N = 3]]`'s `K` checked.
         let sigma: SmallVec<[(String, TermId); 2]> = site
             .bindings
             .iter()
-            .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
+            .filter_map(|(k, v)| match v {
+                Value::Term { id, .. } => Some((kb.local_name_of(*k).to_string(), *id)),
+                _ => None,
+            })
             .collect();
         // Base's `requires` clauses, both σ-substituted (`Map[K=Float]` ⇒ `Eq[T =
         // Float]`) and RAW. The raw pass names the parameter the diagnostic must
@@ -35124,7 +35138,7 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
 /// are no elements to reach, and the row-explosion this note asked for would be a walk
 /// over a case no program can present. Exploding a row that arrives some OTHER way is
 /// still needed and still happens — a `provides Spec[E = {…}]` binding is one, and
-/// [`check_provision_row_bindings`] explodes it — but not here.
+/// [`check_written_row_bindings`] explodes it — but not here.
 fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
     match type_head(kb, &resolve_effect_label_alias(kb, label)?) {
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
@@ -35132,8 +35146,8 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
     }
 }
 
-/// WI-20260831-RSRP5 — AN EFFECT LABEL WRITTEN IN A `provides` ROW BINDING IS JUDGED
-/// THERE, by the same two rules that judge one written in an operation's own row.
+/// WI-20260831-RSRP5 / WI-20260831-V25N3 — AN EFFECT LABEL IS JUDGED WHERE THE ROW IS
+/// WRITTEN, at every position a row can be written in.
 ///
 /// THE ROUTE THE PER-LABEL GATES COULD NOT SEE, and the reason it is closed HERE rather
 /// than by widening them. A carrier binds a spec's row parameter — `LiveLlm provides
@@ -35142,20 +35156,51 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
 /// `provides Spec[E = {Beep}]` (an unregistered kind) BOTH LOADED CLEAN, judged by
 /// nothing, while the identical labels written in an operation row were refused.
 ///
-/// WHY THE BINDING AND NOT THE PROJECTION. This ticket was filed to teach the per-label
-/// gates to read a projection through, the way WI-20260830-APWM3 taught the op-effects
+/// WHY THE BINDING AND NOT THE PROJECTION. RSRP5 was filed to teach the per-label gates
+/// to read a projection through, the way WI-20260830-APWM3 taught the op-effects
 /// coverage check and 054's exclusion. Measuring the population changed the answer: a
-/// label can only reach a projected row by being WRITTEN somewhere, and for a carrier's
-/// row parameter that somewhere is this binding. Judging it here therefore covers the
-/// projection route ENTIRELY, and does it better — one site instead of every caller, a
-/// diagnostic that points at the line the author wrote, and a verdict for a carrier no
-/// caller has projected yet.
+/// label can only reach a projected row by being WRITTEN somewhere. Judging it there
+/// therefore covers the projection route ENTIRELY, and does it better — one site instead
+/// of every caller, a diagnostic that points at the line the author wrote, and a verdict
+/// for a carrier no caller has projected yet.
 ///
 /// IT ALSO LEAVES `docs/kernel-language.md` §5.5 TRUE AS WRITTEN. That section exempts
 /// "a receiver projection (`s.E`)" from the registration rule, on the ground that it
 /// names no kind. Read as "the projection names no kind OF ITS OWN — the kind is named
 /// at the binding, and judged there", the exemption is exactly right, and the widening
-/// this ticket first proposed would have contradicted it.
+/// RSRP5 first proposed would have contradicted it.
+///
+/// ## The two SOURCES, and why the boundary between them is where it is (V25N3)
+///
+/// RSRP5 shipped this over `provides` clauses alone, and §5.5's "judged once, at its
+/// origin" was then FALSE for the third origin: a row written as a TYPE ARGUMENT in a
+/// signature (`operation ask(s: Spec[E = {Beep}], …)`). Both offending spellings loaded
+/// clean, on a minimal fixture and on guardians' `Llm` alike. Closing it is a CENSUS of
+/// the positions a row can be written in, not a new rule — the judging half below is
+/// unchanged.
+///
+/// The census is measured, not enumerated from a ticket's examples
+/// (WI-20260830-APXSS), by walking every live fact head, the const-type table and every
+/// op/const body of a corpus that writes a row at each candidate position and asking
+/// where the binding LANDED. It bottoms out in exactly two sources:
+///
+/// 1. **[`crate::kb::ParameterizedSite`]** — WI-835's registry of every written
+///    parameterized type, recorded AT THE TYPE LOWERINGS so a new type position cannot
+///    escape by being added elsewhere. It reaches an operation's parameter and return
+///    types, an entity FIELD's type, a `sort S = …` alias, a `const`'s type, a body
+///    `let` annotation and a typed lambda binder — and any of those NESTED inside a
+///    tuple, an arrow parameter, or another instantiation. It does NOT reach an
+///    operation's own `requires` / `ensures`; that is source 3, and the distinction is
+///    load-bearing — see it.
+///
+/// 2. **The three SPEC-CLAUSE facts** — `SortProvidesInfo`, `SortRequiresInfo`,
+///    `ProvidesConditionInfo`. `sort_inst_to_value` is the one `TypeExpr::Parameterized`
+///    lowering that records NO site: it assembles a `reflect.SortView` instead, and its
+///    outputs are exactly those three facts. So the boundary is not a judgement call —
+///    source 2 is precisely `sort_inst_to_value`'s output, and source 1 is everything
+///    else. (Its nested bindings still record, via `sort_binding_to_value`, which is why
+///    a row nested INSIDE a provision — `provides Box[T = Spec[E = {Beep}]]`, measured
+///    unjudged before this — arrives through source 1.)
 ///
 /// ONLY ROW PARAMETERS ARE JUDGED, and the filter is the DECLARATION rather than the
 /// binding's shape. `effects E = ?` lowers to `sort E = ?` plus `requires
@@ -35164,12 +35209,22 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
 /// Filtering on the VALUE looking row-shaped was the obvious alternative and is wrong in
 /// BOTH directions: it MISSES the brace-less `provides Spec[E = Beep]`, which loads and
 /// binds a row just as much (measured), and it would judge whatever a TYPE parameter
-/// happened to be bound to — `provides Spec[C = Int64]` refused for `Int64` not being a
+/// happened to be bound to — `Spec[C = Int64]` refused for `Int64` not being a
 /// registered effect kind.
 ///
-/// Reported once per (carrier, spec, label) so a re-presented file's second
-/// `SortProvidesInfo` fact (WI-1049) does not read as two errors.
-pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
+/// Reported once per (origin, spec, param, label) so a re-presented file's second
+/// `SortProvidesInfo` fact (WI-1049) does not read as two errors, and so the SAME slot
+/// written twice in one signature still reports twice.
+///
+/// COST OF THE TWO ADDED SOURCES, measured rather than argued (release, guardians,
+/// min of 3, `ANTHILL_LOAD_TIMING=1`): 0.13 ms with the spec-clause source alone — the
+/// shape RSRP5 shipped — and 0.42 ms with all three. For scale, its sibling gates
+/// (`check_modify_targets`, `check_effect_registration`) cost 0.15 ms each and
+/// `scan_definitions` alone costs 4.5 ms on the same load.
+pub(crate) fn check_written_row_bindings(
+    kb: &mut KnowledgeBase,
+    sites: &[crate::kb::ParameterizedSite],
+) -> Vec<super::load::LoadError> {
     let effect_sym = kb.try_resolve_symbol("anthill.prelude.Effect");
     let modify = kb.try_resolve_symbol("anthill.prelude.Modify");
     if effect_sym.is_none() && modify.is_none() {
@@ -35189,7 +35244,18 @@ pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::
 
     // Snapshot first: the judging walk below mutates `kb` (interning, row explosion).
     struct RowBinding {
-        carrier: Symbol,
+        /// The phrase that completes "… binds `Spec`'s row parameter `E`", naming
+        /// WHERE the author wrote it. A spec clause names the clause and its keyword; a
+        /// written type argument says only that much and leans on its span.
+        ///
+        /// IT IS ALSO THE DEDUP IDENTITY, and that is the /code-review finding: keyed on
+        /// the owner SYMBOL instead, a sort writing the same bad label in `provides
+        /// Spec[E = {Beep}]` AND `requires Spec[E = {Beep}]` reported ONCE, naming only
+        /// the `provides` — MEASURED — and the author fixed that, reloaded, and met the
+        /// other. Keying on the rendered origin makes the key exactly as fine as the
+        /// message, which is the only key that cannot collapse two things a reader has
+        /// to fix separately.
+        origin: String,
         spec: Symbol,
         /// WI-20260831-RSRP5 (/code-review) — WHICH row parameter this binds. A spec may
         /// declare more than one (`effects E = ?` beside `effects F = ?`), and without it
@@ -35199,30 +35265,40 @@ pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::
         /// see which half is wrong cannot fix the right one.
         param: Symbol,
         value: Value,
+        span: Option<crate::span::SourceSpan>,
     }
     let mut bindings: Vec<RowBinding> = Vec::new();
-    // WI-20260831-RSRP5 (/code-review) — MEMOIZED PER SPEC, not per provision. The lookup
-    // walks the spec's whole `requires` chain and scans each entry's keys, and a spec with
-    // N providers was walking the identical chain N times on a pass that already visits
-    // every provision in the KB. Keyed on the spec base, which is what the answer depends
-    // on.
+    // Shared by all three sources — see [`row_params_of`] for why it is memoized.
     let mut row_params_by_spec: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
-    for row in all_provisions(kb) {
-        let Some((spec_base, named)) = unwrap_spec_view(kb, row.spec_view) else {
+
+    // ── Source 2: the three spec-clause facts ────────────────────────────────
+    for clause in all_spec_clause_views(kb) {
+        // ONCE PER KB, not once per load (/code-review). This walk has no batch
+        // boundary of its own — unlike source 1, whose registry is drained per load — so
+        // a `load_incremental` of a CLEAN file into a KB already holding an offending
+        // clause re-reported it: MEASURED, a second batch of one unrelated sort failed
+        // with an error naming a file it was never given.
+        if !kb.claim_row_binding_clause(clause.rid) {
+            continue;
+        }
+        let Some((spec_base, named)) = unwrap_spec_view(kb, clause.spec_view) else {
             continue;
         };
-        let row_params = match row_params_by_spec.get(&spec_base) {
-            Some(cached) => cached.clone(),
-            None => {
-                let computed = effect_row_params_of_spec(kb, spec_base);
-                row_params_by_spec.insert(spec_base, computed.clone());
-                computed
-            }
-        };
+        let row_params = row_params_of(kb, spec_base, &mut row_params_by_spec);
         if row_params.is_empty() {
             continue;
         }
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
+        let owner_qn = kb.qualified_name_of(clause.owner).to_string();
+        // NO SPAN, and the two candidates were BUILT AND MEASURED ANSWERING `None`
+        // rather than argued away (/code-review raised the gap and proposed the first).
+        // `functor_span` is keyed off a converted `Term::Fn` FUNCTOR — it holds spans for
+        // names that appear APPLIED in a body, not for a sort or operation DECLARATION —
+        // and `rule_head_span` is empty for a loader-EMITTED metadata fact, which is what
+        // a `SortProvidesInfo` is. `term_span` on the `SortView` is not a third option:
+        // the term is hash-consed and aliases across sites, so it would point at some
+        // OTHER file's identical clause. So a fact-sourced refusal names its owner and
+        // its clause keyword and no line; a SITE-sourced one carries `path:line:col`.
         for (k, v) in &named {
             let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) else {
                 continue;
@@ -35231,46 +35307,139 @@ pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::
                 continue;
             }
             bindings.push(RowBinding {
-                carrier: row.provider,
+                origin: format!("`{owner_qn} {} {spec_qn}`", clause.kind.keyword()),
                 spec: spec_base,
                 param,
                 value: Value::term(*v),
+                span: None,
+            });
+        }
+    }
+
+    // ── Source 1: every written parameterized type ───────────────────────────
+    for site in sites {
+        let row_params = row_params_of(kb, site.base, &mut row_params_by_spec);
+        if row_params.is_empty() {
+            continue;
+        }
+        let spec_qn = kb.qualified_name_of(site.base).to_string();
+        for (key, bound) in &site.bindings {
+            // THROUGH THE SAME LADDER AS A `SortView` KEY, not a raw `Symbol` compare.
+            // A site's binding key is minted in the WRITING scope (`kb.intern("E")` for a
+            // positional, `reintern(p.last())` for a named one) while
+            // `effect_row_params_of_spec` returns the spec's OWN parameter symbol
+            // (`test.Spec.E`) — the WI-422 class of silent miss, and MEASURED as one
+            // here: keyed on `Symbol` equality this arm matched NOTHING and every
+            // written type argument stayed unjudged, with the spec-clause arm beside it
+            // passing.
+            let Some(param) = type_param_sym_of_binding(kb, *key, &spec_qn) else {
+                continue;
+            };
+            if !row_params.iter().any(|p| *p == param) {
+                continue;
+            }
+            bindings.push(RowBinding {
+                origin: "a written type argument".to_string(),
+                spec: site.base,
+                param,
+                value: bound.clone(),
+                span: Some(site.span),
+            });
+        }
+    }
+
+    // ── Source 3: an operation's own `requires` / `ensures` clauses ──────────
+    // NOT a type lowering at all: an op-scoped clause list is OVERLOADED (it carries
+    // both spec requirements and VALUE preconditions, `requires plus: Monoid[T],
+    // neq(b, 0)`), so the loader converts each item with `convert_term` — the GOAL
+    // converter — and no `TypeExpr` lowering runs. MEASURED: with sources 1 and 2 alone
+    // `operation go(…) requires Spec[E = {Beep}]` and its named-binder twin were the
+    // only two positions of the census still loading clean.
+    for (rid, op_sym, clauses) in super::op_info::all_operation_contract_clauses(kb) {
+        // Once per KB, for the spec-clause loop's reason, and claimed per FACT rather
+        // than per clause because one `OperationInfo` fact carries both lists. A
+        // re-presented file banks a second fact with a new id (WI-1049), so the batch
+        // that re-presents a bad clause still reports it and only a batch that does not
+        // present it at all skips it.
+        if !kb.claim_row_binding_clause(rid) {
+            continue;
+        }
+        let mut found: Vec<(&'static str, Symbol, Symbol, Value)> = Vec::new();
+        for (keyword, clause) in clauses {
+            let mut in_clause: Vec<(Symbol, Symbol, Value)> = Vec::new();
+            collect_row_bindings_in_goal(kb, &clause, &mut row_params_by_spec, &mut in_clause, 0);
+            found.extend(in_clause.into_iter().map(|(s, p, v)| (keyword, s, p, v)));
+        }
+        if found.is_empty() {
+            continue;
+        }
+        let op_qn = kb.qualified_name_of(op_sym).to_string();
+        // No span — see the spec-clause loop above, where the same two lookups were
+        // measured answering `None`.
+        let span = None;
+        for (keyword, spec, param, value) in found {
+            bindings.push(RowBinding {
+                origin: format!("`{op_qn}`'s `{keyword}` clause"),
+                spec,
+                param,
+                value,
+                span,
             });
         }
     }
 
     let mut errors = Vec::new();
-    let mut reported: HashSet<(Symbol, Symbol, Symbol, String)> = HashSet::new();
+    // THE ORIGIN, NOT THE OWNER SYMBOL (/code-review). The key has to be exactly as fine
+    // as the message: `provides` and `requires` on ONE sort render differently and are
+    // two things to fix, but share an owner — measured collapsing to a single
+    // `provides`-only diagnostic when the owner keyed it. The SPAN is in the key beside
+    // it because two written type arguments in one signature share the constant site
+    // origin and are separated by nothing else.
+    let mut reported: HashSet<(String, Option<crate::span::SourceSpan>, Symbol, Symbol, String)> =
+        HashSet::new();
     for b in &bindings {
         for label in effect_element_labels(kb, &b.value, keys.label) {
             let display = type_display_name_value(kb, &label);
-            if !reported.insert((b.carrier, b.spec, b.param, display.clone())) {
+            if !reported.insert((
+                b.origin.clone(),
+                b.span,
+                b.spec,
+                b.param,
+                display.clone(),
+            )) {
                 continue;
             }
-            let carrier_qn = kb.qualified_name_of(b.carrier).to_string();
             let spec_qn = kb.qualified_name_of(b.spec).to_string();
             let slot = kb.local_name_of(b.param).to_string();
+            let span = b.span.map(|s| s.span);
+            let source = b.span.map(|s| s.source);
+            let mut push = |detail: String| {
+                let err = super::load::LoadError::WrittenEffectRowLabel {
+                    spec: spec_qn.clone(),
+                    param: slot.clone(),
+                    label: display.clone(),
+                    origin: b.origin.clone(),
+                    detail,
+                    span,
+                };
+                errors.push((err, source));
+            };
             if let Some((_, kind)) = classify_modify_target(kb, &label, modify, &keys) {
-                let detail = match kind {
+                let which = match kind {
                     ModifyTarget::Place => None,
                     ModifyTarget::Type => Some("whose target is a TYPE"),
                     ModifyTarget::Missing => Some("which names no target at all"),
                 };
-                if let Some(detail) = detail {
-                    errors.push(super::load::LoadError::Other {
-                        message: format!(
-                            "`{carrier_qn} provides {spec_qn}` binds `{slot}` to an effect \
-                             row containing `{display}`, {detail} — a `Modify` target is a \
-                             PLACE, not a type (kernel-language.md §5.6). A row binding is \
-                             not a signature, so the places a SIGNATURE offers are not \
-                             available here: there is no parameter to name, and no \
-                             `result`. What IS available is an ambient resource — a \
-                             NULLARY CONSTRUCTOR that denotes one (`Modify[clock]` over an \
-                             `entity clock`), which is the §5.6 form written for exactly \
-                             this position. Every operation that projects this row carries \
-                             the label, so it is judged where it is written."
-                        ),
-                    });
+                if let Some(which) = which {
+                    push(format!(
+                        "{which} — a `Modify` target is a PLACE, not a type \
+                         (kernel-language.md §5.6). A row TYPE-ARGUMENT is not a \
+                         signature, so the places a SIGNATURE offers are not available \
+                         here: there is no parameter to name, and no `result`. What IS \
+                         available is an ambient resource — a NULLARY CONSTRUCTOR that \
+                         denotes one (`Modify[clock]` over an `entity clock`), which is \
+                         the §5.6 form written for exactly this position."
+                    ));
                     continue;
                 }
             }
@@ -35280,29 +35449,226 @@ pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::
             let Some(kind) = effect_label_kind(kb, &label) else {
                 continue;
             };
+            // A TYPE PARAMETER NAMES NO KIND — §5.5's own exemption for "a row variable
+            // the checker has opened", asked of the label rather than of its carrier.
+            //
+            // WHY IT IS ASKED AT ALL, since the type lowerings already answer it: a SORT
+            // parameter carries a `SortAlias(P, Var)` fact, so `effect_label_kind`
+            // follows it to a variable and returns `None` above. An OPERATION's bracket
+            // parameter carries no such fact — its variable lives in the op's own record
+            // — so it arrives here as an ordinary `SortRef`. That is invisible through
+            // sources 1 and 2, where a type param in scope lowers to a `Term::Var`
+            // outright, and LIVE through source 3, whose clauses are converted by the
+            // GOAL converter: MEASURED, the prelude's `map[…, EffS, …] requires
+            // Iterable[C = Sc, Element = S, E = EffS]` (and `filter`'s twin) were
+            // refused for `EffS` not being a registered effect kind, on every program
+            // that merely loads the prelude.
+            if is_sort_param_symbol(kb, kind) {
+                continue;
+            }
             if registered.contains(&kb.canonical_sort_sym(kind)) {
                 continue;
             }
             let short = kb.local_name_of(kind).to_string();
             let kind_qn = kb.qualified_name_of(kind).to_string();
-            errors.push(super::load::LoadError::Other {
-                message: format!(
-                    "`{carrier_qn} provides {spec_qn}` binds `{slot}` to an effect row \
-                     containing `{display}`, but `{kind_qn}` is not a REGISTERED effect \
-                     kind — \
-                     nothing in the knowledge base says that sort is an effect, so this \
-                     binding names a label the kernel never admitted and a misspelling of \
-                     it would read as a new effect rather than as an error. Effect labels \
-                     are OPEN (kernel-language.md §5.5) — any sort may be one — but \
-                     becoming one is a declaration, written where `{short}` is in scope: \
-                     `fact Effect[T = {short}]` in the namespace that declares it, or \
-                     `provides Effect[T = {short}]` inside the sort that declares it. If \
-                     the label is a typo, fix the spelling."
-                ),
+            push(format!(
+                "but `{kind_qn}` is not a REGISTERED effect kind — nothing in the \
+                 knowledge base says that sort is an effect, so this names a label the \
+                 kernel never admitted and a misspelling of it would read as a new effect \
+                 rather than as an error. Effect labels are OPEN (kernel-language.md \
+                 §5.5) — any sort may be one — but becoming one is a declaration, written \
+                 where `{short}` is in scope: `fact Effect[T = {short}]` in the namespace \
+                 that declares it, or `provides Effect[T = {short}]` inside the sort that \
+                 declares it. If the label is a typo, fix the spelling."
+            ));
+        }
+    }
+    // WI-745: attribute a site-sourced refusal to the file its span indexes into, so it
+    // renders `path:line:col`. A spec-clause refusal has no span and stays bare.
+    errors
+        .into_iter()
+        .map(|(err, source)| match source {
+            Some(src) => err.located_in_kb_source(kb, src),
+            None => err,
+        })
+        .collect()
+}
+
+/// WI-20260831-V25N3 — every `Spec[rowParam = …]` reachable inside one GOAL term, as
+/// `(spec, row parameter, bound row)`.
+///
+/// A STRUCTURAL DESCENT, because a clause is not one application: a multi-goal clause is
+/// a `conjunction(g1, …)`, and a spec application can be an ARGUMENT of another
+/// (`requires Iterable[C = Box[T = Spec[E = {…}]]]`). Sources 1 and 2 need no such walk —
+/// a `ParameterizedSite` is already one application, and a `SortView`'s nested bindings
+/// record their own sites — so this is the goal-list reader's own machinery, not a
+/// general one.
+///
+/// DEPTH-BOUNDED for the same reason [`effect_element_labels`] is: the bound guards a
+/// malformed (cyclic) structure this walk owns no verdict for, and on overflow it returns
+/// what it found rather than nothing.
+fn collect_row_bindings_in_goal(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    row_params_by_spec: &mut HashMap<Symbol, Vec<Symbol>>,
+    out: &mut Vec<(Symbol, Symbol, Value)>,
+    depth: u32,
+) {
+    if depth > EFFECT_ELEMENT_DEPTH_LIMIT {
+        return;
+    }
+    let ViewHead::Functor {
+        functor: Some(base),
+        ..
+    } = v.head(kb)
+    else {
+        return;
+    };
+    let keys = v.named_keys(kb);
+    let row_params = row_params_of(kb, base, row_params_by_spec);
+    if !row_params.is_empty() {
+        let spec_qn = kb.qualified_name_of(base).to_string();
+        for k in &keys {
+            let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) else {
+                continue;
+            };
+            if !row_params.iter().any(|p| *p == param) {
+                continue;
+            }
+            if let Some(bound) = v.named_arg(kb, *k).map(|b| b.to_value()) {
+                out.push((base, param, bound));
+            }
+        }
+    }
+    let mut kids: Vec<Value> = Vec::new();
+    let mut i = 0;
+    while let Some(a) = v.pos_arg(kb, i) {
+        kids.push(a.to_value());
+        i += 1;
+    }
+    for k in &keys {
+        if let Some(a) = v.named_arg(kb, *k) {
+            kids.push(a.to_value());
+        }
+    }
+    for k in kids {
+        collect_row_bindings_in_goal(kb, &k, row_params_by_spec, out, depth + 1);
+    }
+}
+
+/// WI-20260831-RSRP5 (/code-review) / WI-20260831-V25N3 — `spec`'s effect-row
+/// parameters, MEMOIZED PER SPEC.
+///
+/// [`effect_row_params_of_spec`] walks the spec's whole `requires` chain and scans each
+/// entry's keys, and the readers ask it once per CLAUSE, once per SITE and once per node
+/// of a contract-clause descent — so a spec with N providers walked the identical chain N
+/// times on a pass that already visits every provision in the KB. Keyed on the spec base,
+/// which is what the answer depends on. An EMPTY vec is a cached ANSWER, not a miss: it
+/// means "this sort declares no row", the overwhelmingly common case, and every caller
+/// short-circuits on it.
+fn row_params_of(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    cache: &mut HashMap<Symbol, Vec<Symbol>>,
+) -> Vec<Symbol> {
+    if let Some(cached) = cache.get(&spec) {
+        return cached.clone();
+    }
+    let computed = effect_row_params_of_spec(kb, spec);
+    cache.insert(spec, computed.clone());
+    computed
+}
+
+/// WI-20260831-V25N3 — WHICH SPEC CLAUSE a row binding was written in. Only the keyword
+/// differs in the diagnostic, but the three are three FACTS, so the walk that gathers
+/// them has to name them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SpecClauseKind {
+    Provides,
+    Requires,
+    ProvidesCondition,
+}
+
+impl SpecClauseKind {
+    /// The keyword the author wrote, for the diagnostic. A provision CONDITION is a
+    /// `provides X :- Y` tail, so its keyword names the tail rather than the clause —
+    /// otherwise the message points at the provided spec, which is not the one at fault.
+    fn keyword(self) -> &'static str {
+        match self {
+            SpecClauseKind::Provides => "provides",
+            SpecClauseKind::Requires => "requires",
+            SpecClauseKind::ProvidesCondition => "provides … :-",
+        }
+    }
+}
+
+/// WI-20260831-V25N3 — one written SPEC CLAUSE: its owning sort and the `SortView` it
+/// names. The three facts `sort_inst_to_value` emits, in one walk.
+struct SpecClauseView {
+    kind: SpecClauseKind,
+    /// The sort the clause is written on.
+    owner: Symbol,
+    spec_view: TermId,
+    /// The fact this clause IS, so the caller can claim it once per KB — see
+    /// [`KnowledgeBase::claim_row_binding_clause`].
+    rid: RuleId,
+}
+
+/// Every `provides` / `requires` / `provides … :-` clause in the KB, as
+/// [`SpecClauseView`]s.
+///
+/// NOT [`all_provisions`] widened: that decoder resolves the PROVIDER relation (it
+/// unwraps views, follows conditional provisions), which is a different question from
+/// "what did the author write in this clause". This one reads the three facts' raw
+/// `spec` / `condition` slots, because the row binding under judgement is a written
+/// token, not a derived one.
+fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
+    let mut out = Vec::new();
+    for (qn, kind, spec_field) in [
+        (
+            "anthill.reflect.SortProvidesInfo",
+            SpecClauseKind::Provides,
+            "spec",
+        ),
+        (
+            "anthill.reflect.SortRequiresInfo",
+            SpecClauseKind::Requires,
+            "spec",
+        ),
+        (
+            "anthill.reflect.ProvidesConditionInfo",
+            SpecClauseKind::ProvidesCondition,
+            "condition",
+        ),
+    ] {
+        let Some(sym) = kb.try_resolve_symbol(qn) else {
+            continue;
+        };
+        for rid in kb.rules_by_functor(sym) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let Some(named) = kb.fact_head_named_args(rid) else {
+                continue;
+            };
+            let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
+                continue;
+            };
+            let Some(owner) = super::load::sort_ref_functor(kb, sr) else {
+                continue;
+            };
+            let Some(spec_view) = get_named_arg(kb, &named, spec_field) else {
+                continue;
+            };
+            out.push(SpecClauseView {
+                kind,
+                owner,
+                spec_view,
+                rid,
             });
         }
     }
-    errors
+    out
 }
 
 /// WI-20260831-RSRP5 — WHICH OF `spec`'S TYPE PARAMETERS ARE EFFECT-ROW PARAMETERS.
@@ -35313,7 +35679,7 @@ pub fn check_provision_row_bindings(kb: &mut KnowledgeBase) -> Vec<super::load::
 /// indistinguishable from an ordinary `sort C = ?` — same `SortAlias(_, Var)` shape, same
 /// entry in `type_params_of_sort` — so the ANCHOR is the only thing that says which
 /// parameter carries a row, and reading it is what keeps
-/// [`check_provision_row_bindings`] off a type parameter's binding.
+/// [`check_written_row_bindings`] off a type parameter's binding.
 fn effect_row_params_of_spec(kb: &mut KnowledgeBase, spec: Symbol) -> Vec<Symbol> {
     let Some(anchor) = effects_runtime_sym(kb) else {
         return Vec::new();

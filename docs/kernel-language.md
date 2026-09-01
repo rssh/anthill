@@ -2418,13 +2418,26 @@ read through the projection to hold. Two are:
 The **registration** rule below is not an exception to this and never was, and
 WI-20260831-RSRP5 settled why. It exempts "a receiver projection (`s.E`)" on the
 ground that such a position names no kind — which is right, because the kind is
-named where the ROW is written, and *that* is where it is judged: a carrier's
-`provides Spec[E = {…}]` binding and a sort's bound alias `effects E = K` are
-each checked for a registered kind and for a lawful `Modify` target, so a label
-cannot reach a projection without having passed both. The same holds for §5.6's
-`Modify`-target rule. A row element is therefore judged once, at its origin,
-rather than again at every operation that projects it — which is also the only
-place a diagnostic can name the line the author wrote.
+named where the ROW is WRITTEN, and *that* is where it is judged. **Every**
+position that writes a row is checked, for a registered kind and for a lawful
+§5.6 `Modify` target alike (WI-20260831-V25N3): a carrier's `provides Spec[E =
+{…}]` binding, a sort's bound alias `effects E = K`, a sort's or an operation's
+`requires Spec[E = {…}]`, a provision's `:- Spec[E = {…}]` condition, and any
+written **type argument** — a parameter or return type, an entity field, a `sort
+S = …` alias, a `const`'s type, a body `let` annotation or typed lambda binder,
+and any of those nested inside a tuple, an arrow parameter or another
+instantiation. So a label cannot reach a projection without having passed both
+rules. A row element is therefore judged once, at its origin, rather than again
+at every operation that projects it — which is also the only place a diagnostic
+can name the line the author wrote.
+
+Two positions are outside that list, each for a reason of its own. A row
+parameter still a **hole** (`effects E = ?`) and a **row variable** name no kind
+to judge, which is the same exemption the projection has: an operation's bracket
+parameter bound into a row (`ask[Eff](…) requires Spec[E = Eff]`) is a variable,
+not a label. And an operation type parameter's **default** (`f[T = Spec[E =
+{…}]]`) is refused before any row is read — nothing reads such a default, so it
+is a load error in its own right (§4.2).
 
 A row bound by a **written type argument** at a use site (`s: Spec[E = {…}]`) is
 the third way to make a projection concrete, and it is read on BOTH sides of the
@@ -2435,10 +2448,6 @@ refused naming that label. WI-20260831-PYNS2, whose test file records the one
 receiver shape still outside this — a sort with constructors of its own that
 also declares a carrier parameter, where nothing tells a carrier argument from an
 element one.
-
-The judged-at-its-origin rule above does NOT yet reach this third way: a label
-written in a signature's type argument (`s: Spec[E = {Beep}]`) is checked neither
-for a registered kind nor for a lawful `Modify` target. WI-20260831-V25N3.
 
 **Guarded effects** (proposal 048, WI-478/WI-067) qualify one row element, not
 the whole row. The bare spelling admits one guard term so an outer comma still

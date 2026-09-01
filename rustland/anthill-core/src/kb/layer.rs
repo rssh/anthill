@@ -313,6 +313,14 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         guards_by_sort: _,
         rule_head_captures: _,
         resolved_requires_facts: _,
+        // WI-20260831-V25N3 — MONOTONE, for `resolved_requires_facts`' reason and one of
+        // its own. It records which clause facts the written-row-label walk has already
+        // judged, so a later load does not re-report an earlier batch's clause; keeping
+        // an entry for a discarded layer's rule can only SUPPRESS a re-report of a row
+        // that no longer exists, and a `RuleId` from a discarded layer is tombstoned
+        // (`tombstone_layer_rules`) rather than reissued, so it can never name a
+        // different row.
+        judged_row_binding_clauses: _,
         unbacked_derived_provisions: _,
         derived_provision_origin: _,
         builtins: _,

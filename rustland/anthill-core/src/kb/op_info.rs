@@ -15,6 +15,7 @@ use crate::intern::Symbol;
 
 use super::node_occurrence::NodeOccurrence;
 use super::term::{Term, TermId, Var};
+use super::RuleId;
 use super::term_view::{TermView, ViewHead, ViewItem};
 use super::typing::list_to_vec;
 use super::KnowledgeBase;
@@ -170,11 +171,50 @@ pub fn all_operation_params_and_effects(
         .collect()
 }
 
+/// WI-20260831-V25N3 — every operation's own `requires` / `ensures` clauses, each with
+/// the keyword it was written under. The contract-clause twin of
+/// [`all_operation_params_and_effects`], and ONE ENTRY PER FACT for that function's
+/// reason: a spec op and its impl are separate facts, each with its OWN clause list.
+///
+/// The AUTO-INFERRED `EffectsRuntime[Effects = E]` clauses WI-320 appends ride in this
+/// list too and are NOT filtered out — filtering them would mean re-deriving which
+/// clauses the loader synthesized, a second answer to a settled question. A consumer
+/// that must tell them apart does what `check_override_refinement` does.
+pub fn all_operation_contract_clauses(
+    kb: &KnowledgeBase,
+) -> Vec<(RuleId, Symbol, Vec<(&'static str, Value)>)> {
+    let mut out = Vec::new();
+    for (rid, op_sym, head) in operation_info_fact_rows(kb) {
+        let mut clauses = Vec::new();
+        for keyword in ["requires", "ensures"] {
+            for clause in clause_list_field(kb, head, keyword) {
+                clauses.push((keyword, clause));
+            }
+        }
+        if !clauses.is_empty() {
+            out.push((rid, op_sym, clauses));
+        }
+    }
+    out
+}
+
 /// `(op_sym, &head)` for every `OperationInfo` FACT — the shared walk behind
 /// [`all_operation_params`] / [`all_operation_effects`]. ONE entry PER FACT (a spec op
 /// and its impl are separate facts, each with its own signature); each `&Value` head
 /// borrows `kb`. A fact whose head carries no resolvable `name` ref is skipped.
 fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
+    operation_info_fact_rows(kb)
+        .into_iter()
+        .map(|(_, op_sym, head)| (op_sym, head))
+        .collect()
+}
+
+/// [`operation_info_fact_heads`] with each fact's own `RuleId` — for a reader whose
+/// question is per-FACT and crosses loads, so it needs an identity for the row rather
+/// than for the operation. WI-20260831-V25N3's written-row-label walk is the one:
+/// it claims each fact once per KB so a `load_incremental` does not re-report an
+/// earlier batch's clause.
+fn operation_info_fact_rows(kb: &KnowledgeBase) -> Vec<(RuleId, Symbol, &Value)> {
     let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
         return Vec::new();
     };
@@ -187,7 +227,7 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
         let Some(op_sym) = head_name_ref(kb, head) else {
             continue;
         };
-        out.push((op_sym, head));
+        out.push((rid, op_sym, head));
     }
     out
 }
