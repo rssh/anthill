@@ -211,9 +211,11 @@ fn operation_info_fact_heads(kb: &KnowledgeBase) -> Vec<(Symbol, &Value)> {
 
 /// [`operation_info_fact_heads`] with each fact's own `RuleId` — for a reader whose
 /// question is per-FACT and crosses loads, so it needs an identity for the row rather
-/// than for the operation. WI-20260831-V25N3's written-row-label walk is the one:
-/// it claims each fact once per KB so a `load_incremental` does not re-report an
-/// earlier batch's clause.
+/// than for the operation. WI-20260831-V25N3's written-row-label walk is the one: it
+/// claims each fact once per KB so a `load_incremental` does not re-report an earlier
+/// batch's clause, and the loader drops that claim when it re-presents the fact
+/// (`KnowledgeBase::note_metadata_fact_presented`) so a re-presented file is refused
+/// again.
 fn operation_info_fact_rows(kb: &KnowledgeBase) -> Vec<(RuleId, Symbol, &Value)> {
     let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
         return Vec::new();

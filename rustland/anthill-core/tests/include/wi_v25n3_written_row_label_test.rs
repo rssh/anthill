@@ -74,7 +74,23 @@
 //! drained per load — so each clause fact is CLAIMED ONCE PER KB
 //! (`claim_row_binding_clause`). Without it a `load_incremental` of a clean file into a
 //! KB already holding an offending clause re-reported that clause, failing a batch over a
-//! file it was never given; `a_later_load_does_not_re_report_…` pins both halves.
+//! file it was never given.
+//!
+//! AND THE CLAIM IS DROPPED WHEN THE LOADER RE-PRESENTS THE FACT
+//! (`note_metadata_fact_presented`, WI-20260901-EA6KS): an assert DEDUPS, so re-loading
+//! the very file that WROTE the clause lands on the id already claimed, and that lost the
+//! refusal outright — the same unchanged file came back `Ok` with zero errors. Both
+//! directions are pinned by `a_later_load_re_reports_a_re_presented_clause_…`, each named
+//! there as the other's control, because either alone is satisfiable by a walk that
+//! judges everything or nothing. It counts the four PRODUCERS of the two fact sources,
+//! not the clause keywords: `SortProvidesInfo` has two loader producers and only one of
+//! them went through the metadata entry point.
+//!
+//! AND THE ENTRY POINT THAT RUNS NO CHECK RECORDS NOTHING (`restore_load_check_marks`,
+//! `a_check_less_load_entry_point_…`): `load::load` walks items without reaching
+//! `load_phase_inner`, so leaving either of the two registries a check reads changed hands
+//! the next batch a refusal about a file it was never given — measured for both, one a
+//! regression of the drop above and one pre-existing.
 //!
 //! A FACT-SOURCED REFUSAL CARRIES NO SPAN, and the two candidate lookups were built and
 //! measured answering `None` rather than argued away: `functor_span` keys off a converted
@@ -107,7 +123,15 @@
 //!                                              NOTHING else. RSRP5's own slot-axis test
 //!                                              stays green, because `param` is still in
 //!                                              the key: two axes, two tests.
-//!   `claim_row_binding_clause` (`if false &&`) a_later_load_does_not_re_report_… — and
+//!   `claim_row_binding_clause` (always `true`) a_later_load_re_reports_… (its UNRELATED
+//!                                              batch goes to 4) — and nothing else
+//!   `note_metadata_fact_presented` (inert)     a_later_load_re_reports_… (its
+//!                                              RE-PRESENTED batch goes to 0) — and
+//!                                              nothing else, measured over the WHOLE
+//!                                              workspace. Its call sites back out
+//!                                              separately, one route each: see that
+//!                                              test's own table.
+//!   `restore_load_check_marks` (either half)   a_check_less_load_entry_point_… — and
 //!                                              nothing else
 //! ```
 //!
@@ -755,26 +779,217 @@ end
     }
 }
 
-/// A LATER LOAD DOES NOT RE-REPORT AN EARLIER BATCH'S CLAUSE.
+/// A CHECK-LESS LOAD ENTRY POINT RECORDS NO LOAD-CHECK WORK.
 ///
-/// Two of the three sources walk the WHOLE KB — only the site registry is drained per
-/// load — so a `load_incremental` of a clean file into a KB that already holds an
-/// offending clause re-reported it: MEASURED, a second batch of one unrelated sort failed
-/// with an error naming a file it was never given. Each clause fact is claimed once per
-/// KB now (`claim_row_binding_clause`), the same per-row, cross-phase shape
-/// `resolved_requires_facts` has.
+/// `load::load` — the single-file entry — runs the item walk without ever reaching
+/// `load_phase_inner`, so NO load check runs over what it loaded. Two registries the walk
+/// writes are read only by a check, and leaving either changed hands the NEXT batch work
+/// it did not do: measured, a `load_incremental` of one unrelated clean sort failed with
+/// refusals naming a file it was never given. `KnowledgeBase::restore_load_check_marks`
+/// is the rollback; both halves are asserted here because they are two registries with
+/// one rule, and they came from opposite directions (/code-review).
 ///
-/// BOTH HALVES ARE ASSERTED, and the second is what stops the fix from being "judge
-/// nothing twice by judging nothing": batch 1 must still refuse. (/code-review)
+/// ```text
+///   half                          back-out                       unrelated batch reports
+///   ───────────────────────────── ────────────────────────────── ───────────────────────
+///   judged_row_binding_clauses    the field's restore line        2  (was 0)
+///   parameterized_type_sites      the truncate line               1  (was 0)
+/// ```
+///
+/// THE TWO HALVES HAVE DIFFERENT HISTORIES, and saying so is the point. The claim half is
+/// a regression introduced by WI-20260901-EA6KS itself — the walk now DROPS claims and
+/// only the check re-adds them — and backing that drop out takes its row to 0. The site
+/// half is PRE-EXISTING, measured identical with the drop backed out: `load`'s sites
+/// simply waited in a push-only registry until the next batch drained them. It is fixed
+/// beside the other because otherwise the same check's source 1 and source 2 answer "what
+/// does `load` mean" two different ways.
+///
+/// A ROLLBACK, NOT A SUPPRESSION: this entry point ran no checks before or after, so
+/// nothing that was reported stops being reported. What stops is charging it to the wrong
+/// batch — which is the rule `a_later_load_re_reports_…` states for the other producers.
 #[test]
-fn a_later_load_does_not_re_report_an_earlier_batchs_clause() {
+fn a_check_less_load_entry_point_records_no_load_check_work() {
     use anthill_core::kb::load::{self, NullResolver};
     use anthill_core::kb::KnowledgeBase;
     use anthill_core::parse;
 
+    // The CLAUSE half: two spec clauses, both offending — the `judged_row_binding_clauses`
+    // route, which `load` un-claims and never re-claims.
+    let clauses = r#"
+namespace test.v25n3.solo
+  import anthill.prelude.{Error, String, EffectsRuntime}
+  import test.v25n3.spec.{Spec}
+  sort BeepS
+    entity beeps
+  end
+  sort CS
+    import test.v25n3.solo.{BeepS}
+    entity cs(t: String)
+    requires Spec[E = {BeepS}]
+    provides Spec[E = {BeepS}]
+  end
+end
+"#;
+    // The SITE half: a row written as a type argument in a signature — source 1, whose
+    // registry `load` fills and no check of its own drains.
+    let site = r#"
+namespace test.v25n3.solo2
+  import anthill.prelude.{Error, String, EffectsRuntime}
+  import test.v25n3.out.{Out}
+  import test.v25n3.out.Out.{out}
+  import test.v25n3.spec.{Spec}
+  sort BeepT2
+    entity beept2
+  end
+  operation askS(s: Spec[E = {BeepT2}], p: String) -> Out
+    effects {Error} = out(v: p)
+end
+"#;
+    let unrelated = r#"
+namespace test.v25n3.solo3
+  import anthill.prelude.{String}
+  sort LaterS
+    entity laters(t: String)
+  end
+end
+"#;
+    let judged = |errs: &[String]| {
+        errs.iter()
+            .filter(|e| e.contains("is not a REGISTERED effect kind"))
+            .count()
+    };
+    let errs_of = |r: Result<load::LoadResult, Vec<load::LoadError>>| -> Vec<String> {
+        match r {
+            Ok(_) => vec![],
+            Err(e) => e.iter().map(|x| x.to_string()).collect(),
+        }
+    };
+
+    for (half, offender, expected_in_batch_one) in
+        [("clause", clauses, 2usize), ("site", site, 0usize)]
+    {
+        let dir = crate::common::stdlib_dir();
+        let mut parsed: Vec<_> = crate::common::collect_anthill_files(&dir)
+            .iter()
+            .map(|p| {
+                parse::parse(&std::fs::read_to_string(p).expect("read stdlib"))
+                    .expect("parse stdlib")
+            })
+            .collect();
+        for extra in [OUT, SPEC] {
+            parsed.push(parse::parse(extra).expect("parse extra"));
+        }
+        // The CLAUSE half loads its offender in batch 1 too, so the claim it needs to
+        // leave behind exists to be dropped; the SITE half must NOT, because a site is
+        // judged in the batch that wrote it and the question is what a later batch
+        // inherits from `load` alone.
+        if expected_in_batch_one > 0 {
+            parsed.push(parse::parse(offender).expect("parse offender"));
+        }
+        let refs: Vec<_> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        let first = errs_of(load::load_all(&mut kb, &refs, &NullResolver));
+        assert_eq!(
+            judged(&first),
+            expected_in_batch_one,
+            "{half}: batch 1 baseline; got: {first:#?}"
+        );
+
+        let solo = parse::parse(offender).expect("parse offender");
+        let mid = errs_of(load::load(&mut kb, &solo, &NullResolver));
+        assert_eq!(
+            judged(&mid),
+            0,
+            "{half}: `load` runs no load check, so it reports none of these itself; \
+             got: {mid:#?}"
+        );
+
+        let later = parse::parse(unrelated).expect("parse later");
+        let third = errs_of(load::load_incremental(&mut kb, &[&later], &NullResolver));
+        assert_eq!(
+            judged(&third),
+            0,
+            "{half}: a batch of one unrelated sort must not inherit `load`'s work; \
+             got: {third:#?}"
+        );
+    }
+}
+
+/// A LATER LOAD RE-REPORTS A RE-PRESENTED CLAUSE, AND ONLY THAT ONE.
+///
+/// Two of the three sources walk the WHOLE KB — only the site registry is drained per
+/// load — so the walk needs a per-fact boundary of its own, and it has two questions to
+/// answer with one, which is why BOTH directions are asserted here and each is the
+/// other's control:
+///
+/// * A BATCH THAT PRESENTS NOTHING must report nothing. Without
+///   `claim_row_binding_clause`, a `load_incremental` of a clean unrelated file into a KB
+///   that already holds an offending clause re-reported it — a batch failing over a file
+///   it was never given (WI-20260831-V25N3, measured).
+/// * A BATCH THAT RE-PRESENTS THE FILE must report it again. The claim alone gets this
+///   WRONG, and shipped wrong: an assert DEDUPS, so re-loading the very file that wrote
+///   the clause lands on the RuleId already claimed, and the same unchanged file came
+///   back `Ok` with zero errors — a load-blocking refusal lost
+///   (WI-20260901-EA6KS, measured). `note_metadata_fact_presented` is the repair.
+///
+/// A pass with EITHER direction alone is trivially available — claim nothing, or claim
+/// everything — so neither assertion means anything without the other, and the first
+/// shipped without the second.
+///
+/// FOUR CLAUSE ROUTES, one per producer of the facts sources 2 and 3 read, because the
+/// repair reaches each by a different site and one fixture per site is what says each is
+/// live. Backed out ONE AT A TIME:
+///
+/// ```text
+///   back-out                                           what the RE-PRESENTED batch loses
+///   ────────────────────────────────────────────────── ────────────────────────────────
+///   `claim_row_binding_clause` (always `true`)         nothing — it fails EARLIER, on
+///                                                      the UNRELATED batch, which goes
+///                                                      from 0 to 4. The other direction.
+///   `note_metadata_fact_presented` (body emptied)      every refusal
+///   … its `assert_metadata_fact_carrier` call alone    the sort's `provides`, and the
+///                                                      `fact Spec[…]` provider with it
+///   … its `assert_metadata_fact`/`_value` calls alone  the operation's `requires`
+///   … its `resolve_requires_bindings` call alone       the sort's `requires`
+///   `maybe_emit_fact_provides_info` back on            the `fact Spec[…]` provider
+///     `assert_fact_carrier`                            alone
+/// ```
+///
+/// The whole-repair row is measured against the WORKSPACE suite, not just this binary:
+/// 6249 pass and this one test fails.
+///
+/// THE FOURTH ROUTE IS WHY THIS COUNTS PRODUCERS AND NOT CLAUSE KINDS. `SortProvidesInfo`
+/// has two loader producers, not one — `load_provides_clause` for the `provides` keyword
+/// and `maybe_emit_fact_provides_info` for a `fact Spec[…]` provider declaration — and
+/// only the first went through the metadata entry point, so the first cut of this repair
+/// covered three routes and left the fourth exactly as broken as it found it (measured;
+/// /code-review). A per-KEYWORD census would not have found it.
+///
+/// The sort-level `requires` is the one that needs the `resolve_requires_bindings` site:
+/// its fact is asserted by the item walk and then RETRACTED and re-asserted by that pass
+/// onto a dedup hit against the earlier batch's live completed head, so the loader's own
+/// presentation lands on a transient id and the surviving one carries the old claim.
+#[test]
+fn a_later_load_re_reports_a_re_presented_clause_and_not_an_unrelated_one() {
+    use anthill_core::kb::load::{self, NullResolver};
+    use anthill_core::kb::KnowledgeBase;
+    use anthill_core::parse;
+
+    // ONE FILE, FOUR ROUTES: a sort's `requires` (the retract-and-re-assert route), its
+    // `provides` (a plain metadata-carrier assert), an operation's `requires` (the
+    // `OperationInfo` fact) and a `fact Spec[…]` provider declaration
+    // (`maybe_emit_fact_provides_info`, the fourth `SortProvidesInfo` producer and the
+    // one that was still bypassing the metadata entry point).
+    //
+    // `DI` IS A SECOND CARRIER ON PURPOSE. The dedup key is the rendered ORIGIN, and a
+    // `fact Spec[C = CI, …]` renders as `CI provides Spec` — the same string the sort's
+    // own `provides` clause renders as — so writing both on ONE carrier collapses them to
+    // a single refusal and the route goes invisible whether or not it works.
     let bad = r#"
 namespace test.v25n3.inc
   import anthill.prelude.{Error, String, EffectsRuntime}
+  import test.v25n3.out.{Out}
+  import test.v25n3.out.Out.{out}
   import test.v25n3.spec.{Spec}
   sort BeepI
     entity beepi
@@ -783,7 +998,15 @@ namespace test.v25n3.inc
     import test.v25n3.inc.{BeepI}
     entity ci(t: String)
     requires Spec[E = {BeepI}]
+    provides Spec[E = {BeepI}]
   end
+  sort DI
+    entity di(t: String)
+  end
+  fact Spec[C = DI, E = {BeepI}]
+  operation askI(p: String) -> Out
+    requires Spec[E = {BeepI}]
+    effects {Error} = out(v: p)
 end
 "#;
     let unrelated = r#"
@@ -810,15 +1033,23 @@ end
         Ok(_) => vec![],
         Err(e) => e.iter().map(|x| x.to_string()).collect(),
     };
-    let judged = |errs: &[String]| {
-        errs.iter()
+    // Only the row-label refusals are counted: the fixture's `provides Spec[…]` is
+    // deliberately unbacked, and this test is about WHICH BATCH judges a clause, not
+    // about what else that clause owes.
+    let rows = |errs: &[String]| {
+        let mut out: Vec<String> = errs
+            .iter()
             .filter(|e| e.contains("is not a REGISTERED effect kind"))
-            .count()
+            .cloned()
+            .collect();
+        out.sort();
+        out
     };
+    let judged = |errs: &[String]| rows(errs).len();
     assert_eq!(
         judged(&first),
-        1,
-        "the batch that WRITES the clause must refuse it; got: {first:#?}"
+        4,
+        "the batch that WRITES the clauses must refuse all four; got: {first:#?}"
     );
 
     let later = parse::parse(unrelated).expect("parse later");
@@ -830,5 +1061,20 @@ end
         judged(&second),
         0,
         "a later batch must not re-report a clause it was never given; got: {second:#?}"
+    );
+
+    let again = parse::parse(bad).expect("parse re-presented");
+    let third: Vec<String> = match load::load_incremental(&mut kb, &[&again], &NullResolver) {
+        Ok(_) => vec![],
+        Err(e) => e.iter().map(|x| x.to_string()).collect(),
+    };
+    // THE SAME DIAGNOSTIC, not merely the same COUNT: a re-presented clause must read
+    // identically to the first batch's refusal, since the two are the same clause of the
+    // same file. Comparing the rendered messages is what catches a repair that judges the
+    // right number of clauses through the wrong origins.
+    assert_eq!(
+        rows(&third),
+        rows(&first),
+        "a RE-PRESENTED file must be refused again, on every route, word for word"
     );
 }

@@ -137,6 +137,7 @@ kb_scoped_fields!(
     guards_by_sort,
     rule_head_captures,
     resolved_requires_facts,
+    judged_row_binding_clauses,
     unbacked_derived_provisions,
     derived_provision_origin,
     // ── declarations: what makes a name MEAN something ─────────
@@ -313,13 +314,30 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         guards_by_sort: _,
         rule_head_captures: _,
         resolved_requires_facts: _,
-        // WI-20260831-V25N3 — MONOTONE, for `resolved_requires_facts`' reason and one of
-        // its own. It records which clause facts the written-row-label walk has already
-        // judged, so a later load does not re-report an earlier batch's clause; keeping
-        // an entry for a discarded layer's rule can only SUPPRESS a re-report of a row
-        // that no longer exists, and a `RuleId` from a discarded layer is tombstoned
-        // (`tombstone_layer_rules`) rather than reissued, so it can never name a
-        // different row.
+        // WI-20260831-V25N3 — which clause facts the written-row-label walk has already
+        // judged, so a later load does not re-report an earlier batch's clause.
+        //
+        // SCOPED, like `resolved_requires_facts` directly above and for its reason: both
+        // record that a LOAD PASS has already acted on a given fact, and a discarded
+        // layer's load is one that did not happen as far as the base is concerned.
+        //
+        // It was first bound here under a MONOTONE comment — INSIDE this section, whose
+        // header says otherwise, and citing `resolved_requires_facts` (a scoped field) as
+        // its precedent for being monotone. The behavioural half of that argument was
+        // "an entry can only ever be ADDED, and a leaked addition merely suppresses a
+        // re-report of a row that no longer exists". WI-20260901-EA6KS made it false in
+        // kind: the set is now REMOVED from as well, by
+        // [`KnowledgeBase::note_metadata_fact_presented`], and a leaked REMOVAL is the
+        // opposite failure — a base clause the layer un-claimed and the discard did not
+        // restore would be re-reported by a later batch that presented nothing, which is
+        // the bug the set exists to prevent.
+        //
+        // NOTHING DRIVES THE DIFFERENCE TODAY, and this says so rather than crediting a
+        // fixture: every removal is followed by the walk's own re-claim inside the SAME
+        // `load_phase_inner`, which has no early return between the two, so a layer
+        // cannot currently end with a base rid removed-but-unclaimed. What is fixed here
+        // is the CLASSIFICATION — this function's whole purpose is that the next author
+        // adding a field below this one reads the section header and is right.
         judged_row_binding_clauses: _,
         unbacked_derived_provisions: _,
         derived_provision_origin: _,

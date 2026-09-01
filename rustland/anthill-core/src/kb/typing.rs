@@ -35306,9 +35306,9 @@ fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
 /// happened to be bound to — `Spec[C = Int64]` refused for `Int64` not being a
 /// registered effect kind.
 ///
-/// Reported once per (origin, spec, param, label) so a re-presented file's second
-/// `SortProvidesInfo` fact (WI-1049) does not read as two errors, and so the SAME slot
-/// written twice in one signature still reports twice.
+/// Reported once per (origin, spec, param, label), so one clause reaching the walk down
+/// two routes does not read as two errors while the SAME slot written twice in one
+/// signature still reports twice.
 ///
 /// COST OF THE TWO ADDED SOURCES, measured rather than argued (release, guardians,
 /// min of 3, `ANTHILL_LOAD_TIMING=1`): 0.13 ms with the spec-clause source alone — the
@@ -35371,7 +35371,9 @@ pub(crate) fn check_written_row_bindings(
         // boundary of its own — unlike source 1, whose registry is drained per load — so
         // a `load_incremental` of a CLEAN file into a KB already holding an offending
         // clause re-reported it: MEASURED, a second batch of one unrelated sort failed
-        // with an error naming a file it was never given.
+        // with an error naming a file it was never given. The claim is DROPPED again
+        // when the loader re-presents the fact, which is the other direction and needs
+        // its own mechanism: `KnowledgeBase::note_metadata_fact_presented`.
         if !kb.claim_row_binding_clause(clause.rid) {
             continue;
         }
@@ -35451,10 +35453,11 @@ pub(crate) fn check_written_row_bindings(
     // only two positions of the census still loading clean.
     for (rid, op_sym, clauses) in super::op_info::all_operation_contract_clauses(kb) {
         // Once per KB, for the spec-clause loop's reason, and claimed per FACT rather
-        // than per clause because one `OperationInfo` fact carries both lists. A
-        // re-presented file banks a second fact with a new id (WI-1049), so the batch
-        // that re-presents a bad clause still reports it and only a batch that does not
-        // present it at all skips it.
+        // than per clause because one `OperationInfo` fact carries both lists. The batch
+        // that RE-PRESENTS the file still reports it, and only a batch that does not
+        // present it at all skips it — but the claim does not deliver that on its own
+        // (the assert dedups onto the claimed id), so see
+        // `KnowledgeBase::note_metadata_fact_presented`, which is what drops it.
         if !kb.claim_row_binding_clause(rid) {
             continue;
         }

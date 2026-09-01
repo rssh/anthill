@@ -11603,6 +11603,11 @@ pub fn load(
     // same two windows with its start-of-phase reset and its three mid-pipeline
     // invalidations; this entry point has neither, which is why both go here.
     kb.invalidate_requires_chain_cache();
+    // WI-20260901-EA6KS — this entry point runs NO load check, so it must record none.
+    // The item walk below writes two registries that only a check reads, and both were
+    // measured handing the next batch a refusal about a file that batch was never given.
+    // Put back at every exit; see [`crate::kb::LoadCheckMarks`] for the two measurements.
+    let check_marks = kb.load_check_marks();
     let source_ids = register_sources(kb, &[parsed]);
     let mut all_errors =
         scan_definitions_with_sources(kb, &[parsed], &source_ids, ImportAttribution::PerFile);
@@ -11638,6 +11643,11 @@ pub fn load(
     // there is no later pass and no rebuild, so this is the last word — the index stays
     // `None` from here, which is this entry point's correct steady state.
     kb.invalidate_requires_chain_cache();
+    // WI-20260901-EA6KS — the closing half of the capture at the top. AFTER
+    // `resolve_instantiations`, which is itself one of the writers (its
+    // retract-and-re-assert calls `note_metadata_fact_presented`), and on BOTH exits
+    // because an errored load leaves the KB just as written-to as a clean one.
+    kb.restore_load_check_marks(check_marks);
     if all_errors.is_empty() {
         Ok(LoadResult {
             defined_sorts: all_sorts,
@@ -13511,6 +13521,17 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                 kb.retract(rid);
                 let new_rid = kb.assert_fact(new_head, sort, domain, meta);
                 kb.mark_requires_resolved(new_rid);
+                // WI-20260901-EA6KS — and THIS is where the clause this batch presented
+                // ends up. `rid` was minted by `Loader::load_requires_decl` moments ago
+                // (only an UNRESOLVED fact reaches here, and every fact this pass sees is
+                // marked), so the presentation is real; but the completed head is
+                // structurally identical to the one an EARLIER batch of the same file
+                // left live, so `assert_fact` dedups and `new_rid` is that earlier id —
+                // already carrying the earlier batch's judged-once mark. Dropping it here
+                // is the same "the fact's identity moved, carry its marks" step as the
+                // `mark_requires_resolved` above, and without it a re-presented
+                // `requires Spec[E = {…}]` loses its refusal.
+                kb.note_metadata_fact_presented(new_rid);
             }
         }
     }
@@ -26010,13 +26031,23 @@ impl<'a> Loader<'a> {
         // SAME path `load_provides_clause` uses, so an all-ground spec rides as a
         // hash-consed `Term::Fn` and a denoted-bearing one as a `Value::Entity`
         // value fact (one carrier decision, in `assert_fact_carrier`).
+        //
+        // AND THE SAME ENTRY POINT, which it was not: this called `assert_fact_carrier`
+        // DIRECTLY while its `provides` twin goes through the metadata wrapper, and that
+        // is a difference with teeth — the wrapper is what tells
+        // `KnowledgeBase::note_metadata_fact_presented` that the declaration walk
+        // presented this fact, so a `fact Spec[…]` provider was the one clause route
+        // whose refusal was still lost on a re-presented file (MEASURED: refused on the
+        // first load, `Ok` with zero errors on the second — WI-20260901-EA6KS, found by
+        // /code-review). The debug-only slot checks it adds are the ones its twin
+        // already passes for this very functor.
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
         let sort_ref_arg = self.kb.intern("sort_ref");
         let spec_arg = self.kb.intern("spec");
         self.kb
             .register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
         let provides_sort = ClauseKind::Requirement;
-        self.kb.assert_fact_carrier(
+        self.kb.assert_metadata_fact_carrier(
             provides_sym,
             Vec::new(),
             vec![

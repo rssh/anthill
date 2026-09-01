@@ -1414,10 +1414,26 @@ pub struct KnowledgeBase {
     // given. This is the same per-ROW, cross-phase question `resolved_requires_facts`
     // above answers, keyed the same way.
     //
-    // A RE-PRESENTED FILE IS STILL JUDGED, and must be: `load_incremental` re-scans
-    // files already in the KB and banks a SECOND fact for each (WI-1049), with a NEW
-    // RuleId — so the batch that re-presents a bad clause reports it, and only the batch
-    // that does not present it at all skips it.
+    // A RE-PRESENTED FILE IS STILL JUDGED, and the claim alone does not deliver that:
+    // `assert_fact` / `assert_fact_value` hand back the EXISTING RuleId for a
+    // structurally identical live fact (`live_dedup_hit`), so re-loading the very file
+    // that wrote the clause lands on the id already in this set. (WI-1049's "a second
+    // fact, with a new RuleId" is real but scoped to TYPE-PARAMETER-BEARING operations,
+    // where `load_operation` mints a `fresh_var` per declared parameter and THAT is what
+    // defeats hash-consing; a `SortProvidesInfo` / `SortRequiresInfo` /
+    // `ProvidesConditionInfo` head carries no such var, nor does an `OperationInfo` head
+    // for an op declaring no bracket parameters. Believing it cost a load-blocking
+    // refusal: MEASURED, the same file re-presented to `load_incremental` came back Ok
+    // with zero errors — WI-20260901-EA6KS.)
+    //
+    // SO THE CLAIM IS DROPPED WHEN THE LOADER RE-PRESENTS THE FACT, and
+    // [`Self::note_metadata_fact_presented`] is where: "already judged" has to mean
+    // "already judged AND not written again since", and the only event that separates
+    // those is an assertion coming from the declaration walk. That is why the drop lives
+    // at the loader's three metadata entry points rather than at `assert_fact` itself —
+    // `eq_derive::run` re-asserts its derived `SortProvidesInfo` rows on EVERY load
+    // through `assert_fact_carrier`, and un-claiming those would re-report a row in a
+    // batch that presented nothing, which is the bug this set exists to fix.
     judged_row_binding_clauses: HashSet<RuleId>,
 
     /// WI-1103 — the `SortProvidesInfo` rows [`eq_derive::run`] asserts (a Partial
@@ -1737,6 +1753,58 @@ pub struct KnowledgeBase {
     // across `stdlib/` and `anthill-stl/`. A per-file counter restarts at 0 for the
     // second file and hands its first clause the index the first file's already used.
     provides_clause_seen: HashMap<ScopeId, usize>,
+}
+
+/// WI-20260901-EA6KS — the per-load bookkeeping that belongs to the LOAD CHECKS, taken
+/// by [`KnowledgeBase::load_check_marks`] and put back by
+/// [`KnowledgeBase::restore_load_check_marks`].
+///
+/// BOTH REGISTRIES ARE WRITTEN BY THE ITEM WALK AND READ ONLY BY A CHECK, and
+/// [`load::load`] — the single-file entry point — runs the walk without ever reaching
+/// `load_phase_inner`, so no check runs over what it loaded. Leaving what it wrote in
+/// place hands the NEXT batch work it did not do, and BOTH were measured doing exactly
+/// that, each against its own control:
+///
+/// * `judged_row_binding_clauses`. The walk DROPS claims
+///   ([`KnowledgeBase::note_metadata_fact_presented`]) and only the check re-adds them,
+///   so a `load` of an offending file left every one of its clauses un-claimed: a later
+///   `load_incremental` of an unrelated clean file then reported 2 refusals naming a file
+///   it was never given. Introduced by that drop — backing it out takes the same fixture
+///   to 0.
+/// * `parameterized_type_sites`. Push-only within a load and drained ONCE by
+///   `load_phase_inner`, so a `load`'s sites simply waited: the next batch drained them
+///   and reported 1 refusal for the earlier file. PRE-EXISTING — measured identical with
+///   the claim-drop backed out — and fixed here because the alternative is source 1 and
+///   source 2 of one check answering "what does `load` mean" two different ways, which is
+///   the defect this ticket is about.
+///
+/// THE TWO HALVES COST DIFFERENT THINGS, and the site half DOES drop a refusal — saying
+/// otherwise would be the comfortable version of this note (/code-review caught the first
+/// draft claiming "nothing that was being reported stops being reported", which its own
+/// second bullet contradicts).
+///
+/// * The claim half loses NOTHING. Restoring it returns the exact behaviour that stood
+///   before the drop above existed: the clause facts are still in the KB and still
+///   claimed, and the batch that presented them is still the batch that judged them.
+/// * The site half DROPS TWO REFUSALS for a file loaded through [`load::load`] — the
+///   WI-644 use-site `requires Eq` one and this check's own source-1 one — where before
+///   they surfaced in whichever later batch happened to drain the registry. They are not
+///   relocated; nothing judges them. That is a real loss and it is the lesser one: the
+///   alternative is that a `load_incremental` of a clean unrelated file FAILS, which is
+///   the outcome WI-20260831-V25N3 was filed for, and it makes the entry point unusable
+///   in exactly the incremental workflow it exists to serve. `load` already runs none of
+///   `load_phase_inner`'s ~20 checks; the site registry was the one piece of check work it
+///   left lying around for someone else to be blamed for, so this makes it uniformly
+///   check-free rather than check-free-with-one-booby-trap.
+///
+/// THE THIRD OPTION IS THE RIGHT ONE AND IS NOT THIS TICKET'S: `load` could run those two
+/// checks over its OWN drained sites. It cannot today — `check_use_site_requires_eq` reads
+/// `eq_derive`'s derived `NonEq` rows, which this entry point never derives, so it would
+/// answer a Float composite WRONGLY rather than not at all. Owned by
+/// WI-20260901-Q68AK-load-load-runs-no-load-check.
+pub(crate) struct LoadCheckMarks {
+    judged_row_binding_clauses: HashSet<RuleId>,
+    parameterized_type_sites: usize,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -2066,8 +2134,76 @@ impl KnowledgeBase {
     /// WI-20260831-V25N3 — claim `rid` for the written-row-label walk, returning `true`
     /// the FIRST time it is seen and `false` afterwards. See
     /// [`Self::judged_row_binding_clauses`] for why the question is per-row.
+    ///
+    /// IT MEANS "THE WALK SAW THIS CLAUSE", not "the walk had an opinion about it"
+    /// (/code-review). Both callers claim at the top of their loop, BEFORE unwrapping the
+    /// spec view or asking whether the spec has a row parameter at all — deliberately, so
+    /// that a clause with nothing to judge is not re-walked on every later load. The one
+    /// case where that reading bites is a KB in which `anthill.prelude.Effect` resolves
+    /// but declares NO type parameter: `check_written_row_bindings` then computes
+    /// `registered` as `None`, its registered-kind half goes inert, and every clause in
+    /// the KB is marked seen while only the `Modify`-target half actually decided. That
+    /// is a bootstrap anomaly `check_effect_registration` refuses LOUDLY in the same
+    /// load, so the batch fails and there is no later batch to be silently short-changed
+    /// — and it is not reachable from a test, which loads the real prelude, so this is
+    /// recorded rather than guarded. A guard nothing can drive would be the worse trade.
     pub(crate) fn claim_row_binding_clause(&mut self, rid: RuleId) -> bool {
         self.judged_row_binding_clauses.insert(rid)
+    }
+
+    /// WI-20260901-EA6KS — capture what the LOAD CHECKS have recorded so far, so an
+    /// entry point that runs none of them can put it back.
+    ///
+    /// See [`LoadCheckMarks`] for which registries those are and why leaving them
+    /// changed is a live fail-open.
+    pub(crate) fn load_check_marks(&self) -> LoadCheckMarks {
+        LoadCheckMarks {
+            judged_row_binding_clauses: self.judged_row_binding_clauses.clone(),
+            parameterized_type_sites: self.parameterized_type_sites.len(),
+        }
+    }
+
+    /// WI-20260901-EA6KS — restore what [`Self::load_check_marks`] captured.
+    pub(crate) fn restore_load_check_marks(&mut self, marks: LoadCheckMarks) {
+        let LoadCheckMarks {
+            judged_row_binding_clauses,
+            parameterized_type_sites,
+        } = marks;
+        self.judged_row_binding_clauses = judged_row_binding_clauses;
+        // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
+        // pending sites, and this restores what it found rather than what it wants. The
+        // registry is push-only between a capture and its restore — only
+        // `take_parameterized_type_sites` shortens it, and that runs in `load_phase_inner`,
+        // which is exactly the entry point that does NOT capture these marks.
+        debug_assert!(
+            self.parameterized_type_sites.len() >= parameterized_type_sites,
+            "the site registry shrank between capture and restore"
+        );
+        self.parameterized_type_sites.truncate(parameterized_type_sites);
+    }
+
+    /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
+    /// metadata fact `rid`, so drop every "already judged once" mark keyed on it.
+    ///
+    /// A ground-fact assert DEDUPS: re-loading the file that wrote a clause returns the
+    /// RuleId that file's first load minted ([`live_dedup_hit`]), so without this a
+    /// re-presented file's load-blocking refusal is lost — measured, and pinned by
+    /// `a_later_load_re_reports_a_re_presented_clause_and_not_an_unrelated_one`.
+    ///
+    /// PRESENTATION, NOT ASSERTION, is the event: called from
+    /// [`Self::assert_metadata_fact`], [`Self::assert_metadata_fact_value`] and
+    /// [`Self::assert_metadata_fact_carrier`] — whose 21 call sites are ALL in the
+    /// loader's item walk — and not from `assert_fact`, which `eq_derive::run` reaches
+    /// on every load with rows no file presented. `resolve_requires_bindings` calls it
+    /// too, because it retracts and re-asserts THIS batch's `SortRequiresInfo` fact onto
+    /// a dedup hit against the previous batch's live one, and so owns where that
+    /// presentation ends up (exactly as it owns [`Self::mark_requires_resolved`]).
+    ///
+    /// ONE SET TODAY. It is spelled as "drop the judged-once marks" rather than as
+    /// "un-claim the row-binding walk" because a second per-fact load check keyed the
+    /// same way would owe the same drop, and would otherwise quietly not get it.
+    pub(crate) fn note_metadata_fact_presented(&mut self, rid: RuleId) {
+        self.judged_row_binding_clauses.remove(&rid);
     }
 
     /// WI-1103 — was this `SortProvidesInfo` row DERIVED by [`eq_derive::run`], i.e.
@@ -4962,7 +5098,9 @@ impl KnowledgeBase {
             self.check_metadata_head(self.head_functor(term));
             self.check_metadata_slots_of_term(term);
         }
-        self.assert_fact(term, clause_kind, domain, meta)
+        let rid = self.assert_fact(term, clause_kind, domain, meta);
+        self.note_metadata_fact_presented(rid);
+        rid
     }
 
     /// [`Self::assert_fact_value`] for a loader metadata fact (WI-630).
@@ -5000,7 +5138,9 @@ impl KnowledgeBase {
                 _ => {}
             }
         }
-        self.assert_fact_value(head, clause_kind, domain, meta)
+        let rid = self.assert_fact_value(head, clause_kind, domain, meta);
+        self.note_metadata_fact_presented(rid);
+        rid
     }
 
     /// [`Self::assert_fact_carrier`] for a loader metadata fact (WI-630).
@@ -5019,7 +5159,9 @@ impl KnowledgeBase {
             let labels: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
             self.check_metadata_slots(functor, pos.len(), &labels);
         }
-        self.assert_fact_carrier(functor, pos, named, clause_kind, domain, meta)
+        let rid = self.assert_fact_carrier(functor, pos, named, clause_kind, domain, meta);
+        self.note_metadata_fact_presented(rid);
+        rid
     }
 
     /// Incref the ground `TermId` leaves reachable in a value head (WI-348
