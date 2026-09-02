@@ -1006,7 +1006,7 @@ pub struct KnowledgeBase {
     /// names the captured declaration's line off this same log.
     ///
     /// PER SCAN, cleared at the top of `load::scan_definitions_with_sources` — the
-    /// pass that fills it — so a `load_all` into a live KB second phase, or a standalone
+    /// pass that fills it — so the second `load_all` of a staged load, or a standalone
     /// query scan, starts from empty rather than re-checking declarations an earlier
     /// phase already ruled on.
     pub(crate) decl_sites: Vec<load::DeclSite>,
@@ -1250,11 +1250,13 @@ pub struct KnowledgeBase {
     /// that has the SAME input — [`Self::invalidate_requires_chain_cache`] drops this
     /// index alongside `requires_tree_cache` and friends, so a producer that already
     /// owes that call owes nothing new, and one that forgets it was already serving a
-    /// stale chain. Reset to `None` at the start of EVERY load entry point that can write
-    /// the relation — `load_phase_inner` (like its siblings) and the single-file `load`,
-    /// which never reaches a type-check and so keeps scanning — and (re)built by
+    /// stale chain. Reset to `None` at the start of `load_phase_inner`, beside its
+    /// sibling index resets — one door, since WI-20260901-Q68AK folded the single-file
+    /// `load` entry point into `LoadOptions { run_typer: false }` — and (re)built by
     /// `build_requires_index` at `type_check_sorts` start and once more at the end of the
-    /// load pipeline, so the RUNTIME readers (eval, codegen) get a live index. `None`
+    /// load pipeline, so the RUNTIME readers (eval, codegen) get a live index. A
+    /// `run_typer: false` load returns above BOTH build points, which is what the reset is
+    /// for: that path leaves the index dropped rather than stale. `None`
     /// until built; while `None`, the consumer falls back to the live scan
     /// (`rids_or_scan`), which returns every fact and is re-filtered per fact at the call
     /// site — so a `None` index is slow, never wrong.
@@ -1388,7 +1390,7 @@ pub struct KnowledgeBase {
     // deciding at the lowering would silently pass every derived case.
     //
     // Push-only WITHIN a load; drained ONCE PER LOAD by `load_phase_inner`
-    // (`take_parameterized_type_sites`) so a second `load_all` into a live KB into the same KB
+    // (`take_parameterized_type_sites`) so a second `load_all` into the same KB
     // re-checks only ITS OWN sites. Leaving them would re-walk and re-report every
     // earlier batch's sites — the reason the sibling `resolved_requires_facts` below
     // exists.
@@ -2216,7 +2218,6 @@ impl KnowledgeBase {
     pub(crate) fn note_metadata_fact_presented(&mut self, rid: RuleId) {
         self.judged_row_binding_clauses.remove(&rid);
     }
-
 
     /// WI-1103 — was this `SortProvidesInfo` row DERIVED by [`eq_derive::run`], i.e.
     /// is it exempt from the provider-coverage op-backing walk? See
@@ -9155,7 +9156,7 @@ impl KnowledgeBase {
     }
 
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so
-    /// a later `load_all` into a live KB into this KB checks only its own sites instead
+    /// a later `load_all` into this KB checks only its own sites instead
     /// of re-walking (and re-reporting) every batch loaded before it.
     pub(crate) fn take_parameterized_type_sites(&mut self) -> Vec<ParameterizedSite> {
         std::mem::take(&mut self.parameterized_type_sites)

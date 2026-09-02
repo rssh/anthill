@@ -28195,10 +28195,12 @@ fn requires_rids_by_sort(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb:
 /// readers inherit a live index. Both producers are done before the first of those:
 /// `Loader::load_requires_decl` during the per-file load, and
 /// `load::resolve_requires_bindings` — which RETRACTS and re-asserts, so a stale bucket
-/// would serve a retracted rid — inside `resolve_instantiations`. The single-file [`load`]
-/// entry point runs both of those and NO type-check, so it deliberately gets no build at
-/// all: it resets the index at its start and leaves it `None`, i.e. scanning.
-/// (`crate::kb::load::load`.)
+/// would serve a retracted rid — inside `resolve_instantiations`. A
+/// `LoadOptions { run_typer: false }` load runs both of those and NO type-check, so it
+/// deliberately gets no build at all: `load_phase_inner` resets the index at its start and
+/// the partial path returns above both build points, leaving it `None`, i.e. scanning.
+/// (That partial shape was a separate `load::load` entry point until WI-20260901-Q68AK;
+/// the rule is unchanged, the door is now an option on the one pipeline.)
 ///
 /// A future producer that runs after a build must call
 /// `KnowledgeBase::invalidate_requires_chain_cache`, which drops this index — the one
@@ -35389,10 +35391,25 @@ pub(crate) enum RowBindingRun {
     /// trade is the SITE half's, made twice for one reason
     /// ([`crate::kb::LoadCheckMarks`]): the alternative is that a `load_all` of a clean
     /// unrelated file FAILS, which makes the entry point unusable in the incremental
-    /// workflow it exists to serve. It is also the lesser loss because the file is not
-    /// silently blessed — a later batch that RE-PRESENTS it drops the claims through
+    /// workflow it exists to serve.
+    ///
+    /// RE-PRESENTATION RECOVERS THE WRITTEN CLAUSES AND NOT THE DERIVED ROWS — the
+    /// qualification this note used to leave out, stated here because it is the guarantee
+    /// a reader takes away from the decision site (/code-review). A later batch that
+    /// RE-PRESENTS the file drops each WRITTEN clause's claim through
     /// `KnowledgeBase::note_metadata_fact_presented` and is refused normally, which is
-    /// what `a_check_less_load_claims_the_clauses_it_wrote`'s fourth batch pins.
+    /// what `a_check_less_load_claims_the_clauses_it_wrote`'s fourth batch pins. A row
+    /// `derive_forwarded_provisions` MATERIALIZED is never re-presented at all:
+    /// `forwarded_rows_to_derive` returns only rows NOT ALREADY PRESENT, so the second
+    /// load filters it out before `assert_forwarded_provides` and there is no assertion to
+    /// hang a presentation on. Such a row is judged by no batch, ever — including a full
+    /// re-load of the identical file, and including the case where the partial load
+    /// ERRORED, since the claim sits above both the `Ok` and the `Err` arm of
+    /// `load_phase_inner`'s early return. `…_claims_a_row_it_derived_too`'s fourth batch
+    /// pins exactly that, and says why recovering it would have to happen at the deriver's
+    /// filter rather than at an entry point. The author still meets a refusal at the
+    /// clause they actually WROTE, which is the one they can fix, and that is why this is
+    /// a stated cost rather than a hole.
     ///
     /// IT IS NOT A LANGUAGE-LEVEL NARROWING, so `docs/kernel-language.md` §5.5's "every
     /// position that writes a row is checked" stands unamended: §5.5 states what the

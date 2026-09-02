@@ -90,9 +90,10 @@
 //!
 //! AND THE ENTRY POINT THAT RUNS NO CHECK HANDS ON NOTHING (`a_check_less_load_entry_point_…`,
 //! `a_check_less_load_claims_the_clauses_it_wrote`, `…_claims_a_row_it_derived_too`): a
-//! `run_typer: false` load stops above every check, so leaving either of the two
-//! registries a check reads changed hands the next batch a refusal about a file it was
-//! never given — measured for both. The SITE half is a restore (`restore_load_check_marks`).
+//! `run_typer: false` load returns before the typer and every check below it, so leaving
+//! either of the two registries a check reads changed hands the next batch a refusal about
+//! a file it was never given — measured for both. The SITE half is a restore
+//! (`restore_load_check_marks`).
 //! The CLAUSE half is a run of THIS CHECK'S OWN WALK that claims and judges nothing
 //! (`typing::RowBindingRun::ClaimOnly`, WI-20260901-47VWX), because the population is
 //! everything the check would judge and not everything the loader wrote: two earlier
@@ -864,12 +865,12 @@ end
 /// THE TWO HALVES HAVE DIFFERENT HISTORIES, and saying so is the point. The claim half is
 /// a regression introduced by WI-20260901-EA6KS itself — the walk now DROPS claims and
 /// only the check re-adds them — and backing that drop out takes its row to 0. The site
-/// half is PRE-EXISTING, measured identical with the drop backed out: `load`'s sites
-/// simply waited in a push-only registry until the next batch drained them. It is fixed
-/// beside the other because otherwise the same check's source 1 and source 2 answer "what
-/// does `load` mean" two different ways.
+/// half is PRE-EXISTING, measured identical with the drop backed out: the partial load's
+/// sites simply waited in a push-only registry until the next batch drained them. It is
+/// fixed beside the other because otherwise the same check's source 1 and source 2 answer
+/// "what does a check-less load mean" two different ways.
 ///
-/// NOT A SUPPRESSION: this entry point ran no checks before or after, so nothing that was
+/// NOT A SUPPRESSION: this path runs no checks before or after, so nothing that was
 /// reported stops being reported. What stops is charging it to the wrong batch — which is
 /// the rule `a_later_load_re_reports_…` states for the other producers.
 #[test]
@@ -879,7 +880,7 @@ fn a_check_less_load_entry_point_records_no_load_check_work() {
     use anthill_core::parse;
 
     // The CLAUSE half: two spec clauses, both offending — the `judged_row_binding_clauses`
-    // route, which `load` un-claims and never re-claims.
+    // route, which the partial load un-claims and never re-claims.
     let clauses = r#"
 namespace test.v25n3.solo
   import anthill.prelude.{Error, String, EffectsRuntime}
@@ -896,7 +897,7 @@ namespace test.v25n3.solo
 end
 "#;
     // The SITE half: a row written as a type argument in a signature — source 1, whose
-    // registry `load` fills and no check of its own drains.
+    // registry the load fills and no check of its own drains.
     let site = r#"
 namespace test.v25n3.solo2
   import anthill.prelude.{Error, String, EffectsRuntime}
@@ -947,7 +948,7 @@ end
         // The CLAUSE half loads its offender in batch 1 too, so the claim it needs to
         // leave behind exists to be dropped; the SITE half must NOT, because a site is
         // judged in the batch that wrote it and the question is what a later batch
-        // inherits from `load` alone.
+        // inherits from the check-less load alone.
         if expected_in_batch_one > 0 {
             parsed.push(parse::parse(offender).expect("parse offender"));
         }
@@ -1353,7 +1354,7 @@ end
     ] {
         assert!(
             rows(&fourth).iter().any(|e| e.contains(owner)),
-            "each of the four clause producers must be refused; missing `{owner}` in \
+            "each of the five clause producers must be refused; missing `{owner}` in \
              {fourth:#?}"
         );
     }
@@ -1459,7 +1460,17 @@ end
         let mut out: Vec<String> = errs
             .iter()
             .filter(|e| e.contains("is not a REGISTERED effect kind"))
-            .map(|e| e[..e.find(" binds ").unwrap_or(0)].to_string())
+            .map(|e| {
+                // LOUD, never `unwrap_or(0)` (/code-review): with the phrase absent the
+                // slice is `""` and every row-IDENTIFYING assertion below degrades to
+                // comparing empty strings instead of failing at the point of truth. The
+                // phrase is `WrittenEffectRowLabel`'s own wording, so a reword must land
+                // here rather than silently emptying the census.
+                let at = e
+                    .find(" binds ")
+                    .unwrap_or_else(|| panic!("row-label message must carry ` binds `: {e}"));
+                e[..at].to_string()
+            })
             .collect();
         out.sort();
         out

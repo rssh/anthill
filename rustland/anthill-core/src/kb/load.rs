@@ -1334,8 +1334,8 @@ pub enum LoadError {
     /// refuses nothing that exists.
     ///
     /// "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as the binding decision it reads
-    /// from is (`load_all` into a live KB is an alias of `load_all`, so each batch runs its own
-    /// `scan_definitions`). A predicate assembled across two BATCHES is therefore not
+    /// from is (each `load_all` runs its own `scan_definitions`, so a STAGED load has one
+    /// scan per batch). A predicate assembled across two BATCHES is therefore not
     /// caught: the earlier batch's heads are already minted, so the later batch's denote
     /// and never become candidates. Same boundary, same reason — the guarantee is over
     /// one scan's files — and stated rather than implied.
@@ -4475,7 +4475,7 @@ pub fn scan_definitions_with_sources(
     let mut ledger = DeclLedger::default();
     // WI-999 — the capture ledger is per SCAN, and this is the pass that fills it.
     // Clearing here rather than in `load_phase_inner` covers every entry point that
-    // scans (the CLI's query scan, `load_all` into a live KB's second phase, a test's
+    // scans (the CLI's query scan, the second `load_all` of a staged load, a test's
     // hand-built IR), so `check_name_captures` never re-judges a declaration an
     // earlier phase already ruled on — the same reason WI-1049 resets `op_decl_sites`.
     kb.decl_sites.clear();
@@ -4597,9 +4597,9 @@ pub fn scan_definitions_with_sources(
     // the finished program, the same answer whichever file or line came first.
     //
     // "THE PROGRAM" IS THE FILES OF THIS SCAN, and a STAGED load has more than one.
-    // `load_all` into a live KB is an alias of `load_all`, so each batch runs its own
-    // `scan_definitions` and a head decided in an earlier one cannot be re-decided —
-    // the symbol is already minted. Load `namespace demo { sort Rec { rule p(2) } }`
+    // Each `load_all` into the KB runs its own `scan_definitions`, so a head decided in an
+    // earlier batch cannot be re-decided — the symbol is already minted. Load
+    // `namespace demo { sort Rec { rule p(2) } }`
     // first and `namespace demo { rule p(1) }` second and the two stay separate, where
     // one `load_all` over the identical pair joins them. The other order is already
     // right (the second batch's head finds the first batch's symbol through the
@@ -4894,8 +4894,8 @@ pub fn scan_definitions_with_sources(
     // message can name.
     //
     // "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as everything else in this pass is
-    // (`load_all` into a live KB is an alias of `load_all`, so each batch runs its own
-    // `scan_definitions`). A predicate assembled across two BATCHES is therefore not
+    // (each `load_all` runs its own `scan_definitions`, so a STAGED load has one scan
+    // per batch). A predicate assembled across two BATCHES is therefore not
     // caught: the earlier batch's heads are already minted, so the later batch's denote.
     {
         let mut by_predicate: HashMap<(ScopeId, &str), Vec<usize>> = HashMap::new();
@@ -11834,7 +11834,7 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
 /// name only phase 2 declares IS refused at phase 1. That is the ordering promise
 /// made explicit rather than a limitation discovered later: the normal path hands
 /// every file to one `load_all` (cross-file mutual recursion is what
-/// `scan_definitions` exists for), and `load_all` into a live KB's phase 1 is the stdlib,
+/// `scan_definitions` exists for), and a staged load's phase 1 is the stdlib,
 /// which references nothing a user file supplies. A caller that genuinely needs the
 /// forward reference must load both files in one phase.
 fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
@@ -12294,11 +12294,14 @@ fn load_phase_inner(
     // (`build_sort_info_index`); clearing it first makes this phase's load-time SortInfo
     // lookups fall back to the live scan (seeing THIS phase's freshly-asserted SortInfo
     // facts) instead of a stale index from a prior phase — load-bearing for
-    // `load_all` into a live KB. SortInfo is untouched by eq_derive, so unlike `provides_index`
-    // this is the only invalidation THIS phase needs. WI-1008: it is no longer the only
-    // one in the crate — `merge_secondary_entry_operations` re-asserts SortInfo records
-    // and drops the index itself, which is what covers the `load` entry point, where
-    // this line does not run.
+    // a `load_all` into a live KB. SortInfo is untouched by eq_derive, so unlike
+    // `provides_index` this is the only invalidation THIS phase needs. WI-1008: it is no
+    // longer the only one in the crate — `merge_secondary_entry_operations` re-asserts
+    // SortInfo records and drops the index itself. WI-20260901-Q8NH5 — that drop used to
+    // be justified as "what covers the `load` entry point, where this line does not run".
+    // There is one pipeline now and this line runs on every path through it, the partial
+    // one included; what the drop still covers is the OTHER door into that pass, stated
+    // at its own site.
     kb.sort_info_index = None;
     // WI-1112 — same reset for the SortRequiresInfo index, same reason: this phase's
     // `requires` facts are asserted below and the index is rebuilt at this phase's
@@ -12312,16 +12315,28 @@ fn load_phase_inner(
     // retired single-file entry point asserted into this relation and never reached a
     // `build_requires_index` to correct itself. There is one phase now, and the case the
     // line still covers is the PARTIAL one: `LoadOptions { run_typer: false }` returns
-    // before `build_requires_index` (which runs inside `type_check_sorts`), so the reset
-    // here is what leaves that path a dropped index rather than a stale one —
-    // `wi1112_requires_index_tests` drives exactly that.
-    // MEASURED: with THIS line backed out the full workspace stays green, and so does a
-    // scan-vs-index disagreement detector wired into every `collect_sort_requires` call
-    // across all 29 test binaries — no fixture reads the chain in this phase's pre-typer
-    // window. Its twin in `load` is the one that is DRIVEN
-    // (`wi1112_requires_index_tests::a_single_file_load_does_not_read_a_stale_index`);
-    // this one is the same rule at the sibling door, kept so the invariant has no
-    // exceptions to remember.
+    // above BOTH build points — `build_requires_index` inside `type_check_sorts`, and the
+    // second one at the end of the pipeline — so nothing below this reset would rebuild an
+    // index it inherited.
+    //
+    // WHAT IS NO LONGER TRUE, RE-MEASURED (WI-20260901-Q8NH5). Folding the two entry points
+    // into one turned a rule about two DOORS into three writers on ONE path: this line and
+    // the two pre-typer `invalidate_requires_chain_cache()` calls around
+    // `derive_forwarded_provisions` each leave the index `None`, and nothing between them
+    // rebuilds it, so they are REDUNDANT WITH EACH OTHER — which they were not while
+    // `load::load` ran none of them. On `wi1112_requires_index_tests`: back THIS line out
+    // alone and all 6 rows pass (and so does the full workspace — 36 binaries, 6290 tests);
+    // back out BOTH invalidations and keep this line and
+    // `a_single_file_load_does_not_read_a_stale_index` STILL passes, only the chain-MEMO
+    // row failing, which this line does not clear; back out all three and the `is_none`
+    // assertion fails. So no single back-out names this line, and the sentence it used to
+    // carry — "its twin in `load` is the one that is DRIVEN" — named a twin that no longer
+    // exists. (The pre-Q68AK measurement went further, a scan-vs-index disagreement
+    // detector wired into every `collect_sort_requires` call across all 29 test binaries
+    // staying silent too; it was taken while this line ran only on the FULL path, so it
+    // says nothing about the partial one.) Kept because the invalidations are owed to the
+    // CHAIN CACHES rather than to this index, so a correction there must not silently take
+    // the reset with it.
     kb.requires_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
@@ -13178,9 +13193,15 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // This pass is the SECOND writer of the SortInfo relation, and the keyed index
         // over it (`sort_info_index`, WI-671) is built once on the premise that
         // `emit_sort_info` is the only one — so drop it, per the standing rule its
-        // field doc now carries. `load_phase` clears it before loading; the single-file
-        // `load` entry point does not, which is why the drop belongs here and not
-        // there. Idempotent, so re-dropping on a later row costs nothing, and a KB with
+        // field doc now carries. WI-20260901-Q8NH5 — the sibling this used to contrast
+        // with is gone. It read "`load_phase` clears it before loading; the single-file
+        // `load` entry point does not", and the partial shape is an option on the one
+        // pipeline now (`LoadOptions { run_typer: false }`), which clears the index at the
+        // top like every other load. What the drop still covers is the OTHER door into
+        // this pass: `resolve_instantiations` is `pub` and is driven directly on a KB
+        // that has already finished a load — `resolve_instantiations_is_idempotent` in
+        // `incremental_load_test` does exactly that — where the index is LIVE and no
+        // reset ran. Idempotent, so re-dropping on a later row costs nothing, and a KB with
         // no secondary entry never reaches it.
         kb.sort_info_index = None;
 
@@ -15391,11 +15412,18 @@ fn captured_origin(
 /// scope a `namespace X` is classified into depends on a `sort X` that may be
 /// declared in a later file (the WI-321 invariant).
 ///
-/// WHICH ENTRY POINTS RUN IT, stated because the boundary is inherited rather than
-/// chosen: every whole-KB check lives in [`load_phase_inner`], which [`load_all`] /
-/// [`load_all` into a live KB] reach and the single-file [`load`] does not. So `load` sees
-/// no capture refusal, exactly as it sees no duplicate-operation refusal (WI-1049) —
-/// one boundary for the whole family, not a gap this check opened.
+/// WHERE THE BOUNDARY IS — and it is NO LONGER ONE LINE FOR THE WHOLE FAMILY
+/// (WI-20260901-Q8NH5). This check sits BELOW [`load_phase_inner`]'s `run_typer` gate, so
+/// a [`LoadOptions`] load with `run_typer: false` — the partial shape that replaced the
+/// retired single-file `load` entry point — returns before reaching it and sees no
+/// capture refusal. What is NOT still true is the sentence this replaced, "exactly as it
+/// sees no duplicate-operation refusal (WI-1049) — one boundary for the whole family":
+/// the retired entry point returned just after `resolve_instantiations` and skipped
+/// WI-1049's check too, while `run_typer: false` returns well BELOW it and does refuse a
+/// duplicate declaration. MEASURED, both fixtures through both options —
+/// `wi999_name_capture_test::a_partial_load_sees_no_capture_refusal` drives the split and
+/// carries the duplicate-operation row as its control, because without that row an absent
+/// capture refusal is equally explained by a path that runs no check at all.
 ///
 /// WHAT IT DOES NOT ASSUME ABOUT THE CAPTURED NAME. `register_builtin_tag` mints a
 /// symbol for a name nothing declares, so a resolver builtin can be an operation by
@@ -29961,7 +29989,7 @@ mod wi953_scope_spine_tests {
     //! declaration pass and the load phase.
     //!
     //! CONTROL: `the_same_file_loads_clean_through_the_whole_pipeline`, which
-    //! takes the SAME fixture through `load` and passes with or without the
+    //! takes the SAME fixture through `load_all` and passes with or without the
     //! reports. Back the reports out of `lookup_defined` and every other test
     //! here fails (no `UndefinedAfterDefinePass` is ever produced) while the
     //! control still passes.
@@ -30361,7 +30389,7 @@ end
 
     /// The channel WI-1028 actually rewrote: `LoadPass::at_item` used to unwrap the
     /// scope TERM (`name_term_sym`) to get the domain and now reads `scope.owner()`.
-    /// Driven through a real `load`, so the assertion is on the KB, not on a
+    /// Driven through a real `load_all`, so the assertion is on the KB, not on a
     /// test-local pass.
     #[test]
     fn a_clause_is_filed_under_the_owner_of_the_scope_it_is_written_in() {

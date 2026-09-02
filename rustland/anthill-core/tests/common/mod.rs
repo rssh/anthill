@@ -224,6 +224,28 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
     try_load_kb_with_files(&[source])
 }
 
+/// WI-20260901-Q8NH5 — [`try_load_kb_with`] through the PARTIAL load path
+/// (`LoadOptions { run_typer: false }`), returning that path's own verdict.
+///
+/// The peer of [`load_stdlib_kb_untyped`], and for the opposite question: that one EXPECTS
+/// the partial load to succeed, because its callers drive the typer themselves. This one
+/// asks WHICH REFUSALS the partial path produces, which is how a check's position relative
+/// to `load_phase_inner`'s `run_typer` return is measured rather than read off the source.
+/// Same corpus and same recipe as [`try_load_kb_with`], so a pair of calls varies the
+/// OPTION and nothing else.
+#[allow(dead_code)]
+pub fn try_load_kb_untyped_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_named_prepared_with(
+        &[source],
+        None,
+        load::LoadOptions {
+            run_typer: false,
+            ..Default::default()
+        },
+        |_| {},
+    )
+}
+
 /// WI-1122 — [`try_load_kb_with`] with a hook that runs on the FRESH KB before
 /// `load_all`, for the embedder seams that must be mounted before load
 /// (`register_host_fn`, `register_extent_owner`). Registering after the load would not
@@ -248,7 +270,7 @@ pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<Str
 }
 
 /// The shared body of [`try_load_kb_with_files`] and [`try_load_kb_prepared`]: parse
-/// each source as its own file, build a fresh KB, run `prepare` on it, then `load_all`.
+/// each source as its own file, build a fresh KB, run `prepare` on it, then load it.
 /// ONE recipe rather than two, so a change to the load pipeline (a different resolver,
 /// an added pass) cannot reach the ~683 ordinary call sites while leaving the
 /// prepared-KB tests on an older one.
@@ -266,6 +288,18 @@ pub fn try_load_kb_prepared_files(
 fn try_load_kb_named_prepared(
     sources: &[&str],
     names: Option<&[&str]>,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_named_prepared_with(sources, names, load::LoadOptions::default(), prepare)
+}
+
+/// [`try_load_kb_named_prepared`] with explicit [`load::LoadOptions`]. The recipe stays
+/// ONE function for the reason stated above — the option is a parameter of it, never a
+/// second copy that a pipeline change could leave behind.
+fn try_load_kb_named_prepared_with(
+    sources: &[&str],
+    names: Option<&[&str]>,
+    options: load::LoadOptions,
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<KnowledgeBase, Vec<String>> {
     if let Some(names) = names {
@@ -287,7 +321,7 @@ fn try_load_kb_named_prepared(
     refs.extend(user.iter());
     let mut kb = KnowledgeBase::new();
     prepare(&mut kb);
-    match load::load_all(&mut kb, &refs, &NullResolver) {
+    match load::load_all_with(&mut kb, &refs, &NullResolver, options) {
         Ok(_) => Ok(kb),
         Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
     }

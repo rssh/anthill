@@ -3,9 +3,9 @@
 - id: WI-20260901-Q8NH5-the-load-removal-left-its
 - created: 2026-09-01T14:11:01Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-01T14:11:01Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-02T00:11:05Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

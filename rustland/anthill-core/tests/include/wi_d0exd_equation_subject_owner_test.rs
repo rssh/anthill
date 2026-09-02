@@ -147,7 +147,7 @@ fn int_value(v: Value) -> i64 {
 }
 
 /// The errors from loading `batches` one after another into one KB — a STAGED load, which
-/// a second `load_all` into a live KB is (each batch runs its own
+/// two successive `load_all`s into one KB are (each runs its own
 /// `scan_definitions`). The only way to reach a target minted by an EARLIER scan, which is
 /// where a name carrying two rule-introduced roles becomes reachable.
 fn staged_load_errors(batches: &[&str]) -> Vec<String> {

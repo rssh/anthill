@@ -53,7 +53,7 @@ use anthill_core::parse;
 
 /// Load stdlib + `extra` in ONE `load_all` and return the errors (empty when clean).
 /// The whole-KB passes — op-body type checking among them — belong to `load_all`, so
-/// a second incremental `load` would not be the loader's verdict on this source.
+/// a second incremental `load_all` would not be the loader's verdict on this source.
 fn errors_for(extra: &str) -> Vec<String> {
     let dir = crate::common::stdlib_dir();
     let files = crate::common::collect_anthill_files(&dir);

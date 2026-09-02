@@ -4741,8 +4741,8 @@ end
         );
     }
 
-    /// THE OTHER DOOR. the PARTIAL load path (`LoadOptions { run_typer: false }`, which replaced the
-    /// retired single-file `load::load`) asserts
+    /// THE OTHER DOOR. The PARTIAL load path (`LoadOptions { run_typer: false }`, which
+    /// replaced the retired single-file `load::load`) asserts
     /// `SortRequiresInfo` twice over (`load_requires_decl`, then
     /// `resolve_requires_bindings`' retract-and-re-assert) and NEVER reaches
     /// `type_check_sorts`, so nothing downstream of it would correct an index it
@@ -4750,13 +4750,19 @@ end
     /// live, and every requirement in the file being loaded is filed under a bucket that
     /// was built before the file existed.
     ///
-    /// CONTROL: back out `load`'s `invalidate_requires_chain_cache()` calls — BOTH, since
-    /// either alone leaves the index `None` at the end — and this fails at the `is_none`
-    /// assertion, and then, with that assertion removed too, at the requirement itself,
-    /// which is the shape the user meets (measured). This is the DRIVEN half of the rule;
-    /// the equivalent reset in `load_phase_inner` is measured unobservable (see its
-    /// comment) and kept because one rule with no exceptions is cheaper to hold than two
-    /// doors with different answers.
+    /// CONTROL, RE-MEASURED AT THIS DOOR (WI-20260901-Q8NH5). THREE writers leave the index
+    /// `None` on the partial path — `load_phase_inner`'s opening `kb.requires_index = None`
+    /// and the two pre-typer `invalidate_requires_chain_cache()` calls around
+    /// `derive_forwarded_provisions` — and they are REDUNDANT with each other, which they
+    /// were not while `load::load` ran none of them. So no single back-out names one of
+    /// them: back out the reset alone and this passes (the full workspace too); back out
+    /// BOTH invalidations and keep the reset and this still passes, only the memo row below
+    /// failing; back out all three and this fails at the `is_none` assertion, and then,
+    /// with that assertion removed too, at the requirement itself, which is the shape the
+    /// user meets. What this row pins is therefore the RESULT — a partial load leaves no
+    /// index a later reader can trust — and not any one line. The comment it used to carry
+    /// ("this is the DRIVEN half of the rule; the equivalent reset in `load_phase_inner` is
+    /// measured unobservable") split a rule across two doors that no longer exist.
     #[test]
     fn a_single_file_load_does_not_read_a_stale_index() {
         use crate::kb::load::{self, NullResolver};
@@ -4810,13 +4816,13 @@ end
         );
     }
 
-    /// AND THE CLOSING HALF OF THAT PAIR. `load` also has to invalidate AFTER it writes,
-    /// because the derived state it can invalidate is not only the index: `direct_requires`
-    /// reads TWO relations (WI-1110), the memoized `requires_tree` is keyed per sort, and a
-    /// `load` onto a KB whose chains are already warm — which is every `load` after a
-    /// `load_all`, since `check_provider_requires` builds a chain for every provider —
-    /// would otherwise serve the pre-load memo for a sort whose requirements the loaded
-    /// file just changed.
+    /// AND THE CLOSING HALF OF THAT PAIR. The partial path also has to invalidate AFTER it
+    /// writes, because the derived state it can invalidate is not only the index:
+    /// `direct_requires` reads TWO relations (WI-1110), the memoized `requires_tree` is
+    /// keyed per sort, and a load onto a KB whose chains are already warm — which is every
+    /// load after a `load_all`, since `check_provider_requires` builds a chain for every
+    /// provider — would otherwise serve the pre-load memo for a sort whose requirements the
+    /// loaded file just changed.
     ///
     /// The file writes the reflect fact DIRECTLY, which is the shape that lets a second
     /// file change a first file's chain at all (a `requires` clause can only be written
@@ -4831,12 +4837,17 @@ end
     /// the loader's own producer never hits it because `make_name_term_from_sym` builds
     /// the application form.
     ///
-    /// CONTROL: back out BOTH `invalidate_requires_chain_cache()` calls in `load` and this
-    /// fails — `requires_tree` answers from the memo warmed before the load. MEASURED, and
-    /// not what a first reading predicts: EITHER call alone keeps it green, because the
-    /// opening one clears the memo and nothing in this fixture re-warms it during the
-    /// walk. So this test drives the PAIR, not a half; the two are kept for the two
-    /// windows `load` would otherwise leave open, stated at their site.
+    /// CONTROL: back out BOTH PRE-TYPER `invalidate_requires_chain_cache()` calls in
+    /// `load_phase_inner` — the pair around `derive_forwarded_provisions`; the third one,
+    /// at the end of the pipeline, is below the `run_typer` return and never runs here —
+    /// and this fails: `requires_tree` answers from the memo warmed before the load.
+    /// MEASURED, and not what a first reading predicts: EITHER call alone keeps it green,
+    /// because the opening one clears the memo and nothing in this fixture re-warms it
+    /// during the walk. So this test drives the PAIR, not a half; the two are kept for the
+    /// two windows the pre-typer stretch would otherwise leave open, stated at their site.
+    /// (Re-measured at this door under WI-20260901-Q8NH5: the fixture reached the pair
+    /// through the retired `load::load` before Q68AK, and reaches it through
+    /// `load_phase_inner` now.)
     #[test]
     fn a_single_file_load_drops_the_chain_memo_it_invalidates() {
         use crate::kb::load::{self, NullResolver};

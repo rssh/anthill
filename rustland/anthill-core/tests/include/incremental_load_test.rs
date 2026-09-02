@@ -1,8 +1,13 @@
 /// Tests for incremental-loading primitives.
 ///
-/// Verifies (1) resolve_instantiations is idempotent, (2) load_stdlib +
-/// load_incremental produces a semantically equivalent KB to a one-shot
-/// load_all.
+/// Verifies (1) `resolve_instantiations` is idempotent, (2) a STAGED load — the stdlib
+/// through `load_all`, then the user file through a second `load_all` into that same live
+/// KB — produces a semantically equivalent KB to a one-shot `load_all` over both.
+///
+/// WI-20260901-Q68AK retired the `load_stdlib` / `load_incremental` spellings these tests
+/// were named for; both were one-line delegations to `load_all` by then, so every call
+/// below is a `load_all` and the test NAMES are the only place the old distinction
+/// survives.
 use std::collections::BTreeSet;
 
 use anthill_core::kb::load::{self, resolve_instantiations, NullResolver};
@@ -109,7 +114,7 @@ namespace test.increment
 end
 "#;
 
-/// WI-967 — `load_all` into a live KB bootstraps like every other load entry point.
+/// WI-967 — a `load_all` into a live KB bootstraps like every other load entry point.
 ///
 /// It used to be the ONE entry point that skipped `register_prelude`, on the
 /// assumption that it is only ever reached second. Nothing enforced that, and
@@ -117,13 +122,17 @@ end
 /// resolve. This drives the fixed behaviour on a genuinely fresh KB: no stdlib,
 /// no prior load, no caller-side registration.
 ///
-/// CONTROL — this test is the evidence for that one behaviour change; it FAILS
-/// when `load_all` into a live KB is reverted to `load_phase(kb, files, resolver)`.
-/// Every other test in this file passes either way by design, because they all
-/// call `load_stdlib` first, which bootstraps. So does the whole 4000-test
-/// suite: the WI-967 deletion of the redundant caller-side `register_prelude` /
-/// builtin-tag lines is a refactor over an idempotent function and is green both
-/// ways.
+/// CONTROL — RE-STATED, BECAUSE THE ISOLATING BACK-OUT WENT WITH THE SECOND ENTRY POINT
+/// (WI-20260901-Q8NH5, measured). While `load_incremental` was its own function, removing
+/// ITS `register_prelude` reddened this row alone: every other row here calls
+/// `load_stdlib` first and bootstrapped through the OTHER function. There is ONE bootstrap
+/// site now — `load_all_with`'s `register_prelude(kb)` — and removing it takes all FIVE
+/// rows in this file red, `load_stdlib_kb` included, so no back-out isolates this one any
+/// more. What it still holds alone is the SHAPE: it is the only row whose KB never sees a
+/// stdlib file, so it is the only one asserting that the kernel vocabulary and the builtin
+/// TAGS come from the LOAD and not from something the stdlib happened to bring. The WI-967
+/// deletion of the redundant caller-side `register_prelude` / builtin-tag lines is still a
+/// refactor over an idempotent function, green either way, here and across the suite.
 #[test]
 fn load_incremental_bootstraps_a_fresh_kb() {
     let user = parse::parse(
@@ -142,7 +151,7 @@ end
     let mut kb = KnowledgeBase::new();
     // FIRST call into the KB — no register_prelude, no load_stdlib, nothing.
     load::load_all(&mut kb, &[&user], &NullResolver)
-        .expect("load_incremental must bootstrap a fresh KB, not leave kernel names unresolved");
+        .expect("a first load_all must bootstrap a fresh KB, not leave kernel names unresolved");
 
     // Both halves of bootstrap must have run.
     // (1) the kernel meta-sorts / stdlib scope hierarchy — `Int64` above resolved.
@@ -174,7 +183,7 @@ end
 
 /// WI-1103 — also over the FULL closure (see [`load_stdlib_kb`] for why, and for the
 /// measured back-out). One of this file's two CONTROLs for that change: it FAILS at
-/// the `load_all` into a live KB line without it, because `check_provider_operations`
+/// the SECOND `load_all` line below without it, because `check_provider_operations`
 /// re-walks phase 1's derived `NonEq` rows and refuses all five.
 #[test]
 fn load_incremental_equivalent_to_load_all() {
@@ -189,7 +198,7 @@ fn load_incremental_equivalent_to_load_all() {
     let mut kb_a = KnowledgeBase::new();
     load::load_all(&mut kb_a, &all_refs, &NullResolver).expect("one-shot load");
 
-    // Build KB-B via load_stdlib then load_incremental.
+    // Build KB-B in two batches: the stdlib, then the user file into that live KB.
     let mut kb_b = KnowledgeBase::new();
     let stdlib_refs: Vec<&_> = stdlib_parsed.iter().collect();
     load::load_all(&mut kb_b, &stdlib_refs, &NullResolver).expect("stdlib load");
@@ -217,7 +226,7 @@ fn load_incremental_equivalent_to_load_all() {
 
 #[test]
 fn load_incremental_does_not_touch_stdlib_facts() {
-    // Snapshot stdlib facts, then run load_incremental with a user file,
+    // Snapshot stdlib facts, then load a user file into the live KB,
     // then check every originally-resolved RuleId is still live and still
     // marked resolved.
     let mut kb = load_stdlib_kb();
@@ -247,7 +256,7 @@ fn load_incremental_does_not_touch_stdlib_facts() {
         assert_eq!(
             kb.rule_head(*rid),
             *head,
-            "stdlib fact head must not be mutated by load_incremental"
+            "stdlib fact head must not be mutated by the second load"
         );
     }
 }

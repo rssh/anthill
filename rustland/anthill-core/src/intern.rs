@@ -563,7 +563,7 @@ pub enum ImportOrigin {
     /// the file-local rule — it has no file to be local to.
     Builtin,
     /// Written in one file. [`SourceId`] and not a load-slice index because it must
-    /// be stable across load PHASES and outlive the slice: `load_all` into a live KB's second
+    /// be stable across load PHASES and outlive the slice: a staged load's second
     /// phase, and the CLI's query scan, both index from 0 again, so a slice position
     /// would silently alias one file onto another. It is also the identity every
     /// `SourceSpan` already carries, so an occurrence can name its own file without a

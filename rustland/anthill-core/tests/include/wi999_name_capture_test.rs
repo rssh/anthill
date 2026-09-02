@@ -60,9 +60,9 @@
 //!
 //! MEASURED by making each edit and re-running, not predicted.
 //!
-//! Delete the `check_name_captures(kb)` call in `load_phase_inner` — 9 fail, 14 pass
-//! (re-measured with the WI-939 rows; the count this line carried was 4/9, taken
-//! before the import rows and these joined the file):
+//! Delete the `check_name_captures(kb)` call in `load_phase_inner` — 10 fail, 15 pass
+//! (re-measured under WI-20260901-Q8NH5 with the two boundary rows; before them it was
+//! 9/14, and before the WI-939 and import rows 4/9):
 //!
 //!   * [`operation_capture_is_refused`], [`const_capture_is_refused`],
 //!     [`nested_type_capture_is_refused`], [`main_entry_capture_is_refused`],
@@ -72,11 +72,16 @@
 //!     [`wildcard_import_of_a_variant_bearing_sort_is_a_capture`],
 //!     [`wildcard_import_of_the_leaked_into_namespace_is_a_capture`] — FAIL.
 //!     Each loads clean with the check gone, which is the defect.
+//!   * [`a_partial_load_sees_no_capture_refusal`] — FAILS TOO, and at its PREMISE rather
+//!     than at its subject: the default-option arm asserts the refusal exists before the
+//!     partial arm asserts it is absent, so a deleted check makes the row loud instead of
+//!     vacuously green. That is the point of spelling the premise out.
 //!   * every `*_base_*` row, [`provider_override_is_not_refused`],
 //!     [`requires_shadow_is_not_refused`], [`sibling_constructor_is_not_a_capture`],
 //!     [`enclosing_namespace_is_not_a_capture`],
 //!     [`a_member_beside_a_differently_named_rule_is_not_a_capture`],
-//!     [`entity_variant_is_not_a_capturer`], [`ordinary_namespace_is_untouched`] —
+//!     [`entity_variant_is_not_a_capturer`], [`ordinary_namespace_is_untouched`],
+//!     [`a_partial_load_still_sees_the_duplicate_operation_refusal`] —
 //!     PASS EITHER WAY, BY DESIGN. They are the controls: without them a check that
 //!     refused everything would look correct.
 //!
@@ -811,6 +816,81 @@ namespace wi999.var
 end
 "#;
     assert_eq!(eval_int(src, "wi999.var.drive"), 6);
+}
+
+// ── WHICH LOAD OPTION RUNS THIS CHECK ───────────────────────────────────────
+//
+// WI-20260901-Q8NH5. `check_name_captures`'s doc used to state the boundary as one line
+// for the whole family: the retired single-file `load::load` saw neither this refusal nor
+// WI-1049's duplicate-operation one. The partial shape is an OPTION on the one pipeline
+// now (`LoadOptions { run_typer: false }`, WI-20260901-Q68AK) and it lands BETWEEN the
+// two — WI-1049's check runs above the `run_typer` return, this one below it. The pair of
+// rows below is that split, each on one fixture through BOTH options, so the option is
+// the only thing that varies.
+
+#[test]
+fn a_partial_load_sees_no_capture_refusal() {
+    // BACKED OUT (move the `check_name_captures(kb)` call above `load_phase_inner`'s
+    // `if !options.run_typer` return): this test FAILS — the partial load reports the
+    // capture. MEASURED, not predicted.
+    let src = RULE_BASE.replace("    rule uses", &format!("{RULE_MEMBER}    rule uses"));
+
+    // THE PREMISE, and it is not decoration: without it this row would pass over a
+    // fixture that captures nothing, which is every fixture that loads clean.
+    assert_names_both(
+        &refusal(&src),
+        "operation f",
+        "wi939.rel.Rec",
+        "wi939.rel.f",
+    );
+
+    if let Err(errs) = crate::common::try_load_kb_untyped_with(&src) {
+        panic!(
+            "the partial path returns above `check_name_captures`, so this text must load \
+             clean through it; got:\n{}",
+            errs.join("\n")
+        );
+    }
+}
+
+#[test]
+fn a_partial_load_still_sees_the_duplicate_operation_refusal() {
+    // THE CONTROL FOR THE ROW ABOVE, and what makes it mean anything: an absent capture
+    // refusal is equally explained by a partial path that runs NO check at all. WI-1049's
+    // check sits ABOVE the `run_typer` return and fires through both options.
+    //
+    // It is also the half of the old "one boundary for the whole family" sentence that
+    // stopped being true. The retired `load::load` returned just after
+    // `resolve_instantiations` — above WI-1049's check too — while `run_typer: false`
+    // returns well below it.
+    //
+    // BACKED OUT (move the `check_duplicate_operation_declarations(kb)` call below that
+    // return): the `run_typer: false` arm FAILS, the default arm still passes. MEASURED.
+    const DUP: &str = r#"
+namespace wi999.q8nh5dup
+  sort Q
+    sort T = ?
+    operation q_op(x: T, y: T) -> T
+    operation q_op(x: T) -> T
+  end
+end
+"#;
+    for (option, verdict) in [
+        ("default", crate::common::try_load_kb_with(DUP)),
+        (
+            "run_typer: false",
+            crate::common::try_load_kb_untyped_with(DUP),
+        ),
+    ] {
+        let Err(errs) = verdict else {
+            panic!("{option}: expected a duplicate-operation refusal; the fixture loaded CLEAN");
+        };
+        assert!(
+            errs.iter().any(|e| e.contains("declared more than once")),
+            "{option}: expected WI-1049's duplicate-operation refusal; got:\n{}",
+            errs.join("\n")
+        );
+    }
 }
 
 #[test]
