@@ -465,14 +465,23 @@ impl NodeOccurrence {
     ///
     /// TWO callers can pass `true`, and they do NOT have the same authority. The loader's
     /// own stamp at the end of `build_body_atom_occurrence` reads the parse term's
-    /// `is_minted` bit directly and is exact. [`build_frame`]'s `UnknownFn` arm reads a
-    /// `HashSet<TermId>` filled by `Loader::parse_dot_chain_table`, whose key is
-    /// HASH-CONSED and therefore many-to-one — so that table takes a set difference to
-    /// withhold the bit wherever a written `field_access` shares a `TermId` with a
-    /// citation. That is a real weakening: on a collision the bit is absent where the
-    /// exact answer would be `true`. It is never wrongly PRESENT, which is the direction
-    /// that matters (WI-20260901-92VA4), and the sentence this replaced claimed a safety
-    /// property the second caller does not have.
+    /// `is_minted` bit directly and is exact — and since WI-20260902-2SZ88 that is the
+    /// path every ENTITY CONSTRUCTOR takes, because [`crate::kb::load`]'s
+    /// `entity_ctor_expr` builds one from its parse node rather than re-deriving it from
+    /// its term.
+    ///
+    /// [`build_frame`]'s `UnknownFn` arm reads a `HashSet<TermId>` filled by
+    /// `Loader::parse_dot_chain_table`, whose key is HASH-CONSED and therefore
+    /// many-to-one — so that table takes a set difference to withhold the bit wherever a
+    /// written `field_access` shares a `TermId` with a citation. That is a real
+    /// weakening: on a collision the bit is absent where the exact answer would be
+    /// `true`. It is never wrongly PRESENT, which is the direction that matters
+    /// (WI-20260901-92VA4), and the sentence this replaced claimed a safety property the
+    /// second caller does not have.
+    ///
+    /// THAT SECOND CALLER NOW SERVES ONLY THE REFLECT FORMS — `ListLiteral` and friends,
+    /// whose occurrence shape is not an `Expr::Apply`. **WI-20260902-2NXAC** owns moving
+    /// them onto the first caller's footing too.
     pub fn new_expr_dot_chain(
         expr: Expr,
         span: SourceSpan,
@@ -5520,6 +5529,14 @@ pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccur
 /// atom by `Loader::parse_dot_chain_table` — WHICH IS A MANY-TO-ONE KEY, and that function
 /// documents the set difference that makes it safe. Everything else passes `None` and is
 /// unchanged.
+///
+/// WI-20260902-2SZ88 TOOK THE ENTITY CONSTRUCTORS OUT OF THIS PATH. [`crate::kb::load`]'s
+/// `entity_ctor_expr` builds them from the PARSE node instead, so their children take
+/// their spans and their `dot_chain` from their own parse terms and neither table can be
+/// wrong about them. What still arrives here is the REFLECT half — 284 nodes of the
+/// 127 097 that took the early return over the whole workspace suite, `ListLiteral` the
+/// largest at 192 — because a reflect form's occurrence is not an `Expr::Apply` and its
+/// shape lives in `visit_fn`. **WI-20260902-2NXAC** owns finishing it.
 ///
 /// NOT AN ENUMERATION OF CALLERS, deliberately: `load.rs` has four `materialize_from_handle*`
 /// sites, not two, and only ONE of them passes a table — `bare_entity_goal_occurrence`

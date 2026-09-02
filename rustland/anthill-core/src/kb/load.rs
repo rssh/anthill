@@ -18076,6 +18076,38 @@ struct Loader<'a> {
     loaded_paths: &'a mut HashSet<String>,
     // Map from parse-time TermId → KB TermId
     term_map: HashMap<u32, TermId>,
+    /// WI-20260902-2SZ88 — per ENTITY-headed parse node, the `(field, parse child)`
+    /// pairs its lowering ASSIGNED, in no particular order (the reader looks up by
+    /// symbol). A declared field missing from the list was INVENTED by
+    /// `fill_entity_named_args` — the WI-716 `none()` or the var fill — and has no parse
+    /// node to ask anything of.
+    ///
+    /// THE KEY IS THE PARSE ID, NOT THE KB ID, and that is the whole point of the
+    /// ticket: a KB `TermId` denotes a STRUCTURE (hash-consed, so a minted `ns.rel` and a
+    /// hand-written `field_access(ns, rel)` share one), while every question the
+    /// occurrence builder asks — which span, is this a dot the author wrote, was this
+    /// bracket consumed — is about a PLACE. Written by `convert_term_inner`'s `Fn` arm,
+    /// the one site that decides the assignment; read by `entity_ctor_expr`.
+    entity_slot_origin: HashMap<u32, Vec<(Symbol, TermId)>>,
+    /// WI-20260902-2SZ88 — IS A `convert_term` WALK ALREADY COVERING THIS SUBTREE'S
+    /// INLINE DESCRIPTIONS? Set while [`Self::entity_ctor_expr`]'s children are being
+    /// built, because that function calls `convert_term` on the whole entity subtree
+    /// first and THAT walk emits a `DescriptionInfo` for every described variable in it.
+    ///
+    /// The `Term::Var(Var::Global(..))` arm of `build_body_atom_occurrence_inner` emits
+    /// them too — its own comment says it exists only because a GENERIC atom never calls
+    /// `convert_term`, and that "entity / reflect-form atoms still emit via the
+    /// `convert_term` call". Making entity atoms native put both walks over one subtree.
+    ///
+    /// AND `emit_desc_fact` IS NOT IDEMPOTENT — it indexes per target, so the second run
+    /// makes a DISTINCT fact rather than colliding with the first. MEASURED:
+    /// `:- bx(v: ?x {< the input value >}?)` produced TWO `DescriptionInfo` facts where
+    /// the generic-atom control `:- some_pred(?x {< … >}?)` produced one, and one is what
+    /// the baseline produced for both. Found by `/code-review`.
+    ///
+    /// SAVED AND RESTORED rather than set-and-clear, so a nested entity constructor
+    /// cannot un-suppress its parent's subtree on the way out.
+    descs_emitted_by_convert: bool,
     // Map from parse-time Symbol → KB Symbol (for reintern — plain intern)
     sym_map: HashMap<u32, Symbol>,
     // Map from parse-time VarId → KB VarId
@@ -18465,6 +18497,8 @@ impl<'a> Loader<'a> {
             resolver,
             loaded_paths,
             term_map: HashMap::new(),
+            entity_slot_origin: HashMap::new(),
+            descs_emitted_by_convert: false,
             sym_map: HashMap::new(),
             var_map: HashMap::new(),
             errors: Vec::new(),
@@ -20014,6 +20048,19 @@ impl<'a> Loader<'a> {
                     .filter(|&&(_, id)| !self.is_parse_aux(id) || self.is_effect_row_aux(id))
                     .copied()
                     .collect();
+                // WI-20260902-2SZ88 — WHICH PARSE CHILD PRODUCED EACH NAMED SLOT.
+                // Recorded at the three sites that ASSIGN one — this by-name pass, the
+                // `some(x)` coercion below, and WI-433's positional plan — and never
+                // re-derived, because re-deriving it would make this arm's rules have two
+                // producers (WI-869's four-desynced-of-seven). A field ABSENT from the
+                // list was invented by `fill_entity_named_args` and has no surface at
+                // all, which is exactly what the reader needs to know; the sort that
+                // function applies afterwards is not mirrored here, because the reader
+                // looks each field up BY SYMBOL.
+                let mut slot_origin: Vec<(Symbol, TermId)> = visible_named
+                    .iter()
+                    .map(|&(sym, pid)| (self.reintern(sym), pid))
+                    .collect();
                 let mut new_named: SmallVec<[(Symbol, TermId); 2]> = visible_named
                     .into_iter()
                     .map(|(sym, id)| {
@@ -20045,6 +20092,9 @@ impl<'a> Loader<'a> {
                 if is_some_ctor && new_pos.len() == 1 && new_named.is_empty() {
                     let value_sym = self.kb.intern("value");
                     new_named.push((value_sym, new_pos.pop().expect("len checked")));
+                    // WI-20260902-2SZ88 — the coercion is an ASSIGNMENT of a parse child
+                    // to a field, recorded beside the one it makes.
+                    slot_origin.push((value_sym, pos_args[0]));
                 }
 
                 // WI-927: is this the BRACKETED surface (`Box[T = Int64]`)? Then its
@@ -20097,6 +20147,11 @@ impl<'a> Loader<'a> {
                         PositionalPlan::Assign(fields) => {
                             for (i, pos_val) in new_pos.drain(..).enumerate() {
                                 new_named.push((fields[i], pos_val));
+                                // WI-20260902-2SZ88 — `new_pos` was built by mapping over
+                                // `pos_args` 1:1 and the `some` coercion above can only
+                                // have emptied it, so index `i` names the same parse child
+                                // here that it named there.
+                                slot_origin.push((fields[i], pos_args[i]));
                             }
                         }
                         PositionalPlan::OverArity { declared, unfilled } => {
@@ -20178,6 +20233,18 @@ impl<'a> Loader<'a> {
                 // still unifies a pattern's var (so `E(id: ?)` finds it) but
                 // correctly fails `field: some(?)`.
                 self.fill_entity_named_args(new_functor, new_pos.len(), &mut new_named);
+
+                // WI-20260902-2SZ88 — HAND THE ORIGINS TO THE OCCURRENCE BUILDER. Keyed by
+                // the PARSE `TermId`, which is a PLACE key: `SimpleTermStore::alloc`
+                // pushes unconditionally, one id per syntactic node. The KB id cannot
+                // carry this — it is hash-consed (many-to-one) and its slots are reissued
+                // from a free list, which is why the two tables that tried
+                // (`parse_dot_chain_table`, `kb.term_spans`) are each first-write-wins or
+                // a set difference. Written only for a functor with a field schema: the
+                // sole reader is `entity_ctor_expr`, gated the same way.
+                if self.kb.entity_field_names(new_functor).is_some() {
+                    self.entity_slot_origin.insert(parse_id.raw(), slot_origin);
+                }
 
                 // WI-710: a NESTED sort-headed term is a parameterized TYPE — the
                 // `Cell[W = Int64]` in a rule body's `is_modifiable(Cell[W = Int64])`, or
@@ -22595,13 +22662,24 @@ impl<'a> Loader<'a> {
     /// the parse term — info the term-derived path lost (rule-body terms get no
     /// `term_spans` entry, so `materialize` gave them `empty_span`).
     ///
+    /// WI-20260902-2SZ88 — ENTITY CONSTRUCTORS ARE NO LONGER A FALLBACK. They are built
+    /// natively too, by [`Self::entity_ctor_expr`], which reads the LOWERED term's slot
+    /// list so the fills stay shared (see below) while every WRITTEN child comes from its
+    /// own parse node. That is 126 813 of the 127 097 nodes that used to take the fallback
+    /// — 99.78%, censused over the whole workspace suite.
+    ///
     /// Falls back to `materialize(convert_term(parse_id))` for:
-    /// - entity functors — `convert_term` expands partial fields with fresh vars
-    ///   (load.rs); the memoized `convert_term` returns the SAME expanded term so
-    ///   the occurrence shares those vars (a native rebuild would mint different
-    ///   ones); and
     /// - reflect / control-flow forms (`is_reflect_form_functor`) — whose
-    ///   occurrence shape isn't a plain `Apply`.
+    ///   occurrence shape isn't a plain `Apply` (`ListLiteral` builds `Expr::ListLit`),
+    ///   and which are the remaining 284. **WI-20260902-2NXAC** owns them.
+    ///
+    /// WHAT MADE ENTITIES A FALLBACK, and what `entity_ctor_expr` does about it:
+    /// `convert_term` expands partial fields with fresh vars (and WI-716's `none()`), and
+    /// the memoized `convert_term` returns the SAME expanded term the rule body carries,
+    /// so a native rebuild that MINTED ITS OWN vars would give the occurrence and the term
+    /// different variables for one field. The native arm therefore does not rebuild the
+    /// fills at all — it materializes them from that very term, and only the author's own
+    /// children are rebuilt.
     /// Both are reachable as nested args too (e.g. `member(?x, cons(..))`); the
     /// memoized `convert_term` keeps every subterm consistent. Narrowing these
     /// fallbacks (native entities / structural reflect patterns, fixing the
@@ -22719,12 +22797,24 @@ impl<'a> Loader<'a> {
     /// The repair is a SET DIFFERENCE and it is deliberately conservative: a kb id is
     /// stamped only if EVERY parse node in this atom that maps to it is a citation. On a
     /// collision the bit is withheld and the typer falls back to the per-leaf walk — a
-    /// worse DIAGNOSTIC for the citation that shares the id, which is the failure this
-    /// ticket set out to improve, but never a wrong ACCEPTANCE of a call the author
-    /// wrote. Losing a diagnostic is recoverable; typing a hand-written call as a name it
-    /// does not spell is not. (The precise fix is to carry the parse `TermId` beside the
-    /// term one through the materializer so the question is asked of the node itself;
-    /// that is a larger change to a shared walk and is WI-20260902-2SZ88-make-the-dot-chain-provenance.)
+    /// worse DIAGNOSTIC for the citation that shares the id, but never a wrong
+    /// ACCEPTANCE of a call the author wrote. Losing a diagnostic is recoverable; typing
+    /// a hand-written call as a name it does not spell is not.
+    ///
+    /// ── WI-20260902-2SZ88 REMOVED THE ENTITY HALF OF THIS TABLE'S JOB ───────────
+    ///
+    /// A plain entity constructor no longer reaches this table at all:
+    /// [`Loader::entity_ctor_expr`] builds its occurrence from the PARSE node, so every
+    /// child takes its `dot_chain` from `dotted_citation_name` of its own node —
+    /// exactly, with no key to collide. MEASURED with this function returning an EMPTY
+    /// set: the entity row of `wi_4nekz`'s enclosing-atom census goes from 3 errors and
+    /// none typed to 1 error typed `Relation`, and it is the only row that moves.
+    ///
+    /// WHAT STILL READS IT is the REFLECT half — `ListLiteral`, `SetLiteral`,
+    /// `TupleLiteral` and the control-flow forms, whose occurrence shape is not an
+    /// `Expr::Apply` and so still round-trips. That is 284 nodes of the 127 097 that took
+    /// the early return over the whole workspace suite; the set difference stays for
+    /// them, and **WI-20260902-2NXAC** owns finishing the job.
     fn parse_dot_chain_table(&self, parse_id: TermId) -> std::collections::HashSet<TermId> {
         let mut cited: std::collections::HashSet<TermId> = std::collections::HashSet::new();
         let mut plain: std::collections::HashSet<TermId> = std::collections::HashSet::new();
@@ -22743,6 +22833,238 @@ impl<'a> Loader<'a> {
         }
         cited.retain(|k| !plain.contains(k));
         cited
+    }
+
+    /// WI-20260902-2SZ88 — AN ENTITY CONSTRUCTOR'S OCCURRENCE, BUILT FROM ITS PARSE
+    /// NODE INSTEAD OF RE-DERIVED FROM ITS TERM.
+    ///
+    /// ── WHAT THIS DELETES ────────────────────────────────────────────────────────
+    ///
+    /// The arm that called this used to hand the whole subtree to
+    /// [`node_occurrence::materialize_from_handle_spanned`], which walks the KB TERM and
+    /// therefore sees nothing the parse tree knew. Everything the parse tree knew had to
+    /// be shipped alongside in side tables keyed by the KB `TermId` —
+    /// [`Self::parse_span_table`] and [`Self::parse_dot_chain_table`] — AND THAT KEY
+    /// CANNOT ANSWER THE QUESTION. `TermStore::alloc` returns an existing id on a hash
+    /// hit, so a KB `TermId` denotes a STRUCTURE, not a place: a minted `ns.rel` and a
+    /// hand-written `anthill.reflect.field_access(ns, rel)` are ONE id, which is the
+    /// entire premise of WI-20260901-92VA4. `parse_dot_chain_table` pays for that with a
+    /// SET DIFFERENCE — the bit is withheld wherever a citation shares an id with a
+    /// written call — so an exact `true` was lost and the citation fell back to the
+    /// per-leaf cascade WI-20260902-4NEKZ had just removed.
+    ///
+    /// Here there is no key, because the builder is STANDING AT THE PARSE NODE: every
+    /// child recurses through [`Self::build_body_atom_occurrence`], which takes its span
+    /// from the parse term and gets its `dot_chain` from `dotted_citation_name` of its
+    /// own node. That is the same exactness the un-nested path always had.
+    ///
+    /// ── THE ONE THING THE PARSE NODE CANNOT ANSWER ───────────────────────────────
+    ///
+    /// `convert_term` does not just resolve names, it LOWERS: WI-433 assigns positional
+    /// arguments to declared fields, `some(x)` is coerced to `some(value: x)`, and
+    /// `fill_entity_named_args` fills every omitted field with a fresh var (pattern) or
+    /// `none()` (WI-716, value position). THE FILLS HAVE NO PARSE NODE, and they must not
+    /// be re-minted — the memoized `convert_term` returns the SAME expanded term the
+    /// rule's body carries, so a native rebuild that minted its own vars would give the
+    /// occurrence and the term different variables for one field. That is why this reads
+    /// the LOWERED term's slot list and asks, per slot, which parse child produced it:
+    /// [`Self::entity_slot_origin`], written by the one site that decides it.
+    ///
+    /// A slot with no origin is an INVENTED one, and materializing it from the term is
+    /// exactly right — a fresh var or `none()` has no surface to lose.
+    ///
+    /// ── SCOPE: NOT THE REFLECT FORMS ─────────────────────────────────────────────
+    ///
+    /// Gated `entity && !is_reflect_form_functor` because a reflect form's occurrence is
+    /// not an `Expr::Apply` — `ListLiteral` builds `Expr::ListLit`, `if_expr` builds
+    /// `Expr::If` — and those shapes live in `visit_fn`. The reflect functors ARE
+    /// registered entities, so without the second half of the gate this arm would swallow
+    /// them and build an application. They keep the round-trip and the two tables.
+    ///
+    /// MEASURED, over the whole workspace test corpus with the early return
+    /// instrumented: 127 097 nodes took it, of which 126 813 (99.78%) are plain entity
+    /// constructors and reach this function; 284 are reflect-keyed (`ListLiteral` 192,
+    /// `dot_apply` 49, `if_expr` 9, the rest in ones and twos) and 1 was not an entity at
+    /// all. So the round-trip is, in practice, this path — and the residue that keeps it
+    /// is named rather than left implicit: **WI-20260902-2NXAC** owns the reflect half,
+    /// whose `ListLiteral` rows are the ones its own measurements are written on.
+    ///
+    /// `None` when the lowered term is neither a `Term::Fn` nor the `nullary_canon`
+    /// `Term::Ref` a 0-field constructor folds to — the caller then takes the
+    /// round-trip, which is what it did for every shape before this existed.
+    /// WI-20260902-2SZ88 — THE OCCURRENCE FOR ONE LOWERED CHILD OF AN ENTITY
+    /// CONSTRUCTOR, given the parse child that produced it. THREE CASES, and the middle
+    /// one is the one a first cut got wrong twice.
+    ///
+    /// 1. AN EFFECT-ROW AUX rides as a `ParseAux`, which `build_body_atom_occurrence`
+    ///    meets with an `unreachable!`. The generic arm one function up has the identical
+    ///    guard for the identical reason; putting the rule HERE is what stops the
+    ///    positional and named loops from disagreeing about it — they did, and a
+    ///    POSITIONAL `Outer[k = Bx[{}]]` under an entity head PANICKED THE LOADER where
+    ///    the baseline reported two located errors. Found by `/code-review`.
+    ///
+    /// 2. THE LOWERING MAY HAVE TRANSFORMED THE CHILD, not merely converted it:
+    ///    `wrap_bare_option_value` wraps a bare value written at an `Option[..]` field
+    ///    into `some(…)`, so the lowered child is one node LARGER than the conversion of
+    ///    the parse child. The occurrence must carry the wrap the TERM carries or
+    ///    resolution stops matching — MEASURED, five `github_todo_test` rows fell,
+    ///    `wi717_omitted_optionals_stay_claimable` among them, when a first cut recursed
+    ///    on the parse child and produced the bare payload against a `some(payload)` term.
+    ///
+    ///    So such a child is MATERIALIZED — but from its own subtree's tables, not
+    ///    bare. Materializing it bare is the second thing that first cut got wrong: it
+    ///    reintroduced WI-1035/1039's wrong location for everything under the wrap.
+    ///    MEASURED, `rule r(1) :- bo(v: fx("a"))` with `entity bo(v: Option[T = Int64])` —
+    ///    `11:22` on the baseline, **`1:1`** materialized bare, `11:22` again with the
+    ///    tables. The plain-field control `bo2(v: fx("a"))` reads `7:23` under all three,
+    ///    which is what says the axis is the WRAP and not the entity head. Also found by
+    ///    `/code-review`.
+    ///
+    ///    THE TEST IS AN IDENTITY CHECK against `term_map`, deliberately, and not a list
+    ///    of the transforms that exist: a list would be a producer census (WI-805's
+    ///    mistake) and would go stale in silence the day a second transform is added.
+    ///    `term_map` is read in its SAFE direction — parse to KB is a function; only the
+    ///    reverse is many-to-one, which is this ticket's whole subject.
+    ///
+    /// 3. OTHERWISE THE CHILD PASSED THROUGH, and it is built from its own parse node —
+    ///    exact span, exact `dot_chain`, no table involved. That is the majority and the
+    ///    point of the ticket.
+    fn lowered_child_occurrence(&mut self, pid: TermId, kb_child: TermId) -> Rc<NodeOccurrence> {
+        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+            return child;
+        }
+        if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
+            return self.build_body_atom_occurrence(pid);
+        }
+        let spans = self.parse_span_table(pid);
+        let dot_chains = self.parse_dot_chain_table(pid);
+        node_occurrence::materialize_from_handle_spanned(
+            self.kb,
+            kb_child,
+            Some(&spans),
+            Some(&dot_chains),
+        )
+    }
+
+    fn entity_ctor_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
+        let kb_term = self.convert_term(parse_id); // memoized hit
+        let (kb_pos, kb_named) = match self.kb.get_term(kb_term).clone() {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => (pos_args, named_args),
+            // `KnowledgeBase::nullary_canon` folds a 0-field constructor's `Fn{f,[],[]}`
+            // to its bare name, and `visit_term`'s `Term::Ref` arm builds exactly this.
+            //
+            // NO `build_recv_type` HERE, and that is a HOLE rather than a decision: an
+            // `Expr::Ref` has no `recv_type` slot to put one in, so a proposal-035 form-(3)
+            // receiver written on a ZERO-FIELD constructor is still never consumed and
+            // still refused by `check_unconsumed_recv_types`. The `Expr::Apply` tail below
+            // closes that for every constructor that HAS fields. I did not drive the
+            // zero-field case; it is not a regression (the round-trip consumed nothing
+            // either), and it belongs with **WI-20260902-2NXAC**'s finding (2), which owns
+            // the same channel for the reflect forms. Found by `/code-review`.
+            Term::Ref(s) => return Some(Expr::Ref(s)),
+            _ => return None,
+        };
+        // The parse node's own POSITIONAL children, to recurse into. The named ones are
+        // reached through `entity_slot_origin` instead — the lowered term's named list is
+        // in DECLARED FIELD ORDER and is longer than the written one, so neither index
+        // nor written order lines them up.
+        let parse_pos = match self.parsed.terms.get(parse_id).clone() {
+            Term::Fn { pos_args, .. } => pos_args,
+            _ => return None,
+        };
+
+        // POSITIONAL SLOTS CORRESPOND BY INDEX. `new_pos` in `convert_term_inner` is
+        // built by mapping over the parse node's `pos_args` one-for-one, and the only
+        // things that touch it afterwards EMPTY it (the `some` coercion pops the single
+        // element; WI-433's `Assign` drains all of them). So the lowered term's
+        // positional count is either 0 or the parse node's own.
+        debug_assert!(
+            kb_pos.is_empty() || kb_pos.len() == parse_pos.len(),
+            "entity_ctor_expr: lowered positional count {} matches neither 0 nor the \
+             parse node's {}",
+            kb_pos.len(),
+            parse_pos.len(),
+        );
+        if !kb_pos.is_empty() && kb_pos.len() != parse_pos.len() {
+            return None;
+        }
+        // The `convert_term` above walked this whole subtree and emitted its inline
+        // descriptions; the child walk below must not emit them a second time. See
+        // [`Self::descs_emitted_by_convert`].
+        let saved_descs = self.descs_emitted_by_convert;
+        self.descs_emitted_by_convert = true;
+        let expr = self.entity_ctor_children(parse_id, functor, kb_pos, kb_named, parse_pos);
+        self.descs_emitted_by_convert = saved_descs;
+        expr
+    }
+
+    /// The child loops of [`Self::entity_ctor_expr`], split out only so the
+    /// `descs_emitted_by_convert` save/restore around them cannot be skipped by an early
+    /// `return` added later.
+    fn entity_ctor_children(
+        &mut self,
+        parse_id: TermId,
+        functor: Symbol,
+        kb_pos: smallvec::SmallVec<[TermId; 4]>,
+        kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
+        parse_pos: smallvec::SmallVec<[TermId; 4]>,
+    ) -> Option<Expr> {
+        let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(kb_pos.len());
+        for (i, &kb_child) in kb_pos.iter().enumerate() {
+            let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
+            pos.push(occ);
+        }
+
+        // NAMED SLOTS ARE LOOKED UP BY FIELD SYMBOL — the lowered list is in declared
+        // field order (`fill_entity_named_args` sorts it), which is not the order the
+        // author wrote, so index correspondence would be wrong here.
+        let origins = match self.entity_slot_origin.get(&parse_id.raw()) {
+            Some(o) => o.clone(),
+            // The conversion of THIS node did not run the `Fn` arm that writes the
+            // origins — it cannot have produced the named args we are looking at. Loud
+            // in debug; in release the caller falls back to the round-trip, which is no
+            // worse than the behaviour this function replaced.
+            None if kb_named.is_empty() => Vec::new(),
+            None => {
+                debug_assert!(
+                    false,
+                    "entity_ctor_expr: {} named slot(s) lowered with no recorded origins",
+                    kb_named.len(),
+                );
+                return None;
+            }
+        };
+        let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(kb_named.len());
+        for &(field, kb_child) in kb_named.iter() {
+            let occ = match origins.iter().find(|(s, _)| *s == field) {
+                Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
+                // AN INVENTED SLOT — `fill_entity_named_args`'s fresh var or WI-716's
+                // `none()`. No parse node exists, so there is nothing a table could say
+                // about it, and materializing the term is the whole of its content.
+                // BOTH FILLS ARE LEAVES by construction (`Term::Var`, or the nullary
+                // `none()`), so this cannot hide a subtree that WOULD have wanted spans —
+                // which is the failure the wrapped case above was measured to have.
+                None => node_occurrence::materialize_from_handle(self.kb, kb_child),
+            };
+            named.push((field, occ));
+        }
+
+        Some(Expr::Apply {
+            // Read here for the same reason the generic arm reads it, and this is one of
+            // the three readings WI-20260902-2NXAC found the round-trip dropping: the
+            // early return called neither `build_recv_type` nor `consumed_recv_types
+            // .insert`, so a form-(3) receiver under an entity constructor was written,
+            // never consumed, and then REFUSED by `check_unconsumed_recv_types`.
+            recv_type: self.build_recv_type(parse_id),
+            functor,
+            pos_args: pos,
+            named_args: named,
+            type_args: Vec::new(),
+        })
     }
 
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
@@ -22877,11 +23199,16 @@ impl<'a> Loader<'a> {
                 // term-body `convert_term` walk did. (Entity / reflect-form atoms
                 // still emit via the `convert_term` call in the Fn arm below; this
                 // covers vars in generic predicate atoms.)
-                if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
-                    let desc_texts = desc_texts.clone();
-                    let target = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
-                    for desc_text in &desc_texts {
-                        self.emit_desc_fact(target, desc_text, self.current_domain());
+                // WI-20260902-2SZ88: …and NOT when a `convert_term` walk is already
+                // covering this subtree — see [`Self::descs_emitted_by_convert`], which
+                // carries the measurement.
+                if !self.descs_emitted_by_convert {
+                    if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
+                        let desc_texts = desc_texts.clone();
+                        let target = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
+                        for desc_text in &desc_texts {
+                            self.emit_desc_fact(target, desc_text, self.current_domain());
+                        }
                     }
                 }
                 Expr::Var(Var::Global(kb_vid))
@@ -23040,7 +23367,24 @@ impl<'a> Loader<'a> {
                 } else {
                     new_functor
                 };
-                if self.kb.entity_field_names(new_functor).is_some()
+                // WI-20260902-2SZ88 — A PLAIN ENTITY CONSTRUCTOR IS BUILT HERE, NOT
+                // RE-DERIVED FROM ITS TERM. See [`Self::entity_ctor_expr`]. `None` means
+                // the lowering produced a shape that arm does not recognise, and the
+                // round-trip below still serves it.
+                let entity_native = if self.kb.entity_field_names(new_functor).is_some()
+                    && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
+                {
+                    self.entity_ctor_expr(parse_id, new_functor)
+                } else {
+                    None
+                };
+                if let Some(expr) = entity_native {
+                    // NOT a `return`: falling through to this function's tail is what
+                    // gets the node its own `dot_chain` stamp from
+                    // `dotted_citation_name` — EXACTLY, of the parse node, with no table
+                    // and no set difference. That is the ticket.
+                    expr
+                } else if self.kb.entity_field_names(new_functor).is_some()
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
                     let kb_term = self.convert_term(parse_id); // memoized hit
@@ -23062,7 +23406,7 @@ impl<'a> Loader<'a> {
                         Some(&spans),
                         Some(&dot_chains),
                     );
-                }
+                } else {
                 // Native generic application. Positional in source order; named
                 // ParseAux-filtered (type_args / type_name are read elsewhere)
                 // with `reintern`ed keys in source order — matching `convert_term`
@@ -23163,6 +23507,7 @@ impl<'a> Loader<'a> {
                     pos_args: pos,
                     named_args: named,
                     type_args: Vec::new(),
+                }
                 }
             }
         };

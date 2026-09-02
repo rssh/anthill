@@ -1579,3 +1579,6 @@ mod wi_vnwaw_dotted_goal_readings_test;
 
 #[path = "include/wi_4nekz_dotted_equation_operand_test.rs"]
 mod wi_4nekz_dotted_equation_operand_test;
+
+#[path = "include/wi_2sz88_entity_ctor_native_occurrence_test.rs"]
+mod wi_2sz88_entity_ctor_native_occurrence_test;
