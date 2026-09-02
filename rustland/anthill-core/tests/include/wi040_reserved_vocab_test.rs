@@ -173,6 +173,16 @@ fn a_desugared_field_access_carries_its_address() {
 /// `find_dictionary` has no source declaration at all, while `cut` does. Making their
 /// existence policy uniform is not part of the reflect-address sweep.
 ///
+/// WI-909'S TWO ARE IN THE FIRST WALK AND VACUOUS IN IT, said here rather than left for
+/// a reader to discover: `anthill.kernel.unify` and `.struct_eq` are BUILTIN-TAGGED
+/// (`register_builtin_tag(…, BuiltinTag::Unify / ::Eq)`), and `register_builtin_tag`
+/// DEFINES a missing qualified name rather than skipping it — so deleting
+/// `operation unify[T]` from `kernel.anthill` leaves the symbol minted and this row
+/// green. That is `cut`'s situation exactly. They are walked anyway because the walk is
+/// over a LIST, and a fourth equality spelling added to `EQUALITY_FAMILY_FUNCTORS`
+/// might not be builtin-tagged; what actually covers these two is every `<=>` and `===`
+/// in the stdlib, which stop resolving at their use sites.
+///
 /// FAILS IF a constant is edited without its declaration, in either place. Raised by
 /// `/code-review`, which caught the module doc claiming "nothing has to be kept in
 /// step" — true of the mint-vs-table duplication that was deleted, false of this.
@@ -201,6 +211,17 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
         // address that denotes nothing is the failure this test exists to name.
         .chain(
             anthill_core::parse::pratt::CONNECTIVE_FUNCTORS
+                .iter()
+                .copied(),
+        )
+        // WI-909: `unify` / `struct_eq` carry kernel addresses too. Walking the whole
+        // EQUALITY family re-walks `EQ_FUNCTOR`, which `SPEC_OP_FUNCTORS` already
+        // covers — harmless, and preferable to naming the two by hand, because a
+        // FOURTH equality spelling would join the family list (that is where
+        // `is_equality_family_functor` reads it) and would otherwise arrive here
+        // uncovered.
+        .chain(
+            anthill_core::parse::pratt::EQUALITY_FAMILY_FUNCTORS
                 .iter()
                 .copied(),
         )

@@ -28,18 +28,24 @@
 //! `FIELD_ACCESS`'s: deleting `operation cut()` from kernel.anthill leaves the symbol
 //! minted and the test green. Said at that row too.
 //!
-//! # These are not the last of the tier
+//! # The class is closed for converter mints
 //!
 //! `CUT` and `FIND_DICTIONARY` replaced two `PRELUDE_QUALIFIED` rows, and a draft of
 //! this doc called them "the last two converter mints that still depended on that
-//! fallback". THAT IS WRONG, and it is worth stating because the mistake closes a class
-//! that is still open: [`crate::parse::pratt::UNIFY_FUNCTOR`] and
-//! [`crate::parse::pratt::STRUCT_EQ_FUNCTOR`] are ALSO short converter mints resolved by
-//! the tier — `<=>`, `===` and a goal-position `let` name no functor either. They are
-//! the same shape and were simply not migrated here. `unify` additionally has a real
-//! same-named rival in the stdlib (`anthill.reflect.unify`, a 3-arg reflection
-//! operation), so its capture hazard is one `import` line away rather than
-//! hypothetical. Found by `/code-review`.
+//! fallback". That was wrong when written — [`crate::parse::pratt::UNIFY_FUNCTOR`] and
+//! [`crate::parse::pratt::STRUCT_EQ_FUNCTOR`] were short mints on the tier too, because
+//! `<=>`, `===` and a goal-position `let` name no functor either — and WI-909 made it
+//! true by migrating them, so no converter mint resolves through the tier now. The
+//! remaining fifteen rows are all names a PERSON writes bare; that is a different
+//! question, and `kb::load::PRELUDE_QUALIFIED` is where it is asked.
+//!
+//! THOSE TWO LIVE IN `pratt`, NOT HERE, and the split is by who mints rather than by
+//! what the target is: this module is the CONVERTER's table, and `<=>` / `===` are minted
+//! by the infix desugar, whose functor table already holds `EQ_FUNCTOR`'s address beside
+//! them. Splitting the equality family across two modules to unify the *namespace*
+//! instead would put `eq` here, away from the list `is_equality_family_functor` reads.
+//! What IS shared is the mechanism, and [`qualified`] is the seam: `kb::load`'s
+//! connective-agreement tests read pratt's constants through it.
 //!
 //! Everything downstream keys on a [`crate::kb::resolve::BuiltinTag`] registered by
 //! QUALIFIED name, never on the short spelling, so the address lands on the same symbol
@@ -188,14 +194,42 @@ pub const CUT: &str = "..anthill.kernel.cut";
 /// which reads this constant through [`qualified`].
 pub const FIND_DICTIONARY: &str = "..anthill.kernel.find_dictionary";
 
-/// The kernel CONTROL targets — the subset [`is`] must never be asked about.
+/// The kernel CONTROL targets — this module's own [`ALL`] members that are control
+/// primitives rather than reflect vocabulary.
 ///
 /// Their surface forms (`!`, `requires(X)`) name no functor, so unlike the reflect
-/// vocabulary they have no legitimate written spelling: a user's `cut(…)` is an
-/// ordinary unrelated call, and admitting it is the capture this module exists to make
-/// unrepresentable. Read by [`is`]'s guard and, from outside, by
-/// [`is_kernel_control`].
+/// vocabulary they have no legitimate written spelling. Published through
+/// [`is_kernel_control`] as the partition of [`ALL`]; the guard on [`is`] reads the
+/// WIDER [`NO_SURFACE_FUNCTOR`] below, which is a different question.
 const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY];
+
+/// EVERY address whose surface form names NO FUNCTOR — the set [`is`] must never be
+/// asked about, because [`is`] admits the SHORT spelling and there is no written
+/// spelling that means these: a user's `cut(…)` or `unify(a, b, kb)` is an ordinary
+/// unrelated call, and admitting it is the capture the addresses exist to make
+/// unrepresentable.
+///
+/// WIDER THAN [`KERNEL_CONTROL`], AND THAT IS THE POINT (WI-909, raised by
+/// `/code-review`). The guard used to read that list, which was exactly right while `!`
+/// and `requires(X)` were the only two surface forms without a functor. `<=>`, `===` and
+/// a goal-position `let` are three more, and when they took addresses they landed in
+/// `crate::parse::pratt` — so a guard keyed on this module's own partition stopped
+/// covering the class it was written for. `dt::is(name, pratt::UNIFY_FUNCTOR)` would
+/// have passed the assert and answered `true` for a written short `unify`, i.e. for
+/// `anthill.reflect.unify` — precisely the WI-888 capture, re-admitted through the
+/// helper whose doc promises it cannot happen. No caller does that today; the guard
+/// exists for the next one.
+///
+/// KEYED ON THE PROPERTY, not on the module a constant happens to live in, so a fourth
+/// functor-less surface form joins by being listed here rather than by someone noticing
+/// the omission. Four comparisons on [`is`]'s path instead of two — see that function's
+/// own cost note.
+const NO_SURFACE_FUNCTOR: &[&str] = &[
+    CUT,
+    FIND_DICTIONARY,
+    crate::parse::pratt::UNIFY_FUNCTOR,
+    crate::parse::pratt::STRUCT_EQ_FUNCTOR,
+];
 
 /// Is `target` one of the kernel CONTROL targets rather than reflect vocabulary?
 ///
@@ -309,17 +343,18 @@ pub fn is(name: &str, target: &str) -> bool {
     // `/code-review` as a contract that would have been followed into the bug.
     // A PLAIN `assert!`, not `debug_assert!`: the misuse it catches produces a silent
     // wrong answer (a user's `cut(...)` read as the control primitive), and WI-1122
-    // records what a release-only gap costs. The cost is two STRING comparisons against
-    // 22- and 33-byte constants (`<[&str]>::contains` compares contents, not pointers),
+    // records what a release-only gap costs. The cost is FOUR string comparisons against
+    // the [`NO_SURFACE_FUNCTOR`] constants (`<[&str]>::contains` compares contents, not
+    // pointers) — two until WI-909 widened the guard from [`KERNEL_CONTROL`],
     // on a call that already does three of its own PLUS the `strip_prefix` inside
     // `qualified` — negligible, but stated correctly: this comment said "pointer
     // comparisons" until `/code-review` read the impl, then undercounted the third
     // comparison and the `qualified` call until it read the impl again, and a mis-sized
     // load cost is what WI-653 had to re-diagnose.
     assert!(
-        !KERNEL_CONTROL.contains(&target),
-        "desugar_target::is admits the short spelling and must not be used for a kernel \
-         control target ({target}); compare to the constant directly"
+        !NO_SURFACE_FUNCTOR.contains(&target),
+        "desugar_target::is admits the short spelling and must not be used for a target \
+         whose surface form names no functor ({target}); compare to the constant directly"
     );
     name == target || name == qualified(target) || name == short(target)
 }
@@ -351,9 +386,24 @@ mod tests {
     /// is a user's unrelated `cut(…)`. The `assert!` is a plain one precisely so this
     /// holds in release; this row is what says so out loud.
     #[test]
-    #[should_panic(expected = "must not be used for a kernel control target")]
+    #[should_panic(expected = "whose surface form names no functor")]
     fn a_kernel_control_target_is_refused_by_is() {
         let _ = is(qualified(CUT), CUT);
+    }
+
+    /// …AND SO IS A CONNECTIVE THAT LIVES IN `pratt` (WI-909). Same class, different
+    /// module: `<=>` names no functor, so admitting `is`'s SHORT arm would read a
+    /// written `unify(a, b, kb)` — `anthill.reflect.unify`, a real 3-arg operation — as
+    /// the kernel primitive. That is the WI-888 capture the address removed.
+    ///
+    /// FAILS ON BACK-OUT of the guard's widening (`NO_SURFACE_FUNCTOR` -> the narrower
+    /// `KERNEL_CONTROL`): `is` then returns `true` instead of panicking, and this row is
+    /// the only thing that says so. Raised by `/code-review`, which found the guard had
+    /// silently stopped covering the class its own doc names.
+    #[test]
+    #[should_panic(expected = "whose surface form names no functor")]
+    fn a_functor_less_connective_is_refused_by_is_even_though_pratt_owns_it() {
+        let _ = is("unify", crate::parse::pratt::UNIFY_FUNCTOR);
     }
 
     /// Every target's short spelling is its last segment and carries no marker — the

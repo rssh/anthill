@@ -3297,9 +3297,19 @@ fn parse_rule_body_goals_ir(
 #[test]
 fn parse_unify_operator_desugars_to_unify() {
     // `?v <=> e` desugars to unify(?v, e) (greedy-lexed over `<=`).
+    //
+    // WI-909: the functor is the ADDRESS, read off the constant rather than spelled, so
+    // this row cannot drift from the mint the way `parse_let_binding_desugars_to_unify`
+    // did — it held its own `"unify(…)"` literal and stayed green while the `let`
+    // lowering minted a name that resolves through no rung. (That break is loud at a USE
+    // site — a `let` is a goal, so WI-1034 names it — but no corpus file writes one, so
+    // nothing walked into it.)
     let (terms, symbols, goals) = parse_rule_body_goals_ir("?v <=> f(?y)");
     assert_eq!(goals.len(), 1);
-    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "unify(?v, f(?y))");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, goals[0]),
+        format!("{}(?v, f(?y))", anthill_core::parse::pratt::UNIFY_FUNCTOR)
+    );
 }
 
 #[test]
@@ -3309,7 +3319,10 @@ fn parse_struct_eq_operator_desugars_to_struct_eq() {
     assert_eq!(goals.len(), 1);
     assert_eq!(
         fmt_ir_term(&terms, &symbols, goals[0]),
-        "struct_eq(?x, f(?y))"
+        format!(
+            "{}(?x, f(?y))",
+            anthill_core::parse::pratt::STRUCT_EQ_FUNCTOR
+        )
     );
 }
 
@@ -3317,9 +3330,29 @@ fn parse_struct_eq_operator_desugars_to_struct_eq() {
 fn parse_let_binding_desugars_to_unify() {
     // Goal-position `let ?v = e` is sugar for `?v <=> e` — the same unify(?v, e) IR;
     // a following goal is unaffected.
+    //
+    // "THE SAME IR" IS NOW ASSERTED, not restated. This row held the literal
+    // `"unify(?v, f(?y))"` and `convert_let_binding` held its own `"unify"`, so the two
+    // agreed only because nobody had changed either — and when WI-909 gave
+    // `UNIFY_FUNCTOR` an address, this row stayed GREEN while the `let` lowering started
+    // minting a name that resolves through no rung. Comparing the two lowerings against
+    // each other is the assertion the comment was already making.
+    // `kernel_mint_address_test::a_goal_position_let_binds_through_the_kernel_primitive`
+    // is the other half — this row pins the IR, that one walks the goal.
     let (terms, symbols, goals) = parse_rule_body_goals_ir("let ?v = f(?y), g(?v)");
     assert_eq!(goals.len(), 2);
-    assert_eq!(fmt_ir_term(&terms, &symbols, goals[0]), "unify(?v, f(?y))");
+    let (op_terms, op_symbols, op_goals) = parse_rule_body_goals_ir("?v <=> f(?y)");
+    assert_eq!(
+        fmt_ir_term(&terms, &symbols, goals[0]),
+        fmt_ir_term(&op_terms, &op_symbols, op_goals[0]),
+        "`let ?v = e` and `?v <=> e` must lower to the same IR — proposal 049"
+    );
+    assert!(
+        fmt_ir_term(&terms, &symbols, goals[0])
+            .starts_with(anthill_core::parse::pratt::UNIFY_FUNCTOR),
+        "…and that IR names the kernel primitive by ADDRESS; a short `unify` resolves \
+         through no rung since WI-909 removed the tier row"
+    );
     assert_eq!(fmt_ir_term(&terms, &symbols, goals[1]), "g(?v)");
 }
 

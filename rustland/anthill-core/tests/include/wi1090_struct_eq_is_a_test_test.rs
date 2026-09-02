@@ -343,6 +343,12 @@ fn a_clause_on_the_struct_eq_builtin_never_decides_a_goal() {
 namespace wi1090.inert
   sort S
     import anthill.prelude.{Int64, Bool}
+    -- WI-909: `struct_eq` took an address and left the implicit tier, and a rule head is
+    -- RESOLVED, not declared (WI-896) — so without this import the head below stops
+    -- reaching the kernel primitive and introduces a local `wi1090.inert.S.struct_eq`
+    -- instead. That would leave the fixture unable to construct this file's SUBJECT (a
+    -- clause filed ON the builtin) while every assertion still passed.
+    import anthill.kernel.{struct_eq}
     entity f1090(a: Int64, b: Int64)
     rule struct_eq(f1090(a: ?x, b: ?y), f1090(a: ?y, b: ?x)) :- true
     rule drive1090(?v) :- f1090(a: 1, b: 2) === f1090(a: 2, b: 1), ?v <=> 1

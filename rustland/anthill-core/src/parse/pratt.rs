@@ -181,22 +181,59 @@ pub const SPEC_OP_FUNCTORS: &[&str] = &[
 /// (proposal 049/051). Only `unify` is an EQUATION connective — see
 /// [`EQUATION_FUNCTORS`].
 ///
-/// `EQ_FUNCTOR` is one of [`SPEC_OP_FUNCTORS`] and so carries an ADDRESS, while `unify`
-/// and `struct_eq` stay SHORT and are resolved by the implicit tier. Every reader of
-/// this family compares against these constants rather than against a spelling, which is
-/// what lets the list be mixed without a second rule.
+/// ALL THREE CARRY AN ADDRESS since WI-909, so every reader of this family compares
+/// against these constants in ONE currency. `EQ_FUNCTOR` came first as a
+/// [`SPEC_OP_FUNCTORS`] member (WI-20260825-KD9SW); `unify` and `struct_eq` were short
+/// names resolved by `kb::load`'s implicit tier until this ticket, which is
+/// `crate::parse::desugar_target`'s move applied to the two that module's own header
+/// named as still open.
 ///
-/// BEING A KERNEL PRIMITIVE IS NOT THE REASON THEY ARE SHORT, though this doc said so
-/// until `crate::parse::desugar_target::CUT` / `FIND_DICTIONARY` disproved it: those are
-/// kernel primitives WITH addresses. The two here are short because they have not been
-/// migrated, and they are the same shape as the two that were — converter mints for
-/// surface forms (`<=>`, `===`, a goal-position `let`) that name no functor. `unify` is
-/// the sharper case: `anthill.reflect.unify` is a real, unrelated 3-arg operation in the
-/// stdlib, so an `import anthill.reflect.{unify}` puts a rival in scope ABOVE the tier.
-/// Raised by `/code-review` against the change that migrated the other two.
+/// WHAT THE ADDRESS BUYS, and it is not a table row: the tier sat BELOW scope
+/// resolution, so any `unify` in scope captured the mint — and `anthill.reflect.unify`
+/// is a real, unrelated 3-arg operation, so the capture was one
+/// `import anthill.reflect.{unify}` away rather than hypothetical. A captured
+/// connective does not fail; it answers differently. MEASURED by backing the addresses
+/// out: `rule tau() <=> 7 [simp]` leaves residual `eq(?_, 7)` with them and
+/// `eq(?_, tau)` without — the equation silently stops firing, and the file loads clean
+/// with no diagnostic either way.
+///
+/// `..anthill.kernel` is where they live because that is where their declarations are
+/// (`stdlib/anthill/kernel/kernel.anthill` — `operation unify[T]`, `operation
+/// struct_eq[T]`), and because they are resolver primitives rather than spec operations:
+/// proposal 049 §8.3 says `<=>` is structural-only and NEVER dispatches, and the spec
+/// says the same of `===`, so unlike `=` there is no carrier that may mean something
+/// else by them. That is the same argument the tier override used to make, now made by
+/// the address instead of by a special case in the resolver.
+///
+/// THE DEFECT THAT MADE THE OVERRIDE NECESSARY, recorded here because this is where its
+/// fix now lives (it was `kb::load::minted_connective_symbol`'s doc until WI-909 deleted
+/// that function). Measured on the stdlib the moment WI-888 made `<=>` the only
+/// equational spelling: `reflect.anthill` declares its own
+/// `unify(a: Term, b: Term, kb: KB)` — proposal 049's term-level face — so the three
+/// `rule fact_monotonicity(…) <=> constant() [simp]` rules written in that same
+/// namespace resolved their MINTED connective to `anthill.reflect.unify` and filed three
+/// clauses under a 3-ary reflect operation. They loaded clean and stopped firing:
+/// `anthill.reflect.fact_monotonicity` owned nothing, `simp_equation_rids` never saw
+/// them, and the only symptom was a `Store.persist` of an `OperationInfo` silently
+/// succeeding where it must be refused. The `=` spelling had worked only because
+/// `anthill.reflect` happens to declare no `eq`.
+///
+/// WHY `eq` KEEPS THE SCOPE LADDER, and why widening the rule to it would be a
+/// regression rather than a tidy-up: `=` is SEMANTIC and DOES dispatch through a
+/// carrier's own `eq` (WI-350/WI-444/WI-627, `Set.eq` / `Map.eq`). `EQ_FUNCTOR` carries
+/// an address for a different reason — it is a spec operation, and a spec operation's
+/// address names the SPEC, leaving the carrier to be chosen by dispatch. The two here
+/// name a primitive that has no carrier to choose.
+///
+/// WHAT THE ADDRESS DOES *NOT* CHANGE (WI-948): a user's own written `unify(a, b, kb)`
+/// CALL is an ordinary name, not a mint, so it still takes the ordinary ladder and
+/// `reflect.anthill`'s operation stays callable by name from inside its own namespace.
+/// The old override said this with an `is_minted` gate; the address says it by being
+/// unspellable — `..` cannot appear in an identifier, so no written call can collide
+/// with it.
 pub const EQ_FUNCTOR: &str = "..anthill.prelude.PartialEq.eq";
-pub const UNIFY_FUNCTOR: &str = "unify";
-pub const STRUCT_EQ_FUNCTOR: &str = "struct_eq";
+pub const UNIFY_FUNCTOR: &str = "..anthill.kernel.unify";
+pub const STRUCT_EQ_FUNCTOR: &str = "..anthill.kernel.struct_eq";
 
 /// The equality-family connectives — every functor the infix desugar mints for a
 /// binary equality operator, whatever it MEANS. One SHAPE: the connective at the
@@ -787,6 +824,36 @@ mod tests {
             );
         }
         assert_eq!(CONNECTIVE_FUNCTORS.len(), 3, "the population is the three");
+
+        // WI-909 — THE EQUALITY FAMILY IS ADDRESSED THROUGHOUT NOW. It is the list that
+        // spans both namespaces (`eq` on a prelude spec, `unify` / `struct_eq` on the
+        // kernel), so the only assertion true of every member is the MARKER — which is
+        // the load-bearing one: it is what puts the mint above scope resolution, where
+        // the implicit tier could not put it.
+        for f in EQUALITY_FAMILY_FUNCTORS {
+            assert!(
+                f.starts_with(crate::intern::ABSOLUTE_PATH_MARKER),
+                "`{f}` must be an ABSOLUTE address — while `unify` / `struct_eq` were \
+                 SHORT they resolved through `kb::load`'s implicit tier, which sits \
+                 BELOW scope, so any same-spelled name in scope captured the mint"
+            );
+        }
+        // …and the two that moved name the kernel, beside `cut` / `find_dictionary`,
+        // because that is where their declarations are. Spelled as a pair rather than a
+        // loop over the family: `EQ_FUNCTOR` is the member for which this is FALSE, and
+        // a loop with an exclusion reads as if the exclusion were incidental.
+        for f in [UNIFY_FUNCTOR, STRUCT_EQ_FUNCTOR] {
+            assert!(
+                f.starts_with("..anthill.kernel."),
+                "`{f}` is a RESOLVER PRIMITIVE (proposal 049 §8.3: never dispatches), \
+                 so it names the kernel declaration outright — unlike `eq`, whose \
+                 address names a SPEC and leaves the carrier to dispatch"
+            );
+        }
+        assert!(
+            EQ_FUNCTOR.starts_with("..anthill.prelude."),
+            "`=` is the semantic one and stays a spec operation"
+        );
     }
 
     #[test]

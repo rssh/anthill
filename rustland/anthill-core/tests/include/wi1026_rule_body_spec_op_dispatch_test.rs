@@ -154,10 +154,21 @@ use anthill_core::eval::Value;
 /// Not `wi1010::program` with an empty tail: that builder hardwires `operation
 /// probe() -> Int64 = Desc.describe(leaf())`, and this file's subject is the path
 /// that has no such operation in it.
+/// WI-909 — THE `import anthill.kernel.{unify}` LINE IS LOAD-BEARING, and it is written
+/// here rather than inside the fixture string because `a_bare_goal_naming_nothing_is_
+/// refused_at_load` asserts an absolute LINE NUMBER in the generated source: a comment
+/// block in the fixture shifts it. (It did, and that row caught it.)
+///
+/// Some `tail` fixtures write a bare `unify(?r, …)` — a WRITTEN CALL, not the `<=>`
+/// operator's mint — and `unify` left `kb::load::PRELUDE_QUALIFIED` when it took an
+/// address. Without the import the goal names nothing, and the rows using it stay green
+/// only because a dispatch refusal is reported AHEAD of WI-1034's goal check: the test
+/// passes while the rule it is built on is dead. Found by `/code-review`.
 pub(crate) fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
+  import anthill.kernel.{{unify}}
 
   sort Desc
     sort T = ?
@@ -425,8 +436,12 @@ fn a_bare_goal_naming_nothing_is_refused_at_load() {
     // the GOAL and not the citing rule, deliberately; the reason is at
     // `load::undefined_rule_body_goal_message`.
     let (loc, _) = crate::wi1012_static_supplier_tie_test::located(&msg);
+    // 18 -> 19 in WI-909: `program` gained one `import anthill.kernel.{unify}` line
+    // above the rule. The absolute number is what makes this row worth having (it
+    // asserts the refusal is LOCATED, not merely raised), and it is also why that
+    // import is a bare line rather than a commented block — see `program`.
     assert!(
-        loc.starts_with("18:"),
+        loc.starts_with("19:"),
         "the refusal must point at the rule under test, got `{loc}` in: {msg}",
     );
 }

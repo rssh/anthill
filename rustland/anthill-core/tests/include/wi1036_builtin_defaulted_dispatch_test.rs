@@ -159,6 +159,11 @@ fn own_gt_program(tail: &str) -> String {
     format!(
         r#"namespace wi1036.own
   import anthill.prelude.{{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}}
+  -- WI-909: the `tail` fixtures write a bare `unify(?r, …)` — a WRITTEN CALL, not the
+  -- `<=>` operator's mint — and `unify` left `kb::load::PRELUDE_QUALIFIED` when it took
+  -- an address. A written name takes an import; only the OPERATOR needs nothing. Same
+  -- migration KD9SW made for `gt` / `eq` and the other ten spec operations.
+  import anthill.kernel.{{unify}}
 
   sort Point
     import anthill.prelude.{{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}}

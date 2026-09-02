@@ -27,6 +27,7 @@ fn join_name_segments(symbols: &crate::intern::SymbolTable, segments: &[Symbol])
 use super::desugar_target as dt;
 use super::error::ParseError;
 use super::ir::*;
+use super::pratt;
 
 /// The `why` clause [`Converter::check_label_unique`] reports for a repeated TUPLE
 /// component name (WI-805). Kept apart from [`ENTITY_FIELDS_DISTINCT`] because the two
@@ -487,14 +488,26 @@ impl<'a> Converter<'a> {
     ///
     /// # THE CENSUS THIS NEW PRODUCER OWES (AK2AJ's, re-run for this producer set)
     ///
-    /// `is_minted` has ELEVEN readers, all in `kb/load.rs` — TEN of them pre-existing,
-    /// the eleventh being `visit_load`'s new gate itself — and "was this written as a
-    /// call" is not the same question at each, so the census is per READER. Its answer
-    /// is that NO EXISTING READER'S VERDICT MOVES:
+    /// `is_minted` has NINE readers, all in `kb/load.rs` — EIGHT of them pre-existing,
+    /// the ninth being `visit_load`'s new gate itself — and "was this written as a call"
+    /// is not the same question at each, so the census is per READER. Its answer is that
+    /// NO EXISTING READER'S VERDICT MOVES:
     ///
-    /// * EIGHT of the ten pair the mint with a NAME (or a name-derived layout) that no
-    ///   marker in this set answers to: `parse_connective_head` and
-    ///   `minted_connective_symbol` require `is_equality_family_functor`;
+    /// COUNTED, NOT DECREMENTED (WI-909, after `/code-review` caught the first cut doing
+    /// the latter). The nine READERS are `parse_connective_head`, `is_typed_column`,
+    /// `bodyless_declares_nothing_detail`, `head_subject_name`, `fact_head_subject_name`,
+    /// `check_bare_arrow_typo`, `first_unresolvable_arrow_leaf`, `convert_term_inner` and
+    /// `visit_load`, across TWELVE call sites (three readers ask twice). Two names this
+    /// enumeration used to carry are gone: `minted_connective_symbol`, deleted by WI-909
+    /// because `<=>` / `===` carry addresses and nothing has to re-rank them against
+    /// scope; and `rule_introduced_functor_name`, which still exists but is not an
+    /// `is_minted` caller — the head-subject question is asked by `head_subject_name` and
+    /// `fact_head_subject_name`. Both are named here because a census that lists a
+    /// non-reader reads as wider coverage than it has.
+    ///
+    /// * SEVEN of the eight pair the mint with a NAME (or a name-derived layout) that no
+    ///   marker in this set answers to: `parse_connective_head` requires
+    ///   `is_equality_family_functor`;
     ///   `is_typed_column` and `convert_term`'s strip require `typed_var`;
     ///   `check_bare_arrow_typo` (twice) and `first_unresolvable_arrow_leaf` require
     ///   `is_arrow_functor` or `binder_form_layout` (`lambda_expr` | `let_expr` |
@@ -1137,15 +1150,19 @@ impl<'a> Converter<'a> {
                 // ADDING A PRODUCER IS A CENSUSED CHANGE, and the census is per READER --
                 // "was this written as a call" is not the same question each `is_minted`
                 // site asks. NO EXISTING READER'S VERDICT MOVES, because every one of the
-                // nine pairs the mint with a NAME or a POSITION this node fails:
+                // eight pairs the mint with a NAME or a POSITION this node fails:
                 //  * `parse_connective_head`, `bodyless_declares_nothing_detail`,
                 //    `rule_introduced_functor_name` ask it of a rule HEAD (or an
                 //    equation's LHS operand). `rule_heads` is `commaSep1($._goal)` and
                 //    `typed_var_arg` sits only in `_positional_fn_arg`, so this node is
                 //    an ARGUMENT and can never occupy either position.
-                //  * `minted_connective_symbol` additionally requires
-                //    `is_equality_family_functor`; `parse_connective_head` also requires
-                //    2 positional args (this marker has one).
+                //  * `parse_connective_head` additionally requires
+                //    `is_equality_family_functor` AND 2 positional args (this marker has
+                //    one). `minted_connective_symbol` used to stand beside it with the
+                //    same first requirement; WI-909 deleted it. The reader population is
+                //    counted at the method doc above — NINE readers over TWELVE sites —
+                //    and `rule_introduced_functor_name`, named in the line above, is one
+                //    of the two entries that census found are not callers at all.
                 //  * `check_bare_arrow_typo` / `first_unresolvable_arrow_leaf` /
                 //    `convert_expr`'s arrow arm additionally require
                 //    `is_arrow_functor`, `binder_form_layout` (`lambda_expr` /
@@ -4421,15 +4438,34 @@ impl<'a> Converter<'a> {
     /// proposal 049: lower a goal-position `let ?v = expr` to `unify(?v, expr)` — the same
     /// IR pratt builds for `?v <=> expr`. The bound var is a `variable_term`; the value is
     /// a `_term`. A malformed binding (a missing field) is a loud error.
+    ///
+    /// IT NAMES [`pratt::UNIFY_FUNCTOR`] RATHER THAN SPELLING `"unify"`, and "the same IR
+    /// pratt builds" is why: the doc above has said that since proposal 049, and while
+    /// this site held its own string literal the claim was maintained by coincidence.
+    /// WI-909 broke the coincidence by giving the constant an address: the tier row that
+    /// had been answering the short name went with it, so a goal-position `let` minted a
+    /// name that resolves through no rung.
+    ///
+    /// THE BREAK IS LOUD AT THE USE SITE and silent everywhere else, which is the
+    /// distinction worth keeping. WI-1034's rule-body-goal check catches it — MEASURED,
+    /// backing this site out gives "rule-body goal `unify` names nothing: … this goal can
+    /// NEVER match" — because a `let` lowers to a GOAL, which is the one position that
+    /// backstop covers. What had no instrument was the CHANGE:
+    /// `parse_let_binding_desugars_to_unify` compared this site's spelling against a
+    /// literal of its own, so both sides were the same stale string and it stayed green;
+    /// and no `.anthill` file in the corpus writes a goal-position `let`, so the suite
+    /// never reached the loud error either.
     fn convert_let_binding(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         let var = self.field(node, "var").map(|n| self.convert_term(n));
         let value = self.field(node, "value").map(|n| self.convert_term(n));
         match (var, value) {
-            (Some(v), Some(e)) => self.alloc_fn_term("unify", SmallVec::from_slice(&[v, e]), span),
+            (Some(v), Some(e)) => {
+                self.alloc_fn_term(pratt::UNIFY_FUNCTOR, SmallVec::from_slice(&[v, e]), span)
+            }
             _ => {
                 self.err("malformed `let` binding (expected `let ?v = expr`)", node);
-                self.alloc_fn_term("unify", SmallVec::new(), span)
+                self.alloc_fn_term(pratt::UNIFY_FUNCTOR, SmallVec::new(), span)
             }
         }
     }

@@ -1508,6 +1508,11 @@ Four things are outside it, each for its own reason.
   `anthill.reflect` declaring its own `unify` is the same exemption and is **settled
   rather than tolerated**: a `<=>` written there still means the kernel primitive
   (§8.3), and only a *written* `unify(a, b, kb)` call reaches the local declaration.
+  Since **WI-909** that is settled by the OPERATOR carrying `..anthill.kernel.unify`
+  outright rather than by the tier being consulted below scope — which is the stronger
+  guarantee, because the tier lost to any `unify` in scope and an address cannot. The
+  bullet keeps `unify` and `.cut` as examples of the non-parametric shape; neither is a
+  tier entry any more.
 - **Constructors** are outside it, though `cons` / `nil` / `some` / `none` do sit on
   parametric sorts: they are not operations, and a sort with constructors is a data
   sort, which cannot be the subject of a `provides` clause at all.
@@ -1702,7 +1707,7 @@ These illustrate the `<=>` equational-rule *mechanism*. In the current prelude s
 | a resolver **builtin** or scoping marker (`unify`, `find_dictionary`, `forall_impl`, …) | that builtin's own goal semantics |
 | a **non-`Bool`** term that is not a relation — a non-`Bool` operation, a non-boolean constant | a **load error**: it denotes no truth, so it can never match |
 
-Of the builtins in the resolver-builtin row, `unify` and `forall_impl` are reachable **bare**; `find_dictionary` is not. It left the implicit prelude with `cut` (§8.6), so it is written as `requires(X)` / `require[X]`, or under an explicit import.
+Of the builtins in the resolver-builtin row, `forall_impl` is reachable **bare**; `unify` and `find_dictionary` are not. Both left the implicit prelude in WI-909 — `find_dictionary` with `cut`, `unify` with `struct_eq` (§8.6) — so `find_dictionary` is written as `requires(X)` / `require[X]` and `unify` as the `<=>` operator or a goal-position `let`, either of them under an explicit import when the name itself is written.
 
 `not`, `or` and `and` are not an exception to the condition reading, and §6.6 is not in tension with it. All three names at a goal position resolve to the **resolver primitives** before anything is typed, so they never become `Bool` expressions there at all — the redirection is a rule about *names*, applied first. (`and` was the exception until WI-20260822-J38JE, for want of a `kernel.and` to be redirected TO; §6.6 named the comma and `a & b` was refused. `push_and` supplied the primitive and the three are symmetric now.) A genuine `Bool`-valued `and` of two `Bool` **values** is still a condition like any other — the conjunction reading **subsumes** it rather than competing with it (§6.6).
 
@@ -3526,8 +3531,12 @@ names the operation, not the token the desugar mints: an operator carries its ta
 ADDRESS (`..anthill.prelude.Additive.add` for `+`), so `Functor` × `Origin` read together
 are that address. §5.5 has the rule and its consequences; `parse::pratt::SPEC_OP_FUNCTORS`
 is the list. Since WI-20260825-P9Y67 the boolean connectives carry addresses too, at
-`anthill.kernel` rather than a prelude spec (`parse::pratt::CONNECTIVE_FUNCTORS`); only
-`pow` still mints a short name, because no spec owns it.
+`anthill.kernel` rather than a prelude spec (`parse::pratt::CONNECTIVE_FUNCTORS`), and
+since **WI-909** so do `<=>` and `===` (`parse::pratt::EQUALITY_FAMILY_FUNCTORS`, at
+`anthill.kernel` beside them); only `pow` still mints a short name, because no spec owns
+it. That last clause was written before this was true — `unify` and `struct_eq` were
+minting short names when it was first set down, and resolved through the implicit
+prelude's lowest rung instead.
 
 | Operator | Priority | Assoc | Functor | Origin |
 |----------|----------|-------|---------|--------|
@@ -4400,7 +4409,7 @@ same-spelled top-level path instead.
 **The lowest rung is the implicit prelude, and only that.** It is the user-facing
 vocabulary available in every namespace with no `import` line: the fundamental
 constructors (`cons`, `nil`, `some`, `none`), the `BigInt` conversions, the resolver
-primitives `unify`, `struct_eq` and `push_choice`, and the reflection result sorts. It
+primitive `push_choice`, and the reflection result sorts. It
 sits at the **bottom** of the ladder, which is what lets a user name shadow one without
 conflict: a local declaration or an explicit import is found first, so a user's own name
 wins and can never go *ambiguous* against a member.
@@ -4411,10 +4420,18 @@ none takes an *address* instead — see **Synthesized forms** below, which owns 
 and its consequences. `not` / `or` / `and` left in WI-20260826-XED22 once their
 operators carried addresses, so a written `or(…)` / `and(…)` takes an import. The twelve **operator targets** (`add`, `eq`, `gt`,
 `div`, …) left in WI-20260825-KD9SW on the same rule, so a written `gt(a, b)` takes an
-import too. `find_dictionary` and `cut` left most recently and cost no import at all,
+import too. `find_dictionary` and `cut` left in WI-909 and cost no import at all,
 because neither has a surface spelling to migrate: `requires(X)` / `require[X]` and `!`
 are the ways to mean them, and a written name still works under an explicit import.
-`unify` and `struct_eq` are the same case and have **not** left yet.
+`unify` and `struct_eq` followed in the same ticket, and they are the case where the
+distinction bites: `<=>` and `===` are likewise ways to mean them that cost nothing, but
+unlike `cut` these two also have a WRITTEN spelling people had been using — so a bare
+`unify(?r, e)` in a rule body now takes `import anthill.kernel.{unify}`, and without it
+WI-1034 refuses the goal by name. A rule HEAD spelled `unify` or `struct_eq` changes with
+it: a head is resolved, not declared (§8.3), so one that used to add a clause to the
+kernel primitive now introduces a local name unless the connective is imported. With
+those two the rung holds no converter mint at all, which is what makes the rule above
+exact rather than approximate.
 
 **A member reached through a `provides` CONVERSION answers to its head's address**
 (WI-20260825-X9RRN). A spec's `provides` is a conversion — "hold a `Numeric[T]` and you

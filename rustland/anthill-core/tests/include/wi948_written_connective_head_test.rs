@@ -189,6 +189,13 @@ fn an_argument_of_a_written_connective_head_is_not_the_subject() {
 namespace wi948.subject
   sort S
     import anthill.prelude.{Int64}
+    -- WI-909: `unify` took an address and left `kb::load::PRELUDE_QUALIFIED`, and a rule
+    -- head is RESOLVED, not declared (WI-896) — so without this import the head below
+    -- stops denoting `anthill.kernel.unify` and MINTS `wi948.subject.S.unify` instead.
+    -- The `f948` assertion would still pass; the `clauses_under` DELTA below would too,
+    -- for an entirely different reason (no clause on the connective at all), which is a
+    -- control going vacuous while reading as though it held. Found by `/code-review`.
+    import anthill.kernel.{unify}
     entity boxed948(v: Int64)
     rule unify(f948(?x), ?x) :- true
     rule mine948(boxed948(v: ?x), ?x) :- true
@@ -227,7 +234,8 @@ end
     );
 
     // EITHER WAY, and before the absence below so the control run reaches it. `unify` is
-    // reserved kernel vocab, so this head RESOLVES to `anthill.kernel.unify` (WI-896) —
+    // IMPORTED by the fixture (WI-909 — it is no longer reserved vocabulary the tier
+    // answers for), so this head RESOLVES to `anthill.kernel.unify` (WI-896) —
     // and an untagged bodyless head on a connective is a WI-139 cite-required law, so
     // `unindex_functor` drops it. The rule reaches no goal, with the guard or without.
     // A DELTA against the same program minus the rule, because the stdlib's own `[simp]`
@@ -236,6 +244,9 @@ end
 namespace wi948.subject
   sort S
     import anthill.prelude.{Int64}
+    -- Kept in step with the WITH fixture (WI-909): the delta measures the CONNECTIVE
+    -- HEAD, so the import must not be the thing that differs between them.
+    import anthill.kernel.{unify}
     entity boxed948(v: Int64)
     rule mine948(boxed948(v: ?x), ?x) :- true
   end
@@ -265,6 +276,15 @@ end
 /// equations, not declared as an operation … no defining equation for it can be found".
 /// The file contains no equation, so that message sends the author looking for a
 /// missing `[simp]` rule that was never meant to exist.
+///
+/// NO `import anthill.kernel.{unify}` HERE, unlike the fixture above, and the asymmetry
+/// is deliberate rather than an omission (WI-909). That one's `clauses_under` delta
+/// depends on the head DENOTING the kernel connective, so it needs the import now that
+/// the tier no longer supplies it. This row's subject is `f948` — an ARGUMENT, undeclared
+/// either way — so it is indifferent to whether the head denotes `anthill.kernel.unify`
+/// or mints a local `wi948.cite.S.unify`. Adding the import would change nothing it
+/// asserts; the note is here so the next reader does not add it to "match" and then
+/// wonder which fixture is wrong.
 #[test]
 fn an_argument_is_not_reported_as_defined_by_equations() {
     const SRC: &str = r#"

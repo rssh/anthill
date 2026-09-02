@@ -10,9 +10,13 @@
 //! lowest rung — turned it back into the address. That is WI-20260825-5W3RJ's shape one
 //! namespace over.
 //!
-//! NOT THE LAST OF THE CLASS, and the header says so because a draft of this file
-//! claimed otherwise: `pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR` are short converter
-//! mints on the tier too. See `desugar_target`'s module doc.
+//! `pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR` FOLLOWED, in WI-909's group-4 pass, and
+//! this file covers both passes because they are one mechanism. `<=>` and `===` name no
+//! functor either, so the converter supplied a short one and the tier turned it back
+//! into `anthill.kernel.unify` / `.struct_eq`. Their migration additionally DELETED
+//! `kb::load::minted_connective_symbol`, a hand-written override that existed only to
+//! lift those two mints back above scope resolution at every functor-resolving producer
+//! — which the `..` address does by construction. `PRELUDE_QUALIFIED` 17 -> 15.
 //!
 //! WHAT THE CHANGE BUYS. The tier sits BELOW scope resolution, so a namespace declaring
 //! its own `cut` / `find_dictionary` captured the mint — and a captured control
@@ -29,10 +33,25 @@
 //!       `a_rule_head_named_cut_introduces_a_local_name` — the head resolves THROUGH the
 //!       tier to `anthill.kernel.cut` instead, so no `test.…cut` is minted and the row
 //!       fails. It is the only row that sees that half.
+//!   * THE PRE-WI-888 STATE — `pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR` back to short
+//!     AND their `PRELUDE_QUALIFIED` rows restored, `minted_connective_symbol` still
+//!     gone. That is the back-out that isolates group 4's mechanism, and BOTH halves are
+//!     needed: with the rows left out, a short `struct_eq` names nothing and the STDLIB
+//!     stops loading, so every row here fails for an unrelated reason.
+//!       `a_rival_unify_in_scope_does_not_capture_the_equation` — MEASURED `left: 0,
+//!       right: 1`; its no-rival control still passes, which is what says the row saw
+//!       the capture rather than a broken fixture.
+//!       `pratt::tests::minted_operators_carry_their_spec_op_address` (a unit test, not
+//!       here) — MEASURED "`unify` must be an ABSOLUTE address". It is the ONLY row that
+//!       catches a short constant; see `a_minted_unify_carries_its_address` for why the
+//!       mint rows cannot.
 //!   * PASS EITHER WAY, by design — the controls:
 //!       `the_cut_operator_still_commits_with_no_rival`
 //!       `the_guard_still_blocks_with_no_rival` / `the_guard_fires_for_a_provider`
 //!       `every_desugar_target_carries_the_absolute_marker`
+//!       `a_minted_unify_carries_its_address` / `a_minted_struct_eq_carries_its_address`
+//!       — green in every state above, because the mint site IS the constant they
+//!       compare against. What they measure is stated at their own site.
 //!
 //! THE TWO HALVES LOAD DIFFERENTLY, ON PURPOSE. The cut rows use `common::load_kb_with`
 //! (stdlib + Rust host bindings); the guard rows use `common::load_stdlib_kb_with_source`
@@ -53,6 +72,7 @@ use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::desugar_target as dt;
+use anthill_core::parse::pratt;
 use smallvec::SmallVec;
 
 use crate::common::{definite_unary, load_kb_with, load_kb_with_stdlib_only};
@@ -126,6 +146,63 @@ fn a_minted_requires_guard_carries_its_address() {
             "`{body}` must name the kernel relation outright; got {spellings:?}"
         );
     }
+}
+
+/// `<=>` mints `..anthill.kernel.unify`, not `unify`, and mints exactly one functor.
+///
+/// IT DOES *NOT* CATCH A SHORT CONSTANT, unlike the four cut / find_dictionary rows
+/// above, and saying so is the difference between a pin and a tautology. Those mint
+/// sites are `convert.rs` arms that name `dt::CUT` independently of the constant, so the
+/// two sides move apart on a back-out. Here the mint site IS the constant — pratt's
+/// infix table stores `functor: UNIFY_FUNCTOR` — so backing `UNIFY_FUNCTOR` out to
+/// `"unify"` moves BOTH sides and this row stays green. MEASURED in that state, together
+/// with the two rows that do fail there.
+///
+/// WHAT IT DOES MEASURE, which is worth its lines: that the `<=>` SURFACE FORM routes
+/// through this constant at all (a second lowering path, or a table entry pointing
+/// somewhere else, shows up here), and that it mints ONE functor rather than a bare name
+/// beside an address.
+///
+/// THE ROW THAT CATCHES A SHORT CONSTANT is
+/// `pratt::tests::minted_operators_carry_their_spec_op_address`, which asserts the `..`
+/// marker over `EQUALITY_FAMILY_FUNCTORS`. Driven: it fails with
+/// "`unify` must be an ABSOLUTE address".
+#[test]
+fn a_minted_unify_carries_its_address() {
+    let spellings = minted_spellings(
+        "namespace test.w909.eqn\n  \
+         operation tau909() -> Int64\n  \
+         rule tau909() <=> 7 [simp]\n\
+         end\n",
+        "unify",
+        pratt::UNIFY_FUNCTOR,
+    );
+    assert_eq!(
+        spellings,
+        vec![pratt::UNIFY_FUNCTOR.to_owned()],
+        "`<=>` must name the kernel primitive outright; a bare `unify` is looked up by \
+         the implicit tier, which sits BELOW scope"
+    );
+}
+
+/// `===` mints `..anthill.kernel.struct_eq`, not `struct_eq`. Same claim and the same
+/// limit as the row above — read its second paragraph before trusting this one as a
+/// back-out detector.
+#[test]
+fn a_minted_struct_eq_carries_its_address() {
+    let spellings = minted_spellings(
+        "namespace test.w909.steq\n  \
+         fact p909(1)\n  \
+         rule a909(?x) :- p909(?x), ?x === 1\n\
+         end\n",
+        "struct_eq",
+        pratt::STRUCT_EQ_FUNCTOR,
+    );
+    assert_eq!(
+        spellings,
+        vec![pratt::STRUCT_EQ_FUNCTOR.to_owned()],
+        "`===` must name the kernel primitive outright"
+    );
 }
 
 /// EVERY desugar target carries the `..` marker.
@@ -237,6 +314,222 @@ fn a_rule_head_named_cut_introduces_a_local_name() {
         kb.try_resolve_symbol("test.w909.head.cut").is_some(),
         "`cut` is off the implicit tier, so a rule head spelled that way must introduce \
          a LOCAL name instead of adding a clause to `anthill.kernel.cut`"
+    );
+}
+
+/// The equation fixture: a `[simp]` definition plus a probe that forces the rewrite.
+/// `rival` is spliced in as an extra namespace-level line.
+///
+/// THE RIVAL IS A REAL ONE. `anthill.reflect.unify(a: Term, b: Term, kb: KB)` is a
+/// declaration the stdlib already ships — proposal 049's term-level face — so this arm
+/// is one `import` line, not a synthetic collision. That is what made the hazard sharp
+/// enough to migrate: `desugar_target`'s header called `unify` "the sharper case" for
+/// exactly this reason.
+fn eqn_src(rival: &str) -> String {
+    format!(
+        r#"
+    namespace test.w909.eqn
+      import anthill.prelude.{{Int64}}
+      import anthill.prelude.PartialEq.{{eq}}
+{rival}
+      operation tau909() -> Int64
+
+      rule tau909() <=> 7 [simp]
+
+      rule probe909(1) :- eq(7, tau909())
+    end
+"#
+    )
+}
+
+/// A RIVAL `unify` IN SCOPE DOES NOT CAPTURE THE EQUATION — the same program as the
+/// control plus one import, which is the only difference between them.
+///
+/// PASSES EITHER WAY against the previous commit, BY DESIGN, and the distinction is the
+/// whole reason this row is worth its lines: `kb::load::minted_connective_symbol` used
+/// to hold this property by hand, lifting the minted connective above scope at every
+/// functor-resolving producer. WI-909 deletes that function, so the row's job is to say
+/// the ADDRESS now holds what the override held.
+///
+/// FAILS IN THE PRE-WI-888 STATE — short mints, `PRELUDE_QUALIFIED` rows restored, no
+/// override — which is the back-out that isolates the mechanism. MEASURED there, both
+/// arms, loading clean with no diagnostic either way:
+///
+/// | fixture | pre-WI-888 | with the addresses |
+/// |---|---|---|
+/// | rival imported | residual `eq(?_, tau909)` — **captured** | `eq(?_, 7)` |
+/// | no rival (control) | `eq(?_, 7)` | `eq(?_, 7)` |
+///
+/// Backing out the constants ALONE is NOT that measurement and must not be mistaken for
+/// it: with the tier rows already gone, a short `struct_eq` names nothing, so the STDLIB
+/// stops loading (`rule-body goal `struct_eq` names nothing`, plus three
+/// `struct_eq.apply` type errors) and every row here fails for an unrelated reason.
+#[test]
+fn a_rival_unify_in_scope_does_not_capture_the_equation() {
+    // The constant rides in the HEAD so the claim DECIDES: `=` is a semantic test that
+    // never binds (§8.3), so `rule p(?m) :- …, ?m = 1` suspends and would count a
+    // floundered answer as success — `common::definite_unary`'s doc records the four
+    // suites that did. Here the body's `eq(7, tau909())` decides only when the equation
+    // has rewritten `tau909()` to `7`; under a capture it leaves a residual and the
+    // count is 0.
+    let mut control = load_kb_with(&eqn_src(""));
+    assert_eq!(
+        definite_unary(&mut control, "test.w909.eqn.probe909").len(),
+        1,
+        "control: with no rival the `[simp]` equation rewrites `tau909()` to `7` and the \
+         probe decides. If THIS fails the fixture is broken, not the address"
+    );
+    let mut rivalled = load_kb_with(&eqn_src("      import anthill.reflect.{unify}\n"));
+    assert_eq!(
+        definite_unary(&mut rivalled, "test.w909.eqn.probe909").len(),
+        1,
+        "an `import anthill.reflect.{{unify}}` puts a real 3-arg operation in scope; the \
+         minted `<=>` must still denote `anthill.kernel.unify`, because its address \
+         outranks scope. Under the tier it did not, and the clause was filed under the \
+         reflect operation — silently, which is WI-888."
+    );
+}
+
+/// A GOAL-POSITION `let` REACHES THE KERNEL PRIMITIVE — driven, because nothing else
+/// drives it.
+///
+/// `let ?y = e` is proposal 049 sugar for `?y <=> e` and lowers through a DIFFERENT
+/// function from the `<=>` operator (`convert::convert_let_binding`, not pratt's infix
+/// table). That second lowering spelled `"unify"` as a string literal of its own, so
+/// WI-909's address did not reach it and it began minting a name that resolves through
+/// no rung — the goal could never match.
+///
+/// THE BREAK ITSELF IS LOUD — a `let` lowers to a GOAL, so WI-1034's rule-body-goal
+/// check names it. MEASURED by backing `convert_let_binding` out: "rule-body goal
+/// `unify` names nothing: … this goal can NEVER match", which is how this row fails.
+///
+/// WHAT HAD NO INSTRUMENT WAS THE CHANGE, and that is why this row exists rather than a
+/// comment. `parse_test::parse_let_binding_desugars_to_unify` compared the lowering to
+/// its OWN `"unify(?v, f(?y))"` literal, so both sides were the same stale spelling and
+/// it stayed green. And no `.anthill` file in stdlib, examples, or either embedded
+/// project writes a goal-position `let` — MEASURED, `grep ':-.*\blet '` over the corpus
+/// is 0 — so the suite never reached the loud error. A backstop nothing walks into
+/// reports nothing. The parse-side row now asserts the two lowerings against EACH OTHER;
+/// this one walks the goal.
+#[test]
+fn a_goal_position_let_binds_through_the_kernel_primitive() {
+    let mut kb = load_kb_with(
+        "namespace test.w909.letgoal\n  \
+         import anthill.prelude.{Int64}\n  \
+         fact src909(3)\n  \
+         rule via_let909(?y) :- src909(?x), let ?y = ?x\n  \
+         rule via_op909(?y) :- src909(?x), ?y <=> ?x\n\
+         end\n",
+    );
+    // `Value` has no `PartialEq` (WI-486 removed the carrier-blind comparator), so the
+    // two lowerings are compared through the KB-aware view head. That is the right
+    // currency anyway: what must agree is the VALUE each binds, not a derived count.
+    use anthill_core::kb::term_view::TermView;
+    let heads = |kb: &mut KnowledgeBase, qn: &str| -> Vec<String> {
+        definite_unary(kb, qn)
+            .iter()
+            .map(|v| format!("{:?}", v.head(kb)))
+            .collect()
+    };
+    let via_op = heads(&mut kb, "test.w909.letgoal.via_op909");
+    assert_eq!(
+        via_op.len(),
+        1,
+        "control: the `<=>` operator spelling binds and decides. If THIS fails the \
+         fixture is broken, not the `let` lowering"
+    );
+    assert!(
+        via_op[0].contains('3'),
+        "control: …and it binds the fact's value; got {via_op:?}"
+    );
+    assert_eq!(
+        heads(&mut kb, "test.w909.letgoal.via_let909"),
+        via_op,
+        "`let ?y = ?x` is sugar for `?y <=> ?x` (proposal 049), so it must bind the same \
+         way. A short `unify` here resolves through nothing since the tier row went, and \
+         the goal silently stops matching"
+    );
+}
+
+/// A `<=>` IN A QUERY PATTERN IS NOT CAPTURED BY AN INVOCATION IMPORT.
+///
+/// THE POSITION THE DELETED OVERRIDE WAS ADDED FOR, and it had no test. `kb::load`'s
+/// query arm called `minted_connective_symbol` directly, with a comment naming this
+/// exact scenario — `anthill query -i anthill.reflect.{unify} …` puts that declaration
+/// in `<global>`, the very scope a query pattern resolves in — and the comment was the
+/// whole coverage. WI-909 removes the override, so the claim needs an instrument.
+///
+/// A QUERY PATTERN IS THE POSITION WITH NO LOAD-ERROR CHANNEL: an unresolved functor is
+/// interned bare and the query simply matches nothing, so a capture here is silent by
+/// construction. That is why the row asserts the resolved QUALIFIED NAME rather than a
+/// solution count — a count of 0 cannot tell "captured" from "no such fact".
+///
+/// The `-i` spelling is deliberate (`supply_invocation_imports`): since WI-995 an
+/// `import` written in a program FILE is local to that file and never reaches a query
+/// pattern, so a file-based rival would make this row vacuous while reading as though it
+/// tested something.
+#[test]
+fn a_query_pattern_connective_is_not_captured_by_an_invocation_import() {
+    let mut kb = load_kb_with_stdlib_only(
+        "namespace test.w909.qp\n  \
+         fact p909(1)\n\
+         end\n",
+    );
+    let target = anthill_core::parse::desugar_target::qualified(pratt::UNIFY_FUNCTOR);
+    assert_eq!(
+        crate::common::query_pattern_functor_qn(&mut kb, "?x <=> 1"),
+        target,
+        "control: with nothing in scope the pattern's minted connective denotes the \
+         kernel primitive"
+    );
+    crate::common::supply_invocation_imports(&mut kb, &["anthill.reflect.{unify}"]);
+    assert_eq!(
+        crate::common::query_pattern_functor_qn(&mut kb, "?x <=> 1"),
+        target,
+        "`-i anthill.reflect.{{unify}}` puts a real 3-arg operation into `<global>`, \
+         which IS the query scope; the address outranks it. Under the tier this rung \
+         lost, which is why the arm carried a hand-written override"
+    );
+}
+
+/// A RULE HEAD NAMED `unify` INTRODUCES A LOCAL NAME — the `unify` twin of
+/// `a_rule_head_named_cut_introduces_a_local_name`, and the row for group 4's OTHER
+/// half: the two deleted `PRELUDE_QUALIFIED` rows, which every mint row here is blind
+/// to.
+///
+/// A rule head is RESOLVED, not declared (WI-896). While `anthill.kernel.unify` sat on
+/// the implicit tier, a head spelled `unify` reached it and the rule contributed a
+/// clause to the KERNEL PRIMITIVE — so `test.w909.head2.unify` was never minted. With
+/// the row gone the ladder finds nothing and the head introduces a local name.
+///
+/// IT EXISTS BECAUSE THE CLAIM WAS DOCUMENTED WITHOUT ONE. `kb::load::parse_equation_lhs`
+/// states this behaviour change for `unify` and cited only the `cut` row above as
+/// evidence — a different name on a different rung. `/code-review` also found the one
+/// test that HAD been measuring it (`wi948_written_connective_head_test`) quietly
+/// stop: its head fell to a local mint, leaving a `clauses_under` delta that still
+/// compared equal for a new reason. That fixture now imports the connective to keep its
+/// own subject; this row asserts the unimported behaviour instead of assuming it.
+///
+/// FAILS IF THE TIER ROWS COME BACK, mints untouched. `zz909b` is the control: an
+/// ordinary name that was never on the tier and mints either way, so a failure taking
+/// both arms down is the fixture breaking rather than the tier returning.
+#[test]
+fn a_rule_head_named_unify_introduces_a_local_name() {
+    let kb = load_kb_with(
+        "namespace test.w909.head2\n  \
+         fact ok909(1)\n  \
+         rule unify(?x) :- ok909(?x)\n  \
+         rule zz909b(?x) :- ok909(?x)\n\
+         end\n",
+    );
+    assert!(
+        kb.try_resolve_symbol("test.w909.head2.zz909b").is_some(),
+        "control: an ordinary rule head always introduces its name"
+    );
+    assert!(
+        kb.try_resolve_symbol("test.w909.head2.unify").is_some(),
+        "`unify` is off the implicit tier, so a rule head spelled that way must \
+         introduce a LOCAL name instead of adding a clause to `anthill.kernel.unify`"
     );
 }
 

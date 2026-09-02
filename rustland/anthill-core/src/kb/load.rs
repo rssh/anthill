@@ -5212,12 +5212,13 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.BigInt.to_bigint",
     "anthill.prelude.BigInt.to_int",
     "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
-    "anthill.kernel.unify",       // structural-unification primitive (`<=>` / `let` lift it)
-    "anthill.kernel.struct_eq",   // structural identity test (`===`); proposal 051 / WI-615
-    // `find_dictionary` and `cut` left for `crate::parse::desugar_target`: both are
-    // CONVERTER MINTS, so they carry an address and need no rung. `unify` and
-    // `struct_eq` above are the SAME shape and have not been migrated — the rule and
-    // the open remainder are stated once, in that module.
+    // `unify` / `struct_eq` LEFT IN WI-909, following `find_dictionary` and `cut`: all
+    // four are CONVERTER MINTS, so they carry an address
+    // (`crate::parse::pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR`,
+    // `crate::parse::desugar_target::CUT` / `FIND_DICTIONARY`) and need no rung. That
+    // retired `minted_connective_symbol`, which existed ONLY to lift these two above
+    // scope resolution — the absolute rung does it, so the special case is gone rather
+    // than moved. The rule for the class is stated once, in `desugar_target`.
     //
     // REMOVING A ROW IS A BEHAVIOUR CHANGE AT THE RULE HEAD, not only at the mint, and
     // that is the half a reader misses: a head is RESOLVED, not declared, so while the
@@ -5271,6 +5272,15 @@ fn prelude_qualified(name: &str) -> Option<&'static str> {
 /// ordinary ABSOLUTE rung and needs no fallback, no table and nothing to keep in step
 /// with the mint sites. What remains here is the USER-facing prelude, which is a
 /// genuinely different question — names a person writes bare on purpose.
+///
+/// AND SINCE WI-909 THAT DESCRIPTION IS EXACT rather than approximate. Two rows survived
+/// 5W3RJ that were converter mints all along — `unify` / `struct_eq`, the `<=>` and
+/// `===` targets, which the desugar synthesizes exactly as it synthesizes `match_expr`.
+/// They carried a hand-written override (`minted_connective_symbol`) to re-rank them
+/// above scope, which is the shape of a table that is doing two jobs. Both now name
+/// `..anthill.kernel.…` outright and the override is deleted, so every remaining row IS
+/// a name a person writes bare, and any future row that is not should be migrated rather
+/// than added.
 fn implicit_qualified(name: &str) -> Option<&'static str> {
     prelude_qualified(name)
 }
@@ -5317,9 +5327,10 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
 /// not go and get it somewhere else.
 ///
 /// THE PRELUDE ALONE since WI-20260825-5W3RJ (see [`implicit_qualified`]), which SHRANK
-/// this population from 62 to 34. Nothing that read it wanted the desugaring vocab: its
-/// one reader asks which tier names denote a spec operation, and no synthesized form
-/// ever did.
+/// this population from 62 to 34; later passes took it to 15 (WI-20260826-XED22's
+/// `not` / `or` / `and`, WI-909's `cut` / `find_dictionary` and then `unify` /
+/// `struct_eq`). Nothing that read it wanted the desugaring vocab: its one reader asks
+/// which tier names denote a spec operation, and no synthesized form ever did.
 ///
 /// `wi_kd9sw_minted_operator_address_test` (WI-20260825-KD9SW retired the refusal this
 /// named: a minted operator carries its address, so there is no tier name to capture)
@@ -5935,12 +5946,22 @@ fn parse_connective_head<'a>(
 /// test, its subject defines nothing, and a bodyless `===` head is refused at load
 /// ([`LoadError::NonDefiningConnectiveHead`]) rather than stamped.
 ///
-/// The mint damage this can still do is only ever to the ARGUMENT: every connective
-/// spelling is implicit-tier reserved vocabulary — all three are [`PRELUDE_QUALIFIED`]
-/// entries (`anthill.kernel.unify` / `.struct_eq`, `anthill.prelude.PartialEq.eq`), not
-/// desugar targets — so a head can never introduce one of them whatever
-/// this answers — [`rule_head_ladder_answer`] refuses it (WI-530), measured
-/// identical with the `is_minted` guard and without it.
+/// The mint damage this can still do is only ever to the ARGUMENT, and since WI-909 the
+/// reason is stronger than it was. A MINTED connective spelling is now an ADDRESS —
+/// `..anthill.kernel.unify` / `..anthill.kernel.struct_eq` /
+/// `..anthill.prelude.PartialEq.eq` — and `..` is unspellable by any identifier, so a
+/// head can never introduce one whatever this answers. It used to rest on all three
+/// being [`PRELUDE_QUALIFIED`] entries with [`rule_head_ladder_answer`] refusing them
+/// (WI-530, measured identical with the `is_minted` guard and without it); none of the
+/// three is a tier entry any more, so that argument no longer holds and this one
+/// replaces it rather than joining it.
+///
+/// THE WRITTEN SPELLING IS A DIFFERENT NAME and its behaviour DID change: with `unify`
+/// off the tier, a source `rule unify(?a, ?b) :- …` outside `anthill.kernel` no longer
+/// reaches the kernel primitive through the fallback — it introduces a local name, which
+/// is `cut`'s situation exactly (`kernel_mint_address_test::
+/// a_rule_head_named_cut_introduces_a_local_name`). A rule head is RESOLVED, not
+/// declared (WI-896), so that is a resolution moving, not a declaration changing.
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -17098,19 +17119,16 @@ fn convert_query_term_expecting(
             pos_args,
             named_args,
         } => {
-            // WI-888: a QUERY pattern is the FOURTH functor producer, and it needs the
-            // minted-connective override for the same reason the three loader paths do.
-            // Found by review after the loader half shipped: `anthill query -i
-            // anthill.reflect.{unify} …` imports that declaration into `<global>`, which
-            // is the very scope a query resolves in, so a `<=>` in the pattern would be
-            // captured by it — the same silent misresolution, at the one position with
-            // no load-error channel to be loud from.
-            let kb_functor =
-                minted_connective_symbol(kb, parse_symbols, parse_terms, parse_id, functor)
-                    .unwrap_or_else(|| {
-                        let functor_name = parse_symbols.local_name(functor);
-                        resolve_query_name(kb, functor_name, scope)
-                    });
+            // WI-888 / WI-909: a QUERY pattern is the FOURTH functor producer, and it
+            // used to need a minted-connective OVERRIDE here for the same reason the
+            // three loader paths did — `anthill query -i anthill.reflect.{unify} …`
+            // imports that declaration into `<global>`, the very scope a query resolves
+            // in, so a `<=>` in the pattern was captured by it, silently, at the one
+            // position with no load-error channel to be loud from. The mint carries its
+            // ADDRESS now, which outranks scope by construction, so the ordinary query
+            // ladder is the whole answer and no producer has to be enumerated.
+            let functor_name = parse_symbols.local_name(functor);
+            let kb_functor = resolve_query_name(kb, functor_name, scope);
 
             // WI-1096: a `[…]` here becomes what the LOADER would have stored in this
             // position — same decision function, same declared-type hint — so a query
@@ -17316,64 +17334,6 @@ fn convert_query_term_expecting(
 /// clause, so the query matches nothing — because this position has no error channel to
 /// tell them apart in. What differs is the DIAGNOSIS, and that is the CLI's
 /// (`report_unknown_functor_name`).
-/// WI-888 — A MINTED CARRIER-AGNOSTIC CONNECTIVE DENOTES ITS KERNEL PRIMITIVE, whatever
-/// a same-named symbol in scope holds. `None` when this node is not one, which is every
-/// ordinary functor.
-///
-/// THE DEFECT, measured on the stdlib the moment WI-888 made `<=>` the only equational
-/// spelling: `reflect.anthill` declares its own `unify(a: Term, b: Term, kb: KB)`
-/// (proposal 049's term-level face), so the three `rule fact_monotonicity(…) <=>
-/// constant() [simp]` rules written in that same namespace resolved their MINTED
-/// connective to `anthill.reflect.unify` and filed three clauses under a 3-ary reflect
-/// operation. They loaded clean and stopped firing — `anthill.reflect.fact_monotonicity`
-/// owned nothing, `simp_equation_rids` never saw them, and the only symptom was a
-/// `Store.persist` of an `OperationInfo` silently succeeding where it must be refused.
-/// The `=` spelling had worked only because `anthill.reflect` happens to declare no `eq`.
-///
-/// WHY THE LINE IS AT *CARRIER-AGNOSTIC*, and why `eq` is deliberately NOT here: the
-/// spec's Invariant (proposal 049, §8.3) says `<=>` is structural-only and NEVER
-/// dispatches, and §"`===` — the structural identity *test*" says the same of `===` —
-/// so no carrier can mean something else by them, and a same-named symbol in scope is a
-/// collision rather than an override. `=` is the opposite: it is semantic and DOES
-/// dispatch through a carrier's own `eq` (WI-350/WI-444/WI-627, `Set.eq` / `Map.eq`), so
-/// the scope ladder answering for it is the feature, not the bug. Widening this to `eq`
-/// would take that override away.
-///
-/// `is_minted` is the whole gate (WI-948): a user's own `unify(a, b, kb)` CALL is never
-/// minted and keeps the ordinary ladder, so `reflect.anthill`'s operation stays callable
-/// by name from inside its own namespace.
-///
-/// AN UNLOADED TARGET ANSWERS `None`, AND THAT IS A DEFINED ANSWER RATHER THAN A SILENT
-/// FALLBACK — the same line WI-969 drew at `is_equality_connective_functor`: a KB with
-/// no canonical equality connective has no equality connective, so there is no primitive
-/// for the operator to mean and the ordinary ladder is the only answer left. It is
-/// unreachable in any KB the loader runs on: `resolve_implicit` gates on
-/// `by_qualified_name`, both targets (`anthill.kernel.unify` / `.struct_eq`) are
-/// [`PRELUDE_QUALIFIED`] entries — NOT desugar targets, which this doc claimed until
-/// WI-20260825-5W3RJ deleted that half and made the confusion visible — and
-/// `implicit_target_orphans` is pinned empty for the standard load by
-/// `wi900_implicit_tier_agreement_test::every_implicit_target_is_declared_by_the_standard_load`.
-fn minted_connective_symbol(
-    kb: &KnowledgeBase,
-    parse_symbols: &crate::intern::SymbolTable,
-    parse_terms: &SimpleTermStore,
-    parse_id: TermId,
-    functor: Symbol,
-) -> Option<Symbol> {
-    if !parse_terms.is_minted(parse_id) {
-        return None;
-    }
-    let name = parse_symbols.local_name(functor);
-    // The family minus `eq` — read off the parse-layer lists rather than spelled here,
-    // so a new equality connective joins by being added there.
-    if !crate::parse::pratt::is_equality_family_functor(name)
-        || name == crate::parse::pratt::EQ_FUNCTOR
-    {
-        return None;
-    }
-    resolve_implicit(kb, name)
-}
-
 fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Symbol {
     match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) => sym,
@@ -19151,65 +19111,21 @@ impl<'a> Loader<'a> {
         resolved
     }
 
-    /// WI-888 — A MINTED CARRIER-AGNOSTIC CONNECTIVE DENOTES ITS KERNEL PRIMITIVE,
-    /// whatever a same-named symbol in scope holds. `None` when this node is not one,
-    /// which is every ordinary functor.
+    /// [`remap_symbol`] for a TERM's functor, with the parse node's id in hand for the
+    /// span. The ordinary ladder is the whole answer.
     ///
-    /// THE DEFECT, measured on the stdlib the moment WI-888 made `<=>` the only
-    /// equational spelling: `reflect.anthill` declares its own
-    /// `unify(a: Term, b: Term, kb: KB)` (proposal 049's term-level face), so the three
-    /// `rule fact_monotonicity(…) <=> constant() [simp]` rules written in that same
-    /// namespace resolved their MINTED connective to `anthill.reflect.unify` and filed
-    /// three clauses under a 3-ary reflect operation. They loaded clean and stopped
-    /// firing — `anthill.reflect.fact_monotonicity` owned nothing, `simp_equation_rids`
-    /// never saw them, and the only symptom was a `Store.persist` of an `OperationInfo`
-    /// silently succeeding where it must be refused. The `=` spelling had worked only
-    /// because `anthill.reflect` happens to declare no `eq`.
-    ///
-    /// WHY THE LINE IS AT *CARRIER-AGNOSTIC*, and why `eq` is deliberately NOT here:
-    /// the spec's Invariant (proposal 049, §8.3) says `<=>` is structural-only and
-    /// NEVER dispatches, and §"`===` — the structural identity *test*" says the same of
-    /// `===` — so no carrier can mean something else by them, and a same-named symbol
-    /// in scope is a collision rather than an override. `=` is the opposite: it is
-    /// semantic and DOES dispatch through a carrier's own `eq` (WI-350/WI-444/WI-627,
-    /// `Set.eq` / `Map.eq`), so the scope ladder answering for it is the feature, not
-    /// the bug. Widening this to `eq` would take that override away.
-    ///
-    /// `is_minted` is the whole gate (WI-948): a user's own `unify(a, b, kb)` CALL is
-    /// never minted and keeps the ordinary ladder, so `reflect.anthill`'s operation
-    /// stays callable by name from inside its own namespace.
-    fn minted_connective_symbol(&self, parse_id: TermId, functor: Symbol) -> Option<Symbol> {
-        minted_connective_symbol(
-            self.kb,
-            &self.parsed.symbols,
-            &self.parsed.terms,
-            parse_id,
-            functor,
-        )
-    }
-
-    /// [`remap_symbol`] for a TERM's functor, where the parse node's PROVENANCE is in
-    /// hand: a minted carrier-agnostic connective takes its kernel primitive
-    /// ([`Self::minted_connective_symbol`]), everything else takes the ordinary ladder.
-    ///
-    /// THREE CALLERS ON THE LOAD PATH — censused, not assumed, because an override that
-    /// reached a head and missed a body goal would fix half a shadow that was live in
-    /// both. `convert_term`'s `Term::Fn` arm, the `ApplyOrConstructor` build frame, and
-    /// `build_body_atom_occurrence`'s `Term::Fn` arm are the only ones that resolve a
-    /// FUNCTOR; every other `remap_symbol` caller resolves a `Term::Ident`/`Term::Ref`
-    /// LEAF, a dot member, a `provides` spec name or an annotation slot, and a minted
-    /// connective is always a `Term::Fn` with two positional arguments, so none of them
-    /// can carry one.
-    ///
-    /// A FOURTH PRODUCER LIVES OFF THIS PATH and calls the free function directly:
-    /// `convert_query_term_expecting`, which resolves through `resolve_query_name`
-    /// rather than the loader's ladder because a query pattern has no load-error
-    /// channel. It was missed by the first cut of this census and found by review —
-    /// which is why the population is now stated per RESOLVER rather than per method.
+    /// IT USED TO CARRY AN OVERRIDE, and the reason it no longer needs one is WI-909
+    /// rather than a decision that the override was wrong: a minted `<=>` / `===`
+    /// resolved through the implicit tier, which sits BELOW scope, so
+    /// `minted_connective_symbol` had to lift it back above scope by hand — at every
+    /// functor-resolving producer, which meant a census of them (three on this path,
+    /// plus `convert_query_term_expecting` off it, which the first cut of that census
+    /// missed and review found). `crate::parse::pratt::UNIFY_FUNCTOR` /
+    /// `STRUCT_EQ_FUNCTOR` carry `..`-marked ADDRESSES now, and an address outranks
+    /// scope by construction, so there is no producer to enumerate and no rung to
+    /// re-rank. The defect the override was written for, and the measurement that says
+    /// the addresses still close it, are recorded at those constants.
     fn remap_functor(&mut self, functor: Symbol, parse_id: TermId) -> Symbol {
-        if let Some(sym) = self.minted_connective_symbol(parse_id, functor) {
-            return sym;
-        }
         self.remap_symbol(functor, self.parsed.terms.span(parse_id))
     }
 
@@ -32530,9 +32446,10 @@ mod wi351_place_tests {
 /// connective that does NOT define — the row that IS WI-888, and the one a re-widened
 /// `EQUATION_FUNCTORS` would fail.
 ///
-/// This lives HERE rather than in an integration test because both halves are
-/// crate-private: `implicit_qualified` (the name → qualified-target owner) and
-/// `is_equality_connective_functor` (`pub(crate)`).
+/// This lives HERE rather than in an integration test because
+/// `is_equality_connective_functor` is `pub(crate)`. It used to need `implicit_qualified`
+/// too — the name → qualified-target owner — and no longer does: WI-909 gave the last two
+/// family members addresses, so every target here is read off the constant.
 #[cfg(test)]
 mod wi888_connective_agreement_tests {
     use super::*;
@@ -32552,9 +32469,7 @@ mod wi888_connective_agreement_tests {
     fn every_parse_equation_connective_is_one_in_the_kb() {
         let kb = bootstrapped();
         for name in pratt::EQUATION_FUNCTORS {
-            let qn = implicit_qualified(name).unwrap_or_else(|| {
-                panic!("`{name}` is a reserved connective, so it must have an implicit target")
-            });
+            let qn = crate::parse::desugar_target::qualified(name);
             let sym = kb
                 .try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
@@ -32566,19 +32481,6 @@ mod wi888_connective_agreement_tests {
         }
     }
 
-    /// WI-20260825-KD9SW — the qualified name a minted functor names, whichever way it
-    /// names it. The twelve spec operations carry an ADDRESS
-    /// (`..anthill.prelude.PartialEq.eq`) and resolve through the dotted ladder; the
-    /// kernel primitives beside them (`unify`, `struct_eq`) are still SHORT and resolve
-    /// through the implicit tier. Both are "where does this functor point", and asking
-    /// it once is what lets these rows keep walking the whole family after half of it
-    /// stopped having a tier entry to look up.
-    fn minted_target(name: &str) -> Option<String> {
-        crate::intern::absolute_path_target(name)
-            .map(str::to_owned)
-            .or_else(|| implicit_qualified(name).map(str::to_owned))
-    }
-
     /// BACKWARD, and the row the ticket is about: `===` resolves, is reserved kernel
     /// vocabulary, and is NOT an equation connective on either side. Before WI-1090 the
     /// parse side said yes and the KB said no — so a `[simp]`-tagged `g(?x) === ?x`
@@ -32586,8 +32488,7 @@ mod wi888_connective_agreement_tests {
     #[test]
     fn struct_eq_is_a_test_on_both_sides() {
         let kb = bootstrapped();
-        let qn = implicit_qualified(pratt::STRUCT_EQ_FUNCTOR)
-            .expect("`===` is reserved kernel vocabulary and must have an implicit target");
+        let qn = crate::parse::desugar_target::qualified(pratt::STRUCT_EQ_FUNCTOR);
         let sym = kb
             .try_resolve_symbol(qn)
             .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
@@ -32623,11 +32524,16 @@ mod wi888_connective_agreement_tests {
     fn every_defining_connective_is_an_equality_connective() {
         let kb = bootstrapped();
         for name in pratt::EQUALITY_FAMILY_FUNCTORS {
-            let qn = minted_target(name).unwrap_or_else(|| {
-                panic!("`{name}` is minted by the desugar, so it must name a declaration")
-            });
+            // WI-909: ONE CURRENCY. This read used to go through a local `minted_target`
+            // that tried the address and FELL BACK to the implicit tier, because half
+            // the family was addressed and half was short. Every member carries an
+            // address now, so the fallback had nothing left to catch and the concept is
+            // single-homed in `desugar_target::qualified` — which panics on an unmarked
+            // name, i.e. a new family member that forgot its address fails HERE rather
+            // than quietly resolving through a rung.
+            let qn = crate::parse::desugar_target::qualified(name);
             let sym = kb
-                .try_resolve_symbol(&qn)
+                .try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
             assert!(
                 !pratt::is_equation_functor(name) || kb.is_equality_connective_functor(sym),
@@ -32654,10 +32560,9 @@ mod wi888_connective_agreement_tests {
         // KD9SW: `=` names `..anthill.prelude.PartialEq.eq` outright now, so its target
         // comes off the ADDRESS rather than out of the implicit tier — which no longer
         // carries it, and that is this ticket rather than a regression.
-        let qn = minted_target(pratt::EQ_FUNCTOR)
-            .expect("`=` is minted by the desugar and must name a declaration");
+        let qn = crate::parse::desugar_target::qualified(pratt::EQ_FUNCTOR);
         let sym = kb
-            .try_resolve_symbol(&qn)
+            .try_resolve_symbol(qn)
             .unwrap_or_else(|| panic!("`{qn}` must resolve in a bootstrapped KB"));
         assert!(
             kb.is_equality_connective_functor(sym),
