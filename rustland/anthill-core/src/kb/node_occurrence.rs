@@ -457,10 +457,24 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
 impl NodeOccurrence {
     /// Build a source-origin expression occurrence.
     pub fn new_expr(expr: Expr, span: SourceSpan, owner: Option<Symbol>) -> Rc<Self> {
+        Self::new_expr_dot_chain(expr, span, owner, false)
+    }
+
+    /// WI-20260902-4NEKZ — [`Self::new_expr`], recording whether this node is the
+    /// converter's own dot desugaring (see the `dot_chain` field). The loader is the only
+    /// caller that passes `true`, at the one site that has the parse term's `is_minted`
+    /// bit to answer with.
+    pub fn new_expr_dot_chain(
+        expr: Expr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        dot_chain: bool,
+    ) -> Rc<Self> {
         Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
                 expr,
                 origin: OccurrenceOrigin::Source,
+                dot_chain,
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
                 inferred_type: RefCell::new(None),
@@ -469,6 +483,12 @@ impl NodeOccurrence {
             span,
             owner,
         })
+    }
+
+    /// WI-20260902-4NEKZ — is this node the converter's own desugaring of a dot? See the
+    /// `dot_chain` field for what the question is and why shape cannot answer it.
+    pub fn is_dot_chain(&self) -> bool {
+        matches!(&self.kind, NodeKind::Expr { dot_chain: true, .. })
     }
 
     /// WI-502 Step 3 — rebuild THIS `Expr` occurrence with a new `expr`,
@@ -514,6 +534,13 @@ impl NodeOccurrence {
                         from: Rc::clone(from),
                         by: *by,
                     },
+                    // WI-20260902-4NEKZ: CARRIED, like the origin beside it. A rebuild
+                    // (De Bruijn open/close, substitution, `[simp]` reassembly) is the
+                    // same node with new children; dropping the bit here would make a
+                    // rule body's dot chain stop reading as one the first time the
+                    // resolver opened it — the silent-loss shape `inferred_type` was
+                    // fixed for at WI-502.
+                    dot_chain: self.is_dot_chain(),
                     classification: RefCell::new(None),
                     resolved_type_args: RefCell::new(Vec::new()),
                     inferred_type: RefCell::new(None),
@@ -522,7 +549,12 @@ impl NodeOccurrence {
                 span: self.span,
                 owner: self.owner,
             }),
-            _ => NodeOccurrence::new_expr(expr, self.span, self.owner),
+            _ => NodeOccurrence::new_expr_dot_chain(
+                expr,
+                self.span,
+                self.owner,
+                self.is_dot_chain(),
+            ),
         };
         rebuilt.carry_typer_stamps_from(self);
         rebuilt
@@ -641,6 +673,8 @@ impl NodeOccurrence {
             kind: NodeKind::Expr {
                 expr: expr.clone(),
                 origin: OccurrenceOrigin::Synthesized { from, by },
+                // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
+                dot_chain: self.is_dot_chain(),
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
                 inferred_type: RefCell::new(None),
@@ -726,6 +760,12 @@ impl NodeOccurrence {
             NodeKind::Expr {
                 expr: _,
                 origin: _,
+                // WI-20260902-4NEKZ: NOT a typer stamp — it is set once at construction
+                // and carried by the rebuild constructors, so it is spelled out here
+                // (rather than elided with `..`) for the reason the two `_`s beside it
+                // are: this destructuring is EXHAUSTIVE on purpose, so a new field has to
+                // be decided about rather than silently skipped.
+                dot_chain: _,
                 classification: dst_class,
                 resolved_type_args: _,
                 inferred_type: dst_ty,
@@ -734,6 +774,7 @@ impl NodeOccurrence {
             NodeKind::Expr {
                 expr: _,
                 origin: _,
+                dot_chain: _,
                 classification: src_class,
                 resolved_type_args: _,
                 inferred_type: src_ty,
@@ -764,6 +805,12 @@ impl NodeOccurrence {
             kind: NodeKind::Expr {
                 expr,
                 origin: OccurrenceOrigin::Synthesized { from, by },
+                // WI-20260902-4NEKZ: NOT carried from `from`, and that is the difference
+                // between this constructor and `rebuilt_expr`. A rebuild is the same node
+                // with new children; a SYNTHESIS is a new node a pass decided to build —
+                // the typer's own `field_access(recv, "field")` rewrite is the case — and
+                // it is not the dot the author wrote even when it expands one.
+                dot_chain: false,
                 classification: RefCell::new(None),
                 resolved_type_args: RefCell::new(Vec::new()),
                 inferred_type: RefCell::new(None),
@@ -1045,6 +1092,24 @@ pub enum NodeKind {
     Expr {
         expr: Expr,
         origin: OccurrenceOrigin,
+        /// WI-20260902-4NEKZ — was this node the CONVERTER's own desugaring of a dot
+        /// (`ns.rel` → `field_access(ns, Ident(rel))`), rather than a call the author
+        /// wrote to a functor spelled `field_access`?
+        ///
+        /// THE PARSE TERM'S `is_minted` BIT, CARRIED. The loader answers this by
+        /// PROVENANCE (`SimpleTermStore::is_minted`, [`load::dotted_citation_name`]'s
+        /// first gate) and the occurrence had no way to record it, so a consumer working
+        /// on occurrences could only ask by SHAPE — and shape cannot tell the two apart.
+        /// MEASURED: a hand-written `anthill.reflect.field_access(ns, rel)` and the
+        /// desugaring of `ns.rel` reach the typer as byte-identical `Expr::Apply` nodes,
+        /// down to the receiver being a resolved `Ref` and the selector a bare `Ident`,
+        /// for a one-segment receiver. Reading a written builtin call as a name is
+        /// WI-20260901-92VA4's defect, which is why the loader has the gate at all.
+        ///
+        /// `false` everywhere else, including every synthesized node: the typer's own
+        /// `field_access(recv, "field")` rewrite (WI-759) is a call it MEANT to build,
+        /// not a dot the author wrote, and no reader of this flag wants it.
+        dot_chain: bool,
         /// Typer-attached classification (WI-231). Mutable because the
         /// typer writes after construction while other walkers may hold
         /// shared `Rc` references to this occurrence.

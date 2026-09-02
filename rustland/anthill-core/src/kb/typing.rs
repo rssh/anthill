@@ -7033,6 +7033,110 @@ fn relation_reference_type(
     relation_type_from_columns(kb, sym, columns, occ.span, span)
 }
 
+/// WI-20260902-4NEKZ — THE DOTTED NAME a LOADER-BUILT `field_access` chain spells, when
+/// every segment of it is already resolved.
+///
+/// A paren-less `ns.rel` in a rule-body VALUE slot keeps its `field_access` chain: 719FJ
+/// collapses such a citation only in a LOGICAL position, because a data slot holds a term
+/// whose spelling is its identity and `fact holds(ns.rel)` must build the term the goal
+/// `holds(ns.rel)` searches for. So the chain reaches the typer whole, and the typer used
+/// to walk into its LEAVES.
+///
+/// PROVENANCE FIRST, AND IT IS THE LOADER'S ANSWER RATHER THAN A SHAPE TEST. Every level
+/// must carry [`NodeOccurrence::is_dot_chain`] — the parse term's `is_minted` bit, which
+/// `load::dotted_citation_name` gates on for the same reason (WI-20260901-92VA4: a
+/// HAND-WRITTEN `field_access(a, b)` is a call to whatever that name denotes at that
+/// scope, not the desugaring of a dot). Without it this recognizer read a written
+/// `anthill.reflect.field_access(ns, rel)` as the name `ns.rel` and let the program LOAD
+/// CLEAN — a SILENT ACCEPTANCE, worse than the noisy refusal it replaced, found by
+/// `/code-review` on this ticket's own first cut. It cannot be recovered by shape:
+/// measured, with a one-segment receiver the two forms reach the typer as identical
+/// nodes — same functor, a resolved `Ref` receiver and a bare `Ident` selector in both.
+///
+/// AND THEN NO SCOPE IS CONSULTED, which is what makes the rest a read rather than a
+/// second resolution ladder: the loader re-routes the chain LEVEL BY LEVEL, so each
+/// receiver segment already carries its FULLY-QUALIFIED symbol and only the final field is
+/// a bare intern. Measured on all three citation forms — `zzls.inner.rel` (absolute),
+/// `inner.rel` written inside `zzls2` (relative), and `..zzls3.inner.rel` (marked
+/// absolute) — the receiver leaf is `Ref` with qualified name `zzls.inner` /
+/// `zzls2.inner` / `zzls3.inner` in each. Joining that with the field's SHORT name
+/// therefore reproduces the name the author wrote, wherever they wrote it.
+///
+/// `None` the moment a segment does NOT resolve (an `Expr::Ident` root or receiver), so a
+/// chain naming nothing keeps whatever the ordinary path says about it.
+fn loader_chain_dotted_name(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<String> {
+    match occ.as_expr()? {
+        Expr::Ref(sym) => Some(kb.qualified_name_of(*sym).to_string()),
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if occ.is_dot_chain()
+            && named_args.is_empty()
+            && pos_args.len() == 2
+            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
+        {
+            let base = loader_chain_dotted_name(kb, &pos_args[0])?;
+            // BOTH LEAF SPELLINGS. A resolved intermediate segment is a `Ref` and the
+            // final field is an `Ident` (the bare intern of the written word); the SHORT
+            // name is taken in either case, since `base` already carries the qualification.
+            let field = match pos_args[1].as_expr()? {
+                Expr::Ref(f) | Expr::Ident(f) => short_name_of(kb.local_name_of(*f)).to_string(),
+                _ => return None,
+            };
+            Some(format!("{base}.{field}"))
+        }
+        _ => None,
+    }
+}
+
+/// WI-20260902-4NEKZ — the RELATION a dotted paren-less citation in a rule-body value slot
+/// cites, or `None` when this node is not such a citation.
+///
+/// WHAT IT REPAIRS, measured on the delivered WI-20260902-VNWAW tree — `rule dRel(1) :-
+/// zzf2.inner.rel = 7` beside `rule rel(1) :- base(1)`:
+///
+///   6:19: type mismatch in zzf2.name:  expected resolved name, got unresolved
+///   6:19: type mismatch in inner.name: expected resolved name, got unresolved
+///   6:19: type mismatch in rel.name:   expected resolved name, got unresolved
+///
+/// THREE errors at ONE span, each blaming a segment of a name that RESOLVES, because
+/// [`check_bare_ref`] was reached once per leaf and a namespace has no value reading. The
+/// ONE-SEGMENT spelling of the same program says the true thing — one error, `eq.b
+/// (op-arg): expected Relation[…], got Int64` — and so does the OPERATION-BODY spelling of
+/// the dotted one, because `Loader::try_qualified_rule_ref` collapses the chain there.
+///
+/// SO THE FIX IS THE TYPER'S AND NOT THE LOADER'S, and that is a measurement, not a
+/// preference. Collapsing the chain in a rule-body value slot would fell
+/// `wi_719fj_dotted_paren_less_citation_test::a_data_slot_still_stores_the_chain_on_both_sides_of_a_match`:
+/// the FACT's argument is a TERM built by `convert_term` (which keeps the chain) while the
+/// rule body is an OCCURRENCE, so rewriting one side alone stops them matching — WI-756's
+/// rule, and the whole reason 719FJ gated its collapse on a logical position. Reading the
+/// chain here changes no term.
+///
+/// IT IS NOT A LIE ABOUT THE VALUE, checked rather than assumed: measured, `?t <=> ns.rel`
+/// and the one-segment `?t <=> rel` BOTH bind the name (`Ref(rel)`) at run time, neither
+/// builds a `Relation` value. So typing the chain as `Relation[T]` says exactly what the
+/// one-segment spelling already says in the same position — which is the parity this
+/// ticket is about — and does not invent a reading for one spelling only.
+///
+/// SCOPE — A RULE, AND NOTHING ELSE. A chain naming a constructor, a sort, a namespace, an
+/// entity, or nothing at all is left exactly as it was: measured, the OPERATION body
+/// reports those five identically to the rule body (2-3 per-segment errors each), so they
+/// are a SHARED, wider defect in [`check_bare_ref`]'s fall-through message and not this
+/// spelling's — **WI-20260902-40KSW** owns them. Only the RULE row diverged between the two
+/// positions, and it is the only one this closes.
+///
+/// The precedence — the WHOLE chain first, a member of a shorter prefix second — is
+/// `Loader::try_qualified_rule_ref`'s, quoted: "that ordering is what makes `Queen.find`
+/// the relation itself rather than member `find` of a relation `Queen`".
+fn dotted_citation_relation(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    let name = loader_chain_dotted_name(kb, occ)?;
+    let sym = kb.try_resolve_symbol(&name)?;
+    kb.cites_a_relation(sym).then_some(sym)
+}
+
 /// WI-714 (proposal 052) — the APPLIED citation position: a rule NAME applied to
 /// arguments (`queens(board)`, `queryTwoParams(x: 3)`). Each supplied argument
 /// **binds** a COLUMN — a positional arg by column ordinal (arg `i` ↦ the i-th
@@ -11627,6 +11731,31 @@ fn visit_type(
             named_args,
             ..
         } => {
+            // WI-20260902-4NEKZ — A DOTTED PAREN-LESS CITATION OF A RULE IS THAT
+            // RELATION, in a rule-body VALUE slot as in an operation body. The chain
+            // survives to here only where the loader did NOT collapse it — an operation
+            // body's is already a `var_ref` by `try_qualified_rule_ref`, and a logical
+            // position's is already the bare name by 719FJ — so this rung is reached by
+            // exactly the population that was walking into its own leaves and reporting
+            // one false "unresolved name" per segment. See
+            // [`dotted_citation_relation`] for the measurement and for why the repair is
+            // the typer's rather than the loader's.
+            //
+            // THE SHAPE GATE IS AT THE CALL SITE, not only inside, because this arm
+            // types EVERY application in every body: a converter-minted `field_access`
+            // is binary and unnamed, so a node that is not keeps the two `usize`
+            // compares and skips the call — and with it the by-name symbol lookup
+            // `field_access`'s identity needs. Not a measured saving (a single suite
+            // run cannot rank one this small: 326.36s before, 326.64s after, with five
+            // tests added), just the cheap tests written first.
+            if pos_args.len() == 2 && named_args.is_empty() {
+                if let Some(rel) = dotted_citation_relation(kb, &occ) {
+                    let r = relation_reference_type(kb, rel, occ_span, &occ)
+                        .map(|ty| TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ)));
+                    results.push(r);
+                    return;
+                }
+            }
             let functor = *functor;
             // WI-707: a SORT-headed application in a slot that expects a `Type` is a
             // parameterized TYPE — `is_modifiable(Cell[V = Int64])` — not a call. Its

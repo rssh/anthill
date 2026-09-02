@@ -1576,3 +1576,6 @@ mod wi_czj2n_nullary_spelling_test;
 
 #[path = "include/wi_vnwaw_dotted_goal_readings_test.rs"]
 mod wi_vnwaw_dotted_goal_readings_test;
+
+#[path = "include/wi_4nekz_dotted_equation_operand_test.rs"]
+mod wi_4nekz_dotted_equation_operand_test;

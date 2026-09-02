@@ -23082,7 +23082,28 @@ impl<'a> Loader<'a> {
                 }
             }
         };
-        NodeOccurrence::new_expr(expr, span, None)
+        // WI-20260902-4NEKZ — RECORD WHETHER THIS NODE IS A DOT THE AUTHOR WROTE. The
+        // converter folds a paren-less `ns.rel` into a MINTED `field_access` chain, and
+        // in a rule-body VALUE slot that chain STANDS (719FJ collapses only a logical
+        // subject, because a data slot holds a term whose spelling is its identity). So
+        // it reaches the typer whole, and the typer needs to tell it from a call the
+        // author wrote to a functor spelled `field_access` — WI-20260901-92VA4's rule,
+        // whose gate is PROVENANCE and not spelling.
+        //
+        // ONLY THE LOADER CAN ANSWER IT: `is_minted` lives on the parse term, and an
+        // occurrence had no field to carry it. MEASURED, which is why the bit exists
+        // rather than a shape test: with a one-segment receiver, a hand-written
+        // `anthill.reflect.field_access(ns, rel)` and the desugaring of `ns.rel` reach
+        // the typer as identical `Expr::Apply` nodes — same functor, a resolved `Ref`
+        // receiver and a bare `Ident` selector in both — and a shape-only recognizer read
+        // the written call as the name `ns.rel`, typed it `Relation[T]` and let the
+        // program LOAD CLEAN. Found by `/code-review` on this ticket's own first cut.
+        //
+        // Asked of THIS node only, never of its children: the three gates that make a
+        // chain a citation are `dotted_citation_name`'s, and it re-asks them per level.
+        let dot_chain = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)
+            .is_some();
+        NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain)
     }
 
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
