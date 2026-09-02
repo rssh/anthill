@@ -97,15 +97,30 @@ impl MapKey {
     /// ENTITY name now keys as `MapKey::Ref` where it keyed as `MapKey::Term(tid)`,
     /// which is the same merge under a wider gate.
     ///
-    /// THE CANON IS GATED ON `is_constructor_symbol`, AND THAT GATE IS THE POINT,
-    /// not a residual gap. `functor_view_head` rewrites a nullary `Fn` only for a
-    /// registered CONSTRUCTOR; for a sort or type param, `Ref(s)` and `Fn{s,[],[]}`
-    /// are not two spellings of one name at all — they are WI-391's
-    /// wildcard-vs-concrete type-dispatch distinction, which `alloc`'s own canon
-    /// says outright it must not disturb. Merging those two would be the `Ident`
-    /// mistake with different symbols. So `resolve_qualified_name_term("…Color")`
-    /// (a sort) keeps its own key by design, while `…Color.red` (a constructor)
-    /// joins its name's; both are driven.
+    /// A SORT DOES **NOT** KEEP ITS OWN KEY, and this paragraph used to say it did.
+    /// It described a gate that no longer exists — "the canon is gated on
+    /// `is_constructor_symbol` … `functor_view_head` rewrites a nullary `Fn` only for a
+    /// registered CONSTRUCTOR, so `resolve_qualified_name_term("…Color")` (a sort) keeps
+    /// its own key by design". WI-20260902-CZJ2N moved the canon to `alloc` and gated it
+    /// on TYPE-HOOD, and `functor_view_head` became unconditional; the CZJ2N paragraph
+    /// above was inserted here without replacing the stale one. MEASURED on a `sort
+    /// Shape`, which is the case the old text named:
+    ///
+    ///   ref_tid == fn_tid              -> false        (the exemption, at the STORE)
+    ///   head of each                   -> Functor { Shape, 0, 0 }   — IDENTICAL
+    ///   `try_from_value` of each       -> `MapKey::Ref(Shape)`      — ONE key
+    ///
+    /// So the widening this reader takes reaches a SORT too, and `Ref(S)` / `Fn{S,[],[]}`
+    /// stay two things only for a consumer that compares `TermId`s. Whether that is
+    /// right is **WI-20260902-JB6RS**, which owns the question for every structural
+    /// consumer at once (the discrimination tree, `views_structurally_equal` and the
+    /// resolver's unify read the same merged head) — §8.3 / WI-391 make `Ref(S)` the
+    /// dispatch wildcard and a nullary `Fn{S}` the concrete spec identity, and that
+    /// distinction is preserved nowhere a match is decided. Recorded here rather than
+    /// silently corrected, because this comment is where the next reader looks.
+    ///
+    /// A CONSTRUCTOR's two spellings joining one key is unchanged and still driven
+    /// ([`MapKey`]'s `a_non_canonicalized_nullary_constructor_keys_as_its_name`).
     pub fn try_from_value(kb: &KnowledgeBase, v: &Value) -> Option<Self> {
         match v {
             Value::Int(n) => Some(MapKey::Int(*n)),

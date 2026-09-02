@@ -16795,6 +16795,13 @@ fn fill_entity_named_args(
 /// proof step); [`convert_query_term`] and the rule-body GOAL arm of
 /// `build_body_atom_occurrence_inner` are the other two, and each reaches this.
 ///
+/// WI-20260902-VNWAW: that GOAL arm reaches it down TWO paths, because a dotted
+/// paren-less citation is collapsed to its symbol in a branch of its own (719FJ) and so
+/// never touches the one-segment `Term::Ref` / `Term::Ident` arms. It called this on the
+/// one-segment path only, so `:- ns.account` answered nothing where `:- account`
+/// answered — and `not` of it succeeded. The other four positions were never split this
+/// way: their dotted branch already funnels back through the same call.
+///
 /// A FREE FUNCTION because two of those callers have no `Loader` — the query converter is
 /// one — and because `value_position` is then a PARAMETER rather than a field, which is
 /// what lets the query pattern say "no" explicitly: a query asks "any account", and
@@ -22710,6 +22717,12 @@ impl<'a> Loader<'a> {
     ///   binds 7, matching §5.4. The census over stdlib/, examples/, tests/ and
     ///   anthill-todo/ found ZERO rule-body slots naming a nullary op bare, so the
     ///   population this moves is new code only.
+    ///
+    /// WI-20260902-VNWAW — TWO CALLERS, NOT ONE. The dotted paren-less goal branch of
+    /// `build_body_atom_occurrence_inner` calls this too, because 719FJ collapses such a
+    /// citation to its symbol in a branch that never reaches the `Term::Ref` /
+    /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
+    /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
     fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
             return Expr::Apply {
@@ -22859,8 +22872,58 @@ impl<'a> Loader<'a> {
                 if at_goal && !is_wrapper {
                     if let Some(sym) = self.dotted_subject_symbol(parse_id) {
                         let expr = if self.kb.symbols.is_resolved(sym) {
-                            Expr::Ref(sym)
+                            // WI-20260902-VNWAW — AND ONCE IT IS THE NAME, IT IS THE
+                            // NAME'S TWO GOAL READINGS TOO. The collapse above answers
+                            // "which SYMBOL"; what a symbol MEANS in a goal is the
+                            // one-segment arms' question, and they gained two answers
+                            // at WI-20260902-CZJ2N that this branch did not: a fielded
+                            // ENTITY is §8.3's all-fields-fresh pattern, and a nullary
+                            // OPERATION is its own call (a predicate goal is answered
+                            // by MATCHING, an operation goal by REDUCING).
+                            //
+                            // BEFORE, MEASURED on the delivered CZJ2N tree, with
+                            // `operation flag() -> Bool = true` and `entity acct(n: …)`
+                            // + `fact acct(n: 1)` one namespace up:
+                            //
+                            //   goal            unqualified   dotted
+                            //   bare op              1          0   <- silently empty
+                            //   not(bare op)         0          1   <- WRONG ANSWER
+                            //   bare entity          1          0   <- silently empty
+                            //
+                            // The `not` row is the same free proof 719FJ and CZJ2N each
+                            // removed for their own spelling: negation-as-failure
+                            // reading a goal that cannot run as a disproof. It survived
+                            // here because this branch returns the bare leaf, so the
+                            // readings the `Term::Ref` / `Term::Ident` arms of this same
+                            // `match` take never ran for a dotted citation. The four
+                            // OTHER logical positions already had both, through code the
+                            // dotted spelling shares: `convert_subject_term` calls
+                            // `expand_bare_entity_subject` on ITS dotted branch and
+                            // `convert_query_term` on its own. Only this one forked.
+                            //
+                            // BOTH ARE ASKED IN THE ARMS' OWN ORDER (entity first): the
+                            // two are disjoint by construction (a fielded entity is not
+                            // an operation), and matching the order keeps this a
+                            // FORWARDING to those arms rather than a third reading.
+                            //
+                            // THE CORPUS CENSUS IS ZERO. Instrumented here and run over
+                            // every `.anthill` file in the tree (234) and every
+                            // `anthill-todo` document (1 292, 197 items loaded): no
+                            // dotted paren-less goal citation of any kind, with a
+                            // positive control that fired all three arms. The population
+                            // this moves is new code only, and the whole suite is
+                            // unchanged by it.
+                            if let Some(occ) = self.bare_entity_goal_occurrence(sym, parse_id)
+                            {
+                                return occ;
+                            }
+                            self.nullary_op_call_or_ref(sym, parse_id)
                         } else {
+                            // An UNRESOLVED name has neither reading to take — no field
+                            // schema, no declared arity — and mirrors the one-segment
+                            // `Term::Ident` arm's `else`, which keeps the bare `Ident`
+                            // so WI-476's bare intern still heads no clause and the
+                            // unknown-functor diagnostic still gets a name.
                             Expr::Ident(sym)
                         };
                         return NodeOccurrence::new_expr(expr, span, None);
