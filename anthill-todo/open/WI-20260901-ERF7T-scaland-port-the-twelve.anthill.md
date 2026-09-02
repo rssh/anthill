@@ -54,3 +54,49 @@ host-name position, not only the load); the kernel CONTROL pair is excluded from
 short-spelling admission, as `desugar_target::is`'s assert requires; `sbt test` green.
 Say at each ported site which scaland test fails when the port is backed out.
 
+## Changes
+
+### 2026-09-02T07:58:40Z — feedback — user
+
+WI-909 ADDED TWO MORE ADDRESSES TO PORT, and they are not among this ticket's twelve.
+`parse::pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR` are now `..anthill.kernel.unify` /
+`..anthill.kernel.struct_eq` (they were short names on `kb::load::PRELUDE_QUALIFIED`),
+so rustland parses `<=>` / `===` to an address while scaland still parses them to
+`unify` / `struct_eq`. That is the divergence `Pratt.scala`'s own KD9SW doc says the
+mirror exists to prevent — "the same source would parse to `add(a, b)` here and to
+`..anthill.prelude.Additive.add(a, b)` there, so the two implementations would disagree
+about what a program IS".
+
+THREE MINT SITES, not two. `Pratt.scala:83` (`"<=>"`) and `:88` (`"==="`), plus
+`AnthillParser.scala:869`, where a goal-position `let ?v = e` calls `intern("unify")`
+directly. Rustland had that identical split — `convert_let_binding` held its own
+`"unify"` literal — and WI-909 walked into it: the `let` lowering stopped agreeing with
+the operator, while `parse_let_binding_desugars_to_unify` stayed GREEN because it
+compared that site's spelling against a literal of its own. Scaland's
+`ParseTest.scala:902/910/919` and `LoaderTest.scala:319` have the same shape, so they
+will not catch it either. The rustland fix was to assert the two lowerings against EACH
+OTHER rather than against literals.
+
+ONE READER IS REAL WORK, and it is the only one — the other two I first cited were
+wrong, so they are named here as NOT the problem to save the next reader the walk:
+  - REAL: `kb/KnowledgeBase.scala:531` `isEquation` matches `name == "eq" || name ==
+    "unify"` on `symbols.name(fn.functor)`. Per `Pratt.scala`'s own comment scaland has
+    no resolver-side builtin and the functor "just round-trips", and `Prelude.scala:242`
+    confirms `anthill.kernel` is deliberately NOT a `<global>` parent — so a minted
+    connective is never resolved and `symbols.name` yields whatever was interned. Give
+    it an address and this reader sees `..anthill.kernel.unify`, not `unify`.
+  - NOT: `Loader.scala:821` `nonDefiningConnectiveHead` is purely parse-layer and goes
+    through `parseConnectiveHead`, which compares against the pratt constants — it
+    follows an address automatically.
+  - NOT: `Prelude.scala:224` is `field_access`; `:243-244` is a doc line. Neither
+    registers `unify` / `struct_eq`. The only kernel builtin registered is
+    `(kernel, "not", BuiltinTag.Not)` at `:218`.
+
+AND SCALAND HAS NO `..`-MARKER HANDLING: `ABSOLUTE_PATH_MARKER` / `stripPrefix("..")`
+over `scaland/core/src/main/scala` finds one mention, a comment in `Symbol.scala`. The
+twelve `SPEC_OP_FUNCTORS` addresses already in `Pratt.scala` get away with that because
+nothing classifies on them; a connective that IS classified cannot.
+
+NOT DRIVEN — read from source, same standing as this ticket's own state section. No sbt
+run was made.
+
