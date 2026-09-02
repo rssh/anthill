@@ -4407,9 +4407,8 @@ the citing scope is forbidden, reported as such, not a licence to bind a
 same-spelled top-level path instead.
 
 **The lowest rung is the implicit prelude, and only that.** It is the user-facing
-vocabulary available in every namespace with no `import` line: the fundamental
-constructors (`cons`, `nil`, `some`, `none`), the `BigInt` conversions, the resolver
-primitive `push_choice`, and the reflection result sorts. It
+vocabulary available in every namespace with no `import` line, and since WI-909 that is
+the fundamental **constructors** — `cons`, `nil`, `some`, `none` — and nothing else. It
 sits at the **bottom** of the ladder, which is what lets a user name shadow one without
 conflict: a local declaration or an explicit import is found first, so a user's own name
 wins and can never go *ambiguous* against a member.
@@ -4432,6 +4431,22 @@ it: a head is resolved, not declared (§8.3), so one that used to add a clause t
 kernel primitive now introduces a local name unless the connective is imported. With
 those two the rung holds no converter mint at all, which is what makes the rule above
 exact rather than approximate.
+
+**And a second rule narrowed it again: bare *where*.** The `BigInt` conversions,
+`push_choice` and the eight reflection result sorts left in the same ticket, on a
+distinction the first rule does not draw. A person did write them bare — but only ever in
+a **CLI query pattern**, never in a source file: a corpus census over the stdlib, the
+examples and both embedded projects found no `.anthill` file naming any of the eleven
+without an import. A query has an `-i` flag and a source file does not, so the rung is
+justified for names written bare in SOURCE and merely convenient for the rest. A bare
+`anthill query 'SortInfo(name: ?n)'` is now refused, naming `-i anthill.reflect.*` as the
+remedy.
+
+That refusal is a *consistency*, not a loss, and the reflection sorts are the case that
+shows it: `MemberInfo` and `DescriptionInfo` belong to the same vocabulary — the same
+result sorts, emitted by the same loader — and were never on the rung, so they have always
+been refused exactly this way. The rung covered eight of ten members of one vocabulary,
+and the two it missed are what the eight now match.
 
 **A member reached through a `provides` CONVERSION answers to its head's address**
 (WI-20260825-X9RRN). A spec's `provides` is a conversion — "hold a `Numeric[T]` and you

@@ -24,10 +24,17 @@
 //!
 //! # WHAT THIS FIX DOES NOT CHANGE, MEASURED HERE RATHER THAN LEFT IMPLIED
 //!
+//! WI-909 CHANGED WHAT MAKES THE HEAD RESOLVE, and the header said the opposite until
+//! `/code-review` caught it. The claim used to rest on "every connective spelling is
+//! reserved vocabulary (`PRELUDE_QUALIFIED` — all three connective spellings live
+//! there)". None of the three is a tier entry now: `eq` left with the twelve operator
+//! targets (WI-20260825-KD9SW), `unify` and `struct_eq` with WI-909's second pass. A
+//! written head resolves because the fixtures below IMPORT the connective — which is
+//! exactly why they gained `import anthill.kernel.{unify}` in that ticket, and a reader
+//! trusting the old sentence would re-derive the wrong reason for those lines.
+//!
 //! A written connective-named head still does not RUN, and this file must not read as
-//! a promise that it does. Every connective spelling is reserved vocabulary
-//! (`PRELUDE_QUALIFIED` — all three connective spellings live there), so such a head
-//! RESOLVES rather
+//! a promise that it does. Such a head RESOLVES rather
 //! than declares (WI-896) — to `anthill.prelude.PartialEq.eq` or
 //! `anthill.kernel.unify` — and its clause joins that builtin-backed name, where
 //! WI-139 unindexes it (`is_equational_head`) or the builtin decides the goal before

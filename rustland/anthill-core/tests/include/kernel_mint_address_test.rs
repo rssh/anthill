@@ -16,7 +16,11 @@
 //! into `anthill.kernel.unify` / `.struct_eq`. Their migration additionally DELETED
 //! `kb::load::minted_connective_symbol`, a hand-written override that existed only to
 //! lift those two mints back above scope resolution at every functor-resolving producer
-//! — which the `..` address does by construction. `PRELUDE_QUALIFIED` 17 -> 15.
+//! — which the `..` address does by construction. `PRELUDE_QUALIFIED` 17 -> 15, and a
+//! third WI-909 pass then took it 15 -> 4 by removing the names reachable only at
+//! `resolve_name_in_kb` (the `BigInt` conversions, `push_choice`, the eight reflect
+//! result sorts). That pass touches no row here: those names are not converter mints,
+//! and every back-out state below is stated in terms of THIS file's two.
 //!
 //! WHAT THE CHANGE BUYS. The tier sits BELOW scope resolution, so a namespace declaring
 //! its own `cut` / `find_dictionary` captured the mint — and a captured control

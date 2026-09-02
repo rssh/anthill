@@ -21,6 +21,13 @@
 //! Every contested name in the fixture ANSWERS under either reading, which is what makes
 //! those two measurements possible — WI-907's fixture cannot show it, since its contested
 //! `SortInfo` is a sort with no clauses.
+//!
+//! WI-909 — `push_choice` IS WRITTEN QUALIFIED HERE. It left `load::PRELUDE_QUALIFIED`
+//! with the reflection result sorts and the `BigInt` conversions: a corpus census found
+//! no `.anthill` file writing it bare, so its only bare writers were CLI query patterns
+//! like these, which run at `<global>` with no scope and no import line. The pattern is
+//! plumbing for what these rows actually measure, so it takes the address; `-i
+//! anthill.kernel.*` would serve equally.
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -131,7 +138,7 @@ fn qualifying_the_contested_head_resolves_the_same_path() {
 /// `no solutions`, exit 0, though the branch answers under either reading (next test).
 #[test]
 fn a_contested_name_in_a_bare_disjunction_branch_is_refused() {
-    let out = query_both(&["push_choice(never917(), contested917(?v))"]);
+    let out = query_both(&["anthill.kernel.push_choice(never917(), contested917(?v))"]);
     assert_refused_as_ambiguous(
         &out,
         "contested917",
@@ -145,7 +152,7 @@ fn a_contested_name_in_a_bare_disjunction_branch_is_refused() {
 #[test]
 fn a_single_import_still_answers_the_same_disjunction() {
     assert_answered(
-        &query_alpha(&["push_choice(never917(), contested917(?v))"]),
+        &query_alpha(&["anthill.kernel.push_choice(never917(), contested917(?v))"]),
         "?v = 1",
     );
 }
@@ -180,7 +187,7 @@ fn a_single_import_still_matches_the_same_data_slot() {
 #[test]
 fn an_absent_name_in_a_bare_disjunction_branch_is_still_tolerated() {
     assert_answered(
-        &query_both(&["push_choice(w917a(v: ?x), no_such_thing917(?z))"]),
+        &query_both(&["anthill.kernel.push_choice(w917a(v: ?x), no_such_thing917(?z))"]),
         "?x = 1",
     );
 }

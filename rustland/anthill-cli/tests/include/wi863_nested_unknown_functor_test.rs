@@ -13,6 +13,13 @@
 //! query. `not` is the one goal context where an undefined functor NECESSARILY
 //! falsifies its negand. Each nested case is pinned alongside the legitimate NAF
 //! it must be told apart from.
+//!
+//! WI-909 — `push_choice` IS WRITTEN QUALIFIED HERE. It left `load::PRELUDE_QUALIFIED`
+//! with the reflection result sorts and the `BigInt` conversions: a corpus census found
+//! no `.anthill` file writing it bare, so its only bare writers were CLI query patterns
+//! like these, which run at `<global>` with no scope and no import line. The pattern is
+//! plumbing for what these rows actually measure, so it takes the address; `-i
+//! anthill.kernel.*` would serve equally.
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -144,7 +151,7 @@ fn not_over_a_true_fact_answers_empty() {
 /// the live left branch and must NOT be refused (it is not inside a `not`).
 #[test]
 fn a_bare_disjunction_with_an_unknown_branch_is_not_refused() {
-    let out = query_props(&["push_choice(base(1), nonesuch(5))"]);
+    let out = query_props(&["anthill.kernel.push_choice(base(1), nonesuch(5))"]);
     assert!(
         answered(&out),
         "a live disjunction must answer, not be refused; stderr:\n{}",

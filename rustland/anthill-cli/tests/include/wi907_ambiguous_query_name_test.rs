@@ -57,17 +57,17 @@ fn assert_refused_as_ambiguous(out: &crate::common::Output, name: &str, candidat
     );
 }
 
-/// THE acceptance case, on the name that used to ANSWER. `SortInfo` is ambiguous between
+/// THE acceptance case, on a name that collides with the tier. It is ambiguous between
 /// the two imported sorts AND is an implicit-tier spelling — the combination that made
 /// the fall-through produce rows rather than silence.
+///
+/// `cons` SINCE WI-909 (it was `SortInfo`, measured producing four rows pre-fix): the
+/// eight reflection result sorts left the tier, so a collision with them is no longer
+/// possible and this row would have gone vacuous. The fixture repointed with it.
 #[test]
 fn an_ambiguous_name_colliding_with_the_implicit_tier_is_refused() {
-    let out = query_both(&["SortInfo(name: ?n)"]);
-    assert_refused_as_ambiguous(
-        &out,
-        "SortInfo",
-        &["wi907.alpha.SortInfo", "wi907.beta.SortInfo"],
-    );
+    let out = query_both(&["cons(?h, ?t)"]);
+    assert_refused_as_ambiguous(&out, "cons", &["wi907.alpha.cons", "wi907.beta.cons"]);
 }
 
 /// The same refusal for an ordinary user name with no tier twin, which pre-fix bound the

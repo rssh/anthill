@@ -35,8 +35,9 @@
 //! fallback". That was wrong when written — [`crate::parse::pratt::UNIFY_FUNCTOR`] and
 //! [`crate::parse::pratt::STRUCT_EQ_FUNCTOR`] were short mints on the tier too, because
 //! `<=>`, `===` and a goal-position `let` name no functor either — and WI-909 made it
-//! true by migrating them, so no converter mint resolves through the tier now. The
-//! remaining fifteen rows are all names a PERSON writes bare; that is a different
+//! true by migrating them, so no converter mint resolves through the tier now. A second
+//! WI-909 pass then took the rung to FOUR rows — the constructors `cons` / `nil` /
+//! `some` / `none`, the only names a person writes bare in SOURCE; that is a different
 //! question, and `kb::load::PRELUDE_QUALIFIED` is where it is asked.
 //!
 //! THOSE TWO LIVE IN `pratt`, NOT HERE, and the split is by who mints rather than by

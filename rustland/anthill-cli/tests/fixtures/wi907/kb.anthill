@@ -2,10 +2,17 @@
 -- both resolves each one AMBIGUOUSLY. Nothing here references the contested names, so
 -- the file loads clean and the conflict is live but unreported until a query names it.
 --
--- `SortInfo` deliberately collides with the IMPLICIT TIER (`anthill.reflect.SortInfo`);
+-- `cons` deliberately collides with the IMPLICIT TIER (`anthill.prelude.List.cons`);
 -- `Widget907` has no tier twin, so the pair covers both halves of the same refusal.
+--
+-- IT WAS `SortInfo` UNTIL WI-909, which took the eight reflection result sorts off the
+-- tier. A name that is no longer a tier spelling makes the tier-collision half of this
+-- fixture describe a situation that cannot arise — and the core twin's central row would
+-- have gone on PASSING, a ladder with no rung to fall to being unable to fall through.
+-- Kept in step with `wi907_ambiguous_name_ladder_test::DECLS`, which repointed the same
+-- way and carries the longer argument.
 namespace wi907.alpha
-  sort SortInfo
+  sort cons
     entity si907a(v: anthill.prelude.Int64)
   end
   sort Widget907
@@ -15,7 +22,7 @@ namespace wi907.alpha
 end
 
 namespace wi907.beta
-  sort SortInfo
+  sort cons
     entity si907b(v: anthill.prelude.Int64)
   end
   sort Widget907

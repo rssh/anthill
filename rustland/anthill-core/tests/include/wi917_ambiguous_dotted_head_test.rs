@@ -198,7 +198,11 @@ fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
     let contested = kb.resolve_symbol("wi917.alpha.SortInfo");
 
     for pattern in [
-        "push_choice(w917a(v: ?x), SortInfo(name: ?n))", // bare disjunction branch
+        // WI-909 qualified `push_choice`: it left the implicit tier, and here it is
+        // only the ENCLOSING form — what this row measures is the contested
+        // `SortInfo`, which is contested by this fixture's own two declarations
+        // and not by any tier entry.
+        "anthill.kernel.push_choice(w917a(v: ?x), SortInfo(name: ?n))", // bare disjunction branch
         "forall_in(?s, nil, tuple(SortInfo(name: ?s)))", // quantifier body
         "w917a(v: SortInfo(name: ?n))",                  // DATA slot, never a goal
     ] {
@@ -233,7 +237,15 @@ fn an_absent_name_in_a_tolerated_position_is_still_tolerated() {
     let scope = global_scope(&mut kb);
 
     for pattern in [
-        "push_choice(w917a(v: ?x), no_such_thing917(?z))",
+        // WI-909 qualified, for the reason its POSITIVE twin above was: `push_choice`
+        // left the implicit tier, so a bare head here resolves to nothing and the
+        // pattern stops being a DISJUNCTION at all. `ambiguous_query_names` would go on
+        // answering empty — an absent name is not an ambiguous one — so this row would
+        // keep passing while no longer measuring WI-863's tolerance in a disjunction
+        // branch, which is the whole reason it is paired with that twin. Found by
+        // `/code-review`; the sweep that qualified the twin used a regex that could not
+        // match a functor at the START of a string literal.
+        "anthill.kernel.push_choice(w917a(v: ?x), no_such_thing917(?z))",
         "w917a(v: no_such_thing917(?z))",
     ] {
         let qt = query_pattern_term(&mut kb, pattern);

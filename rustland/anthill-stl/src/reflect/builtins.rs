@@ -2601,9 +2601,10 @@ end
     /// name, so the message was wrong about a name that DOES denote something here.
     ///
     /// It asserts the same targets as `anthill-core`'s
-    /// `wi913_host_name_ladder_test::sld_lookup_symbol_reads_the_implicit_tier`, and
-    /// that pairing is the point: one declared operation, two backings, and after
-    /// WI-984 they may not answer differently.
+    /// `wi913_host_name_ladder_test::sld_lookup_symbol_reads_the_implicit_tier` and its
+    /// `…_does_not_read_the_reflect_sorts` sibling, and that pairing is the point: one
+    /// declared operation, two backings, and after WI-984 they may not answer
+    /// differently — for what the tier ANSWERS and for what it does not.
     #[test]
     fn lookup_symbol_reads_the_implicit_tier() {
         let mut interp = load_stdlib_and_source(
@@ -2619,8 +2620,19 @@ end
             looked_up_name(&mut interp, "cons").expect("cons denotes its target"),
             "anthill.prelude.List.cons",
         );
+        // …AND A REFLECT RESULT SORT DOES NOT (WI-909 took the eight of them off the
+        // tier). Inverted rather than deleted, and kept in this row rather than moved,
+        // because the WI-984 pairing is the point: `anthill-core`'s
+        // `wi913_host_name_ladder_test::sld_lookup_symbol_does_not_read_the_reflect_sorts`
+        // asserts the same thing against the SLD backing, and the two may not diverge.
+        assert!(
+            looked_up_name(&mut interp, "SortInfo").is_err(),
+            "`SortInfo` left the implicit tier; a bare reflect sort denotes nothing at \
+             `<global>`, exactly as `MemberInfo` always has",
+        );
         assert_eq!(
-            looked_up_name(&mut interp, "SortInfo").expect("SortInfo denotes its target"),
+            looked_up_name(&mut interp, "anthill.reflect.SortInfo")
+                .expect("the qualified name is the migration"),
             "anthill.reflect.SortInfo",
         );
         // CONTROL — a qualified name resolves identically on both sides of the fix.

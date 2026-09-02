@@ -139,19 +139,41 @@ fn sld_lookup_symbol_reads_the_implicit_tier() {
     );
 }
 
-/// The other half of the SAME operation. Both backings must answer alike, which is
-/// the WI-984 rule (`anthill-stl`'s `lookup_symbol_reads_the_implicit_tier` drives
-/// the eval-side one against this same expectation).
+/// …AND THE REFLECT RESULT SORTS DO **NOT** ANSWER BARE — inverted in WI-909, which took
+/// the eight of them off `load::PRELUDE_QUALIFIED` along with `push_choice` and the
+/// `BigInt` conversions. This row used to assert the opposite; it is kept, inverted,
+/// rather than deleted, because "a bare `SortInfo` denotes its target here" is exactly
+/// the belief a reader of the surrounding code would carry in.
+///
+/// THE CONTROL IS `MemberInfo`, and it is what makes this a CONSISTENCY claim rather
+/// than a regression: `MemberInfo` and `DescriptionInfo` are the same reflect result-sort
+/// population — same `register_stdlib_scopes` block, same loader emission — and were
+/// never on the tier, so they have ALWAYS answered `None` here. The rung covered eight of
+/// ten members of one vocabulary. Asserting the two side by side is the whole argument
+/// for the removal, in the currency this file reads.
+///
+/// The QUALIFIED name still answers, which is the migration: a host that means the
+/// reflect sort says so, exactly as it always had to for `MemberInfo`.
 #[test]
-fn sld_lookup_symbol_reads_the_implicit_reflect_sorts() {
+fn sld_lookup_symbol_does_not_read_the_reflect_sorts() {
     let mut kb = load_kb_with(FIXTURE);
     assert_eq!(
         sld_lookup_symbol(&mut kb, "SortInfo").as_deref(),
-        Some("anthill.reflect.SortInfo"),
+        None,
+        "`SortInfo` left the implicit tier in WI-909; a bare short name resolves only \
+         when it is in scope at `<global>` or on the tier, and it is neither",
     );
     assert_eq!(
-        sld_lookup_symbol(&mut kb, "OperationInfo").as_deref(),
-        Some("anthill.reflect.OperationInfo"),
+        sld_lookup_symbol(&mut kb, "MemberInfo").as_deref(),
+        sld_lookup_symbol(&mut kb, "SortInfo").as_deref(),
+        "control: the two are one vocabulary and must answer alike. `MemberInfo` was \
+         never on the tier, so this equality is what says WI-909 removed an \
+         inconsistency rather than a capability",
+    );
+    assert_eq!(
+        sld_lookup_symbol(&mut kb, "anthill.reflect.SortInfo").as_deref(),
+        Some("anthill.reflect.SortInfo"),
+        "…and the qualified name is the migration, as it always was for `MemberInfo`",
     );
 }
 

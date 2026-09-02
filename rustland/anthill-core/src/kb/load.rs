@@ -5125,9 +5125,11 @@ pub fn scan_definitions_with_sources(
 }
 
 /// WI-521: the implicit PRELUDE — user-facing names auto-available in every
-/// namespace without an `import` line: the fundamental constructors, the
-/// arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`, …, via
-/// `parse/pratt.rs`), and the logic operators (`not` / `or`). Like the kernel
+/// namespace without an `import` line. As first written that was the fundamental
+/// constructors, the arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`,
+/// …, via `parse/pratt.rs`) and the logic operators (`not` / `or`); every group but the
+/// constructors has since left, and the paragraph is kept because the MECHANISM it
+/// describes is unchanged. Like the kernel
 /// vocab (WI-040), these resolve via a LOWEST-PRECEDENCE fallback rather than a
 /// `<global>` import: a user's local definition or explicit import always wins
 /// (the fallback fires only when scope resolution fails) and the import can never
@@ -5161,21 +5163,27 @@ pub fn scan_definitions_with_sources(
 /// point this one back at the retired `anthill.reflect.not` and the STDLIB STOPS
 /// LOADING with `UndefinedRuleBodyGoal { functor: "not" }` at `anthill.reflect.typing`.
 /// (That measurement was taken while `not` was still an entry; it left in
-/// WI-20260826-XED22. The guard below is unchanged and still covers the entries that
-/// remain — `push_choice` is the one the stdlib names in a goal position now.)
-/// The guard is WI-1034's rule-body-goal check, so what it covers is an entry the
-/// stdlib itself names in a GOAL position — `not` / `or` / `push_choice`. An entry
-/// reached only from value positions has no such backstop and a rename of one would go
-/// unremarked; check by spelling, not by assuming this list is guarded as a whole.
+/// WI-20260826-XED22.) The guard is WI-1034's rule-body-goal check, so what it covers is
+/// an entry the stdlib itself names in a GOAL position. SINCE WI-909 NO ENTRY DOES:
+/// the four that remain are constructors, written in TERM position, which WI-1058's
+/// rule-body-term check covers instead — a different check with its own exemptions.
+/// Check by spelling, not by assuming this list is guarded as a whole.
 ///
-/// `push_choice` (the kernel disjunction primitive that `or` lifts) is here too:
-/// it is a globally-visible language primitive, named bare from any namespace.
-/// That is what separates it from the two neighbours that left: a converter mint can
-/// take an address, and `push_choice` is written by a person, so it cannot.
-/// The reflection `*Info` result sorts are here as well — a reflection vocabulary
-/// queried bare by reflection infrastructure (the `anthill-stl` bridge / CLI);
-/// `reflect/typing.anthill` still imports them explicitly (the fallback is below
-/// that import in precedence, so the import wins where present).
+/// THE TABLE IS THE FOUR CONSTRUCTORS AND NOTHING ELSE (WI-909, second pass), which is
+/// the first time its contents and its name have agreed. `push_choice` and the eight
+/// `anthill.reflect` result sorts left with the `BigInt` conversions: a corpus census
+/// found NO `.anthill` file writing any of them bare, so they answered only at
+/// `resolve_name_in_kb` — the CLI query pattern / host-name rung at `<global>` — and
+/// removing them migrated no source at all.
+///
+/// THE REFLECTION HALF'S JUSTIFICATION HAD BEEN FALSE FOR AS LONG AS IT STOOD, and that
+/// is why its removal is not a judgement call. The text here used to say the `*Info`
+/// sorts were "a reflection vocabulary queried bare by reflection infrastructure".
+/// `MemberInfo` and `DescriptionInfo` belong to that same vocabulary — same
+/// `register_stdlib_scopes` block, same loader emission — and were never on the table,
+/// so a bare `anthill query 'MemberInfo(…)'` has always errored with the `-i` remedy in
+/// its own message. The rung covered eight of ten members of one vocabulary. The eight
+/// now answer as the two always did.
 const PRELUDE_QUALIFIED: &[&str] = &[
     "anthill.prelude.List.cons",
     "anthill.prelude.List.nil",
@@ -5209,45 +5217,33 @@ const PRELUDE_QUALIFIED: &[&str] = &[
     // (Historic, for the entries that remain; position-direction is
     // §6.6's rule — resolver primitives by default; Bool.not/Bool.or only inside an operation body,
     // handled in remap_name_str via in_op_body_value).
-    "anthill.prelude.BigInt.to_bigint",
-    "anthill.prelude.BigInt.to_int",
-    "anthill.kernel.push_choice", // kernel disjunction primitive (`or` lifts it)
-    // `unify` / `struct_eq` LEFT IN WI-909, following `find_dictionary` and `cut`: all
-    // four are CONVERTER MINTS, so they carry an address
-    // (`crate::parse::pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR`,
-    // `crate::parse::desugar_target::CUT` / `FIND_DICTIONARY`) and need no rung. That
-    // retired `minted_connective_symbol`, which existed ONLY to lift these two above
-    // scope resolution — the absolute rung does it, so the special case is gone rather
-    // than moved. The rule for the class is stated once, in `desugar_target`.
+    // WI-909 REMOVED ELEVEN ROWS HERE, and the shape of what is left is the argument
+    // for it: every remaining entry is a CONSTRUCTOR, which is the one population the
+    // rung's own name describes. The eleven were `BigInt.to_bigint` / `.to_int`,
+    // `kernel.push_choice`, and the eight `anthill.reflect` result sorts.
     //
-    // REMOVING A ROW IS A BEHAVIOUR CHANGE AT THE RULE HEAD, not only at the mint, and
-    // that is the half a reader misses: a head is RESOLVED, not declared, so while the
-    // row stood a `rule cut(?x) :- …` reached the kernel primitive THROUGH this tier and
-    // added a clause to it. With the row gone the ladder finds nothing and the head
-    // introduces a local name instead. Driven by
-    // `kernel_mint_address_test::a_rule_head_named_cut_introduces_a_local_name`,
-    // which is the only row that fails if these two rows come back. Raised by
-    // `/code-review`, against a comment that had claimed nothing downstream read the
-    // short name.
+    // WHAT MADE THEM SEPARABLE, measured rather than argued: a census over the whole
+    // corpus (stdlib, examples, `anthill-stl`, `anthill-todo`) found that NO `.anthill`
+    // file writes any of the eleven bare. They answered at ONE site — `resolve_name_in_kb`,
+    // the query-pattern / host-name rung at `<global>` — and nowhere else. So removing
+    // them cost no source migration at all, unlike the four that remain.
     //
-    // `push_choice` above is NOT the same case and stays: it is not minted at all, it
-    // is pre-declared by `register_stdlib_scopes`, and it IS written bare — in CLI
-    // QUERY PATTERNS (wi917 / wi863 / wi1047), which run at `<global>` with no scope
-    // and no import line. That is the `resolve_name_in_kb` rung, and retiring it is the
-    // same open question as the reflection sorts below, not a rename.
-    // Reflection result sorts — a reflection VOCABULARY queried bare (by short
-    // name) from reflection infrastructure (the `anthill-stl` reflect bridge's
-    // `SortQuery`, CLI reflection queries). Globally resolvable like the rest, and
-    // — being on the fallback — still shadowable and never ambiguous against a
-    // user sort of the same name (e.g. a user `entity SortView`).
-    "anthill.reflect.SortInfo",
-    "anthill.reflect.FieldInfo",
-    "anthill.reflect.OperationInfo",
-    "anthill.reflect.EntityInfo",
-    "anthill.reflect.SortRequiresInfo",
-    "anthill.reflect.SortProvidesInfo",
-    "anthill.reflect.ProvidesConditionInfo",
-    "anthill.reflect.SortView",
+    // AND THE REFLECTION HALF'S OWN JUSTIFICATION WAS ALREADY FALSE. The comment deleted
+    // from this spot called the eight "a reflection VOCABULARY queried bare … globally
+    // resolvable like the rest". `MemberInfo` and `DescriptionInfo` are the same
+    // population — reflect result sorts, defined by the same `register_stdlib_scopes`
+    // block, emitted by the same loader — and were never on this table: a bare
+    // `anthill query 'MemberInfo(name: ?n)'` has always errored, telling the author to
+    // write `-i anthill.reflect.*`. So the rung covered eight of ten members of one
+    // vocabulary, and nobody had noticed the two it missed. The eight now answer as the
+    // two always did.
+    //
+    // `push_choice` WAS NOT MINTED and is not a converter case (the WI-909 rows above
+    // are); it is pre-declared by `register_stdlib_scopes` and was written bare only in
+    // CLI QUERY PATTERNS (wi917 / wi863 / wi1047), which run at `<global>` with no scope
+    // and no import line. Those patterns name it qualified now. The stdlib's own
+    // `rule or(?a, ?b) :- push_choice(?a, ?b)` never needed the rung: it is written
+    // INSIDE `anthill.kernel`, where scope resolution answers.
 ];
 
 /// WI-521: short name → qualified target for the implicit prelude, or `None`.
@@ -5281,6 +5277,12 @@ fn prelude_qualified(name: &str) -> Option<&'static str> {
 /// `..anthill.kernel.…` outright and the override is deleted, so every remaining row IS
 /// a name a person writes bare, and any future row that is not should be migrated rather
 /// than added.
+///
+/// A SECOND CUT NARROWED IT AGAIN, on a different axis: "a person writes it bare" was
+/// true of the eleven `resolve_name_in_kb`-only names too, but the only person doing so
+/// was typing a CLI QUERY, which has an `-i` flag for exactly that. What is left is the
+/// names written bare in SOURCE — four constructors — and that is the population this
+/// rung can justify, because a source file has no `-i`.
 fn implicit_qualified(name: &str) -> Option<&'static str> {
     prelude_qualified(name)
 }
@@ -5327,10 +5329,11 @@ pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
 /// not go and get it somewhere else.
 ///
 /// THE PRELUDE ALONE since WI-20260825-5W3RJ (see [`implicit_qualified`]), which SHRANK
-/// this population from 62 to 34; later passes took it to 15 (WI-20260826-XED22's
-/// `not` / `or` / `and`, WI-909's `cut` / `find_dictionary` and then `unify` /
-/// `struct_eq`). Nothing that read it wanted the desugaring vocab: its one reader asks
-/// which tier names denote a spec operation, and no synthesized form ever did.
+/// this population from 62 to 34; later passes took it to FOUR — WI-20260826-XED22's
+/// `not` / `or` / `and`, then WI-909 in three steps (`cut` / `find_dictionary`, then
+/// `unify` / `struct_eq`, then the eleven names reachable only at `resolve_name_in_kb`).
+/// Nothing that read it wanted the desugaring vocab: its one reader asks which tier
+/// names denote a spec operation, and no synthesized form ever did.
 ///
 /// `wi_kd9sw_minted_operator_address_test` (WI-20260825-KD9SW retired the refusal this
 /// named: a minted operator carries its address, so there is no tier name to capture)

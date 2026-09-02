@@ -165,18 +165,25 @@ fn a_short_name_outside_the_implicit_tier_no_longer_resolves_absolutely() {
 /// by the rung that is actually meant for it.
 ///
 /// Needs the stdlib: the tier resolves a name only when its target is LOADED (WI-900).
-/// `SortView` is one of the reflection result sorts the tier lists precisely so the
-/// anthill-stl bridge / CLI can name them bare, and it carries no resident facts — the
-/// sibling `SortInfo` resolves identically but is then refused as a `ResidentCollision`,
-/// which is the single-owner rule, not the ladder.
+///
+/// `cons` SINCE WI-909, which took the reflection result sorts off the tier. This row
+/// used `SortView` — one of the eight — and the claim it makes is about the RUNG, not
+/// about that name, so it is repointed rather than deleted. `cons` is a fair substitute
+/// on the property that mattered: it carries no resident facts, so the mount is decided
+/// by the ladder rather than refused early as a `ResidentCollision` (which is the
+/// single-owner rule, and was why `SortView` was picked over its sibling `SortInfo`).
+///
+/// WHAT NO LONGER HAS A TIER SPELLING is the resident-facts half of that pair — every
+/// remaining tier name is a constructor and none carries clauses. `ResidentCollision` is
+/// WI-908's own subject elsewhere, not this row's.
 #[test]
 fn a_short_implicit_tier_name_still_mounts_with_no_scope_presence() {
     let mut kb = crate::common::load_kb_with("namespace wi908.anchor\n  fact a908(1)\nend\n");
 
-    mount(&mut kb, "SortView").expect("`SortView` is an implicit-tier name");
+    mount(&mut kb, "cons").expect("`cons` is an implicit-tier name");
 
     assert!(
-        kb.extent_owner(kb.resolve_symbol("anthill.reflect.SortView"))
+        kb.extent_owner(kb.resolve_symbol("anthill.prelude.List.cons"))
             .is_some(),
         "the implicit tier maps the bare short name to its qualified target",
     );

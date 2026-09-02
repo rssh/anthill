@@ -213,11 +213,15 @@ fn the_sort_mode_no_longer_exists() {
 /// sort's clauses" is `head functor ∈ constructors(S)`, a family in the FUNCTOR
 /// dimension, so it is two steps: discover the constructors, then list off one.
 ///
-/// The discovery step runs WITHOUT `-i` deliberately. This fixture declares its own
-/// `SortInfo` in both namespaces — that is what it is for (WI-907's implicit-tier
-/// collision) — so an import would shadow `anthill.reflect.SortInfo` with a user sort
-/// and the reflection query would answer about the wrong functor. Unimported, the head
-/// resolves to the implicit tier's.
+/// The discovery step runs WITHOUT `-i`, and WI-909 changed the reason — this paragraph
+/// said the fixture "declares its own `SortInfo` in both namespaces … Unimported, the
+/// head resolves to the implicit tier's", and both halves are now false. The fixture
+/// declares `cons`, not `SortInfo` (WI-907's tier-collision subject moved with the tier
+/// itself), and the pattern below is written FULLY QUALIFIED, so it names
+/// `anthill.reflect.SortInfo` outright and never reaches a rung at all. No `-i` is
+/// needed because nothing is being brought into scope; the qualified spelling is also
+/// what keeps a user sort of the same name from answering in its place, which is the
+/// property the old reasoning was reaching for. Found by `/code-review`.
 /// WI-1047 — `--max-results 0` (unlimited) since `query` began loading the stdlib. The
 /// reflection listing now answers with the stdlib's own `SortInfo` rows as well as this
 /// fixture's, and at the default cap of 100 the fixture's row fell off the end. The
@@ -230,7 +234,11 @@ fn a_declared_sorts_clauses_are_reachable_without_the_mode() {
         "--max-results",
         "0",
         "--match",
-        "SortInfo(name: ?s, constructors: ?c)",
+        // WI-909: qualified, because the eight reflection result sorts left the
+        // implicit tier and a bare `SortInfo` in a query pattern now resolves to
+        // nothing. `-i anthill.reflect.*` would do as well; the qualified spelling is
+        // chosen because it needs no flag plumbing and says which sort is meant.
+        "anthill.reflect.SortInfo(name: ?s, constructors: ?c)",
     ]);
     assert_eq!(sorts.code, 0, "stderr:\n{}", sorts.stderr);
     assert!(

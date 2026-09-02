@@ -1,5 +1,12 @@
 //! Resolver primitives: push_choice and the derived `or` rule.
 //!
+//! WI-909 — EVERY FIXTURE HERE IMPORTS `push_choice`. It left `load::PRELUDE_QUALIFIED`
+//! with the reflection result sorts: a corpus census found no `.anthill` file writing it
+//! bare, so the rung was carrying only CLI query patterns and Rust fixtures like these.
+//! The stdlib's own `rule or(?a, ?b) :- push_choice(?a, ?b)` never needed it — that rule
+//! is written INSIDE `anthill.kernel`, where scope resolution answers, which is why the
+//! stdlib kept loading while these four rows went red.
+//!
 //! Proposal 033 / WI-075. Verifies that `anthill.kernel.push_choice(?a, ?b)`
 //! creates a binary choice point with shared frame tail, and that the
 //! `or(?a, ?b) :- push_choice(?a, ?b)` rule lifts the primitive to a
@@ -56,6 +63,7 @@ fn push_choice_yields_two_solutions_via_facts() {
     // with the goal. Each branch yields one solution.
     let src = r#"
         namespace test.pc.both
+          import anthill.kernel.{push_choice}
           sort Branch
             entity b1
             entity b2
@@ -104,6 +112,7 @@ fn push_choice_yields_one_solution_when_only_one_branch_matches() {
     // second branch.
     let src = r#"
         namespace test.pc.one
+          import anthill.kernel.{push_choice}
           sort Branch
             entity b1
             entity b2
@@ -135,6 +144,7 @@ fn push_choice_yields_zero_solutions_when_both_branches_fail() {
     // Both branches' predicates have no matching facts.
     let src = r#"
         namespace test.pc.none
+          import anthill.kernel.{push_choice}
           sort Branch
             entity b1
           end
@@ -162,6 +172,7 @@ fn or_rule_succeeds_via_either_branch_with_facts() {
     // The derived `or` rule lifts push_choice to a regular head functor.
     let src = r#"
         namespace test.pc.or_rule
+          import anthill.kernel.{push_choice}
           import anthill.kernel.{or}
           sort Tag
             entity t1
@@ -210,6 +221,7 @@ fn push_choice_shares_tail_with_both_branches() {
     // contract: both Continuation candidates inherit frame.goals[1..].
     let src = r#"
         namespace test.pc.tail
+          import anthill.kernel.{push_choice}
           sort Tag
             entity t1
             entity t2
@@ -271,6 +283,7 @@ fn or_rule_handles_nested_disjunction() {
     // the `or` rule unfolding) and that all three leaf solutions surface.
     let src = r#"
         namespace test.pc.nested
+          import anthill.kernel.{push_choice}
           import anthill.kernel.{or}
           sort Tag
             entity ta
@@ -323,6 +336,7 @@ fn or_rule_isolates_substitutions_across_branches() {
     // pinned to ta).
     let src = r#"
         namespace test.pc.isolate
+          import anthill.kernel.{push_choice}
           import anthill.kernel.{or}
           sort Tag
             entity ta
