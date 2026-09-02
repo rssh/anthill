@@ -564,6 +564,40 @@ pub enum TypeError {
         /// The constant as written, for the diagnostic — `42`, `"hello"`, `1.5`.
         literal: String,
     },
+    /// WI-20260902-8K4RB: the subject of a bodyless EQUATION
+    /// ([`crate::intern::SymbolKind::EquationFunctor`]) written in a rule-body GOAL
+    /// position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 [simp]`.
+    ///
+    /// The third member of the "this term has no goal reading" family, beside
+    /// [`Self::NonBoolOpInGoalPosition`] and [`Self::ConstantInGoalPosition`], and it
+    /// is the same argument: an equation's clauses are indexed under the `eq`/`unify`
+    /// CONNECTIVE, never under its subject (WI-898, spec §5.3), so the subject owns no
+    /// clause and a goal naming it matches nothing — in any program, in any branch,
+    /// under any binding. That is why it is refused where a goal that merely NAMES
+    /// NOTHING in a tolerated branch is not.
+    ///
+    /// NOT [`Self::UnreducedEquationFunctor`], though both are equation citations, and
+    /// the difference is the REPAIR. That one is a VALUE-position citation the rewriter
+    /// left standing, so its three branches send the author to tag the equation `[simp]`
+    /// or to inspect the left-hand patterns. Here the equation may be tagged AND firing
+    /// and the goal still cannot answer, because `[simp]` rewrites a VALUE and a goal is
+    /// MATCHED rather than rewritten — so those repairs would send an author to inspect
+    /// a clause that is fine. (Not "a rule body is not a rewrite site": measured, it IS
+    /// one in a value slot — `?v = tauX()` stores the already-inlined `eq(?_, 7)`.)
+    /// MEASURED on the ticket's own fixture, which is `[simp]`-tagged with one defining
+    /// clause: that census reaches the third branch, "none of its 1 `[simp]` clause(s)
+    /// fired here".
+    ///
+    /// WHY IT WAS SILENT UNTIL NOW: the name RESOLVES, so WI-1034's "names nothing"
+    /// refusal declines it ([`KnowledgeBase::symbol_declares_nothing`] is false — the
+    /// mint stamped a kind), and the goal-reading pass below fell through its
+    /// `op_record` gate because an equation subject declares no operation.
+    EquationSubjectInGoalPosition {
+        span: Option<Span>,
+        /// The equation subject, for the diagnostic — rendered QUALIFIED, the spelling
+        /// that locates the equations.
+        functor: Symbol,
+    },
     /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
     /// rules (e.g. `Map` once the relational eq/binds/strip_is apparatus was
@@ -1187,6 +1221,11 @@ impl TypeError {
             TypeError::ConstantInGoalPosition { literal, .. } => {
                 crate::kb::load::constant_in_goal_position_message(literal)
             }
+            TypeError::EquationSubjectInGoalPosition { functor, .. } => {
+                crate::kb::load::equation_subject_in_goal_position_message(
+                    kb.qualified_name_of(*functor),
+                )
+            }
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort);
                 format!(
@@ -1347,6 +1386,7 @@ impl TypeError {
             | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::ConstantInGoalPosition { span, .. }
+            | TypeError::EquationSubjectInGoalPosition { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
@@ -1744,6 +1784,14 @@ impl TypeError {
                     // WI-1034's convention: the span is the GOAL's own text, which is
                     // where the author must look. A constant carries no functor to name
                     // a citing rule by, so the location is the whole diagnostic's anchor.
+                    span: self.span(kb).unwrap_or_default(),
+                }
+            }
+            TypeError::EquationSubjectInGoalPosition { functor, .. } => {
+                LoadError::EquationSubjectInGoalPosition {
+                    functor: kb.qualified_name_of(*functor).to_string(),
+                    // WI-1034's convention, as the neighbour above: the span is the
+                    // GOAL's own text — the citation, not the equation it names.
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
@@ -65744,6 +65792,30 @@ fn check_rule_body_goal_readings(
             check_goal_atom_reading(kb, atom, &mut errors);
         }
     }
+    // ONE GOAL IN THE TEXT REPORTS ONCE — WI-1034's rule for `check_rule_body_goals`,
+    // which this pass did not obey (WI-20260902-8K4RB). A `-:` multi-head rule desugars
+    // to one clause per conclusion SHARING THE BODY, so a single bad goal arrives here
+    // through N `RuleId`s and every variant this pass raises was printed N times, at one
+    // byte-identical `line:col`. MEASURED, `rule banded: 42 -: gte(?d, 0), lte(?d, 9)`
+    // reported the constant refusal TWICE at `4:5` — a pre-existing defect of the two
+    // older members, found while checking that the new one obeyed the rule.
+    //
+    // KEYED ON (variant, source, span) and not on the rendered message: rendering needs a
+    // `&KnowledgeBase` walk per error, and the identity that matters is the POSITION plus
+    // WHICH refusal it is — two different verdicts about one span would still both
+    // survive, and each of these variants is a function of the goal written there.
+    let mut seen: HashSet<(
+        std::mem::Discriminant<TypeError>,
+        Option<crate::span::SourceId>,
+        Option<(u32, u32)>,
+    )> = HashSet::new();
+    errors.retain(|(e, src)| {
+        seen.insert((
+            std::mem::discriminant(e),
+            *src,
+            e.span(kb).map(|sp| (sp.start, sp.end)),
+        ))
+    });
     errors
 }
 
@@ -65825,7 +65897,9 @@ fn tuple_goal_children_occ(
 
 /// Classify one goal-position occurrence for [`check_rule_body_goal_readings`]:
 /// recurse THROUGH a goal connective into its (goal) arguments, else flag a head with
-/// no goal reading — a rule-less non-Bool operation, or a non-boolean constant.
+/// no goal reading — a rule-less non-Bool operation, a non-boolean constant, or (since
+/// WI-20260902-8K4RB) the subject of a bodyless EQUATION, whose clauses index under the
+/// `eq`/`unify` connective so the name owns none.
 /// Iterative (explicit worklist) so a deeply-nested connective body cannot overflow the
 /// host stack — mirrors [`check_occ_spec_op_requirements`].
 ///
@@ -65919,6 +65993,30 @@ fn check_goal_atom_reading(
         // non-operation (unresolved name / relation-only functor) is not this
         // pass's concern — an unresolved name is diagnosed elsewhere.
         let Some(sig) = kb.op_record(f).and_then(|r| r.signature.as_ref()) else {
+            // WI-20260902-8K4RB — EXCEPT for one non-operation that IS this pass's
+            // concern: the subject of a bodyless EQUATION. It has no op record (the
+            // equation declares no operation) and it RESOLVES (the mint stamped it
+            // `EquationFunctor`), so it fell through this gate AND through WI-1034's
+            // "names nothing" refusal, and the goal answered the empty relation in
+            // silence — `not(…)` around it answering ONE.
+            //
+            // ASKED THROUGH [`KnowledgeBase::cites_a_relation`], never as a kind test,
+            // because a scope may write one name in BOTH head shapes and then a
+            // predicate clause IS indexed under it; that function is WI-898's single
+            // owner of "does this name denote a relation" and deriving the answer from
+            // the clause index is what keeps this from being a second, order-dependent
+            // one. Driven in both directions by
+            // `a_predicate_clause_on_the_same_name_keeps_the_goal_legal`.
+            if kb.has_kind(f, crate::intern::SymbolKind::EquationFunctor) && !kb.cites_a_relation(f)
+            {
+                errors.push((
+                    TypeError::EquationSubjectInGoalPosition {
+                        span: Some(o.span.span),
+                        functor: f,
+                    },
+                    Some(o.span.source),
+                ));
+            }
             continue;
         };
         // Only the BARE / DIRECT goal form — the op used at its DECLARED arity —

@@ -515,6 +515,30 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// WI-20260902-8K4RB: the subject of a bodyless EQUATION written in a rule-body
+    /// GOAL position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 [simp]`.
+    ///
+    /// The third member of this goal-position family, beside `ConstantInGoalPosition`
+    /// above and the `NonBoolOpInGoalPosition` the typer routes through `TypeMismatch`,
+    /// raised by the same pass on the same argument: an equation's clauses are indexed
+    /// under the `eq`/`unify` CONNECTIVE and never under its subject (WI-898), so the
+    /// goal owns no clause and can never match in ANY program, in any branch, under any
+    /// binding. Load-blocking for the reason its two neighbours are — nothing goes wrong
+    /// later, the rule simply loads clean and never fires — and worse than they are in
+    /// one respect: `not(…)` around it SUCCEEDS, so the silence is a WRONG answer and
+    /// not merely an absent one.
+    ///
+    /// Its own variant rather than [`Self::UnreducedEquationFunctor`]: that one is the
+    /// VALUE-position citation the rewriter left standing, and its repairs (tag the
+    /// equation, inspect the left-hand patterns) are wrong here, where the equation may
+    /// be tagged and firing and the position still admits no rewrite. See
+    /// [`equation_subject_in_goal_position_message`].
+    EquationSubjectInGoalPosition {
+        /// The equation subject, QUALIFIED — the spelling that locates the equations.
+        functor: String,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-1033 (058 §3.8): a CONDITIONAL provision is certified by the carrier's own
     /// conditional provision of the spec it requires, and the outer conditions do not
     /// ENTAIL the inner ones — so the outer holds at bindings where the inner does not,
@@ -2203,6 +2227,7 @@ impl LoadError {
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
+            | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::CarrierlessProvisionFact { span, .. }
@@ -2506,6 +2531,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     constant_in_goal_position_message(literal)
+                )
+            }
+            LoadError::EquationSubjectInGoalPosition { functor, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    equation_subject_in_goal_position_message(functor)
                 )
             }
             LoadError::UnbackedProviderOperation {
@@ -3654,6 +3686,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     constant_in_goal_position_message(literal),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::EquationSubjectInGoalPosition { functor, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    equation_subject_in_goal_position_message(functor),
                     span.start,
                     span.end
                 )
@@ -11996,6 +12037,57 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
     )
 }
 
+/// WI-20260902-8K4RB — the ONE wording of [`LoadError::EquationSubjectInGoalPosition`],
+/// shared by the located `format_with_source` rendering, the span-less `Display`, and
+/// the [`super::typing::TypeError`] face the goal-reading pass raises it through (the
+/// discipline [`constant_in_goal_position_message`] and its neighbours set).
+///
+/// NOT [`super::typing::unreduced_equation_functor_message`], and the difference is the
+/// REPAIR rather than the subject. That one is a VALUE-position citation the rewriter
+/// left standing, so its census branches send the author to tag the equation `[simp]` or
+/// to inspect the left-hand patterns; here the equation may be tagged AND firing and the
+/// goal still cannot answer. On the ticket's own `[simp]`-tagged fixture that census
+/// reaches "none of its 1 `[simp]` clause(s) fired here" — a sentence that sends the
+/// author to inspect a clause that is fine.
+///
+/// "A GOAL IS MATCHED RATHER THAN REWRITTEN", not "a rule body is not a rewrite site",
+/// and the difference is measured: `[simp]` DOES fire inside a rule body, in a VALUE
+/// slot — `rule r(?v) :- ?v = tauX()` stores `eq(?_, 7)`, the law already inlined. It is
+/// the GOAL position that admits no rewrite, and the first wording would have told the
+/// author something false about the line above.
+///
+/// THE `not` CONSEQUENCE IS NOT IN THE MESSAGE, deliberately — it is about a DIFFERENT
+/// program than the one being refused, and the sibling `constant_in_goal_position_message`
+/// leaves `:- not(42)` to the spec for the same reason. It is the severity that justifies
+/// refusing rather than tolerating, and it is MEASURED: `rule readerNot(1) :- not(tauX)`
+/// answered ONE solution where the un-negated citation answered none, so
+/// negation-as-failure laundered the unsatisfiable goal into a confident `true`.
+///
+/// THE REPAIRS ARE BOTH RUN, never inferred (the `?r = tau()` spelling deliberately is
+/// NOT among them: measured, it rewrites to `eq(?_, 7)` and RESIDUALIZES — `eq` never
+/// binds — so recommending it would hand the author a second silent nothing).
+///
+/// QUALIFIED IN THE REPAIR TOO, not just in the subject, and that was a defect the first
+/// cut shipped: it named the goal `zzf9.inner.tauX` and then advised `cite \`tauX(…)\``,
+/// a SHORT name that need not resolve at the citing scope at all — measured on a
+/// cross-namespace citation, where the qualified spelling is exactly what the author had
+/// written. Found by `/code-review`. The parentheses are spelled out for the same reason
+/// they are in the test: an op body's BARE call site is not yet a redex
+/// (WI-20260902-65BTX), so `= tau` residualizes where `= tau()` answers 7.
+pub(crate) fn equation_subject_in_goal_position_message(functor: &str) -> String {
+    format!(
+        "`{functor}` is defined by EQUATIONS and is written here as a GOAL. An equation's \
+         clauses are indexed under the `eq`/`unify` CONNECTIVE, never under its subject \
+         (kernel-language.md §5.3), so `{functor}` owns no clause and this goal can NEVER \
+         match — however its equations are written or tagged: `[simp]` rewrites a VALUE, \
+         and a goal is MATCHED rather than rewritten, so tagging cannot make this \
+         position answer. If the VALUE is wanted, cite `{functor}` from an OPERATION \
+         body and WRITE THE PARENTHESES (`{functor}()` at arity 0), where the equation \
+         inlines before dispatch; if a PREDICATE of this name is wanted, give it a rule \
+         with `:-` instead of an equational connective."
+    )
+}
+
 /// WI-1034 — refuse every rule-body goal whose functor names nothing.
 ///
 /// The walk and its exemptions belong to
@@ -12078,6 +12170,17 @@ fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// hash-consed term and `undefined_query_goal_functors` takes a `TermId`; such a clause
 /// is skipped rather than half-checked. That is a stated gap and not a silent one, and
 /// it is the reason the population census below is a LOWER BOUND.
+///
+/// AND SCOPED TO "NAMES NOTHING", which is the OTHER stated gap and has its own ticket
+/// (WI-20260902-7XFYQ). The whole goal-READING family — WI-20260902-8K4RB's equation
+/// subject, `ConstantInGoalPosition`, `NonBoolOpInGoalPosition` — is raised by
+/// [`super::typing::check_goal_atom_reading`], which walks `rule_body_nodes` and reaches
+/// no contract clause. MEASURED: `requires tauX` beside `rule tauX <=> 7 [simp]` loads
+/// clean here, and only a CALL is refused — with a message that sends the author to the
+/// call site for a precondition no caller can establish. Widening
+/// [`KnowledgeBase::undefined_query_goal_functors`] is NOT the fix: its other caller is
+/// the CLI's explain-an-empty-result path, which would then report an equation subject
+/// as a name that does not exist.
 ///
 /// WHAT THE CENSUS FOUND. Zero undeclared contract names across the stdlib and every
 /// `.anthill` project in the tree (examples/, docs/measurements/, the anthill-todo and

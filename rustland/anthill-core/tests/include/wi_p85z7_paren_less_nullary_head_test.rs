@@ -58,6 +58,13 @@
 //! back-out is "restore the guard" and whose failing rows are the `bare` arm's two.
 //! The reasoning for both directions is at that row.
 //!
+//! **AND THE REFUSAL CAME BACK, AS A DIFFERENT ONE — WI-20260902-8K4RB.** The silence
+//! CZJ2N left (a minted equation subject cited as a goal answering the empty relation)
+//! is now `EquationSubjectInGoalPosition`, raised by the goal-reading pass at every
+//! arity and in both spellings. That row therefore asserts a REFUSAL again — but one
+//! that names the MINTED qualified symbol, where the guard's refusal said the name
+//! existed nowhere. Its own file is `wi_8k4rb_equation_subject_goal_position_test`.
+//!
 //! **D — THE DETAIL WALK'S NULLARY READING.** In `bodyless_declares_nothing_detail`,
 //! narrow the head destructure back to `Term::Fn { functor, .. }`, so the sentence
 //! explaining a refusal stops reading a bare name as an application. **EXACTLY 1 ROW
@@ -334,52 +341,78 @@ end
 /// `LoadError::UnreducedEquationFunctor` (WI-898) is its own loud channel for a
 /// citation the rewriter left standing.
 ///
-/// SO THIS IS A PAIR OVER TWO POSITIONS, and the absolute values are what make it more
-/// than "they agree": an OP-BODY citation answers **7** (the law inlines before
-/// dispatch) and a RULE-BODY goal answers **0** (an equation's clauses index under the
-/// CONNECTIVE, so its subject owns none — WI-898).
+/// SO THIS IS A PAIR OVER TWO POSITIONS, and the two verdicts are what make it more than
+/// "they agree": an OP-BODY citation answers **7** (the law inlines before dispatch)
+/// while a RULE-BODY goal is REFUSED (an equation's clauses index under the CONNECTIVE,
+/// so its subject owns none — WI-898).
 ///
-/// WHETHER THAT 0 SHOULD BE LOUD is the same question at every arity, and it is FILED
-/// rather than answered here (WI-20260902, "a rule-body citation of an equation functor
-/// answers nothing in silence"). It is filed rather than merely noted because deleting
-/// the guard REMOVES a loud case: the bare spelling used to reach WI-1034's "names
-/// nothing … can NEVER match", and now neither spelling does. One rule at every arity is
-/// the right direction — the guard's premise, that a bare law fires nothing, is exactly
-/// what this ticket deletes — but the gap it was accidentally covering is now
-/// unmitigated. The parenthesised spelling was already silent, which is what says the
-/// two are one question.
+/// **THE RULE-BODY HALF FLIPPED — WI-20260902-8K4RB.** It asserted **0**, the silence
+/// this ticket left unmitigated: deleting the guard removed the one place a user was
+/// told (the bare spelling used to reach WI-1034's "names nothing … can NEVER match",
+/// and after CZJ2N neither spelling did). 8K4RB answered that question with a refusal of
+/// its own — `EquationSubjectInGoalPosition`, raised by the goal-reading pass — so the
+/// row now asserts the REFUSAL where it asserted the count.
+///
+/// THAT IS A STRICTLY STRONGER READING OF THE MINT, which is this row's subject. A `0`
+/// is what a name that minted NOTHING would also answer, so the old assertion ranked the
+/// two mints only against each other; the refusal is raised on `has_kind(
+/// EquationFunctor)` and NAMES THE QUALIFIED SYMBOL, neither of which exists unless the
+/// mint happened. The `parens` and `bare` arms must produce it identically — that is
+/// still the axis.
 ///
 /// BACKED OUT (restore `if introduced_by == RuleIntroduction::Predicate` on
-/// `head_subject_name`'s `Term::Ident` arm): the `bare` arm's LOAD is refused, so both
-/// of its rows fail while the `parens` arm passes — which is what says the axis is the
-/// spelling and not the equation path.
+/// `head_subject_name`'s `Term::Ident` arm — as a match guard, `Term::Ident(sym) if
+/// introduced_by == RuleIntroduction::Predicate => sym`): the `bare` arm's op-body
+/// program does not load at all and its citation program is refused for the OTHER reason
+/// — WI-1034's "names nothing" — so the refusal names neither
+/// `zzP85Z7.eqcitebare.tauFresh` nor the connective sentence, while the `parens` arm
+/// passes both halves. That is what says the axis is the spelling and not the equation
+/// path, and asserting the refusal's WORDING is what keeps the two refusals apart. RUN,
+/// not inherited: it is axis D of WI-20260902-8K4RB's back-out table.
 #[test]
 fn a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin() {
     for (label, head) in [("bare", "tauFresh"), ("parens", "tauFresh()")] {
-        let src = format!(
+        // THE OP-BODY HALF, in its own program: the rule-body half is now a LOAD
+        // REFUSAL, so the two positions can no longer share one source — a single file
+        // carrying both would fail to load and the `7` would never be measured.
+        let mut interp = crate::common::interp_for(&format!(
             "namespace zzP85Z7.eqmint{label}\n  import anthill.prelude.Int64\n  \
-             rule {head} <=> 7 [simp]\n  rule reader(1) :- tauFresh\n  \
+             rule {head} <=> 7 [simp]\n  \
              operation drive(n: Int64) -> Int64 = tauFresh()\nend\n"
-        );
-        let mut interp = crate::common::interp_for(&src);
+        ));
         match interp.call(&format!("zzP85Z7.eqmint{label}.drive"), &[Value::Int(0)]) {
             Ok(Value::Int(7)) => {}
             other => panic!(
                 "{label}: the op-body citation must inline the law and answer 7; got {other:?}"
             ),
         }
-        let mut kb = crate::common::load_kb_with(&src);
-        assert_eq!(
-            answers(&mut kb, &format!("zzP85Z7.eqmint{label}.reader(?x)")),
-            0,
-            "{label}: an equation's clauses index under the connective, so its subject \
-             answers no rule-body goal (WI-898)"
+        // THE RULE-BODY HALF — refused since WI-20260902-8K4RB, and the refusal must be
+        // the EQUATION-SUBJECT one naming the minted symbol, not WI-1034's "names
+        // nothing". That distinction is the whole measurement: only a name that MINTED
+        // can be reported by its qualified spelling.
+        let errs = crate::common::try_load_kb_with(&format!(
+            "namespace zzP85Z7.eqcite{label}\n  import anthill.prelude.Int64\n  \
+             rule {head} <=> 7 [simp]\n  rule reader(1) :- tauFresh\nend\n"
+        ))
+        .err()
+        .unwrap_or_else(|| {
+            panic!("{label}: an equation subject cited as a goal must be refused (8K4RB)")
+        });
+        crate::common::assert_refused_naming(
+            &errs,
+            &[
+                &format!("zzP85Z7.eqcite{label}.tauFresh"),
+                "indexed under the `eq`/`unify` CONNECTIVE",
+            ],
+            &format!("{label}: the subject minted, so the refusal names it qualified"),
         );
     }
 
     // CONTROL — the SAME bare text on the PREDICATE path. It introduces AND answers,
-    // which is what says the 0 above is about the equation reading and not about the
-    // bare spelling failing to mint at all.
+    // which is what says the REFUSAL above is about the equation reading and not about
+    // the bare spelling failing to mint at all. (It said "the 0 above" until
+    // WI-20260902-8K4RB turned that count into a refusal and left the comment naming an
+    // assertion no longer in the test — found by `/code-review`.)
     let mut kb = crate::common::load_kb_with(
         "namespace zzP85Z7.predfresh\n  rule tauFresh :- true\n  \
          rule reader(1) :- tauFresh\nend\n",

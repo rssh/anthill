@@ -47,9 +47,12 @@ enum SymbolKind:
   // (`EquationFunctor`) — and an equation-introduced functor is not a relation.
   //
   // `EquationFunctor` has NO reader in scaland yet, deliberately: rustland's readers
-  // are its typer (`UnreducedEquationFunctor`) and the simp machinery, neither of
-  // which scaland has. It is recorded now so the two loaders agree on what a rule
-  // introduced — recovering it later would mean re-walking every rule head.
+  // are its typer (`UnreducedEquationFunctor` at a VALUE citation, and since
+  // WI-20260902-8K4RB `EquationSubjectInGoalPosition` at a GOAL one) and the simp
+  // machinery, none of which scaland has — the goal-position refusal in particular is
+  // raised by the rule-body goal-READING pass, and scaland has no typer to run it. It is
+  // recorded now so the two loaders agree on what a rule introduced — recovering it
+  // later would mean re-walking every rule head.
   case Sort, Entity, Operation, Const, Namespace, Fact, Rule, Constraint, Param, Field,
        Goal, EquationFunctor
 
