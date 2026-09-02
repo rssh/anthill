@@ -247,6 +247,14 @@ fn pattern_matches(kb: &KnowledgeBase, pattern: TermId, fact: TermId) -> bool {
         (Term::Const(pc), Term::Const(fc)) => pc == fc,
         (Term::Ref(ps), Term::Ref(fs)) => ps == fs,
         (Term::Ident(ps), Term::Ident(fs)) => ps == fs,
+        // WI-20260902-CZJ2N — A BARE PATTERN IS THE ALL-FIELDS-FRESH ONE (§8.3), so it
+        // matches ANY application of the same functor. It used to reach that reading by
+        // accident: `WorkItem` was stored as the nullary `Fn{WorkItem, [], []}` and the
+        // `Fn`/`Fn` arm's named-arg check is SUBSET-based, so a pattern with no named
+        // args matched everything. The nullary canon stores it bare, and without this
+        // arm `retrieve(pattern_any)` fell to `_ => false` and returned ZERO rows —
+        // silently, since a store with no hits is a legal answer.
+        (Term::Ref(ps) | Term::Ident(ps), Term::Fn { functor: ff, .. }) => ps == ff,
         (
             Term::Fn {
                 functor: pf,

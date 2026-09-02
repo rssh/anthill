@@ -253,8 +253,19 @@ impl KbBridge {
                 anthill_core::eval::Value::Term { id: t, .. } => t,
                 _ => continue,
             };
-            if let CoreTerm::Fn { named_args, .. } = kb.get_term(head) {
-                return Some(named_args.iter().map(|&(s, _)| s).collect());
+            match kb.get_term(head) {
+                CoreTerm::Fn { named_args, .. } => {
+                    return Some(named_args.iter().map(|&(s, _)| s).collect())
+                }
+                // WI-20260902-CZJ2N — a NULLARY fact head is stored bare, and its
+                // schema is the EMPTY field list. Without this arm the scan answered
+                // `None`, and `query_to_goals`' `None` branch then builds an ARITY-1
+                // goal (`Fn{f, [?_query]}`) that cannot match the stored `Ref(f)` — so
+                // `KB.query` over an undeclared 0-ary fact functor returned zero rows
+                // where the `Fn` arm used to answer `Some(vec![])` and build a correct
+                // 0-ary goal.
+                CoreTerm::Ref(_) | CoreTerm::Ident(_) => return Some(Vec::new()),
+                _ => {}
             }
         }
         None

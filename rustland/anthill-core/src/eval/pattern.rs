@@ -386,12 +386,13 @@ fn constructor_sub_values(
             pos_arity,
             ..
         } => (f, pos_arity),
-        // A 0-arg constructor stored as `Term::Ref` (WI-436/WI-511: the canonical
-        // nullary-constructor form), reloaded as `Term::Ident` (the printer renders a
-        // 0-arg shape as a bare identifier), or carried as a `Value::SymbolRef`
-        // (WI-1016) / a `Ref`-headed occurrence (WI-1025). Accepting those is what
-        // lets a `case nil()` arm match both `cons("x", nil)` and the bare `nil`.
-        ViewHead::Ref(sym) | ViewHead::Ident(sym) => (sym, 0),
+        // A 0-arg constructor reloaded as `Term::Ident` — the printer renders a 0-arg
+        // shape as a bare identifier and the loader leaves an UNRESOLVED one `Ident`.
+        // Accepting it is part of what lets a `case nil()` arm match both
+        // `cons("x", nil)` and the bare `nil`; the RESOLVED spellings (`Term::Ref`,
+        // `Value::SymbolRef`, a `Ref`-headed occurrence) all head as a nullary
+        // `Functor` through the arm above since WI-20260902-CZJ2N.
+        ViewHead::Ident(sym) => (sym, 0),
         _ => return None,
     };
     if !functor_matches(kb, expected, functor) {

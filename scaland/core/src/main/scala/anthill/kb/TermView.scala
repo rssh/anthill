@@ -95,39 +95,37 @@ enum ViewHead:
     * read — and compare — as the same head.
     */
   case Functor(functor: Option[TermSymbol], posArity: Int, namedArity: Int)
-  case Ref(sym: TermSymbol)
   case Ident(sym: TermSymbol)
   case Bottom
 
-  /** The head's functor symbol, reading a bare [[ViewHead.Ref]] as the 0-ary
-    * application it denotes (`Ref(c) ≡ Fn{c}`) — see [[functorViewHead]]. A
-    * reader that identifies a head by its *symbol* must accept either spelling.
-    * `None` for a functor-less aggregate, a var, a const, `Bottom`.
-    */
+  /** The head's functor symbol. `None` for a functor-less aggregate, a var, a
+    * const, `Bottom`. */
   def functorSym: Option[TermSymbol] = this match
     case ViewHead.Functor(f, _, _) => f
-    case ViewHead.Ref(s)           => Some(s)
     case _                         => None
 
-/** Canonicalize a functor-application head: a **0-ary application of a
-  * registered constructor** reads as the bare [[ViewHead.Ref]].
+object ViewHead:
+  /** WI-20260902-CZJ2N — the head of a NULLARY application, which is what a bare
+    * name IS. The retired `ViewHead.Ref` was the view-layer half of a dual
+    * representation; a SECOND head for the same thing is what let a reader answer
+    * one spelling and not the other. */
+  def nullary(f: TermSymbol): ViewHead = ViewHead.Functor(Some(f), 0, 0)
+
+/** A functor application head. WI-20260902-CZJ2N: it no longer canonicalizes
+  * anything — it is the plain constructor, kept as the single build site so the
+  * carriers cannot drift.
   *
-  * A 0-ary constructor `c` has two indistinguishable spellings — bare `Ref(c)`
-  * and the nullary application `Fn{c}` / `Entity{c}` — that print identically
-  * (`c`), and only the bare `Ref` survives a print/parse round-trip. Reading
-  * every carrier's 0-ary constructor *through* `Ref` closes the divergence where
-  * a fact stored as `Fn{c}` is invisible to a rule spelled `Ref(c)`.
+  * WHAT IT USED TO DO: read a **0-ary application of a registered constructor** as
+  * the bare `ViewHead.Ref`, bridging a dual representation at the view layer. That
+  * was gated on `isConstructorSymbol` and therefore LOAD-ORDER SENSITIVE — the same
+  * term headed one way before `registerEntityOf` and another after — and it reached
+  * sort-nested constructors and nothing else, leaving a nullary PREDICATE, a nullary
+  * OPERATION and a namespace-level ENTITY each with two shapes that do not unify.
   *
-  * The `isConstructorSymbol` gate keeps this kind-isolated: a concrete sort
-  * (`Fn{Int64}`) or a type parameter is not a constructor, so the
-  * wildcard-vs-concrete distinction those rely on is untouched.
-  *
-  * LOAD-ORDER SENSITIVE: `isConstructorSymbol` reads `constructorSymbols_`,
-  * which `registerEntityOf` fills incrementally during loading. The same term
-  * `Fn{c}` therefore heads as `Functor(c,0,0)` before `c` is registered and as
-  * `Ref(c)` after. A consumer that keys, caches, or compares 0-ary constructors
-  * mid-load can straddle that boundary and get two different answers. Rustland
-  * `kb::term_view::functor_view_head` (WI-436) has the same property.
+  * CZJ2N removed the split at the STORE ([[KnowledgeBase.alloc]]: every nullary `Fn`
+  * of a name with no type reading is stored as `Ref`) and removed the second HEAD
+  * here, so a bare name and a nullary application are one term AND one head. The
+  * order-sensitivity goes with the gate: `SymbolKind.Sort` is stamped at declaration.
   */
 private[kb] def functorViewHead(
   kb: KnowledgeBase,
@@ -135,8 +133,7 @@ private[kb] def functorViewHead(
   posArity: Int,
   namedArity: Int
 ): ViewHead =
-  if posArity == 0 && namedArity == 0 && kb.isConstructorSymbol(functor) then ViewHead.Ref(functor)
-  else ViewHead.Functor(Some(functor), posArity, namedArity)
+  ViewHead.Functor(Some(functor), posArity, namedArity)
 
 /** Symbol equality on the raw handle. `TermSymbol` is an opaque `Int`, so `==`
   * would also be correct, but it boxes; this is the module-wide idiom and the
@@ -171,7 +168,7 @@ object TermView:
       case Term.Var(v)     => ViewHead.Var(v)
       case Term.Const(lit) => ViewHead.Const(lit)
       case fn: Term.Fn     => functorViewHead(kb, fn.functor, fn.posArgs.length, fn.namedArgs.length)
-      case Term.Ref(s)     => ViewHead.Ref(s)
+      case Term.Ref(s)     => ViewHead.nullary(s)
       case Term.Ident(s)   => ViewHead.Ident(s)
       case Term.Bottom     => ViewHead.Bottom
 
@@ -275,7 +272,6 @@ def viewsStructurallyEqual[A, B](kb: KnowledgeBase, a: A, b: B)(using
   (va.head(a, kb), vb.head(b, kb)) match
     case (ViewHead.Var(x), ViewHead.Var(y))     => x == y
     case (ViewHead.Const(x), ViewHead.Const(y)) => x == y
-    case (ViewHead.Ref(x), ViewHead.Ref(y))     => symEq(x, y)
     case (ViewHead.Ident(x), ViewHead.Ident(y)) => symEq(x, y)
     case (ViewHead.Bottom, ViewHead.Bottom)     => true
     case (ViewHead.Functor(fa, pa, na), ViewHead.Functor(fb, pb, nb)) =>

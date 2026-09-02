@@ -68,9 +68,27 @@ fn load_source_untyped(kb: &mut KnowledgeBase, source: &str) -> Vec<load::LoadEr
 
 /// Get the functor symbol from a name term (resolve_qualified_name_term returns a nullary Fn).
 fn functor_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol {
+    // WI-20260902-CZJ2N: a nullary application is stored bare, so a NAME term built by
+    // `resolve_qualified_name_term` is a `Term::Ref` unless its symbol is a sort.
     match kb.get_term(term) {
         Term::Fn { functor, .. } => *functor,
-        _ => panic!("expected Fn term"),
+        Term::Ref(s) | Term::Ident(s) => *s,
+        _ => panic!("expected an application term"),
+    }
+}
+
+/// The symbol a NULLARY term names, in either spelling. WI-20260902-CZJ2N: `Fn{f,[],[]}`
+/// and `Ref(f)` are one term for a name with no type reading, so a row that asserts
+/// "this extracted to the name `Eq`" must not also pin which of the two it is.
+fn nullary_name_of(kb: &KnowledgeBase, term: TermId) -> anthill_core::intern::Symbol {
+    match kb.get_term(term) {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => *functor,
+        Term::Ref(s) | Term::Ident(s) => *s,
+        other => panic!("expected a nullary name term, got {other:?}"),
     }
 }
 
@@ -368,20 +386,13 @@ fn extract_sort_ref_from_parameterized_type() {
     // extract_sort_ref emits the canonical nullary-Fn shape used by
     // load.rs for sort references (so the result can flow into rule
     // heads / fact field positions that expect Fn(name, [], [])).
-    match kb.get_term(bound) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            assert_eq!(
-                kb.local_name_of(*functor),
-                "Eq",
-                "should extract Eq from SortView(Eq(), ...)"
-            );
-        }
-        other => panic!("expected Fn(Eq, [], []), got {:?}", other),
-    }
+    // WI-20260902-CZJ2N: `Eq` here is `kb.intern("Eq")` — no `SymbolKind::Sort`, so its
+    // nullary application is stored bare. The claim is the NAME, not the spelling.
+    assert_eq!(
+        kb.local_name_of(nullary_name_of(&kb, bound)),
+        "Eq",
+        "should extract Eq from SortView(Eq(), ...)"
+    );
 }
 
 #[test]
@@ -403,16 +414,7 @@ fn extract_sort_ref_from_simple_ref() {
     assert_eq!(results.len(), 1, "extract_sort_ref from Ref should succeed");
 
     let bound = kb.reify(var_result, &results[0].subst).expect_term();
-    match kb.get_term(bound) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            assert_eq!(kb.local_name_of(*functor), "Eq");
-        }
-        other => panic!("expected Fn(Eq, [], []), got {:?}", other),
-    }
+    assert_eq!(kb.local_name_of(nullary_name_of(&kb, bound)), "Eq");
 }
 
 // ── refines tests (via SLD rules in typing.anthill) ──────────────

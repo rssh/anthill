@@ -2558,40 +2558,115 @@ impl KnowledgeBase {
 
     // ── Term allocation ─────────────────────────────────────────
 
+
     /// The `TermId` of an already-interned term, without interning or refcounting it
     /// (WI-849 review). For a caller that only needs to NAME a term it already holds
     /// alive through something else; [`Self::alloc`] would inflate the refcount on every
-    /// such read. Deliberately does NOT reproduce `alloc`'s WI-511 nullary-`Fn` → `Ref`
-    /// canonicalization, so pass the storage form you expect to find.
+    /// such read.
+    ///
+    /// WI-20260902-CZJ2N: it REPRODUCES [`Self::alloc`]'s nullary canon, where its doc
+    /// used to say "pass the storage form you expect to find". It could not have while
+    /// the canon was WI-511's narrow one; now that every non-type nullary `Fn` is stored
+    /// as `Ref`, a lookup spelling the un-canonical shape would report ABSENT for a term
+    /// that is present — a silent miss, not a caller's mistake.
     pub fn find_term(&self, term: &Term) -> Option<TermId> {
-        self.terms.find(term)
+        match self.nullary_canon(term) {
+            Some(canon) => self.terms.find(&canon),
+            None => self.terms.find(term),
+        }
     }
 
-    /// Allocate a term (hash-consed, refcounted).
-    pub fn alloc(&mut self, term: Term) -> TermId {
-        // WI-511: a nullary application of a registered constructor is stored in
-        // its bare `Ref` form, so a fact written as `Fn{c}` and a rule pattern
-        // spelled `Ref(c)` share ONE TermId. This ELIMINATES the dual
-        // representation that WI-436 only bridged at the view layer
-        // (`functor_view_head`): with a single storage form, raw `Term::Fn`
-        // readers and `head()`-routed readers agree without a canonicalizer.
-        // Gated on `is_constructor_symbol` (kind-isolated, same as the bridge):
-        // ops-as-values are `Value::OpRef`, never `Term::Ref`, and sorts/params
-        // aren't constructors, so the WI-391 `Ref`=wildcard / `Fn`=concrete
-        // TYPE-dispatch distinction is untouched.
-        if let Term::Fn {
+    /// WI-20260902-CZJ2N — ONE STORAGE FORM FOR A NULLARY APPLICATION, wherever the
+    /// name has no TYPE reading: `Term::Fn{f, [], []}` is stored as `Term::Ref(f)`, so
+    /// `rule holds :- b(1)` and `rule holds() :- b(1)` are ONE term and one predicate,
+    /// as §5.3/§8.6 already say in words.
+    ///
+    /// WHAT IT REPLACES. WI-511 gated the same rewrite on `is_constructor_symbol`, so
+    /// the merge reached SORT-NESTED CONSTRUCTORS and nothing else. A nullary
+    /// PREDICATE, a nullary OPERATION and an EQUATION FUNCTOR each kept two shapes that
+    /// do not unify — measured on the delivered tree: `rule tgtA :- b(1)` answered
+    /// `:- tgtA` and not `:- tgtA()`; `:- flag` failed silently while `not(flag)`
+    /// SUCCEEDED (a wrong answer, not a missing one); `rule tau <=> 7 [simp]` matched
+    /// no redex. Each on a program that loads clean.
+    ///
+    /// WHY THE GATE IS NOT SIMPLY GONE, which is what WI-20260902-CZJ2N's own plan
+    /// said to do — MEASURED, and the measurement is the reason this paragraph exists.
+    /// Removing it outright makes the STDLIB FAIL TO LOAD: 792 symbols change spelling,
+    /// and among them the SORTS carry a distinction the type layer depends on. §8.3 and
+    /// WI-391/WI-387 make `Ref(S)` the DISPATCH WILDCARD and a nullary `Fn{S}` the
+    /// CONCRETE spec identity (`sort_inst_to_value`'s bare-`Simple` arm builds each
+    /// deliberately, `impl_param_ref` reads only `Ref`/`Ident` as a wildcard), and
+    /// [`Self::register_self_sort`] records the same thing from the other side — its
+    /// note reports 24 tests failing `expected Type, got WorkItem` when a free-standing
+    /// entity's name term was re-spelled. Collapsing the two therefore turns a
+    /// `provides`-clause provider into a wildcard, and `anthill.prelude.FiniteCollection`
+    /// stops covering its own `requires`.
+    ///
+    /// SO THE LINE IS TYPE-HOOD, not constructor-hood. A name with a TYPE reading keeps
+    /// both spellings and the SLOT decides which it is (which is what §8.6 means by "the
+    /// position decides", and what WI-391 recovers from the symbol's kind); a name with
+    /// no type reading — a predicate, an operation, an equation functor, a namespace, a
+    /// sort-nested constructor — has one term. That subsumes WI-511's gate: a
+    /// sort-nested constructor does not carry `SymbolKind::Sort` (only an EPONYMOUS or
+    /// free-standing entity does, WI-926), so every symbol WI-511 merged still merges.
+    ///
+    /// AND IT IS LESS ORDER-DEPENDENT than the gate it replaces, which matters because
+    /// the old one's order-dependence is a documented hazard (see
+    /// [`Self::register_entity_of`]: `Color` was measured registering under BOTH
+    /// spellings in one run). `constructor_symbols` is populated DURING the load, so
+    /// `is_constructor_symbol` answers differently before and after a registration;
+    /// `SymbolKind::Sort` is stamped in `scan_definitions` pass 1, which completes for
+    /// EVERY file before any term is converted.
+    ///
+    /// A BARE ENTITY IN A LOGICAL POSITION is NOT this function's business. `fact
+    /// account` meaning the §8.3 all-fields-fresh pattern is decided at the
+    /// logical-position entry points in `load.rs`, where a goal can be told from a data
+    /// slot; here there is only a term.
+    ///
+    /// AN UNRESOLVED FUNCTOR STILL CANONICALIZES TO `Ref`, which is WI-511's behaviour
+    /// inherited rather than a decision this ticket makes. Sending it to `Ident`
+    /// instead — the promotion `convert_term_inner`'s `Term::Ident` arm makes ("promote
+    /// to `Ref` if the symbol resolved") — was tried and BACKED OUT: `register_entity_of`
+    /// stores its entity as `Fn{c}` and `is_entity_of` probes `Ref(c)`, and the unit
+    /// fixtures reach both through `kb.intern` (an UNRESOLVED symbol), so the two
+    /// spellings split again and `kb::tests::is_entity_of_is_carrier_neutral` failed
+    /// "zero ⊳ Nat".
+    ///
+    /// The split it would have closed is not reachable from source: a nullary head
+    /// naming nothing is REFUSED before it matters (`rule ..nosuch :- b(1)`,
+    /// WI-1075/P85Z7), and `remap_functor` errors on an unresolvable functor. So the
+    /// case is a hand-built KB's, and there the pre-existing spelling is the right
+    /// answer.
+    fn nullary_canon(&self, term: &Term) -> Option<Term> {
+        let Term::Fn {
             functor,
             pos_args,
             named_args,
-        } = &term
-        {
-            if pos_args.is_empty() && named_args.is_empty() && self.is_constructor_symbol(*functor)
-            {
-                let f = *functor;
-                return self.terms.alloc(Term::Ref(f));
-            }
+        } = term
+        else {
+            return None;
+        };
+        if !pos_args.is_empty() || !named_args.is_empty() {
+            return None;
         }
-        self.terms.alloc(term)
+        if self.has_kind(*functor, SymbolKind::Sort) {
+            return None;
+        }
+        Some(Term::Ref(*functor))
+    }
+
+    /// Allocate a term (hash-consed, refcounted). Applies [`Self::nullary_canon`].
+    ///
+    /// THE SINGLE FUNNEL, and WI-20260902-CZJ2N made it one: `resolve_qualified_name_term`
+    /// used to call `terms.alloc` directly to DODGE the canon, and `execute.rs`'s
+    /// synthesized rule head reached it by accident at arity 0. Both route here now — a
+    /// canon a caller can step around is a second spelling waiting to happen, which is
+    /// exactly what WI-1023 found in the `Map` key path.
+    pub fn alloc(&mut self, term: Term) -> TermId {
+        match self.nullary_canon(&term) {
+            Some(canon) => self.terms.alloc(canon),
+            None => self.terms.alloc(term),
+        }
     }
 
     /// Intern a string, returning a Symbol.
@@ -4051,9 +4126,9 @@ impl KnowledgeBase {
                 pos_arity,
                 ..
             } => Some((s, pos_arity)),
-            // `Ref(c) ≡ Fn{c}` at arity 0 (WI-436) — the canonical spelling of a
-            // 0-ary application, and the shape a bare proposition arrives as.
-            term_view::ViewHead::Ref(s) | term_view::ViewHead::Ident(s) => Some((s, 0)),
+            // An UNRESOLVED bare name. The resolved spelling (`Ref`) heads as a
+            // nullary `Functor` through the arm above since WI-20260902-CZJ2N.
+            term_view::ViewHead::Ident(s) => Some((s, 0)),
             _ => None,
         }
     }
@@ -5462,14 +5537,11 @@ impl KnowledgeBase {
     /// occurrence goal decides without lowering to a term.
     ///
     /// - Reflexive: `views_structurally_equal` — STRUCTURAL, so a parameterized
-    ///   `List[Int]` is not conflated with `List[Str]`. (This canonicalizes the
-    ///   `Fn{c}`/`Ref(c)` 0-ary spellings via `functor_view_head`, exactly as the
-    ///   former builtin's `reify`+`==` did; the retired direct-`TermId` `==` did
-    ///   not, so two cross-spelled TermIds of the *same* entity now compare equal —
-    ///   a same-direction broadening of the convenience path onto the builtin's
-    ///   semantics, unreachable via any caller.)
-    /// - Parent lookup keyed on `sub`'s functor symbol (O(1); the symbol unifies
-    ///   the Fn/Ref spellings), GATED on a NULLARY head: the `entity_parent` index
+    ///   `List[Int]` is not conflated with `List[Str]`. (The `Fn{c}`/`Ref(c)` 0-ary
+    ///   spellings are ONE TermId since WI-20260902-CZJ2N, so nothing has to
+    ///   canonicalize them here.)
+    /// - Parent lookup keyed on `sub`'s functor symbol (O(1)), GATED on a NULLARY
+    ///   head: the `entity_parent` index
     ///   only ever holds nullary entity terms (`register_entity_of` /
     ///   `name_to_sort_term`), so an APPLIED constructor `Fn{c,[args]}` is NOT an
     ///   entity of its sort here — preserving the pre-WI-697 verdict, which keyed on
@@ -5482,8 +5554,11 @@ impl KnowledgeBase {
         if term_view::views_structurally_equal(self, sub, sup) {
             return true;
         }
+        // WI-20260902-CZJ2N: ONE nullary arm each, where there were two. The
+        // `ViewHead::Ref` half is retired — a bare name heads as a nullary `Functor`
+        // — so the arity pin alone carries the gate, and the spellings can no longer
+        // reach here as different heads.
         let sub_sym = match sub.head(self) {
-            term_view::ViewHead::Ref(s) => s,
             term_view::ViewHead::Functor {
                 functor: Some(s),
                 pos_arity: 0,
@@ -5491,14 +5566,12 @@ impl KnowledgeBase {
             } => s,
             _ => return false,
         };
-        // The stored parent is a NAME; `sup` may arrive in any carrier/spelling
-        // (`Fn{S}` or `Ref(S)` — WI-511 makes that order-dependent), so compare
+        // The stored parent is a NAME; `sup` may arrive in any carrier, so compare
         // the two as SYMBOLS rather than structurally.
         let Some(&parent_sym) = self.entity_parent.get(&sub_sym) else {
             return false;
         };
         match term_view::TermView::head(sup, self) {
-            term_view::ViewHead::Ref(s) => s == parent_sym,
             term_view::ViewHead::Functor {
                 functor: Some(s),
                 pos_arity: 0,
@@ -7854,18 +7927,21 @@ impl KnowledgeBase {
         })
     }
 
-    /// Look up a qualified name and create a nullary Fn term.
+    /// Look up a qualified name and create a NAME term for it — a nullary
+    /// application, in whichever spelling [`Self::nullary_canon`] stores.
     /// Falls back to intern() if no resolved symbol exists.
     /// Callers should pass qualified names (e.g. "Color.red", not "red").
+    ///
+    /// WI-20260902-CZJ2N — ROUTES THROUGH [`Self::alloc`], where it deliberately did
+    /// not. The old bypass existed to hand callers "the literal nullary `Term::Fn`"
+    /// so they could read the functor back off it; under WI-511's narrow canon that
+    /// left a THIRD spelling of a constructor name in the store, which WI-1023 then
+    /// had to teach the `Map` key path to tolerate. A canon a caller can step around
+    /// is a second spelling waiting to happen, so the bypass is gone and readers take
+    /// the functor off the head (`ViewHead::functor_sym`) instead of the shape.
     pub fn resolve_qualified_name_term(&mut self, name: &str) -> TermId {
         let sym = self.resolve_qualified_name_sym(name);
-        // `self.terms.alloc`, NOT `self.alloc` / `make_name_term_from_sym`:
-        // this must yield the literal nullary `Term::Fn`, and `KnowledgeBase::
-        // alloc` rewrites one to `Term::Ref` when the symbol is a CONSTRUCTOR
-        // (WI-511). Callers here ask for a NAME term and read the functor back
-        // off it, so routing through the canonicalizer hands them a `Ref` for
-        // `Color.red` and breaks the read.
-        self.terms.alloc(Term::Fn {
+        self.alloc(Term::Fn {
             functor: sym,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
@@ -11284,15 +11360,22 @@ mod tests {
             "Node Nat ⋫ Node zero"
         );
 
-        // Cross-spelling: register `succ` as the pre-canon `Fn{succ}`; a post-canon
-        // `Ref(succ)` (WI-511 alloc canon, gated on is_constructor_symbol) query
-        // resolves via the SINGLE symbol key — what the TermId dual-keying did before.
-        let succ_fn = kb.make_name_term("succ"); // Fn{succ} (succ not a ctor yet)
+        // Cross-spelling — AND THE GADGET NO LONGER PRODUCES TWO SPELLINGS, which is
+        // the point WI-20260902-CZJ2N makes about the gate it replaced. This block
+        // registered `succ` BETWEEN two identical `make_name_term` calls precisely
+        // because WI-511's canon was gated on `is_constructor_symbol`, which the
+        // registration FLIPS: the same source text minted `Fn{succ}` before and
+        // `Ref(succ)` after, and `register_entity_of`'s own doc reports `Color` being
+        // filed under both spellings in one suite run. The gate is `has_kind(Sort)`
+        // now, which `succ` never acquires, so both calls answer ONE TermId and the
+        // order-dependence is gone. The symbol keying still carries the lookup, which
+        // is what the two `is_entity_of` rows below assert.
+        let succ_fn = kb.make_name_term("succ");
         kb.register_entity_of(succ_fn, nat); // now succ IS a constructor
-        let succ_ref = kb.make_name_term("succ"); // alloc canonicalizes Fn{succ} → Ref(succ)
-        assert_ne!(
+        let succ_ref = kb.make_name_term("succ");
+        assert_eq!(
             succ_fn, succ_ref,
-            "the two spellings must be distinct TermIds"
+            "the spelling no longer depends on WHEN the symbol was registered"
         );
         assert!(kb.is_entity_of(succ_fn, nat), "Fn{{succ}} spelling");
         assert!(kb.is_entity_of(succ_ref, nat), "Ref(succ) spelling");

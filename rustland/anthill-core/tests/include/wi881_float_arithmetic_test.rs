@@ -13,7 +13,8 @@
 //! two that are not definitions (the SIGN OF ZERO — IEEE separates `+0.0` from
 //! `-0.0` while every comparison reads them equal);
 //! [`the_constants_answer_in_both_nullary_call_forms`] and
-//! [`a_bare_nullary_simp_head_never_fires`] show the reach limit that settled `tau`;
+//! [`a_bare_nullary_simp_head_fires_exactly_like_its_parenthesised_twin`] show the
+//! reach limit that settled `tau` — the HEAD half of which WI-20260902-CZJ2N removed;
 //! [`the_simp_definition_fires_away_from_its_sort`] is what licenses `recip` being
 //! backed by its equation ALONE, with no host mapping.
 //!
@@ -331,8 +332,9 @@ fn the_simp_definition_fires_away_from_its_sort() {
 /// head is an APPLICATION, so it matches `tau()` and NOT the BARE `tau` this sort's own
 /// comment advertises as a call form. With `[simp]` alone, `pi` and `e` answered bare
 /// and `tau` died `OperationBodyMissing`; three constants of one family must behave
-/// alike, so all six of these run. [`a_bare_nullary_simp_head_never_fires`] isolates
-/// the same limit on the head side.
+/// alike, so all six of these run.
+/// [`a_bare_nullary_simp_head_fires_exactly_like_its_parenthesised_twin`] isolates the
+/// head side — where WI-20260902-CZJ2N removed the limit entirely.
 #[test]
 fn the_constants_answer_in_both_nullary_call_forms() {
     assert_floats(&[
@@ -345,14 +347,25 @@ fn the_constants_answer_in_both_nullary_call_forms() {
     ]);
 }
 
-/// The HEAD side of the same limit, on a local control so nothing in the stdlib moves:
-/// a `[simp]` equation whose head is a BARE nullary name never fires, and the operation
-/// dies `OperationBodyMissing` with the tag present. This is why all four of
-/// `float.anthill`'s equations were inert, and it is the left-hand mirror of the hazard
-/// `map.anthill` records on the right (`<=> none [simp]` parses as `none[simp]`).
-/// `kernel-language.md`'s "Equational rules" paragraph states both.
+/// THE HEAD SIDE, AND WI-20260902-CZJ2N FLIPPED IT: a `[simp]` equation whose head is
+/// a BARE nullary name FIRES, exactly as its parenthesised twin does. The two heads are
+/// ONE TERM now (`KnowledgeBase::nullary_canon`), so `rule bare <=> add(25, 25) [simp]`
+/// defines `bare` and `driveBare` answers 50.
+///
+/// WHAT IT USED TO ASSERT, kept because it is the defect this row now measures the
+/// absence of: `driveBare` died `OperationBodyMissing { wi881.nullary.C.bare }` with
+/// the `[simp]` tag PRESENT, on a program that loaded clean. That is why all four of
+/// `float.anthill`'s equations were inert. §5.3's trap "a nullary head must carry its
+/// parentheses" is deleted with this row's old verdict.
+///
+/// STILL A PAIR, and deliberately: the claim is that the two spellings AGREE, which one
+/// arm cannot make. BACKED OUT (restore the `is_constructor_symbol` gate in
+/// `nullary_canon`, or drop `simp_rewrite::stored_eq_operand_functor`'s `Term::Ref`
+/// arm), the `bare` arm reverts to `OperationBodyMissing` while the `parenthesized`
+/// arm keeps answering 40 — which is what says the axis is the head SPELLING and not
+/// the `[simp]` machinery.
 #[test]
-fn a_bare_nullary_simp_head_never_fires() {
+fn a_bare_nullary_simp_head_fires_exactly_like_its_parenthesised_twin() {
     const CONTROL: &str = r#"
 namespace wi881.nullary
   import anthill.prelude.{Int64}
@@ -379,9 +392,7 @@ end
     }
     let mut interp = crate::common::interp_for(CONTROL);
     match interp.call("wi881.nullary.C.driveBare", &[Value::Int(0)]) {
-        Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. }) => {
-            assert_eq!(name, "wi881.nullary.C.bare")
-        }
-        other => panic!("a bare nullary [simp] head must not fire; got {other:?}"),
+        Ok(Value::Int(50)) => {}
+        other => panic!("a bare nullary [simp] head must fire too; got {other:?}"),
     }
 }

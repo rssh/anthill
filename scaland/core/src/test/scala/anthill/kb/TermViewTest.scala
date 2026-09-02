@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.TermSymbol
+import anthill.intern.{SymbolKind, TermSymbol}
 import anthill.term.{Literal, OrderedDouble, Term, TermId, Value, Var, VarId}
 
 /** The carrier-neutral read API: a hash-consed `TermId` and a non-interned
@@ -22,7 +22,7 @@ class TermViewTest extends munit.FunSuite:
     val arg = kb.alloc(Term.Const(Literal.IntLit(1)))
 
     assertEquals(headOf(kb, kb.alloc(Term.Const(Literal.IntLit(7)))), ViewHead.Const(Literal.IntLit(7)))
-    assertEquals(headOf(kb, kb.alloc(Term.Ref(f))), ViewHead.Ref(f))
+    assertEquals(headOf(kb, kb.alloc(Term.Ref(f))), ViewHead.nullary(f))
     assertEquals(headOf(kb, kb.alloc(Term.Ident(f))), ViewHead.Ident(f))
     assertEquals(headOf(kb, kb.alloc(Term.Bottom)), ViewHead.Bottom)
 
@@ -55,20 +55,24 @@ class TermViewTest extends munit.FunSuite:
     assert(viewsStructurallyEqual(kb, Value.UnitVal, Value.Tuple(noPos, noNamed)))
   }
 
-  // ── WI-436: a 0-ary constructor canonicalizes to Ref ──────────
+  // ── WI-436 / WI-20260902-CZJ2N: one nullary head, one nullary term ────
 
-  test("nullary registered constructor reads as Ref on every carrier") {
+  test("a nullary application and its bare spelling are ONE term and ONE head") {
     val kb = KnowledgeBase()
     val list = kb.makeNameTerm("List")
-    val nilFn = kb.makeNameTerm("nil") // Term.Fn(nil, [], [])
+    val nilFn = kb.makeNameTerm("nil") // Term.Fn(nil, [], []) — canonicalized on alloc
     kb.registerEntityOf(nilFn, list)
     val nilSym = kb.intern("nil")
     val nilRef = kb.alloc(Term.Ref(nilSym))
 
-    // All three spellings of the same 0-ary constructor read as `Ref(nil)`.
-    assertEquals(headOf(kb, nilFn), ViewHead.Ref(nilSym))
-    assertEquals(headOf(kb, nilRef), ViewHead.Ref(nilSym))
-    assertEquals(headOf(kb, Value.Entity(nilSym, noPos, noNamed)), ViewHead.Ref(nilSym))
+    // WI-20260902-CZJ2N: the STORE canonicalizes, so these are the same TermId. Before
+    // it, scaland had no canon at all here and only the VIEW bridged the two.
+    assertEquals(nilFn, nilRef)
+
+    val nullary = ViewHead.nullary(nilSym)
+    assertEquals(headOf(kb, nilFn), nullary)
+    assertEquals(headOf(kb, nilRef), nullary)
+    assertEquals(headOf(kb, Value.Entity(nilSym, noPos, noNamed)), nullary)
 
     // ... and therefore compare equal across carriers and spellings.
     assert(viewsStructurallyEqual(kb, nilFn, nilRef))
@@ -76,20 +80,40 @@ class TermViewTest extends munit.FunSuite:
     assert(viewsStructurallyEqual(kb, nilRef, Value.Entity(nilSym, noPos, noNamed)))
   }
 
-  test("the constructor gate is kind-isolated: a non-constructor nullary Fn stays a Functor") {
+  test("the canon reaches a NON-constructor too — the gate is type-hood, not constructor-hood") {
+    // THE ROW CZJ2N MOVED. It asserted the opposite: an unregistered nullary `Fn` kept a
+    // `Functor` head while its bare spelling was a `Ref`, and the two compared UNEQUAL —
+    // which is why `rule holds :- b(1)` could not answer the goal `holds()`.
     val kb = KnowledgeBase()
-    val natFn = kb.makeNameTerm("Nat") // a sort name, never registered as a constructor
-    val natSym = kb.intern("Nat")
+    val plainFn = kb.makeNameTerm("plain") // never registered as a constructor
+    val plainSym = kb.intern("plain")
+    val plainRef = kb.alloc(Term.Ref(plainSym))
+
+    assert(!kb.isConstructorSymbol(plainSym))
+    assertEquals(plainFn, plainRef)
+    assertEquals(headOf(kb, plainFn), ViewHead.nullary(plainSym))
+    assert(viewsStructurallyEqual(kb, plainFn, plainRef))
+    assertEquals(headOf(kb, plainFn).functorSym, Some(plainSym))
+  }
+
+  test("a SORT name keeps both spellings — the one exception, and the STORE is where it lives") {
+    // §8.3 / WI-391 / WI-387: in a type position `Ref(S)` is the dispatch WILDCARD and a
+    // nullary `Fn(S)` the CONCRETE spec identity. Rustland measured what merging them
+    // costs — 792 symbols re-spelled and the standard library stops loading — so the
+    // canon exempts a `SymbolKind.Sort` name.
+    val kb = KnowledgeBase()
+    val g = kb.globalScope
+    val natSym = kb.symbols.define("Nat", "Nat", SymbolKind.Sort, g)
+    val natFn = kb.alloc(Term.Fn(natSym, IArray.empty, IArray.empty))
     val natRef = kb.alloc(Term.Ref(natSym))
 
-    assert(!kb.isConstructorSymbol(natSym))
-    assertEquals(headOf(kb, natFn), ViewHead.Functor(Some(natSym), 0, 0))
-    assertEquals(headOf(kb, natRef), ViewHead.Ref(natSym))
-    assert(!viewsStructurallyEqual(kb, natFn, natRef))
+    assert(natFn != natRef, "a SORT's two nullary spellings stay two terms")
 
-    // Both spellings still answer `functorSym` with the same symbol.
-    assertEquals(headOf(kb, natFn).functorSym, Some(natSym))
-    assertEquals(headOf(kb, natRef).functorSym, Some(natSym))
+    // …but the VIEW merges them, exactly as rustland's does: every consumer that must
+    // keep them apart reads the TERM.
+    assertEquals(headOf(kb, natFn), ViewHead.nullary(natSym))
+    assertEquals(headOf(kb, natRef), ViewHead.nullary(natSym))
+    assert(viewsStructurallyEqual(kb, natFn, natRef))
   }
 
   // ── Cross-carrier structural equality ─────────────────────────

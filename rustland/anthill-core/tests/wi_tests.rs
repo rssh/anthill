@@ -1567,3 +1567,6 @@ mod wi_p85z7_paren_less_nullary_head_test;
 
 #[path = "include/wi_719fj_dotted_paren_less_citation_test.rs"]
 mod wi_719fj_dotted_paren_less_citation_test;
+
+#[path = "include/wi_czj2n_nullary_spelling_test.rs"]
+mod wi_czj2n_nullary_spelling_test;

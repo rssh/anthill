@@ -426,6 +426,24 @@ pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) 
     }
     pick(&lookup_operation_info(kb, op_sym)?.type_params)
 }
+/// WI-20260902-CZJ2N — is `sym` an OPERATION taking no arguments, i.e. a name whose
+/// bare spelling IS a call?
+///
+/// THE ONE OWNER of that question, because three producers ask it and they must agree
+/// on one node shape: the rule-body occurrence builder
+/// (`load::Loader::nullary_op_call_or_ref`), the `[simp]` RHS substituter
+/// (`simp_rewrite::subst_visit`) and the macro-RHS head reader
+/// (`simp_rewrite::macro_expanded_rhs_head`). Each of them used to tell a nullary CALL
+/// from a bare NAME by the stored shape — `Fn{f, [], []}` versus `Ref(f)` — and that
+/// shape is gone: the two spellings are one term. What remains is the DECLARATION, and
+/// this is it.
+///
+/// It is deliberately NOT `has_kind(Operation)`: an operation of arity > 0 named bare is
+/// an eta reference (§5.4), not a call, and folding the two would turn `map(f)` into a
+/// call to `f`.
+pub fn is_nullary_operation(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    declared_arity(kb, sym) == Some(0)
+}
 
 /// WI-886 — how many parameters does `op_sym` DECLARE? [`operation_is_declared`]'s
 /// sibling: same two tiers (the WI-656 cached record, then the pre-
@@ -892,13 +910,23 @@ fn extract_params(kb: &KnowledgeBase, params_field: Option<ViewItem>) -> Vec<(Sy
         .collect()
 }
 
-/// The symbol a `name`-field `ViewItem` refers to. Carrier-agnostic: a ref reads
-/// as `ViewHead::Ref` through `TermView` whether the field is a hash-consed
-/// `Term::Ref`, a `Value::Term(Ref)`, or a `Value::Node` `Expr::Ref` occurrence —
-/// so no `kb.get_term` (which would only see the `Term` carrier).
+/// The symbol a `name`-field `ViewItem` refers to. Carrier-agnostic: a ref reads as a
+/// NULLARY `ViewHead::Functor` through `TermView` whether the field is a hash-consed
+/// `Term::Ref`, a `Value::Term(Ref)`, or a `Value::Node` `Expr::Ref` occurrence — so no
+/// `kb.get_term` (which would only see the `Term` carrier).
+///
+/// WI-20260902-CZJ2N: the arity is PINNED at 0 rather than read through
+/// `functor_sym`. This asks "is this field a NAME", and an applied term
+/// (`some(?x)`) is not one; before the `ViewHead::Ref` head was retired the
+/// variant carried that restriction, and dropping it here without the pin would
+/// silently widen a name field to any application.
 fn view_ref_sym(kb: &KnowledgeBase, item: ViewItem) -> Option<Symbol> {
     match item.head(kb) {
-        ViewHead::Ref(s) => Some(s),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(s),
         _ => None,
     }
 }

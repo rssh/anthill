@@ -359,8 +359,7 @@ fn entity_shape(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> String {
     let functor = match v.head(kb) {
         ViewHead::Functor {
             functor: Some(s), ..
-        }
-        | ViewHead::Ref(s) => s,
+        } => s,
         other => return format!("<not an entity: {other:?}>"),
     };
     let short = |s: Symbol| kb.local_name_of(s).rsplit('.').next().unwrap_or("").to_string();

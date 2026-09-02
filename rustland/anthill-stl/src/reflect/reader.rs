@@ -463,7 +463,33 @@ pub(crate) fn reify_walk<V: TermView, B: ReifyBuilder>(
     match view.head(kb) {
         ViewHead::Var(var) => builder.on_var(kb, var_repr_name(kb, var)),
         ViewHead::Const(lit) => builder.on_literal(kb, lit),
-        ViewHead::Ref(sym) | ViewHead::Ident(sym) => builder.on_ref(kb, sym),
+        ViewHead::Ident(sym) => builder.on_ref(kb, sym),
+        // WI-20260902-CZJ2N — A NULLARY APPLICATION REIFIES AS `RefRepr`, NOT AS AN
+        // ARGUMENT-LESS `FnRepr`, and this arm has to precede the general `Functor` one
+        // to say so. The retired `ViewHead::Ref` carried the distinction before; one
+        // term deserves one repr, which is the split this ticket exists to remove.
+        //
+        // IT IS WIDER THAN THE HEAD IT REPLACES, and that is stated because it is a
+        // reflect-SURFACE change. `ViewHead::Ref` covered `Term::Ref(s)` for any `s`
+        // plus `Fn{c, [], []}` for a registered CONSTRUCTOR; this covers every nullary
+        // head, so two shapes move from `FnRepr(f, [])` to `RefRepr(f)`: a canon-EXEMPT
+        // `Fn{S, [], []}` of a `SymbolKind::Sort` name (the empty `ListLiteral()` the
+        // reload-faithful printer writes is the live one), and the nullary `Expr::Apply`
+        // `Loader::nullary_op_call_or_ref` now mints for `:- flag`.
+        //
+        // CENSUSED, not assumed: the corpus has ONE consumer of these constructors —
+        // `examples/guardians/lib/gate.anthill`'s `repr_name` / `spec_of_row` — and it
+        // reads BOTH arms for a nullary name, by its own comment's design ("Reading only
+        // one of them would work for sorts and silently fail for entities"). So the move
+        // is invisible to it. The PRINTER is unaffected either way: `persistence::print`
+        // reads the raw `Term::Fn` and still writes `ListLiteral()` with its parentheses
+        // in reload-faithful mode, so the persistence round trip does not go through
+        // here.
+        ViewHead::Functor {
+            functor: Some(sym),
+            pos_arity: 0,
+            named_arity: 0,
+        } => builder.on_ref(kb, sym),
         // Both realizations reify `⊥` as a `Ref` named `"⊥"`.
         ViewHead::Bottom => {
             let bottom = kb.intern("⊥");

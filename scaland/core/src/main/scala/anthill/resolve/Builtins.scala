@@ -33,6 +33,22 @@ object Builtins:
       case BuiltinTag.Kind => executeKind(kb, goal, subst)
       case BuiltinTag.FieldAccess => BuiltinResult.Delay // TODO
 
+  /** The symbol a NAME-shaped argument denotes, in either spelling.
+    *
+    * WI-20260902-CZJ2N — the four reflection builtins below each read `case inner:
+    * Term.Fn` to get the symbol out of their first argument, and a name term is a
+    * `Term.Ref` now (`KnowledgeBase.alloc`'s nullary canon). Read as "not a name" it made
+    * every one of them `Delay`, so `qualified_name`, `short_name`, `scope`, `kind` and
+    * `extract_sort` answered a SUSPENSION on the very shape they exist for. `Term.Ident`
+    * is admitted too — an unresolved name still names something to report.
+    */
+  private def nameArgSymbol(kb: KnowledgeBase, arg: TermId): Option[TermSymbol] =
+    kb.getTerm(arg) match
+      case Term.Fn(functor, _, _) => Some(functor)
+      case Term.Ref(sym)          => Some(sym)
+      case Term.Ident(sym)        => Some(sym)
+      case _                      => None
+
   def firstArg(kb: KnowledgeBase, goal: TermId): TermId =
     kb.getTerm(goal) match
       case fn: Term.Fn if fn.posArgs.length >= 1 => fn.posArgs(0)
@@ -92,9 +108,9 @@ object Builtins:
   private def executeSymbolName(kb: KnowledgeBase, goal: TermId, subst: Substitution, qualifiedName: Boolean): BuiltinResult =
     extract2Args(kb, goal, subst) match
       case Some((symArg, resultArg)) =>
-        kb.getTerm(symArg) match
-          case inner: Term.Fn =>
-            val name = kb.symbols.get(inner.functor) match
+        nameArgSymbol(kb, symArg) match
+          case Some(functor) =>
+            val name = kb.symbols.get(functor) match
               case SymbolDef.Resolved(shortName, qn, _, _) => if qualifiedName then qn else shortName
               case SymbolDef.Unresolved(n) => n
             val strTerm = kb.alloc(Term.Const(Literal.StringLit(name)))
@@ -125,24 +141,23 @@ object Builtins:
   private def executeExtractSort(kb: KnowledgeBase, goal: TermId, subst: Substitution): BuiltinResult =
     extract2Args(kb, goal, subst) match
       case Some((instArg, resultArg)) =>
-        kb.getTerm(instArg) match
-          case inner: Term.Fn =>
-            // Canonical nullary-Fn shape — matches the form used by the
-            // loader for sort references (e.g. SortRequiresInfo facts hold
-            // `sort_ref: Fn(B, [], [])`). Pre-WI-172 the eager
-            // applySubst-each + bindCompressed silently overwrote the
-            // Term.Ref form when later discrim-tree matches re-bound the
+        nameArgSymbol(kb, instArg) match
+          case Some(functor) =>
+            // The canonical NAME shape, whichever spelling it arrived in — the form the
+            // loader uses for sort references (e.g. `SortRequiresInfo` facts hold
+            // `sort_ref`). Pre-WI-172 the eager applySubst-each + bindCompressed silently
+            // overwrote the `Term.Ref` form when later discrim-tree matches re-bound the
             // same var; lazy walking surfaces the inconsistency.
-            bindResult(kb, resultArg, kb.makeNameTermFromSym(inner.functor), subst)
+            bindResult(kb, resultArg, kb.makeNameTermFromSym(functor), subst)
           case _ => BuiltinResult.Delay
       case None => BuiltinResult.Failure
 
   private def executeScope(kb: KnowledgeBase, goal: TermId, subst: Substitution): BuiltinResult =
     extract2Args(kb, goal, subst) match
       case Some((symArg, resultArg)) =>
-        kb.getTerm(symArg) match
-          case inner: Term.Fn =>
-            kb.symbols.get(inner.functor) match
+        nameArgSymbol(kb, symArg) match
+          case Some(functor) =>
+            kb.symbols.get(functor) match
               // WI-976: THE reader of the scope→term direction, and it goes through
               // `scopeTerm`. It used to be `TermId.fromRaw(scopeRaw)` — see
               // `anthill.intern.SymbolTable.ScopeId` for why that was right only by coincidence.
@@ -155,9 +170,9 @@ object Builtins:
   private def executeKind(kb: KnowledgeBase, goal: TermId, subst: Substitution): BuiltinResult =
     extract2Args(kb, goal, subst) match
       case Some((symArg, resultArg)) =>
-        kb.getTerm(symArg) match
-          case inner: Term.Fn =>
-            kb.symbols.get(inner.functor) match
+        nameArgSymbol(kb, symArg) match
+          case Some(functor) =>
+            kb.symbols.get(functor) match
               case SymbolDef.Resolved(_, _, kind, _) =>
                 val strTerm = kb.alloc(Term.Const(Literal.StringLit(kind.toString.toLowerCase)))
                 bindResult(kb, resultArg, strTerm, subst)

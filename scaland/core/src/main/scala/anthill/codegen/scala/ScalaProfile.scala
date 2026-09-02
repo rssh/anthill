@@ -124,6 +124,11 @@ object ScalaProfile:
   ): Map[String, String] =
     val elems = kb.getTerm(tid) match
       case fn: Term.Fn if kb.resolveSym(fn.functor) == "ListLiteral" => fn.posArgs
+      // WI-20260902-CZJ2N: an EMPTY `[]` is a nullary application and is stored bare, so
+      // `type_map { }` arrives as `Term.Ref(ListLiteral)`. Read as "not a list literal"
+      // it refused a profile that legitimately maps nothing — which is exactly what
+      // `scalarless` / `unitless` are.
+      case Term.Ref(sym) if kb.resolveSym(sym) == "ListLiteral" => IArray.empty[TermId]
       case _ => malformed(language, profile, "type_map", "not a list literal")
     var acc = Map.empty[String, String]
     var i = 0

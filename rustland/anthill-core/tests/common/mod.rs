@@ -910,17 +910,16 @@ pub fn list_column_ints(kb: &KnowledgeBase, v: &eval::Value) -> Vec<i64> {
 /// The FUNCTOR SYMBOL of an entity value, whatever CARRIER it rides on.
 ///
 /// Through [`TermView`] rather than a `Value::Entity` match, for the reason
-/// [`entity_field`] spells out. A NULLARY constructor reads as `ViewHead::Ref` and not
-/// as an empty `Functor` (WI-436/WI-511), so both spellings must be accepted or `nil` /
-/// `none` answer `None` here while `some(1)` answers a symbol.
+/// [`entity_field`] spells out. WI-20260902-CZJ2N: a NULLARY constructor reads as a
+/// `Functor` head at arity 0 like every other application — it used to read as a
+/// separate `ViewHead::Ref`, which is why this had two arms.
 #[allow(dead_code)]
 pub fn entity_functor(kb: &KnowledgeBase, v: &eval::Value) -> Option<anthill_core::intern::Symbol> {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Functor {
             functor: Some(s), ..
-        }
-        | ViewHead::Ref(s) => Some(s),
+        } => Some(s),
         _ => None,
     }
 }

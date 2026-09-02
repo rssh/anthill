@@ -1712,6 +1712,12 @@ fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
         let head = kb.rule_head(rid);
         let functor = match kb.get_term(head) {
             Term::Fn { functor, .. } => *functor,
+            // WI-20260902-CZJ2N: a NULLARY hint head is stored bare. Without this arm
+            // `rule p [hint] :- …` (and its parenthesised twin, which is now the same
+            // term) was silently dropped from the implicit-cite list, so its `-:`
+            // conclusion never reached the SMT preamble and `by z3` reported `Unknown`
+            // with no diagnostic.
+            Term::Ref(s) | Term::Ident(s) => *s,
             _ => continue,
         };
         let head_qn = kb.qualified_name_of(functor).to_string();

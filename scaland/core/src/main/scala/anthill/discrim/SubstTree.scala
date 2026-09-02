@@ -14,8 +14,23 @@ enum DiscrimKey:
   case Positional
   case Lit(lit: Literal)
   case IdentKey(sym: TermSymbol)
-  case RefKey(sym: TermSymbol)
   case Bottom
+
+/** WI-20260902-CZJ2N — THE NULLARY SPELLING OF AN APPLICATION, for the six walks below.
+  *
+  * A bare `Term.Ref(f)` IS the nullary application `f()`, so it keys under the SAME path
+  * as one: `Functor(f)` then `Arity(0)`. `DiscrimKey.RefKey` was a second key space for
+  * the same thing, and it is what made a fact written `holds` invisible to a goal written
+  * `holds()` — the walks here read `Term` directly rather than through `TermView`, so no
+  * view-layer canon could have reached them.
+  *
+  * SPELLED AS AN EXPLICIT ARM AT EACH WALK, not as an `unapply` extractor covering both:
+  * Scala's exhaustivity checker cannot see through an extractor, and every `match` over
+  * `Term` in this file is deliberately wildcard-free so that a new variant is a compile
+  * error rather than a silent mis-index. `Term.Ident` keeps its own key — an UNRESOLVED
+  * name is not an application of anything.
+  */
+private inline def NULLARY_ARITY: Int = 0
 
 // ── DiscrimNode — tree node ─────────────────────────────────────
 
@@ -39,17 +54,18 @@ class SubstTree[L]:
 
   private def insertWalk(node: DiscrimNode[L], terms: TermStore, termId: TermId): DiscrimNode[L] =
     terms.get(termId) match
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(fn.functor), DiscrimNode())
+      case Term.Fn(functor, posArgs, namedArgs) =>
+        val arity = posArgs.length + namedArgs.length
+        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(functor), DiscrimNode())
         val n2 = n1.concrete.getOrElseUpdate(DiscrimKey.Arity(arity), DiscrimNode())
-        insertWalkArgs(n2, terms, fn.posArgs, fn.namedArgs)
+        insertWalkArgs(n2, terms, posArgs, namedArgs)
+      case Term.Ref(sym) =>
+        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(sym), DiscrimNode())
+        n1.concrete.getOrElseUpdate(DiscrimKey.Arity(NULLARY_ARITY), DiscrimNode())
       case Term.Const(lit) =>
         node.concrete.getOrElseUpdate(DiscrimKey.Lit(lit), DiscrimNode())
       case Term.Ident(sym) =>
         node.concrete.getOrElseUpdate(DiscrimKey.IdentKey(sym), DiscrimNode())
-      case Term.Ref(sym) =>
-        node.concrete.getOrElseUpdate(DiscrimKey.RefKey(sym), DiscrimNode())
       case Term.Bottom =>
         node.concrete.getOrElseUpdate(DiscrimKey.Bottom, DiscrimNode())
       case Term.Var(_) => node
@@ -90,17 +106,18 @@ class SubstTree[L]:
           val child = DiscrimNode[L]()
           node.varEdges += ((vid, child))
           child
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(fn.functor), DiscrimNode())
+      case Term.Fn(functor, posArgs, namedArgs) =>
+        val arity = posArgs.length + namedArgs.length
+        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(functor), DiscrimNode())
         val n2 = n1.concrete.getOrElseUpdate(DiscrimKey.Arity(arity), DiscrimNode())
-        insertPatternWalkArgs(n2, terms, fn.posArgs, fn.namedArgs)
+        insertPatternWalkArgs(n2, terms, posArgs, namedArgs)
+      case Term.Ref(sym) =>
+        val n1 = node.concrete.getOrElseUpdate(DiscrimKey.Functor(sym), DiscrimNode())
+        n1.concrete.getOrElseUpdate(DiscrimKey.Arity(NULLARY_ARITY), DiscrimNode())
       case Term.Const(lit) =>
         node.concrete.getOrElseUpdate(DiscrimKey.Lit(lit), DiscrimNode())
       case Term.Ident(sym) =>
         node.concrete.getOrElseUpdate(DiscrimKey.IdentKey(sym), DiscrimNode())
-      case Term.Ref(sym) =>
-        node.concrete.getOrElseUpdate(DiscrimKey.RefKey(sym), DiscrimNode())
       case Term.Bottom =>
         node.concrete.getOrElseUpdate(DiscrimKey.Bottom, DiscrimNode())
 
@@ -132,25 +149,34 @@ class SubstTree[L]:
   ): Boolean =
     // Simplified: just find and remove leaf from tree traversal
     terms.get(termId) match
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        val fk = DiscrimKey.Functor(fn.functor)
-        node.concrete.get(fk) match
-          case Some(fnChild) =>
-            val ak = DiscrimKey.Arity(arity)
-            fnChild.concrete.get(ak) match
-              case Some(arChild) =>
-                removeWalkArgs(arChild, terms, fn.posArgs, fn.namedArgs, 0, 0, leaf)
-                if arChild.isEmpty then fnChild.concrete.remove(ak)
-              case None =>
-            if fnChild.isEmpty then node.concrete.remove(fk)
-          case None =>
-        node.isEmpty
+      case Term.Fn(functor, posArgs, namedArgs) =>
+        removeWalkApp(node, terms, functor, posArgs, namedArgs, leaf)
+      case Term.Ref(sym) =>
+        removeWalkApp(node, terms, sym, IArray.empty, IArray.empty, leaf)
       case Term.Const(lit) => removeAtLeafKey(node, DiscrimKey.Lit(lit), leaf)
       case Term.Ident(sym) => removeAtLeafKey(node, DiscrimKey.IdentKey(sym), leaf)
-      case Term.Ref(sym) => removeAtLeafKey(node, DiscrimKey.RefKey(sym), leaf)
       case Term.Bottom => removeAtLeafKey(node, DiscrimKey.Bottom, leaf)
       case Term.Var(_) => node.isEmpty
+
+  /** The application arm of [[removeWalkTerm]], shared by the two spellings of an
+    * application (WI-20260902-CZJ2N). */
+  private def removeWalkApp(
+    node: DiscrimNode[L], terms: TermStore, functor: TermSymbol,
+    posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)], leaf: L
+  )(using eq: PartialFunction[L, Boolean]): Boolean =
+    val arity = posArgs.length + namedArgs.length
+    val fk = DiscrimKey.Functor(functor)
+    node.concrete.get(fk) match
+      case Some(fnChild) =>
+        val ak = DiscrimKey.Arity(arity)
+        fnChild.concrete.get(ak) match
+          case Some(arChild) =>
+            removeWalkArgs(arChild, terms, posArgs, namedArgs, 0, 0, leaf)
+            if arChild.isEmpty then fnChild.concrete.remove(ak)
+          case None =>
+        if fnChild.isEmpty then node.concrete.remove(fk)
+      case None =>
+    node.isEmpty
 
   private def removeAtLeafKey(node: DiscrimNode[L], key: DiscrimKey, leaf: L)(
     using eq: PartialFunction[L, Boolean]
@@ -192,17 +218,36 @@ class SubstTree[L]:
     posIdx: Int, namedIdx: Int, leaf: L
   )(using eq: PartialFunction[L, Boolean]): Unit =
     terms.get(argTermId) match
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        val fk = DiscrimKey.Functor(fn.functor)
+      case Term.Fn(functor, argPos, argNamed) =>
+        removeWalkArgApp(node, terms, functor, argPos, argNamed, pos, named, posIdx, namedIdx, leaf)
+      case Term.Ref(sym) =>
+        removeWalkArgApp(node, terms, sym, IArray.empty, IArray.empty, pos, named, posIdx, namedIdx, leaf)
+      case Term.Const(lit) =>
+        removeValueThenContinue(node, DiscrimKey.Lit(lit), terms, pos, named, posIdx, namedIdx, leaf)
+      case Term.Ident(sym) =>
+        removeValueThenContinue(node, DiscrimKey.IdentKey(sym), terms, pos, named, posIdx, namedIdx, leaf)
+      case Term.Bottom =>
+        removeValueThenContinue(node, DiscrimKey.Bottom, terms, pos, named, posIdx, namedIdx, leaf)
+      case Term.Var(_) => ()
+
+  /** The application arm of [[removeWalkArgValue]], shared by the two spellings of an
+    * application (WI-20260902-CZJ2N). */
+  private def removeWalkArgApp(
+    node: DiscrimNode[L], terms: TermStore, functor: TermSymbol,
+    argPos: IArray[TermId], argNamed: IArray[(TermSymbol, TermId)],
+    pos: IArray[TermId], named: IArray[(TermSymbol, TermId)],
+    posIdx: Int, namedIdx: Int, leaf: L
+  )(using eq: PartialFunction[L, Boolean]): Unit =
+        val arity = argPos.length + argNamed.length
+        val fk = DiscrimKey.Functor(functor)
         node.concrete.get(fk).foreach { fnChild =>
           val ak = DiscrimKey.Arity(arity)
           fnChild.concrete.get(ak).foreach { arChild =>
             // Combine inner args with remaining outer args
             val combinedPos = IArray.newBuilder[TermId]
-            fn.posArgs.foreach(combinedPos += _)
+            argPos.foreach(combinedPos += _)
             val combinedNamed = IArray.newBuilder[(TermSymbol, TermId)]
-            fn.namedArgs.foreach(combinedNamed += _)
+            argNamed.foreach(combinedNamed += _)
             // Inner args processed first, then continue with remaining outer
             removeWalkArgs(arChild, terms, combinedPos.result(), combinedNamed.result(), 0, 0, leaf)
             // Then continue outer
@@ -211,15 +256,6 @@ class SubstTree[L]:
           }
           if fnChild.isEmpty then node.concrete.remove(fk)
         }
-      case Term.Const(lit) =>
-        removeValueThenContinue(node, DiscrimKey.Lit(lit), terms, pos, named, posIdx, namedIdx, leaf)
-      case Term.Ident(sym) =>
-        removeValueThenContinue(node, DiscrimKey.IdentKey(sym), terms, pos, named, posIdx, namedIdx, leaf)
-      case Term.Ref(sym) =>
-        removeValueThenContinue(node, DiscrimKey.RefKey(sym), terms, pos, named, posIdx, namedIdx, leaf)
-      case Term.Bottom =>
-        removeValueThenContinue(node, DiscrimKey.Bottom, terms, pos, named, posIdx, namedIdx, leaf)
-      case Term.Var(_) => ()
 
   private def removeValueThenContinue(
     node: DiscrimNode[L], key: DiscrimKey, terms: TermStore,
@@ -259,28 +295,37 @@ class SubstTree[L]:
         val s = subst.withBinding(v.varId, BindValue.Path(path))
         collectAllLeaves(node, s, results)
 
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        node.concrete.get(DiscrimKey.Functor(fn.functor)).foreach { n1 =>
-          n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
-            // `path` is the prefix to this head's args (Root at top level);
-            // each arg's own path extends it (WI-671).
-            queryArgs(n2, terms, fn.posArgs, fn.namedArgs, 0, 0, path,
-              subst.copy(), results, collectLeavesOnDone)
-          }
-        }
-        for (treeVid, child) <- node.varEdges do
-          val branch = subst.withBinding(treeVid, BindValue.TermVal(queryTerm))
-          collectAllLeaves(child, branch, results)
+      case Term.Fn(functor, posArgs, namedArgs) =>
+        queryNodeApp(node, terms, queryTerm, functor, posArgs, namedArgs, path, subst, results)
+      case Term.Ref(sym) =>
+        queryNodeApp(node, terms, queryTerm, sym, IArray.empty, IArray.empty, path, subst, results)
 
       case Term.Const(lit) =>
         queryLeafKey(node, DiscrimKey.Lit(lit), queryTerm, subst, results)
       case Term.Ident(sym) =>
         queryLeafKey(node, DiscrimKey.IdentKey(sym), queryTerm, subst, results)
-      case Term.Ref(sym) =>
-        queryLeafKey(node, DiscrimKey.RefKey(sym), queryTerm, subst, results)
       case Term.Bottom =>
         queryLeafKey(node, DiscrimKey.Bottom, queryTerm, subst, results)
+
+  /** The application arm of [[queryNode]], shared by the two spellings of an
+    * application (WI-20260902-CZJ2N). */
+  private def queryNodeApp(
+    node: DiscrimNode[L], terms: TermStore, queryTerm: TermId, functor: TermSymbol,
+    posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)],
+    path: VarPath, subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)]
+  ): Unit =
+    val arity = posArgs.length + namedArgs.length
+    node.concrete.get(DiscrimKey.Functor(functor)).foreach { n1 =>
+      n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
+        // `path` is the prefix to this head's args (Root at top level);
+        // each arg's own path extends it (WI-671).
+        queryArgs(n2, terms, posArgs, namedArgs, 0, 0, path,
+          subst.copy(), results, collectLeavesOnDone)
+      }
+    }
+    for (treeVid, child) <- node.varEdges do
+      val branch = subst.withBinding(treeVid, BindValue.TermVal(queryTerm))
+      collectAllLeaves(child, branch, results)
 
   private def queryLeafKey(
     node: DiscrimNode[L], key: DiscrimKey, queryTerm: TermId,
@@ -338,22 +383,12 @@ class SubstTree[L]:
         val s = subst.withBinding(v.varId, BindValue.Path(argPath))
         skipSubtreeThenContinue(node, terms, remPos, remNamed, posIdx, namedIdx, prefix, s, results, onDone)
 
-      case fn: Term.Fn =>
-        val arity = fn.arity
-        node.concrete.get(DiscrimKey.Functor(fn.functor)).foreach { n1 =>
-          n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
-            // Continue the OUTER args with the outer `prefix`; descend the
-            // nested compound with `argPath` as its prefix so nested query
-            // vars extend the path rather than restart at root (WI-671).
-            val nestedCont: OnDone = (nd, s, r) =>
-              queryArgs(nd, terms, remPos, remNamed, posIdx, namedIdx, prefix, s, r, onDone)
-            queryArgs(n2, terms, fn.posArgs, fn.namedArgs, 0, 0,
-              argPath, subst.copy(), results, nestedCont)
-          }
-        }
-        for (treeVid, child) <- node.varEdges do
-          val branch = subst.withBinding(treeVid, BindValue.TermVal(argTermId))
-          queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, prefix, branch, results, onDone)
+      case Term.Fn(functor, argPos, argNamed) =>
+        queryArgApp(node, terms, argTermId, functor, argPos, argNamed, argPath,
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
+      case Term.Ref(sym) =>
+        queryArgApp(node, terms, argTermId, sym, IArray.empty, IArray.empty, argPath,
+          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
 
       case Term.Const(lit) =>
         followKeyThenContinue(node, DiscrimKey.Lit(lit), argTermId, terms,
@@ -361,12 +396,35 @@ class SubstTree[L]:
       case Term.Ident(sym) =>
         followKeyThenContinue(node, DiscrimKey.IdentKey(sym), argTermId, terms,
           remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
-      case Term.Ref(sym) =>
-        followKeyThenContinue(node, DiscrimKey.RefKey(sym), argTermId, terms,
-          remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
       case Term.Bottom =>
         followKeyThenContinue(node, DiscrimKey.Bottom, argTermId, terms,
           remPos, remNamed, posIdx, namedIdx, prefix, subst, results, onDone)
+
+  /** The application arm of [[queryArgValue]], shared by the two spellings of an
+    * application (WI-20260902-CZJ2N). */
+  private def queryArgApp(
+    node: DiscrimNode[L], terms: TermStore, argTermId: TermId, functor: TermSymbol,
+    argPos: IArray[TermId], argNamed: IArray[(TermSymbol, TermId)], argPath: VarPath,
+    remPos: IArray[TermId], remNamed: IArray[(TermSymbol, TermId)],
+    posIdx: Int, namedIdx: Int, prefix: VarPath,
+    subst: SmallSubst, results: ArrayBuffer[(L, SmallSubst)],
+    onDone: OnDone
+  ): Unit =
+    val arity = argPos.length + argNamed.length
+    node.concrete.get(DiscrimKey.Functor(functor)).foreach { n1 =>
+      n1.concrete.get(DiscrimKey.Arity(arity)).foreach { n2 =>
+        // Continue the OUTER args with the outer `prefix`; descend the
+        // nested compound with `argPath` as its prefix so nested query
+        // vars extend the path rather than restart at root (WI-671).
+        val nestedCont: OnDone = (nd, s, r) =>
+          queryArgs(nd, terms, remPos, remNamed, posIdx, namedIdx, prefix, s, r, onDone)
+        queryArgs(n2, terms, argPos, argNamed, 0, 0,
+          argPath, subst.copy(), results, nestedCont)
+      }
+    }
+    for (treeVid, child) <- node.varEdges do
+      val branch = subst.withBinding(treeVid, BindValue.TermVal(argTermId))
+      queryArgs(child, terms, remPos, remNamed, posIdx, namedIdx, prefix, branch, results, onDone)
 
   private def followKeyThenContinue(
     node: DiscrimNode[L], key: DiscrimKey, queryTerm: TermId, terms: TermStore,

@@ -11,7 +11,7 @@
 //!    when this file was written).
 //!  - `Value::lowers_to_leaf_term` — "does it lower to a LEAF term, losslessly
 //!    and infallibly?" — the `Term`-vs-`Entity` carrier choice (`fn_value`).
-//!  - the `ViewHead::Ref` read in `MapKey::try_from_value` — "is it the same
+//!  - the head read in `MapKey::try_from_value` — "is it the same
 //!    NAME?" — covered by that module's own unit tests.
 //!
 //! Two of the three move in a direction where being wrong LOSES data — an

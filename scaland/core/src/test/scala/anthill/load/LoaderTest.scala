@@ -362,6 +362,62 @@ class LoaderTest extends munit.FunSuite:
       "a namespace-level entity is NOT an entity of the namespace enclosing it")
   }
 
+  // ── WI-20260902-CZJ2N: the two nullary spellings are ONE predicate ────
+
+  /** THE TICKET'S OWN 2x2, DRIVEN. `rule tgtA :- b(1)` and `rule tgtB() :- b(1)` are two
+    * spellings of one nullary predicate, and each of the four goals must answer.
+    *
+    * BEFORE: `aa` 1, `ab` 0, `ba` 0, `bb` 1 — each spelling answered its own and neither
+    * answered the other's, on a program that loads clean. scaland had no nullary canon at
+    * all (`KnowledgeBase.alloc` was a plain `terms.alloc`), and its discrimination tree
+    * keyed a bare name under `DiscrimKey.RefKey` — a second key space — so the split was
+    * at the STORE and at the INDEX, where no view-layer bridge could reach it.
+    *
+    * BACKED OUT at either half — the canon in `KnowledgeBase.alloc`, or the `Term.Ref`
+    * arm of `SubstTree`'s six walks — the `ab` and `ba` rows fail while `aa` and `bb`
+    * pass, which is what says the axis is the SPELLING and not the predicate machinery.
+    */
+  test("WI-20260902-CZJ2N: a nullary predicate answers in BOTH goal spellings") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val parsed = Parser.parse(
+      """rule bczj(1)
+        |rule tgtA :- bczj(1)
+        |rule tgtB() :- bczj(1)
+        |rule aa(1) :- tgtA
+        |rule ab(1) :- tgtA()
+        |rule ba(1) :- tgtB
+        |rule bb(1) :- tgtB()""".stripMargin, "<czj2n>")
+      .toOption.getOrElse(fail("parse failed"))
+    val errors = Loader.loadAll(kb, IndexedSeq(parsed))
+    assert(errors.isEmpty, s"Load errors: $errors")
+
+    val one = kb.alloc(Term.Const(Literal.IntLit(1)))
+    for name <- Seq("aa", "ab", "ba", "bb") do
+      val query = kb.alloc(Term.Fn(ruleFunctor(kb, name), IArray(one), IArray.empty))
+      assertEquals(
+        SearchStream.resolve(kb, query).allSolutions(kb).length, 1,
+        s"`$name` must answer — the head and the goal are one predicate however each is spelled")
+  }
+
+  /** THE STORE IS WHERE IT LIVES, asserted directly so the row above cannot pass by some
+    * later layer papering over two terms. */
+  test("WI-20260902-CZJ2N: `f()` and `f` are ONE TermId, unless `f` is a SORT") {
+    val kb = KnowledgeBase()
+    val g = kb.globalScope
+    val pred = kb.symbols.define("holds", "holds", SymbolKind.Goal, g)
+    assertEquals(
+      kb.alloc(Term.Fn(pred, IArray.empty, IArray.empty)),
+      kb.alloc(Term.Ref(pred)),
+      "a name with no TYPE reading has one nullary term")
+
+    val sort = kb.symbols.define("Shape", "Shape", SymbolKind.Sort, g)
+    assert(
+      kb.alloc(Term.Fn(sort, IArray.empty, IArray.empty)) != kb.alloc(Term.Ref(sort)),
+      "a SORT keeps both — `Ref(S)` is the dispatch wildcard, `Fn(S)` the concrete " +
+        "spec identity (§8.3 / WI-391 / WI-387)")
+  }
+
   // WI-582: a typed rule pattern `?x: T` parses to a `typed_var(?x, type: T)`
   // marker; the loader STRIPS it back to the bare `?x` (scaland has no typer, so
   // the bound is dropped, not enforced), keeping the head matchable as `p(?x)`.

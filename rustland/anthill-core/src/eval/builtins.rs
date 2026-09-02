@@ -769,7 +769,6 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         ViewHead::Functor {
             functor: Some(f), ..
         } => Some(f),
-        ViewHead::Ref(sym) => Some(sym),
         _ => None,
     };
     match (&receiver, receiver_functor) {
@@ -4208,12 +4207,12 @@ enum ListCell {
 ///   walks fine — but matching `Value::Entity` structurally would not have recognised
 ///   that list's `nil`, and an EMPTY such list would be refused as "not a list".
 ///   `loaded(sources_from_a_query(...))` returning no rows is exactly that case.
-/// * The WI-511 / WI-436 CANON, via [`ViewHead::functor_sym`] rather than a `Functor`
-///   match. `nil` is a NULLARY constructor, and `functor_view_head` canonicalizes a
-///   0-ary application of a registered constructor to the bare [`ViewHead::Ref`]. So
-///   `cons` (two named args) heads as `Functor` while `nil` heads as `Ref`, and a
-///   `Functor`-only match sees every list as unterminated. `functor_sym` is the reader
-///   that spans both, which is why it exists.
+/// * The NULLARY CANON, via [`ViewHead::functor_sym`] rather than a `Functor { .. }`
+///   destructure that also pins an arity. `nil` is a NULLARY constructor: before
+///   WI-20260902-CZJ2N it headed as a separate `ViewHead::Ref` while `cons` (two named
+///   args) headed as `Functor`, so an arity-pinned match saw every list as
+///   unterminated. `nil` heads as `Functor { .. }` at arity 0 now, but the reason to
+///   read the SYMBOL and not the shape stands — that is what `functor_sym` is for.
 fn list_cell_kind(interp: &Interpreter, v: &Value) -> ListCell {
     use crate::kb::term_view::TermView;
     match v.head(&interp.kb).functor_sym() {
@@ -4947,10 +4946,18 @@ fn handle_to_native(interp: &mut Interpreter, v: &Value) -> Value {
     }
     let decision = match v.head(&interp.kb) {
         ViewHead::Const(lit) => Decision::Literal(lit),
+        // WI-20260902-CZJ2N: split by ARITY, where this used to split by `Functor`
+        // vs the retired `ViewHead::Ref`. Same partition — a bare name heads as a
+        // nullary `Functor` now — and it keeps `TryRef`'s cheap field-less build
+        // instead of routing a name through `materialize_entity`.
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Decision::TryRef(f),
         ViewHead::Functor {
             functor: Some(f), ..
         } => Decision::TryFn(f),
-        ViewHead::Ref(sym) => Decision::TryRef(sym),
         ViewHead::Var(var) => Decision::Var(var),
         _ => Decision::AsIs,
     };
@@ -5356,9 +5363,20 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
             pos_args,
             named_args,
         } => (*functor, pos_args.clone(), named_args.clone()),
+        // WI-20260902-CZJ2N — a NULLARY application is stored bare, and this
+        // function's own contract covers it: "if `t` has no such named arg the result
+        // is structurally equal to `t`". A term with NO named args trivially has no
+        // such arg, so the answer is `t` — not an `Internal` error. `reflect_make_fn`
+        // is a live producer (an empty `List[Term]` of named args), so this is
+        // reachable from anthill code and not only from the canon.
+        Term::Ref(s) | Term::Ident(s) => (
+            *s,
+            smallvec::SmallVec::new(),
+            smallvec::SmallVec::<[(crate::intern::Symbol, crate::kb::term::TermId); 2]>::new(),
+        ),
         _ => {
             return Err(EvalError::Internal(format!(
-                "replace_named_arg: expected Fn term, got {:?}",
+                "replace_named_arg: expected an application term, got {:?}",
                 interp.kb.get_term(tid)
             )))
         }

@@ -215,15 +215,22 @@ pub(super) fn equation_lhs_shapes(
             return None;
         };
         let lhs = *pos_args.first()?;
-        let Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } = kb.get_term(lhs)
-        else {
-            return None;
+        // WI-20260902-CZJ2N — a NULLARY LHS is stored bare, and its shape is
+        // `(0, [])`. Bailing with `None` here is what the `Fn`-only destructure did,
+        // and it became reachable the moment `stored_lhs_functor` learned to answer
+        // for a `Ref` LHS (the sibling fix in this same file): the loop walked in and
+        // then abandoned the whole census, which `data_functor_error` reads as "no
+        // proof" and says NOTHING — so a call at an arity no clause has stopped being
+        // refused, for every functor with a nullary defining equation.
+        let shape = match kb.get_term(lhs) {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect()),
+            Term::Ref(_) | Term::Ident(_) => (0usize, Vec::new()),
+            _ => return None,
         };
-        let shape = (pos_args.len(), named_args.iter().map(|(k, _)| *k).collect());
         if !out.contains(&shape) {
             out.push(shape);
         }
@@ -1048,6 +1055,11 @@ pub(super) fn macro_expanded_rhs_head(kb: &KnowledgeBase, rid: RuleId) -> Option
             named_args,
             ..
         } if named_args.is_empty() => Some(*functor).filter(|f| super::typing::is_macro(kb, *f)),
+        // WI-20260902-CZJ2N: a NULLARY macro RHS (`rule f(?x) <=> m() [simp]`) is
+        // stored bare. Without this arm the WI-757 exemption never fired and an
+        // effectful nullary macro in a `[simp]` RHS was REFUSED at load with the wrong
+        // error — while `subst_visit`'s sibling arm is what makes it expand at all.
+        Term::Ref(s) | Term::Ident(s) => Some(*s).filter(|f| super::typing::is_macro(kb, *f)),
         _ => None,
     }
 }
@@ -1066,6 +1078,14 @@ fn stored_eq_operand_functor(kb: &KnowledgeBase, rid: RuleId, idx: usize) -> Opt
     };
     match kb.get_term(operand) {
         Term::Fn { functor, .. } => Some(*functor),
+        // WI-20260902-CZJ2N — A NULLARY LHS IS STORED BARE, so `rule tau() <=> 7 [simp]`
+        // has a `Term::Ref` operand, not a `Term::Fn`. Without this arm the pre-filter
+        // in `fire_simp_equation` compared `Some(tau)` against `None` and skipped every
+        // nullary law: MEASURED, `operation drive(n) = tau()` under `rule tau() <=> 7
+        // [simp]` went from 7 to an undischarged residual. It is also what makes the
+        // BARE head `rule tau <=> 7 [simp]` fire, which is this ticket's D row — the two
+        // spellings are one term, so one arm serves both.
+        Term::Ref(s) => Some(*s),
         _ => None,
     }
 }
@@ -1436,6 +1456,23 @@ fn subst_visit(
                 }
             }
             Term::Const(lit) => results.push(synth(Expr::Const(lit.clone()))),
+            // WI-20260902-CZJ2N — A NULLARY OPERATION'S BARE NAME IS ITS CALL, and
+            // this arm has to say so because the shape no longer can: a nullary call
+            // used to arrive as `Fn{f, [], []}` and take the `Apply` arm above, and it
+            // is a `Term::Ref` now. Left as a plain `Expr::Ref`, a nullary macro in a
+            // `[simp]` RHS stopped expanding (`try_expand_macro` matches `Expr::Apply`)
+            // and a nullary op call in one stopped being a redex.
+            //
+            // A bare CONSTRUCTOR or SORT keeps `Expr::Ref` — `is_nullary_operation`
+            // reads the DECLARATION, which is the only thing left that separates the
+            // two readings.
+            Term::Ref(s) if super::op_info::is_nullary_operation(kb, *s) => {
+                work.push(SubstOp::BuildApply {
+                    functor: *s,
+                    pos_count: 0,
+                    named_keys: Vec::new(),
+                });
+            }
             Term::Ref(s) => results.push(synth(Expr::Ref(*s))),
             Term::Ident(s) => results.push(synth(Expr::Ident(*s))),
             // An unbound RHS var or `⊥` yields `⊥`; a well-formed `[simp]`

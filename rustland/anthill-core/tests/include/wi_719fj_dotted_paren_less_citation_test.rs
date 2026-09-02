@@ -38,16 +38,16 @@
 //!    `holds(nsx.tgt)` must build ONE term — a term's spelling is its identity, and
 //!    normalizing one side of a match is never a repair (WI-756, and the regression
 //!    WI-20260825-P9Y67 measured from the other side). Only a SUBJECT is collapsed.
-//!  * The **PAREN-LESS / PARENTHESISED TERM SHAPE** stays split, for the dotted spelling
-//!    exactly as for the one-segment one: a paren-less subject is a `Ref` leaf and a
-//!    parenthesised one a zero-argument `Fn`, and the two do not unify. That split is
-//!    SPELLING-INDEPENDENT, predates this ticket and is WI-20260902-CZJ2N's —
-//!    [`the_two_nullary_spellings_are_still_two_terms`] pins it with the ONE-segment
-//!    fixture that has no dot in it at all. It is why the ticket's own mixed fixture
-//!    (`rule tgt()` inside, `rule nsx.tgt` outside) lands two clauses that no single
-//!    goal spelling reaches; written in ONE spelling, as
-//!    [`a_dotted_paren_less_head_joins_the_predicate_it_names`] writes it, the goal
-//!    answers both.
+//!  * The **PAREN-LESS / PARENTHESISED TERM SHAPE** was still split when this ticket
+//!    shipped, for the dotted spelling exactly as for the one-segment one: a paren-less
+//!    subject was a `Ref` leaf and a parenthesised one a zero-argument `Fn`, and the two
+//!    did not unify. That split was SPELLING-INDEPENDENT, predated this ticket, and
+//!    WI-20260902-CZJ2N CLOSED IT — [`the_two_nullary_spellings_are_one_term`] is the
+//!    same fixture with its verdicts flipped, and
+//!    [`a_predicate_assembled_from_both_spellings_answers_from_either`] is this ticket's
+//!    own mixed fixture (`rule tgt()` inside, `rule nsx.tgt` outside), which it had to
+//!    write in ONE spelling because no single goal reached both clauses. It now
+//!    answers both, in either spelling.
 //!  * A **CONSTRAINT** body is the one proposition-shaped position NOT reached — see
 //!    [`a_constraint_body_is_inert_for_every_spelling`], which measures why: a denial is
 //!    stored as an inert fact and registered as no guard, so a goal there decides
@@ -123,7 +123,7 @@
 //! §6.7), [`a_data_slot_still_stores_the_chain_on_both_sides_of_a_match`],
 //! [`a_hand_written_field_access_is_still_a_call_in_both_positions`] (the mint gate's own
 //! fixture), [`a_dotted_equation_subject_still_fires_nothing`],
-//! [`the_two_nullary_spellings_are_still_two_terms`] (the PIN), and
+//! [`the_two_nullary_spellings_are_one_term`] (the PIN, flipped by CZJ2N), and
 //! [`a_constraint_body_is_inert_for_every_spelling`] (the boundary).
 //!
 //! STDLIB LOADS: TWO —
@@ -183,7 +183,7 @@ fn clauses(kb: &KnowledgeBase, qn: &str) -> Option<usize> {
 /// WRITTEN IN ONE SPELLING ON BOTH SIDES, which is what makes "the goal answering both"
 /// true here: the paren-less and parenthesised nullary subjects are different TERMS
 /// (`Ref` vs a zero-argument `Fn`) and that split is spelling-independent — see
-/// [`the_two_nullary_spellings_are_still_two_terms`], which pins it with no dot in it.
+/// [`the_two_nullary_spellings_are_one_term`], which pins it with no dot in it.
 #[test]
 fn a_dotted_paren_less_head_joins_the_predicate_it_names() {
     const SRC: &str = "\
@@ -569,7 +569,7 @@ rule viaBody719(1) :- holds719(zz719.ds.tgt)
 /// term converters at once and against §8.3's entity rule. WI-20260902-CZJ2N owns it, and
 /// this 2×2 is the control it must move.
 #[test]
-fn the_two_nullary_spellings_are_still_two_terms() {
+fn the_two_nullary_spellings_are_one_term() {
     const SRC: &str = "\
 fact b719(1)
 namespace zz719.sp
@@ -582,33 +582,63 @@ namespace zz719.sp
 end
 ";
     let mut kb = crate::common::load_kb_with(SRC);
-    for (goal, want, why) in [
-        (
-            "aa",
-            1,
-            "paren-less head, paren-less goal — one term, and it answers",
-        ),
-        (
-            "ab",
-            0,
-            "paren-less head, APPLIED goal — two terms, so nothing matches",
-        ),
-        (
-            "ba",
-            0,
-            "applied head, paren-less goal — the same split, mirrored",
-        ),
-        (
-            "bb",
-            1,
-            "applied head, applied goal — one term, and it answers",
-        ),
+    for (goal, why) in [
+        ("aa", "paren-less head, paren-less goal"),
+        ("ab", "paren-less head, APPLIED goal"),
+        ("ba", "applied head, paren-less goal"),
+        ("bb", "applied head, applied goal"),
     ] {
         assert_eq!(
             answers(&mut kb, &format!("zz719.sp.{goal}(?x)")),
-            want,
-            "zz719.sp.{goal}: {why}"
+            1,
+            "zz719.sp.{goal}: {why} — all four are ONE predicate and every goal \
+             spelling reaches it"
         );
+    }
+}
+
+/// THE MIXED FIXTURE 719FJ'S ACCEPTANCE ASKED FOR AND COULD NOT HAVE: `rule tgt()`
+/// written INSIDE `nsx` beside `rule nsx.tgt :- …` written outside it. 719FJ landed
+/// both clauses under `nsx.tgt` and then had to write ONE spelling on both sides,
+/// because the two heads were two shapes and no single goal reached both.
+///
+/// It is the second half of this ticket's claim: not only do the spellings agree
+/// pairwise, a predicate ASSEMBLED from both spellings answers from either.
+///
+/// INVERTED, NOT COUNTED, and that is a correction the first draft needed: a NULLARY
+/// goal's two clauses produce the SAME (empty) substitution, and the answer stream
+/// dedups by projection — so "reaches both clauses" can never show up as 2. MEASURED:
+/// the counting version read 1 with the change fully in, and would have read 1 with it
+/// backed out too. So the fixture is written TWICE with the TRUE clause on opposite
+/// sides, and each spelling must answer in BOTH.
+///
+/// BACKED OUT (restore the `is_constructor_symbol` gate in
+/// `KnowledgeBase::nullary_canon`), 2 of the 4 rows fail: in `mixa` the BARE goal
+/// answers 0 (it reaches only the bare clause, whose body is false) and in `mixb` the
+/// APPLIED goal does — each spelling seeing only the clause written its own way, on a
+/// program that loads clean.
+#[test]
+fn a_predicate_assembled_from_both_spellings_answers_from_either() {
+    // `mixa`: the APPLIED clause is the true one; `mixb`: the BARE clause is.
+    for (ns, applied_body, bare_body) in [("mixa", "1", "999"), ("mixb", "999", "1")] {
+        let src = format!(
+            "fact b719(1)\nnamespace zz719.{ns}\n  rule tgt() :- b719({applied_body})\nend\n\
+             rule zz719.{ns}.tgt :- b719({bare_body})\n"
+        );
+        let kb = crate::common::load_kb_with(&src);
+        assert_eq!(
+            clauses(&kb, &format!("zz719.{ns}.tgt")),
+            Some(2),
+            "{ns}: both clauses index under the one predicate"
+        );
+        for spelling in [format!("zz719.{ns}.tgt"), format!("zz719.{ns}.tgt()")] {
+            let mut kb = crate::common::load_kb_with(&src);
+            assert_eq!(
+                answers(&mut kb, &spelling),
+                1,
+                "{ns}: `{spelling}` must reach the TRUE clause, whichever spelling wrote it"
+            );
+        }
     }
 }
 

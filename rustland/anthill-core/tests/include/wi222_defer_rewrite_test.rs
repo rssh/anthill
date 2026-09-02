@@ -192,8 +192,11 @@ end
 
     // args must be carried over (non-nil — use_eq passes two args).
     let args_tid = get_named_arg(kb, &named_args, "args").expect("apply_within must carry `args`");
+    // WI-20260902-CZJ2N: a nullary list terminator is stored bare, so read the functor
+    // off either spelling — exactly as the `tail` read just above already does.
     let args_functor = match kb.get_term(args_tid) {
         Term::Fn { functor, .. } => *functor,
+        Term::Ref(s) | Term::Ident(s) => *s,
         other => panic!("args must be a list term; got {other:?}"),
     };
     assert_ne!(

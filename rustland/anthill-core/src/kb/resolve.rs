@@ -2480,10 +2480,10 @@ impl SearchStream {
         // 2-cycle across carriers would have hung inside `step`.
         let mut seen: HashSet<VarId> = HashSet::new();
         let pred = Self::walk_value_chain(kb, raw[0].clone(), subst, &mut seen)?;
-        // `Ref(p)` or the NULLARY application `p()`, and deliberately not
-        // `Ident` or an applied `f(x)` — the pre-existing shape, unwidened.
+        // The NULLARY application `p` / `p()` (ONE head since WI-20260902-CZJ2N),
+        // and deliberately not `Ident` or an applied `f(x)` — the pre-existing
+        // shape, unwidened.
         let pred_sym = match pred.head(kb) {
-            ViewHead::Ref(s) => s,
             ViewHead::Functor {
                 functor: Some(s),
                 pos_arity: 0,
@@ -4226,7 +4226,7 @@ impl KnowledgeBase {
         // They used to reify each per-arg through the module's `carrier_term`,
         // justified as "the KB's symbol/field lookups are keyed over `Term`" —
         // which is true of the LOOKUP and irrelevant to the READ: a symbol is a
-        // symbol on any carrier, and `ViewHead::Ref` hands it over without
+        // symbol on any carrier, and the head hands it over without
         // allocating. What that reify actually did was answer by carrier — `None`
         // for everything but `Term`/`Node`, and ⊥ for a `Spliced` leaf — so the
         // narrowness was a silent wrong answer, not a narrow cost. It has no
@@ -4753,11 +4753,11 @@ impl KnowledgeBase {
         // WI-694: read the sort symbol off the arg's head carrier-neutrally (no
         // reify) — `functor_sym` unifies the `Ref` / `Fn` spellings across carriers.
         let sort_sym = match inst.head(self) {
-            // Simple Ref: the sort itself.
-            ViewHead::Ref(sym) => Some(sym),
             // `SortView(sort_name, bindings…)` — the first positional child is the
             // sort name; read ITS head symbol. Any other functor is the sort itself
-            // (e.g. `Eq()` / `SortInfo(...)`).
+            // (a bare `Ref` at arity 0, `Eq()`, `SortInfo(...)`) — the `pos_arity > 0`
+            // test below is what keeps the bare spelling on the "itself" branch now
+            // that it heads as a nullary `Functor` (WI-20260902-CZJ2N).
             ViewHead::Functor {
                 functor: Some(functor),
                 pos_arity,
@@ -5624,8 +5624,7 @@ impl KnowledgeBase {
     /// lookup; scalars and headless values read `None` (structural).
     pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
         let functor = match v.head(self) {
-            ViewHead::Ref(s)
-            | ViewHead::Functor {
+            ViewHead::Functor {
                 functor: Some(s), ..
             } => s,
             _ => return None,
@@ -6062,11 +6061,12 @@ impl KnowledgeBase {
         if pos_arity < 2 {
             return BuiltinResult::Failure;
         }
-        // A nominal-symbol argument (spec base / op functor) rides as a `Ref`, an
-        // as-yet-unresolved `Ident`, or a nullary `Fn` (`make_name_term` shape).
+        // A nominal-symbol argument (spec base / op functor) rides as a nullary
+        // application (`Ref` / `make_name_term`, one head) or an as-yet-unresolved
+        // `Ident`.
         fn head_symbol(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
             match v.head(kb) {
-                ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
+                ViewHead::Ident(s) => Some(s),
                 ViewHead::Functor {
                     functor: Some(s), ..
                 } => Some(s),
@@ -6309,7 +6309,6 @@ impl KnowledgeBase {
         }
         match (a.head(self), b.head(self)) {
             (ViewHead::Const(la), ViewHead::Const(lb)) => eq_or(la == lb),
-            (ViewHead::Ref(sa), ViewHead::Ref(sb)) => eq_or(sa == sb),
             (ViewHead::Ident(sa), ViewHead::Ident(sb)) => eq_or(sa == sb),
             (ViewHead::Bottom, ViewHead::Bottom) => UnifyOutcome::Ok,
             (
@@ -6427,7 +6426,6 @@ impl KnowledgeBase {
         }
         match (a.head(self), b.head(self)) {
             (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
-            (ViewHead::Ref(sa), ViewHead::Ref(sb)) => sa == sb,
             (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
             (ViewHead::Bottom, ViewHead::Bottom) => true,
             (
@@ -7019,7 +7017,7 @@ impl KnowledgeBase {
     fn field_name_from_value(&self, v: &Value) -> Option<String> {
         match v.head(self) {
             ViewHead::Const(Literal::String(s)) => Some(s),
-            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(self.symbols.local_name(s).to_owned()),
+            ViewHead::Ident(s) => Some(self.symbols.local_name(s).to_owned()),
             ViewHead::Functor {
                 functor: Some(s), ..
             } => Some(self.symbols.local_name(s).to_owned()),
@@ -7032,16 +7030,14 @@ impl KnowledgeBase {
     /// The carrier-neutral form of the `Term::Ref(s) | Term::Ident(s)` match the
     /// symbol builtins used to reach through the module's old `carrier_term`.
     ///
-    /// It is WIDER than that route in two ways, and an earlier version of this
-    /// doc denied the first — it claimed `alloc`'s nullary-constructor canon
-    /// (`Fn{c,[],[]}` → `Term::Ref(c)`) meant `ViewHead::Ref` and `Term::Ref`
-    /// named "exactly the same set". They do not: `resolve_qualified_name_term`
-    /// (kb/mod.rs) deliberately calls `terms.alloc` to BYPASS that canon — its
-    /// callers read the functor back off the name term — so non-canonicalized
-    /// nullary constructor `Fn`s exist in the store, and `functor_view_head`
-    /// reads them as `ViewHead::Ref(c)` where the replaced match answered
-    /// `None`. Arguably the better answer (`Color.red` IS a symbol), but a
-    /// widening, and no test drives it at any of the migrated sites.
+    /// It is WIDER than that route in two ways. First, it reads a NULLARY
+    /// APPLICATION of any symbol as a name. WI-1024 already had that widening for
+    /// non-canonicalized nullary constructor `Fn`s (`resolve_qualified_name_term`
+    /// bypassed WI-511's canon, so they existed in the store); WI-20260902-CZJ2N
+    /// makes it the rule rather than the leak — `Fn{f, [], []}` IS `Ref(f)` for
+    /// every symbol, so a nullary OP or a namespace-level ENTITY name answers here
+    /// too, where it answered `None`. That is the ticket's own decision (a bare
+    /// name in a logical position IS the nullary application) reaching this reader.
     ///
     /// Second, it answers on carriers the reify simply dropped: `carrier_term`
     /// was `None` for everything but `Term`/`Node`, and reify has no
@@ -7060,7 +7056,17 @@ impl KnowledgeBase {
     /// entity, and a `Value::Node` ref occurrence, all of which name a symbol.
     pub fn value_symbol(&self, v: &Value) -> Option<Symbol> {
         match v.head(self) {
-            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
+            ViewHead::Ident(s) => Some(s),
+            // WI-20260902-CZJ2N — the NULLARY arm is what `ViewHead::Ref` was. The
+            // arity pin is the whole of the difference from `value_head_symbol`
+            // below, and it is what keeps the two apart now that one head serves
+            // both: this asks "does the value NAME a symbol", and `some(?x)` does
+            // not.
+            ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => Some(s),
             _ => None,
         }
     }
@@ -7090,7 +7096,7 @@ impl KnowledgeBase {
     /// crate boundary — anthill-stl's reflect bridge reads it at eight sites.
     pub fn value_head_symbol(&self, v: &Value) -> Option<Symbol> {
         match v.head(self) {
-            ViewHead::Ref(s) | ViewHead::Ident(s) => Some(s),
+            ViewHead::Ident(s) => Some(s),
             ViewHead::Functor {
                 functor: Some(s), ..
             } => Some(s),
@@ -7810,7 +7816,7 @@ impl KnowledgeBase {
             .walk_arg(dict.named_arg(self, impl_key), subst)?
             .head(self)
         {
-            ViewHead::Ref(s) | ViewHead::Ident(s) => s,
+            ViewHead::Ident(s) => s,
             ViewHead::Functor {
                 functor: Some(s),
                 pos_arity: 0,
@@ -8306,8 +8312,14 @@ impl KnowledgeBase {
             }
             Value::Node(_) => None,
             Value::Term { id, .. } => {
+                // WI-20260902-CZJ2N: a NULLARY bodied-op call is stored bare, so
+                // without the `Ref`/`Ident` arm a term-carried `tau()` operand went
+                // unrecognized and `unfold_eq_operand`'s WI-580 case-split was
+                // abandoned — missing solutions / an undischarged residual where the
+                // equation used to unfold.
                 let functor = match self.get_term(*id) {
                     Term::Fn { functor, .. } => *functor,
+                    Term::Ref(s) | Term::Ident(s) => *s,
                     _ => return None,
                 };
                 // WI-20260826-VPEWK widened two OTHER readers of this same

@@ -58,7 +58,38 @@ class KnowledgeBase:
 
   // ── Term allocation ─────────────────────────────────────────
 
-  def alloc(term: Term): TermId = terms.alloc(term)
+  /** WI-20260902-CZJ2N — ONE STORAGE FORM FOR A NULLARY APPLICATION, wherever the name
+    * has no TYPE reading: `Term.Fn(f, [], [])` is stored as `Term.Ref(f)`, so
+    * `rule holds :- b(1)` and `rule holds() :- b(1)` are one term and one predicate, as
+    * §5.3/§8.6 already say in words.
+    *
+    * Scaland had NO canon at all here (rustland's WI-511 rewrote the same shape for a
+    * registered constructor), so all five kinds the ticket names were split: a nullary
+    * PREDICATE, a nullary OPERATION, an EQUATION FUNCTOR, a namespace-level ENTITY and a
+    * sort-nested constructor.
+    *
+    * THE GATE IS TYPE-HOOD, not constructor-hood, and rustland's own note carries the
+    * measurement: removing it outright makes 792 symbols change spelling and the standard
+    * library stops loading, because §8.3 / WI-391 / WI-387 make `Ref(S)` the dispatch
+    * WILDCARD and a nullary `Fn(S)` the CONCRETE spec identity for a SORT. A name with a
+    * type reading keeps both spellings and the SLOT decides; everything else has one term.
+    *
+    * `SymbolKind.Sort` is stamped at declaration, before any term is converted — which is
+    * why this is not the load-order hazard [[functorViewHead]]'s note used to describe for
+    * `isConstructorSymbol`, whose registry fills DURING the load.
+    */
+  def alloc(term: Term): TermId = term match
+    case Term.Fn(functor, pos, named) if pos.isEmpty && named.isEmpty && !hasTypeReading(functor) =>
+      terms.alloc(Term.Ref(functor))
+    case _ => terms.alloc(term)
+
+  /** Does `sym` name something that can appear in a TYPE position, where §8.3 / WI-391
+    * give `Ref(S)` and `Fn(S)` different meanings? The one gate [[alloc]]'s nullary canon
+    * asks. */
+  private def hasTypeReading(sym: TermSymbol): Boolean =
+    symbols.get(sym) match
+      case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
+      case _                                            => false
 
   def intern(s: String): TermSymbol = symbols.intern(s)
 
@@ -171,10 +202,13 @@ class KnowledgeBase:
     bySort_.getOrElseUpdate(TermId.raw(sort), ArrayBuffer.empty) += ruleId
     byDomain_.getOrElseUpdate(domain, ArrayBuffer.empty) += ruleId
 
-    terms.get(dbHead) match
-      case fn: Term.Fn =>
-        byFunctor_.getOrElseUpdate(TermSymbol.raw(fn.functor), ArrayBuffer.empty) += ruleId
-      case _ =>
+    // WI-20260902-CZJ2N — INDEX THE NULLARY HEAD TOO. `rule holds()` and `rule holds`
+    // are one term now, stored as `Term.Ref`, so the `Term.Fn`-only read filed NEITHER
+    // spelling's clause under its functor — `byFunctor` answered empty and nothing said
+    // so. `headFunctorOf` is the one reader for "which functor does this head name".
+    headFunctorOf(dbHead).foreach { f =>
+      byFunctor_.getOrElseUpdate(TermSymbol.raw(f), ArrayBuffer.empty) += ruleId
+    }
 
     discrim.insertPattern(terms, dbHead, ruleId)
     ruleId
@@ -206,10 +240,11 @@ class KnowledgeBase:
     entry.retracted = true
     bySort_.get(TermId.raw(entry.sort)).foreach(_.filterInPlace(_ != id))
     byDomain_.get(entry.domain).foreach(_.filterInPlace(_ != id))
-    terms.get(entry.head) match
-      case fn: Term.Fn =>
-        byFunctor_.get(TermSymbol.raw(fn.functor)).foreach(_.filterInPlace(_ != id))
-      case _ =>
+    // Insert and retract must read the head the same way, or a retract leaves the
+    // clause in the bucket (WI-20260902-CZJ2N).
+    headFunctorOf(entry.head).foreach { f =>
+      byFunctor_.get(TermSymbol.raw(f)).foreach(_.filterInPlace(_ != id))
+    }
 
   // ── Sort management ─────────────────────────────────────────
 
@@ -219,9 +254,15 @@ class KnowledgeBase:
   def registerEntityOf(entity: TermId, parent: TermId): Unit =
     sortEntities_.getOrElseUpdate(TermId.raw(parent), ArrayBuffer.empty) += entity
     entityParent_(TermId.raw(entity)) = parent
+    // WI-20260902-CZJ2N — READ THE FUNCTOR OFF EITHER SPELLING. A nullary entity term
+    // is stored as `Term.Ref` now (its symbol has no type reading), so the `Term.Fn`-only
+    // read stopped marking any 0-ary constructor at all — silently, since
+    // `isConstructorSymbol` answering `false` is a legal answer everywhere it is asked.
+    // Rustland keys this index by SYMBOL for the same reason (WI-697).
     terms.get(entity) match
-      case fn: Term.Fn => constructorSymbols_ += TermSymbol.raw(fn.functor)
-      case _ =>
+      case Term.Fn(functor, _, _) => constructorSymbols_ += TermSymbol.raw(functor)
+      case Term.Ref(sym)          => constructorSymbols_ += TermSymbol.raw(sym)
+      case _                      =>
 
   def isEntityOf(sub: TermId, sup: TermId): Boolean =
     TermId.raw(sub) == TermId.raw(sup) ||
@@ -249,6 +290,15 @@ class KnowledgeBase:
         }
     }
     result
+
+  /** The functor a rule/fact HEAD names, in either spelling. WI-20260902-CZJ2N: a
+    * nullary head is stored as `Term.Ref`, so a `Term.Fn`-only read misses it. `None` for
+    * a head that names no functor (a variable, a literal, `⊥`). */
+  private def headFunctorOf(head: TermId): Option[TermSymbol] =
+    terms.get(head) match
+      case Term.Fn(functor, _, _) => Some(functor)
+      case Term.Ref(sym)          => Some(sym)
+      case _                      => None
 
   def byFunctor(sym: TermSymbol): ArrayBuffer[RuleId] =
     byFunctor_.get(TermSymbol.raw(sym))
@@ -495,8 +545,16 @@ class KnowledgeBase:
     * above ([[makeNameTerm]], [[scopeTerm]]) differ only in how they get the symbol, and
     * all go through here. One producer is one thing to keep true, which is what lets
     * [[ScopeId]] presume the shape instead of re-deriving it. */
+  /** A NAME term for `sym` — a nullary application, in whichever spelling [[alloc]]
+    * stores.
+    *
+    * WI-20260902-CZJ2N: routes through [[alloc]], where it called `terms.alloc` directly
+    * and so stepped around the nullary canon. A canon a caller can bypass is a second
+    * spelling waiting to happen — rustland's `resolve_qualified_name_term` had exactly
+    * this bypass and WI-1023 had to teach its `Map` key path to tolerate the third
+    * spelling it left in the store. */
   def makeNameTermFromSym(sym: TermSymbol): TermId =
-    terms.alloc(Term.Fn(sym, IArray.empty, IArray.empty))
+    alloc(Term.Fn(sym, IArray.empty, IArray.empty))
 
   def makeNameTerm(name: String): TermId =
     makeNameTermFromSym(symbols.intern(name))
@@ -555,10 +613,14 @@ class KnowledgeBase:
   def registerBuiltinTag(sym: TermSymbol, tag: BuiltinTag): Unit =
     builtins_(TermSymbol.raw(sym)) = tag
 
+  /** The builtin tag a GOAL's functor carries, in either spelling.
+    *
+    * WI-20260902-CZJ2N: a NULLARY goal is stored as `Term.Ref`, so the `Term.Fn`-only
+    * read answered `None` for `:- not` and every other 0-ary builtin goal — and an
+    * untagged builtin goal "resolves and does nothing", which is the silence
+    * `PreludeScopesTest` exists to catch from the other side. */
   def getBuiltin(goal: TermId): Option[BuiltinTag] =
-    terms.get(goal) match
-      case fn: Term.Fn => builtins_.get(TermSymbol.raw(fn.functor))
-      case _ => None
+    headFunctorOf(goal).flatMap(f => builtins_.get(TermSymbol.raw(f)))
 
 // ── BuiltinTag ────────────────────────────────────────────────
 

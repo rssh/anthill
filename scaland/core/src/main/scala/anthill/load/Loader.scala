@@ -757,12 +757,23 @@ object Loader:
       // of one nullary predicate opposite programs: `rule holds()` scoped where it was
       // written, `rule holds` introduced NOTHING ANYWHERE and fell to the bare intern —
       // one global name two scopes' same-spelled heads then share, WI-894's defect
-      // class. The EQUATION path stays `None`: a `[simp]` head is an APPLICATION, so
-      // `rule tau <=> …` matches no redex and fires nothing, and minting `tau` would
-      // stamp it `EquationFunctor` for a law that can never run. A dotted paren-less
-      // head never reaches here — the converter folds a multi-segment name into a
-      // MINTED `field_access` chain, refused above.
-      case id: Term.Ident if kind == SymbolKind.Goal =>
+      // class.
+      //
+      // WI-20260902-CZJ2N — THE EQUATION PATH MINTS TOO, and the `kind == Goal` guard
+      // that stood here is what it deletes. P85Z7 admitted only the PREDICATE path, on
+      // the reading that a `[simp]` head is an APPLICATION which a bare name is not — so
+      // `rule tau <=> …` matched no redex and minting `tau` would have stamped it
+      // `EquationFunctor` for a law that can never run. CZJ2N makes the two spellings
+      // ONE TERM, so the bare law DOES define and refusing to mint its subject would be
+      // a new spelling-dependent rule: refusing at arity 0 only, on the equation path
+      // only. `docs/kernel-language.md` §5.3 now says so, and rustland's
+      // `load::head_subject_name` deleted the same guard — the two loaders must agree on
+      // what a rule introduced, which is why `SymbolKind.EquationFunctor` exists here at
+      // all with no reader yet.
+      //
+      // A dotted paren-less head never reaches here — the converter folds a
+      // multi-segment name into a MINTED `field_access` chain, refused above.
+      case id: Term.Ident =>
         val name = fileSym.name(id.sym)
         if name.contains('.') then None else Some((name, kind))
       case _ => None
@@ -1582,14 +1593,18 @@ object Loader:
     // `fact ns.tgt` asserts it, exactly as the applied spelling `ns.tgt(…)` does — a
     // proposition has no projection reading, so the chain is the qualified name. The
     // result is BYTE-IDENTICAL to the `Term.Ident` arm below: a paren-less citation is
-    // the same node whether its name has one segment or five. (rustland's `Ident` arm
-    // promotes a resolved name to `Term.Ref` and scaland's does not; the two differ
-    // there for EVERY name, not for this one.)
+    // the same node whether its name has one segment or five — INCLUDING the promotion
+    // of a resolved name to `Term.Ref` (WI-20260902-CZJ2N, which brought scaland's arm
+    // into line with rustland's). Dropping the promotion here would re-open the split
+    // one spelling over: `ns.tgt` would stay `Ident` while `ns.tgt()` canonicalized to
+    // `Ref`, which is the very thing 719FJ closed for the dotted case.
     if atGoal then
       dottedCitationName(fileSym, fileTerms, termId) match
         case Some(name) =>
-          return kb.alloc(
-            Term.Ident(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))))
+          val sym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+          return
+            if kb.symbols.isResolved(sym) then kb.alloc(Term.Ref(sym))
+            else kb.alloc(Term.Ident(sym))
         case None => ()
 
     fileTerms.get(termId) match
@@ -1654,7 +1669,14 @@ object Loader:
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
-        kb.alloc(Term.Ident(kbSym))
+        // WI-20260902-CZJ2N — PROMOTE A RESOLVED BARE NAME TO `Ref`, which is what
+        // rustland's `convert_term_inner` has always done and scaland did not. Without
+        // it the store still held two nullary forms: `tgtA` stayed `Term.Ident` while
+        // `tgtA()` canonicalized to `Term.Ref`, so `rule ab(1) :- tgtA()` answered 0
+        // against `rule tgtA :- …`. `Term.Ident` now means exactly one thing here — a
+        // name nothing in scope answers.
+        if kb.symbols.isResolved(kbSym) then kb.alloc(Term.Ref(kbSym))
+        else kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
 
   /** WI-888 — A MINTED CARRIER-AGNOSTIC CONNECTIVE DENOTES ITS KERNEL PRIMITIVE,

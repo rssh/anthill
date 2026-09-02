@@ -6477,20 +6477,29 @@ fn head_subject_name<'a>(
         // scoped where it is written" exists to stop; the nullary spelling never
         // entered the fix.
         //
-        // THE PREDICATE PATH ONLY, and this is the case the one function used to fuse.
-        // An EQUATION's bare LHS is the opposite rule and must stay `None`: §5.3 says a
-        // `[simp]` head is an APPLICATION, so `rule tau <=> …` matches no redex and
-        // fires nothing — minting `tau` here would stamp it `EquationFunctor` and make
-        // a citation of it report "defined by equations … no defining equation can be
-        // found" about a name that never had one. `rule tau() <=> …` is the spelling
-        // that defines, and it reaches the `Fn` arm above.
+        // BOTH PATHS SINCE WI-20260902-CZJ2N, and the guard that stood here is what it
+        // deleted. P85Z7 admitted only `RuleIntroduction::Predicate`, on the reading
+        // that §5.3 makes a `[simp]` head an APPLICATION which a bare name is not — so
+        // `rule tau <=> …` matched no redex, and minting `tau` would have stamped it
+        // `EquationFunctor`: a name that RESOLVES and owns no clause, which SUPPRESSES
+        // WI-1034's body-goal refusal and leaves a citation of it silently answering
+        // nothing.
+        //
+        // CZJ2N makes the two spellings ONE TERM, so the premise is gone: the bare law
+        // DOES define, and refusing to mint its subject would be a new
+        // spelling-dependent rule — refusing at arity 0 only, on the equation path
+        // only. An equation-defined name is a spec'd feature (§5.3, WI-D0EXD:
+        // `operation` is "the declaration of an equation-defined name") and
+        // `LoadError::UnreducedEquationFunctor` (WI-898) is its own loud channel for a
+        // citation the rewriter left standing. So the mint is admitted at every arity
+        // and both spellings behave alike.
         //
         // NOT `Term::Ref`: `ref_term` is a written `Ref(a.b)`, a REFERENCE to a
         // declared name rather than a head introducing one. A DOTTED paren-less head
         // (`nsx.shared_pl`) never reaches this arm either — the converter folds a
         // multi-segment `name` into a minted `field_access` chain, which the mint guard
         // above already refuses.
-        Term::Ident(sym) if introduced_by == RuleIntroduction::Predicate => sym,
+        Term::Ident(sym) => sym,
         _ => return None,
     };
     Some((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
@@ -15361,7 +15370,17 @@ fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
 }
 
 /// WI-939 item 4 — how many ARGUMENTS this rule's head carries. `None` when the head
-/// is not an application at all (a bare marker), which is not a graph clause either.
+/// is not an application at all — a literal, a variable, `⊥`.
+///
+/// WI-20260902-CZJ2N — THE NULLARY ARM IS `Term::Ref`, and it is not a courtesy: a
+/// nullary head is STORED bare (`KnowledgeBase::nullary_canon`), so the `Term::Fn`
+/// destructure alone answered `None` for `rule flag()` and the caller
+/// (`check_operation_body_and_clauses`) then never counted it. That SUPPRESSES a
+/// load-blocking refusal: a clause under a bodied nullary `Bool` operation is a second
+/// DEFINITION of it, the clauses take precedence, and the operation silently answers
+/// differently from its body. The doc used to say "`None` when the head is not an
+/// application at all (a bare marker)", which was the reading this ticket deletes —
+/// a bare head IS an application of arity 0.
 fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
     match kb.terms.get(kb.rule_head(rid)) {
         Term::Fn {
@@ -15369,6 +15388,7 @@ fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
             named_args,
             ..
         } => Some(pos_args.len() + named_args.len()),
+        Term::Ref(_) | Term::Ident(_) => Some(0),
         _ => None,
     }
 }
@@ -16578,6 +16598,129 @@ fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Op
 // Public: convert a parse-time term into a KB term with scope-aware resolution
 // ══════════════════════════════════════════════════════════════════
 
+/// Expand a partially-applied entity term's named args to the FULL declared field list,
+/// so every fact/pattern of a functor presents the same named slots (the discrim tree
+/// matches structurally). Positional args also count as "provided" — `ToolPasses("x")`
+/// covers `tool` via `pos_args[0]`, so it isn't re-stuffed with a fresh var that would
+/// shadow the positional. A non-entity functor is left alone.
+///
+/// WI-716: the FILLER depends on VALUE vs PATTERN position. In a value position (a fact
+/// head or an entity-deriving rule head) an absent OPTIONAL field means `none()`, not a
+/// var: a var makes the produced entity `forall v. E(field: v)`, which unsoundly unifies a
+/// `some(?)` query. In a query/rule-body PATTERN (and for an absent REQUIRED field) the
+/// var-fill stays — "matches anything". A `none()` value still unifies a pattern's var (so
+/// `E(id: ?)` finds it) but correctly fails `field: some(?)`.
+///
+/// WI-20260902-CZJ2N lifted this out of [`Loader::convert_term_inner`] and made it a FREE
+/// function, so that the three sites which expand a bare entity name share ONE filler: the
+/// converter's own `Fn` arm, [`Loader::expand_bare_entity_subject`], and
+/// [`expand_bare_entity_pattern`] — the last of which has no `Loader` to be a method on.
+/// Two spellings of §8.3's all-fields-fresh pattern must not have two fillers.
+fn fill_entity_named_args(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_len: usize,
+    value_position: bool,
+    named: &mut SmallVec<[(Symbol, TermId); 2]>,
+) {
+    let Some(all_fields) = kb.entity_field_names(functor) else {
+        return;
+    };
+    let all_fields = all_fields.to_vec(); // borrow-safe copy
+
+    // Field symbols whose declared type is `Option[..]` — computed only in a value
+    // position; patterns keep the uniform var-fill.
+    let optional_fields: HashSet<Symbol> = if value_position {
+        let fts: Vec<(Symbol, crate::eval::value::Value)> = kb
+            .entity_field_types(functor)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
+        fts.iter()
+            .filter(|(_, ty)| crate::kb::typing::is_option_type(&*kb, ty))
+            .map(|(s, _)| *s)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    if named.len() + pos_len < all_fields.len() {
+        let mut provided: HashSet<Symbol> = named.iter().map(|(s, _)| *s).collect();
+        for (i, &field_sym) in all_fields.iter().enumerate() {
+            if i < pos_len {
+                provided.insert(field_sym);
+            }
+        }
+        for &field_sym in &all_fields {
+            if !provided.contains(&field_sym) {
+                let fill = if optional_fields.contains(&field_sym) {
+                    // WI-716: absent optional in a value position -> none()
+                    let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
+                    kb.alloc(Term::Fn {
+                        functor: none_sym,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::new(),
+                    })
+                } else {
+                    let fresh = kb.fresh_var(field_sym);
+                    kb.alloc(Term::Var(Var::Global(fresh)))
+                };
+                named.push((field_sym, fill));
+            }
+        }
+    }
+    let order: HashMap<Symbol, usize> = all_fields
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, i))
+        .collect();
+    named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
+}
+
+/// WI-20260902-CZJ2N — §8.3'S EXPANSION OF A BARE ENTITY NAME IN A LOGICAL POSITION:
+/// `fact account` IS `fact account()`, the all-fields-fresh pattern.
+///
+/// §8.3 already says the expansion applies "whenever the functor is a registered entity",
+/// and one level up the spec already reads a bare SPEC name that way — `fact Monoid` IS
+/// `fact Monoid[?]` (`unwrap_spec_view` takes a bare `Ref` as no-bindings). F2 makes the
+/// VALUE level match. Before this, `fact account` asserted a phantom `account/0` atom that
+/// `:- account()` could not see and no other spelling reached either.
+///
+/// AT THE LOGICAL-POSITION ENTRY POINTS, NOT IN `convert_term_inner`. That arm serves DATA
+/// slots too, where `Ref(WorkItem)` must stay the sort-as-value (`facts_of(kb(),
+/// WorkItem)`, `typing::check_bare_ref`'s free-standing-entity arm), and `expected: None`
+/// cannot tell a goal from a data slot of unknown type. [`Loader::convert_subject_term`]
+/// is the funnel for four of the five positions (rule head, fact head, sort-body pre-scan,
+/// proof step); [`convert_query_term`] and the rule-body GOAL arm of
+/// `build_body_atom_occurrence_inner` are the other two, and each reaches this.
+///
+/// A FREE FUNCTION because two of those callers have no `Loader` — the query converter is
+/// one — and because `value_position` is then a PARAMETER rather than a field, which is
+/// what lets the query pattern say "no" explicitly: a query asks "any account", and
+/// filling an absent OPTIONAL with `none()` there would find only the facts whose optional
+/// is absent. That asymmetry is WI-716's, and it is stated at
+/// [`fill_entity_named_args`].
+///
+/// BEFORE INDEXING, necessarily: `Ref(account)` and `account(?, ?)` key differently in the
+/// discrimination tree, so a unification-time expansion could not do it.
+///
+/// IDEMPOTENT, which is what lets it sit at a funnel rather than at a branch: a 0-field
+/// sort-nested constructor re-canonicalizes to the same `Ref` it arrived as, and an
+/// already-applied term is not a `Term::Ref` and is returned untouched.
+fn expand_bare_entity_pattern(kb: &mut KnowledgeBase, tid: TermId, value_position: bool) -> TermId {
+    let Term::Ref(e) = *kb.get_term(tid) else {
+        return tid;
+    };
+    if kb.entity_field_names(e).is_none() {
+        return tid;
+    }
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    fill_entity_named_args(kb, e, 0, value_position, &mut named);
+    kb.make_entity_term(e, SmallVec::new(), named)
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Public: convert a parse-time term into a KB term with scope-aware resolution
+// ══════════════════════════════════════════════════════════════════
+
 /// Convert a parse-time term (from `SimpleTermStore`) into the KB's
 /// hash-consed `TermStore`, resolving symbols through the KB's scope chain.
 ///
@@ -16624,9 +16767,10 @@ pub fn convert_query_term(
         } else {
             Term::Ident(sym)
         };
-        return kb.alloc(term);
+        let tid = kb.alloc(term);
+        return expand_bare_entity_pattern(kb, tid, false);
     }
-    convert_query_term_expecting(
+    let tid = convert_query_term_expecting(
         kb,
         parse_terms,
         parse_symbols,
@@ -16634,7 +16778,15 @@ pub fn convert_query_term(
         scope,
         var_map,
         None,
-    )
+    );
+    // WI-20260902-CZJ2N — §8.3'S EXPANSION AT THE QUERY PATTERN, the fifth logical
+    // position. `anthill query 'account'` searches for the same all-fields-fresh pattern
+    // `account()` searches for, so a query cannot be written that the fact head cannot
+    // answer. AT THE ENTRY POINT and not inside `convert_query_term_expecting`, for the
+    // reason the 719FJ collapse above is: an ARGUMENT of a pattern is a data slot whose
+    // spelling is its identity, and the fact this searches for was built by the loader's
+    // own data-slot walk, which is untouched.
+    expand_bare_entity_pattern(kb, tid, false)
 }
 
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
@@ -19117,8 +19269,18 @@ impl<'a> Loader<'a> {
     fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) {
         let source_span = self.source_span_of(parse_id);
         self.kb.term_spans.entry(kb_id).or_insert(source_span);
-        if let Term::Fn { functor, .. } = self.kb.terms.get(kb_id) {
-            let functor = *functor;
+        // WI-20260902-CZJ2N — `Term::Ref` / `Term::Ident` TOO. A nullary application is
+        // stored bare, so the `Term::Fn`-only read stopped recording a functor span for
+        // every nullary predicate, operation and equation functor. `functor_spans` is
+        // what `kb.functor_span()` hands the typer's diagnostics and what
+        // `check_operation_body_and_clauses` falls back to for a declaration site, so
+        // the loss is silent and shows up as an error message with no location.
+        let functor = match self.kb.terms.get(kb_id) {
+            Term::Fn { functor, .. } => Some(*functor),
+            Term::Ref(s) | Term::Ident(s) => Some(*s),
+            _ => None,
+        };
+        if let Some(functor) = functor {
             self.kb.functor_spans.entry(functor).or_insert(source_span);
         }
     }
@@ -19222,6 +19384,22 @@ impl<'a> Loader<'a> {
         build_some(self.kb, term)
     }
 
+    /// [`fill_entity_named_args`] at this loader's own value/pattern position.
+    fn fill_entity_named_args(
+        &mut self,
+        functor: Symbol,
+        pos_len: usize,
+        named: &mut SmallVec<[(Symbol, TermId); 2]>,
+    ) {
+        fill_entity_named_args(self.kb, functor, pos_len, self.in_value_position, named)
+    }
+
+    /// [`expand_bare_entity_pattern`] at this loader's own value/pattern position — see
+    /// there for the rule, the five positions and why it is a free function.
+    fn expand_bare_entity_subject(&mut self, tid: TermId) -> TermId {
+        expand_bare_entity_pattern(self.kb, tid, self.in_value_position)
+    }
+
     /// WI-20260901-719FJ — THE SUBJECT OF A LOGICAL FORM, converted.
     ///
     /// A LOGICAL SUBJECT is a rule head, a fact head, a rule-body GOAL or a query
@@ -19254,9 +19432,19 @@ impl<'a> Loader<'a> {
     /// exactly how that breaks, so every position asks this only of its SUBJECT.
     fn convert_subject_term(&mut self, parse_id: TermId) -> TermId {
         let Some(sym) = self.dotted_subject_symbol(parse_id) else {
-            return self.convert_term(parse_id);
+            let tid = self.convert_term(parse_id);
+            // WI-20260902-CZJ2N: §8.3's expansion, at the funnel. The memo is
+            // OVERWRITTEN with the expanded term for the same reason the dotted branch
+            // below writes one at all — one parse node must denote one KB term, or a
+            // later walk of it sees a shape this position already decided against.
+            let expanded = self.expand_bare_entity_subject(tid);
+            if expanded != tid {
+                self.term_map.insert(parse_id.raw(), expanded);
+            }
+            return expanded;
         };
         let kb_id = self.subject_name_term(sym);
+        let kb_id = self.expand_bare_entity_subject(kb_id);
         // The memo `convert_term_inner` reads first, so a later walk of the same parse
         // node (the body-atom walk's entity/reflect materialization, `parse_span_table`)
         // sees the collapsed node rather than re-deriving the `field_access` one.
@@ -19879,57 +20067,7 @@ impl<'a> Loader<'a> {
                 // field) the var-fill stays — "matches anything". A `none()` value
                 // still unifies a pattern's var (so `E(id: ?)` finds it) but
                 // correctly fails `field: some(?)`.
-                if let Some(all_fields) = self.kb.entity_field_names(new_functor) {
-                    let all_fields = all_fields.to_vec(); // borrow-safe copy
-                                                          // Field symbols whose declared type is `Option[..]` — computed only
-                                                          // in a value position; patterns keep the uniform var-fill.
-                    let optional_fields: HashSet<Symbol> = if self.in_value_position {
-                        let fts: Vec<(Symbol, crate::eval::value::Value)> = self
-                            .kb
-                            .entity_field_types(new_functor)
-                            .map(|s| s.to_vec())
-                            .unwrap_or_default();
-                        fts.iter()
-                            .filter(|(_, ty)| crate::kb::typing::is_option_type(&*self.kb, ty))
-                            .map(|(s, _)| *s)
-                            .collect()
-                    } else {
-                        HashSet::new()
-                    };
-                    if new_named.len() + new_pos.len() < all_fields.len() {
-                        let mut provided: HashSet<Symbol> =
-                            new_named.iter().map(|(s, _)| *s).collect();
-                        for (i, &field_sym) in all_fields.iter().enumerate() {
-                            if i < new_pos.len() {
-                                provided.insert(field_sym);
-                            }
-                        }
-                        for &field_sym in &all_fields {
-                            if !provided.contains(&field_sym) {
-                                let fill = if optional_fields.contains(&field_sym) {
-                                    // WI-716: absent optional in a value position -> none()
-                                    let none_sym =
-                                        self.kb.resolve_symbol("anthill.prelude.Option.none");
-                                    self.kb.alloc(Term::Fn {
-                                        functor: none_sym,
-                                        pos_args: SmallVec::new(),
-                                        named_args: SmallVec::new(),
-                                    })
-                                } else {
-                                    let fresh = self.kb.fresh_var(field_sym);
-                                    self.kb.alloc(Term::Var(Var::Global(fresh)))
-                                };
-                                new_named.push((field_sym, fill));
-                            }
-                        }
-                    }
-                    let order: HashMap<Symbol, usize> = all_fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &s)| (s, i))
-                        .collect();
-                    new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
-                }
+                self.fill_entity_named_args(new_functor, new_pos.len(), &mut new_named);
 
                 // WI-710: a NESTED sort-headed term is a parameterized TYPE — the
                 // `Cell[W = Int64]` in a rule body's `is_modifiable(Cell[W = Int64])`, or
@@ -22434,6 +22572,90 @@ impl<'a> Loader<'a> {
 
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
     /// maintain `term_depth`. Every recursive child re-enters through the wrapper.
+    /// WI-20260902-CZJ2N — A BARE NAME OF A NULLARY OPERATION IS THAT OPERATION'S CALL,
+    /// IN A RULE BODY. `rule r(1) :- flag` builds the same `Expr::Apply { flag }` node
+    /// `:- flag()` builds, so the two spellings are ONE occurrence and every consumer
+    /// downstream — the WI-580 relational hook, `reduce_op_value`, the typer's
+    /// `check_goal_atom_reading` twin, `[simp]`, eval — sees one shape.
+    ///
+    /// WHY THE NODE AND NOT JUST THE TERM. The storage canon
+    /// ([`KnowledgeBase::nullary_canon`]) already makes `Ref(flag)` and `Fn{flag}` one
+    /// TERM, and that is enough for a PREDICATE, whose goal is answered by matching
+    /// clauses. It is NOT enough for an OPERATION, which is answered by REDUCING: a rule
+    /// body carries occurrences, and `reduce_op_value` opens an `Expr::Apply` and hands
+    /// anything else straight back un-reduced. MEASURED, with the canon in and this
+    /// elaboration out: the WI-580 hook fired identically for `:- flag` and `:- flag()`
+    /// (same functor, `declared_arity == Some(0)`, `bare_bodied_bool_relation == true`)
+    /// and the two still answered 0 and 1 — the divergence is entirely the node shape.
+    ///
+    /// THE WRONG ANSWER THIS REMOVES is not the missing one. With `:- flag` failing
+    /// silently, `:- not(flag)` SUCCEEDED — negation-as-failure reading a goal that
+    /// could not run as a disproof. That is §6.6's "resolution is by syntactic
+    /// position" being false for one spelling.
+    ///
+    /// SCOPE — RULE BODIES, ops only:
+    /// * An OPERATION with declared arity 0, and nothing else. A bare CONSTRUCTOR
+    ///   (`real_pose_at(?k, Leader, ?l)`) stays a `Ref`: §8.3 gives it a value reading
+    ///   and the storage canon already merges its two spellings. A bare SORT stays a
+    ///   `Ref` for the same reason [`KnowledgeBase::nullary_canon`] leaves it alone —
+    ///   `Ref(S)` is the type-level wildcard.
+    /// * OPERATION BODIES ARE NOT THIS SITE. §5.4's eta reading is TYPE-DIRECTED — a
+    ///   nullary op in an arrow-typed slot is the unapplied function value — and this
+    ///   walk has no expected type to consult. `typing::check_bare_ref` owns that
+    ///   corner and already gives a bare nullary op the zero-arg-call TYPE.
+    /// * A rule-body DATA slot is included, deliberately: `rule c(?v) :- ?v <=> seven`
+    ///   binds 7, matching §5.4. The census over stdlib/, examples/, tests/ and
+    ///   anthill-todo/ found ZERO rule-body slots naming a nullary op bare, so the
+    ///   population this moves is new code only.
+    fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
+        if super::op_info::is_nullary_operation(&self.kb, sym) {
+            return Expr::Apply {
+                recv_type: self.build_recv_type(parse_id),
+                functor: sym,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            };
+        }
+        Expr::Ref(sym)
+    }
+
+    /// WI-20260902-CZJ2N — §8.3's expansion for a bare ENTITY name reached in RULE-BODY
+    /// GOAL position, the fifth and last of the logical positions.
+    ///
+    /// `rule f(1) :- account` searches for the same all-fields-fresh pattern
+    /// `:- account()` searches for. Returns `None` when this is not that case, so the
+    /// caller keeps its ordinary reading — the gate is `at_goal && !is_wrapper` at the
+    /// call site (a DATA slot keeps `Ref(WorkItem)` as the sort-as-value, which is what
+    /// `facts_of(kb(), WorkItem)` reads) plus "has a declared field schema" here.
+    ///
+    /// Built through [`Self::expand_bare_entity_subject`] and the same materializer the
+    /// `Fn` arm uses for an applied entity atom, rather than by assembling an
+    /// `Expr::Constructor` by hand: the goal must be the SAME shape the fact head
+    /// stores or it matches nothing, and that function is the one place the shape is
+    /// decided.
+    fn bare_entity_goal_occurrence(
+        &mut self,
+        sym: Symbol,
+        parse_id: TermId,
+    ) -> Option<Rc<NodeOccurrence>> {
+        self.kb.entity_field_names(sym)?;
+        let bare = self.kb.alloc(Term::Ref(sym));
+        let expanded = self.expand_bare_entity_subject(bare);
+        if expanded == bare {
+            // A 0-field constructor re-canonicalizes to the `Ref` it came in as — the
+            // two spellings are already one term there, so there is nothing to expand
+            // and the caller's plain reading is right.
+            return None;
+        }
+        let spans = self.parse_span_table(parse_id);
+        Some(node_occurrence::materialize_from_handle_spanned(
+            self.kb,
+            expanded,
+            Some(&spans),
+        ))
+    }
+
     fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
@@ -22473,14 +22695,29 @@ impl<'a> Loader<'a> {
             Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
             Term::Var(Var::Rigid(_)) => unreachable!("Var::Rigid in stored parse term"),
             Term::Ref(sym) => {
-                Expr::Ref(self.remap_symbol_strict(sym, self.parsed.terms.span(parse_id)))
+                let s = self.remap_symbol_strict(sym, self.parsed.terms.span(parse_id));
+                if self.in_body_goal && !self.in_body_goal_wrapper {
+                    if let Some(occ) = self.bare_entity_goal_occurrence(s, parse_id) {
+                        return occ;
+                    }
+                }
+                self.nullary_op_call_or_ref(s, parse_id)
             }
             Term::Ident(sym) => {
                 let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
                 if self.kb.symbols.is_resolved(new_sym) {
-                    Expr::Ref(new_sym)
+                    // WI-20260902-CZJ2N: §8.3's expansion, in GOAL position only. A DATA
+                    // slot keeps the bare `Ref` — a term's spelling is its identity there
+                    // (WI-756), and `Ref(WorkItem)` is the sort-as-value a reflect call
+                    // reads.
+                    if self.in_body_goal && !self.in_body_goal_wrapper {
+                        if let Some(occ) = self.bare_entity_goal_occurrence(new_sym, parse_id) {
+                            return occ;
+                        }
+                    }
+                    self.nullary_op_call_or_ref(new_sym, parse_id)
                 } else {
                     Expr::Ident(new_sym)
                 }
@@ -29423,10 +29660,19 @@ impl<'a> Loader<'a> {
         pb: &ProvidesBlock,
         spec_term: TermId,
     ) -> Option<(String, String)> {
-        let Term::Fn { functor, .. } = self.kb.get_term(spec_term) else {
-            return None;
-        };
-        let qn = self.kb.qualified_name_of(*functor).to_string();
+        // WI-20260902-CZJ2N — READ THE HEAD, not the `Term::Fn` SPELLING. A binding
+        // block's carrier is a NAMESPACE for twenty of the twenty-six reflect mappings
+        // (`provides anthill.reflect language rust`), and a namespace name has no type
+        // reading, so its nullary term is stored bare (`KnowledgeBase::nullary_canon`).
+        // MEASURED with the `Term::Fn` destructure kept: this returned `None`, the
+        // whole block's `operation_map` was dropped, and the mapping count went 134 →
+        // 114 — SILENTLY. Every `?x.y` then died `OperationBodyMissing:
+        // anthill.reflect.field_access` at eval, on a program that loaded clean.
+        //
+        // `functor_sym` is the carrier-neutral read that answers for both spellings and
+        // cannot go stale the way a shape match does.
+        let functor = super::term_view::TermView::head(&spec_term, &self.kb).functor_sym()?;
+        let qn = self.kb.qualified_name_of(functor).to_string();
         Some((qn, self.parsed.symbols.local_name(pb.language).to_string()))
     }
 
@@ -30718,21 +30964,45 @@ end
             "and a namespace never does"
         );
 
-        // The old spelling, kept alive here as the oracle: build the owner's name
-        // term the way the loader used to and read its shape. Equal on all three.
-        for owner in [plain, ctor, ns] {
+        // THE TRIPWIRE FIRED, AND THIS IS THE NEW READING — WI-20260902-CZJ2N.
+        //
+        // The doc above says this row exists so that "a future change to the WI-511
+        // canon … breaks here loudly instead of silently flipping". It did. The canon
+        // is no longer `is_constructor_symbol`, it is `!has_kind(owner, Sort)`, so the
+        // encoding and the predicate are no longer the same function:
+        //
+        //   | owner       | Sort? | ctor? | name term | old `via_term` | `is_sort_scope` |
+        //   |-------------|-------|-------|-----------|----------------|-----------------|
+        //   | `PlainSort` | yes   | no    | `Fn`      | true           | true            |
+        //   | `CtorSort`  | yes   | YES   | `Fn`      | **true**       | **false**       |
+        //   | `SomeNamespace` | no | no   | `Ref`     | false          | false           |
+        //
+        // `CtorSort` is the row that split: it is `Sort`-kinded, so the canon exempts
+        // it and its name term stays `Fn` where WI-511 rewrote it to `Ref`. The
+        // ENCODING now says "has a type reading"; the PREDICATE says "opens a sort
+        // body". Those were only ever accidentally equal, and this is the accident
+        // ending — which is precisely why WI-1029 folded `is_sort_scope` off the shape
+        // and onto the owner. Nothing about the predicate's answers moved.
+        //
+        // Pinned as the NEW relation rather than deleted, so the next canon change
+        // breaks here too.
+        for (owner, keeps_fn_spelling) in [(plain, true), (ctor, true), (ns, false)] {
             let term = kb.make_name_term_from_sym(owner);
-            let via_term = matches!(kb.get_term(term),
-                Term::Fn { functor, pos_args, named_args }
-                    if pos_args.is_empty() && named_args.is_empty()
-                        && kb.symbols.get(*functor).has_kind(SymbolKind::Sort));
             assert_eq!(
-                via_term,
-                is_sort_scope(&kb, kb.symbols.scope_id(owner)),
-                "the term reading and the owner reading are the same predicate for {}",
+                matches!(kb.get_term(term), Term::Fn { .. }),
+                keeps_fn_spelling,
+                "the nullary canon exempts exactly the `SymbolKind::Sort` owners: {}",
                 kb.qualified_name_of(owner)
             );
         }
+        let ctor_term = kb.make_name_term_from_sym(ctor);
+        assert!(
+            matches!(kb.get_term(ctor_term), Term::Fn { .. })
+                && !is_sort_scope(&kb, kb.symbols.scope_id(ctor)),
+            "and the encoding no longer decides the predicate — `CtorSort` keeps the \
+             `Fn` spelling while `is_sort_scope` says no, which the WI-511 canon could \
+             not have produced"
+        );
     }
 
     /// The channel WI-1028 actually rewrote: `LoadPass::at_item` used to unwrap the

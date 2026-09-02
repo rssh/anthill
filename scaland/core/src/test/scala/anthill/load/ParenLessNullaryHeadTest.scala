@@ -122,13 +122,20 @@ class ParenLessNullaryHeadTest extends munit.FunSuite:
     )
   }
 
-  test("a bare equation subject introduces nothing") {
-    // §5.3: a `[simp]` head is an APPLICATION, so `rule tau <=> …` matches no redex and
-    // fires nothing. The one function this ticket changed is read by BOTH paths, and
-    // minting a bare equation subject would stamp it `EquationFunctor` for a law that can
-    // never run. The PARENTHESISED twin is the control: it DOES introduce.
-    for (label, tag, mark, want) <-
-      Seq(("bare", "P85EqBare", "", false), ("parens", "P85EqParen", "()", true))
+  test("an equation subject introduces its name in BOTH spellings") {
+    // WI-20260902-CZJ2N FLIPPED THE BARE ARM. This asserted `want = false` for it: §5.3
+    // read a `[simp]` head as an APPLICATION which a bare name is not, so `rule tau <=>
+    // …` matched no redex and minting `tau` would have stamped it `EquationFunctor` for
+    // a law that can never run. The two spellings are ONE TERM now, so the bare law
+    // DEFINES and keeping the guard would be a new spelling-dependent rule — refusing at
+    // arity 0 only, on the equation path only. §5.3 now says so, and rustland deleted
+    // the same guard from `head_subject_name`.
+    //
+    // STILL A PAIR, because the claim is that the two AGREE. BACKED OUT (restore
+    // `case id: Term.Ident if kind == SymbolKind.Goal` in `Loader.headSubjectName`), the
+    // `bare` arm reports `false` while `parens` still reports `true` — which is what says
+    // the axis is the SPELLING and not the equation path.
+    for (label, tag, mark) <- Seq(("bare", "P85EqBare", ""), ("parens", "P85EqParen", "()"))
     do
       val kb = LoadFixture.loaded(
         s"""namespace zz$tag
@@ -136,8 +143,8 @@ class ParenLessNullaryHeadTest extends munit.FunSuite:
            |end""".stripMargin,
         s"$tag.anthill",
       )
-      assertEquals(
-        kb.hasQualifiedName(s"zz$tag.tau"), want,
-        s"$label: only the APPLICATION spelling of an equation subject introduces a name",
+      assert(
+        kb.hasQualifiedName(s"zz$tag.tau"),
+        s"$label: an equation subject introduces its name in either spelling",
       )
   }

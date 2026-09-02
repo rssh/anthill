@@ -52,8 +52,6 @@ pub enum ViewHead {
         pos_arity: usize,
         named_arity: usize,
     },
-    /// Reference to a named symbol.
-    Ref(Symbol),
     /// Bare identifier (not yet resolved).
     Ident(Symbol),
     /// Bottom term `⊥`.
@@ -64,57 +62,69 @@ pub enum ViewHead {
 }
 
 impl ViewHead {
-    /// WI-436 — the head's functor symbol, treating a bare [`ViewHead::Ref`] as
-    /// the 0-ary application it denotes: `Ref(c) ≡ Fn{c}`. Returns the symbol for
-    /// both a `Functor { functor: Some(s), .. }` and a `Ref(s)` head, and `None`
-    /// for a functor-less aggregate / var / const / opaque head.
+    /// WI-20260902-CZJ2N — the head of a NULLARY application, which is what a bare
+    /// name IS: `Ref(f)`, `Value::SymbolRef(f)`, `Expr::Ref(f)` and a stored
+    /// `Fn{f, [], []}` all read as this one head.
     ///
-    /// The reader counterpart of the canonicalization in [`functor_view_head`]: a
-    /// 0-ary constructor canonicalizes to the bare `Ref`, so a reader that
-    /// identifies a head by its *symbol* (an effect-row label, a reflect Expr
-    /// ctor, a sort functor) must read `c` off either spelling. Keying on the
-    /// symbol is also stronger than a qualified-name string match — symbol
-    /// identity can't collide with a same-named user sort.
+    /// The `ViewHead::Ref` variant this replaces was the view-layer half of the
+    /// dual representation WI-436 bridged and WI-511 half-merged. It is gone
+    /// because a SECOND head for the same thing is what let a reader answer one
+    /// spelling and not the other — see [`functor_view_head`].
+    pub(crate) fn nullary(functor: Symbol) -> ViewHead {
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity: 0,
+            named_arity: 0,
+        }
+    }
+
+    /// The head's functor symbol (WI-436), or `None` for a functor-less aggregate /
+    /// var / const / opaque head.
+    ///
+    /// WI-20260902-CZJ2N: it no longer has a `Ref` arm to fold in — a bare name is a
+    /// nullary `Functor` head now, so this is a plain read. Kept because 40-odd readers
+    /// identify a head by its SYMBOL and do not care about arity, and because keying on
+    /// the symbol is stronger than a qualified-name string match (symbol identity can't
+    /// collide with a same-named user sort).
     pub(crate) fn functor_sym(&self) -> Option<Symbol> {
         match self {
             ViewHead::Functor {
                 functor: Some(s), ..
             } => Some(*s),
-            ViewHead::Ref(s) => Some(*s),
             _ => None,
         }
     }
 }
 
-/// WI-436 — canonicalize a functor application head: a **0-ary application of a
-/// registered constructor** reads as the bare [`ViewHead::Ref`]. A 0-ary
-/// constructor `c` has two indistinguishable spellings — bare `Ref(c)` and the
-/// nullary application `Fn{c}` / `Constructor{c}` / `Entity{c}` — that PRINT
-/// identically (`c`); the bare `Ref` is the single canonical form (the only one
-/// `print → parse` produces). So every carrier reads a 0-ary constructor THROUGH
-/// `Ref`, closing the divergence where a fact stored as `Fn{c}` was invisible to
-/// a rule spelled `Ref(c)` (and vice versa).
+/// A functor application head. WI-20260902-CZJ2N: no longer canonicalizes anything —
+/// it is the plain constructor, kept as the single build site so the carriers cannot
+/// drift.
 ///
-/// SOUND and KIND-ISOLATED via the `is_constructor_symbol` gate: an op-as-value
-/// is a `Value::OpRef`, never a `Term::Ref`, so no op/eta case depends on the
-/// `Ref`-vs-`Fn` shape; and a concrete SORT (`Fn{Int}`) or type-PARAM is not a
-/// constructor, so the type/dispatch wildcard-vs-concrete distinction (WI-391,
-/// recovered from the symbol's kind) is untouched. Readers that identify a head
-/// by symbol use [`ViewHead::functor_sym`] to accept the `Ref` spelling.
-fn functor_view_head(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    pos_arity: usize,
-    named_arity: usize,
-) -> ViewHead {
-    if pos_arity == 0 && named_arity == 0 && kb.is_constructor_symbol(functor) {
-        ViewHead::Ref(functor)
-    } else {
-        ViewHead::Functor {
-            functor: Some(functor),
-            pos_arity,
-            named_arity,
-        }
+/// WHAT IT USED TO DO, and why that is gone. WI-436 read a **0-ary application of a
+/// registered constructor** as the bare `ViewHead::Ref`, bridging a dual representation
+/// at the view layer; WI-511 then merged the two STORAGE forms for the same gated set.
+/// Both were kind-dependent (`is_constructor_symbol`), so the merge reached sort-nested
+/// constructors and nothing else: a nullary PREDICATE, a nullary OPERATION and a
+/// namespace-level ENTITY each kept two shapes that do not unify.
+///
+/// CZJ2N widened the gate at the store ([`KnowledgeBase::nullary_canon`] — every nullary
+/// `Fn` of a name with no TYPE reading is stored as `Ref`) and removed the second HEAD
+/// here, so a bare name and a nullary application are one term AND one head. That is what
+/// makes `:- holds` reach `rule holds()`, `:- flag` route through WI-580's relational
+/// hook, and `rule tau <=> …` fire as a `[simp]` law — each of which read the `Functor`
+/// head and skipped `Ref`.
+///
+/// KEPT AS A FUNCTION, though it is now a plain constructor: it is the one build site the
+/// ten carrier `head()` arms share, and inlining it would put ten copies of the shape
+/// where one canonicalization used to be. It no longer needs the `KnowledgeBase`, which
+/// is the whole of what the retirement bought — a head is now a fact about the term and
+/// not about the KB's registration state, so it cannot answer differently before and
+/// after a load-time registration (the order-sensitivity WI-436's own note recorded).
+fn functor_view_head(functor: Symbol, pos_arity: usize, named_arity: usize) -> ViewHead {
+    ViewHead::Functor {
+        functor: Some(functor),
+        pos_arity,
+        named_arity,
     }
 }
 
@@ -931,7 +941,7 @@ fn pattern_shape_inner(pat: &Pattern, annotated: bool) -> (&'static str, &'stati
 fn pattern_head(pat: &Pattern, annotated: bool, kb: &KnowledgeBase) -> ViewHead {
     let (qname, keys) = pattern_shape(pat, annotated);
     match kb.try_resolve_symbol(qname) {
-        Some(f) => functor_view_head(kb, f, 0, keys.len()),
+        Some(f) => functor_view_head(f, 0, keys.len()),
         // Reflect not loaded ⇒ no pattern twin exists in this KB (fail-soft,
         // mirroring the wrapped-form arms); its children then read none, which is
         // consistent with this head.
@@ -1117,7 +1127,6 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             // twin has not got would stop the two matching.
             recv_type: _,
         }) => functor_view_head(
-            kb,
             *functor,
             pos_args.len(),
             named_args.len() + usize::from(!type_args.is_empty()),
@@ -1137,7 +1146,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             name,
             pos_args,
             named_args,
-        }) => functor_view_head(kb, *name, pos_args.len(), named_args.len()),
+        }) => functor_view_head(*name, pos_args.len(), named_args.len()),
         // WI-1045 — the DICTIONARY construction node reads as the dictionary it
         // builds: same functor, positional sub-dictionaries, one named `impl`.
         // That is the third carrier of the one representation
@@ -1155,7 +1164,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // delegation below: a value carrying an occurrence views through to the
         // occurrence, so an occurrence carrying a value views through to the value.
         Some(Expr::Spliced(v)) => v.head(kb),
-        Some(Expr::Ref(s)) => ViewHead::Ref(*s),
+        Some(Expr::Ref(s)) => ViewHead::nullary(*s),
         Some(Expr::Ident(s)) => ViewHead::Ident(*s),
         // Proposal 055 — a nominal type value reads as THE TERM TWIN
         // `try_occurrence_to_term` builds for it, which is this file's standing
@@ -1188,13 +1197,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
             head,
             pos_args,
             named_args,
-        }) => {
-            if pos_args.is_empty() && named_args.is_empty() {
-                ViewHead::Ref(*head)
-            } else {
-                functor_view_head(kb, *head, pos_args.len(), named_args.len())
-            }
-        }
+        }) => functor_view_head(*head, pos_args.len(), named_args.len()),
         // A var of ANY kind surfaces its `Var` — the discrim tree keys a flex
         // `Global` / bound `DeBruijn` as a wildcard var-edge and a `Rigid`
         // skolem as a `RigidVar` constant (mirrors `TermIdView`/`Value`). The
@@ -1210,13 +1213,13 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // an empty `[]` and its `Fn{ListLiteral}` twin canonicalize to the same
         // head. Reflect-not-loaded ⇒ `Opaque` (no reflect list literal exists).
         Some(Expr::ListLit(es)) => match list_literal_functor(kb) {
-            Some(f) => functor_view_head(kb, f, es.len(), 0),
+            Some(f) => functor_view_head(f, es.len(), 0),
             None => ViewHead::Opaque,
         },
         // WI-1014 Part A — `{e…}` reads as its `SetLiteral(e…)` twin, the same
         // shape as the list literal one line up.
         Some(Expr::SetLit(es)) => match set_literal_functor(kb) {
-            Some(f) => functor_view_head(kb, f, es.len(), 0),
+            Some(f) => functor_view_head(f, es.len(), 0),
             None => ViewHead::Opaque,
         },
         // WI-1014 Part B — `(…)` reads as its `TupleLiteral(_1: …, name: …)` twin:
@@ -1234,7 +1237,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // sorting named keys past an ORDERED PRODUCT's identity (WI-788), fixed
         // and pinned by `wi815_a_named_tuples_component_order_is_its_identity`.
         Some(Expr::TupleLit { positional, named }) => match tuple_literal_functor(kb) {
-            Some(f) => functor_view_head(kb, f, 0, positional.len() + named.len()),
+            Some(f) => functor_view_head(f, 0, positional.len() + named.len()),
             None => ViewHead::Opaque,
         },
         // WHAT IS STILL `Opaque`, AND WHY — each for a NAMED reason, not because
@@ -1897,11 +1900,7 @@ pub trait TermView {
                         .any(|s| self.named_arg(kb, s).map_or(false, |a| a.bears_opaque(kb)))
             }
             // Leaves: a var, a literal, a name, `⊥`. Nothing beneath them.
-            ViewHead::Var(_)
-            | ViewHead::Const(_)
-            | ViewHead::Ref(_)
-            | ViewHead::Ident(_)
-            | ViewHead::Bottom => false,
+            ViewHead::Var(_) | ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Bottom => false,
         }
     }
 }
@@ -1944,7 +1943,6 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
     match (a.head(kb), b.head(kb)) {
         (ViewHead::Var(va), ViewHead::Var(vb)) => va == vb,
         (ViewHead::Const(la), ViewHead::Const(lb)) => la == lb,
-        (ViewHead::Ref(sa), ViewHead::Ref(sb)) => sa == sb,
         (ViewHead::Ident(sa), ViewHead::Ident(sb)) => sa == sb,
         (ViewHead::Bottom, ViewHead::Bottom) => true,
         (
@@ -2160,7 +2158,6 @@ fn fingerprint_into<V: TermView>(
             }
         },
         ViewHead::Const(lit) => out.push(StructToken::Const(lit)),
-        ViewHead::Ref(s) => out.push(StructToken::Ref(s)),
         ViewHead::Ident(s) => out.push(StructToken::Ident(s)),
         ViewHead::Bottom => out.push(StructToken::Bottom),
         ViewHead::Opaque => out.push(StructToken::Opaque),
@@ -2275,8 +2272,8 @@ impl TermView for TermIdView {
                 functor,
                 pos_args,
                 named_args,
-            } => functor_view_head(kb, *functor, pos_args.len(), named_args.len()),
-            Term::Ref(s) => ViewHead::Ref(*s),
+            } => functor_view_head(*functor, pos_args.len(), named_args.len()),
+            Term::Ref(s) => ViewHead::nullary(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
             Term::ParseAux(_) => {
@@ -2352,8 +2349,8 @@ impl TermView for TermId {
                 functor,
                 pos_args,
                 named_args,
-            } => functor_view_head(kb, *functor, pos_args.len(), named_args.len()),
-            Term::Ref(s) => ViewHead::Ref(*s),
+            } => functor_view_head(*functor, pos_args.len(), named_args.len()),
+            Term::Ref(s) => ViewHead::nullary(*s),
             Term::Ident(s) => ViewHead::Ident(*s),
             Term::Bottom => ViewHead::Bottom,
             Term::ParseAux(_) => unreachable!(
@@ -2653,7 +2650,7 @@ impl TermView for Value {
                 pos,
                 named,
                 ..
-            } => functor_view_head(kb, *functor, pos.len(), named.len()),
+            } => functor_view_head(*functor, pos.len(), named.len()),
             // WI-276: a reflect Expr occurrence is structural — expose its Expr.
             // WI-342: Type / EffectExpr occurrences expose their functor too.
             Value::Node(occ) => occ_head(occ, kb),
@@ -2668,7 +2665,7 @@ impl TermView for Value {
             // one way regardless of which carrier it arrived on. NOT through
             // `functor_view_head`: this IS the canonical bare-`Ref` spelling
             // that function canonicalizes a nullary application TO.
-            Value::SymbolRef(s) => ViewHead::Ref(*s),
+            Value::SymbolRef(s) => ViewHead::nullary(*s),
             // WI-1019 — the two RESOLVED values read structurally; see the
             // section above for why these two and not the rest.
             Value::OpRef { .. } => opref_head(OpRefHalves::of(self), kb),
@@ -3230,13 +3227,25 @@ impl TermView for ReflectedExpr {
 }
 
 #[cfg(test)]
-mod wi436_tests {
-    //! WI-436 — a 0-ary constructor reads as the bare `Ref(c)` across every
-    //! carrier (stored `Term`, `Value::Entity`, reflect `Expr` occurrence), so
-    //! `Ref(c)` and the nullary application `Fn{c}` are one representation. A
-    //! non-constructor functor keeps its `Functor` head (the gate is exactly
-    //! `is_constructor_symbol`, isolating the rule by symbol kind).
+mod nullary_head_tests {
+    //! WI-436 / WI-511, REWRITTEN BY WI-20260902-CZJ2N — a nullary application and its
+    //! bare spelling are ONE TERM and ONE HEAD, for every symbol WITHOUT a type reading.
+    //!
+    //! WI-436 read a 0-ary CONSTRUCTOR as a separate `ViewHead::Ref` and left every
+    //! other nullary functor with a `Functor` head, so `Ref(c)` and `Fn{c}` were one
+    //! representation only when `is_constructor_symbol(c)`. This module used to assert
+    //! that split — its second row was called `nullary_non_constructor_stays_functor_-
+    //! and_distinct_from_ref` and passed. CZJ2N removes the split at the STORE
+    //! (`KnowledgeBase::nullary_canon`) and the second HEAD here
+    //! (`functor_view_head`), so that row now asserts the opposite.
+    //!
+    //! THE LINE THAT REMAINS is type-hood, and the third row is what pins it: a symbol
+    //! carrying `SymbolKind::Sort` keeps BOTH spellings, because §8.3 / WI-391 make
+    //! `Ref(S)` the dispatch WILDCARD and a nullary `Fn{S}` the concrete spec identity.
+    //! Backed out (drop the `has_kind(Sort)` test in `nullary_canon`), the stdlib does
+    //! not load.
     use super::*;
+    use crate::intern::SymbolKind;
     use crate::span::{SourceId, SourceSpan};
     use smallvec::SmallVec;
     use std::rc::Rc;
@@ -3245,9 +3254,11 @@ mod wi436_tests {
         SourceSpan::new(SourceId::from_raw(0), 0, 0)
     }
 
-    /// A KB with `red` registered as a constructor of sort `Color`, plus a
-    /// non-constructor functor `plain` of the same (zero) arity for the control.
-    fn kb_with_constructor() -> (KnowledgeBase, Symbol, Symbol) {
+    /// A KB with `red` registered as a constructor of sort `Color`, a plain
+    /// non-constructor `plain`, and a SORT-kinded `Shape`. Three inputs to the two
+    /// gates this change is about — WI-511's `is_constructor_symbol` and CZJ2N's
+    /// `has_kind(Sort)` — so no row can pass by the fixture being homogeneous.
+    fn kb_with_symbols() -> (KnowledgeBase, Symbol, Symbol, Symbol) {
         let mut kb = KnowledgeBase::new();
         let red = kb.intern("Color.red");
         let color = kb.intern("Color");
@@ -3259,14 +3270,25 @@ mod wi436_tests {
         let color_t = kb.alloc(Term::Ref(color));
         kb.register_entity_of(red_entity, color_t);
         assert!(kb.is_constructor_symbol(red));
-        let plain = kb.intern("plain");
+        // DEFINED, not merely interned: `SymbolKind::Sort` only sticks to a RESOLVED
+        // symbol (`SymbolTable::add_kind`), so a fixture built with `intern` alone
+        // cannot vary the gate this module is about.
+        let global = kb.global_scope();
+        let plain = kb.define_symbol("plain", "plain", SymbolKind::Goal, global);
         assert!(!kb.is_constructor_symbol(plain));
-        (kb, red, plain)
+        assert!(!kb.has_kind(plain, SymbolKind::Sort));
+        let shape = kb.define_symbol("Shape", "Shape", SymbolKind::Sort, global);
+        assert!(kb.has_kind(shape, SymbolKind::Sort));
+        assert!(!kb.is_constructor_symbol(shape));
+        (kb, red, plain, shape)
     }
 
+    /// The CONSTRUCTOR row — WI-436's, unchanged in verdict and kept as the CONTROL:
+    /// it passes with CZJ2N backed out, which is what says the next row's axis is the
+    /// gate and not the view layer as a whole.
     #[test]
-    fn nullary_constructor_reads_as_bare_ref_across_carriers() {
-        let (mut kb, red, _) = kb_with_constructor();
+    fn a_nullary_constructor_reads_as_one_head_across_carriers() {
+        let (mut kb, red, _, _) = kb_with_symbols();
 
         let bare_ref = kb.alloc(Term::Ref(red));
         let nullary_fn = kb.alloc(Term::Fn {
@@ -3290,19 +3312,20 @@ mod wi436_tests {
             None,
         ));
 
-        // Every carrier's head is the bare `Ref(red)` — not a `Functor` — and
-        // `functor_sym` reads `red` off it.
+        assert_eq!(bare_ref, nullary_fn, "one storage form");
         for h in [
             bare_ref.head(&kb),
             nullary_fn.head(&kb),
             entity_val.head(&kb),
             ctor_occ.head(&kb),
         ] {
-            assert!(matches!(h, ViewHead::Ref(s) if s == red));
+            assert!(matches!(
+                h,
+                ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == red
+            ));
             assert_eq!(h.functor_sym(), Some(red));
         }
 
-        // …so all four compare structurally equal in both directions.
         assert!(views_structurally_equal(&kb, &bare_ref, &nullary_fn));
         assert!(views_structurally_equal(&kb, &nullary_fn, &bare_ref));
         assert!(views_structurally_equal(&kb, &bare_ref, &entity_val));
@@ -3310,20 +3333,73 @@ mod wi436_tests {
         assert!(views_structurally_equal(&kb, &entity_val, &ctor_occ));
     }
 
+    /// THE ROW CZJ2N MOVES. Its predecessor asserted the opposite —
+    /// `!views_structurally_equal(plain_ref, plain_fn)` — and was green: a nullary
+    /// NON-constructor kept two terms, which is why `rule holds :- b(1)` could not
+    /// answer `:- holds()`.
+    ///
+    /// BACKED OUT (restore the `is_constructor_symbol` gate in
+    /// `KnowledgeBase::nullary_canon`, or the `ViewHead::Ref` arm in
+    /// `functor_view_head`): both assertions here fail; the constructor row above and
+    /// the sort row below pass either way.
     #[test]
-    fn nullary_non_constructor_stays_functor_and_distinct_from_ref() {
-        let (mut kb, _, plain) = kb_with_constructor();
+    fn a_nullary_non_constructor_is_one_term_with_its_bare_spelling() {
+        let (mut kb, _, plain, _) = kb_with_symbols();
         let plain_ref = kb.alloc(Term::Ref(plain));
         let plain_fn = kb.alloc(Term::Fn {
             functor: plain,
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
+        assert_eq!(
+            plain_ref, plain_fn,
+            "`plain` and `plain()` are ONE TermId — the storage canon, ungated by \
+             constructor-hood"
+        );
         assert!(matches!(
             plain_fn.head(&kb),
             ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == plain
         ));
-        assert!(!views_structurally_equal(&kb, &plain_ref, &plain_fn));
+        assert!(views_structurally_equal(&kb, &plain_ref, &plain_fn));
+    }
+
+    /// THE EXCEPTION, and it is a decision rather than an oversight: a name with a TYPE
+    /// reading keeps both spellings, because §8.3 and WI-391/WI-387 give them different
+    /// meanings there — `Ref(S)` is the dispatch WILDCARD a `provides Spec[T = T]`
+    /// lowers to, a nullary `Fn{S}` the CONCRETE spec identity `sort_inst_to_value`
+    /// builds. `KnowledgeBase::register_self_sort`'s note records the same thing from
+    /// the other side (24 tests failed `expected Type, got WorkItem` when a
+    /// free-standing entity's name term was re-spelled).
+    ///
+    /// MEASURED: dropping the `has_kind(Sort)` test from `nullary_canon` makes 792
+    /// symbols change spelling and the STDLIB FAILS TO LOAD —
+    /// `anthill.prelude.FiniteCollection.collect` stops covering its own `requires`.
+    #[test]
+    fn a_nullary_sort_name_keeps_both_spellings() {
+        let (mut kb, _, _, shape) = kb_with_symbols();
+        let shape_ref = kb.alloc(Term::Ref(shape));
+        let shape_fn = kb.alloc(Term::Fn {
+            functor: shape,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        assert_ne!(
+            shape_ref, shape_fn,
+            "a SORT keeps `Ref(S)` (the type-level wildcard) apart from `Fn{{S}}` \
+             (the concrete spec identity) — WI-391/WI-387"
+        );
+        // AND THE SPLIT IS AT THE STORE ONLY — the VIEW merges them, which is stated
+        // here because it is a real narrowing of where the distinction lives and it
+        // was not obvious. `functor_view_head` no longer has a second head to give a
+        // bare name, so both spellings read as `Functor{S, 0, 0}` and compare
+        // structurally equal. Every consumer that must keep them apart therefore reads
+        // the TERM: `sort_inst_to_value` builds each deliberately and `impl_param_ref`
+        // decides dispatch specificity off `Term::Ref`/`Term::Ident`. That the stdlib
+        // loads is the measurement that no type-level reader was on the view path.
+        assert!(
+            views_structurally_equal(&kb, &shape_ref, &shape_fn),
+            "the VIEW merges what the STORE keeps apart — see above"
+        );
     }
 }
 

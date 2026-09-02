@@ -1732,9 +1732,17 @@ impl<'kb> Emitter<'kb> {
             Term::Fn {
                 functor, pos_args, ..
             } => (*functor, pos_args.clone()),
+            // WI-20260902-CZJ2N — A NULLARY HEAD IS STORED BARE, so `rule status_ok :-
+            // …` arrives as `Term::Ref` and not as an argument-less `Term::Fn`. Without
+            // this arm it fell to `Unsupported`, which the caller turns into a HARD
+            // `SmtGenError` — so an obligation whose rule (or any rule it chases) has a
+            // nullary head aborted SMT emission entirely, and the 0-arg arm below became
+            // dead code. `Term::Ident` is included for the same reason
+            // `head_arg_count` includes it: the two spellings are one head.
+            Term::Ref(s) | Term::Ident(s) => (*s, smallvec::SmallVec::new()),
             other => {
                 return HeadShape::Unsupported(format!(
-                    "rule head must be Fn or Bottom, got {other:?}"
+                    "rule head must be an application or Bottom, got {other:?}"
                 ))
             }
         };

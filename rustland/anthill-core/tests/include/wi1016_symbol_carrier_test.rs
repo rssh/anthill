@@ -196,7 +196,7 @@ fn a_symbolref_child_stores_one_fact_not_two() {
 ///
 /// `is_duplicate_answer` skips dedup when σ carries a binding it cannot
 /// fingerprint, and the test for that was by CARRIER (`Value::Term | Value::Node`).
-/// A `SymbolRef` fingerprints perfectly well (`ViewHead::Ref`), so excluding it
+/// A `SymbolRef` fingerprints perfectly well (a nullary `ViewHead::Functor`), so excluding it
 /// turned answer dedup off according to which carrier the symbol arrived on.
 ///
 /// The σ binding is produced by `resolve_sort_instantiation_param` projecting a

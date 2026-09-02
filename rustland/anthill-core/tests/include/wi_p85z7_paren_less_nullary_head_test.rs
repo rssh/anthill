@@ -24,15 +24,24 @@
 //! every row not named passed, anywhere in the suite. The counts are the failures, since
 //! the complement is the binary's size and adds nothing.
 //!
+//! **AXIS C IS GONE, AND TWO ROWS HERE FLIPPED — WI-20260902-CZJ2N.** The two nullary
+//! head spellings are ONE TERM now, so a bare `[simp]` head DEFINES and its subject
+//! MINTS. The counts below are as measured when this ticket shipped; the rows they name
+//! are unchanged except where said. See
+//! [`a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin`] and
+//! [`a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin`], each of which
+//! carries its own back-out.
+//!
 //! **A — THE HEAD'S NULLARY SHAPE.** In `head_subject_name`, drop the `Term::Ident`
 //! arm (`_ => return None` alone), which is the pre-fix reading. **EXACTLY 4 ROWS FAIL:**
 //! [`two_scopes_writing_one_bare_nullary_head_get_two_predicates`],
 //! [`two_scopes_that_see_each_other_are_refused_in_both_spellings`],
 //! [`a_bare_nullary_clause_is_indexed_under_the_scoped_symbol`] here, and
 //! `wi_fqc85_rule_declaration_test::a_body_less_bare_nullary_head_declares_its_predicate`.
-//! [`a_bare_equation_subject_introduces_nothing_and_fires_nothing`] passes either way BY
-//! DESIGN — it is what says the split is a split — and so does
-//! [`a_marked_absolute_nullary_head_that_names_nothing_is_refused`], whose axis is B.
+//! [`a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin`] passed either
+//! way BY DESIGN under this ticket's reading; since CZJ2N its BARE arm depends on the
+//! mint, so axis A fells it too. [`a_marked_absolute_nullary_head_that_names_nothing_is_refused`]
+//! still passes either way here — its axis is B.
 //!
 //! **B — THE MARKED-ABSOLUTE REFUSAL.** In `Loader::load_rule`'s head loop, narrow the
 //! pattern back to `Term::Fn { functor, .. }` so a paren-less marked head is not asked.
@@ -41,12 +50,13 @@
 //! and only its BARE arm — its parenthesised arm and its RESOLVABLE arm pass either way,
 //! which is what says the axis is the SPELLING and not the marker.
 //!
-//! **C — THE PREDICATE-PATH GATE.** Drop the `if introduced_by ==
-//! RuleIntroduction::Predicate` guard from that same `Term::Ident` arm, so a bare
-//! EQUATION subject is minted too. **EXACTLY 1 ROW FAILS:**
-//! [`a_bare_equation_subjects_citation_stays_loud`]. Every other row here passes ungated,
-//! [`a_bare_equation_subject_introduces_nothing_and_fires_nothing`] INCLUDED — which is
-//! why that row is not the guard's measurement, though an earlier draft said it was.
+//! **C — THE PREDICATE-PATH GATE. WITHDRAWN BY WI-20260902-CZJ2N.** The guard is
+//! deleted, not narrowed: a bare EQUATION subject mints exactly as a parenthesised one
+//! does. Its measurement was `a_bare_equation_subjects_citation_stays_loud`, which
+//! asserted the REFUSAL the mint suppresses; that row is replaced by
+//! [`a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin`], whose
+//! back-out is "restore the guard" and whose failing rows are the `bare` arm's two.
+//! The reasoning for both directions is at that row.
 //!
 //! **D — THE DETAIL WALK'S NULLARY READING.** In `bodyless_declares_nothing_detail`,
 //! narrow the head destructure back to `Term::Fn { functor, .. }`, so the sentence
@@ -73,9 +83,11 @@
 //! what [`a_fact_head_is_unscoped_in_both_spellings`] asserts. The paren-less spelling
 //! is therefore NOT a second hole on the fact side; it is the same one, whole.
 //!
-//! STDLIB LOADS: ONE — [`a_bare_equation_subject_introduces_nothing_and_fires_nothing`]
-//! is the only row that needs an interpreter. Every other row uses `try_load_kb_with` /
-//! `load_kb_with`, which bootstrap only.
+//! STDLIB LOADS: TWO —
+//! [`a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin`] and
+//! [`a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin`] need an
+//! interpreter. Every other row uses `try_load_kb_with` / `load_kb_with`, which
+//! bootstrap only.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -243,34 +255,32 @@ fn a_bare_nullary_clause_is_indexed_under_the_scoped_symbol() {
     );
 }
 
-/// THE EQUATION SIDE, WHICH MUST NOT MOVE. §5.3: a `[simp]` head is an APPLICATION, so a
-/// bare-name head matches no redex — `rule tau <=> …` fires nothing and `rule tau() <=>
-/// …` is the spelling that defines. The one function this ticket changed
-/// (`head_subject_name`) is read by BOTH paths, and minting a bare equation subject
-/// would stamp it `SymbolKind::EquationFunctor` — a name that RESOLVES and owns no
-/// clause, which is exactly what makes a citation of it silent instead of refused
-/// ([`a_bare_equation_subjects_citation_stays_loud`] measures that).
+/// THE EQUATION SIDE, AND WI-20260902-CZJ2N MOVED IT. This row asserted the opposite
+/// when P85Z7 shipped: §5.3 read a `[simp]` head as an APPLICATION that a bare name
+/// could not be, so `rule tau <=> …` fired NOTHING and `Bare.drive` answered the
+/// operation's own body, `1`. CZJ2N makes the two spellings ONE TERM
+/// (`KnowledgeBase::nullary_canon`), so the bare law defines exactly as the
+/// parenthesised one does and BOTH drivers answer 7. §5.3's trap "a nullary head must
+/// carry its parentheses" is deleted with the old verdict.
 ///
-/// PASSES UNDER BOTH BACK-OUTS, AND UNDER THE UNGATED VARIANT TOO. It is here for what
-/// it PINS, not for what it separates: the `[simp]` reach that makes the equation side's
-/// answer the right one. The guard's own measurement is
-/// [`a_bare_equation_subjects_citation_stays_loud`], and it is not this row — an earlier
-/// draft of this comment claimed the ungated change would make `Bare.drive` answer 7,
-/// and RUNNING it says otherwise: `tau` is a DECLARED OPERATION in this fixture, so the
-/// head denotes and the ladder mints nothing on either side of the guard. Every row here
-/// but the citation one passes ungated.
+/// STILL A PAIR, and that is what it is for: the claim is that the spellings AGREE.
+/// BACKED OUT (restore the `is_constructor_symbol` gate in `nullary_canon`, or drop
+/// `simp_rewrite::stored_eq_operand_functor`'s `Term::Ref` arm), `Bare.drive` returns
+/// to 1 while `Paren.drive` stays 7 — which is what says the axis is the head SPELLING.
 ///
 /// WI-881 measured the CALL-SITE twin of this on `Float.tau` (see
-/// `wi884_sibling_backing_test`): a `[simp]` law matches `minValue()` and not the
-/// `var_ref` a bare name lowers to. This is the HEAD-SIDE twin of that sentence.
+/// `wi884_sibling_backing_test`): a `[simp]` law matched `minValue()` and not the
+/// `var_ref` a bare name lowers to. That half is NOT closed here — see
+/// `wi881_float_arithmetic_test::the_constants_answer_in_both_nullary_call_forms` for
+/// where the call-site reading lives.
 #[test]
-fn a_bare_equation_subject_introduces_nothing_and_fires_nothing() {
+fn a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin() {
     const EQN: &str = r#"
 namespace zzP85Z7.eqn
   sort Bare
     import anthill.prelude.Int64
     operation tau() -> Int64 = 1
-    -- the BARE subject: a law about a redex that does not exist
+    -- the BARE subject: since WI-20260902-CZJ2N, the same redex the parens spell
     rule tau <=> 7 [simp]
     operation drive(n: Int64) -> Int64 = tau()
   end
@@ -288,8 +298,8 @@ end
     for (path, want, why) in [
         (
             "zzP85Z7.eqn.Bare.drive",
-            1,
-            "a bare equation subject matches no redex, so the operation's own body stands",
+            7,
+            "a bare equation subject IS the application, so its law inlines before dispatch",
         ),
         (
             "zzP85Z7.eqn.Paren.drive",
@@ -304,67 +314,72 @@ end
     }
 }
 
-/// AXIS C, AND THE ONE ROW THAT MEASURES THE GUARD — a bare equation subject naming
-/// NOTHING must stay outside the symbol table, so that a citation of it is REFUSED
-/// rather than silently resolving to a name whose law can never fire.
+/// AXIS C, WITHDRAWN BY WI-20260902-CZJ2N — a bare equation subject MINTS, exactly as
+/// the parenthesised one does, and this row now measures that they AGREE.
 ///
-/// `rule tauFresh <=> 7 [simp]` matches no redex (§5.3), so the rule is dead however it
-/// is read. What the guard decides is what happens to the READER: minting the subject
-/// makes `:- tauFresh` resolve — to an `EquationFunctor` symbol with no clauses — which
-/// SUPPRESSES WI-1034's body-goal refusal, and the program then loads clean and answers
-/// nothing. MEASURED, both ways, on this exact fixture:
+/// WHAT IT ASSERTED, and why it was right at the time: P85Z7 gated the mint on
+/// `RuleIntroduction::Predicate`, so `rule tauFresh <=> 7 [simp]` left its subject
+/// outside the symbol table and `rule reader(1) :- tauFresh` was REFUSED ("`tauFresh`
+/// names nothing … can NEVER match", WI-1034's body-goal refusal). Minting it instead
+/// made the citation resolve — to an `EquationFunctor` with no clauses — and the
+/// program then loaded clean and answered nothing, in silence. Under the reading of the
+/// day that was the right trade: the bare law fired nothing, so a name it introduced
+/// could never be satisfied.
 ///
-/// | the `Term::Ident` arm | load | `reader(?x)` |
-/// |---|---|---|
-/// | gated on `Predicate` (shipped) | REFUSED: "`tauFresh` names nothing … can NEVER match" | — |
-/// | ungated | clean | **no solutions**, in silence |
+/// WHY THE TRADE IS GONE. CZJ2N makes the two head spellings ONE TERM, so the bare law
+/// DEFINES. Keeping the guard would then be a new spelling-dependent rule — refusing at
+/// arity 0 only, on the equation path only — and refusing at every arity would change
+/// proposal 061: an equation-defined name is a spec'd feature (§5.3 l.2022 names
+/// `operation` as "the declaration of an equation-defined name"), and
+/// `LoadError::UnreducedEquationFunctor` (WI-898) is its own loud channel for a
+/// citation the rewriter left standing.
 ///
-/// BACKED OUT (drop the `if introduced_by == RuleIntroduction::Predicate` guard, keeping
-/// the arm): THIS ROW FAILS and it is the only one — every other row in the binary
-/// passes ungated, this file's included, which is
-/// what makes it the guard's measurement rather than a second reading of axis A.
+/// SO THIS IS A PAIR OVER TWO POSITIONS, and the absolute values are what make it more
+/// than "they agree": an OP-BODY citation answers **7** (the law inlines before
+/// dispatch) and a RULE-BODY goal answers **0** (an equation's clauses index under the
+/// CONNECTIVE, so its subject owns none — WI-898).
 ///
-/// THE TWO CONTROLS SEPARATE THREE READINGS, and each is a different program:
+/// WHETHER THAT 0 SHOULD BE LOUD is the same question at every arity, and it is FILED
+/// rather than answered here (WI-20260902, "a rule-body citation of an equation functor
+/// answers nothing in silence"). It is filed rather than merely noted because deleting
+/// the guard REMOVES a loud case: the bare spelling used to reach WI-1034's "names
+/// nothing … can NEVER match", and now neither spelling does. One rule at every arity is
+/// the right direction — the guard's premise, that a bare law fires nothing, is exactly
+/// what this ticket deletes — but the gap it was accidentally covering is now
+/// unmitigated. The parenthesised spelling was already silent, which is what says the
+/// two are one question.
 ///
-///   * the PARENTHESISED equation `rule tauFresh() <=> 7 [simp]` — introduces, so the
-///     citation is admitted and answers NOTHING (an equation's clauses index under the
-///     connective, WI-898). Loud-vs-quiet is the axis; this arm is the quiet one that is
-///     nonetheless correct.
-///   * the PREDICATE spelling `rule tauFresh :- true` — the same bare text on the other
-///     path, which introduces AND answers. Without it "refused" could not be told from
-///     "a bare nullary head never works".
+/// BACKED OUT (restore `if introduced_by == RuleIntroduction::Predicate` on
+/// `head_subject_name`'s `Term::Ident` arm): the `bare` arm's LOAD is refused, so both
+/// of its rows fail while the `parens` arm passes — which is what says the axis is the
+/// spelling and not the equation path.
 #[test]
-fn a_bare_equation_subjects_citation_stays_loud() {
-    let errs = crate::common::try_load_kb_with(
-        "namespace zzP85Z7.eqfresh\n  rule tauFresh <=> 7 [simp]\n  \
-         rule reader(1) :- tauFresh\nend\n",
-    )
-    .err()
-    .expect(
-        "a goal naming a bare equation subject names nothing runnable and must be \
-         refused; the fixture loaded clean",
-    );
-    crate::common::assert_refused_naming(
-        &errs,
-        &["tauFresh", "names nothing"],
-        "WI-1034's body-goal refusal must reach it — that is what the mint would suppress",
-    );
+fn a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin() {
+    for (label, head) in [("bare", "tauFresh"), ("parens", "tauFresh()")] {
+        let src = format!(
+            "namespace zzP85Z7.eqmint{label}\n  import anthill.prelude.Int64\n  \
+             rule {head} <=> 7 [simp]\n  rule reader(1) :- tauFresh\n  \
+             operation drive(n: Int64) -> Int64 = tauFresh()\nend\n"
+        );
+        let mut interp = crate::common::interp_for(&src);
+        match interp.call(&format!("zzP85Z7.eqmint{label}.drive"), &[Value::Int(0)]) {
+            Ok(Value::Int(7)) => {}
+            other => panic!(
+                "{label}: the op-body citation must inline the law and answer 7; got {other:?}"
+            ),
+        }
+        let mut kb = crate::common::load_kb_with(&src);
+        assert_eq!(
+            answers(&mut kb, &format!("zzP85Z7.eqmint{label}.reader(?x)")),
+            0,
+            "{label}: an equation's clauses index under the connective, so its subject \
+             answers no rule-body goal (WI-898)"
+        );
+    }
 
-    // CONTROL 1 — the parenthesised equation. It INTRODUCES, so the citation is
-    // admitted; it answers nothing because an equation indexes under the connective.
-    let mut kb = crate::common::load_kb_with(
-        "namespace zzP85Z7.eqparen\n  rule tauFresh() <=> 7 [simp]\n  \
-         rule reader(1) :- tauFresh()\nend\n",
-    );
-    assert_eq!(
-        answers(&mut kb, "zzP85Z7.eqparen.reader(?x)"),
-        0,
-        "an equation's clauses index under the connective, so its subject answers no goal"
-    );
-
-    // CONTROL 2 — the SAME bare text on the PREDICATE path. It introduces AND answers,
-    // which is what says the refusal above is about the equation reading and not about
-    // the bare spelling.
+    // CONTROL — the SAME bare text on the PREDICATE path. It introduces AND answers,
+    // which is what says the 0 above is about the equation reading and not about the
+    // bare spelling failing to mint at all.
     let mut kb = crate::common::load_kb_with(
         "namespace zzP85Z7.predfresh\n  rule tauFresh :- true\n  \
          rule reader(1) :- tauFresh\nend\n",

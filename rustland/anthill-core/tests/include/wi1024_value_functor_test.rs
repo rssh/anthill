@@ -65,7 +65,7 @@ fn node(e: Expr) -> Value {
 }
 
 /// An occurrence that is an APPLICATION, not a name. It must carry an argument: a
-/// nullary `Expr::Apply` of a constructor canonicalizes to `ViewHead::Ref` through
+/// nullary `Expr::Apply` of a constructor reads as a nullary `ViewHead::Functor` through
 /// `functor_view_head` (WI-436), so a zero-arg one would test the other case.
 fn applied_node(functor: Symbol, arg: Symbol) -> Value {
     node(Expr::Apply {
@@ -225,7 +225,14 @@ fn value_functor_answers_by_what_the_head_denotes() {
             "premise: a spliced OpRef heads as the OpRef CONSTRUCTOR — the laundering route",
         );
         assert!(
-            matches!(node(Expr::Ref(sym)).head(interp.kb()), ViewHead::Ref(f) if f == sym),
+            matches!(
+                node(Expr::Ref(sym)).head(interp.kb()),
+                ViewHead::Functor {
+                    functor: Some(f),
+                    pos_arity: 0,
+                    named_arity: 0,
+                } if f == sym
+            ),
             "premise: a bare Ref occurrence DOES name its symbol (WI-1025)",
         );
         assert!(
@@ -316,7 +323,7 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
                 ViewHead::Functor {
                     functor: Some(_),
                     ..
-                } | ViewHead::Ref(_)
+                }
             );
             has_functor_head
                 && value_functor(interp.kb(), v).is_none()

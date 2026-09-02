@@ -34,11 +34,10 @@ pub(crate) enum DiscrimKey {
     Positional,
     Lit(Literal),
     Ident(Symbol),
-    Ref(Symbol),
     /// A `Rigid` (skolem / eigenvariable) var, keyed by its `VarId` *identity*.
     /// Unlike a wildcard var-edge (which matches any subterm), this concrete
     /// edge matches only the SAME rigid — a skolem is a constant, not a
-    /// pattern var, so it belongs with the other constant keys (`Lit`/`Ref`/…),
+    /// pattern var, so it belongs with the other constant keys (`Lit`/`Ident`/…),
     /// not in `var_edges`. This is what keeps two distinct skolems apart and
     /// stops a rigid goal var from over-matching a concrete fact.
     RigidVar(VarId),
@@ -170,7 +169,7 @@ impl<L> SubstTree<L> {
 
 /// Whether [`SubstTree::insert_pattern`] can index `view` without tripping its
 /// functor-less / `Opaque` panic — i.e. every head along the whole structure is
-/// a concrete key (`Functor{Some}` / `Const` / `Ident` / `Ref` / `Bottom`) or a
+/// a concrete key (`Functor{Some}` / `Const` / `Ident` / `Bottom`) or a
 /// variable (which routes to a var-edge). Mirrors the [`SubstTree::insert_walk`]
 /// recursion, so it is the authoritative pre-check.
 ///
@@ -199,7 +198,7 @@ pub(crate) fn view_is_indexable<V: TermView>(kb: &KnowledgeBase, view: &V) -> bo
                     .map_or(false, |a| view_is_indexable(kb, &a))
             })
         }
-        ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Ref(_) | ViewHead::Bottom => true,
+        ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Bottom => true,
         ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => false,
         // Routed to a var-edge by `index_var` above; unreachable, treated as ok.
         ViewHead::Var(_) => true,
@@ -309,7 +308,6 @@ impl<L: Clone> SubstTree<L> {
             }
             ViewHead::Const(lit) => make_mut_child(&mut node.concrete, DiscrimKey::Lit(lit)),
             ViewHead::Ident(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ident(sym)),
-            ViewHead::Ref(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ref(sym)),
             ViewHead::Bottom => make_mut_child(&mut node.concrete, DiscrimKey::Bottom),
             // Functor-less aggregates (tuple / unit) and Opaque heads
             // (closures, streams, post-elaboration forms …) carry no concrete
@@ -417,7 +415,6 @@ impl<L: Clone> SubstTree<L> {
             }
             ViewHead::Const(lit) => Self::remove_at_leaf_key(node, DiscrimKey::Lit(lit), leaf),
             ViewHead::Ident(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ident(sym), leaf),
-            ViewHead::Ref(sym) => Self::remove_at_leaf_key(node, DiscrimKey::Ref(sym), leaf),
             ViewHead::Bottom => Self::remove_at_leaf_key(node, DiscrimKey::Bottom, leaf),
             // Mirror of `insert_walk`'s guard: such a head can never have been
             // inserted (insert panics on it), so retracting one is a logic
@@ -562,9 +559,6 @@ impl<L: Clone> SubstTree<L> {
                 idx,
                 leaf,
             ),
-            ViewHead::Ref(sym) => {
-                Self::remove_value_then_continue(node, DiscrimKey::Ref(sym), kb, arg_seq, idx, leaf)
-            }
             ViewHead::Bottom => {
                 Self::remove_value_then_continue(node, DiscrimKey::Bottom, kb, arg_seq, idx, leaf)
             }
@@ -818,9 +812,6 @@ impl<L: Clone> SubstTree<L> {
             ViewHead::Ident(sym) => {
                 Self::query_leaf_key(node, &DiscrimKey::Ident(sym), query, subst, results);
             }
-            ViewHead::Ref(sym) => {
-                Self::query_leaf_key(node, &DiscrimKey::Ref(sym), query, subst, results);
-            }
             ViewHead::Bottom => {
                 Self::query_leaf_key(node, &DiscrimKey::Bottom, query, subst, results);
             }
@@ -1073,24 +1064,6 @@ impl<L: Clone> SubstTree<L> {
                     on_done,
                 );
             }
-            ViewHead::Ref(sym) => {
-                Self::follow_key_then_continue(
-                    node,
-                    &DiscrimKey::Ref(sym),
-                    arg,
-                    kb,
-                    outer,
-                    pos_idx,
-                    pos_total,
-                    named_keys,
-                    named_idx,
-                    prefix,
-                    subst,
-                    match_mode,
-                    results,
-                    on_done,
-                );
-            }
             ViewHead::Bottom => {
                 Self::follow_key_then_continue(
                     node,
@@ -1324,62 +1297,82 @@ mod tests {
         assert!(tree.query_raw(&env.kb, &view(t2)).is_empty());
     }
 
+    /// WI-436 / WI-511, WIDENED BY WI-20260902-CZJ2N: a fact whose arg is a nullary
+    /// APPLICATION `Fn{f}` must be found by a query spelling the same name BARE
+    /// `Ref(f)`, and vice versa — the two are one term. Both sides key the arg under
+    /// `Functor(f) → Arity(0)`, because `TermStore::alloc` stores one shape and
+    /// `functor_view_head` reports one head.
+    ///
+    /// THE `plain` ROW IS THE ONE CZJ2N MOVES, and it is why this row runs both
+    /// symbols. WI-436/511 gated the merge on `is_constructor_symbol`, so `red`
+    /// matched and a NON-constructor did not — the split this ticket closes. Backed
+    /// out (restore the `is_constructor_symbol` gate in `TermStore::alloc`, or the
+    /// `ViewHead::Ref` arm in `functor_view_head`), the `plain` arm reports 0 matches
+    /// in both directions while `red` still reports 1: the constructor arm passes
+    /// either way BY DESIGN and is the control that says the axis is the GATE and not
+    /// the tree.
     #[test]
-    fn wi436_nullary_constructor_fn_matches_bare_ref() {
-        // WI-436: a fact whose arg is a nullary constructor APPLICATION `Fn{red}`
-        // must be found by a query spelling the same constructor BARE `Ref(red)`
-        // (and vice versa) — the two are one value. Both insert and query key the
-        // arg under `DiscrimKey::Ref(red)` via the canonicalized `head()`.
-        let mut env = TestEnv::new();
-        let red = env.intern("Color.red");
-        let color = env.intern("Color");
-        // register `red` as a constructor of sort `Color` (Fn-form entity identity).
-        let red_entity = env.alloc(Term::Fn {
-            functor: red,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-        let color_t = env.alloc(Term::Ref(color));
-        env.kb.register_entity_of(red_entity, color_t);
-        assert!(env.kb.is_constructor_symbol(red));
+    fn a_nullary_application_matches_its_bare_spelling_for_any_symbol() {
+        for (label, register_as_ctor) in [("red", true), ("plain", false)] {
+            let mut env = TestEnv::new();
+            let f_sym = env.intern(label);
+            if register_as_ctor {
+                let color = env.intern("Color");
+                let entity = env.alloc(Term::Fn {
+                    functor: f_sym,
+                    pos_args: SmallVec::new(),
+                    named_args: SmallVec::new(),
+                });
+                let color_t = env.alloc(Term::Ref(color));
+                env.kb.register_entity_of(entity, color_t);
+            }
+            assert_eq!(
+                env.kb.is_constructor_symbol(f_sym),
+                register_as_ctor,
+                "{label}: the fixture must actually vary the old gate's input"
+            );
 
-        let holds = env.intern("holds");
-        let red_fn = env.alloc(Term::Fn {
-            functor: red,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-        let red_ref = env.alloc(Term::Ref(red));
-        let fact_fn = env.alloc(Term::Fn {
-            functor: holds,
-            pos_args: SmallVec::from_elem(red_fn, 1),
-            named_args: SmallVec::new(),
-        });
-        let query_ref = env.alloc(Term::Fn {
-            functor: holds,
-            pos_args: SmallVec::from_elem(red_ref, 1),
-            named_args: SmallVec::new(),
-        });
+            let holds = env.intern("holds");
+            let nullary_fn = env.alloc(Term::Fn {
+                functor: f_sym,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::new(),
+            });
+            let bare_ref = env.alloc(Term::Ref(f_sym));
+            assert_eq!(
+                nullary_fn, bare_ref,
+                "{label}: `Fn{{f}}` and `Ref(f)` must be ONE TermId — the storage canon"
+            );
 
-        // fact stored in `Fn{red}` form, queried in bare `Ref(red)` form → match.
-        let mut tree: SubstTree<u32> = SubstTree::new();
-        tree.insert_ground(&env.kb, &view(fact_fn), 1);
-        let res = make_resolver(vec![(1, fact_fn)]);
-        assert_eq!(
-            tree.query_resolved(&env.kb, &view(query_ref), &res).len(),
-            1,
-            "bare Ref(red) query must match a stored nullary Fn{{red}} fact"
-        );
+            let fact = env.alloc(Term::Fn {
+                functor: holds,
+                pos_args: SmallVec::from_elem(nullary_fn, 1),
+                named_args: SmallVec::new(),
+            });
+            let query = env.alloc(Term::Fn {
+                functor: holds,
+                pos_args: SmallVec::from_elem(bare_ref, 1),
+                named_args: SmallVec::new(),
+            });
 
-        // …and the reverse: fact stored bare `Ref(red)`, queried as `Fn{red}`.
-        let mut tree2: SubstTree<u32> = SubstTree::new();
-        tree2.insert_ground(&env.kb, &view(query_ref), 2);
-        let res2 = make_resolver(vec![(2, query_ref)]);
-        assert_eq!(
-            tree2.query_resolved(&env.kb, &view(fact_fn), &res2).len(),
-            1,
-            "nullary Fn{{red}} query must match a stored bare Ref(red) fact"
-        );
+            let mut tree: SubstTree<u32> = SubstTree::new();
+            tree.insert_ground(&env.kb, &view(fact), 1);
+            let res = make_resolver(vec![(1, fact)]);
+            assert_eq!(
+                tree.query_resolved(&env.kb, &view(query), &res).len(),
+                1,
+                "{label}: bare `Ref` query must match a stored nullary `Fn` fact"
+            );
+
+            let mut tree2: SubstTree<u32> = SubstTree::new();
+            tree2.insert_ground(&env.kb, &view(query), 2);
+            let res2 = make_resolver(vec![(2, query)]);
+            assert_eq!(
+                tree2.query_resolved(&env.kb, &view(fact), &res2).len(),
+                1,
+                "{label}: nullary `Fn` query must match a stored bare `Ref` fact"
+            );
+        }
     }
 
     #[test]

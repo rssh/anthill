@@ -21,6 +21,11 @@ fn field<'a>(v: &'a Value, key: Symbol) -> Option<&'a Value> {
 fn entity_functor(v: &Value) -> Option<Symbol> {
     match v {
         Value::Entity { functor, .. } => Some(*functor),
+        // WI-20260902-CZJ2N: `extract`'s reifier renders a NULLARY constructor as a
+        // `SymbolRef` — the carrier-free spelling of the one nullary head — where an
+        // argument-bearing one is an `Entity`. `Error` has no fields, so this row's
+        // answer arrives on that carrier.
+        Value::SymbolRef(s) => Some(*s),
         _ => None,
     }
 }
@@ -210,10 +215,21 @@ fn extract_non_type_reifies_error() {
         .try_resolve_symbol("anthill.prelude.TypeExtractor.Error")
         .expect("Error ctor");
     // A plain term whose functor is not a Type constructor.
+    //
+    // WI-20260902-CZJ2N — IT NEEDS A POSITIONAL ARGUMENT NOW, and that is a real
+    // narrowing of what "not a type" can be spelled as rather than a fixture tidy-up.
+    // This used to be the NULLARY `Fn{foo, [], []}`, which `type_head` classified
+    // `Error` because only a `Term::Ref` read as a bare sort. A nullary application of a
+    // non-sort name IS `Term::Ref(foo)` now, so that fixture became a bare SORT
+    // REFERENCE and `extract` was right to say so. `Fn{foo, [x], []}` is what remains
+    // structurally malformed as a type: a type carries NAMED bindings, never positional
+    // ones, so it still falls to `type_head`'s trailing `Error` arm — which is
+    // therefore NOT unreachable, contrary to what this ticket's plan predicted.
     let foo = kb.intern("foo");
+    let x = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(1)));
     let non_type = kb.alloc(Term::Fn {
         functor: foo,
-        pos_args: SmallVec::new(),
+        pos_args: SmallVec::from_elem(x, 1),
         named_args: SmallVec::new(),
     });
 

@@ -1126,11 +1126,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     val witnessFn = kb.getTerm(namedArg(kb, recordHead, "witness")) match
       case w: Term.Fn => w
       case other => fail(s"expected Fn for witness, got $other")
-    val verdictFn = kb.getTerm(namedArg(kb, witnessFn, "verdict")) match
-      case v: Term.Fn => v
-      case other => fail(s"expected Fn for verdict, got $other")
-    assert(functorQn(kb, verdictFn.functor).endsWith("Unsat"),
-      s"expected Unsat, got ${functorQn(kb, verdictFn.functor)}")
+    // WI-20260902-CZJ2N: `Unsat` is a NULLARY constructor and is stored bare, so the
+    // verdict arrives as `Term.Ref`. The claim is the NAME, not the spelling.
+    val verdictSym = kb.getTerm(namedArg(kb, witnessFn, "verdict")) match
+      case Term.Fn(functor, _, _) => functor
+      case Term.Ref(sym)          => sym
+      case other => fail(s"expected a verdict application, got $other")
+    assert(functorQn(kb, verdictSym).endsWith("Unsat"),
+      s"expected Unsat, got ${functorQn(kb, verdictSym)}")
   }
 
   // ── WI-163: bare `eq(?x, ?y)` resolves to PartialEq.eq with no ambiguity ─

@@ -236,7 +236,12 @@ fn dictionary_impl(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> String {
         .named_arg(kb, impl_key)
         .unwrap_or_else(|| panic!("a dictionary must carry `impl`, got {v:?}"))
         .to_value();
-    let ViewHead::Ref(s) = impl_child.head(kb) else {
+    let ViewHead::Functor {
+        functor: Some(s),
+        pos_arity: 0,
+        named_arity: 0,
+    } = impl_child.head(kb)
+    else {
         panic!("`impl` must name a sort, got {impl_child:?}")
     };
     kb.qualified_name_of(s).to_string()

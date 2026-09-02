@@ -2741,10 +2741,13 @@ fn multi_file_same_namespace_no_duplicate_facts() {
     let ns_count = ns_facts
         .iter()
         .filter(|&&fid| {
-            if let Term::Fn { functor, .. } = kb.get_term(kb.fact_term(fid)) {
-                kb.local_name_of(*functor) == "ns"
-            } else {
-                false
+            // WI-20260902-CZJ2N: a `Namespace` fact head is a NULLARY application and is
+            // stored bare (a namespace symbol has no type reading), so read the functor
+            // off either spelling.
+            match kb.get_term(kb.fact_term(fid)) {
+                Term::Fn { functor, .. } => kb.local_name_of(*functor) == "ns",
+                Term::Ref(s) | Term::Ident(s) => kb.local_name_of(*s) == "ns",
+                _ => false,
             }
         })
         .count();
@@ -4050,13 +4053,17 @@ sort Host {
     let mut labels: Vec<anthill_core::kb::term::TermId> = Vec::new();
     let mut node = expr;
     loop {
+        // WI-20260902-CZJ2N: `empty_row` is a NULLARY row constructor and is stored
+        // bare, so the walk reads the functor off either spelling. Its named args are
+        // empty either way, which is what terminates the chain below.
         let (functor, args) = match kb.get_term(node) {
             Term::Fn {
                 functor,
                 named_args,
                 ..
             } => (kb.local_name_of(*functor).to_owned(), named_args.clone()),
-            other => panic!("expected EffectExpression Fn, got {:?}", other),
+            Term::Ref(s) | Term::Ident(s) => (kb.local_name_of(*s).to_owned(), Default::default()),
+            other => panic!("expected an EffectExpression application, got {:?}", other),
         };
         match functor.as_str() {
             "empty_row" => break,

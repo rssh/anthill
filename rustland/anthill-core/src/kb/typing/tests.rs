@@ -5227,3 +5227,88 @@ mod ctd6d_row_carrier_tests {
         );
     }
 }
+
+/// WI-20260902-CZJ2N — `type_head` reads a SORT's two nullary spellings ALIKE, and the
+/// distinction that matters is read elsewhere.
+#[cfg(test)]
+mod czj2n_nullary_sort_type_head_test {
+    //! The nullary canon EXEMPTS a `SymbolKind::Sort` name, so `Fn{S, [], []}` and
+    //! `Ref(S)` are still two TERMS — §8.3 / WI-391 / WI-387 make the first the concrete
+    //! spec identity `sort_inst_to_value` builds and the second the dispatch WILDCARD a
+    //! `provides Spec[T = T]` lowers to.
+    //!
+    //! [`super::super::type_head`] no longer tells them apart: `is_bare_ref` was
+    //! `matches!(head, ViewHead::Ref(_))` and is now "nullary functor head", so the
+    //! concrete spelling moved from `TypeHead::Error` to `TypeHead::SortRef(S)`. That is
+    //! the reclassification this module pins, together with the reason it is harmless —
+    //! the wildcard test is [`super::super::impl_param_ref`], which matches the RAW term
+    //! and never asks `type_head` at all.
+    //!
+    //! BACKED OUT (restore `is_bare_ref` to a `ViewHead::Ref` match — which no longer
+    //! compiles, so: gate the arm on the term being a `Term::Ref`): the first row's
+    //! `Fn{S}` half reports `TypeHead::Error` again. The second row passes either way BY
+    //! DESIGN — it is the control that says the dispatch distinction is not on this
+    //! path, and it is the reason the first row's widening costs nothing.
+    use super::super::*;
+    use crate::intern::SymbolKind;
+    use smallvec::SmallVec;
+
+    #[test]
+    fn type_head_reads_both_nullary_sort_spellings_alike() {
+        let mut kb = KnowledgeBase::new();
+        let g = kb.global_scope();
+        let s = kb.define_symbol("Shape", "Shape", SymbolKind::Sort, g);
+
+        let bare = kb.alloc(Term::Ref(s));
+        let concrete = kb.alloc(Term::Fn {
+            functor: s,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        assert_ne!(
+            bare, concrete,
+            "premise: the canon EXEMPTS a sort, so both spellings exist in the store"
+        );
+
+        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+            assert!(
+                matches!(type_head(&kb, &TermIdView(t)), TypeHead::SortRef(f) if f == s),
+                "{label}: a nullary sort head is the sort reference"
+            );
+        }
+
+        // THE CONTROL, and the reason the row above is not a loss: the WILDCARD test is
+        // a RAW-TERM read and still separates them.
+        let params = [s];
+        assert_eq!(
+            impl_param_ref(&kb, bare, &params),
+            Some(s),
+            "`Ref(S)` is the dispatch wildcard"
+        );
+        assert_eq!(
+            impl_param_ref(&kb, concrete, &params),
+            None,
+            "…and `Fn{{S}}` is the concrete identity, which is what keeps a \
+             `provides Spec[T = T]` from out-ranking a concrete provider (wi210)"
+        );
+    }
+
+    /// And a head with POSITIONAL arguments is still malformed as a type — the arm this
+    /// ticket's plan predicted would become unreachable, and did not.
+    #[test]
+    fn a_positional_head_is_still_not_a_type() {
+        let mut kb = KnowledgeBase::new();
+        let g = kb.global_scope();
+        let s = kb.define_symbol("Shape", "Shape", SymbolKind::Sort, g);
+        let arg = kb.alloc(Term::Const(crate::kb::term::Literal::Int(1)));
+        let applied = kb.alloc(Term::Fn {
+            functor: s,
+            pos_args: SmallVec::from_elem(arg, 1),
+            named_args: SmallVec::new(),
+        });
+        assert!(matches!(
+            type_head(&kb, &TermIdView(applied)),
+            TypeHead::Error
+        ));
+    }
+}

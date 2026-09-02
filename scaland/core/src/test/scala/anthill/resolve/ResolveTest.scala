@@ -249,7 +249,9 @@ class ResolveTest extends munit.FunSuite:
       kb.getTerm(tid) match
         case fn: Term.Fn if kb.resolveSym(fn.functor) == "succ" && fn.posArgs.length == 1 =>
           1 + succDepth(fn.posArgs(0))
-        case fn: Term.Fn if kb.resolveSym(fn.functor) == "zero" => 0
+        // WI-20260902-CZJ2N: `zero()` is a NULLARY application and is stored bare, so the
+        // base case arrives as `Term.Ref`.
+        case Term.Ref(sym) if kb.resolveSym(sym) == "zero" => 0
         case Term.Var(_) => -1 // unbound variable — this is the bug
         case _ => -2
 

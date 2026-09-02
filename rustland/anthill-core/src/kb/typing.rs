@@ -5435,7 +5435,6 @@ fn mentioned_sort_syms<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Sy
         ViewHead::Functor {
             functor: Some(f), ..
         }
-        | ViewHead::Ref(f)
         | ViewHead::Ident(f) => {
             // A TYPE PARAMETER IS NOT A SORT HERE, though `sort_kind` says it is:
             // `load_abstract_sort` registers a `sort T = ?` alias with
@@ -5766,6 +5765,14 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
                 }
             }
         }
+        // WI-20260902-CZJ2N — `Nothing` IS A NULLARY `TypeExtractor` CONSTRUCTOR, and
+        // the only one: every other structural form (`Arrow`, `TypeVar`, `NamedTuple`,
+        // `Denoted`, `ExprCarried`, `RigidTypeProjection`, `EffectsRows`, `PolyType`)
+        // carries named args. It is stored bare now, so the `Fn` arm's `"Nothing" =>
+        // "nothing"` case above stopped firing and an effects row rendered `{Nothing}`
+        // where the surface spelling is `{nothing}`. Keyed on the LOCAL name, exactly as
+        // that arm is — same looseness, one rule.
+        Term::Ref(s) if kb.local_name_of(*s) == "Nothing" => "nothing".to_string(),
         Term::Ref(s) => kb.local_name_of(*s).to_string(),
         Term::Var(v) => {
             // WI-307 code-review #7: render variables by their name (not
@@ -29703,7 +29710,6 @@ fn unwrap_spec_view_value(
                     ViewHead::Functor {
                         functor: Some(s), ..
                     }
-                    | ViewHead::Ref(s)
                     | ViewHead::Ident(s) => Some(s),
                     _ => None,
                 })?;
@@ -29718,7 +29724,7 @@ fn unwrap_spec_view_value(
                 Some((f, SmallVec::new()))
             }
         }
-        ViewHead::Ref(s) | ViewHead::Ident(s) => Some((s, SmallVec::new())),
+        ViewHead::Ident(s) => Some((s, SmallVec::new())),
         _ => None,
     }
 }
@@ -33829,7 +33835,7 @@ fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
 fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
     match v.head(kb) {
         ViewHead::Var(_) => true,
-        ViewHead::Ref(s) | ViewHead::Ident(s) => is_sort_param_symbol(kb, s),
+        ViewHead::Ident(s) => is_sort_param_symbol(kb, s),
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
@@ -37368,11 +37374,20 @@ fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option<VarId> {
         return Some(v);
     }
     // WI-477: read the head carrier-agnostically — a sort type-param ref (`c: C`
-    // ⇒ `Ref(S.C)`) reads as `ViewHead::Ref`/`Ident` whether the param type rides
-    // as a `TermId` or a `Value::Node`; a structural carrier (arrow/row) has no
-    // such head → `None`, as before.
+    // ⇒ `Ref(S.C)`) reads as a NULLARY head whether the param type rides as a
+    // `TermId` or a `Value::Node`; a structural carrier (arrow/row) has arguments,
+    // so the arity pin keeps it at `None`, as before.
+    //
+    // WI-20260902-CZJ2N: `pos_arity: 0, named_arity: 0` is what the retired
+    // `ViewHead::Ref` variant used to carry. Without the pin this would read the
+    // BASE of `List[T = Int]` as a type param.
     match pty.head(kb) {
-        ViewHead::Ref(s) | ViewHead::Ident(s) => type_param_global_var(kb, s),
+        ViewHead::Ident(s) => type_param_global_var(kb, s),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => type_param_global_var(kb, s),
         _ => None,
     }
 }
@@ -46723,7 +46738,14 @@ fn resolve_receiver_path_type(
                 None => true,
                 Some(a) => matches!(
                     (a.head(kb), nil_sym),
-                    (ViewHead::Ref(r), Some(n)) if r == n
+                    (
+                        ViewHead::Functor {
+                            functor: Some(r),
+                            pos_arity: 0,
+                            named_arity: 0,
+                        },
+                        Some(n),
+                    ) if r == n
                 ),
             };
             let base = receiver.named_arg(kb, k_receiver).map(|b| b.to_value());
@@ -47351,12 +47373,12 @@ fn push_op_requires_clause(kb: &KnowledgeBase, clause: &Value, out: &mut Vec<Req
                 }
             }
         }
-        // Match the ground `push_op_requires_clause_term` exactly: `Fn`/`Ref` heads
-        // become an entry; an `Ident` (or functor-less) head is skipped (WI-662).
+        // Match the ground `push_op_requires_clause_term` exactly: a FUNCTOR head at
+        // any arity — the bare spelling included, since WI-20260902-CZJ2N — becomes an
+        // entry; an `Ident` (or functor-less) head is skipped (WI-662).
         ViewHead::Functor {
             functor: Some(f), ..
-        }
-        | ViewHead::Ref(f) => {
+        } => {
             out.push(RequiresEntry {
                 required_sort: f,
                 spec: clause.clone(),
@@ -49588,15 +49610,24 @@ fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
         .position(|&p| p == sym)
 }
 
-/// The symbol a `denoted`'s `value` child refers to, if it is a `Ref`-shaped
+/// The symbol a `denoted`'s `value` child refers to, if it is a NAME-shaped
 /// occurrence — read carrier-agnostically through [`TermView`]. `intern` (not
 /// `lookup_symbol`) so the read is robust in a KB that hasn't interned the
 /// well-known `value` field symbol (a production KB always has via stdlib load).
+///
+/// WI-20260902-CZJ2N: the arity pin is the retired `ViewHead::Ref` variant. Two
+/// `denoted` types unify iff their value refers to the SAME SYMBOL, so an APPLIED
+/// value (`some(?x)`) must keep answering `None` here and fall to the structural
+/// comparison, not report `some`.
 fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> {
     let value_key = kb.intern("value");
     let child = r.named_arg(kb, value_key)?;
     match child.head(kb) {
-        ViewHead::Ref(s) => Some(s),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(s),
         _ => None,
     }
 }
@@ -50386,8 +50417,7 @@ fn sort_alias_head_slots(kb: &KnowledgeBase, rid: RuleId) -> Option<(Symbol, Ter
     }
     let head = kb.rule_head_value(rid);
     let src_functor = match head.pos_arg(kb, 0)?.head(kb) {
-        ViewHead::Ref(s)
-        | ViewHead::Functor {
+        ViewHead::Functor {
             functor: Some(s), ..
         } => s,
         _ => return None,
@@ -51230,7 +51260,20 @@ fn substitute_ref_terms_value_rec(
             }
         }
         // A bare global / parameter reference: substitute if mapped, else keep.
-        ViewHead::Ref(s) | ViewHead::Ident(s) => map
+        //
+        // WI-20260902-CZJ2N — THE ARITY PIN IS THE OLD `ViewHead::Ref`, and it must
+        // stay AHEAD of the general `Functor` arm below: without it a bare `Ref(p)`
+        // would fall through to the rebuild arm, which recurses over zero children and
+        // hands back an un-substituted name.
+        ViewHead::Ident(s) => map
+            .get(&s)
+            .map(|&t| Value::term(t))
+            .unwrap_or_else(|| v.clone()),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => map
             .get(&s)
             .map(|&t| Value::term(t))
             .unwrap_or_else(|| v.clone()),
@@ -51644,7 +51687,16 @@ pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, clause: &Value) -> Vec<Value>
 /// functor), matching the term-world predicate it replaces.
 fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol]) -> bool {
     match view.head(kb) {
-        ViewHead::Ref(s) | ViewHead::Ident(s) => syms.contains(&s),
+        ViewHead::Ident(s) => syms.contains(&s),
+        // WI-20260902-CZJ2N — the NULLARY arm is the retired `ViewHead::Ref`, and it
+        // must precede the recursing arm below: a bare `Ref(p)` has no children, so
+        // falling through would answer `false` for the very shape this looks for.
+        // The doc's "a functor SYMBOL is not a reference" still holds — at arity > 0.
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => syms.contains(&s),
         ViewHead::Functor { pos_arity, .. } => {
             (0..pos_arity).any(|i| {
                 view.pos_arg(kb, i)
@@ -58945,7 +58997,16 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         ViewHead::Functor { named_arity, .. } => *named_arity,
         _ => 0,
     };
-    let is_bare_ref = matches!(head, ViewHead::Ref(_));
+    // WI-20260902-CZJ2N: the retired `ViewHead::Ref` variant WAS this predicate. A
+    // bare sort reference is a NULLARY functor head now, so the shape is spelled out.
+    let is_bare_ref = matches!(
+        head,
+        ViewHead::Functor {
+            pos_arity: 0,
+            named_arity: 0,
+            ..
+        }
+    );
     // WI-1079 — A BARE LOGICAL VARIABLE IS A TYPE, and before this arm it was the one form
     // that reached `Error` while being perfectly well-formed. It has no functor symbol, so it
     // fell through the `else` below and was reported as malformed input.
@@ -58995,9 +59056,31 @@ fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         // phantom sort named `dot_apply` (and `sort_functor_of_view` would report
         // that as a real sort head).
         qualified if qualified == dt::qualified(dt::DOT_APPLY) => TypeHead::Error,
-        // An ordinary (non-meta-ctor) bare `Ref(S)` is the sort reference; a
-        // `Fn{S, named}` with bindings is a parameterized type; a no-arg `Fn{S}`
-        // of an ordinary sort is malformed (a bare sort is `Ref(S)`, never `Fn{S}`).
+        // An ordinary (non-meta-ctor) NULLARY head is the sort reference; a
+        // `Fn{S, named}` with bindings is a parameterized type; anything else — a head
+        // carrying POSITIONAL arguments — is malformed as a type, since a type's
+        // arguments are named bindings.
+        //
+        // WI-20260902-CZJ2N — THE NULLARY ARM NOW COVERS `Fn{S, [], []}` TOO, and that
+        // is a real reclassification rather than a rename. This comment used to read "a
+        // no-arg `Fn{S}` of an ordinary sort is malformed (a bare sort is `Ref(S)`,
+        // never `Fn{S}`)", and `is_bare_ref` was `matches!(head, ViewHead::Ref(_))`;
+        // with that head retired, both spellings reach one arm. The shape has NOT gone
+        // away — a `SymbolKind::Sort` name is exactly what the storage canon EXEMPTS, so
+        // `sort_inst_to_value`'s concrete spec identity `Fn{S}` still exists in the
+        // store — it has stopped being `TypeHead::Error`.
+        //
+        // THAT IS THE RIGHT ANSWER, and it is not what keeps the dispatch distinction:
+        // `Fn{S}` is a spec identity the loader BUILDS deliberately, so classifying it
+        // malformed was never a check anything relied on. What separates the concrete
+        // identity from the WILDCARD `Ref(S)` is `impl_param_ref`, which matches
+        // `Term::Ref` / `Term::Ident` on the raw term and never asks this function —
+        // driven by `type_head_reads_both_nullary_sort_spellings_alike` below, whose
+        // second half asserts the wildcard test still tells them apart.
+        //
+        // The trailing `_ => Error` is therefore NOT unreachable, which this ticket's
+        // plan predicted it would be: `Fn{f, [x], []}` still lands there, and
+        // `type_extract_test::extract_non_type_reifies_error` drives it.
         _ if is_bare_ref => TypeHead::SortRef(f),
         _ if named_arity > 0 => TypeHead::Parameterized { base: f },
         _ => TypeHead::Error,
@@ -59882,8 +59965,9 @@ fn value_type_term_d(
         ViewHead::Var(Var::Global(vid)) => var_type_term(kb, subst, vid, depth),
         // A De Bruijn / Rigid var has no runtime σ-binding to read here.
         ViewHead::Var(_) => fresh_type_var(kb),
-        // A bare 0-ary constructor (`nil` ≡ `Ref(c)`, WI-436): type as its sort.
-        ViewHead::Ref(s) => constructor_value_type(kb, s, &[], &[]),
+        // A bare 0-ary constructor (`nil`) reaches the `Functor` arm below at arity
+        // 0 since WI-20260902-CZJ2N, where `constructor_value_type(kb, c, &[], &[])`
+        // is exactly what its own arm computed.
         ViewHead::Functor {
             functor: Some(functor),
             pos_arity,
@@ -61466,19 +61550,29 @@ fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Symbol>) {
     let mut stack = vec![id];
     while let Some(t) = stack.pop() {
-        if let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = kb.get_term(t)
-        {
-            out.push(*functor);
-            for a in pos_args.iter() {
-                stack.push(*a);
+        match kb.get_term(t) {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                out.push(*functor);
+                for a in pos_args.iter() {
+                    stack.push(*a);
+                }
+                for (_, a) in named_args.iter() {
+                    stack.push(*a);
+                }
             }
-            for (_, a) in named_args.iter() {
-                stack.push(*a);
-            }
+            // WI-20260902-CZJ2N — A NULLARY CALL IS STORED BARE, so `rule tau() <=> 7
+            // [simp]` has a `Term::Ref` LHS and the `Fn`-only walk never pushed `tau`.
+            // That SILENTLY DROPS WI-702's soundness refusal: a `[simp]`/`[unfold]`
+            // rule naming an EFFECTFUL nullary operation loaded clean, and the firing
+            // sites are effect-blind by design, so the effectful call was free to be
+            // duplicated, reordered or dropped at rewrite time. Reaches a nested call
+            // too (`g(tau())`), not only the head.
+            Term::Ref(s) | Term::Ident(s) => out.push(*s),
+            _ => {}
         }
     }
 }
@@ -64924,8 +65018,14 @@ fn check_pattern_fragment(kb: &KnowledgeBase, sort_name: Symbol, errors: &mut Ve
         // so the head checks remain term-based.
         let head = kb.rule_head(rid);
 
+        // WI-20260902-CZJ2N: a NULLARY head is stored bare. Without the `Ref`/`Ident`
+        // arm every 0-ary-headed rule (`rule flag :- …`, and now its parenthesised
+        // twin, which is the same term) was skipped entirely — head rule 1 AND the
+        // per-goal `check_ho_apply_pattern_occ` body walk — so a load-time refusal
+        // silently stopped running on a whole class of rules.
         let head_sym = match kb.get_term(head) {
             Term::Fn { functor, .. } => *functor,
+            Term::Ref(s) | Term::Ident(s) => *s,
             _ => continue,
         };
         // WI-458: the rule's OWN head span, keyed by RuleId. Deliberately no
@@ -65235,12 +65335,24 @@ fn type_rule_bodies(
             // On a contradiction the receiver sorts are unreliable — skip dispatch
             // and stamping. Report only for the sort-scoped rules `check_rule_typing`
             // walked; a free rule's contradiction stays unreported, as before.
+            // WI-20260902-CZJ2N — READ THE HEAD THROUGH `head_functor`, not a `Term::Fn`
+            // destructure. `rule_sym` above already IS that read and was computed and
+            // discarded here; the destructure additionally assumed a shape a NULLARY head
+            // no longer has (it is stored as `Term::Ref`), so a 0-ary-headed rule would
+            // lose this diagnostic.
+            //
+            // NOT DRIVEN, and said rather than claimed: MEASURED on
+            // `wi_9c2pz_per_application_type_params_test`'s own contradiction fixture with
+            // the head rewritten `bad()` and `bad`, BOTH answer zero contradictions — and
+            // both answered zero on the pre-CZJ2N tree too. Something upstream of this
+            // arm already declines a nullary-headed rule (the contradiction is not
+            // FLAGGED, so this branch is never reached), so the `Term::Fn` gate was not
+            // what suppressed it and closing the gate fixes no observable behaviour. It
+            // is closed anyway because the assumption is false and the correct read was
+            // already in hand — an untested branch that reads a shape the store cannot
+            // produce is a trap for whoever makes the upstream case reachable.
             if reportable.contains(&rid) {
-                if let Term::Fn {
-                    functor: head_sym, ..
-                } = kb.get_term(head)
-                {
-                    let head_sym = *head_sym;
+                if let Some(head_sym) = rule_sym {
                     // WI-458: the rule's own head span, keyed by RuleId — no
                     // `term_span` fallback (see `check_pattern_fragment`).
                     let head_span = kb.rule_head_span(rid);

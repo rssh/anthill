@@ -202,9 +202,12 @@ namespace guardians
       case none() -> none()
       case some(a) -> repr_name(a)
 
-  -- A nullary name reaches `reify` under either spelling — `RefRepr` for a
-  -- constructor, `FnRepr` with no arguments otherwise (the WI-436 / WI-511 canon).
-  -- Reading only one of them would work for sorts and silently fail for entities.
+  -- A nullary name reaches `reify` as `RefRepr` since WI-20260902-CZJ2N, which made
+  -- the two spellings one term and one repr. It used to depend on the symbol: `RefRepr`
+  -- for a registered constructor, `FnRepr` with no arguments otherwise (WI-436/WI-511),
+  -- and reading only one arm worked for sorts while silently failing for entities.
+  -- BOTH arms are kept: the `FnRepr` one is what an APPLIED name reaches, and reading
+  -- the pair is what made this operation survive the canon change unedited.
   operation repr_name(r: TermRepr) -> Option[T = Symbol] =
     match r
       case RefRepr(n) -> some(n)

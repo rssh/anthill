@@ -312,8 +312,8 @@ fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalEr
 /// arrives as a `Value::Node`, and `KB.sorts` / `KB.descriptions` then failed
 /// "expected Option[String], got Node" on the very carrier the inner read had just
 /// been taught to accept (found by /code-review). `Value::Entity`, `Value::Term` and
-/// `Value::Node` all present `ViewHead::Functor` / `ViewHead::Ref`, so ONE read
-/// serves all three: a nullary head is `none()`, a head with one child is `some(x)`.
+/// `Value::Node` all present `ViewHead::Functor`, so ONE read serves all three: a
+/// nullary head is `none()`, a head with one child is `some(x)`.
 fn option_string_arg(
     kb: &anthill_core::kb::KnowledgeBase,
     v: Value,
@@ -321,9 +321,8 @@ fn option_string_arg(
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         // `none()` — a nullary constructor, on whichever spelling its carrier uses
-        // (`ViewHead::Ref` is the canonical nullary form, WI-436/WI-511).
-        ViewHead::Ref(_)
-        | ViewHead::Functor {
+        // (one nullary head since WI-20260902-CZJ2N).
+        ViewHead::Functor {
             pos_arity: 0,
             named_arity: 0,
             ..

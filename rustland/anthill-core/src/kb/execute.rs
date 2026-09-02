@@ -305,6 +305,22 @@ impl Value {
             | Value::Var(_)
             | Value::SymbolRef(_) => true,
             // Lowers, but not to a leaf, and not infallibly — see above.
+            //
+            // WI-20260902-CZJ2N — A 0-FIELD ENTITY IS THE ONE CASE WHERE THIS IS
+            // CONSERVATIVE RATHER THAN EXACT, and it is stated because an earlier cut of
+            // this ticket made the arm `pos.is_empty() && named.is_empty()` and that was
+            // WRONG. Whether a nullary entity lowers to a leaf depends on the FUNCTOR'S
+            // KIND: the canon stores `Fn{f, [], []}` as `Term::Ref(f)` — a leaf — unless
+            // `f` carries `SymbolKind::Sort`, which a free-standing or eponymous entity
+            // does (WI-926), and there it stays a `Term::Fn`. This signature has no
+            // `KnowledgeBase` to ask, so the honest answer is the conservative one.
+            //
+            // WHAT `false` COSTS: `KnowledgeBase::fn_value` builds a `Value::Entity`
+            // rather than a hash-consed `Term::Fn` for a parent whose child is a
+            // 0-field entity — a CARRIER choice, never a wrong answer, since the two
+            // read identically through `TermView`. What the arity-aware version cost
+            // was a predicate that CLAIMED a leaf `alloc_from_value` does not produce,
+            // which is the unsound direction.
             Value::Entity { .. } => false,
             // `alloc_from_value` answers `UnsupportedVariant` for all of these: the
             // interpreter-owned handles and the term-less aggregates have no
@@ -513,7 +529,14 @@ impl KnowledgeBase {
             .iter()
             .map(|&v| self.terms.alloc(Term::Var(Var::Global(v))))
             .collect();
-        let head = self.terms.alloc(Term::Fn {
+        // WI-20260902-CZJ2N — `self.alloc`, NOT `self.terms.alloc`: a query with NO free
+        // variables makes this a NULLARY head, and the store's own `alloc` is where the
+        // one nullary form is decided (`KnowledgeBase::nullary_canon`). Bypassing it
+        // would mint a second spelling of a term the rest of the KB stores one way — the
+        // same bypass `resolve_qualified_name_term` had, which WI-1023 then had to teach
+        // the `Map` key path to tolerate. The `Term::Var` children above are unaffected
+        // (the canon is about applications), so they stay on the direct path.
+        let head = self.alloc(Term::Fn {
             functor: synth_sym,
             pos_args,
             named_args: SmallVec::new(),
@@ -661,10 +684,10 @@ impl KnowledgeBase {
             },
             ViewHead::Var(Var::DeBruijn(i)) => out.push(SynthKey::DeBruijnVar(i)),
             ViewHead::Var(Var::Rigid(vid)) => out.push(SynthKey::Rigid(vid.raw())),
-            ViewHead::Ref(s) => out.push(SynthKey::Ref(s)),
             ViewHead::Ident(s) => out.push(SynthKey::Ident(s)),
             ViewHead::Bottom => out.push(SynthKey::Bottom),
-            // A 0-ary constructor reads as `Ref` (WI-436), so `functor: None` here
+            // A nullary application reads as `Functor` at arity 0 (WI-20260902-CZJ2N,
+            // which retired the separate `Ref` head), so `functor: None` here
             // is a functor-less aggregate (`Value::Tuple`/`Unit`) and `Opaque` a
             // runtime carrier (Closure/Stream/…). Neither is a valid goal shape —
             // `lower_leaf`/`alloc_from_value` reject them upstream — so this is
@@ -1174,24 +1197,80 @@ mod tests {
         );
 
         let kb = interp.kb_mut();
-        let disagreed: Vec<&str> = samples
+        // "Lowers to a LEAF" = `alloc_from_value` succeeds AND the term it produced has
+        // no children — both halves read off the function itself rather than assumed.
+        let is_leaf = |kb: &mut KnowledgeBase, v: &Value| match kb.alloc_from_value(v) {
+            Ok(t) => !matches!(kb.get_term(t), Term::Fn { .. }),
+            Err(_) => false,
+        };
+
+        // THE SOUND DIRECTION, over every variant: a `true` must be TRUE. This is what
+        // `fn_value` relies on when it treats an `Err` as a broken invariant, and it is
+        // the half that a leaf arm becoming recursive would break.
+        let overclaimed: Vec<&str> = samples
             .iter()
-            .filter(|v| {
-                // "Lowers to a LEAF" = `alloc_from_value` succeeds AND the term it
-                // produced has no children — both halves read off the function
-                // itself rather than assumed.
-                let actual = match kb.alloc_from_value(v) {
-                    Ok(t) => !matches!(kb.get_term(t), Term::Fn { .. }),
-                    Err(_) => false,
-                };
-                v.lowers_to_leaf_term() != actual
-            })
+            .filter(|v| v.lowers_to_leaf_term() && !is_leaf(kb, v))
             .map(variant_name)
             .collect();
         assert!(
-            disagreed.is_empty(),
-            "predicate and alloc_from_value disagreed: {disagreed:?}"
+            overclaimed.is_empty(),
+            "predicate claims a leaf `alloc_from_value` does not produce: {overclaimed:?}"
         );
+
+        // AND EXACT EVERYWHERE BUT `Entity`, which is deliberately conservative
+        // (WI-20260902-CZJ2N — a NULLARY entity's answer depends on the functor's kind,
+        // which `lowers_to_leaf_term` has no `KnowledgeBase` to ask). Excluding it by
+        // NAME rather than weakening the oracle for every variant: an `Err` → `Ok` move
+        // anywhere else still fails here.
+        let underclaimed: Vec<&str> = samples
+            .iter()
+            .filter(|v| !v.lowers_to_leaf_term() && is_leaf(kb, v))
+            .map(variant_name)
+            .filter(|n| *n != "Entity")
+            .collect();
+        assert!(
+            underclaimed.is_empty(),
+            "predicate refuses a leaf `alloc_from_value` does produce: {underclaimed:?}"
+        );
+    }
+
+    /// WI-20260902-CZJ2N — THE ONE CASE `leaf_lowering_agrees_with_alloc` excludes, driven
+    /// so the exclusion is a measurement and not a hole.
+    ///
+    /// A 0-field `Value::Entity` lowers to a LEAF (`Term::Ref`) when its functor has no
+    /// TYPE reading and to an APPLICATION (`Term::Fn`) when it does — the nullary canon's
+    /// own exemption. `Value::lowers_to_leaf_term` cannot tell the two apart (no
+    /// `KnowledgeBase` in scope) and answers `false` for both, which is conservative in
+    /// the safe direction: it costs `fn_value` a carrier choice, never correctness.
+    #[test]
+    fn a_nullary_entity_lowers_by_its_functors_kind() {
+        use crate::intern::SymbolKind;
+        let mut interp = crate::eval::Interpreter::new(KnowledgeBase::new());
+        let kb = interp.kb_mut();
+        let g = kb.global_scope();
+        let plain = kb.define_symbol("plainlk", "plainlk", SymbolKind::Entity, g);
+        let sorted = kb.define_symbol("SortedLk", "SortedLk", SymbolKind::Sort, g);
+
+        for (label, functor, want_leaf) in
+            [("no type reading", plain, true), ("a SORT", sorted, false)]
+        {
+            let v = Value::Entity {
+                functor,
+                pos: Rc::from(Vec::<Value>::new()),
+                named: Rc::from(Vec::<(Symbol, Value)>::new()),
+            };
+            let t = kb.alloc_from_value(&v).expect("a 0-field entity lowers");
+            assert_eq!(
+                !matches!(kb.get_term(t), Term::Fn { .. }),
+                want_leaf,
+                "{label}: the canon decides whether a nullary entity lowers to a leaf"
+            );
+            assert!(
+                !v.lowers_to_leaf_term(),
+                "{label}: and the predicate answers `false` for BOTH — conservative, \
+                 which is why the oracle above excludes `Entity`"
+            );
+        }
     }
 
     /// The exhaustiveness anchor for [`leaf_lowering_agrees_with_alloc`] — no `_`

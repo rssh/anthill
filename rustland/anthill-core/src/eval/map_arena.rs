@@ -81,14 +81,21 @@ impl MapKey {
     ///    unchanged for every other occurrence.)
     ///
     /// THE `Term` ARM ASKS `ViewHead`, NOT `Term::Ref` (WI-1023) — "is this term a
-    /// NAME", not "is it spelled `Ref`". `resolve_qualified_name_term` deliberately
-    /// bypasses [`KnowledgeBase::alloc`]'s WI-511 canon, so a non-canonicalized
-    /// nullary constructor `Fn{c,[],[]}` exists in the store; it IS the same name as
-    /// `Ref(c)` and `functor_view_head` already reads it as `ViewHead::Ref(c)`, so
-    /// the by-spelling match declined it and accepted a key SPLIT — the mirror image
-    /// of the `Ident` merge, and the wrong direction for the same reason. Reading
-    /// the head keeps `Ident` distinct for free: it heads as `ViewHead::Ident`, so
-    /// the widening reaches exactly the spellings of one name and no further.
+    /// NAME", not "is it spelled `Ref`". At the time, `resolve_qualified_name_term`
+    /// deliberately bypassed the WI-511 canon, so a non-canonicalized nullary
+    /// constructor `Fn{c,[],[]}` existed in the store and the by-spelling match
+    /// declined it, accepting a key SPLIT — the mirror image of the `Ident` merge and
+    /// the wrong direction for the same reason. Reading the head keeps `Ident`
+    /// distinct for free: it heads as `ViewHead::Ident`, so the widening reaches
+    /// exactly the spellings of one name and no further.
+    ///
+    /// WI-20260902-CZJ2N — THE QUESTION IS NOW "NULLARY FUNCTOR", the retired
+    /// `ViewHead::Ref` having been the only head that meant it. The ARITY PIN is
+    /// load-bearing and is the whole of the difference: `functor_sym` would answer for
+    /// `some(?x)` too, and an applied term is a `MapKey::Term`, not a name. The
+    /// widening this brings is real and intended — a nullary OP or a namespace-level
+    /// ENTITY name now keys as `MapKey::Ref` where it keyed as `MapKey::Term(tid)`,
+    /// which is the same merge under a wider gate.
     ///
     /// THE CANON IS GATED ON `is_constructor_symbol`, AND THAT GATE IS THE POINT,
     /// not a residual gap. `functor_view_head` rewrites a nullary `Fn` only for a
@@ -129,7 +136,11 @@ impl MapKey {
                 Term::Const(Literal::String(s)) => Some(MapKey::Str(s.clone())),
                 Term::Const(_) => Some(MapKey::Term(*tid)),
                 _ => match v.head(kb) {
-                    ViewHead::Ref(s) => Some(MapKey::Ref(s)),
+                    ViewHead::Functor {
+                        functor: Some(s),
+                        pos_arity: 0,
+                        named_arity: 0,
+                    } => Some(MapKey::Ref(s)),
                     _ => Some(MapKey::Term(*tid)),
                 },
             },
@@ -145,7 +156,11 @@ impl MapKey {
                 ViewHead::Const(Literal::Int(n)) => Some(MapKey::Int(n)),
                 ViewHead::Const(Literal::Bool(b)) => Some(MapKey::Bool(b)),
                 ViewHead::Const(Literal::String(s)) => Some(MapKey::Str(s)),
-                ViewHead::Ref(sym) => Some(MapKey::Ref(sym)),
+                ViewHead::Functor {
+                    functor: Some(sym),
+                    pos_arity: 0,
+                    named_arity: 0,
+                } => Some(MapKey::Ref(sym)),
                 _ => None,
             },
             _ => None,
@@ -195,7 +210,7 @@ impl MapKey {
     /// A `Ref` key spells itself `Value::SymbolRef`, the carrier-free form, rather
     /// than re-interning a `Term::Ref`: this is a READ, and it must not need
     /// `&mut kb`. The two are indistinguishable to every structural consumer
-    /// (`ViewHead::Ref`), and feeding it back to `try_from_value` returns the same
+    /// (one nullary `ViewHead::Functor`), and feeding it back to `try_from_value` returns the same
     /// key, so `Map.get(m, k)` for a `k` out of `Map.keys(m)` still hits.
     pub fn to_value(&self) -> Value {
         match self {
@@ -524,10 +539,16 @@ mod tests {
 
     /// WI-1023 — the THIRD spelling of one name keys with the other two.
     ///
-    /// `resolve_qualified_name_term` mints `Fn{c,[],[]}` through `terms.alloc`,
+    /// `resolve_qualified_name_term` USED to mint `Fn{c,[],[]}` through `terms.alloc`,
     /// deliberately bypassing the WI-511 canon that would rewrite it to `Ref(c)`.
-    /// It denotes the same constructor, and `functor_view_head` says so
-    /// (`ViewHead::Ref(c)`), so keying it as `Term(tid)` put one name in two slots.
+    /// It denotes the same constructor, and `functor_view_head` said so, so keying it
+    /// as `Term(tid)` put one name in two slots.
+    ///
+    /// WI-20260902-CZJ2N MOVED THE CANON INTO `TermStore::alloc`, so that third
+    /// spelling no longer exists — `terms.alloc` itself rewrites it. This row now
+    /// pins the canon rather than the reader's tolerance of it: backed out (restore
+    /// the `is_constructor_symbol` gate), `via_nullary_fn` is a distinct `TermId`
+    /// again and the head read below is what keeps the key single.
     ///
     /// CONTROL, MEASURED by restoring `match kb.get_term(*tid) { Term::Ref(s) =>
     /// … }`: `via_nullary_fn` comes back `Some(MapKey::Term(fn_tid))`, the
@@ -545,11 +566,20 @@ mod tests {
 
         // The three spellings: the canonical `Ref`, the value carrier, and the
         // nullary `Fn` `resolve_qualified_name_term` mints.
+        //
+        // WI-20260902-CZJ2N — THE THIRD SPELLING NO LONGER EXISTS, and this row now
+        // pins that rather than the reader's tolerance of it. The premise used to be
+        // `assert_ne!(ref_tid, fn_tid, "the mint really does bypass the canon")`; the
+        // bypass is gone (`resolve_qualified_name_term` routes through
+        // `KnowledgeBase::alloc`), so the two are ONE TermId and the key question is
+        // answered at the store instead of at the reader. The head read below is still
+        // what makes the `SymbolRef` carrier agree, which is the half this row also
+        // measures.
         let ref_tid = kb.alloc(Term::Ref(c));
         let fn_tid = kb.resolve_qualified_name_term("demo.Color.red");
-        assert_ne!(
+        assert_eq!(
             ref_tid, fn_tid,
-            "premise: the mint really does bypass the canon"
+            "the mint no longer bypasses the canon — one name, one term"
         );
 
         let via_ref = MapKey::try_from_value(&kb, &Value::term(ref_tid));
@@ -582,27 +612,41 @@ mod tests {
             "an unresolved identifier is not the resolved name",
         );
 
-        // AND THE GATE: for a NON-constructor the two spellings are not one name.
-        // `functor_view_head` rewrites a nullary `Fn` only for a registered
-        // constructor, because for a sort `Ref(s)` vs `Fn{s}` IS WI-391's
-        // wildcard-vs-concrete type distinction. Asserted so the widening's
-        // boundary is driven rather than assumed — this is the case that would
-        // silently merge if the `is_constructor_symbol` gate were dropped.
-        let sort = kb.intern("demo.Color");
+        // AND THE GATE: for a name with a TYPE reading the two spellings are not one
+        // name. `KnowledgeBase::nullary_canon` exempts a `SymbolKind::Sort` symbol,
+        // because for a sort `Ref(s)` vs `Fn{s}` IS WI-391's wildcard-vs-concrete type
+        // distinction. Asserted so the widening's boundary is driven rather than
+        // assumed.
+        //
+        // WI-20260902-CZJ2N moved this gate from `is_constructor_symbol` to
+        // `has_kind(Sort)`, so the symbol must be DEFINED with that kind: an
+        // `intern`-only symbol carries no kinds at all (`SymbolTable::add_kind` writes
+        // only to a `Resolved` def), and the row would pass for the wrong reason.
+        let g = kb.global_scope();
+        let sort = kb.define_symbol("Color", "demo.Color", crate::intern::SymbolKind::Sort, g);
         assert!(
-            !kb.is_constructor_symbol(sort),
-            "premise: a sort is not a constructor"
+            kb.has_kind(sort, crate::intern::SymbolKind::Sort) && !kb.is_constructor_symbol(sort),
+            "premise: a sort has a type reading and is not a constructor"
         );
         let sort_fn = kb.resolve_qualified_name_term("demo.Color");
         let sort_ref = kb.alloc(Term::Ref(sort));
+        assert_ne!(
+            sort_fn, sort_ref,
+            "a sort's nullary application and its bare Ref are two TERMS — that is \
+             WI-391's wildcard-vs-concrete distinction, and it lives at the STORE"
+        );
+        // …BUT THEY KEY ALIKE, and that is a narrowing WI-20260902-CZJ2N makes rather
+        // than an oversight. The key is read off the HEAD, and `functor_view_head` has
+        // no second head to give a bare name any more, so both spellings read as
+        // `Functor{Color, 0, 0}`. The type-level distinction is read from the TERM by
+        // the site that owns it (`typing::impl_param_ref` matches `Term::Ref` /
+        // `Term::Ident` directly), never from a `MapKey` — so nothing that decides
+        // dispatch is on this path. Asserted rather than left implicit: a `Map` keyed
+        // by TYPE values cannot tell `S` from `S()`, and this is where a reader finds
+        // that out.
         assert_eq!(
             MapKey::try_from_value(&kb, &Value::term(sort_fn)),
-            Some(MapKey::Term(sort_fn)),
-        );
-        assert_ne!(
-            MapKey::try_from_value(&kb, &Value::term(sort_fn)),
             MapKey::try_from_value(&kb, &Value::term(sort_ref)),
-            "a sort's nullary application and its bare Ref are not one name",
         );
 
         // A `Term::Const` key is read off the term (no `head`, so no payload clone)
