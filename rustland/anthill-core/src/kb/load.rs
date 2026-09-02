@@ -8,6 +8,7 @@
 ///
 /// The loader takes a `SourceResolver` to fetch imported files. The CLI
 /// provides a real FS implementation; tests use `NullResolver`.
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -2237,7 +2238,7 @@ impl LoadError {
     /// including two references to one bad name in same-short-named but distinct
     /// scopes) are always kept. The one real duplicate — a head functor resolved
     /// for owner-tracking AND for the term build — is eliminated at the producer
-    /// (`resolve_owner_symbol`), NOT by keying span-insensitively (which would
+    /// (`resolve_owner_name`), NOT by keying span-insensitively (which would
     /// over-collapse, dropping a diagnostic; the short scope name is not a unique
     /// identity — see `no-short-name-comparison`). A `Located` keys on its inner
     /// (the path is the same file for every error deduped together).
@@ -6094,6 +6095,98 @@ fn is_typed_column(
             .any(|&a| is_typed_column(parse_sym, parse_terms, a))
 }
 
+/// WI-20260901-719FJ — the dotted NAME a PAREN-LESS citation spells, or `None` when this
+/// node is not one.
+///
+/// A multi-segment name written without a trailing `(…)` — `nsx.tgt`, `Queen.find`,
+/// `..a.b` — has no application to hang a functor on, so the converter folds it into a
+/// MINTED `field_access(object, Ident(field))` chain (§6.7: a name with no application is
+/// dot projection). That chain is what the spelling lowers to in EVERY position; what it
+/// MEANS is the position's to say, and the three logical positions say the same thing as
+/// the one-segment spelling of themselves — see [`Loader::dotted_subject_symbol`].
+///
+/// THREE GATES, each of them somebody's measured defect:
+///
+///  * PROVENANCE, NOT SPELLING (WI-20260901-92VA4). A HAND-WRITTEN `field_access(a, b)`
+///    is a call to whatever that name denotes at that scope, not the desugaring of a dot,
+///    so only the converter's own `mark_minted` node is read here. Without the gate, the
+///    written call would silently become a name.
+///  * NAMED ARGS DISQUALIFY IT, the same reason `visit_load`'s gate gives: the converter
+///    emits this builtin with an empty `named_args` on both of its paths, so a
+///    `field_access` carrying them is a user's call to a functor that happens to be
+///    spelled that way, and collapsing it would drop those argument subtrees unvisited.
+///  * NAME-ROOTED, which is [`field_access_dotted_name_of`]'s own answer: a chain whose
+///    root is a VARIABLE (`?x.f`) or which has a call in it is a projection on a VALUE
+///    and has no name to be.
+fn dotted_citation_name(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    parse_id: TermId,
+) -> Option<String> {
+    if !parse_terms.is_minted(parse_id) {
+        return None;
+    }
+    let Term::Fn {
+        functor,
+        named_args,
+        ..
+    } = parse_terms.get(parse_id)
+    else {
+        return None;
+    };
+    if !named_args.is_empty() || parse_sym.local_name(*functor) != dt::FIELD_ACCESS {
+        return None;
+    }
+    field_access_dotted_name_of(parse_sym, parse_terms, parse_id)
+}
+
+/// The dotted name a pure `field_access(Ident-chain, Ident)` term spells, or `None` if any
+/// node isn't the converter's 2-arg `field_access(object, Ident(field))` shape bottoming
+/// out in a root `Ident` (i.e. a call / value / instantiation sits in the chain, so it is
+/// not a static name path).
+///
+/// A FREE FUNCTION because its four readers do not share a `Loader`: the value position
+/// asks it through [`Loader::field_access_dotted_name`], the two head positions and the
+/// rule-body goal ask it through [`dotted_citation_name`], and the QUERY pattern
+/// ([`convert_query_term`]) has no loader at all. One walk, so a chain cannot spell one
+/// name at a citation and another at a head.
+fn field_access_dotted_name_of(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    parse_id: TermId,
+) -> Option<String> {
+    // Segments BORROW from the parse tables (only the join allocates) — this runs on
+    // every name-rooted dotted path in every op body, and WI-749 added a second caller
+    // per node (`field_access_names_rule_prefix` on the receiver).
+    let mut segments: Vec<&str> = Vec::new();
+    let mut cur = parse_id;
+    loop {
+        match parse_terms.get(cur) {
+            Term::Ident(sym) => {
+                segments.push(parse_sym.local_name(*sym));
+                break;
+            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if dt::is(parse_sym.local_name(*functor), dt::FIELD_ACCESS)
+                && pos_args.len() == 2
+                && named_args.is_empty() =>
+            {
+                let Term::Ident(field) = parse_terms.get(pos_args[1]) else {
+                    return None;
+                };
+                segments.push(parse_sym.local_name(*field));
+                cur = pos_args[0];
+            }
+            _ => return None,
+        }
+    }
+    segments.reverse();
+    Some(segments.join("."))
+}
+
 /// WHY a [`RuleReading::DeclaresNothing`] rule declares nothing, in the author's terms.
 /// Asks the SAME shape questions [`rule_introduced_functor_name`] asks, in its order, so
 /// the message and the verdict cannot describe different rules.
@@ -6130,7 +6223,15 @@ fn bodyless_declares_nothing_detail(
     // REACHABLE IN HEAD POSITION MUST MOVE THIS TEXT WITH IT — and a marker added in a
     // production reachable from `_term` is exactly that case, which the first bullet
     // alone would not catch.
-    if parse_terms.is_minted(*tid) {
+    // A DOTTED PAREN-LESS HEAD IS MINTED AND STILL NAMES SOMETHING (WI-20260901-719FJ),
+    // so it is asked ahead of the desugaring sentence — the same order
+    // [`head_subject_name`] takes, because the two walks must describe one rule. Before
+    // this arm `rule nsx.tgt` got the DESUGARING sentence while `rule nsx.tgt()` got the
+    // QUALIFIED one: axis D's defect (P85Z7) surviving one spelling over. The name flows
+    // into the qualified test below rather than returning here, so the two spellings now
+    // share the sentence AND the reason.
+    let chain = dotted_citation_name(parse_sym, parse_terms, *tid);
+    if chain.is_none() && parse_terms.is_minted(*tid) {
         return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
                 `?a + ?b` carries `add`), not a name the rule introduces"
             .to_owned();
@@ -6162,10 +6263,16 @@ fn bodyless_declares_nothing_detail(
     // `wi_fqc85_rule_declaration_test` drives. A bare LITERAL (`rule 42`, `rule true`)
     // is refused earlier with its own sentence, and every other non-`Fn` parse node is
     // named above.
-    let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(*tid) else {
-        return "its head is not a functor application, so it names no predicate".to_owned();
+    let name = match &chain {
+        Some(name) => name.as_str(),
+        None => {
+            let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(*tid) else {
+                return "its head is not a functor application, so it names no predicate"
+                    .to_owned();
+            };
+            parse_sym.local_name(*functor)
+        }
     };
-    let name = parse_sym.local_name(*functor);
     if name.contains('.') {
         return format!(
             "`{name}` is a QUALIFIED name, and a qualified name references an existing \
@@ -6290,7 +6397,7 @@ fn head_subject_name<'a>(
     bodyless: bool,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<(&'a str, RuleIntroduction)> {
+) -> Option<(Cow<'a, str>, RuleIntroduction)> {
     let RuleHead::Term(tid) = head else {
         return None;
     };
@@ -6328,6 +6435,28 @@ fn head_subject_name<'a>(
     // this position, and for the measurement that says so. A marker added in a grammar
     // production reachable from `_term` WOULD reach it, and would silently make its
     // rule introduce nothing.
+    //
+    // A DOTTED PAREN-LESS SUBJECT IS THE EXCEPTION, and it is asked FIRST because the
+    // mint guard would otherwise swallow it (WI-20260901-719FJ). `rule nsx.tgt :- b(1)`
+    // folds into a minted `field_access` chain, so before this arm the head introduced
+    // nothing AND referenced nothing: its clause landed under `field_access` and the
+    // whole rule was dropped in silence, while `rule nsx.tgt()` referenced correctly.
+    // The chain's functor really is the desugar's — which is why the guard below is
+    // right about it — but the chain also SPELLS A NAME, and that name is the subject
+    // (§6.7; the value position has read it that way since WI-714).
+    //
+    // NO PREDICATE-PATH GATE, unlike the `Term::Ident` arm below, and that is
+    // reachability rather than policy: [`subject_introduces`] refuses every name
+    // containing a dot, so a chain subject NEVER mints and can never reach the
+    // `EquationFunctor` stamp P85Z7's gate exists to prevent. What it CAN reach is the
+    // clause census, which [`RuleHeadCollectPass::collect`] already filters on
+    // `Predicate` — an equation's clauses index under the connective (WI-898). What IS
+    // driven is the consequence: `a_dotted_equation_subject_still_fires_nothing` shows a
+    // dotted `[simp]` subject matching no redex, so the equation reading did not widen
+    // when this walk learned to read a chain.
+    if let Some(name) = dotted_citation_name(parse_sym, parse_terms, subject) {
+        return Some((Cow::Owned(name), introduced_by));
+    }
     if parse_terms.is_minted(subject) {
         return None;
     }
@@ -6364,7 +6493,7 @@ fn head_subject_name<'a>(
         Term::Ident(sym) if introduced_by == RuleIntroduction::Predicate => sym,
         _ => return None,
     };
-    Some((parse_sym.local_name(*functor), introduced_by))
+    Some((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
 }
 
 /// The name a rule INTRODUCES — the name that must become a scoped symbol so a
@@ -6398,22 +6527,39 @@ fn rule_introduced_functor_name<'a>(
     parse_terms: &SimpleTermStore,
 ) -> Option<(&'a str, RuleIntroduction)> {
     let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
-    let (name, introduced_by) =
+    let (subject, introduced_by) =
         head_subject_name(r.heads.first()?, bodyless, parse_sym, parse_terms)?;
-    subject_introduces(name, r.heads.len()).then_some((name, introduced_by))
+    Some((subject_introduces(&subject, r.heads.len())?, introduced_by))
 }
 
 /// THE TWO REFUSALS THEMSELVES, so that a caller which already holds the subject
 /// ([`RuleHeadCollectPass::collect`], which needs it for the clause census anyway) can
 /// ask the question without walking the head's shape a second time — and cannot spell
-/// the answer differently.
+/// the answer differently. `Some` is the name the rule INTRODUCES.
 ///
 /// A QUALIFIED spelling references rather than introduces — see
 /// [`rule_introduced_functor_name`]. SEVERAL HEADS name no single predicate, so the rule
 /// introduces nothing at all; each head still LANDS its own clause, which is the census
 /// [`ClauseSite`] takes and this one does not.
-fn subject_introduces(name: &str, head_count: usize) -> bool {
-    head_count == 1 && !name.contains('.')
+///
+/// IT ALSO NARROWS THE CARRIER, and that is the dot rule doing a second job rather than
+/// a second rule (WI-20260901-719FJ): a subject reaches this as a [`Cow`] because the
+/// ONE shape whose name the parse symbol table never interned is a folded dot-chain
+/// (`rule nsx.tgt :- b(1)` — the converter interned `nsx` and `tgt`, never `nsx.tgt`).
+/// A chain has at least two segments, so its name always carries the dot refused above;
+/// what survives is borrowed, and the callers that want a `&'a str` — every one of them,
+/// since only an INTRODUCED name is stored — get it without restating the invariant.
+fn subject_introduces<'a>(subject: &Cow<'a, str>, head_count: usize) -> Option<&'a str> {
+    if head_count != 1 || subject.contains('.') {
+        return None;
+    }
+    let Cow::Borrowed(name) = subject else {
+        unreachable!(
+            "an owned head subject is a folded dot-chain, which is dotted and was \
+             refused above"
+        )
+    };
+    Some(name)
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -8739,8 +8885,11 @@ struct ClauseSite<'f> {
     /// together with [`EntryTextRange`] and the span.
     written_in: ScopeId,
     /// The head's subject as written, DOTTED SPELLINGS KEPT. Borrowed from the FILE's
-    /// parse-time symbol table, as [`RuleHeadSite::name`] is.
-    subject: &'f str,
+    /// parse-time symbol table, as [`RuleHeadSite::name`] is — except for a PAREN-LESS
+    /// dotted head, whose name the converter never interned as one segment (it folded
+    /// the segments into a `field_access` chain, WI-20260901-719FJ), so that one is
+    /// owned.
+    subject: Cow<'f, str>,
     span: Span,
 }
 
@@ -8758,18 +8907,36 @@ struct ClauseSite<'f> {
 /// additionally decides the equation/predicate split: a fact has no body and no
 /// connective reading to make (`fact lhs === rhs` is refused at load, WI-1090), so the
 /// question here is strictly the functor's.
+///
+/// A DOTTED PAREN-LESS HEAD IS KEPT TOO (WI-20260901-719FJ), and it must be asked ahead
+/// of the mint guard for the same reason [`head_subject_name`]'s twin arm is: `fact
+/// nsx.tgt` folds into a minted `field_access` chain, and since `load_fact` now lands its
+/// clause on `nsx.tgt`, a census that could not see the chain would UNDER-COUNT the very
+/// clause 059 R3's condition (2) is about — APXSS's own defect, one keyword over from
+/// where this ticket first fixed it.
+///
+/// STILL NOT WIDENED TO A BARE `Term::Ident` head, and that is a boundary rather than an
+/// oversight: `fact holds` inside a scope that declares `holds` DOES land its clause on
+/// that predicate (the `Term::Ident` arm of `convert_term_inner` resolves it), and this
+/// census misses it — spelling-independently, since the miss is about the ONE-segment
+/// paren-less shape and not about the dot. That shape is WI-20260821-RDGQC's, which owns
+/// the fact head whole; widening here would fix half of it in the one place a reader
+/// would then stop looking.
 fn fact_head_subject_name<'a>(
     f: &Fact,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<&'a str> {
+) -> Option<Cow<'a, str>> {
+    if let Some(name) = dotted_citation_name(parse_sym, parse_terms, f.term) {
+        return Some(Cow::Owned(name));
+    }
     if parse_terms.is_minted(f.term) {
         return None;
     }
     let Term::Fn { functor, .. } = parse_terms.get(f.term) else {
         return None;
     };
-    Some(parse_sym.local_name(*functor))
+    Some(Cow::Borrowed(parse_sym.local_name(*functor)))
 }
 
 /// 059 R3's NARROW RULE — WI-1001. Judges every rule sub-pass 1b deferred, and returns
@@ -8884,7 +9051,7 @@ fn judge_secondary_entry_rules<'f>(
     let wanted: HashSet<&str> = ordered.iter().map(|((_, name), _)| *name).collect();
     let mut landed: HashMap<Symbol, Vec<usize>> = HashMap::new();
     for (i, site) in clause_sites.iter().enumerate() {
-        if !wanted.contains(last_segment(site.subject)) {
+        if !wanted.contains(last_segment(&site.subject)) {
             continue;
         }
         // WI-995: imports are file-local, so the ladder answers on behalf of the file
@@ -8894,7 +9061,7 @@ fn judge_secondary_entry_rules<'f>(
         // intern (WI-476) — a global name, never this scope's predicate — and an
         // AMBIGUOUS one is refused at its own reference position with the candidate set
         // it needs; neither is a clause of the predicate this entry is declaring.
-        if let ResolveResult::Found(sym) = resolve_name_in_kb(kb, site.subject, site.resolves_in) {
+        if let ResolveResult::Found(sym) = resolve_name_in_kb(kb, &site.subject, site.resolves_in) {
             landed.entry(sym).or_default().push(i);
         }
     }
@@ -9695,16 +9862,16 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             // separately (WI-20260821-D0EXD); one in its own scope is one author writing
             // both roles.
             if introduced_by == RuleIntroduction::Predicate {
-                self.clause(subject, r.span, scope, scope);
+                self.clause(subject.clone(), r.span, scope, scope);
             }
-            if !subject_introduces(subject, head_count) {
+            let Some(name) = subject_introduces(&subject, head_count) else {
                 continue;
-            }
+            };
             self.sites.push(RuleHeadSite {
                 file_idx: self.file_idx,
                 scope,
                 prefix: prefix.to_owned(),
-                name: subject,
+                name,
                 introduced_by,
                 span: r.span,
             });
@@ -9728,7 +9895,13 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
 
     /// One [`ClauseSite`]. The two scopes coincide everywhere but inside a host
     /// `provides` block — see [`Self::collect_provides_block`].
-    fn clause(&mut self, subject: &'f str, span: Span, resolves_in: ScopeId, written_in: ScopeId) {
+    fn clause(
+        &mut self,
+        subject: Cow<'f, str>,
+        span: Span,
+        resolves_in: ScopeId,
+        written_in: ScopeId,
+    ) {
         if !self.census_clauses {
             return;
         }
@@ -16428,6 +16601,31 @@ pub fn convert_query_term(
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
 ) -> TermId {
+    // WI-20260901-719FJ — THE PATTERN IS A LOGICAL SUBJECT, so a dotted paren-less name
+    // written here is the NAME, the same reading the rule head, the fact head and the
+    // rule-body goal take (`Loader::convert_subject_term`). MEASURED before it, on a
+    // predicate that exists: `anthill query 'nsx.tgt'` came back
+    // `conditional / residual: eq(field_access(nsx, tgt), true)` — a FLOUNDERED solution
+    // a `.len()` counts as an answer — where `nsx.tgt()` answered `true`.
+    //
+    // AT THE ENTRY POINT, so it reads the PATTERN and never an argument of one: a data
+    // slot holds a term whose spelling is its identity, and the fact this query searches
+    // for was built by the loader's own data-slot walk, which is untouched. That is why
+    // the collapse is here and not in `convert_query_term_expecting`, which recurses.
+    if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
+        let sym = resolve_query_name(kb, &name, scope);
+        // `Ref` when the name denotes, `Ident` when it does not — `resolve_query_name`
+        // bare-interns the two answers that name no single symbol (WI-476), and an
+        // unresolved bare intern heads no clause, so the pattern matches nothing and the
+        // CLI's `report_unknown_functor_name` gets a name to diagnose instead of
+        // `field_access`.
+        let term = if kb.symbols.is_resolved(sym) {
+            Term::Ref(sym)
+        } else {
+            Term::Ident(sym)
+        };
+        return kb.alloc(term);
+    }
     convert_query_term_expecting(
         kb,
         parse_terms,
@@ -18478,16 +18676,20 @@ impl<'a> Loader<'a> {
     /// same-name errors are never collapsed.
     ///
     /// INVARIANT (no silent skip): discarding here is sound ONLY because the
-    /// fact's term build re-resolves the SAME `parse_functor` through the same
-    /// `remap_symbol`, so any diagnostic dropped here is re-pushed there — see
-    /// the `Term::Fn` build arm (`kb_functor = self.remap_symbol(parse_functor,
-    /// …)`, marked "authoritative fact-head diagnostic site"). If a future build
-    /// path ever stops re-resolving the head, MOVE the truncate to that path (or
-    /// drop it) rather than let this quietly swallow the only report — a
-    /// suppressed resolution error is exactly the silent skip the repo forbids.
-    fn resolve_owner_symbol(&mut self, sym: Symbol, span: Span) -> Symbol {
+    /// fact's term build re-resolves the SAME NAME through the same
+    /// `remap_name_str`, so any diagnostic dropped here is re-pushed there. It
+    /// holds for all three head shapes [`Self::head_name_as_written`] answers for
+    /// (WI-20260901-719FJ): an APPLICATION re-resolves at the `Term::Fn` build arm
+    /// (`kb_functor = self.remap_symbol(parse_functor, …)`, marked "authoritative
+    /// fact-head diagnostic site"), a bare `Term::Ident` at that arm, and a DOTTED
+    /// PAREN-LESS head at [`Self::dotted_subject_symbol`], which resolves the joined
+    /// name this one just resolved quietly. If a future build path ever stops
+    /// re-resolving the head, MOVE the truncate to that path (or drop it) rather than
+    /// let this quietly swallow the only report — a suppressed resolution error is
+    /// exactly the silent skip the repo forbids.
+    fn resolve_owner_name(&mut self, name: &str, span: Span) -> Symbol {
         let mark = self.errors.len();
-        let resolved = self.remap_symbol(sym, span);
+        let resolved = self.remap_name_str(name, span);
         self.errors.truncate(mark);
         resolved
     }
@@ -19018,6 +19220,83 @@ impl<'a> Loader<'a> {
             }
         }
         build_some(self.kb, term)
+    }
+
+    /// WI-20260901-719FJ — THE SUBJECT OF A LOGICAL FORM, converted.
+    ///
+    /// A LOGICAL SUBJECT is a rule head, a fact head, a rule-body GOAL or a query
+    /// pattern: the position where a term states a PROPOSITION rather than denotes a
+    /// value. A dotted PAREN-LESS name written there is the NAME it spells, because a
+    /// proposition has no projection reading — so the converter's `field_access` chain
+    /// collapses to exactly what the ONE-SEGMENT spelling of the same position lowers to
+    /// ([`Self::subject_name_term`]), and `rule nsx.tgt :- b(1)` becomes the program
+    /// `rule nsx.tgt() :- b(1)` already was.
+    ///
+    /// WHAT IT WAS BEFORE: the chain reached the generic `Term::Fn` build and the clause
+    /// was stored under `field_access` — the whole rule dropped in SILENCE, while the
+    /// parenthesised twin referenced correctly. MEASURED on the ticket's fixture:
+    /// `nsx.tgt` held ONE clause where the twin held two, `:- nsx.tgt` answered nothing,
+    /// and the query pattern `nsx.tgt` came back as the residual
+    /// `eq(field_access(nsx, tgt), true)` — a floundered "solution", not an answer.
+    ///
+    /// THE VALUE POSITION IS NOT THIS QUESTION and is deliberately untouched: proposal
+    /// 052 §6.7 reads the same chain in an operation body as the `Relation[T]` VALUE
+    /// ([`Self::try_qualified_rule_ref`]), which is what makes `Queen.find.map(…)` work.
+    /// One spelling, two positions, two readings — and that split is not new: the
+    /// UNQUALIFIED `person_row` is a relation value in an op body and a nullary goal in
+    /// a rule body already. What this closes is that the QUALIFIED spelling had only the
+    /// value half, and was silent in the other three.
+    ///
+    /// A DATA SLOT IS ALSO NOT THIS QUESTION. `fact holds(nsx.tgt)` stores the chain and
+    /// the query `holds(nsx.tgt)` finds it — the two spell one term, which is WI-1046's
+    /// rule ("a term's spelling is its identity; normalizing one side of a match is
+    /// never a repair", WI-756). Collapsing one walk's data slots and not the other's is
+    /// exactly how that breaks, so every position asks this only of its SUBJECT.
+    fn convert_subject_term(&mut self, parse_id: TermId) -> TermId {
+        let Some(sym) = self.dotted_subject_symbol(parse_id) else {
+            return self.convert_term(parse_id);
+        };
+        let kb_id = self.subject_name_term(sym);
+        // The memo `convert_term_inner` reads first, so a later walk of the same parse
+        // node (the body-atom walk's entity/reflect materialization, `parse_span_table`)
+        // sees the collapsed node rather than re-deriving the `field_access` one.
+        //
+        // AND NOTHING ELSE — no `create_occurrence`, exactly as [`Self::convert_term`]
+        // records none. `load_fact` calls it on its own head afterwards and a rule head
+        // never had one, so this stays a substitution for that call rather than a second
+        // writer into the hash-consed `term_spans`, where first-write-wins would let a
+        // head site claim a `Ref`'s span from whatever renders it later (WI-458).
+        self.term_map.insert(parse_id.raw(), kb_id);
+        kb_id
+    }
+
+    /// The SYMBOL a logical subject's dotted paren-less name resolves to, or `None` when
+    /// this node is not such a name ([`dotted_citation_name`] carries the three gates).
+    ///
+    /// Resolved through `remap_name_str` — the SAME resolution the parenthesised twin's
+    /// functor takes, so `rule nsx.tgt` and `rule nsx.tgt()` cannot land on different
+    /// symbols, and a name that resolves to NOTHING reaches WI-476's bare intern in both
+    /// spellings instead of one of them silently becoming a `field_access` clause.
+    fn dotted_subject_symbol(&mut self, parse_id: TermId) -> Option<Symbol> {
+        let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
+        Some(self.remap_name_str(&name, self.parsed.terms.span(parse_id)))
+    }
+
+    /// A resolved subject name as a term: `Ref` when it denotes, `Ident` when nothing in
+    /// scope answers. Byte-for-byte [`Self::convert_term_inner`]'s `Term::Ident` arm, and
+    /// that is the point — a paren-less citation is the same node whether its name has
+    /// one segment or five.
+    ///
+    /// NOT a zero-argument `Term::Fn`: §8.3 makes `account` and `account()` different
+    /// terms (the second is the all-fields-fresh pattern), and the paren-less spelling is
+    /// the reference on both sides of the dot.
+    fn subject_name_term(&mut self, sym: Symbol) -> TermId {
+        let term = if self.kb.symbols.is_resolved(sym) {
+            Term::Ref(sym)
+        } else {
+            Term::Ident(sym)
+        };
+        self.kb.alloc(term)
     }
 
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
@@ -20874,41 +21153,12 @@ impl<'a> Loader<'a> {
         true
     }
 
-    /// The dotted name a pure `field_access(Ident-chain, Ident)` term spells, or
-    /// `None` if any node isn't the converter's 2-arg `field_access(object,
-    /// Ident(field))` shape bottoming out in a root `Ident` (i.e. a call / value /
-    /// instantiation sits in the chain, so it is not a static name path).
+    /// [`field_access_dotted_name_of`] at this loader's parse tables. The walk itself is
+    /// a free function (WI-20260901-719FJ) because the QUERY-pattern position has no
+    /// `Loader` to ask it through, and a second copy of "which name does this chain
+    /// spell" is how the citation positions drifted apart before (WI-729/749/750/751).
     fn field_access_dotted_name(&self, parse_id: TermId) -> Option<String> {
-        // Segments BORROW from `self.parsed` (only the join allocates) — this runs on
-        // every name-rooted dotted path in every op body, and WI-749 added a second
-        // caller per node ([`Self::field_access_names_rule_prefix`] on the receiver).
-        let mut segments: Vec<&str> = Vec::new();
-        let mut cur = parse_id;
-        loop {
-            match self.parsed.terms.get(cur) {
-                Term::Ident(sym) => {
-                    segments.push(self.parsed.symbols.local_name(*sym));
-                    break;
-                }
-                Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args,
-                } if dt::is(self.parsed.symbols.local_name(*functor), dt::FIELD_ACCESS)
-                    && pos_args.len() == 2
-                    && named_args.is_empty() =>
-                {
-                    let Term::Ident(field) = self.parsed.terms.get(pos_args[1]) else {
-                        return None;
-                    };
-                    segments.push(self.parsed.symbols.local_name(*field));
-                    cur = pos_args[0];
-                }
-                _ => return None,
-            }
-        }
-        segments.reverse();
-        Some(segments.join("."))
+        field_access_dotted_name_of(&self.parsed.symbols, &self.parsed.terms, parse_id)
     }
 
     /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
@@ -21374,10 +21624,10 @@ impl<'a> Loader<'a> {
 
                 // WI-745: authoritative fact-head diagnostic site. `load_fact`
                 // resolves this same functor QUIETLY for owner-tracking
-                // (`resolve_owner_symbol`, which truncates its copy); this build
+                // (`resolve_owner_name`, which truncates its copy); this build
                 // re-resolution is where an unresolved/ambiguous/forbidden head
                 // is actually reported. The two must stay paired — see the
-                // no-silent-skip invariant on `resolve_owner_symbol`.
+                // no-silent-skip invariant on `resolve_owner_name`.
                 let kb_functor = self.remap_functor(parse_functor, outer_parse_id);
                 // Construction or call? WI-926 (§6.3): the symbol KIND alone can no
                 // longer answer. An eponymous `sort E { entity E(…) }` is ONE symbol,
@@ -22250,6 +22500,32 @@ impl<'a> Loader<'a> {
                 // decides which of this node's arguments are themselves goals.
                 let at_goal = std::mem::replace(&mut self.in_body_goal, false);
                 let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
+                // WI-20260901-719FJ — A BODY GOAL IS A LOGICAL SUBJECT, so a dotted
+                // paren-less citation written here is the NAME, exactly as the
+                // one-segment `:- tgt` already is (P85Z7). Asked at the GOAL and not in
+                // the walk at large, because a DATA slot holds a term whose spelling is
+                // its identity (WI-1046 / WI-756): `fact holds(nsx.tgt)` and the query
+                // `holds(nsx.tgt)` must keep building one term, and collapsing one side
+                // of that match is the regression WI-20260825-P9Y67 measured.
+                //
+                // A WRAPPER is excluded for the reason it is excluded below: `not(…)` /
+                // a conjunction is not itself a name, its COMPONENTS are the goals, and
+                // each reaches this arm with the flag set.
+                //
+                // BEFORE: the chain stayed a `field_access` application with no clauses,
+                // so `rule reader(1) :- nsx.tgt` answered NOTHING while
+                // `:- nsx.tgt()` answered — and, worse, `:- not(nsx.tgt)` SUCCEEDED,
+                // negation-as-failure reading the broken goal's failure as a proof.
+                if at_goal && !is_wrapper {
+                    if let Some(sym) = self.dotted_subject_symbol(parse_id) {
+                        let expr = if self.kb.symbols.is_resolved(sym) {
+                            Expr::Ref(sym)
+                        } else {
+                            Expr::Ident(sym)
+                        };
+                        return NodeOccurrence::new_expr(expr, span, None);
+                    }
+                }
                 let new_functor = self.remap_functor(functor, parse_id);
                 // A WRAPPER is not a goal — its components are — so it is not routed.
                 //
@@ -23641,7 +23917,13 @@ impl<'a> Loader<'a> {
         for item in items {
             // `fact Spec[…]` carries a parse-time term; `provides Spec[…]` a TypeExpr.
             let spec_term = match item {
-                Item::Fact(f) => self.convert_term(f.term),
+                // WI-20260901-719FJ: the SAME fact head `load_fact` converts, read
+                // through the same door. Not because a dotted paren-less head could be a
+                // spec application — a `Ref` fails the `Term::Fn` destructure below just
+                // as the chain did — but because `convert_term` MEMOIZES per parse node,
+                // and a pre-scan that converted one node two ways would leave the memo
+                // holding whichever ran first.
+                Item::Fact(f) => self.convert_subject_term(f.term),
                 Item::ProvidesClause(pc) => match self.sort_inst_to_value(&pc.spec) {
                     Value::Term { id: t, .. } => t,
                     // A denoted-bearing spec carries no concrete carrier to narrow to.
@@ -25627,11 +25909,30 @@ impl<'a> Loader<'a> {
         // resolve it QUIETLY — the term build below resolves the same functor and
         // owns its diagnostic; a loud resolve here double-reported it.
         let prev_owner = self.current_owner;
-        if let Term::Fn { functor, .. } = self.parsed.terms.get(f.term) {
-            let functor = *functor;
-            self.refuse_unresolvable_absolute_head(functor, self.parsed.terms.span(f.term));
-            self.current_owner =
-                Some(self.resolve_owner_symbol(functor, self.parsed.terms.span(f.term)));
+        // WI-20260901-719FJ — ALL THREE HEAD SHAPES, through the one walk that spells a
+        // head's name ([`Self::head_name_as_written`]): a DOTTED paren-less `fact ..a.b`
+        // carries its name in a folded chain rather than in a functor symbol, and a
+        // ONE-SEGMENT `fact ..a` carries it in a `Term::Ident`.
+        //
+        // THE `Term::Ident` ARM IS NOT A NO-OP HERE, and an earlier cut of this comment
+        // claimed it was ("an unqualified name is never marked absolute") — which is
+        // FALSE, and `/code-review` measured it false: the converter's
+        // `"name" | "absolute_name"` arm builds a one-segment path as `Term::Ident`, and
+        // the `..` marker rides on that head segment, so `..zznosuch` IS a `Term::Ident`
+        // whose local name `absolute_path_target` answers `Some` for. MEASURED, with the
+        // arm gated back to `Term::Fn`: `fact ..zznosuch` LOADED CLEAN and asserted under
+        // a symbol nothing can cite — the very shape WI-1075's doc names as its defect,
+        // which the RULE head had been refusing since P85Z7 and the FACT head had not.
+        // Driven by the `fact-1seg` arm of
+        // `wi_719fj_…::a_marked_absolute_dotted_paren_less_head_that_names_nothing_is_refused`.
+        //
+        // The OWNER half of the widening really is inert, and that half was verified: a
+        // bare `Term::Ident` fact head carries no arguments, so there is no child
+        // occurrence for `current_owner` to attribute.
+        if let Some(name) = self.head_name_as_written(f.term) {
+            let span = self.parsed.terms.span(f.term);
+            self.refuse_unresolvable_absolute_head(&name, span);
+            self.current_owner = Some(self.resolve_owner_name(&name, span));
         }
 
         // WI-618: facts are rules with empty bodies — a keyword-less lambda
@@ -25666,7 +25967,10 @@ impl<'a> Loader<'a> {
         // `none()` rather than an unbound var (which would unsoundly unify a
         // `some(?)` pattern; see `convert_term_with_expected`).
         self.in_value_position = true;
-        let term = self.convert_term(f.term);
+        // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact nsx.tgt` is
+        // the same reference `fact nsx.tgt()` is, and used to file its clause under
+        // `field_access` (measured: 1 clause on `nsx.tgt` where the twin filed 2).
+        let term = self.convert_subject_term(f.term);
         self.in_value_position = false;
         // WI-797: a mounted-extent functor is virtualized through its store, so a
         // resident source fact for it is refused (single owner).
@@ -26275,6 +26579,32 @@ impl<'a> Loader<'a> {
         None
     }
 
+    /// WI-20260901-719FJ — THE NAME A CLAUSE HEAD WRITES, whatever shape the converter
+    /// gave it. `None` for a head that writes no name at all (a variable, a literal, `⊥`).
+    ///
+    /// THREE SHAPES, one name, and each arrived from its own defect:
+    ///  * an APPLICATION `a.b(?x)` carries its joined name in the functor symbol;
+    ///  * a PAREN-LESS one-segment head `holds` is a `Term::Ident`, which is why reading
+    ///    only the `Fn` shape gave the two spellings of one marked head opposite verdicts
+    ///    (WI-20260821-P85Z7, axis B);
+    ///  * a PAREN-LESS DOTTED head `nsx.tgt` is a folded `field_access` chain with no
+    ///    functor symbol to read, which is the same split one segment over — measured,
+    ///    `rule ..nosuch.tgt :- b(1)` escaped WI-1075's refusal that `rule ..nosuch.tgt()`
+    ///    got.
+    ///
+    /// The CHAIN is asked first, because its node IS a `Term::Fn` — the accessor's — and
+    /// the `Fn` arm would answer `field_access` for it. Same order as
+    /// [`head_subject_name`]'s, for the same reason.
+    fn head_name_as_written(&self, tid: TermId) -> Option<String> {
+        if let Some(chain) = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, tid) {
+            return Some(chain);
+        }
+        let (Term::Fn { functor, .. } | Term::Ident(functor)) = self.parsed.terms.get(tid) else {
+            return None;
+        };
+        Some(self.parsed.symbols.local_name(*functor).to_owned())
+    }
+
     /// WI-1075 — a CLAUSE HEAD spelled `..a.b` asserts about a ROOT symbol, so there had
     /// better be one. No-op for an unmarked head and for a marked one that resolves.
     ///
@@ -26291,11 +26621,18 @@ impl<'a> Loader<'a> {
     /// An UNMARKED head that resolves to nothing is untouched: it may legitimately be a
     /// new data name (WI-476). A marked one names something or names nothing.
     ///
+    /// TAKES THE NAME, NOT THE HEAD'S FUNCTOR SYMBOL (WI-20260901-719FJ). A DOTTED
+    /// paren-less head has no functor symbol to give — the converter folded `..a.b` into
+    /// a `field_access` chain whose functor is the accessor's — so the caller asks
+    /// [`Self::head_name_as_written`] and this reads the name the author wrote. Before
+    /// that, `rule ..nosuch.tgt :- b(1)` escaped the refusal entirely while
+    /// `rule ..nosuch.tgt() :- b(1)` was refused: WI-1075's own defect, one spelling
+    /// over, exactly as P85Z7 found it for the one-segment marked head.
+    ///
     /// `Any` visibility, because the question is whether the path HAS an answer — an
     /// `internal` one is answered (and refused) by the reference machinery, which has
     /// the precise diagnostic; reporting "unresolved" over it would bury that.
-    fn refuse_unresolvable_absolute_head(&mut self, functor: Symbol, span: Span) {
-        let name = self.parsed.symbols.local_name(functor);
+    fn refuse_unresolvable_absolute_head(&mut self, name: &str, span: Span) {
         if absolute_path_target(name).is_none()
             || self.resolve_dotted(name, DottedVisibility::Any).denotes()
         {
@@ -26384,11 +26721,9 @@ impl<'a> Loader<'a> {
         // clause on the top-level predicate (2 clauses, not 1).
         for h in &r.heads {
             if let RuleHead::Term(tid) = h {
-                if let Term::Fn { functor, .. } | Term::Ident(functor) =
-                    self.parsed.terms.get(*tid)
-                {
-                    let (functor, span) = (*functor, self.parsed.terms.span(*tid));
-                    self.refuse_unresolvable_absolute_head(functor, span);
+                if let Some(name) = self.head_name_as_written(*tid) {
+                    let span = self.parsed.terms.span(*tid);
+                    self.refuse_unresolvable_absolute_head(&name, span);
                 }
             }
         }
@@ -26672,7 +27007,10 @@ impl<'a> Loader<'a> {
                     // fact-only fix). A non-entity head has no field expansion, so
                     // this is a no-op for it.
                     self.in_value_position = true;
-                    let head = self.convert_term(*tid);
+                    // WI-20260901-719FJ: a rule head is a LOGICAL SUBJECT, so a dotted
+                    // paren-less head is the NAME it spells and not a projection — see
+                    // [`Self::convert_subject_term`].
+                    let head = self.convert_subject_term(*tid);
                     self.in_value_position = false;
                     self.in_rule_head = false;
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
@@ -28324,8 +28662,13 @@ impl<'a> Loader<'a> {
             .kb
             .alloc(Term::Const(super::term::Literal::String(label_str)));
 
+        // WI-20260901-719FJ: a proof step IS a rule — its head is a claim and its body
+        // atoms are goals — so a dotted paren-less citation written in either is the
+        // NAME, exactly as it is in the `rule` this step is spelled like. The record is
+        // what the prover dispatches on, so a chain left here would describe a step about
+        // `field_access` and match nothing.
         let head_term = match step.rule.heads.first() {
-            Some(RuleHead::Term(tid)) => self.convert_term(*tid),
+            Some(RuleHead::Term(tid)) => self.convert_subject_term(*tid),
             _ => self.kb.alloc(Term::Bottom),
         };
 
@@ -28333,7 +28676,12 @@ impl<'a> Loader<'a> {
             .rule
             .body
             .as_ref()
-            .map(|terms| terms.iter().map(|&t| self.convert_term(t)).collect())
+            .map(|terms| {
+                terms
+                    .iter()
+                    .map(|&t| self.convert_subject_term(t))
+                    .collect()
+            })
             .unwrap_or_default();
         let body_list = self.kb.build_list(&body_ids);
 

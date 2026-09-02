@@ -375,6 +375,13 @@ not a runtime value, so it is unambiguously distinguishable from value-level dot
 WI-638 added the named-tuple arm. This is the only new naming work, and it makes bare `Queen.find` a
 relation value uniformly with the bare unqualified `queens`.
 
+**The bare-qualified reading is the VALUE position's, not the spelling's** (WI-20260901-719FJ). The same
+`field_access` chain is what `Queen.find` lowers to in a rule head, a `fact` head, a rule-body goal and a
+query pattern too — and there it is the qualified NAME, not a relation value, because a proposition has no
+projection reading (kernel spec §6.7, *A dotted paren-less name in a LOGICAL position is the name it
+spells*). So 052's arm below is scoped to positions that denote a value: an operation body, and any data
+slot. That is the same split the bare *unqualified* `queens` already has.
+
 **`x.name` on a *runtime value* is not a way to name a relation.** Dot on a value `x` is
 operation-dispatch (the provides cluster): it reaches `x`'s *operations / fields*, and a rule is not a
 member of a value's sort. A value yields a relation only via an **operation or field that *returns*

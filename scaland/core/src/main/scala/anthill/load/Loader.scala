@@ -1196,7 +1196,9 @@ object Loader:
           // that collects errors without failing the load sees the pre-fix KB.
           if !refuseNonDefiningConnectiveHead(
             fileSym, fileTerms, fact.term, fileTerms.spanOf(fact.term), errors) then
-            val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors)
+            // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact ns.tgt`
+            // is the same reference `fact ns.tgt()` is.
+            val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors, atGoal = true)
             val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
             kb.assertFact(kbTerm, sortSort, scope)
 
@@ -1347,8 +1349,12 @@ object Loader:
         refuseNonDefiningConnectiveHead(fileSym, fileTerms, h, fileTerms.spanOf(h), errors))
       if refused then return
 
+    // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
+    // citation written there is the NAME. Only the top level, and that is a
+    // MEASUREMENT rather than an omission — see `reallocTerm`'s `Term.Fn` arm, and
+    // the row `negation in a rule body does not reach NAF, for any spelling`.
     val kbBody = rule.body.map(_.map(b =>
-      reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm))).getOrElse(IndexedSeq.empty)
+      reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm, atGoal = true))).getOrElse(IndexedSeq.empty)
 
     if hasBottom then
       val botTerm = kb.alloc(Term.Bottom)
@@ -1356,7 +1362,8 @@ object Loader:
     else
       // One horn rule per head, sharing body (and shared var scope via vm).
       for headId <- positiveHeads do
-        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm)
+        // WI-20260901-719FJ: a rule head is a LOGICAL SUBJECT.
+        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true)
         kb.assertRule(kbHead, kbBody, sortSort, scope)
 
   // ── Proof / Provides loaders (proposal 025 + 031) ────────────
@@ -1428,7 +1435,9 @@ object Loader:
         for r <- rb.entries do
           loadRuleHeads(kb, r, fileTerms, fileSym, scope, ruleSort, errors)
       case ProvidesItem.FactI(f) =>
-        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors)
+        // WI-20260901-719FJ: the same head position, inside a `provides … language
+        // anthill` block.
+        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true)
         kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope)
@@ -1475,8 +1484,59 @@ object Loader:
       fn.posArgs.length == 1 &&
       fn.namedArgs.exists { case (k, _) => fileSym.name(k) == "type" }
 
+  /** WI-20260901-719FJ (rustland's twin, same ticket) — the dotted NAME a PAREN-LESS
+    * citation spells, or `None` when this node is not one.
+    *
+    * A multi-segment name written without a trailing `(…)` has no application to hang a
+    * functor on, so the parser folds it into a MINTED `field_access(object, Ref(field))`
+    * chain (§6.7: a name with no application is dot projection). The chain is what the
+    * spelling lowers to in EVERY position; what it MEANS is the position's to say — see
+    * [[reallocTerm]]'s `atGoal` parameter.
+    *
+    * THREE GATES, mirroring rustland's `dotted_citation_name`: PROVENANCE and not
+    * spelling (a hand-written `field_access(a, b)` is a call to whatever that name
+    * denotes, so only `allocMinted` nodes are read); no named arguments (the parser emits
+    * none on either of its two `field_access` paths); and NAME-ROOTED (a chain rooted in
+    * a variable is `?x.f`, a projection on a value, with no name to be). */
+  private def dottedCitationName(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, termId: TermId
+  ): Option[String] =
+    if !fileTerms.isMinted(termId) then return None
+    fileTerms.get(termId) match
+      case fn: Term.Fn
+        if fn.namedArgs.isEmpty && fileSym.name(fn.functor) == "field_access" => ()
+      case _ => return None
+    val segments = ArrayBuffer.empty[String]
+    var cur = termId
+    var done = false
+    while !done do
+      fileTerms.get(cur) match
+        case id: Term.Ident =>
+          segments += fileSym.name(id.sym)
+          done = true
+        case fn: Term.Fn
+          if fileSym.name(fn.functor) == "field_access"
+            && fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
+          fileTerms.get(fn.posArgs(1)) match
+            case r: Term.Ref =>
+              segments += fileSym.name(r.sym)
+              cur = fn.posArgs(0)
+            case _ => return None
+        case _ => return None
+    Some(segments.reverse.mkString("."))
+
   /** Re-allocate a parse-time term into the KB's hash-consed store.
     * Uses varMap to share VarIds within a rule scope (same parse-time VarId → same KB VarId).
+    *
+    * WI-20260901-719FJ — AND IT DECIDES ONE THING BY POSITION: `atGoal` says whether this
+    * node is a LOGICAL SUBJECT (a rule head, a `fact` head, a rule-body goal), which is
+    * where a dotted PAREN-LESS citation is the NAME it spells rather than a `field_access`
+    * chain. MEASURED BEFORE IT, and scaland's symptom was the LOUDER one: `field_access`
+    * is a builtin whose tag is `BuiltinResult.Delay`, so a dotted paren-less GOAL
+    * SUSPENDED and its residual counted as a solution — `rule r(1) :- zz.nope.tgt`, naming
+    * a namespace that does not exist, loaded clean and ANSWERED. In head position the
+    * clause landed under `field_access` and the rule was dropped: `rule ns.tgt :- b(1)`
+    * answered nothing where `rule ns.tgt() :- b(1)` answered.
     */
   private def reallocTerm(
     kb: KnowledgeBase,
@@ -1485,7 +1545,14 @@ object Loader:
     termId: TermId,
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError],
-    varMap: HashMap[Int, VarId] = HashMap.empty
+    varMap: HashMap[Int, VarId] = HashMap.empty,
+    /** WI-20260901-719FJ — is this node a LOGICAL SUBJECT: a rule head, a `fact` head or
+      * a rule-body goal? See the collapse below for what it decides, and
+      * [[dottedCitationName]] for what a dotted paren-less citation is. `false` for a
+      * DATA slot, which keeps the chain: a fact's argument and the pattern that searches
+      * for it must build ONE term. It is NOT propagated to any child — see the `Term.Fn`
+      * arm for the measurement that says scaland has no goal-carrying argument yet. */
+    atGoal: Boolean = false
   ): TermId =
     // WI-1009: refuse a PARSE-TIME MARKER before anything below reads its functor name.
     // Asked of the term's PROVENANCE and not its spelling, which is the whole fix: four
@@ -1509,6 +1576,21 @@ object Loader:
         errors += LoadError.ExpressionInTermPosition(marker, fileTerms.spanOf(termId))
         return kb.alloc(Term.Bottom)
       case None => ()
+
+    // WI-20260901-719FJ — A LOGICAL SUBJECT'S DOTTED PAREN-LESS CITATION IS THE NAME IT
+    // SPELLS. `rule ns.tgt :- b(1)` joins the predicate `ns.tgt`, `:- ns.tgt` runs it and
+    // `fact ns.tgt` asserts it, exactly as the applied spelling `ns.tgt(…)` does — a
+    // proposition has no projection reading, so the chain is the qualified name. The
+    // result is BYTE-IDENTICAL to the `Term.Ident` arm below: a paren-less citation is
+    // the same node whether its name has one segment or five. (rustland's `Ident` arm
+    // promotes a resolved name to `Term.Ref` and scaland's does not; the two differ
+    // there for EVERY name, not for this one.)
+    if atGoal then
+      dottedCitationName(fileSym, fileTerms, termId) match
+        case Some(name) =>
+          return kb.alloc(
+            Term.Ident(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))))
+        case None => ()
 
     fileTerms.get(termId) match
       case Term.Const(lit) => kb.alloc(Term.Const(lit))
@@ -1546,7 +1628,20 @@ object Loader:
         val name = fileSym.name(fn.functor)
         val kbFunctor = mintedConnectiveSymbol(kb, fileTerms, name, termId)
           .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId)))
-        val kbPos = IArray.from(fn.posArgs.map(id => reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap)))
+        // WI-20260901-719FJ — NO GOAL DESCENT, and that is a MEASUREMENT rather than an
+        // omission. rustland routes `not`'s negand as a goal of its own
+        // (`goal_arg_slots`); the twin here would be keyed on the resolved functor's
+        // builtin tag, and it could never fire: `kb.getBuiltin` answers `None` for a
+        // loaded rule-body `not(…)`, so scaland's NAF is not reached from a rule body at
+        // all. Driven — `rule r(1) :- not(un(999))` over an EMPTY `un` answers 0, as does
+        // `not(un(1))` over a provable one, and as does every nullary spelling, dotted or
+        // not. There is no negand POSITION here to route yet; a branch nothing can drive
+        // is not a fix. When `not` reaches NAF in a rule body, this is the line that has
+        // to grow the descent, and the dotted spelling will be wrong there until it does.
+        // Every argument is therefore DATA, which keeps a fact's slot and the pattern
+        // that searches for it spelling one term.
+        val kbPos = IArray.from(fn.posArgs.map(id =>
+          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap)))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
           (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap))

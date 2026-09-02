@@ -55,16 +55,18 @@
 //! BARE arm. The VERDICT is unmoved by this axis — only its explanation is — which is why
 //! no other row sees it.
 //!
-//! ── WHAT THIS TICKET DELIBERATELY DOES NOT FIX ──────────────────────────────
+//! ── WHAT THIS TICKET DELIBERATELY DID NOT FIX, AND WHERE IT WENT ────────────
 //!
-//! [`a_dotted_paren_less_head_still_lands_no_clause`] PINS the one paren-less spelling
+//! `a_dotted_paren_less_head_still_lands_no_clause` PINNED the one paren-less spelling
 //! still silent — a QUALIFIED one (`rule nsx.tgt :- b(1)`), which the converter folds
-//! into a minted `field_access` chain, so its clause lands under `field_access` and not
-//! on `nsx.tgt`. It is not this ticket's shape: the same chain is what a dotted
-//! paren-less CITATION lowers to in every position (proposal 052 §6.7 makes it the
-//! relation VALUE), so deciding it for the head means deciding it for the goal and the
-//! operation body too. WI-20260901-719FJ owns it; the row here is the measurement, kept
-//! green so the gap cannot be rediscovered as a surprise.
+//! into a minted `field_access` chain, so its clause landed under `field_access` and not
+//! on `nsx.tgt`. WI-20260901-719FJ CLOSED IT, and the row moved there with its text
+//! (`wi_719fj_dotted_paren_less_citation_test`): the chain is now read as the NAME it
+//! spells in the rule head, the fact head, the rule-body goal and the query pattern
+//! alike, while the operation body keeps proposal 052 §6.7's `Relation[T]` value. It
+//! was never this ticket's shape — the same chain is what a dotted paren-less CITATION
+//! lowers to in every position, so deciding it for the head meant deciding it for the
+//! other three at once.
 //!
 //! A **fact** head stays unscoped at every arity (§6.1, and WI-20260821-RDGQC's
 //! enumeration owns the question) — `fact holds` and `fact holds()` are alike, which is
@@ -79,12 +81,25 @@ use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::KnowledgeBase;
 
-/// How many solutions `pattern` has, driven through the shipped query-pattern path —
-/// the same instrument `wi_fqc85_rule_declaration_test` uses, so a head landing on a
-/// different symbol is counted exactly as `anthill query` would count it.
+/// How many DEFINITE solutions `pattern` has, driven through the shipped query-pattern
+/// path — the same instrument `wi_fqc85_rule_declaration_test` uses, so a head landing on
+/// a different symbol is counted exactly as `anthill query` would count it.
+///
+/// DEFINITE, and that was a REAL MISS here rather than a precaution
+/// (WI-20260901-719FJ found it): a plain `.len()` counts a FLOUNDERED solution as an
+/// answer (WI-20260822-WZX6B, `common::definite_unary`'s doc), and this file has a
+/// pattern that floundered — `zzP85Z7.idx.pl` is itself a DOTTED PAREN-LESS citation, so
+/// before 719FJ it lowered to `field_access(zzP85Z7.idx, pl)` and came back
+/// `conditional / residual: eq(field_access(…), true)`. MEASURED: with BOTH of that
+/// fixture's clause bodies made false the count stayed 1, so
+/// [`a_bare_nullary_clause_is_indexed_under_the_scoped_symbol`]'s "and the goal reaches
+/// them" assertion was passing on a residual and proved nothing. It measures now.
 fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
     let goal = crate::common::query_pattern_term(kb, pattern);
-    kb.resolve(&[goal], &ResolveConfig::default()).len()
+    kb.resolve(&[goal], &ResolveConfig::default())
+        .iter()
+        .filter(|s| s.is_definite())
+        .count()
 }
 
 /// The clauses stored under the symbol `qn` names — `None` when NOTHING is named `qn`.
@@ -202,6 +217,13 @@ fn two_scopes_that_see_each_other_are_refused_in_both_spellings() {
 /// is the clause still on the bare intern? A minted-but-unreached symbol would answer
 /// `Some(0)` here while the goal still answered from somewhere else, so the count and
 /// the answer are asserted together.
+///
+/// ITS SECOND ASSERTION ONLY STARTED MEASURING AT WI-20260901-719FJ, and that is worth
+/// saying because the row was green the whole time: the pattern `zzP85Z7.idx.pl` is
+/// itself a DOTTED PAREN-LESS citation, so until 719FJ it lowered to a `field_access`
+/// chain and came back as a RESIDUAL — which `answers` was counting (see its doc, and
+/// the measurement that says the count stayed 1 with both clause bodies false). The
+/// count assertion was always real; "and the goal reaches them" was not.
 #[test]
 fn a_bare_nullary_clause_is_indexed_under_the_scoped_symbol() {
     // BACKED OUT (A): `zzP85Z7.idx.pl` is `None` and the qualified goal panics in
@@ -436,39 +458,6 @@ fn a_body_less_qualified_heads_refusal_reads_alike_in_both_spellings() {
     assert!(
         errs.iter().any(|e| e.contains("not a functor application")),
         "a variable head really is not an application, and must keep saying so: {errs:#?}"
-    );
-}
-
-/// THE GAP THIS TICKET LEAVES, PINNED — a QUALIFIED paren-less head. The converter folds
-/// a multi-segment `name` into a minted `field_access` chain, so the head is not a name
-/// at all and its clause lands under `field_access`: the rule is silently dropped. The
-/// parenthesised twin references `nsx.tgt` correctly, so this is the same "two spellings,
-/// two programs" shape — with a different owner, because the chain is what a dotted
-/// paren-less CITATION lowers to in EVERY position (proposal 052 §6.7 reads it as the
-/// relation VALUE), so the head cannot be decided alone. WI-20260901-719FJ.
-///
-/// GREEN BEFORE AND AFTER, deliberately: it is a measurement, not a claim that the
-/// behaviour is right. When 719FJ lands, this row's `Some(1)` becomes `Some(2)` and its
-/// text moves there.
-#[test]
-fn a_dotted_paren_less_head_still_lands_no_clause() {
-    const SRC: &str = "fact b(1)\nnamespace zzP85Z7.dotted\n  rule tgt() :- b(1)\nend\n\
-                       rule zzP85Z7.dotted.tgt :- b(1)\n";
-    let kb = crate::common::load_kb_with(SRC);
-    assert_eq!(
-        clauses(&kb, "zzP85Z7.dotted.tgt"),
-        Some(1),
-        "the dotted paren-less head lands NO clause — its own clause is the one missing"
-    );
-
-    // THE TWIN, which does reference: two clauses, one predicate.
-    const PARENS: &str = "fact b(1)\nnamespace zzP85Z7.dottedp\n  rule tgt() :- b(1)\nend\n\
-                          rule zzP85Z7.dottedp.tgt() :- b(1)\n";
-    let kb = crate::common::load_kb_with(PARENS);
-    assert_eq!(
-        clauses(&kb, "zzP85Z7.dottedp.tgt"),
-        Some(2),
-        "the parenthesised twin references the predicate and joins it"
     );
 }
 

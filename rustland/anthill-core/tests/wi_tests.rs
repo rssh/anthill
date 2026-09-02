@@ -1564,3 +1564,6 @@ mod wi_jm7a8_precondition_effect_test;
 
 #[path = "include/wi_p85z7_paren_less_nullary_head_test.rs"]
 mod wi_p85z7_paren_less_nullary_head_test;
+
+#[path = "include/wi_719fj_dotted_paren_less_citation_test.rs"]
+mod wi_719fj_dotted_paren_less_citation_test;
