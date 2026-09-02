@@ -461,9 +461,18 @@ impl NodeOccurrence {
     }
 
     /// WI-20260902-4NEKZ — [`Self::new_expr`], recording whether this node is the
-    /// converter's own dot desugaring (see the `dot_chain` field). The loader is the only
-    /// caller that passes `true`, at the one site that has the parse term's `is_minted`
-    /// bit to answer with.
+    /// converter's own dot desugaring (see the `dot_chain` field).
+    ///
+    /// TWO callers can pass `true`, and they do NOT have the same authority. The loader's
+    /// own stamp at the end of `build_body_atom_occurrence` reads the parse term's
+    /// `is_minted` bit directly and is exact. [`build_frame`]'s `UnknownFn` arm reads a
+    /// `HashSet<TermId>` filled by `Loader::parse_dot_chain_table`, whose key is
+    /// HASH-CONSED and therefore many-to-one — so that table takes a set difference to
+    /// withhold the bit wherever a written `field_access` shares a `TermId` with a
+    /// citation. That is a real weakening: on a collision the bit is absent where the
+    /// exact answer would be `true`. It is never wrongly PRESENT, which is the direction
+    /// that matters (WI-20260901-92VA4), and the sentence this replaced claimed a safety
+    /// property the second caller does not have.
     pub fn new_expr_dot_chain(
         expr: Expr,
         span: SourceSpan,
@@ -488,7 +497,13 @@ impl NodeOccurrence {
     /// WI-20260902-4NEKZ — is this node the converter's own desugaring of a dot? See the
     /// `dot_chain` field for what the question is and why shape cannot answer it.
     pub fn is_dot_chain(&self) -> bool {
-        matches!(&self.kind, NodeKind::Expr { dot_chain: true, .. })
+        matches!(
+            &self.kind,
+            NodeKind::Expr {
+                dot_chain: true,
+                ..
+            }
+        )
     }
 
     /// WI-502 Step 3 — rebuild THIS `Expr` occurrence with a new `expr`,
@@ -549,12 +564,9 @@ impl NodeOccurrence {
                 span: self.span,
                 owner: self.owner,
             }),
-            _ => NodeOccurrence::new_expr_dot_chain(
-                expr,
-                self.span,
-                self.owner,
-                self.is_dot_chain(),
-            ),
+            _ => {
+                NodeOccurrence::new_expr_dot_chain(expr, self.span, self.owner, self.is_dot_chain())
+            }
         };
         rebuilt.carry_typer_stamps_from(self);
         rebuilt
@@ -5460,7 +5472,7 @@ fn subst_named(
 /// constant host stack regardless of source nesting; the loop builds
 /// Exprs bottom-up by popping completed children off `results`.
 pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccurrence> {
-    materialize_from_handle_spanned(kb, root, None)
+    materialize_from_handle_spanned(kb, root, None, None)
 }
 
 /// WI-1039 — [`materialize_from_handle`] with a CALLER-SUPPLIED span table, consulted
@@ -5489,17 +5501,45 @@ pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccur
 /// beside the term one in `WorkOp::Visit` and read `parsed.terms.span()` directly — no
 /// allocation, no hash-cons collision, O(1) per node. It is not done here because it would
 /// give this module a dependency on the parse IR, which it does not otherwise have.
+/// `dot_chains` — WI-20260902-4NEKZ follow-up. THE ENTITY-HEADED / REFLECT-FORM EARLY
+/// RETURN IN `build_body_atom_occurrence` REACHES THIS FUNCTION, AND EVERYTHING IT BUILDS
+/// USED TO ARRIVE WITH `dot_chain: false`. So a dotted paren-less citation nested inside a
+/// list, set or tuple literal, or inside an entity constructor's argument, lost the
+/// provenance bit its bare sibling carries and the typer fell back to the per-leaf walk.
+/// MEASURED, one chain in one rule-body value slot, varying only what encloses it:
+///
+/// | body | before | after |
+/// |---|---|---|
+/// | `ns.inner.rel = 7`             | 1, the true one | 1 |
+/// | `[ns.inner.rel] = 7`           | **3** per-segment | 1 |
+/// | `{ns.inner.rel} = 7`           | **3** | 1 |
+/// | `(ns.inner.rel, 1) = 7`        | **3** | 1 |
+/// | `boxed(v: ns.inner.rel) = 7`   | **3** | 1 |
+///
+/// Keyed by the KB `TermId` the loader's `term_map` gives for each PARSE node, filled per
+/// atom by `Loader::parse_dot_chain_table` — WHICH IS A MANY-TO-ONE KEY, and that function
+/// documents the set difference that makes it safe. Everything else passes `None` and is
+/// unchanged.
+///
+/// NOT AN ENUMERATION OF CALLERS, deliberately: `load.rs` has four `materialize_from_handle*`
+/// sites, not two, and only ONE of them passes a table — `bare_entity_goal_occurrence`
+/// walks a synthesized term no `term_map` key can reach (measured, and recorded at that
+/// site), and `lower_effect_row_aux_occ` reaches the unspanned `materialize_from_handle`
+/// from inside the rule-body child loops, so it loses SPANS as well. Neither is this
+/// ticket's, but a doc that counts callers goes stale the day one is added, and this one
+/// already had.
 pub(crate) fn materialize_from_handle_spanned(
     kb: &KnowledgeBase,
     root: TermId,
     spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
+    dot_chains: Option<&std::collections::HashSet<TermId>>,
 ) -> Rc<NodeOccurrence> {
     let mut work: Vec<WorkOp> = vec![WorkOp::Visit(root)];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
-            WorkOp::Visit(t) => visit_term(kb, t, spans, &mut work, &mut results),
+            WorkOp::Visit(t) => visit_term(kb, t, spans, dot_chains, &mut work, &mut results),
             WorkOp::Build(frame) => build_frame(kb, frame, &mut results),
         }
     }
@@ -5708,6 +5748,9 @@ pub(crate) enum BuildFrame {
         functor: Symbol,
         pos_count: usize,
         named_keys: Vec<Symbol>,
+        /// WI-20260902-4NEKZ follow-up — see [`materialize_from_handle_spanned`]'s
+        /// `dot_chains` parameter. `false` for every caller that has no parse tree.
+        dot_chain: bool,
     },
 }
 
@@ -5721,6 +5764,7 @@ fn visit_term(
     kb: &KnowledgeBase,
     t: TermId,
     spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
+    dot_chains: Option<&std::collections::HashSet<TermId>>,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
@@ -5746,6 +5790,10 @@ fn visit_term(
             let qn = kb.qualified_name_of(functor);
             let short = kb.local_name_of(functor);
             let key = expr_form_key(qn, short);
+            // WI-20260902-4NEKZ follow-up: the caller's table, keyed exactly as `spans`
+            // is. Asked of THIS node only — the walk re-asks it of every child, which is
+            // what `parse_dot_chain_table` fills per level.
+            let dot_chain = dot_chains.is_some_and(|m| m.contains(&t));
             visit_fn(
                 kb,
                 t,
@@ -5754,6 +5802,7 @@ fn visit_term(
                 &pos_args,
                 &named_args,
                 key,
+                dot_chain,
                 work,
                 results,
             );
@@ -5776,9 +5825,24 @@ fn visit_fn(
     pos_args: &smallvec::SmallVec<[TermId; 4]>,
     named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
     key: &str,
+    dot_chain: bool,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
+    // WI-20260902-4NEKZ follow-up — THE BIT IS ONLY READ ON THE `_` ARM, and nothing
+    // structural guarantees a citation lands there. Of `build_frame`'s 15 arms exactly one
+    // (`UnknownFn`) calls `new_expr_dot_chain`; the other 14 call `new_expr`, which
+    // hardcodes `false`. That is safe today only because `anthill.reflect.field_access` is
+    // deliberately absent from every keyed form below AND from `is_reflect_form_functor` —
+    // and `expr_form_key` keys on the LAST DOTTED SEGMENT, so the safety is one name
+    // collision away. A keyed form that carried a citation would drop the bit with no
+    // compile error and no diagnostic, and the per-leaf cascade this ticket removed would
+    // come back GREEN. Per the repo's "prefer a loud error over a silent skip", say so.
+    debug_assert!(
+        !dot_chain || key == "field_access",
+        "dot_chain is set on a node keyed `{key}`, but only the `_` arm forwards the bit \
+         to `push_unknown_fn` — this arm builds with `new_expr` and would drop it silently"
+    );
     match key {
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
             match get_named_arg(kb, named_args, "value").map(|v| kb.get_term(v)) {
@@ -5793,7 +5857,7 @@ fn visit_fn(
                 // Non-literal `value` ⇒ reflection data (a pattern such as
                 // `int_lit(value: ?)`); keep it structural (WI-297) so
                 // `occurrence_term` can match it.
-                _ => push_unknown_fn(span, functor, pos_args, named_args, work),
+                _ => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
             }
         }
         "var_ref" => {
@@ -5807,7 +5871,7 @@ fn visit_fn(
                 }
                 // Non-name `name` (e.g. `var_ref(name: ?n)`) ⇒ reflection data;
                 // keep structural (WI-297).
-                None => push_unknown_fn(span, functor, pos_args, named_args, work),
+                None => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
             }
         }
         "if_expr" => {
@@ -5899,7 +5963,7 @@ fn visit_fn(
                 }
                 // Malformed `proof_stmt(name: ?n)` ⇒ reflection data; keep
                 // structural (mirrors the `var_ref` None arm).
-                None => push_unknown_fn(span, functor, pos_args, named_args, work),
+                None => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
             }
         }
         "match_expr" => {
@@ -6124,7 +6188,7 @@ fn visit_fn(
                 work.push(WorkOp::Visit(v));
             }
         }
-        _ => push_unknown_fn(span, functor, pos_args, named_args, work),
+        _ => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
     }
     let _ = results; // kept in case future variants want direct push
 }
@@ -6142,6 +6206,7 @@ fn push_unknown_fn(
     functor: Symbol,
     pos_args: &smallvec::SmallVec<[TermId; 4]>,
     named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    dot_chain: bool,
     work: &mut Vec<WorkOp>,
 ) {
     let pos_count = pos_args.len();
@@ -6151,6 +6216,7 @@ fn push_unknown_fn(
         functor,
         pos_count,
         named_keys,
+        dot_chain,
     }));
     for &(_, v) in named_args.iter().rev() {
         work.push(WorkOp::Visit(v));
@@ -6496,6 +6562,7 @@ pub(crate) fn build_frame(
             functor,
             pos_count,
             named_keys,
+            dot_chain,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Apply {
@@ -6505,7 +6572,9 @@ pub(crate) fn build_frame(
                 named_args,
                 type_args: Vec::new(),
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(NodeOccurrence::new_expr_dot_chain(
+                expr, span, None, dot_chain,
+            ));
         }
     }
 }

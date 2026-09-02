@@ -691,13 +691,21 @@ Two checks on that output, both on the `n=`/`k=` totals rather than the deltas:
 ```bash
 #   1. no row may show n=0 -- an empty id set means the filename pattern missed an era
 awk '$4=="n=0"' /tmp/out            # must print nothing
-#   2. the LAST row must agree with the working tree
-ls anthill-todo/*/*.anthill.md | wc -l                       # 1298 at 2026-09-02  -> n=
-ls anthill-todo/{delivered,verified}/*.anthill.md | wc -l    # 1097 at 2026-09-02  -> k=
+#   2. the LAST row must agree with the tree the recipe actually walked
+git ls-files 'anthill-todo/*/*.anthill.md' | wc -l           # 1298 at 2026-09-02  -> n=
+git ls-files 'anthill-todo/delivered/*.anthill.md' \
+             'anthill-todo/verified/*.anthill.md'  | wc -l   # 1097 at 2026-09-02  -> k=
 ```
 
-Note the `/*.anthill.md` in both: `ls anthill-todo/{delivered,verified} | wc -l` counts the two
-`dir:` headers and a blank separator as well, and answers 1100.
+`git ls-files`, not `ls`, and that is the whole point of check 2: the recipe walks
+`git ls-tree` over COMMITS, so comparing it against the working tree makes it fail for a
+reason that has nothing to do with the recipe the moment anyone has an unstaged ticket.
+Measured while writing this section — one untracked work item and `ls` answers 1299
+against the recipe's 1298, in a check whose job is to catch a silent miss. (The id-scheme
+count above, 175 of 1298, is on the tracked set for the same reason.)
+
+Note the `/*.anthill.md` glob too: `ls anthill-todo/{delivered,verified} | wc -l` counts the
+two `dir:` headers and a blank separator as well, and answers 1100.
 
 **Test-time series (§3.8).** Machine-local; `target/` is gitignored, so this exists only where the
 runs happened and cannot be reconstructed elsewhere.

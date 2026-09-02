@@ -22680,6 +22680,71 @@ impl<'a> Loader<'a> {
         out
     }
 
+    /// WI-20260902-4NEKZ follow-up — WHICH NODES OF THIS ATOM ARE DOTS THE AUTHOR WROTE.
+    ///
+    /// The sibling of [`Self::parse_span_table`], walked identically and keyed identically
+    /// (by the KB `TermId` the `term_map` gives for each PARSE node), because it answers a
+    /// question with the same shape: something the PARSE tree knows and the KB term does
+    /// not. `build_body_atom_occurrence` stamps `dot_chain` on the node it builds itself,
+    /// but the entity-headed / reflect-form arm RETURNS EARLY into
+    /// [`node_occurrence::materialize_from_handle_spanned`], which walks the KB term and
+    /// so cannot ask `is_minted` of anything. Without this table every chain nested in a
+    /// list, set or tuple literal or in an entity constructor's argument arrived with the
+    /// bit clear — see that function's doc for the measured rows.
+    ///
+    /// Asked PER LEVEL, exactly as the stamp on the un-nested path is: `dotted_citation_name`
+    /// is the same three gates, so a hand-written `field_access(ns, rel)` nested in a list is
+    /// no more a citation than it is at top level.
+    ///
+    /// ── THE KEY IS MANY-TO-ONE, AND THAT IS WHY THIS SET IS A DIFFERENCE ─────────
+    ///
+    /// `term_map` maps a PARSE node to a HASH-CONSED KB term, so two parse nodes that are
+    /// structurally identical share one `TermId` — and a minted `ns.rel` and a
+    /// hand-written `anthill.reflect.field_access(ns, rel)` ARE structurally identical
+    /// once converted. That is the whole premise of WI-20260901-92VA4: they reach the
+    /// typer as the same `Expr::Apply`, which is why the bit exists rather than a shape
+    /// test. A set of "kb ids that some citation maps to" therefore CANNOT answer
+    /// "is THIS node a citation" — MEASURED, and it silently accepted the written call:
+    ///
+    /// | rule body, one entity with two `Int64` fields | before | with the difference |
+    /// |---|---|---|
+    /// | `boxedc(v: <written call>, w: 1)`             | refused, 3 errors | refused |
+    /// | `boxedc(v: <written call>, w: zzcol.inner.other)` | refused, 3 errors | refused |
+    /// | `boxedc(v: <written call>, w: zzcol.inner.rel)`   | **ACCEPTED, typed `Relation`** | refused |
+    ///
+    /// The two controls vary only structural identity: a DIFFERENTLY-named citation
+    /// beside the written call is a distinct `TermId` and never masked it. So the
+    /// collision is the axis, not the gate.
+    ///
+    /// The repair is a SET DIFFERENCE and it is deliberately conservative: a kb id is
+    /// stamped only if EVERY parse node in this atom that maps to it is a citation. On a
+    /// collision the bit is withheld and the typer falls back to the per-leaf walk — a
+    /// worse DIAGNOSTIC for the citation that shares the id, which is the failure this
+    /// ticket set out to improve, but never a wrong ACCEPTANCE of a call the author
+    /// wrote. Losing a diagnostic is recoverable; typing a hand-written call as a name it
+    /// does not spell is not. (The precise fix is to carry the parse `TermId` beside the
+    /// term one through the materializer so the question is asked of the node itself;
+    /// that is a larger change to a shared walk and is WI-20260902-2SZ88-make-the-dot-chain-provenance.)
+    fn parse_dot_chain_table(&self, parse_id: TermId) -> std::collections::HashSet<TermId> {
+        let mut cited: std::collections::HashSet<TermId> = std::collections::HashSet::new();
+        let mut plain: std::collections::HashSet<TermId> = std::collections::HashSet::new();
+        let mut stack: Vec<TermId> = vec![parse_id];
+        while let Some(pid) = stack.pop() {
+            if let Some(&kb_id) = self.term_map.get(&pid.raw()) {
+                if dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, pid).is_some() {
+                    cited.insert(kb_id);
+                } else {
+                    plain.insert(kb_id);
+                }
+            }
+            // `Term::subterms` for the same reason `parse_span_table` uses it: a
+            // hand-written child enumeration goes stale in SILENCE.
+            stack.extend(self.parsed.terms.get(pid).subterms().into_iter().rev());
+        }
+        cited.retain(|k| !plain.contains(k));
+        cited
+    }
+
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
     /// maintain `term_depth`. Every recursive child re-enters through the wrapper.
     /// WI-20260902-CZJ2N — A BARE NAME OF A NULLARY OPERATION IS THAT OPERATION'S CALL,
@@ -22765,10 +22830,23 @@ impl<'a> Loader<'a> {
             return None;
         }
         let spans = self.parse_span_table(parse_id);
+        // `None`, and MEASURED rather than assumed: the root walked here is
+        // `expand_bare_entity_subject(kb.alloc(Term::Ref(sym)))` — an all-fields-fresh
+        // constructor the loader SYNTHESIZED, which never came through `convert_term`, so
+        // no `term_map`-keyed table can intersect it. Instrumented on both routes into
+        // this arm (a bare entity subject, and the dotted `ns.Sort.ctor` spelling):
+        // `dot_table=0 span_table=0 nodes=2 dot_hits=0 span_hits=0` on every column.
+        // Passing a table here would cost a walk per call and stamp nothing, and — worse
+        // — would read as a second measured call site to anyone backing the repair out.
+        // (The `spans` argument beside it is dead for the same reason; WI-1039's span fix
+        // never reached this arm either. Left as-is: removing it is a separate question
+        // from this ticket, and it is recorded here so the next reader does not re-derive
+        // it.)
         Some(node_occurrence::materialize_from_handle_spanned(
             self.kb,
             expanded,
             Some(&spans),
+            None,
         ))
     }
 
@@ -22913,8 +22991,7 @@ impl<'a> Loader<'a> {
                             // positive control that fired all three arms. The population
                             // this moves is new code only, and the whole suite is
                             // unchanged by it.
-                            if let Some(occ) = self.bare_entity_goal_occurrence(sym, parse_id)
-                            {
+                            if let Some(occ) = self.bare_entity_goal_occurrence(sym, parse_id) {
                                 return occ;
                             }
                             self.nullary_op_call_or_ref(sym, parse_id)
@@ -22973,10 +23050,17 @@ impl<'a> Loader<'a> {
                                                                // for the atom AND for everything inside it, which is where the
                                                                // loader's own walk stops descending.
                     let spans = self.parse_span_table(parse_id);
+                    // WI-20260902-4NEKZ follow-up: THIS EARLY RETURN IS THE BUG THE TABLE
+                    // FIXES. It bypasses the `dot_chain` stamp at the end of this function,
+                    // so before the table every chain under an entity constructor or a
+                    // list/set/tuple literal reached the typer with the bit clear and got
+                    // the per-leaf walk its bare sibling no longer gets.
+                    let dot_chains = self.parse_dot_chain_table(parse_id);
                     return node_occurrence::materialize_from_handle_spanned(
                         self.kb,
                         kb_term,
                         Some(&spans),
+                        Some(&dot_chains),
                     );
                 }
                 // Native generic application. Positional in source order; named
@@ -23101,8 +23185,8 @@ impl<'a> Loader<'a> {
         //
         // Asked of THIS node only, never of its children: the three gates that make a
         // chain a citation are `dotted_citation_name`'s, and it re-asks them per level.
-        let dot_chain = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)
-            .is_some();
+        let dot_chain =
+            dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_some();
         NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain)
     }
 

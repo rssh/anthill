@@ -67,21 +67,32 @@
 //! TWO AXES, each backed out PRESENT-BUT-WRONG and run over the whole `wi_tests` binary.
 //!
 //! **1 — THE READING.** `dotted_citation_relation`'s rung at the head of `visit_type`'s
-//! `Expr::Apply` arm, made to answer `None`. **EXACTLY 4 ROWS FAIL** of 4 047:
+//! `Expr::Apply` arm, made to answer `None`. **EXACTLY 5 ROWS FAIL** of 4 049
+//! (re-measured 2026-09-02 with the two rows below added; it was 4 of 4 047 and the
+//! census went stale in the commit that added them):
 //! [`a_dotted_rule_citation_types_as_the_relation_it_names`],
 //! [`the_mismatch_diagnosis_is_the_one_the_other_two_spellings_give`],
-//! [`every_citation_form_reaches_the_same_reading`], and
+//! [`every_citation_form_reaches_the_same_reading`],
+//! [`the_reading_survives_every_enclosing_atom`], and
 //! [`a_hand_written_field_access_call_is_not_a_citation`] — the last on its PAIR half
 //! ("the desugared dot still loads"), which is what makes that test a measurement of
 //! PROVENANCE rather than of the recognizer being switched off.
 //!
 //! **2 — THE PROVENANCE GATE.** Drop `occ.is_dot_chain() &&` from
 //! `loader_chain_dotted_name`'s guard, so the recognizer works by SHAPE as this ticket's
-//! first cut did. **EXACTLY 1 ROW FAILS:**
-//! [`a_hand_written_field_access_call_is_not_a_citation`], on both its receiver shapes.
-//! Every other row passes with it out, which is what says the gate is a second decision
-//! and not a restatement of the first — and the two axes meet in that one test, on its
-//! two halves.
+//! first cut did. **EXACTLY 2 ROWS FAIL** (re-measured 2026-09-02; it was 1):
+//! [`a_hand_written_field_access_call_is_not_a_citation`], on both its receiver shapes,
+//! and [`a_citation_beside_a_written_field_access_call_does_not_launder_it`]. Every other
+//! row passes with it out, which is what says the gate is a second decision and not a
+//! restatement of the first — and axes 1 and 2 meet in the first of those, on its two
+//! halves.
+//!
+//! **3 — THE TABLE'S SET DIFFERENCE.** `Loader::parse_dot_chain_table`'s
+//! `cited.retain(|k| !plain.contains(k))`, commented out, so the table stamps every kb id
+//! some citation maps to. **EXACTLY 1 ROW FAILS:**
+//! [`a_citation_beside_a_written_field_access_call_does_not_launder_it`], and only on its
+//! THIRD row — its two controls stay green, which is what says the axis is the
+//! hash-consed KEY and not the provenance gate that axis 2 owns.
 //!
 //! TWO MORE ROWS PASS UNDER BOTH, BY DESIGN, and each guards a different way of getting
 //! this wrong: [`the_five_other_name_kinds_still_agree_with_the_operation_body`] fails if
@@ -95,9 +106,26 @@ use anthill_core::kb::KnowledgeBase;
 /// The fixture every test here varies: `zz4n.inner.rel` is a real one-clause relation,
 /// `zz4n.two.rel2` its one-segment twin, and `body` is written in `zz4n.two`'s rule body.
 fn rule_body(body: &str) -> Vec<String> {
+    rule_body_with("", "", body)
+}
+
+/// [`rule_body`] with room for extra declarations — `inner_extra` inside `zz4n.inner`,
+/// `two_extra` inside `zz4n.two`, both empty for the plain form, which therefore builds a
+/// BYTE-IDENTICAL program to the one every earlier row here has always loaded.
+///
+/// It exists because the two rows added after review needed an entity and a second
+/// relation, and the first cut gave them a forked copy of this string. A fork is a silent
+/// hazard in a file whose rows quote each other's error COUNTS: the control row of
+/// `the_reading_survives_every_enclosing_atom` quotes the figure
+/// [`the_mismatch_diagnosis_is_the_one_the_other_two_spellings_give`] produces, and with
+/// two skeletons that figure was taken on one program and asserted on another. A later
+/// rename of `base4n2` or the namespace tail would edit one copy and leave the other
+/// loading, surfacing as an unexplained count change in an unrelated test. Found by
+/// `/code-review`.
+fn rule_body_with(inner_extra: &str, two_extra: &str, body: &str) -> Vec<String> {
     let src = format!(
-        "namespace zz4n.inner\n  fact base4n(1)\n  rule rel(1) :- base4n(1)\nend\n\
-         namespace zz4n.two\n  fact base4n2(1)\n  rule rel2(1) :- base4n2(1)\n  \
+        "namespace zz4n.inner\n  fact base4n(1)\n  rule rel(1) :- base4n(1)\n{inner_extra}end\n\
+         namespace zz4n.two\n  fact base4n2(1)\n  rule rel2(1) :- base4n2(1)\n{two_extra}  \
          rule r(1) :- {body}\nend\n"
     );
     crate::common::try_load_kb_with(&src).err().unwrap_or_default()
@@ -404,4 +432,139 @@ rule slot4nh(?t) :- ?t <=> zz4nh.inner.rel
         kb.value_symbol(&bound).is_some(),
         "a dotted citation in a data slot still binds the NAME at run time; got {bound:?}"
     );
+}
+
+/// **F — AND IT SURVIVES BEING NESTED.** The reading is a property of the CHAIN, not of
+/// the atom that happens to enclose it, so the same citation in the same rule-body value
+/// slot must type the same way whether it stands bare or sits inside a literal or an
+/// entity constructor's argument.
+///
+/// IT DID NOT. `build_body_atom_occurrence` stamps `dot_chain` on the node it builds
+/// itself, but its entity-headed / reflect-form arm RETURNS EARLY into
+/// `materialize_from_handle_spanned`, which walks the KB term and cannot ask `is_minted`
+/// of anything — so every nested chain arrived with the bit clear and got exactly the
+/// per-leaf walk this ticket removed. Found by `/code-review`; repaired by
+/// `Loader::parse_dot_chain_table`, the sibling of the span table that arm already passes.
+///
+/// | body | before | after |
+/// |---|---|---|
+/// | `zz4n.inner.rel = 7`            | 1, the true one | 1 |
+/// | `[zz4n.inner.rel] = 7`          | **3** per-segment | 1 |
+/// | `{zz4n.inner.rel} = 7`          | **3** | 1 |
+/// | `(zz4n.inner.rel, 1) = 7`       | **3** | 1 |
+/// | `boxed4n(v: zz4n.inner.rel) = 7`| **3** | 1 |
+///
+/// THE CONTROL is the first row, and it is stated rather than implied: it passes with the
+/// repair backed out (it never took the early return), so a run in which only it stays
+/// green measures nothing. Backing the repair out — `parse_dot_chain_table` returning an
+/// empty set, or either call site passing `None` — reddens the other four and leaves the
+/// first alone. MEASURED both ways.
+///
+/// AND THE TYPE IS ASSERTED, not the count: each row names the ENCLOSING type it built
+/// (`List[T = Relation[…]]`, `Set[…]`, the tuple, the entity field) around a `Relation`,
+/// which is what says the chain was read as the relation it cites rather than merely
+/// stopping the cascade.
+#[test]
+fn the_reading_survives_every_enclosing_atom() {
+    // The file's ONE skeleton plus the entity these rows need — see `rule_body_with`.
+    const BOXED: &str = "  sort Boxed4n\n    entity boxed4n(v: Int64)\n  end\n";
+    for (label, body, wants) in [
+        (
+            "bare — the CONTROL, green either way",
+            "zz4n.inner.rel = 7",
+            "eq.b (op-arg)",
+        ),
+        (
+            "in a list literal",
+            "[zz4n.inner.rel] = 7",
+            "List[T = Relation",
+        ),
+        (
+            "in a set literal",
+            "{zz4n.inner.rel} = 7",
+            "Set[T = Relation",
+        ),
+        ("in a tuple", "(zz4n.inner.rel, 1) = 7", "_1: Relation"),
+        (
+            "in an entity constructor argument",
+            "boxed4n(v: zz4n.inner.rel) = 7",
+            "boxed4n.v (entity-field)",
+        ),
+    ] {
+        let errs = rule_body_with("", BOXED, body);
+        assert_eq!(
+            errs.len(),
+            1,
+            "{label}: `{body}` writes ONE name and must get ONE diagnosis. Two ways to \
+             fail: THREE errors is the pre-repair per-segment cascade (one per segment of \
+             a name that RESOLVES); ZERO is the opposite defect — the chain silently \
+             accepted — which is what row three of \
+             `a_citation_beside_a_written_field_access_call_does_not_launder_it` guards. \
+             Got {}: {errs:#?}",
+            errs.len()
+        );
+        assert!(
+            !errs[0].contains("unresolved"),
+            "{label}: …and it must not call a name that resolves unresolved: {:?}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("Relation["),
+            "{label}: …and the chain must have been TYPED as the relation it cites, not \
+             merely have stopped erroring: {:?}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains(wants),
+            "{label}: …inside the enclosing atom it was written in (expected {wants:?}): {:?}",
+            errs[0]
+        );
+    }
+}
+
+/// **G — AND A CITATION BESIDE A WRITTEN CALL DOES NOT LAUNDER IT.** The provenance
+/// control for the NESTED path, which F alone does not provide.
+///
+/// `parse_dot_chain_table` keys on the KB `TermId`, and that key is MANY-TO-ONE: a minted
+/// `ns.rel` and a hand-written `anthill.reflect.field_access(ns, rel)` convert to the same
+/// hash-consed term — that identity is the whole premise of WI-20260901-92VA4. So the
+/// first cut of the table stamped both and the written call was ACCEPTED, typed as the
+/// relation it does not spell. Found by `/code-review`; the repair is the set difference
+/// documented on `parse_dot_chain_table`.
+///
+/// THE TWO CONTROLS ARE THE POINT and they vary only structural identity, not the gate:
+/// the written call ALONE is refused, and the written call beside a DIFFERENTLY-NAMED
+/// citation (a distinct `TermId`) is refused. Only the structurally-identical pair ever
+/// flipped, which is what says the defect was the key and not the reading. Backing the
+/// `cited.retain(…)` line out reddens row three and leaves rows one and two green.
+#[test]
+fn a_citation_beside_a_written_field_access_call_does_not_launder_it() {
+    const OTHER: &str = "  rule other(1) :- base4n(1)\n";
+    const BOXED2: &str = "  sort Bx\n    entity boxedc(v: Int64, w: Int64)\n  end\n";
+    const WRITTEN: &str = "anthill.reflect.field_access(zz4n.inner, rel)";
+    for (label, w) in [
+        ("the written call ALONE — control", "1"),
+        (
+            "beside a DIFFERENTLY-named citation (distinct TermId) — control",
+            "zz4n.inner.other",
+        ),
+        (
+            "beside a STRUCTURALLY IDENTICAL citation — the collision",
+            "zz4n.inner.rel",
+        ),
+    ] {
+        let errs = rule_body_with(OTHER, BOXED2, &format!("boxedc(v: {WRITTEN}, w: {w}) = 7"));
+        assert!(
+            errs.iter().any(|e| e.contains("unresolved")),
+            "{label}: a field_access call the AUTHOR WROTE is not a citation and must stay \
+             refused. It was ACCEPTED and typed `Relation` on the third row while both \
+             controls refused, which is WI-20260901-92VA4's silent acceptance reached \
+             through the hash-consed key: {errs:#?}"
+        );
+        assert!(
+            !errs.iter().any(|e| e.contains("Relation[")),
+            "{label}: …and it must not have been typed as the relation it does not \
+             spell: {errs:#?}"
+        );
+    }
 }
