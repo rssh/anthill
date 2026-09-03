@@ -37,6 +37,13 @@
 //! [`the_dot_chain_bit_needs_no_table_in_a_collection_literal`] is green under that
 //! back-out too, and needs its own axis — see its doc.
 //!
+//! **THE RECEIVER-TYPE AXIS HAS TWO OPPOSED ROWS.**
+//! [`a_form_three_receiver_on_a_constructor_is_refused`] fails when
+//! `entity_ctor_expr`'s `recv_type` goes back to `build_recv_type` — the state
+//! WI-20260902-2SZ88 SHIPPED, which silently accepted a bracket the spec refuses —
+//! while [`a_form_three_receiver_type_under_a_literal_is_not_refused`] stays green under
+//! that same change. Measured both ways; they are two channels, not one.
+//!
 //! **THE RECEIVER-TYPE AXIS IS SHARED WITH WI-20260902-2SZ88.**
 //! [`a_form_three_receiver_type_under_a_literal_is_not_refused`] goes red on FOUR rows
 //! under that same back-out — three needing `collection_literal_expr` and one needing
@@ -399,4 +406,56 @@ fn a_form_three_receiver_type_under_a_literal_is_not_refused() {
             "{label}: …and the program must load clean: {errs:#?}"
         );
     }
+}
+
+/// **E — AND A FORM-(3) RECEIVER ON A CONSTRUCTOR IS STILL REFUSED.** The other half of D,
+/// and the row that says D's repair did not overshoot into a silent acceptance.
+///
+/// A companion receiver types the result of an OPERATION CALL. On an entity constructor it
+/// is meaningless, and `check_unconsumed_recv_types` refuses it in as many words — "form
+/// (3) applies to an operation call, not to an entity constructor or a fact / rule head".
+/// That sweep works by refusing every bracket nobody CONSUMED, so anything that consumes
+/// one DELETES the refusal.
+///
+/// WI-20260902-2SZ88 DID EXACTLY THAT AND IT SHIPPED. `entity_ctor_expr` called
+/// `build_recv_type`, reading the round-trip's silence about `recv_type` as a loss to
+/// repair, when for an entity head the silence WAS the refusal working. MEASURED:
+///
+/// | rule body | baseline | 2SZ88 as shipped | fixed |
+/// |---|---|---|---|
+/// | `?v <=> Bx[T = Int64].bx(k: 1)` | refused | **LOADS CLEAN** | refused |
+/// | `?v <=> boxm(m: Map[…].empty())` — D's row | refused | clean | clean |
+///
+/// The two rows disagree ON PURPOSE and that is the whole content of this pair: the
+/// bracket in D sits on `empty`, an OPERATION, whose occurrence the child walk builds
+/// through the generic arm; the bracket here sits on `bx`, a CONSTRUCTOR. Reading the two
+/// as one channel is what produced the acceptance.
+///
+/// NOT COVERED, and pre-existing rather than 2SZ88's: a form-(3) bracket on a ZERO-FIELD
+/// constructor (`Bx[T = Int64].nada`) loads clean on EVERY tree including the baseline —
+/// the bare name never carries the bracket to the sweep at all. Measured, and left alone
+/// because it is not this ticket's regression; the row below would have to assert a
+/// refusal that has never existed.
+#[test]
+fn a_form_three_receiver_on_a_constructor_is_refused() {
+    let src = "namespace zz2nx.rt\n  import anthill.prelude.Int64\n  \
+               sort Bx\n    sort T = ?\n    entity bx(k: Int64)\n  end\n  \
+               rule cc(1) :- ?v <=> Bx[T = Int64].bx(k: 1)\nend\n";
+    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    assert!(
+        errs.iter().any(|e| e.contains("not read here")),
+        "a companion receiver on an ENTITY CONSTRUCTOR must stay refused — consuming the \
+         bracket here deletes the sweep's refusal and accepts a form the spec rejects, \
+         which is WI-20260901-92VA4's direction: {errs:#?}"
+    );
+    // THE CONTROL, one keystroke away: the same program with the bracket dropped loads.
+    // Without it a run in which the row is red for ANY reason reads as a pass.
+    let plain = "namespace zz2nx.rt2\n  import anthill.prelude.Int64\n  \
+                 sort Bx\n    sort T = ?\n    entity bx(k: Int64)\n  end\n  \
+                 rule cc(1) :- ?v <=> bx(k: 1)\nend\n";
+    assert!(
+        crate::common::try_load_kb_with(plain).is_ok(),
+        "…and the same constructor WITHOUT the bracket must load, or the row above is \
+         measuring a broken fixture rather than the refusal"
+    );
 }

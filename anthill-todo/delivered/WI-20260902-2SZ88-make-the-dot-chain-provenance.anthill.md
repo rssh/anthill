@@ -201,3 +201,46 @@ another's defect. Recorded in the file header.
 FINAL: workspace suite 6346 passed, 0 failed over 36 binaries (baseline 6341 + 5 new rows),
 zero panics, zero debug-assert firings. `tests/include` registration invariant checked.
 
+### 2026-09-03T07:07:07Z — feedback — user
+
+REGRESSION IN THE DELIVERED WORK, FOUND AND FIXED AFTER THE FACT — AND IT WAS A SILENT
+ACCEPTANCE, THE DIRECTION THIS TICKET FAMILY EXISTS TO PREVENT.
+
+`entity_ctor_expr` called `self.build_recv_type(parse_id)`. I read the round-trip's silence
+about `recv_type` as one of the three readings WI-20260902-2NXAC said that `return` drops,
+and repaired it. FOR AN ENTITY HEAD THE SILENCE WAS THE REFUSAL WORKING.
+
+A proposal-035 form-(3) companion receiver types the result of an OPERATION CALL. On an
+entity constructor it is meaningless, and `check_unconsumed_recv_types` says exactly that —
+"form (3) applies to an operation call, not to an entity constructor or a fact / rule
+head". That sweep refuses every bracket nobody CONSUMED, so consuming one deletes the
+refusal. MEASURED:
+
+  rule cc(1) :- ?v <=> Bx[T = Int64].bx(k: 1)
+     baseline            -> REFUSED, with that message
+     2SZ88 as shipped    -> LOADS CLEAN
+     fixed               -> REFUSED
+
+WHY BOTH /code-review PASSES AND I MISSED IT: every fixture I built for this channel put
+the bracket on an OPERATION (`Map[K = String].empty()`), where consuming it is right. The
+constructor case is the same channel read at a different head, and nothing tested it. The
+user asked what a form-(3) receiver actually IS; building the answer is what produced the
+fixture that fails.
+
+THE FIX is `recv_type: None` in `entity_ctor_expr`, with the reasoning at the site. The
+NESTED case is unaffected and is a genuinely different node: `boxm(m: Map[…].empty())` puts
+the bracket on `empty`, whose occurrence the child walk builds through the generic arm.
+`a_form_three_receiver_type_under_a_literal_is_not_refused` covers that,
+`a_form_three_receiver_on_a_constructor_is_refused` covers this, and the two disagree ON
+PURPOSE — reading them as one channel is what produced the acceptance. Each has its own
+control and each was backed out: the constructor row fails with `build_recv_type` restored,
+the nested row stays green.
+
+NOT FIXED, and now correctly classified: a form-(3) bracket on a ZERO-FIELD constructor
+(`Bx[T = Int64].nada`) loads clean on EVERY tree INCLUDING the baseline — the bare name
+never carries the bracket to the sweep. I had recorded this as a hole 2SZ88 left; it is
+PRE-EXISTING and not this ticket's, and the earlier note saying `Expr::Ref` has no
+`recv_type` slot described the wrong mechanism.
+
+Workspace suite after the fix: 6350 passed, 0 failed.
+

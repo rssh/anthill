@@ -23360,12 +23360,29 @@ impl<'a> Loader<'a> {
         }
 
         Some(Expr::Apply {
-            // Read here for the same reason the generic arm reads it, and this is one of
-            // the three readings WI-20260902-2NXAC found the round-trip dropping: the
-            // early return called neither `build_recv_type` nor `consumed_recv_types
-            // .insert`, so a form-(3) receiver under an entity constructor was written,
-            // never consumed, and then REFUSED by `check_unconsumed_recv_types`.
-            recv_type: self.build_recv_type(parse_id),
+            // NOT `build_recv_type`, AND THAT IS THE WHOLE POINT OF THIS SLOT BEING `None`.
+            //
+            // A form-(3) companion receiver (`Map[K = String].empty()`, proposal 035)
+            // types the result of an OPERATION CALL. On an ENTITY CONSTRUCTOR it is
+            // meaningless, and `check_unconsumed_recv_types` says so in as many words:
+            // "form (3) applies to an operation call, not to an entity constructor or a
+            // fact / rule head". That sweep refuses every bracket nobody CONSUMED — so
+            // calling `build_recv_type` here would consume it and DELETE the refusal.
+            //
+            // MEASURED, and it is why this comment exists: the first cut of
+            // WI-20260902-2SZ88 did call it, reading the round-trip's silence as a loss to
+            // repair. `rule cc(1) :- ?v <=> Bx[T = Int64].bx(k: 1)` is REFUSED on the
+            // baseline and LOADED CLEAN with that call in — a silent acceptance of a
+            // bracket the spec rejects, which is the direction that matters
+            // (WI-20260901-92VA4). Found by a question about what a form-(3) receiver is.
+            //
+            // A form-(3) call INSIDE a constructor's argument is a different node and is
+            // unaffected: `boxm(m: Map[K = String].empty())` puts the bracket on `empty`,
+            // whose occurrence the child walk builds through the generic arm, which reads
+            // it correctly. `a_form_three_receiver_type_under_a_literal_is_not_refused`
+            // covers that row and `a_form_three_receiver_on_a_constructor_is_refused`
+            // covers this one; they are the two halves and they disagree on purpose.
+            recv_type: None,
             functor,
             pos_args: pos,
             named_args: named,
