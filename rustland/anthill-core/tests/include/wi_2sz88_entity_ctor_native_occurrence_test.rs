@@ -24,8 +24,8 @@
 //! `if_expr` 9, the rest in ones and twos) and 1 was not an entity at all. A reflect
 //! form's occurrence is not an `Expr::Apply` — `ListLiteral` builds `Expr::ListLit` —
 //! and those shapes live in `visit_fn`, so they keep the round-trip and the tables.
-//! **WI-20260902-2NXAC** owns that residue; [`the_reflect_half_still_needs_the_table`]
-//! is the row that says so, and will change when it lands.
+//! **WI-20260902-2NXAC** took the three COLLECTION LITERALS (192 of that 284) off the
+//! round-trip in the same way; its own file carries those rows.
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
@@ -36,8 +36,6 @@
 //! **EXACTLY ONE TEST HERE GOES RED:**
 //! [`a_nullary_op_in_an_entity_constructor_argument_is_a_call`], on its two ENTITY rows
 //! (1 → 0, both spellings), with its four controls green either way.
-//! [`the_reflect_half_still_needs_the_table`] is green under this BY DESIGN — it pins the
-//! residue, which the back-out does not touch.
 //!
 //! **2 — THE POSITIONAL LOOP'S GUARD.** `Loader::lowered_child_occurrence` bypassed in the
 //! positional loop only (a bare `build_body_atom_occurrence`), which is what the first cut
@@ -160,8 +158,8 @@ fn answers(body: &str) -> usize {
 /// either way, which is what says this is about the ENCLOSING atom and not about `seven`.
 ///
 /// This is WI-20260902-2NXAC's finding (1), on the half of that ticket this change
-/// reaches; its LIST-literal rows are still 0 and are
-/// [`the_reflect_half_still_needs_the_table`]'s.
+/// reaches. Its LIST-literal rows were still 0 when this shipped; 2NXAC closed them, and
+/// `wi_2nxac_collection_literal_native_occurrence_test` carries them.
 #[test]
 fn a_nullary_op_in_an_entity_constructor_argument_is_a_call() {
     for (label, body, want) in [
@@ -202,48 +200,6 @@ fn a_nullary_op_in_an_entity_constructor_argument_is_a_call() {
         );
     }
 }
-
-/// **C — THE RESIDUE, PINNED.** The reflect half still round-trips, so its dot-chain
-/// answer still comes from the many-to-one table and its nullary reading is still lost.
-///
-/// A GAP WITH A REASON STILL NEEDS A ROW. Without this the 0s below read as "nobody
-/// looked", and the day **WI-20260902-2NXAC** lands they become 1s with nothing saying
-/// they were expected to. This test is the thing that goes red then — deliberately, and
-/// its failure message says so.
-///
-/// The two entity rows of [`a_nullary_op_in_an_entity_constructor_argument_is_a_call`]
-/// are the same shape one enclosing atom over, and they answer 1. So the axis these rows
-/// vary is exactly WHICH enclosing atom, not whether a nullary op reduces.
-#[test]
-fn the_reflect_half_still_needs_the_table() {
-    for (label, body) in [
-        ("a bare nullary op in a LIST literal", "[seven] <=> [7]"),
-        (
-            "and its parenthesised spelling",
-            "[seven()] <=> [7]",
-        ),
-    ] {
-        assert_eq!(
-            answers(body),
-            0,
-            "{label}: `{body}` still answers 0 — `ListLiteral` is a reflect form, so it \
-             keeps the `materialize_from_handle_spanned` round-trip this ticket removed \
-             for entity constructors. IF THIS ROW NOW ANSWERS 1, WI-20260902-2NXAC has \
-             landed and this test is the one to delete: move the row into \
-             `a_nullary_op_in_an_entity_constructor_argument_is_a_call` and drop the \
-             '99.78% / the reflect half is 2NXAC's' paragraph from this file's header."
-        );
-    }
-    // THE CONTROL that says the 0s above are about the nullary reading and not about the
-    // list literal being broken in general: an APPLIED operation in the same literal.
-    assert_eq!(
-        answers("[plus1(6)] <=> [7]"),
-        1,
-        "an APPLIED operation nested in the same list literal answers 1 — nesting per se \
-         is fine, which is what makes the two rows above a nullary-reading loss"
-    );
-}
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // THE THREE REGRESSIONS THE FIRST CUT SHIPPED, each found by `/code-review` and

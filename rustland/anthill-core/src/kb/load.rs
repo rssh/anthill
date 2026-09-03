@@ -20242,6 +20242,18 @@ impl<'a> Loader<'a> {
                 // (`parse_dot_chain_table`, `kb.term_spans`) are each first-write-wins or
                 // a set difference. Written only for a functor with a field schema: the
                 // sole reader is `entity_ctor_expr`, gated the same way.
+                //
+                // GATED ON THE UN-ROUTED FUNCTOR, AND ITS READER GATES ON THE ROUTED ONE.
+                // `entity_ctor_expr` is entered from `build_body_atom_occurrence_inner`,
+                // which applies `route_body_goal_boolean` to `new_functor` FIRST — so the
+                // two sites ask `entity_field_names` of two different symbols and the
+                // reader's `debug_assert!(false, …)` fires (a PANIC in every debug build)
+                // if they ever disagree. They cannot today: routing maps only
+                // `POSITION_DIRECTED_BOOLEANS` — `Bool.not` / `or` / `and` — and none of
+                // those has a field schema, so a functor that is an entity before routing
+                // is the same functor after it. THAT COUPLING IS THE WHOLE REASON THE
+                // ASSERT IS SAFE, and it was written nowhere until `/code-review` traced
+                // it; a future entry in that table with a field schema breaks it.
                 if self.kb.entity_field_names(new_functor).is_some() {
                     self.entity_slot_origin.insert(parse_id.raw(), slot_origin);
                 }
@@ -22810,11 +22822,38 @@ impl<'a> Loader<'a> {
     /// set: the entity row of `wi_4nekz`'s enclosing-atom census goes from 3 errors and
     /// none typed to 1 error typed `Relation`, and it is the only row that moves.
     ///
-    /// WHAT STILL READS IT is the REFLECT half — `ListLiteral`, `SetLiteral`,
-    /// `TupleLiteral` and the control-flow forms, whose occurrence shape is not an
-    /// `Expr::Apply` and so still round-trips. That is 284 nodes of the 127 097 that took
-    /// the early return over the whole workspace suite; the set difference stays for
-    /// them, and **WI-20260902-2NXAC** owns finishing the job.
+    /// WI-20260902-2NXAC THEN TOOK THE COLLECTION LITERALS TOO — `[a, b]`, `{a, b}`,
+    /// `(a, b)`, 192 of the 284 reflect-keyed nodes — via
+    /// [`Self::collection_literal_expr`]. WITH BOTH IN, THIS TABLE HAS NO READER THE
+    /// SUITE CAN REACH: made to return an EMPTY set, the whole `wi_tests` binary is
+    /// 4053 passed / 1 failed, and that one failure was the 2SZ88 row asserting the
+    /// collection literals still NEEDED it.
+    ///
+    /// ── WHAT THIS FUNCTION NOW ACTUALLY DOES, MEASURED ─────────────────────────
+    ///
+    /// Three separate facts, because collapsing them into "it is / is not reachable" is
+    /// what an earlier version of this paragraph did and it was not answerable:
+    ///
+    /// * IT IS STILL CALLED — 108 times over the `wi_tests` binary, dominated by
+    ///   `dot_apply` (76), then `int_lit` (12), `if_expr` (8), `lambda_expr` (4).
+    /// * IT RETURNS EMPTY EVERY TIME — 0 of those 108 produced a non-empty set. It is not
+    ///   structurally dead, though: a hand-written `?b.take(zz4n.inner.rel)` in a rule
+    ///   body (a citation as a `dot_apply` ARGUMENT) makes it `cited = 2`.
+    /// * AND ITS RESULT CHANGES NOTHING I CAN REACH — including that one. Emptying the
+    ///   set gives byte-identical diagnostics on the `cited = 2` program, and leaves the
+    ///   whole `wi_tests` binary green.
+    ///
+    /// SO IT IS KEPT ON AN ASYMMETRY, NOT ON EVIDENCE OF USE. Nothing measured here
+    /// depends on it. It stays because the two failure directions are not equal: a lost
+    /// diagnostic is recoverable, and a written `field_access` call LAUNDERED into a name
+    /// it does not spell is WI-20260901-92VA4's silent acceptance, which is not. The cost
+    /// is one subtree walk per reflect atom for a result nothing reads.
+    ///
+    /// A FUTURE READER DECIDING TO DELETE IT should re-run those three numbers first, and
+    /// should know why the residue could not be driven: `let` does not parse in a rule
+    /// body, `if` there answers 0 for every variant including a plain integer literal (so
+    /// its 0 is a different defect), and the remaining control-flow forms reach a rule
+    /// body only as reflection PATTERNS.
     fn parse_dot_chain_table(&self, parse_id: TermId) -> std::collections::HashSet<TermId> {
         let mut cited: std::collections::HashSet<TermId> = std::collections::HashSet::new();
         let mut plain: std::collections::HashSet<TermId> = std::collections::HashSet::new();
@@ -22833,6 +22872,316 @@ impl<'a> Loader<'a> {
         }
         cited.retain(|k| !plain.contains(k));
         cited
+    }
+
+    /// WI-20260902-2SZ88 — THE OCCURRENCE FOR ONE LOWERED CHILD OF AN ENTITY
+    /// CONSTRUCTOR, given the parse child that produced it. THREE CASES, and the middle
+    /// one is the one a first cut got wrong twice.
+    ///
+    /// 1. AN EFFECT-ROW AUX rides as a `ParseAux`, which `build_body_atom_occurrence`
+    ///    meets with an `unreachable!`. The generic arm one function up has the identical
+    ///    guard for the identical reason; putting the rule HERE is what stops the
+    ///    positional and named loops from disagreeing about it — they did, and a
+    ///    POSITIONAL `Outer[k = Bx[{}]]` under an entity head PANICKED THE LOADER where
+    ///    the baseline reported two located errors. Found by `/code-review`.
+    ///
+    /// 2. THE LOWERING MAY HAVE TRANSFORMED THE CHILD, not merely converted it:
+    ///    `wrap_bare_option_value` wraps a bare value written at an `Option[..]` field
+    ///    into `some(…)`, so the lowered child is one node LARGER than the conversion of
+    ///    the parse child. The occurrence must carry the wrap the TERM carries or
+    ///    resolution stops matching — MEASURED, five `github_todo_test` rows fell,
+    ///    `wi717_omitted_optionals_stay_claimable` among them, when a first cut recursed
+    ///    on the parse child and produced the bare payload against a `some(payload)` term.
+    ///
+    ///    So such a child is MATERIALIZED — but from its own subtree's tables, not
+    ///    bare. Materializing it bare is the second thing that first cut got wrong: it
+    ///    reintroduced WI-1035/1039's wrong location for everything under the wrap.
+    ///    MEASURED, `rule r(1) :- bo(v: fx("a"))` with `entity bo(v: Option[T = Int64])` —
+    ///    `11:22` on the baseline, **`1:1`** materialized bare, `11:22` again with the
+    ///    tables. The plain-field control `bo2(v: fx("a"))` reads `7:23` under all three,
+    ///    which is what says the axis is the WRAP and not the entity head. Also found by
+    ///    `/code-review`.
+    ///
+    ///    THE TEST IS AN IDENTITY CHECK against `term_map`, deliberately, and not a list
+    ///    of the transforms that exist: a list would be a producer census (WI-805's
+    ///    mistake) and would go stale in silence the day a second transform is added.
+    ///    `term_map` is read in its SAFE direction — parse to KB is a function; only the
+    ///    reverse is many-to-one, which is this ticket's whole subject.
+    ///
+    /// 3. OTHERWISE THE CHILD PASSED THROUGH, and it is built from its own parse node —
+    ///    exact span, exact `dot_chain`, no table involved. That is the majority and the
+    ///    point of the ticket.
+    fn lowered_child_occurrence(&mut self, pid: TermId, kb_child: TermId) -> Rc<NodeOccurrence> {
+        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+            return child;
+        }
+        if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
+            return self.build_body_atom_occurrence(pid);
+        }
+        let spans = self.parse_span_table(pid);
+        let dot_chains = self.parse_dot_chain_table(pid);
+        node_occurrence::materialize_from_handle_spanned(
+            self.kb,
+            kb_child,
+            Some(&spans),
+            Some(&dot_chains),
+        )
+    }
+
+    /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.
+    ///
+    /// The sibling of [`Self::entity_ctor_expr`] for the three surfaces WI-20260902-2SZ88
+    /// deliberately left on the round-trip: `[a, b]`, `{a, b}`, `(a, b)`. They are 192 of
+    /// the 284 reflect-keyed nodes that still took it, and they carry every row
+    /// WI-20260902-4NEKZ and this ticket measure.
+    ///
+    /// WHY THEY WERE LEFT: a collection's occurrence is not an `Expr::Apply`, so
+    /// `entity_ctor_expr`'s single shape does not fit — and `[a, b]` is worse than a
+    /// different shape, because WI-1096 LOWERS it to a `cons`/`nil` spine, so the KB tree
+    /// has MORE NODES than the parse tree. The spine cells are invented; only the
+    /// ELEMENTS were written.
+    ///
+    /// SO THE ELEMENTS ARE PAIRED AND THE STRUCTURE IS REBUILT. Each surface pairs its
+    /// lowered slots with its parse children by the rule that surface uses — index for a
+    /// list or set, label for a tuple, and the spine's `head` slots in order for a lowered
+    /// list — and each pair goes through [`Self::lowered_child_occurrence`], the same
+    /// three-way rule the entity arm uses. The structure around them is rebuilt in the
+    /// shape `visit_fn` produces, so this changes WHAT THE ELEMENTS ARE and nothing else.
+    ///
+    /// THE SHAPE IS ASSERTED, NOT ASSUMED. A lowered list rebuilds as `Expr::Apply` under
+    /// `cons` with named `head`/`tail`, which is what `visit_fn`'s `_` arm produces for a
+    /// spine — NOT the `Expr::Constructor` that `node_occurrence::build_occurrence_cons_list`
+    /// builds for the pattern convention. Those two shapes coexist on purpose (see that
+    /// function's doc), and picking the wrong one here would silently change how a rule
+    /// body's list matches. Verified by dumping the occurrence tree for `[a] <=> [b]`,
+    /// `{a} <=> {b}` and `(a, 1) <=> (b, 1)` before and after.
+    ///
+    /// `None` — and the round-trip — whenever the pairing does not line up: an unexpected
+    /// lowered functor, a spine whose length differs from the written element count, a
+    /// tuple slot naming no written child. Those are the shapes this pairing does not
+    /// claim to understand, and guessing at one would be a wrong term rather than a worse
+    /// diagnostic.
+    fn collection_literal_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
+        // TESTED ON THE BORROWED SLICE, OWNED ONLY ON A HIT. This function is the `else`
+        // of the entity gate, so it runs for EVERY non-entity `Term::Fn` in every rule
+        // body — 127 097 nodes over one workspace load — and all but a couple of hundred
+        // of them fail this test. Allocating the key first threw a `String` away on each.
+        // Owned after the test because `expr_form_key` borrows the symbol table and
+        // everything below needs `&mut self`. Found by `/code-review`.
+        let key = {
+            let k = node_occurrence::expr_form_key(
+                self.kb.qualified_name_of(functor),
+                self.kb.local_name_of(functor),
+            );
+            if !matches!(k, "ListLiteral" | "SetLiteral" | "TupleLiteral") {
+                return None;
+            }
+            k.to_string()
+        };
+        let kb_term = self.convert_term(parse_id); // memoized hit
+        let (parse_pos, parse_named) = match self.parsed.terms.get(parse_id).clone() {
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => (pos_args, named_args),
+            _ => return None,
+        };
+        let (kb_functor, kb_pos, kb_named) = match self.kb.get_term(kb_term).clone() {
+            Term::Fn {
+                functor: f,
+                pos_args,
+                named_args,
+            } => (f, pos_args, named_args),
+            // A lowered EMPTY list is the bare `nil` (`nullary_canon`), with no element to
+            // pair and nothing the parse tree could add.
+            Term::Ref(s) => return Some(Expr::Ref(s)),
+            _ => return None,
+        };
+        let lowered_key = node_occurrence::expr_form_key(
+            self.kb.qualified_name_of(kb_functor),
+            self.kb.local_name_of(kb_functor),
+        )
+        .to_string();
+
+        // The `convert_term` above walked this whole subtree and emitted its inline
+        // descriptions; the child walks below must not emit them a second time. The
+        // entity arm has the identical save/restore for the identical reason — see
+        // [`Self::descs_emitted_by_convert`], which carries the measurement. MEASURED
+        // here too, and it was MISSED by this function's first cut: a described variable
+        // inside `[…]`, `{…}` or `(…)` produced TWO `DescriptionInfo` facts where the
+        // generic-atom control produced one. Found by `/code-review`, the second time for
+        // the same root cause — which is why the save/restore now wraps a SPLIT-OUT
+        // function in both places rather than a loop body a later `return` could skip.
+        let saved_descs = self.descs_emitted_by_convert;
+        self.descs_emitted_by_convert = true;
+        let out = self.collection_literal_children(
+            key.as_str(),
+            lowered_key.as_str(),
+            kb_term,
+            kb_pos,
+            kb_named,
+            parse_pos,
+            parse_named,
+        );
+        self.descs_emitted_by_convert = saved_descs;
+        out
+    }
+
+    /// The child walks of [`Self::collection_literal_expr`], split out only so the
+    /// `descs_emitted_by_convert` save/restore around them cannot be skipped by one of the
+    /// several `return None`s below.
+    #[allow(clippy::too_many_arguments)]
+    fn collection_literal_children(
+        &mut self,
+        key: &str,
+        lowered_key: &str,
+        kb_term: TermId,
+        kb_pos: smallvec::SmallVec<[TermId; 4]>,
+        kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
+        parse_pos: smallvec::SmallVec<[TermId; 4]>,
+        parse_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    ) -> Option<Expr> {
+        // ── A LOWERED LIST: the `cons`/`nil` spine (WI-1096) ────────────────────
+        if key == "ListLiteral" && lowered_key != "ListLiteral" {
+            return self.cons_spine_expr(kb_term, &parse_pos);
+        }
+
+        // ── OTHERWISE the lowered node keeps the surface's own shape ────────────
+        // The functor is unchanged and so are the slots, so the pairing is the
+        // surface's own: by INDEX for the positional ones, by LABEL for the named.
+        if lowered_key != key {
+            return None;
+        }
+        if kb_pos.len() != parse_pos.len() {
+            return None;
+        }
+        // EVERY PAIRING IS RESOLVED BEFORE ANY CHILD IS BUILT, and that ordering is the
+        // point rather than a style. Building a child is not free of side effects — it
+        // emits inline descriptions, marks a `recv_type` consumed, and can push an
+        // `InvalidTypeArgument` — so a `return None` taken AFTER some children were built
+        // would leave those behind and then have the caller's round-trip do them again.
+        // `cons_spine_expr` collects its spine first for the same reason. Found by
+        // `/code-review`; not driven (it needs a lowered named slot with no written
+        // counterpart), which is exactly why the ordering is made structural instead of
+        // relied on to stay unreachable.
+        //
+        // A tuple's labels are its IDENTITY (§4.5 / WI-762), so the named ones pair by
+        // SYMBOL and never by position — `(b: 1, a: 2)` is not `(a: 2, b: 1)`, and the
+        // lowered list may be in a different order from the written one. Reinterned up
+        // front for a second reason too: the lookup cannot borrow `self` inside a closure
+        // that `lowered_child_occurrence` needs mutably.
+        let written_named: Vec<(Symbol, TermId)> = parse_named
+            .iter()
+            .map(|&(sym, pid)| (self.reintern(sym), pid))
+            .collect();
+        let mut named_pairs: Vec<(Symbol, TermId, TermId)> = Vec::with_capacity(kb_named.len());
+        for &(field, kb_child) in kb_named.iter() {
+            let written = written_named
+                .iter()
+                .find(|&&(sym, _)| sym == field)
+                .map(|&(_, pid)| pid)?;
+            named_pairs.push((field, written, kb_child));
+        }
+        let mut positional: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(kb_pos.len());
+        for (i, &kb_child) in kb_pos.iter().enumerate() {
+            let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
+            positional.push(occ);
+        }
+        let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(named_pairs.len());
+        for &(field, written, kb_child) in named_pairs.iter() {
+            let occ = self.lowered_child_occurrence(written, kb_child);
+            named.push((field, occ));
+        }
+        Some(match key {
+            "ListLiteral" => Expr::ListLit(positional),
+            "SetLiteral" => Expr::SetLit(positional),
+            _ => Expr::TupleLit { positional, named },
+        })
+    }
+
+    /// WI-20260902-2NXAC — the `cons`/`nil` spine WI-1096 lowers `[a, b]` into, rebuilt
+    /// with its ELEMENTS built from their parse nodes and its CELLS synthesized.
+    ///
+    /// Walks the lowered spine and the written element list together. The cells and the
+    /// terminating `nil` have no parse node — they are the lowering's own — so they are
+    /// rebuilt here; each `head` is the i-th written element and goes through
+    /// [`Self::lowered_child_occurrence`].
+    ///
+    /// REFUSES TO GUESS: a spine that runs out early, runs long, or is not `cons`/`nil`
+    /// all the way down returns `None` and the caller takes the round-trip. The
+    /// alternative — pairing whatever lines up — would put one element's occurrence at
+    /// another's slot, which is a wrong term and not a worse diagnostic.
+    fn cons_spine_expr(&mut self, kb_term: TermId, parse_pos: &[TermId]) -> Option<Expr> {
+        let cons_sym = self.kb.try_resolve_symbol("anthill.prelude.List.cons")?;
+        let head_sym = self.kb.intern("head");
+        let tail_sym = self.kb.intern("tail");
+        // Collect the spine's HEADS first, so a mismatch is caught before anything is
+        // built and the caller's fallback is reached with no side effects. Only the heads
+        // are kept: the cell terms are the lowering's own nodes and are rebuilt below
+        // rather than read, so carrying them would be a field whose comment could drift
+        // from its use. Found by `/code-review`.
+        let mut cells: Vec<TermId> = Vec::new();
+        let mut cur = kb_term;
+        loop {
+            match self.kb.get_term(cur).clone() {
+                Term::Fn {
+                    functor,
+                    named_args,
+                    ..
+                } if functor == cons_sym => {
+                    let head = named_args.iter().find(|(s, _)| *s == head_sym)?.1;
+                    let tail = named_args.iter().find(|(s, _)| *s == tail_sym)?.1;
+                    cells.push(head);
+                    cur = tail;
+                }
+                // The terminating `nil` — a bare `Term::Ref` by the WI-511 canon.
+                Term::Ref(_) => break,
+                _ => return None,
+            }
+        }
+        // NO `is_empty` CHECK: an empty spine means the lowered term was the bare `nil`,
+        // and `collection_literal_expr` returns on its `Term::Ref` arm before calling
+        // here. Stated rather than guarded, because a guard that cannot fire reads as a
+        // case someone handled.
+        if cells.len() != parse_pos.len() {
+            return None;
+        }
+        // Rebuild from the tail back. The terminating `nil` and every cell BUT THE FIRST
+        // become occurrences here; the first cell's `Expr` is what the caller returns, so
+        // the node itself is built by `build_body_atom_occurrence`'s shared tail and gets
+        // that tail's `dot_chain` stamp like every other node it builds.
+        let mut acc = node_occurrence::materialize_from_handle(self.kb, cur);
+        for (i, &head_child) in cells.iter().enumerate().skip(1).rev() {
+            let span = self.source_span_of(parse_pos[i]);
+            let head_occ = self.lowered_child_occurrence(parse_pos[i], head_child);
+            let mut named = vec![(head_sym, head_occ), (tail_sym, acc)];
+            self.kb.canonicalize_record_named_args(cons_sym, &mut named);
+            acc = NodeOccurrence::new_expr(self.cons_cell_expr(cons_sym, named), span, None);
+        }
+        let head_occ = self.lowered_child_occurrence(parse_pos[0], cells[0]);
+        let mut named = vec![(head_sym, head_occ), (tail_sym, acc)];
+        self.kb.canonicalize_record_named_args(cons_sym, &mut named);
+        Some(self.cons_cell_expr(cons_sym, named))
+    }
+
+    /// One `cons` cell as an `Expr::Apply` — the shape `visit_fn`'s `_` arm produces for
+    /// a lowered spine, and NOT the `Expr::Constructor` that
+    /// [`node_occurrence::build_occurrence_cons_list`] builds for the bare-`nil` pattern
+    /// convention. The two coexist deliberately (see that function's doc); written once
+    /// here so [`Self::cons_spine_expr`]'s two build sites cannot pick differently.
+    fn cons_cell_expr(
+        &self,
+        cons_sym: Symbol,
+        named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    ) -> Expr {
+        Expr::Apply {
+            recv_type: None,
+            functor: cons_sym,
+            pos_args: Vec::new(),
+            named_args,
+            type_args: Vec::new(),
+        }
     }
 
     /// WI-20260902-2SZ88 — AN ENTITY CONSTRUCTOR'S OCCURRENCE, BUILT FROM ITS PARSE
@@ -22892,60 +23241,6 @@ impl<'a> Loader<'a> {
     /// `None` when the lowered term is neither a `Term::Fn` nor the `nullary_canon`
     /// `Term::Ref` a 0-field constructor folds to — the caller then takes the
     /// round-trip, which is what it did for every shape before this existed.
-    /// WI-20260902-2SZ88 — THE OCCURRENCE FOR ONE LOWERED CHILD OF AN ENTITY
-    /// CONSTRUCTOR, given the parse child that produced it. THREE CASES, and the middle
-    /// one is the one a first cut got wrong twice.
-    ///
-    /// 1. AN EFFECT-ROW AUX rides as a `ParseAux`, which `build_body_atom_occurrence`
-    ///    meets with an `unreachable!`. The generic arm one function up has the identical
-    ///    guard for the identical reason; putting the rule HERE is what stops the
-    ///    positional and named loops from disagreeing about it — they did, and a
-    ///    POSITIONAL `Outer[k = Bx[{}]]` under an entity head PANICKED THE LOADER where
-    ///    the baseline reported two located errors. Found by `/code-review`.
-    ///
-    /// 2. THE LOWERING MAY HAVE TRANSFORMED THE CHILD, not merely converted it:
-    ///    `wrap_bare_option_value` wraps a bare value written at an `Option[..]` field
-    ///    into `some(…)`, so the lowered child is one node LARGER than the conversion of
-    ///    the parse child. The occurrence must carry the wrap the TERM carries or
-    ///    resolution stops matching — MEASURED, five `github_todo_test` rows fell,
-    ///    `wi717_omitted_optionals_stay_claimable` among them, when a first cut recursed
-    ///    on the parse child and produced the bare payload against a `some(payload)` term.
-    ///
-    ///    So such a child is MATERIALIZED — but from its own subtree's tables, not
-    ///    bare. Materializing it bare is the second thing that first cut got wrong: it
-    ///    reintroduced WI-1035/1039's wrong location for everything under the wrap.
-    ///    MEASURED, `rule r(1) :- bo(v: fx("a"))` with `entity bo(v: Option[T = Int64])` —
-    ///    `11:22` on the baseline, **`1:1`** materialized bare, `11:22` again with the
-    ///    tables. The plain-field control `bo2(v: fx("a"))` reads `7:23` under all three,
-    ///    which is what says the axis is the WRAP and not the entity head. Also found by
-    ///    `/code-review`.
-    ///
-    ///    THE TEST IS AN IDENTITY CHECK against `term_map`, deliberately, and not a list
-    ///    of the transforms that exist: a list would be a producer census (WI-805's
-    ///    mistake) and would go stale in silence the day a second transform is added.
-    ///    `term_map` is read in its SAFE direction — parse to KB is a function; only the
-    ///    reverse is many-to-one, which is this ticket's whole subject.
-    ///
-    /// 3. OTHERWISE THE CHILD PASSED THROUGH, and it is built from its own parse node —
-    ///    exact span, exact `dot_chain`, no table involved. That is the majority and the
-    ///    point of the ticket.
-    fn lowered_child_occurrence(&mut self, pid: TermId, kb_child: TermId) -> Rc<NodeOccurrence> {
-        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
-            return child;
-        }
-        if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
-            return self.build_body_atom_occurrence(pid);
-        }
-        let spans = self.parse_span_table(pid);
-        let dot_chains = self.parse_dot_chain_table(pid);
-        node_occurrence::materialize_from_handle_spanned(
-            self.kb,
-            kb_child,
-            Some(&spans),
-            Some(&dot_chains),
-        )
-    }
-
     fn entity_ctor_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
         let kb_term = self.convert_term(parse_id); // memoized hit
         let (kb_pos, kb_named) = match self.kb.get_term(kb_term).clone() {
@@ -23013,12 +23308,6 @@ impl<'a> Loader<'a> {
         kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
         parse_pos: smallvec::SmallVec<[TermId; 4]>,
     ) -> Option<Expr> {
-        let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(kb_pos.len());
-        for (i, &kb_child) in kb_pos.iter().enumerate() {
-            let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
-            pos.push(occ);
-        }
-
         // NAMED SLOTS ARE LOOKED UP BY FIELD SYMBOL — the lowered list is in declared
         // field order (`fill_entity_named_args` sorts it), which is not the order the
         // author wrote, so index correspondence would be wrong here.
@@ -23029,15 +23318,32 @@ impl<'a> Loader<'a> {
             // in debug; in release the caller falls back to the round-trip, which is no
             // worse than the behaviour this function replaced.
             None if kb_named.is_empty() => Vec::new(),
+            // A PANIC IN DEBUG WHERE RELEASE FALLS BACK, deliberately, but the invariant
+            // it rests on is stated at the WRITE site (`convert_term_inner`'s
+            // `entity_slot_origin.insert`) and not derivable here: that site gates on the
+            // UN-ROUTED functor and this one is entered on the ROUTED one. They agree only
+            // because `route_body_goal_boolean` maps nothing with a field schema.
             None => {
                 debug_assert!(
                     false,
-                    "entity_ctor_expr: {} named slot(s) lowered with no recorded origins",
+                    "entity_ctor_expr: {} named slot(s) lowered with no recorded origins \
+                     — see the coupling noted at `entity_slot_origin`'s write site",
                     kb_named.len(),
                 );
                 return None;
             }
         };
+        // The `origins` lookup — and so the only `return None` left — happens BEFORE any
+        // child is built, for the reason `collection_literal_expr` states at its own
+        // pairing loop: building a child emits descriptions, consumes a `recv_type` and
+        // can push a diagnostic, so a late bail would leave those behind for the caller's
+        // round-trip to repeat. Found by `/code-review`; not driven, and made structural
+        // rather than left to stay unreachable.
+        let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(kb_pos.len());
+        for (i, &kb_child) in kb_pos.iter().enumerate() {
+            let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
+            pos.push(occ);
+        }
         let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(kb_named.len());
         for &(field, kb_child) in kb_named.iter() {
             let occ = match origins.iter().find(|(s, _)| *s == field) {
@@ -23376,7 +23682,10 @@ impl<'a> Loader<'a> {
                 {
                     self.entity_ctor_expr(parse_id, new_functor)
                 } else {
-                    None
+                    // WI-20260902-2NXAC — the three COLLECTION LITERALS, the largest
+                    // reflect-keyed group still on the round-trip (192 of 284 censused
+                    // nodes). Everything else there keeps it.
+                    self.collection_literal_expr(parse_id, new_functor)
                 };
                 if let Some(expr) = entity_native {
                     // NOT a `return`: falling through to this function's tail is what
@@ -23407,107 +23716,107 @@ impl<'a> Loader<'a> {
                         Some(&dot_chains),
                     );
                 } else {
-                // Native generic application. Positional in source order; named
-                // ParseAux-filtered (type_args / type_name are read elsewhere)
-                // with `reintern`ed keys in source order — matching `convert_term`
-                // (no entity-field sort for non-entity functors) and thus the
-                // `UnknownFn` materialization.
-                // WI-366 B1: a written effect-row binding value (`:- Spec[E = {}]`,
-                // or nested/positional `:- Outer[k = Inner[{}]]`) rides as an
-                // effect-row ParseAux — lower+materialize it (the same
-                // `lower_effect_row` the fact-head / `provides` paths use) rather
-                // than recursing into the outer `Term::ParseAux` unreachable
-                // (positional) or dropping it via the build-site skip (named).
-                // WI-1046: which of THIS node's positional slots are goals, from the
-                // one shared table (`KnowledgeBase::goal_arg_slots`) the two KB goal
-                // walks read. A slot that is not listed is DATA — `not`'s negand is a
-                // goal, `Widget(id: …)`'s field is not — and a `tuple(…)` wrapper slot
-                // makes its own components goals, which the wrapper's own recursion
-                // handles when it is reached with the flag set.
-                // Which of THIS node's positional slots are goals, from the one shared
-                // table (`KnowledgeBase::goal_arg_slots`) the two KB goal walks read. A
-                // slot that is not listed is DATA — `not`'s negand is a goal,
-                // `Widget(id: …)`'s field is not. A `tuple_wrapped` slot holds the
-                // conjunction WRAPPER, whose components are the goals; that is carried
-                // by the second flag, so a node is a wrapper because of WHERE IT SITS
-                // and never because of what it is named.
-                let slots = if at_goal && !is_wrapper {
-                    self.kb.goal_arg_slots(new_functor, pos_args.len())
-                } else {
-                    smallvec::SmallVec::new()
-                };
-                let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
-                for (i, &pid) in pos_args.iter().enumerate() {
-                    if let Some(child) = self.lower_effect_row_aux_occ(pid) {
-                        pos.push(child);
-                        continue;
+                    // Native generic application. Positional in source order; named
+                    // ParseAux-filtered (type_args / type_name are read elsewhere)
+                    // with `reintern`ed keys in source order — matching `convert_term`
+                    // (no entity-field sort for non-entity functors) and thus the
+                    // `UnknownFn` materialization.
+                    // WI-366 B1: a written effect-row binding value (`:- Spec[E = {}]`,
+                    // or nested/positional `:- Outer[k = Inner[{}]]`) rides as an
+                    // effect-row ParseAux — lower+materialize it (the same
+                    // `lower_effect_row` the fact-head / `provides` paths use) rather
+                    // than recursing into the outer `Term::ParseAux` unreachable
+                    // (positional) or dropping it via the build-site skip (named).
+                    // WI-1046: which of THIS node's positional slots are goals, from the
+                    // one shared table (`KnowledgeBase::goal_arg_slots`) the two KB goal
+                    // walks read. A slot that is not listed is DATA — `not`'s negand is a
+                    // goal, `Widget(id: …)`'s field is not — and a `tuple(…)` wrapper slot
+                    // makes its own components goals, which the wrapper's own recursion
+                    // handles when it is reached with the flag set.
+                    // Which of THIS node's positional slots are goals, from the one shared
+                    // table (`KnowledgeBase::goal_arg_slots`) the two KB goal walks read. A
+                    // slot that is not listed is DATA — `not`'s negand is a goal,
+                    // `Widget(id: …)`'s field is not. A `tuple_wrapped` slot holds the
+                    // conjunction WRAPPER, whose components are the goals; that is carried
+                    // by the second flag, so a node is a wrapper because of WHERE IT SITS
+                    // and never because of what it is named.
+                    let slots = if at_goal && !is_wrapper {
+                        self.kb.goal_arg_slots(new_functor, pos_args.len())
+                    } else {
+                        smallvec::SmallVec::new()
+                    };
+                    let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
+                    for (i, &pid) in pos_args.iter().enumerate() {
+                        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                            pos.push(child);
+                            continue;
+                        }
+                        match slots.iter().find(|s| s.index == i) {
+                            Some(slot) if slot.tuple_wrapped => self.in_body_goal_wrapper = true,
+                            Some(_) => self.in_body_goal = true,
+                            // A wrapper's OWN components are all goals — that is what a
+                            // conjunction is — and the wrapper reached the loop with
+                            // `is_wrapper` set rather than with slots of its own.
+                            None if is_wrapper => self.in_body_goal = true,
+                            None => {}
+                        }
+                        pos.push(self.build_body_atom_occurrence(pid));
+                        self.in_body_goal = false;
+                        self.in_body_goal_wrapper = false;
                     }
-                    match slots.iter().find(|s| s.index == i) {
-                        Some(slot) if slot.tuple_wrapped => self.in_body_goal_wrapper = true,
-                        Some(_) => self.in_body_goal = true,
-                        // A wrapper's OWN components are all goals — that is what a
-                        // conjunction is — and the wrapper reached the loop with
-                        // `is_wrapper` set rather than with slots of its own.
-                        None if is_wrapper => self.in_body_goal = true,
-                        None => {}
+                    let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+                    for &(sym, pid) in named_args.iter() {
+                        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                            named.push((self.reintern(sym), child));
+                            continue;
+                        }
+                        if self.is_parse_aux(pid) {
+                            continue;
+                        }
+                        let key = self.reintern(sym);
+                        let child = self.build_body_atom_occurrence(pid);
+                        named.push((key, child));
                     }
-                    pos.push(self.build_body_atom_occurrence(pid));
-                    self.in_body_goal = false;
-                    self.in_body_goal_wrapper = false;
-                }
-                let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
-                for &(sym, pid) in named_args.iter() {
-                    if let Some(child) = self.lower_effect_row_aux_occ(pid) {
-                        named.push((self.reintern(sym), child));
-                        continue;
-                    }
-                    if self.is_parse_aux(pid) {
-                        continue;
-                    }
-                    let key = self.reintern(sym);
-                    let child = self.build_body_atom_occurrence(pid);
-                    named.push((key, child));
-                }
-                // WI-710: a NESTED, BRACKETED sort application in a rule body is a
-                // parameterized TYPE (`is_modifiable(Cell[V = Int64])`) — check its type
-                // arguments by the same shared rule the other lowering paths use. Gated
-                // exactly as the `convert_term` peer: `term_depth > 1` (a top-level body
-                // ATOM with a sort head is a GOAL — `:- Modifiable[T = ?t]`, an
-                // instance-fact query), and `is_type_application` (a `(…)` call on a
-                // sort-named functor is a data CONSTRUCTOR — `Leaf(name: ?tip)`). Only
-                // names and counts are read, so a variable argument passes.
-                if self.term_depth > 1
-                    && self.parsed.terms.is_type_application(parse_id)
-                    && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
-                {
-                    let declared = self.kb.type_params_of_sort(new_functor);
-                    let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
-                    if let Err(problem) =
-                        self.kb
-                            .check_sort_type_args(new_functor, &declared, &named_syms, pos.len())
+                    // WI-710: a NESTED, BRACKETED sort application in a rule body is a
+                    // parameterized TYPE (`is_modifiable(Cell[V = Int64])`) — check its type
+                    // arguments by the same shared rule the other lowering paths use. Gated
+                    // exactly as the `convert_term` peer: `term_depth > 1` (a top-level body
+                    // ATOM with a sort head is a GOAL — `:- Modifiable[T = ?t]`, an
+                    // instance-fact query), and `is_type_application` (a `(…)` call on a
+                    // sort-named functor is a data CONSTRUCTOR — `Leaf(name: ?tip)`). Only
+                    // names and counts are read, so a variable argument passes.
+                    if self.term_depth > 1
+                        && self.parsed.terms.is_type_application(parse_id)
+                        && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
                     {
-                        let detail = problem.describe(&self.kb, new_functor);
-                        self.errors.push(LoadError::InvalidTypeArgument {
-                            detail,
-                            span: Some(span.span),
-                        });
+                        let declared = self.kb.type_params_of_sort(new_functor);
+                        let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
+                        if let Err(problem) =
+                            self.kb
+                                .check_sort_type_args(new_functor, &declared, &named_syms, pos.len())
+                        {
+                            let detail = problem.describe(&self.kb, new_functor);
+                            self.errors.push(LoadError::InvalidTypeArgument {
+                                detail,
+                                span: Some(span.span),
+                            });
+                        }
                     }
-                }
-                Expr::Apply {
-                    // WI-20260829-W6JH0: a form-(3) receiver in a RULE BODY carries the
-                    // same claim it does in an operation body, and this walk is the other
-                    // producer of an `Expr::Apply` — so it reads the channel too. Without
-                    // this the claim vanished silently here while being honoured one
-                    // lowering over, which is exactly the split WI-839 wrote its sweep to
-                    // stop. (`type_args` beside it stays `Vec::new()`: that channel is
-                    // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
-                    // decision this ticket does not reopen.)
-                    recv_type: self.build_recv_type(parse_id),
-                    functor: new_functor,
-                    pos_args: pos,
-                    named_args: named,
-                    type_args: Vec::new(),
-                }
+                    Expr::Apply {
+                        // WI-20260829-W6JH0: a form-(3) receiver in a RULE BODY carries the
+                        // same claim it does in an operation body, and this walk is the other
+                        // producer of an `Expr::Apply` — so it reads the channel too. Without
+                        // this the claim vanished silently here while being honoured one
+                        // lowering over, which is exactly the split WI-839 wrote its sweep to
+                        // stop. (`type_args` beside it stays `Vec::new()`: that channel is
+                        // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
+                        // decision this ticket does not reopen.)
+                        recv_type: self.build_recv_type(parse_id),
+                        functor: new_functor,
+                        pos_args: pos,
+                        named_args: named,
+                        type_args: Vec::new(),
+                    }
                 }
             }
         };

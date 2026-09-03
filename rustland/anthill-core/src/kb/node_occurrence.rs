@@ -479,9 +479,12 @@ impl NodeOccurrence {
     /// (WI-20260901-92VA4), and the sentence this replaced claimed a safety property the
     /// second caller does not have.
     ///
-    /// THAT SECOND CALLER NOW SERVES ONLY THE REFLECT FORMS — `ListLiteral` and friends,
-    /// whose occurrence shape is not an `Expr::Apply`. **WI-20260902-2NXAC** owns moving
-    /// them onto the first caller's footing too.
+    /// THAT SECOND CALLER NOW SERVES ALMOST NOTHING. WI-20260902-2NXAC moved the
+    /// collection literals onto the first caller's footing as well, and with both tickets
+    /// in, emptying `parse_dot_chain_table` leaves the whole `wi_tests` binary green —
+    /// the second caller has no reader the suite can reach. It is kept for the ~92
+    /// `dot_apply` / control-flow nodes that still round-trip and that neither ticket
+    /// could drive; see that function's doc for why unreachable is not the same as dead.
     pub fn new_expr_dot_chain(
         expr: Expr,
         span: SourceSpan,
@@ -4982,7 +4985,7 @@ pub fn substitute_occurrence(
                 None => (None, false),
             };
             (c1 || c2 || c3 || c4).then(|| {
-                NodeOccurrence::new_expr(
+                occ.rebuilt_expr(
                     Expr::Apply {
                         recv_type: rt,
                         functor: *functor,
@@ -4990,8 +4993,6 @@ pub fn substitute_occurrence(
                         named_args: named,
                         type_args: ta,
                     },
-                    occ.span,
-                    occ.owner,
                 )
             })
         }
@@ -5004,15 +5005,13 @@ pub fn substitute_occurrence(
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
-                NodeOccurrence::new_expr(
+                occ.rebuilt_expr(
                     Expr::Constructor {
                         name: *name,
                         pos_args: pos,
                         named_args: named,
                         from_projection: *from_projection,
                     },
-                    occ.span,
-                    occ.owner,
                 )
             })
         }
@@ -5024,14 +5023,12 @@ pub fn substitute_occurrence(
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
-                NodeOccurrence::new_expr(
+                occ.rebuilt_expr(
                     Expr::Instantiation {
                         name: *name,
                         pos_args: pos,
                         named_args: named,
                     },
-                    occ.span,
-                    occ.owner,
                 )
             })
         }
@@ -5040,13 +5037,11 @@ pub fn substitute_occurrence(
             let (a, c2) = subst_vec(kb, args, subst);
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| {
-                NodeOccurrence::new_expr(
+                occ.rebuilt_expr(
                     Expr::HoApply {
                         predicate: p,
                         args: a,
                     },
-                    occ.span,
-                    occ.owner,
                 )
             })
         }
@@ -5069,7 +5064,7 @@ pub fn substitute_occurrence(
             let (reqs, c3) = subst_vec(kb, requirements, subst);
             let (ta, c4) = subst_type_args(kb, type_args, subst);
             (c1 || c2 || c3 || c4).then(|| {
-                NodeOccurrence::new_expr(
+                occ.rebuilt_expr(
                     Expr::ApplyWithin {
                         functor: *functor,
                         args: a,
@@ -5077,8 +5072,6 @@ pub fn substitute_occurrence(
                         requirements: reqs,
                         type_args: ta,
                     },
-                    occ.span,
-                    occ.owner,
                 )
             })
         }
@@ -5096,17 +5089,29 @@ pub fn substitute_occurrence(
             return super::simp_rewrite::reassemble(occ, &subst_children);
         }
     };
-    // WI-502 Step 3 / WI-1026: the explicit arms above build the rebuilt node via
-    // `new_expr` (which resets the typer's stamps to `None`); carry `occ`'s
-    // stamped type AND its `CallClass` onto it here, in one place. (The `_` arm
-    // already returned via `reassemble`, which carries them itself.) Both carries
-    // are verbatim — see [`NodeOccurrence::carry_typer_stamps_from`].
-    rebuilt
-        .map(|n| {
-            n.carry_typer_stamps_from(occ);
-            n
-        })
-        .unwrap_or_else(|| Rc::clone(occ))
+    // WI-502 Step 3 / WI-1026 / WI-20260902-2NXAC: NOTHING TO CARRY HERE ANY MORE. The
+    // explicit arms above used to build with `NodeOccurrence::new_expr`, which resets the
+    // typer's stamps, DROPS `dot_chain`, and — unmentioned until now — resets a
+    // `Synthesized` ORIGIN to `Source`. They build with [`NodeOccurrence::rebuilt_expr`]
+    // instead, which carries all three, so this tail is a plain unwrap and the `_` arm's
+    // `reassemble` (which always carried them) needs no special-casing beside it.
+    //
+    // MEASURED, over `wi_tests` with these arms instrumented:
+    //   * `dot_chain`: 16 chain-bearing nodes reach the arms, and **0** are rebuilt — a
+    //     citation is `field_access(Ref(ns), Ident(rel))` with `type_args: []` and
+    //     `recv_type: None`, and substitution rewrites only `Var::Global` leaves, so no
+    //     child can change and the old code returned `Rc::clone(occ)` every time. The bit
+    //     was never actually lost; WI-20260902-2NXAC's finding (3) is correct as
+    //     code-reading and was INERT in fact.
+    //   * the ORIGIN: **20** nodes ARE rebuilt, every one of them `Synthesized`. That loss
+    //     was real and is what this change actually repairs — the readers are
+    //     `simp_rewrite`'s two `Synthesized` matches and `source_head_name`'s provenance
+    //     walk (WI-20260820-5R2XT).
+    //
+    // NEITHER IS DRIVABLE FROM THE SUITE: with the switch in, all 36 binaries are
+    // unchanged. It is made correct by construction rather than left to a comment
+    // asserting the arms are safe, which is what the previous version of this one did.
+    rebuilt.unwrap_or_else(|| Rc::clone(occ))
 }
 
 /// WI-342 E2 — rewrite `Expr::Ref(s)` leaves to `Expr::Ref(map[s])` inside a
@@ -5533,10 +5538,14 @@ pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccur
 /// WI-20260902-2SZ88 TOOK THE ENTITY CONSTRUCTORS OUT OF THIS PATH. [`crate::kb::load`]'s
 /// `entity_ctor_expr` builds them from the PARSE node instead, so their children take
 /// their spans and their `dot_chain` from their own parse terms and neither table can be
-/// wrong about them. What still arrives here is the REFLECT half — 284 nodes of the
-/// 127 097 that took the early return over the whole workspace suite, `ListLiteral` the
-/// largest at 192 — because a reflect form's occurrence is not an `Expr::Apply` and its
-/// shape lives in `visit_fn`. **WI-20260902-2NXAC** owns finishing it.
+/// wrong about them. WI-20260902-2NXAC then did the same for the three COLLECTION
+/// LITERALS (`collection_literal_expr`), which were 192 of the 284 reflect-keyed nodes
+/// that still took the early return.
+///
+/// WHAT STILL ARRIVES HERE is the ~92 left: `dot_apply` (49) and the control-flow forms,
+/// whose occurrence shape is not an `Expr::Apply` and whose arms live in [`visit_fn`].
+/// They reach a rule body only as reflection PATTERNS or not at all (`let` does not parse
+/// there), which is why neither ticket could drive them.
 ///
 /// NOT AN ENUMERATION OF CALLERS, deliberately: `load.rs` has four `materialize_from_handle*`
 /// sites, not two, and only ONE of them passes a table — `bare_entity_goal_occurrence`
@@ -6653,7 +6662,7 @@ fn bottom_node() -> Rc<NodeOccurrence> {
 /// bare short name `apply`. We prefer the qualified name as the
 /// source of truth; if its last segment is empty (unlikely), fall
 /// back to the short name.
-fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
+pub(crate) fn expr_form_key<'a>(qn: &'a str, short: &'a str) -> &'a str {
     let last = qn.rsplit('.').next().unwrap_or(qn);
     if last.is_empty() {
         short
