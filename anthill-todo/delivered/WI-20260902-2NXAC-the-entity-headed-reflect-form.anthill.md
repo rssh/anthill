@@ -3,9 +3,9 @@
 - id: WI-20260902-2NXAC-the-entity-headed-reflect-form
 - created: 2026-09-02T18:39:48Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-02T20:53:38Z
+- status_at: 2026-09-03T05:44:07Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -381,4 +381,22 @@ exactly (3 errors at one offset, 0 with no consumer, 1 for each direct spelling,
 one-segment citation in the same fire). `synthesized_expr` hardcodes `dot_chain: false`
 DELIBERATELY — a synthesis is not the author's dot — so the fix is not that constructor: it
 is for a `[simp]` rule to keep its RHS OCCURRENCE instead of re-deriving it from the term.
+
+### 2026-09-03T05:44:03Z — feedback — user
+
+The -RHS relative is split out as WI-20260903-FCZ3N (a third term->occurrence round-trip, in `simp_rewrite::subst_visit`) — it is a different walk with its own design question (where a rule's RHS occurrence would live), not inline work. All three of this ticket's numbered findings are delivered; the one residue kept here is named at its site: a form-(3) receiver on a ZERO-FIELD constructor, where `Expr::Ref` has no `recv_type` slot to hold one.
+
+### 2026-09-03T05:44:27Z — feedback — user
+
+CORRECTION to the note just above: its text was mangled by the shell (backticks inside a
+double-quoted argument are command substitution — `[simp]` ran as a command). Read this one.
+
+THE `[simp]`-RHS RELATIVE IS SPLIT OUT AS WI-20260903-FCZ3N. It is a third
+term->occurrence round-trip, in `simp_rewrite::subst_visit`, and it is a different walk
+with its own design question — where a `[simp]` rule's RHS occurrence would live, given
+that the rule stores a TERM — so it is not inline work.
+
+All three of this ticket's numbered findings are delivered. The one residue kept here is
+named at its site: a proposal-035 form-(3) receiver on a ZERO-FIELD constructor, where the
+occurrence is an `Expr::Ref` with no `recv_type` slot to hold one.
 
