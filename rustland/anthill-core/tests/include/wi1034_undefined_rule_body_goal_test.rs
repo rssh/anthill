@@ -352,9 +352,11 @@ fn the_corpus_still_loads() {
 
 /// ONE GOAL IN THE TEXT REPORTS ONCE. A `-:` multi-head rule desugars to one clause
 /// per conclusion sharing the body, so a single dangling goal arrives at the check
-/// through N `RuleId`s. These errors bypass `dedup_load_errors` (they are returned
-/// straight from `load_phase_inner`), so the producer keying on (functor, span) is
-/// the only thing that collapses them.
+/// through N `RuleId`s. These errors bypass the per-file `dedup_load_errors` (they are
+/// returned straight from `load_phase_inner`), which is why the producer keys on
+/// (functor, span) — and since WI-20260903-W9D4Z the phase's own
+/// `dedup_rendered_load_errors` would collapse them at the channel too. The producer key
+/// stays: it is `SourceSpan`-based, so it holds however the message renders.
 ///
 /// MEASURED on `safety_gps.anthill:347`, which reported twice — and, before the rule
 /// name was dropped from the message, reported the two copies against

@@ -737,30 +737,39 @@ pub struct CallSite {
     /// only one, `1`, `2`, … for further ones in `req_insertion`'s walk order.
     ///
     /// A SPAN IS NOT UNIQUE PER CALL, and the case is a real program rather than a
-    /// theoretical one. `NodeOccurrence::synthesized_expr` inherits its span verbatim
-    /// from the occurrence it was expanded from, and `simp_rewrite`'s
-    /// `substitute_to_occurrence` builds EVERY node of a `[simp]` RHS from the single
-    /// redex occurrence — so a `[simp]` equation whose RHS calls one deferred spec op
-    /// twice expands, inside one operation body, into two classified applies with the
-    /// same op, functor and span. DRIVEN at WI-873 (found in review of the first
-    /// patch, which had only `(op, functor, span)`):
+    /// theoretical one. DRIVEN at WI-873 (found in review of the first patch, which
+    /// had only `(op, functor, span)`). Without this field the colliding call's rewrite
+    /// is lost — the WI-873 defect recurring one coordinate over, at a key that had
+    /// merely stopped naming the callee and started naming the source position.
+    ///
+    /// WHICH PROGRAM COLLIDES MOVED AT WI-20260903-FCZ3N. The shape this note used to
+    /// give was TWO CALLS IN ONE `[simp]` RHS: `substitute_to_occurrence` built every
+    /// node of the RHS from the single redex occurrence and `synthesized_expr` inherited
+    /// that span, so `rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) [simp]` expanded
+    /// into two classified applies at one `(op, functor, span)`. A fired RHS now keeps
+    /// the span its AUTHOR wrote, so those two `eq` calls carry two spans and no longer
+    /// collide (`wi873_…_test::a_simp_expansion_with_two_calls_is_two_entries` asserts
+    /// their distinctness now). What collides instead is the mirror — ONE written call
+    /// spliced at N REDEXES:
     ///
     /// ```anthill
     /// operation both(a: T, b: T) -> Bool = true
-    /// rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) [simp]
-    /// operation drive(a: T, b: T) -> Bool = both(a, b)
+    /// rule both(?a, ?b) <=> eq(?a, ?b) [simp]
+    /// operation drive(a: T, b: T) -> Bool = and(both(a, b), both(b, a))
     /// ```
     ///
-    /// Without this field that program loses `drive`'s second `eq` rewrite — the
-    /// WI-873 defect recurring one coordinate over, at a key that had merely stopped
-    /// naming the callee and started naming the source position. `wi873_…_test::
-    /// a_simp_expansion_with_two_calls_is_two_entries` is the pin.
+    /// which cannot stop colliding: one authored span is all there is.
+    /// `…::one_rule_fired_at_two_redexes_collides_on_one_span` is the pin, and its own
+    /// back-out (`r.nth_at_span = 0`) fails it at `got 1`.
     ///
     /// Stable across re-runs of the pass (which is what the recorders' idempotence
-    /// needs): the ordinal comes from a deterministic walk of a fixed occurrence
-    /// tree, and it is scoped to the colliding group, so it is `0` for every call in
-    /// the tree today and unaffected by walk order everywhere the group is a
-    /// singleton.
+    /// needs): the ordinal comes from a deterministic walk of a fixed occurrence tree,
+    /// and it is scoped to the colliding group, so walk order cannot reach a singleton.
+    /// RE-MEASURED after FCZ3N, because moving the collision class is exactly what could
+    /// have invalidated that: the stamp is `0` for every call in the stdlib /
+    /// `github-todo` corpora and across `anthill-todo` (488 loads), and over the whole
+    /// `wi_tests` corpus (5 551 loads) exactly ONE entry is non-zero — the fixture
+    /// written to drive it.
     pub nth_at_span: u32,
 }
 

@@ -199,20 +199,28 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 /// the group's members get distinct [`CallSite`]s.
 ///
 /// A SPAN DOES NOT IDENTIFY A CALL, which the first cut of this ticket assumed and a
-/// review disproved with a program: `simp_rewrite::substitute_to_occurrence` builds
-/// every node of a `[simp]` RHS from the single redex occurrence, and
-/// `NodeOccurrence::synthesized_expr` inherits that occurrence's span — so a `[simp]`
-/// equation whose RHS calls one deferred spec op twice puts two classified applies at
-/// one `(op, functor, span)`. Without this stamp the second one's rewrite is dropped
-/// by the recorders' idempotence guard, silently and indistinguishably from a
-/// legitimate re-run: WI-873's own defect, recurring at a narrower key. See
-/// [`CallSite::nth_at_span`] for the driven fixture.
+/// review disproved with a program. Without this stamp the second colliding call's
+/// rewrite is dropped by the recorders' idempotence guard, silently and
+/// indistinguishably from a legitimate re-run: WI-873's own defect, recurring at a
+/// narrower key. See [`CallSite::nth_at_span`] for the driven fixture.
 ///
-/// The group is the collision class, not the whole walk, so the stamp is `0` for
-/// every call in the stdlib / `anthill-stl` / `anthill-todo` / `github-todo` corpora
-/// and only a macro expansion ever sees a `1`. That keeps the key stable against
-/// changes in walk ORDER wherever the group is a singleton, which is everywhere that
-/// matters.
+/// WHICH CALLS COLLIDE MOVED AT WI-20260903-FCZ3N, and this note used to describe only
+/// the old shape (two calls in ONE `[simp]` RHS, sharing the redex's span, because
+/// `substitute_to_occurrence` built every node from the redex occurrence). A fired RHS
+/// now keeps the span its AUTHOR wrote, so those two calls have two spans and no longer
+/// collide — what collides instead is ONE written call spliced at N REDEXES, which
+/// cannot stop colliding, since one authored span is all there is. Both directions are
+/// pinned: `wi873_…_test::a_simp_expansion_with_two_calls_is_two_entries` (distinct now)
+/// and `…::one_rule_fired_at_two_redexes_collides_on_one_span` (the collision).
+///
+/// The group is the collision class, not the whole walk, so the stamp is still `0`
+/// almost everywhere, and the singleton case is what keeps the key stable against
+/// changes in walk ORDER. RE-MEASURED after FCZ3N, since moving the collision class is
+/// exactly what could have invalidated it: `0` for every call in the stdlib /
+/// `github-todo` corpora (54 classified calls) and across `anthill-todo` (488 loads),
+/// and over the whole `wi_tests` corpus (5 551 loads) exactly ONE entry is stamped
+/// non-zero — `one_rule_fired_at_two_redexes_collides_on_one_span`, the fixture written
+/// to drive it.
 ///
 /// AFTER THIS RUNS THE KEY IS INJECTIVE BY CONSTRUCTION, so nothing asserts
 /// distinctness afterwards. The first cut of this fix did, and it was worth

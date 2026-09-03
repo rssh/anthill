@@ -1588,3 +1588,6 @@ mod wi_2nxac_collection_literal_native_occurrence_test;
 
 #[path = "include/wi_fcz3n_simp_rhs_occurrence_test.rs"]
 mod wi_fcz3n_simp_rhs_occurrence_test;
+
+#[path = "include/wi_w9d4z_one_mistake_one_diagnosis_test.rs"]
+mod wi_w9d4z_one_mistake_one_diagnosis_test;

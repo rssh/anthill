@@ -1267,12 +1267,18 @@ pub enum LoadError {
     /// shapes and why each cannot enforce it.
     ///
     /// A span-bearing variant rather than a bare `Other`, for the reason spelled
-    /// at [`Self::UnknownEntityField`]: `Other` renders unlocated, and
-    /// `dedup_load_errors` (keyed on the rendering) would collapse two offending
-    /// rules into one message. Within a file that is now exact; ACROSS files two
-    /// unlabeled rules at equal byte offsets still collapse, since `dedup_key`
-    /// peels the `Located` wrapper — the pre-existing limit `NonEqKeyRequiresLawfulEq`
-    /// documents, not one this variant introduces.
+    /// at [`Self::UnknownEntityField`]: `Other` renders unlocated, and both dedups
+    /// key on the rendering — so two offending rules would collapse into one
+    /// message. Carrying the span, they do not.
+    ///
+    /// WI-20260903-W9D4Z corrected what this note used to claim next: that ACROSS
+    /// files two UNLABELED rules at equal byte offsets "still collapse". They do
+    /// not, and never did. `dedup_load_errors` is reached only through
+    /// `stamped_file_errors`, which is handed ONE file's errors at a time, so two
+    /// files' diagnostics were never in one call for it to collapse — MEASURED at
+    /// 2 refusals, with and without the channel dedup. The batch-wide
+    /// `dedup_rendered_load_errors` DOES span files, which is exactly why its key
+    /// carries the source's identity and not the rendering alone.
     TypedPatternNotEnforced {
         /// The offending rule's citation LABEL, qualified — raw, not a phrase:
         /// [`typed_pattern_refusal_detail`] owns every word of the rendering.
@@ -3725,11 +3731,15 @@ impl std::fmt::Display for LoadError {
                 // The trailing byte range follows the convention every other
                 // span-bearing variant here uses, so `dedup_key` (= this rendering)
                 // separates two refusals written at different offsets. It is NOT what
-                // keeps the two apart today: these errors are returned from
-                // `load_phase_inner` without passing through `dedup_load_errors`, and
-                // a byte range alone would not survive a cross-FILE collision anyway
-                // (no path, no `SourceId`). That case is decided at the producer, by
-                // `check_use_site_requires_eq`'s per-site `SourceSpan` key.
+                // keeps the two apart today, and a byte range alone would not survive a
+                // cross-FILE collision anyway (no path, no `SourceId`). That case is
+                // decided TWICE over: at the producer, by `check_use_site_requires_eq`'s
+                // per-site `SourceSpan` key, and again at the channel — WI-20260903-W9D4Z
+                // gave `load_phase_inner` a batch-wide `dedup_rendered_load_errors` whose
+                // key carries the SOURCE's identity for exactly this reason.
+                // `wi835_use_site_requires_scope_test`'s
+                // `one_refusal_per_site_including_across_files_at_equal_offsets` is the
+                // row that measures it, and it fails if EITHER key drops the file.
                 let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
                     container, spec, param, param, carrier);
                 match span {
@@ -12136,9 +12146,12 @@ fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
     // Keyed by (functor, where it is written), so ONE goal in the text reports ONCE.
     // Load-bearing, not tidiness: a `-:` multi-head rule desugars to one clause per
     // conclusion sharing the body, so `safety_gps.anthill:347`'s single
-    // `distance_at_step(?k, ?d)` arrives here through TWO `RuleId`s. These errors are
-    // returned from `load_phase_inner` without passing through `dedup_load_errors`, so
-    // the producer is the only place that can collapse them.
+    // `distance_at_step(?k, ?d)` arrives here through TWO `RuleId`s. These errors do not
+    // pass through the per-file `dedup_load_errors`, which was once the whole reason this
+    // key existed; since WI-20260903-W9D4Z the phase's own
+    // `dedup_rendered_load_errors` would collapse them too. This key STAYS because it is
+    // `SourceSpan`-based and so holds however the message renders — the channel is the
+    // backstop, not the owner.
     let mut seen: HashSet<(Symbol, crate::span::SourceSpan)> = HashSet::new();
     let mut errors = Vec::new();
     for rid in kb.live_rule_ids_iter() {
@@ -12919,7 +12932,11 @@ fn load_phase_inner(
                 per_file,
             ))
         } else {
-            Err(all_errors)
+            // WI-20260903-W9D4Z — both of this phase's exits collapse indistinguishable
+            // diagnostics, not just the full one: the partial path is the same channel
+            // handed to the same reader, and every producer above the `run_typer` gate
+            // feeds both.
+            Err(dedup_rendered_load_errors(all_errors))
         };
     }
     all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
@@ -13172,7 +13189,11 @@ fn load_phase_inner(
             per_file,
         ))
     } else {
-        Err(all_errors)
+        // WI-20260903-W9D4Z — the LAST thing the phase does to its error list, so every
+        // producer above is covered by one rule instead of ~30 hand-rolled ones. See
+        // `dedup_rendered_load_errors` for why the channel owns this and the per-file
+        // `dedup_load_errors` cannot.
+        Err(dedup_rendered_load_errors(all_errors))
     }
 }
 
@@ -13254,6 +13275,100 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
     errors
         .into_iter()
         .filter(|e| seen.insert(e.dedup_key()))
+        .collect()
+}
+
+/// WI-20260903-W9D4Z — A DIAGNOSTIC THE READER CANNOT TELL APART FROM ONE ALREADY
+/// REPORTED IS REPORTED ONCE. The load phase's whole error batch, keyed on what the
+/// reader ACTUALLY SEES: the file it came from plus its rendering
+/// (`path:line:col: message`, or the bare `Display` for an unstamped error).
+///
+/// WHY THE CHANNEL AND NOT A PRODUCER. [`dedup_load_errors`] answers the same question
+/// for ONE FILE's loader errors, and it cannot answer it here: `all_errors` merges every
+/// file's loader batch with ~30 whole-KB passes that never pass through it, so a defect
+/// reported by TWO of those (or by the loader AND the typer) survives. Both shapes are
+/// real and both are in the corpus — see the census in
+/// `wi_w9d4z_one_mistake_one_diagnosis_test`. Producers had been collapsing their own
+/// copies by hand for exactly this reason (`check_rule_body_goals`,
+/// `check_use_site_requires_eq`), which works only for a duplicate whose two copies come
+/// from the SAME pass. Those keys stay: they are `SourceSpan`-based, so they hold
+/// independently of how a message renders, and they keep a producer's own bookkeeping
+/// honest. This is the backstop under all of them.
+///
+/// THE CLAIM IS INDISTINGUISHABILITY, NOT IMPOSSIBILITY. Two errors that render
+/// byte-identically at the same location in the same file may well be two separate
+/// findings — one `[simp]` rule fired at two redexes is exactly that, and it is why this
+/// exists. Printing the second one tells the reader nothing the first did not: same
+/// sentence, same `path:line:col`, nothing to tell the copies apart. What is REFUSED is
+/// collapsing two errors the reader COULD separate, which is why the key carries file
+/// identity and the full rendering rather than the message alone.
+///
+/// KEYED ON THE RENDERING, not on [`LoadError::dedup_key`]. That key is the bare
+/// `Display` — byte-range-precise but path-less, which is exactly right per file and
+/// wrong across a batch in both directions: it would let two errors sharing a span's
+/// START but not its END print as two identical `line:col` lines, and it carries nothing
+/// to keep two errors at equal byte offsets in DIFFERENT files apart. Path-lessness cost
+/// `dedup_load_errors` nothing because it only ever sees one file
+/// (`stamped_file_errors`); a batch-wide key gets both files at once, so it must say
+/// which.
+///
+/// FILE IDENTITY IS THE SOURCE'S ADDRESS, for the reason [`LoadError::render_all`] keys
+/// its line-index cache the same way: every error stamped from one file shares that
+/// file's `Arc<str>`, so the address is exact — and two files with no `path` (a CLI
+/// string, a test fixture) are still told apart, which their renderings alone could not
+/// do. A miss (the same file behind two `Arc`s) keeps both errors, which is the safe
+/// direction.
+///
+/// ONE LINE INDEX PER FILE, not per error: resolving a `line:col` walks the file from
+/// byte 0, so rendering a batch the naive way is O(N × len) — measured at ~50 s for 2100
+/// diagnostics over 2.7 MB, which is why `render_all` exists. This keys through the same
+/// cache, and only files that actually produced an error are ever indexed. A clean load
+/// never reaches here at all: it is on the `Err` arm.
+///
+/// THE ONE READER-FACING CHANNEL THIS DOES NOT COVER is `anthill-cli`'s
+/// `scan_query_source`, which reports a query source's declaration scan directly rather
+/// than through a load phase. Left alone deliberately, and not because it is out of
+/// reach: it is ONE pass over ONE file, so it has no two producers to pair — the shape
+/// this exists for cannot arise there, and no duplicate from it appears in the census.
+fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
+    // Rendered in a borrowing pass of its own — `LineIndex` holds a `&str` into the
+    // error's own `Arc`, so the cache cannot outlive the borrow the `into_iter` below
+    // consumes. `keep[i]` is "this is the FIRST error rendering this way".
+    let keep: Vec<bool> = {
+        let mut indexes: HashMap<usize, LineIndex> = HashMap::new();
+        let mut seen: HashSet<(usize, String)> = HashSet::new();
+        errors
+            .iter()
+            .map(|e| {
+                let key = match e {
+                    LoadError::Located {
+                        path,
+                        source,
+                        inner,
+                    } => {
+                        // `str::as_ptr` through the `Arc<str>` deref — the DATA address,
+                        // which is what two clones of one file share (`render_all` keys
+                        // its own cache identically).
+                        let addr = source.as_ptr() as usize;
+                        let loc = indexes
+                            .entry(addr)
+                            .or_insert_with(|| LineIndex::new(source));
+                        (addr, LoadError::located_render_at(path, loc, inner))
+                    }
+                    // Never stamped with a file — a whole-KB pass's error with no span to
+                    // attribute, or a typer error whose `SourceRegistry` lookup came back
+                    // empty. Address 0 puts every one of them in one bucket, which is the
+                    // most the reader can distinguish: they render with no file either.
+                    other => (0, other.to_string()),
+                };
+                seen.insert(key)
+            })
+            .collect()
+    };
+    errors
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(e, first)| first.then_some(e))
         .collect()
 }
 
