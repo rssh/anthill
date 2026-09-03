@@ -386,6 +386,30 @@ struct RuleEntry {
     /// the loader right after assert (see `set_rule_head_span`), read by the
     /// typing.rs head-error paths.
     head_span: Option<crate::span::SourceSpan>,
+    /// WI-20260903-FCZ3N — an EQUATION'S RHS AS THE AUTHOR WROTE IT, De Bruijn-closed
+    /// beside `head` and `body_nodes`. `None` for every clause that is not a bodyless
+    /// equation, and for one whose head no source text produced.
+    ///
+    /// THE HEAD IS A TERM AND A TERM CANNOT ANSWER TWO OF THE QUESTIONS A FIRE ASKS.
+    /// `[simp]` firing splices the RHS into an operation body as an OCCURRENCE, and
+    /// `simp_rewrite::subst_visit` used to re-derive that occurrence from the stored
+    /// head term — so every node of it arrived `Synthesized`, at the REDEX's span, with
+    /// `dot_chain` clear. Both losses are real and were measured: a dotted paren-less
+    /// citation `ns.inner.rel` in a fired RHS reported THREE "expected resolved name"
+    /// errors (the per-leaf cascade WI-20260902-4NEKZ removed, back because
+    /// `loader_chain_dotted_name`'s provenance gate could no longer read the chain) and
+    /// reported them at `trig(5)`, where that name does not appear.
+    ///
+    /// The occurrence is built where the PARSE NODE is (`Loader::equation_rhs_occurrence`
+    /// → `lowered_child_occurrence`), which is WI-20260902-2SZ88's and
+    /// WI-20260902-2NXAC's rule for the same class of defect: an occurrence a pass needs
+    /// is built from the syntax that produced it, never re-derived from the term.
+    ///
+    /// Installed after the assert by [`Self::set_rule_equation_rhs_node`], the shape
+    /// `head_span` and `type_bounds` already use — the loader has the `RuleId` only
+    /// then, and the De Bruijn close needs `globals`, which `finalize_rule_debruijn_nodes`
+    /// has just written.
+    rhs_node: Option<Rc<NodeOccurrence>>,
     /// WI-5XBBQ — [`ClauseOrigin`]: did the SOURCE TEXT write this clause, or did the
     /// loader derive it?
     ///
@@ -3215,6 +3239,10 @@ impl KnowledgeBase {
             // WI-472: set by `assert_fact_value` after this push, for a deduped
             // Node/Entity fact head. Every other head (rule, un-deduped, or a
             // `Value::Term` fact whose key is the head itself) leaves it `None`.
+            // WI-20260903-FCZ3N: filled by the loader via `set_rule_equation_rhs_node`
+            // for a bodyless equation whose head came from source text; every other
+            // clause keeps `None` and its RHS is re-derived from the head term.
+            rhs_node: None,
             // WI-5XBBQ: DERIVED unless the loader says otherwise — see the field.
             origin: ClauseOrigin::Derived,
         });
@@ -7231,6 +7259,43 @@ impl KnowledgeBase {
     /// bound_type)` pairs the firing check reads. Empty for untyped rules.
     pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, TermId)] {
         &self.rules[id.index()].type_bounds
+    }
+
+    /// WI-20260903-FCZ3N — install this equation's WRITTEN RHS occurrence (see the
+    /// `rhs_node` field), closing its Global vars to De Bruijn against the rule's own
+    /// `globals` so the stored occurrence is indexed exactly as the head term beside it
+    /// is. The loader calls it right after the assert, like `set_rule_head_span` and
+    /// `install_rule_type_bounds` — the `RuleId`, and with it `globals`, exists only then.
+    ///
+    /// `pub(crate)`: the only legitimate writer is the loader, which alone holds the
+    /// parse node the occurrence must be built from. A host-asserted equation has no
+    /// written RHS and must not get a synthesized stand-in — the term path is the honest
+    /// answer for it.
+    pub(crate) fn set_rule_equation_rhs_node(&mut self, id: RuleId, occ: Rc<NodeOccurrence>) {
+        let globals = self.rules[id.index()].globals.clone();
+        let closed = if globals.is_empty() {
+            occ
+        } else {
+            node_occurrence::node_to_debruijn(self, &occ, &globals)
+        };
+        self.rules[id.index()].rhs_node = Some(closed);
+    }
+
+    /// WI-20260903-FCZ3N — this equation's WRITTEN RHS occurrence, still De Bruijn-closed
+    /// (the firing site opens it against the same `fresh` globals it opened the head
+    /// with). `None` when the clause is not a source-written bodyless equation; see the
+    /// `rhs_node` field.
+    ///
+    /// Returns a clone of the `Rc`, not a borrow: every caller is mid-fire and holds
+    /// `&mut KnowledgeBase` for the opening walk that immediately follows.
+    ///
+    /// `pub` READER beside a `pub(crate)` WRITER, the split `rule_type_bounds` /
+    /// `install_rule_type_bounds` already uses: only the loader may install one (it alone
+    /// holds the parse node), while asking whether a clause kept one is an inspection any
+    /// caller may make — and a suite has to, to assert the POPULATION rather than one
+    /// fixture (`wi_fcz3n_simp_rhs_occurrence_test::every_fireable_source_equation_keeps_its_rhs_occurrence`).
+    pub fn rule_equation_rhs_node(&self, id: RuleId) -> Option<Rc<NodeOccurrence>> {
+        self.rules[id.index()].rhs_node.clone()
     }
 
     /// Resolve a qualified rule name to the first matching `RuleId`.

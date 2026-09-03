@@ -11,9 +11,15 @@
 //! Reuse: matching is the existing discrimination tree via `match_view`
 //! (`Rc<NodeOccurrence>` is a `TermView`, WI-276/277); DeBruijn opening is
 //! the KB's `term_from_debruijn`. The only occurrence-specific piece is the
-//! build side, [`substitute_to_occurrence`], which constructs the RHS as a
-//! `NodeOccurrence` (carrying span + `Synthesized` provenance) on top of the
-//! shared `walk_view`.
+//! build side, [`build_rhs_template`], which produces the RHS as a
+//! `NodeOccurrence` two ways. A rule that kept its written RHS
+//! (`KnowledgeBase::rule_equation_rhs_node`, WI-20260903-FCZ3N) has it
+//! re-parented onto the redex by [`reparent_spliced`] — every node keeping the
+//! span and `dot_chain` the author wrote — and σ applied by the shared
+//! `node_occurrence::substitute_occurrence`. A rule with no source text (a
+//! host- or runtime-asserted equation) gets [`substitute_to_occurrence`],
+//! which walks the head TERM and mints a `Synthesized` node per level on top
+//! of the shared `walk_view`.
 //!
 //! Firing (WI-283) matches an `is_equation` + `[simp]` rule's LHS via
 //! `match_view`, then applies the type-directed guard
@@ -28,8 +34,9 @@
 //! firing — proposal 043 §4.1 / a follow-up.
 //!
 //! Recursion depth (WI-278): the walk is iterative. [`rewrite`] descends the
-//! tree on an explicit `Visit`/`Build` work-stack, and
-//! [`substitute_to_occurrence`] builds the RHS on a second work-stack — both
+//! tree on an explicit `Visit`/`Build` work-stack, and both RHS builders
+//! ([`substitute_to_occurrence`], [`reparent_spliced`]) build on a
+//! second work-stack — all
 //! mirroring the sibling `NodeOccurrence::Drop`, `materialize_from_handle`,
 //! and the typing pass, which were made iterative to survive deeply-nested
 //! bodies (the 624-line typing_pass_spec.anthill). This was a prerequisite for
@@ -59,7 +66,7 @@ use super::load::meta_has_flag;
 use super::node_occurrence::{self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin};
 use super::occurrence::PassId;
 use super::subst::Substitution;
-use super::term::{Term, TermId, VarId};
+use super::term::{Term, TermId, Var, VarId};
 use super::{KnowledgeBase, RuleId};
 
 /// Per-node fixpoint bound — mirrors `apply_eq_rules`'s fuel (`resolve.rs`),
@@ -740,9 +747,11 @@ pub(super) fn try_fire(
         {
             continue;
         }
-        // The typer skips typed-bound rules above, so it ignores the opened
-        // `fresh` globals (they key only the resolver's typed-pattern bounds).
-        let (lhs, rhs, _fresh) = match open_equation(kb, rid) {
+        // WI-20260903-FCZ3N: the opened `fresh` globals are threaded into
+        // `instantiate_rhs`, which opens this rule's WRITTEN RHS occurrence against the
+        // same frame. (They key the resolver's typed-pattern bounds too; the typer skips
+        // bound-carrying rules above and reads them for nothing else.)
+        let (lhs, rhs, fresh) = match open_equation(kb, rid) {
             Some(opened) => opened,
             None => continue,
         };
@@ -771,7 +780,7 @@ pub(super) fn try_fire(
             // The RHS is instantiated `from` the FOLDED redex when there is one, so the
             // synthesized provenance chain reaches the record occurrence the macro was
             // handed rather than a node it never saw.
-            return Ok(Some(instantiate_rhs(kb, rhs, &subst, target)?));
+            return Ok(Some(instantiate_rhs(kb, rid, rhs, &fresh, &subst, target)?));
         }
     }
     Ok(None)
@@ -968,12 +977,14 @@ fn fold_capture_redex(
 /// pay for one. That let both callers drop a parameter and `TyperFirer` drop a field.
 pub(super) fn instantiate_rhs(
     kb: &mut KnowledgeBase,
+    rid: RuleId,
     rhs: TermId,
+    fresh: &[VarId],
     subst: &Substitution,
     from: &Rc<NodeOccurrence>,
 ) -> Result<Rc<NodeOccurrence>, MacroRejection> {
     let pass = simp_pass(kb);
-    let template = substitute_to_occurrence(kb, rhs, subst, from, pass);
+    let template = build_rhs_template(kb, rid, rhs, fresh, subst, from, pass);
     Ok(try_expand_macro(kb, &template)?.unwrap_or(template))
 }
 
@@ -989,12 +1000,281 @@ pub(super) fn instantiate_rhs(
 /// unrepresentable, over a doc comment asking callers to remember.
 pub(super) fn instantiate_rhs_verbatim(
     kb: &mut KnowledgeBase,
+    rid: RuleId,
     rhs: TermId,
+    fresh: &[VarId],
     subst: &Substitution,
     from: &Rc<NodeOccurrence>,
 ) -> Rc<NodeOccurrence> {
     let pass = simp_pass(kb);
-    substitute_to_occurrence(kb, rhs, subst, from, pass)
+    build_rhs_template(kb, rid, rhs, fresh, subst, from, pass)
+}
+
+/// WI-20260903-FCZ3N — THE SUBSTITUTED RHS, BUILT FROM THE OCCURRENCE THE AUTHOR WROTE
+/// WHEN THE RULE KEPT ONE. The one place the two builders are chosen between, so neither
+/// firing site decides it.
+///
+/// [`KnowledgeBase::rule_equation_rhs_node`] holds a source-written equation's RHS as an
+/// occurrence, De Bruijn-closed beside the head. THREE STEPS, in this order, and the
+/// order is what makes each one simple:
+///
+///  1. **OPEN** it against the SAME `fresh` globals [`open_equation`] opened the head
+///     term with, so its variable leaves — everywhere, `Expr::Apply`'s `type_args` and
+///     `recv_type` included — are the ones `subst` binds.
+///  2. **RE-PARENT** every node onto the redex ([`reparent_spliced`]). Done BEFORE the
+///     substitution, while the tree is still the template alone: after it, a matched
+///     redex child is spliced in and must keep ITS identity, and a re-parent pass could
+///     no longer tell the two apart.
+///  3. **SUBSTITUTE** through [`node_occurrence::substitute_occurrence`] — the ONE owner
+///     of "apply σ to an occurrence", shared with the resolver's per-goal walk. It
+///     rebuilds with `rebuilt_expr`, which carries the span, the `dot_chain` and the
+///     `Synthesized` origin step 2 just wrote.
+///  4. **BOTTOM OUT** whatever rule variable σ did not bind ([`bottom_out_unbound`]),
+///     because step 3's owner answers a DIFFERENT question about a free variable than
+///     this one does — see below.
+///
+/// STEP 3 IS THAT FUNCTION AND NOT A LOCAL WALK, because σ reaches more places than an
+/// `Expr::Var` leaf: `Expr::Apply`'s `type_args` and `recv_type`, a `Type`/`EffectExpr`
+/// spine, a `Pattern`'s annotation. This ticket's first cut substituted only the leaves
+/// `for_each_child` yields and copied the rest verbatim; `/code-review` found it.
+///
+/// ── A RULE VARIABLE IN A TYPE POSITION IS STILL NOT INSTANTIATED ────────────
+///
+/// AND ROUTING THROUGH `substitute_occurrence` DOES NOT FIX IT, which is measured rather
+/// than assumed. With `import anthill.prelude.Map.{empty, put, size}`, driven by
+/// `size(put(mk(…), "a", 1))` — the mismatch is `"a"` against the receiver's `K`:
+///
+/// | `[simp]` RHS                                 | before this ticket | now |
+/// |---|---|---|
+/// | `Map[K = Bool, V = Int64].empty()` (GROUND)  | 0 errors | **1** |
+/// | `Map[K = ?k,   V = Int64].empty()` (VARIABLE)| 0 errors | 0 |
+/// | the same call written directly in an operation body | 1 | 1 |
+///
+/// The GROUND row is this ticket's own gain: the term path dropped `recv_type`
+/// altogether, so the receiver the author wrote was never checked at all, and it now
+/// agrees with the direct spelling. The VARIABLE row is UNMOVED — 0 before, 0 after — and
+/// the reason is a layer below this one: the typer's fire binds every rule variable to a
+/// `Value::Node` (the redex's children are occurrences), and a type position is a
+/// `Value::Term` whose σ is `KnowledgeBase::apply_subst`, which is term-world and
+/// documents that "a var bound to a non-`Term` carrier stays the var". So `?k` stays the
+/// throwaway `fresh` global, which unifies with anything.
+///
+/// NOT REFUSED AT LOAD EITHER, and that is the same measurement: whether the binding can
+/// be represented depends on the REDEX, so a load-time refusal would also refuse the
+/// resolver's term-bound case, which works. Censused: **0** of the 21 `[simp]`/`[unfold]`
+/// equations in a stdlib load carry a type position at all, so nothing shipped depends on
+/// either answer today. **OWNED BY WI-20260903-H054K**, which has to decide between
+/// converting a type-shaped `Value::Node` binding into a type term and refusing at the
+/// FIRE, where the carrier is known.
+///
+/// ── WHY STEP 4 EXISTS: ONE WALK, TWO QUESTIONS ABOUT A FREE VARIABLE ────────
+///
+/// [`node_occurrence::substitute_occurrence`] is the RESOLVER's σ, and there a surviving
+/// `Expr::Var` is ORDINARY — a goal has free variables and `subst_var_leaf` keeps the
+/// leaf by design. Instantiating a `[simp]` RHS is the opposite question: the LHS match
+/// binds every variable the rule can bind, so one left over is a rule whose RHS names
+/// something nothing supplies, and [`substitute_to_occurrence`] said so by writing `⊥`
+/// ("a well-formed `[simp]` rule binds every RHS var", its own doc).
+///
+/// MEASURED — `rule f(?x) <=> g(?y) [simp]` with a consumer that fires it: the term path
+/// answers **1** error, and routing σ through the shared owner alone answered **0**, i.e.
+/// a malformed rule loading clean. So the reuse is kept (σ over an occurrence must have
+/// ONE owner) and the verdict is restored beside it, rather than the walk being forked.
+/// The `⊥` now carries the RHS VARIABLE's own span instead of the redex's, which is the
+/// same relocation this whole ticket is about.
+///
+/// NOT A LOAD REFUSAL, for [`build_rhs_template`]'s neighbouring reason: an equation is
+/// logically symmetric and citable both ways with `using` (§8.3), so `f(?x) <=> g(?y)` is
+/// a strange but not meaningless LAW. What is broken is instantiating it left-to-right,
+/// and that is exactly where this fires.
+///
+/// `rhs` (the opened head term's second operand) is what a rule with NO written RHS
+/// falls back to, and that is not a hedge: a host-asserted or runtime-asserted equation
+/// HAS no source text, so there is no occurrence to keep and re-deriving one from the
+/// term is the honest answer for it. With step 4 in, the two paths agree on the unbound
+/// case; they still differ on a STRUCTURED binding, which rides as `Expr::Spliced`
+/// (WI-1040) here and had no arm at all in the term path.
+fn build_rhs_template(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    rhs: TermId,
+    fresh: &[VarId],
+    subst: &Substitution,
+    from: &Rc<NodeOccurrence>,
+    pass: PassId,
+) -> Rc<NodeOccurrence> {
+    match kb.rule_equation_rhs_node(rid) {
+        Some(node) => {
+            let opened = node_occurrence::open_debruijn_node(kb, &node, fresh);
+            let spliced = reparent_spliced(&opened, from, pass);
+            let applied = node_occurrence::substitute_occurrence(kb, &spliced, subst);
+            bottom_out_unbound(&applied, fresh)
+        }
+        None => substitute_to_occurrence(kb, rhs, subst, from, pass),
+    }
+}
+
+/// WI-20260903-FCZ3N — RE-PARENT A WRITTEN RHS ONTO THE REDEX IT IS BEING SPLICED INTO,
+/// node by node, keeping everything else the author wrote.
+///
+/// The inverse of [`substitute_to_occurrence`]'s shape: that one walks a TERM and MINTS
+/// an occurrence for each node (`synthesized_expr`, which hardcodes `dot_chain: false`
+/// and takes the redex's span — correctly, for a node a pass decided to build); this one
+/// walks the OCCURRENCE and mints nothing. Every node keeps its span and its `dot_chain`
+/// ([`NodeOccurrence::reparented_from`]) and changes exactly two things — its provenance
+/// and its `owner`.
+///
+/// WHAT THE SPAN AND THE BIT REPAIR, measured — `rule trig(?x) <=> sink(ns.inner.rel)
+/// [simp]` with a consumer that fires it: THREE "expected resolved name, got unresolved"
+/// errors at the REDEX became ONE, at the citation, naming the relation. The three were
+/// WI-20260902-4NEKZ's per-leaf cascade, back because the spliced chain arrived with
+/// `dot_chain` clear and `loader_chain_dotted_name`'s provenance gate could not read it.
+///
+/// TWO REASONS FOR THE RE-PARENT, and the second would have been a live bug:
+///
+///  * **PROVENANCE.** WI-20260820-5R2XT walks `Synthesized { from }` from a spliced node
+///    to the surface call the author wrote, and a macro-headed RHS reaches the redex
+///    through its TEMPLATE. Left `Source`, that chain would stop inside the rule and
+///    `join(p, q, λ)` would report the macro's name instead of `join`. MEASURED: all four
+///    arms of `wi_5r2xt_macro_spliced_call_name_test` fail without it.
+///  * **NO SHARING WITH THE STORED RULE.** A `NodeKind::Expr` carries the typer's
+///    `RefCell` stamps (`inferred_type`, the `CallClass`, `resolved_type_args`,
+///    `lowered_receiver`). Splicing the rule's own `Rc` into an operation body would make
+///    two call sites of one `[simp]` rule write those cells over each other.
+///    `reparented_from` allocates, so every fire gets its own nodes.
+///
+/// ITERATIVE, for [`substitute_to_occurrence`]'s reason (WI-278): a `[simp]` RHS is
+/// author-written and can nest as deeply as the source does.
+///
+/// A `Pattern` node (a `[simp]` RHS may write a lambda or a `match`) is descended and
+/// rebuilt through the pattern pair `for_each_pattern_child` / `reassemble_pattern`, the
+/// same one `open_debruijn_node` uses — the node itself holds no `RefCell` state, but its
+/// `type_ann` is an `Expr` and would otherwise be the shared cell above. A `Type` /
+/// `EffectExpr` spine is left as it is: it carries no stamps either, and it is
+/// [`node_occurrence::substitute_occurrence`], one step later, that reaches inside one.
+fn reparent_spliced(
+    rhs_node: &Rc<NodeOccurrence>,
+    from: &Rc<NodeOccurrence>,
+    pass: PassId,
+) -> Rc<NodeOccurrence> {
+    let mut work: Vec<SpliceOp> = vec![SpliceOp::Visit(Rc::clone(rhs_node))];
+    let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
+    while let Some(op) = work.pop() {
+        match op {
+            SpliceOp::Visit(node) => {
+                let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+                if let Some(expr) = node.as_expr() {
+                    node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+                } else if node.as_pattern().is_some() {
+                    node_occurrence::for_each_pattern_child(&node, |c| children.push(Rc::clone(c)));
+                }
+                work.push(SpliceOp::Build {
+                    child_count: children.len(),
+                    node,
+                });
+                // Reversed, so children pop — and land on `results` — in the enumeration
+                // order, which is the order the matching `reassemble*` consumes them.
+                for c in children.into_iter().rev() {
+                    work.push(SpliceOp::Visit(c));
+                }
+            }
+            SpliceOp::Build { node, child_count } => {
+                let start = results.len() - child_count;
+                let new_children: Vec<Rc<NodeOccurrence>> = results.split_off(start);
+                let rebuilt = if node.as_expr().is_some() {
+                    reassemble(&node, &new_children).reparented_from(
+                        Rc::clone(from),
+                        pass,
+                        from.owner,
+                    )
+                } else if node.as_pattern().is_some() {
+                    node_occurrence::reassemble_pattern(&node, &new_children)
+                } else {
+                    Rc::clone(&node)
+                };
+                results.push(rebuilt);
+            }
+        }
+    }
+    debug_assert_eq!(results.len(), 1, "reparent_spliced: expected one result");
+    results
+        .pop()
+        .expect("written RHS produced no NodeOccurrence")
+}
+
+/// WI-20260903-FCZ3N — REPLACE EVERY RULE VARIABLE σ DID NOT BIND WITH `⊥`.
+///
+/// `fresh` is the rule's OWN frame ([`open_equation`]'s opened globals), so a
+/// `Expr::Var(Var::Global(v))` with `v ∈ fresh` surviving the substitution is a variable
+/// the LHS match had no value for — a malformed `[simp]` rule, and the verdict
+/// [`substitute_to_occurrence`] has always given it. See [`build_rhs_template`] for why
+/// the shared σ owner cannot give it (there, a free variable is an ordinary goal
+/// variable) and why this is not a load refusal.
+///
+/// KEYED ON `fresh`, NOT ON "any Global": a redex variable rides straight into the RHS
+/// through a projecting rule (`pick(?q, 7) → ?q`, WI-634) and is legitimately unbound
+/// there — bottoming that out would break a working rewrite. Only the RULE's own frame is
+/// the rule's obligation.
+///
+/// Returns the input unchanged (same `Rc`) when nothing is left, which is every
+/// well-formed rule — so a fire pays one walk over its own RHS and no allocation.
+fn bottom_out_unbound(root: &Rc<NodeOccurrence>, fresh: &[VarId]) -> Rc<NodeOccurrence> {
+    if fresh.is_empty() {
+        return Rc::clone(root);
+    }
+    let mut work: Vec<SpliceOp> = vec![SpliceOp::Visit(Rc::clone(root))];
+    let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
+    while let Some(op) = work.pop() {
+        match op {
+            SpliceOp::Visit(node) => {
+                if let Some(Expr::Var(Var::Global(v))) = node.as_expr() {
+                    if fresh.contains(v) {
+                        results.push(node.rebuilt_expr(Expr::Bottom));
+                        continue;
+                    }
+                }
+                let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+                if let Some(expr) = node.as_expr() {
+                    node_occurrence::for_each_child(expr, |c| children.push(Rc::clone(c)));
+                } else if node.as_pattern().is_some() {
+                    node_occurrence::for_each_pattern_child(&node, |c| children.push(Rc::clone(c)));
+                }
+                work.push(SpliceOp::Build {
+                    child_count: children.len(),
+                    node,
+                });
+                for c in children.into_iter().rev() {
+                    work.push(SpliceOp::Visit(c));
+                }
+            }
+            SpliceOp::Build { node, child_count } => {
+                let start = results.len() - child_count;
+                let new_children: Vec<Rc<NodeOccurrence>> = results.split_off(start);
+                let rebuilt = if node.as_expr().is_some() {
+                    reassemble(&node, &new_children)
+                } else if node.as_pattern().is_some() {
+                    node_occurrence::reassemble_pattern(&node, &new_children)
+                } else {
+                    Rc::clone(&node)
+                };
+                results.push(rebuilt);
+            }
+        }
+    }
+    debug_assert_eq!(results.len(), 1, "bottom_out_unbound: expected one result");
+    results
+        .pop()
+        .expect("written RHS produced no NodeOccurrence")
+}
+
+/// Work-stack item for the iterative [`reparent_spliced`] and [`bottom_out_unbound`], the
+/// occurrence-carrier twin of [`SubstOp`].
+enum SpliceOp {
+    Visit(Rc<NodeOccurrence>),
+    Build {
+        node: Rc<NodeOccurrence>,
+        child_count: usize,
+    },
 }
 
 /// The functor of an equation's RHS (`Fn{eq/unify, [lhs, rhs]}` → rhs head), read
@@ -1189,7 +1469,12 @@ fn try_expand_macro(
                 NodeKind::Expr {
                     origin: OccurrenceOrigin::Synthesized { by, .. },
                     ..
-                } if *by == macro_pass => result.reparented_from(Rc::clone(template), macro_pass),
+                } if *by == macro_pass => {
+                    // WI-20260903-FCZ3N: the OWNER is the macro result's own — a macro
+                    // built this node knowing the declaration it belongs to, and
+                    // re-parenting only says what it is an expansion OF.
+                    result.reparented_from(Rc::clone(template), macro_pass, result.owner)
+                }
                 _ => result,
             }))
         }
@@ -1358,6 +1643,13 @@ pub(super) fn open_equation(
 ///
 /// PRIVATE (WI-902): reach it through [`instantiate_rhs`] (expands a macro RHS) or
 /// [`instantiate_rhs_verbatim`] (does not), so a firing site states which it means.
+///
+/// WI-20260903-FCZ3N — AND IT IS NO LONGER THE ONLY BUILDER. Every node it makes is a
+/// SYNTHESIS: `dot_chain` clear, the redex's span. That is right for a node no author
+/// wrote, and wrong for the RHS of a rule that HAS source text — so
+/// [`build_rhs_template`] routes such a rule to [`reparent_spliced`] +
+/// `node_occurrence::substitute_occurrence` instead, and leaves this one ONE job: a rule
+/// with no written RHS at all.
 fn substitute_to_occurrence(
     kb: &KnowledgeBase,
     term: TermId,

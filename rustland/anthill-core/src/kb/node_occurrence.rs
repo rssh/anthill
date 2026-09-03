@@ -654,9 +654,20 @@ impl NodeOccurrence {
     }
 
     /// WI-20260820-5R2XT — this occurrence with its provenance RE-PARENTED onto `from`,
-    /// keeping its own `expr`, span, owner and typer stamps.
+    /// keeping its own `expr`, span and typer stamps.
     ///
-    /// The one caller is the macro expander (`simp_rewrite::try_expand_macro`). A macro
+    /// WI-20260903-FCZ3N — `owner` IS THE CALLER'S TO STATE, and it is the one field the
+    /// two callers disagree about. The macro expander re-parents a node the macro BUILT,
+    /// which already knows the declaration it belongs to, and passes `result.owner`; the
+    /// `[simp]` splice re-parents a node the author wrote INSIDE A RULE onto a redex in
+    /// some OTHER declaration's body, and passes `from.owner` — the tree the node is
+    /// landing in, which is what `synthesized_expr` supplied for every node the term path
+    /// minted. A silent `self.owner` default would have moved every spliced node's owner
+    /// to the rule's (`None`, as the loader builds body atoms), quietly under readers in
+    /// `typing` and `resolve` that ask which declaration a node sits in.
+    ///
+    /// THE FIRST CALLER is the macro expander (`simp_rewrite::try_expand_macro`); the
+    /// second is `simp_rewrite::substitute_written_rhs` (WI-20260903-FCZ3N). A macro
     /// BUILDS its result, so it picks that result's `from` itself — and it can only pick
     /// among the occurrences it was handed, which are the redex's ARGUMENTS. The chain
     /// therefore ended at an argument and the redex was unreachable: MEASURED on
@@ -681,7 +692,12 @@ impl NodeOccurrence {
     /// The caller gates on `self` being an `Expr` (only that kind carries an origin);
     /// a non-`Expr` result has neither a provenance to fix nor a surface name to recover,
     /// so it is left alone THERE rather than absorbed here.
-    pub fn reparented_from(&self, from: Rc<NodeOccurrence>, by: PassId) -> Rc<Self> {
+    pub fn reparented_from(
+        &self,
+        from: Rc<NodeOccurrence>,
+        by: PassId,
+        owner: Option<Symbol>,
+    ) -> Rc<Self> {
         let NodeKind::Expr { expr, .. } = &self.kind else {
             unreachable!("reparented_from: caller must gate on NodeKind::Expr")
         };
@@ -705,7 +721,7 @@ impl NodeOccurrence {
                 lowered_receiver: RefCell::new(None),
             },
             span: self.span,
-            owner: self.owner,
+            owner,
         });
         rebuilt.carry_typer_stamps_from(self);
         rebuilt
@@ -8280,7 +8296,7 @@ mod tests {
         // A node located at the ANCHOR but an expansion OF the template — the shape
         // `try_expand_macro` produces.
         let spliced = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), anchor_span, None)
-            .reparented_from(Rc::clone(&template), pass);
+            .reparented_from(Rc::clone(&template), pass, None);
         assert_eq!(
             spliced.span, anchor_span,
             "re-parenting must not move the node's location",

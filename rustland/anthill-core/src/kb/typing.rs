@@ -10600,11 +10600,14 @@ fn try_fire_dot_rule(
         if !same_sort_canonical(kb, recv_sort, encl) && !sort_provides(kb, recv_sort, encl) {
             continue;
         }
-        let Some((lhs, rhs, _fresh)) = super::simp_rewrite::open_equation(kb, rid) else {
+        // WI-20260903-FCZ3N: `fresh` is threaded on so `instantiate_rhs` can open this
+        // rule's WRITTEN RHS occurrence in the same frame the head term was opened in.
+        let Some((lhs, rhs, fresh)) = super::simp_rewrite::open_equation(kb, rid) else {
             continue;
         };
         if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
-            return super::simp_rewrite::instantiate_rhs(kb, rhs, &subst, from).map(Some);
+            return super::simp_rewrite::instantiate_rhs(kb, rid, rhs, &fresh, &subst, from)
+                .map(Some);
         }
     }
     Ok(None)

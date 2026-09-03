@@ -43,11 +43,21 @@
 //! - `a_body_with_no_deferred_call_records_nothing` PASSES either way, by design —
 //!   it is the negative control that says the counting itself is not inventing
 //!   entries, so it must be insensitive to the fix.
-//! - `a_simp_expansion_with_two_calls_is_two_entries` measures a DIFFERENT axis and
-//!   needs its own back-out (drop `nth_at_span` from the key): it fails at `got 1`,
-//!   while the four above pass. Conversely it passes under the collapsed-key mutation
-//!   above for the wrong reason — `got 0` there too, but so does everything. Two
-//!   coordinates, two back-outs.
+//! - `one_rule_fired_at_two_redexes_collides_on_one_span` measures a DIFFERENT axis and
+//!   needs its own back-out (drop `nth_at_span` from the key — `r.nth_at_span = 0` in
+//!   `req_insertion::stamp_nth_at_span`): it fails at `got 1`, MEASURED, while the four
+//!   above and `a_simp_expansion_with_two_calls_is_two_entries` pass. Conversely it
+//!   passes under the collapsed-key mutation above for the wrong reason — `got 0` there
+//!   too, but so does everything. Two coordinates, two back-outs.
+//! - WI-20260903-FCZ3N MOVED THE COLLIDING FIXTURE, and the axis is unchanged. Two `eq`
+//!   calls written in ONE `[simp]` RHS used to share the redex's span, because the RHS
+//!   was re-derived from the head TERM and every node took `synthesized_expr`'s
+//!   `from.span`. A fired RHS now keeps the spans the author wrote, so THAT pair no
+//!   longer collides — `a_simp_expansion_with_two_calls_is_two_entries` asserts their
+//!   distinctness now — and the collision moved to ONE written call spliced at TWO
+//!   redexes, which is the row above. This file's doc had predicted the move ("if a
+//!   future change gave synthesized occurrences their own spans this would fail"), which
+//!   is why the change surfaced as a red arm rather than as silent slack.
 //!
 //! The four repaired call sites elsewhere fail under the same mutation
 //! (`wi222_defer_rewrite_test` ×3, `wi227_projection_search_test` ×1), while six of
@@ -203,19 +213,24 @@ end
 #[test]
 fn a_simp_expansion_with_two_calls_is_two_entries() {
     // THE SAME DEFECT, ONE COORDINATE OVER — found in review of this ticket's first
-    // patch, whose key was `(op, functor, span)`. A SPAN DOES NOT IDENTIFY A CALL:
-    // `simp_rewrite::substitute_to_occurrence` builds every node of a `[simp]` RHS
-    // from the single redex occurrence, and `NodeOccurrence::synthesized_expr`
-    // inherits that occurrence's span — so the two `eq` calls below land in `drive`'s
-    // body at ONE span, with the same op and the same functor. Under that key the
-    // second rewrite was dropped exactly as the synthesized-apply key had dropped
-    // whole call sites, and `CallSite::nth_at_span` is what separates them.
+    // patch, whose key was `(op, functor, span)`. A SPAN DOES NOT IDENTIFY A CALL, and
+    // a `[simp]` expansion is where that bites: the second rewrite was dropped exactly
+    // as the synthesized-apply key had dropped whole call sites, and
+    // `CallSite::nth_at_span` is what separates them.
     //
-    // CONTROL, measured: stamping every entry `0` (i.e. dropping `nth_at_span` from
-    // the key while leaving everything else) fails this test at `got 1`, and the four
-    // other tests in this file pass — which is why this is its own arm rather than an
-    // assertion inside one of them. The collapsed-key back-out those four use fails
-    // this one too, at `got 0`, so it says nothing specific about this axis.
+    // WI-20260903-FCZ3N MOVED WHICH EXPANSIONS COLLIDE, and this test's own doc
+    // predicted it: "if a future change gave synthesized occurrences their own spans
+    // this would fail". A `[simp]` RHS is now spliced from the OCCURRENCE THE AUTHOR
+    // WROTE, so the two `eq` calls below arrive at the two spans they are written at
+    // and are told apart by span alone. This arm therefore asserts DISTINCTNESS now,
+    // and the collision `nth_at_span` exists for moved next door — to
+    // [`one_rule_fired_at_two_redexes_collides_on_one_span`], which is the same rule's
+    // ONE written call spliced into TWO places.
+    //
+    // SO THE `nth_at_span` CONTROL LIVES THERE, NOT HERE: stamping every entry `0`
+    // leaves this arm green (two spans, two entries) and fails that one at `got 1`.
+    // What this arm still measures is the COUNT — the collapsed-key back-out the four
+    // other tests use fails it at `got 0`, along with everything else.
     let src = r#"
 namespace test.wi873.simp
   import anthill.prelude.{Bool, PartialEq}
@@ -249,14 +264,77 @@ end
          rewrites must be recorded; got {}",
         sites.len()
     );
-    // ASSERTED, because it is the whole point: these two are indistinguishable by
-    // span. If a future change gave synthesized occurrences their own spans this
-    // would fail, and the test would then be measuring a different thing under the
-    // same name rather than silently going slack.
+    // ASSERTED, because it is what changed: the two calls are written at two places and
+    // now carry those two spans. Were this to go back to one span, the test would be
+    // measuring a different thing under the same name rather than silently going slack.
+    assert_ne!(
+        sites[0].0.span, sites[1].0.span,
+        "each expanded call keeps the span the author wrote it at (WI-20260903-FCZ3N)"
+    );
+    assert_eq!(
+        [sites[0].0.nth_at_span, sites[1].0.nth_at_span],
+        [0, 0],
+        "…so neither is the n-th of a colliding group — that case is \
+         `one_rule_fired_at_two_redexes_collides_on_one_span`"
+    );
+}
+
+#[test]
+fn one_rule_fired_at_two_redexes_collides_on_one_span() {
+    // WI-20260903-FCZ3N — THE COLLISION `nth_at_span` EXISTS FOR, RE-SITED. Its old
+    // fixture (two calls written in ONE `[simp]` RHS) stopped colliding when a fired RHS
+    // began keeping the author's spans; this one cannot stop colliding, because there is
+    // only ONE written `eq(` and the rule fires at TWO redexes. Both splices therefore
+    // land in `drive`'s body at that one span, with the same op and the same functor.
+    //
+    // CONTROL, measured: stamping every entry `0` (dropping `nth_at_span` from the key,
+    // leaving everything else) fails this at `got 1`; the five other tests in this file
+    // pass. The collapsed-key back-out those five use fails this one too, at `got 0`, so
+    // it says nothing specific about this axis — the same two-coordinate split the arm
+    // above used to carry.
+    //
+    // IT ALSO MEASURES WI-20260903-FCZ3N, and from the opposite side to the arm above:
+    // backing that out (a fired RHS re-derived from the head term) gives the two splices
+    // their two REDEXES' spans, so the collision stops happening and the `assert_eq!`
+    // below fails. Measured — 4 rows of 4 064 fail under that back-out and this is one
+    // of them.
+    let src = r#"
+namespace test.wi873.simp2
+  import anthill.prelude.{Bool, PartialEq}
+  import anthill.prelude.Bool.{and}
+  import anthill.prelude.PartialEq.{eq}
+  sort Wi873Simp2
+    sort T = ?
+    requires PartialEq[T]
+    operation one(a: T, b: T) -> Bool = true
+    rule one(?a, ?b) <=> eq(?a, ?b) [simp]
+    operation drive(a: T, b: T) -> Bool = and(one(a, b), one(b, a))
+  end
+end
+"#;
+    let kb = load_kb_with(src);
+    let op_sym = kb
+        .try_resolve_symbol("test.wi873.simp2.Wi873Simp2.drive")
+        .expect("drive registered");
+    let eq_sym = kb
+        .try_resolve_symbol("anthill.prelude.PartialEq.eq")
+        .expect("PartialEq.eq registered");
+
+    let sites: Vec<_> = kb
+        .dispatch_rewrites_iter()
+        .filter(|(site, r)| site.op == op_sym && r.spec_op == eq_sym)
+        .collect();
+    assert_eq!(
+        sites.len(),
+        2,
+        "the one `[simp]` rule fires at both `one(...)` redexes, so two rewrites must \
+         be recorded; got {}",
+        sites.len()
+    );
     assert_eq!(
         sites[0].0.span, sites[1].0.span,
-        "the two expanded calls must share the redex's span — that is the collision \
-         `nth_at_span` exists to break"
+        "both come from the SAME written `eq(` in the rule, so they share its span — \
+         that is the collision `nth_at_span` exists to break"
     );
     let mut nths = [sites[0].0.nth_at_span, sites[1].0.nth_at_span];
     nths.sort();

@@ -4087,7 +4087,7 @@ impl KnowledgeBase {
             // rebuilds its hash-consed term.
             let rewritten = match redex {
                 Value::Node(occ) => Value::Node(super::simp_rewrite::instantiate_rhs_verbatim(
-                    self, rhs, &msubst, occ,
+                    self, rid, rhs, &fresh, &msubst, occ,
                 )),
                 _ => Value::term(self.apply_subst(rhs, &msubst)),
             };

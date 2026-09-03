@@ -5859,7 +5859,7 @@ impl RuleIntroduction {
 }
 
 /// THE SHAPE: a parse-layer head the infix desugar wrote with an equality-family
-/// connective — its functor spelling and its LHS operand — or `None` when `head` is
+/// connective — its functor spelling and BOTH operands — or `None` when `head` is
 /// not one. THE ONE OWNER of that knowledge (the connective sits at the head, its
 /// operands at `pos_args[0]` and `[1]`), so no reader can walk it differently. They
 /// were separate walks 11k lines apart and had already drifted on the arity guard.
@@ -5896,7 +5896,7 @@ fn parse_connective_head<'a>(
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
     head: TermId,
-) -> Option<(&'a str, TermId)> {
+) -> Option<(&'a str, TermId, TermId)> {
     if !parse_terms.is_minted(head) {
         return None;
     }
@@ -5905,7 +5905,11 @@ fn parse_connective_head<'a>(
             functor, pos_args, ..
         } if pos_args.len() == 2 => {
             let name = parse_sym.local_name(*functor);
-            crate::parse::pratt::is_equality_family_functor(name).then_some((name, pos_args[0]))
+            crate::parse::pratt::is_equality_family_functor(name).then_some((
+                name,
+                pos_args[0],
+                pos_args[1],
+            ))
         }
         _ => None,
     }
@@ -5933,8 +5937,25 @@ fn parse_equation_lhs(
     head: TermId,
 ) -> Option<TermId> {
     parse_connective_head(parse_sym, parse_terms, head)
-        .filter(|(name, _)| crate::parse::pratt::is_equation_functor(name))
-        .map(|(_, lhs)| lhs)
+        .filter(|(name, _, _)| crate::parse::pratt::is_equation_functor(name))
+        .map(|(_, lhs, _)| lhs)
+}
+
+/// WI-20260903-FCZ3N — the RHS operand of a parse-layer DEFINING EQUATION head, the
+/// mirror of [`parse_equation_lhs`] at `pos_args[1]`. What
+/// `Loader::equation_rhs_occurrence` needs in order to build that RHS's occurrence from
+/// the syntax the author wrote instead of re-deriving it from the stored head term.
+///
+/// The DEFINING subset, exactly as the LHS reader takes it: `===` compares and defines
+/// nothing, so it has no RHS a `[simp]` fire could ever splice.
+fn parse_equation_rhs(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    head: TermId,
+) -> Option<TermId> {
+    parse_connective_head(parse_sym, parse_terms, head)
+        .filter(|(name, _, _)| crate::parse::pratt::is_equation_functor(name))
+        .map(|(_, _, rhs)| rhs)
 }
 
 /// §6.1 (proposal 061) — `true` IS THE EMPTY CONJUNCTION, so a body goal spelling it
@@ -6365,7 +6386,7 @@ fn non_defining_connective_head(
     parse_terms: &SimpleTermStore,
     head: TermId,
 ) -> Option<NonDefiningHead> {
-    let (name, lhs) = parse_connective_head(parse_sym, parse_terms, head)?;
+    let (name, lhs, _rhs) = parse_connective_head(parse_sym, parse_terms, head)?;
     if crate::parse::pratt::is_equation_functor(name) {
         return None;
     }
@@ -22928,6 +22949,54 @@ impl<'a> Loader<'a> {
         )
     }
 
+    /// WI-20260903-FCZ3N — AN EQUATION'S RHS OCCURRENCE, BUILT FROM ITS PARSE NODE.
+    ///
+    /// `parse_head` is the head as the infix desugar wrote it (`<=>`/`=` over two
+    /// operands) and `kb_head` the term [`Self::convert_subject_term`] just produced from
+    /// it. `None` when this head is not a DEFINING equation — a predicate head, a `===`
+    /// comparison, a `⊥` denial — none of which has an RHS a `[simp]` fire can splice.
+    ///
+    /// THE CHILD RULE IS [`Self::lowered_child_occurrence`]'s, unchanged and for its
+    /// reasons: the RHS is built from its own parse node when the conversion passed it
+    /// through 1:1, and materialized from its own subtree's span/`dot_chain` tables when
+    /// a lowering transformed it (`wrap_bare_option_value` and the list spine are the
+    /// live cases). Sharing that function is what keeps the three occurrence-building
+    /// sites — entity constructor, collection literal, and now equation RHS — from
+    /// disagreeing about the middle case.
+    ///
+    /// `descs_emitted_by_convert` IS SET, and this is the third site that needs it:
+    /// `convert_subject_term` has already walked this whole subtree and emitted its
+    /// inline descriptions, so the occurrence walk below must not emit them a second
+    /// time. The entity and collection arms carry the identical save/restore, and both
+    /// of them shipped the double-emit first.
+    fn equation_rhs_occurrence(
+        &mut self,
+        parse_head: TermId,
+        kb_head: TermId,
+    ) -> Option<Rc<NodeOccurrence>> {
+        let rhs_pid = parse_equation_rhs(&self.parsed.symbols, &self.parsed.terms, parse_head)?;
+        // The kb side must be the SAME two-operand connective the parse side just was.
+        // THE FUNCTOR IS CHECKED, not just the arity: `pos_args.len() == 2` alone would
+        // pair the parse RHS with `pos_args[1]` of whatever ELSE a head conversion can
+        // produce, and `lowered_child_occurrence` would then materialize that from the
+        // wrong subtree's span / `dot_chain` tables — silently, because the `term_map`
+        // identity check would simply fail over to the table path. Found by
+        // `/code-review`: the comment claimed the shape and the code checked the arity.
+        let kb_rhs = match self.kb.get_term(kb_head) {
+            Term::Fn {
+                functor, pos_args, ..
+            } if pos_args.len() == 2 && self.kb.is_equality_connective_functor(*functor) => {
+                pos_args[1]
+            }
+            _ => return None,
+        };
+        let saved_descs = self.descs_emitted_by_convert;
+        self.descs_emitted_by_convert = true;
+        let occ = self.lowered_child_occurrence(rhs_pid, kb_rhs);
+        self.descs_emitted_by_convert = saved_descs;
+        Some(occ)
+    }
+
     /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.
     ///
     /// The sibling of [`Self::entity_ctor_expr`] for the three surfaces WI-20260902-2SZ88
@@ -27150,6 +27219,17 @@ impl<'a> Loader<'a> {
         // the same reference `fact nsx.tgt()` is, and used to file its clause under
         // `field_access` (measured: 1 clause on `nsx.tgt` where the twin filed 2).
         let term = self.convert_subject_term(f.term);
+        // WI-20260903-FCZ3N — A `fact lhs <=> rhs` IS A BODYLESS EQUATION, so it fires
+        // like the `rule` spelling and needs its RHS occurrence for the same reason. The
+        // item IS the empty body (the `NonDefiningConnectiveHead` refusal above relies on
+        // exactly that), so there is no emptiness test to make here — unlike `load_rule`,
+        // which must ask. MEASURED: `fact tau() <=> 7 [simp]` loads clean today, so the
+        // spelling is reachable and would otherwise have kept the term path in silence.
+        //
+        // Built HERE, inside `in_value_position`, as the rule site is and for its reason:
+        // the occurrence must read this subtree exactly as the term walk just did. It is
+        // installed after the assert, below, where the `RuleId` exists.
+        let rhs_node = self.equation_rhs_occurrence(f.term, term);
         self.in_value_position = false;
         // WI-797: a mounted-extent functor is virtualized through its store, so a
         // resident source fact for it is refused (single owner).
@@ -27163,6 +27243,19 @@ impl<'a> Loader<'a> {
 
         let meta = f.meta.as_ref().map(|mb| self.load_meta_block(mb));
         let rule_id = self.kb.assert_fact(term, fact_kind, domain, meta);
+        // WI-20260903-FCZ3N — LAST WRITE WINS ON A DEDUP, DELIBERATELY. `assert_fact`
+        // returns an EXISTING `RuleId` when `(term, clause_kind, domain)` all match, so
+        // two byte-identical `fact tau() <=> 7 [simp]` clauses in one domain become ONE
+        // clause and this runs twice on it — MEASURED, across two files. The surviving
+        // clause then carries the SECOND file's RHS occurrence, and it must: the
+        // `set_rule_head_span` three lines down has the same shape and the same
+        // last-write-wins, so taking first-write-wins here alone would leave one clause
+        // reporting its head at one file and its spliced RHS at another. Raised by
+        // `/code-review`; the answer is that the two channels agree, not that either is
+        // idempotent.
+        if let Some(rhs_node) = rhs_node {
+            self.kb.set_rule_equation_rhs_node(rule_id, rhs_node);
+        }
         // WI-458: record the head's span on the RULE, not (only) under the
         // hash-consed head TermId. Two facts whose heads intern to the SAME
         // TermId but differ in sort/domain are not deduped (they get distinct
@@ -27699,7 +27792,7 @@ impl<'a> Loader<'a> {
         // bracket to the WI-839 sweep while its one-character-apart `<=>` twin kept it
         // — WI-619's own defect, for a spelling WI-619 could not have known about.
         let target = parse_connective_head(&self.parsed.symbols, &self.parsed.terms, head_parse_id)
-            .map(|(_, lhs)| lhs)
+            .map(|(_, lhs, _)| lhs)
             .unwrap_or(head_parse_id);
         if let Some(bindings) = self.read_parse_call_type_args(target) {
             let mut all_introducers = true;
@@ -28170,6 +28263,10 @@ impl<'a> Loader<'a> {
         // (`ir::Rule::head_captures`), because the head TERM deliberately carries the
         // capture variable as an ordinary positional argument and so cannot be asked.
         let mut positive_head_captures: Vec<Option<usize>> = Vec::with_capacity(r.heads.len());
+        // WI-20260903-FCZ3N: per positive head, the PARSE id its RHS occurrence must be
+        // built from, parallel to `positive_heads`. The build itself waits until
+        // `body_nodes` is known — see the install below.
+        let mut positive_head_parse_ids: Vec<TermId> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
         for (h_idx, h) in r.heads.iter().enumerate() {
             match h {
@@ -28192,6 +28289,7 @@ impl<'a> Loader<'a> {
                     let head = self.convert_subject_term(*tid);
                     self.in_value_position = false;
                     self.in_rule_head = false;
+                    positive_head_parse_ids.push(*tid);
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
                     positive_head_spans.push(self.source_span_of(*tid));
                     positive_head_nondefining.push(non_defining_connective_head(
@@ -28359,6 +28457,42 @@ impl<'a> Loader<'a> {
             // `get` is None) — the same indexing the head-span install just used.
             if let Some(Some(arg_index)) = positive_head_captures.get(head_idx).copied() {
                 self.kb.record_rule_head_capture(rid, arg_index);
+            }
+            // WI-20260903-FCZ3N — build and install this head's WRITTEN RHS OCCURRENCE,
+            // so a `[simp]` fire splices the nodes the author wrote (their spans, their
+            // `dot_chain` provenance) instead of re-deriving them from the head term.
+            //
+            // BODYLESS ONLY, and that is `is_equation`'s own emptiness test, asked where
+            // its answer exists: a GUARDED equation (`lhs = rhs :- g`) is not an equation
+            // (§8.3) and no firing site can reach it. Read off `body_nodes`, i.e. AFTER
+            // guard folding and after §6.1's `:- true`, so the two rules agree exactly —
+            // the parse-level `r.body` would call a folded-guard or `:- true` rule bodied
+            // and silently leave it on the term path.
+            //
+            // THE BUILD IS HERE AND NOT IN THE HEAD LOOP, and that is the whole reason
+            // this is a second pass rather than a stored vector: a build up there ran for
+            // EVERY equation head and was discarded for every bodied one — a second
+            // error-emitting reading of syntax (`remap_symbol_strict` pushes
+            // `UnresolvedName`, the `Fn` arm calls `check_sort_type_args`) whose output
+            // nothing kept. Found by `/code-review`.
+            //
+            // THE FLAGS ARE RE-ENTERED because the occurrence must read this subtree
+            // exactly as `convert_subject_term` did: `in_value_position` decides WI-716's
+            // omitted-optional fill and `in_rule_head` gates WI-582's `?x: T` strip. Every
+            // `convert_term` this walk reaches is memoized in `term_map` from the head
+            // conversion, so it re-reads and cannot re-report.
+            if body_nodes.is_empty() {
+                if let Some(&parse_tid) = positive_head_parse_ids.get(head_idx) {
+                    let (pv, ph) = (self.in_value_position, self.in_rule_head);
+                    self.in_value_position = true;
+                    self.in_rule_head = true;
+                    let rhs_node = self.equation_rhs_occurrence(parse_tid, kb_head);
+                    self.in_value_position = pv;
+                    self.in_rule_head = ph;
+                    if let Some(rhs_node) = rhs_node {
+                        self.kb.set_rule_equation_rhs_node(rid, rhs_node);
+                    }
+                }
             }
             // WI-582: install this head's typed-pattern bounds (if any) on the
             // RuleEntry, mapping each head variable to its DeBruijn index. A
