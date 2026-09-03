@@ -13312,6 +13312,30 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// (`stamped_file_errors`); a batch-wide key gets both files at once, so it must say
 /// which.
 ///
+/// WHAT IS NOT DEDUPED: AN ERROR WITH NO LOCATION. It is kept unconditionally, however
+/// many copies of it there are, and that exemption is the whole difference between
+/// "these render alike" and "these are the same finding". A located error is pinned by
+/// its file and position; an UNLOCATED one has only its sentence, and a sentence that
+/// does not name its subject is not an identity.
+///
+/// MEASURED, and it is why this exemption exists (`/code-review` on WI-20260903-2M5XR,
+/// against the first cut of this function, which keyed unlocated errors by their
+/// rendering alone): two sorts in ONE file, each with an `operation div` whose body
+/// raises an undeclared effect. The typer renders that mismatch as `type mismatch in
+/// div.effects (op-effects): …` — naming the operation by its SHORT name, so `Money.div`
+/// and `Cash.div` produce byte-identical sentences with no span to separate them. The
+/// batch went from **14 errors to 8**, and `Cash`'s two findings were gone: the author
+/// saw one `div.effects` line, could not tell which sort it was about, and had no way to
+/// know a second existed. That is §8.5's "a diagnostic list is never silently truncated"
+/// (WI-20260830-JM7A8) failing on this function's own population. The neighbouring
+/// provider errors in that same batch survived correctly — because THEY name their
+/// carrier (`'zzprobe.Money' provides …`), which is the property the effects message
+/// lacks.
+///
+/// The real repair is for that message to identify its subject; until it does, this
+/// keeps both. Reporting one true duplicate twice is a smaller harm than dropping a
+/// finding, and only the drop is silent. WI-20260903-2VPHT owns the message.
+///
 /// FILE IDENTITY IS THE SOURCE'S ADDRESS, for the reason [`LoadError::render_all`] keys
 /// its line-index cache the same way: every error stamped from one file shares that
 /// file's `Arc<str>`, so the address is exact — and two files with no `path` (a CLI
@@ -13340,12 +13364,15 @@ fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
         errors
             .iter()
             .map(|e| {
-                let key = match e {
+                match e {
+                    // A LOCATED, SPAN-BEARING error: the file and the position pin WHICH
+                    // finding this is, and the message says what is wrong with it. Two of
+                    // those that render alike are the same finding.
                     LoadError::Located {
                         path,
                         source,
                         inner,
-                    } => {
+                    } if inner.user_span().is_some() => {
                         // `str::as_ptr` through the `Arc<str>` deref — the DATA address,
                         // which is what two clones of one file share (`render_all` keys
                         // its own cache identically).
@@ -13353,15 +13380,13 @@ fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
                         let loc = indexes
                             .entry(addr)
                             .or_insert_with(|| LineIndex::new(source));
-                        (addr, LoadError::located_render_at(path, loc, inner))
+                        seen.insert((addr, LoadError::located_render_at(path, loc, inner)))
                     }
-                    // Never stamped with a file — a whole-KB pass's error with no span to
-                    // attribute, or a typer error whose `SourceRegistry` lookup came back
-                    // empty. Address 0 puts every one of them in one bucket, which is the
-                    // most the reader can distinguish: they render with no file either.
-                    other => (0, other.to_string()),
-                };
-                seen.insert(key)
+                    // ANYTHING UNLOCATED IS KEPT, ALWAYS — see the doc's "WHAT IS NOT
+                    // DEDUPED" section. Its sentence is the only thing it has, and a
+                    // sentence is not an identity.
+                    _ => true,
+                }
             })
             .collect()
     };

@@ -1602,9 +1602,13 @@ pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
 }
 
 /// Open an equation's DeBruijn vars to fresh globals and return its
-/// `(lhs, rhs, fresh)` — the matchable/buildable LHS/RHS terms plus the fresh
-/// globals the DeBruijn slots opened to (empty for a legacy arity-0 Global
-/// head). Uses the KB's `term_from_debruijn` (the same opener `with_fresh_vars`
+/// `(lhs, rhs, fresh)` — the matchable/buildable LHS/RHS terms plus THE RULE'S OWN
+/// FRAME: the fresh globals the DeBruijn slots opened to, or (WI-20260903-2M5XR, for a
+/// legacy arity-0 Global head, which has no slots to open) the Globals its head already
+/// carries. One question, two representations — see the `else` arm for why answering
+/// `Vec::new()` for the second let a malformed `fact` equation load clean.
+///
+/// Uses the KB's `term_from_debruijn` (the same opener `with_fresh_vars`
 /// uses) — not a reimplementation of the resolver's rule-opening. The `fresh`
 /// set lets the resolver's `fire_simp_equation` (WI-641 Phase 2) key typed-
 /// pattern bounds by the opened globals and share this ONE opener rather than
@@ -1627,7 +1631,38 @@ pub(super) fn open_equation(
         let fresh: Vec<VarId> = (0..arity).map(|_| kb.fresh_var(name)).collect();
         (kb.term_from_debruijn(head, &fresh), fresh)
     } else {
-        (head, Vec::new())
+        // WI-20260903-2M5XR — A LEGACY ARITY-0 GLOBAL HEAD HAS A FRAME TOO, and this
+        // answered `Vec::new()` as though it did not. Such a head carries its clause's
+        // variables as `Var::Global` rather than DeBruijn slots (`load_fact` asserts
+        // through `assert_fact`, which leaves `arity`/`globals` at their ground-fact
+        // defaults, where `load_rule` goes through `assert_rule_debruijn_with_nodes`),
+        // so there is nothing to OPEN — but the set of variables the rule owns is
+        // exactly the Globals its head carries, and that is what every reader of
+        // `fresh` is asking for. `match_view_oneway` already binds precisely this set
+        // ("the opened `fresh` globals for a DeBruijn rule, or the head's own `Global`
+        // vars for a legacy arity-0 head" — `resolve.rs`); returning it here makes the
+        // two agree by construction instead of by convention, which they did not:
+        // `fact fu(?x) <=> sink(?y) [simp]` loaded clean while the `rule` spelling of
+        // the same equation was refused.
+        // NOT A SLOT VECTOR — and the two readers that INDEX `fresh` positionally must
+        // therefore never see this one. `open_debruijn_node` does `fresh.get(idx)` for a
+        // `Var::DeBruijn(idx)`, and `typed_pattern_bounds_hold` the same for a bound's
+        // slot; `collect_vars` returns term-walk order, which is not slot order. Both are
+        // unreachable here — an arity-0 rule's stored `rhs_node` is closed against an
+        // EMPTY `globals`, so it holds no `DeBruijn` leaf for the first to find, and
+        // `install_rule_type_bounds` runs only from `load_rule` (a typed pattern on a
+        // `fact` head is refused at load, WI-582). But the FAILURE MODE changed when this
+        // stopped being empty: an out-of-range `get` used to answer `None` and both
+        // readers took their safe path, where an in-range one now answers an ARBITRARY
+        // variable. The bounds half is asserted rather than argued; the node half has no
+        // cheap assertion and is driven instead, by
+        // `wi_2m5xr_fact_spelling_frame_test::a_well_formed_equation_still_fires`.
+        debug_assert!(
+            kb.rule_type_bounds(rid).is_empty(),
+            "an arity-0 equation carries typed-pattern bounds, which would index this \
+             frame by SLOT — but it is a term-walk-ordered SET (WI-20260903-2M5XR)"
+        );
+        (head, kb.collect_vars(head))
     };
     match kb.get_term(opened) {
         Term::Fn { pos_args, .. } if pos_args.len() == 2 => Some((pos_args[0], pos_args[1], fresh)),
