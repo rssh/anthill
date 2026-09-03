@@ -6624,6 +6624,17 @@ impl KnowledgeBase {
 
     /// Apply a substitution to a term, replacing Var nodes with their bindings.
     /// Returns a new hash-consed TermId.
+    ///
+    /// **THE `_ => term` BELOW IS A DROP, NOT A CONSERVATIVE NO-OP, AND WHETHER THAT IS
+    /// SOUND IS THE CALLER'S QUESTION** (WI-20260903-H054K). Keeping the variable is right
+    /// where a free variable MEANS something — a resolver goal has free variables — and
+    /// wrong where the surrounding relation reads a leftover var as "matches anything": in
+    /// a TYPE position it silently typed a wrong program clean, because the leaf kept was
+    /// the throwaway `fresh` global a `[simp]` equation had been opened against. The
+    /// carrier-neutral read is [`subst::Substitution::resolve_as_value`], which sees every
+    /// carrier; `node_occurrence::subst_type_term` is the site that moved. It does NOT reuse
+    /// [`Self::reify`], the KB's general carrier-neutral σ, and its doc carries the two
+    /// measurements for why a type position needs a narrower answer than a goal does.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
             // Term-world substitution: a non-`Term` carrier (a `Value::Node`)

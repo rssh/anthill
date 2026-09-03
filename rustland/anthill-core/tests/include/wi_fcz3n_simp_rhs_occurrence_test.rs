@@ -110,11 +110,12 @@
 //! change to the whole error channel and is **WI-20260903-W9D4Z**. NO ROW HERE PINS THE
 //! 2 — it would go red on that ticket's fix.
 //!
-//! A RULE VARIABLE IN A TYPE POSITION of the RHS is still never instantiated
+//! A RULE VARIABLE IN A TYPE POSITION of the RHS was still never instantiated
 //! (`Map[K = ?k, …].empty()`): the typer's fire binds `Value::Node` and a type position's
-//! σ is term-world. UNMOVED by this ticket — 0 errors before and after — while its GROUND
+//! σ was term-world. UNMOVED by this ticket — 0 errors before and after — while its GROUND
 //! twin went 0 → 1, which is this ticket's gain and the asymmetry that made the gap
-//! visible. **WI-20260903-H054K**; `build_rhs_template`'s doc carries the measurement.
+//! visible. Fixed by **WI-20260903-H054K** at the σ leaf, leaving this ticket's step 3
+//! untouched; `wi_h054k_type_position_subst_test` carries the measurement and the rows.
 //!
 //! ── ONE SHAPE THIS SURFACED AND DOES NOT OWN ────────────────────────────────
 //!

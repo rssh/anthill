@@ -3,9 +3,9 @@
 - id: WI-20260903-H054K-a-rule-variable-in-a-type
 - created: 2026-09-03T09:29:43Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-03T09:29:43Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-03T20:34:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -36,4 +36,52 @@ BLAST RADIUS, censused: **0** of the 21 `[simp]`/`[unfold]` equations in a stdli
 ACCEPTANCE. The VARIABLE row answers 1, naming the same mismatch the direct-in-an-operation-body spelling names, with the GROUND row and the direct row unchanged at 1. If (b) is chosen instead, the VARIABLE row is a located refusal naming `?k` and the receiver — never 0. Say which rows fail when the change is backed out, and keep `wi_fcz3n_simp_rhs_occurrence_test`'s rows green either way.
 
 Split out of WI-20260903-FCZ3N, which measured it and does not own it.
+
+## Changes
+
+### 2026-09-03T20:34:42Z — feedback — user
+
+DELIVERED as answer (a): the leaf reads sigma CARRIER-NEUTRALLY and asks what TYPE the
+binding denotes. `SubstTypeRewrite::term` is now `node_occurrence::subst_type_term` --
+`apply_subst`'s own `Fn` walk with one arm changed.
+
+THE TICKET'S TABLE, closed. The VARIABLE row answers 1, in the same sentence as the other
+two: `type mismatch in put.key (op-arg): expected Bool, got String`.
+
+WHAT THE TICKET DID NOT KNOW, and it is the half that took the work. The obvious repair --
+compose the KB's carrier-neutral sigma (`reify`) with the occurrence->term boundary
+(`try_occurrence_to_term`) -- is wrong TWICE, both measured:
+ 1. `reify` answers with a `Value::Entity`, and a `Value::Entity` in a TYPE position is a
+    carrier the type layer does not read (`resolved_type_is_ground_g`'s `_ => false`), so
+    the check is SKIPPED and the row stays at ZERO. Delivering the binding on a carrier
+    every reader skips only moves the drop.
+ 2. `try_occurrence_to_term` answers "is there a GOAL-TERM shape", which is strictly wider
+    than "does this denote a TYPE". A call, a value parameter and a list literal all
+    arrived as ground PSEUDO-TYPES and were named -- `expected idk`, `expected
+    var_ref[name = s]`, `expected ListLiteral` -- two of them leaking the reflect encoding.
+
+ANSWER (b) IS REFUSED BY A ROW, not by argument: implemented, it falsely refuses
+`Map[K = ?k]` fired at `mkr(String)` with a String key. That row also DRIVES the feature
+(`dr()` evaluates to `Int(1)`). (b) survives only as the residue: a binding that denotes no
+type becomes a GROUND `bottom`, so it is CHECKED rather than skipped. Censused at the arm
+through a file the harness cannot capture (an `eprintln` reads ZERO -- libtest swallows a
+test's stderr, and the first cut of this census believed it): 5 hits across 36 binaries and
+6 376 tests, all five the new file's own.
+
+TWO /code-review PASSES, both of which found something no fixture would have. The second
+found that a TUPLE type reached through the variable was FALSELY REFUSED while its ground
+twin loaded clean -- a structural type has no nominal name, so it never arrives classified.
+A ground-vs-variable census over every writable type shape found the named and nested
+tuples beside it and is now a row; the only disagreement left is the arrow, refused at the
+PARSER before sigma sees it.
+
+DECLINED, with the measurement: an UNBOUND type-position variable keeps its variable. In a
+VALUE position that is malformed (`bottom_out_unbound`); in a TYPE position it is the
+spelling for an UNCONSTRAINED slot, and all three ground spellings load clean, so the rule
+spelling loading clean is AGREEMENT.
+
+BLAST RADIUS, re-censused past the ticket's "0 of 21": axis 1 backed out fails EXACTLY 4
+ROWS of 4 084 over the whole `wi_tests` binary, all four in the new file; axis 2 fails 2.
+Channels: only `recv_type` is drivable from a `[simp]` RHS -- the `type_args` bracket is
+refused at load there (BAD3V) and a row pins that refusal.
 

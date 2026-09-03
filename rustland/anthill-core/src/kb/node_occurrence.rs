@@ -2792,6 +2792,11 @@ fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value
 /// definition of "rewrite a type Value" and cannot drift (the WI-378 goal).
 trait TypeChildRewrite {
     /// Rewrite a ground type child (a hash-consed `TermId`); `bool` = changed.
+    ///
+    /// THE ANSWER IS A TYPE TERM ON EVERY REWRITER, and for σ that is a CONCLUSION rather
+    /// than a restriction — see [`SubstTypeRewrite::term`], which reads σ carrier-neutrally
+    /// and lowers what it finds back into this carrier because a type position is READ on
+    /// it (WI-20260903-H054K).
     fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool);
     /// Rewrite a `Rc<NodeOccurrence>` child — a nested Type/EffectExpr node or a
     /// `Denoted` value occurrence — by recursing the owning rewriter.
@@ -3096,17 +3101,235 @@ impl TypeChildRewrite for OpenTypeRewrite<'_> {
     }
 }
 
+/// WI-20260903-H054K — σ OVER A TYPE-POSITION TERM, READING σ CARRIER-NEUTRALLY.
+///
+/// [`KnowledgeBase::apply_subst`] with ONE ARM CHANGED, and that arm is the whole ticket.
+/// `apply_subst` is term-world and documents its own drop: "a non-`Term` carrier (a
+/// `Value::Node`) can't be a `Term` child, so a var bound to one stays the var". In a type
+/// position that is a SILENT DROP, not a conservative no-op — the leaf it keeps is the
+/// throwaway `fresh` global the equation was opened against, and A FREE VARIABLE UNIFIES
+/// WITH ANYTHING. The typer's `[simp]` fire binds EVERY rule variable to a `Value::Node` (a
+/// redex's children ARE occurrences, WI-246), so a `[simp]` RHS writing `Map[K = ?k, V =
+/// Int64].empty()` typed a wrong program clean while its ground twin `Map[K = Bool, …]`
+/// reported the mismatch.
+///
+/// THE `Fn` WALK IS `apply_subst`'S OWN (`map_fn_children`), shared rather than restated:
+/// same structural sharing when nothing changed, same child order, same hash-consing. Only
+/// the VAR arm differs, and it differs by reading σ through
+/// [`Substitution::resolve_as_value`] — which sees every carrier — instead of narrowing to
+/// `Value::Term` on the way in.
+///
+/// ── WHY NOT `KnowledgeBase::reify`, THE KB'S OWN CARRIER-NEUTRAL σ ──────────
+///
+/// Because it answers a GOAL's question, and this is a TYPE's. Composing it with the
+/// occurrence→term boundary is the obvious fix and it is wrong TWICE, both measured on the
+/// ticket's own `Map[K = ?k, V = Int64].empty()` skeleton:
+///
+///  1. `reify`'s answer for `Map[V = Int64, K = ?k]` with `?k ↦ Node(TypeValue{Bool})` is a
+///     `Value::Entity` — `fn_value` promotes any application with a non-leaf child — and a
+///     `Value::Entity` in a TYPE position is a carrier the type layer does not read:
+///     `resolved_type_is_ground_g`'s `_ => false` calls it non-ground, so
+///     `validate_arg_against_param` SKIPS the check. The row stays at ZERO. Delivering the
+///     binding on a carrier every reader skips only MOVES the drop.
+///  2. [`try_occurrence_to_term`] answers "does this have a GOAL-TERM shape", which is a
+///     strictly wider question than "does this denote a TYPE" — so every value-world
+///     expression that HAS a goal shape lowers to a bogus pseudo-type, and because a `Fn` /
+///     `Ref` term IS ground it is then checked and NAMED. Measured, all four loading clean
+///     before this ticket: `mkv(idk("z"))` → `expected idk`, `mkv(s)` → `expected
+///     var_ref[name = s]`, `mkv([1, 2])` → `expected ListLiteral`, and
+///     `mkv(Map[K = Bool].empty())` → `expected empty` (that arm drops `recv_type` too).
+///     Two of those leak the internal reflect encoding into a user-facing diagnostic and
+///     all four name a type the author never wrote. Found by `/code-review`.
+///
+/// So the gate is [`type_denoted_by`], which asks the type question directly.
+fn subst_type_term(kb: &mut KnowledgeBase, t: TermId, subst: &Substitution) -> TermId {
+    match kb.get_term(t).clone() {
+        Term::Var(Var::Global(vid)) => match subst.resolve_as_value(vid) {
+            // UNBOUND: keep the leaf, exactly as `apply_subst` does — and NOT `⊥`, which is
+            // what the value-position twin (`simp_rewrite::bottom_out_unbound`) writes for a
+            // rule variable the match did not bind. The asymmetry is the two positions asking
+            // DIFFERENT QUESTIONS, and it is measured rather than assumed (/code-review
+            // raised it as a gap): in a VALUE position an unbound variable leaves the RHS
+            // with nothing to splice, while in a TYPE position it is the spelling for an
+            // UNCONSTRAINED slot — §"Expansion during unification" makes `Map[K = ?]`,
+            // `Map[K = ?k]` with `?k` used once, and omitting the binding altogether "all
+            // mean the same thing and … checked alike". MEASURED: all three GROUND spellings
+            // load clean, so the rule-variable spelling loading clean is AGREEMENT with its
+            // ground twin, not a hole. Bottoming it out would refuse a legal type.
+            None => t,
+            Some(bound) => {
+                let bound = bound.clone();
+                type_denoted_by(kb, &bound).unwrap_or_else(|| kb.alloc(Term::Bottom))
+            }
+        },
+        Term::Var(Var::DeBruijn(_)) => t,
+        Term::Fn { .. } => kb.map_fn_children(t, |kb, c| subst_type_term(kb, c, subst)),
+        _ => t,
+    }
+}
+
+/// WI-20260903-H054K — THE TYPE A σ BINDING DENOTES, or `None` when it denotes none.
+///
+/// THE QUESTION IS "DOES THIS DENOTE A TYPE", and it is deliberately NOT
+/// [`try_occurrence_to_term`]'s. That function is the occurrence→GOAL-TERM boundary: it
+/// answers for a lambda with `None` but for an operation CALL, a `var_ref` and a list
+/// literal with a perfectly good term — which, standing in a type position, is a ground
+/// pseudo-type a diagnostic then names (see [`subst_type_term`]'s measurements). Every
+/// carrier that reaches this and is not one of the shapes below is a runtime VALUE, and the
+/// caller writes `⊥` for it.
+///
+/// `⊥` RATHER THAN THE VARIABLE, deliberately and loudly. It is the same word
+/// [`crate::kb::simp_rewrite`]'s `bottom_out_unbound` writes one call out for the
+/// neighbouring "this instantiation has no value to put here", and `Term::Bottom` is GROUND
+/// (`type_value_is_ground_g`), so it is CHECKED and reported where keeping the un-denoting
+/// carrier would restore the silent skip this whole ticket removes.
+fn type_denoted_by(kb: &mut KnowledgeBase, v: &Value) -> Option<TermId> {
+    match v {
+        // Already a type term — this is `apply_subst`'s own arm, unchanged.
+        Value::Term { id, .. } => Some(*id),
+        // §4.5 VALUE-IN-TYPE: a constant standing in type position IS a type (`Vector[Int64,
+        // 3]`), there being no singleton types; and a value-level logical variable is a type
+        // variable here. `alloc_from_value` owns which carriers have a term form and is
+        // TOTAL on exactly this set, so a failure is a broken invariant and says so — the
+        // same call `KnowledgeBase::fn_value` makes about the same function.
+        Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::SymbolRef(_)
+        | Value::Var(_) => Some(
+            kb.alloc_from_value(v)
+                .unwrap_or_else(|e| panic!("a leaf carrier did not lower: {e:?}")),
+        ),
+        Value::Node(occ) => type_denoted_by_occurrence(kb, &Rc::clone(occ)),
+        // Every remaining carrier is a runtime VALUE — an entity, a tuple, a closure, a
+        // stream, a relation, a requirement dictionary. None of them denotes a type.
+        _ => None,
+    }
+}
+
+/// [`type_denoted_by`] for the occurrence carrier. Five shapes denote a type — a `Type` /
+/// `EffectExpression` spine, proposal 055's classified `TypeValue`, a logical variable, a
+/// §4.5 value-in-type constant, and a TUPLE literal (the structural type, which has no
+/// nominal name to be classified by) — and nothing else an occurrence can be does.
+fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    // A `Type` / `EffectExpression` occurrence IS a type, and WI-390 lowers its spine
+    // faithfully. This is the one place the lowering gives something up: the type layer
+    // READS that carrier, so keeping it would preserve a `denoted`'s span. It cannot be kept
+    // without widening [`TypeChildRewrite::term`] past what `TypeChild` can hold, and it is
+    // not a regression — such a binding was DROPPED outright before this ticket. Widen the
+    // leaf when a reader wants that span, not before.
+    if occ.as_type().is_some() || occ.as_effect_expr().is_some() {
+        return try_occurrence_to_term(kb, occ);
+    }
+    match occ.as_expr()? {
+        // Proposal 055's classified nominal type VALUE — the shape a type name written at a
+        // value position arrives as, and the shape the ticket's own program supplies.
+        Expr::TypeValue { .. } => try_occurrence_to_term(kb, occ),
+        // A logical variable — a type variable in this position.
+        Expr::Var(_) => try_occurrence_to_term(kb, occ),
+        // §4.5 value-in-type, on the occurrence carrier: `3` in `Vec[N = 3]` rides as
+        // `Expr::Const` (WI-404).
+        Expr::Const(_) => try_occurrence_to_term(kb, occ),
+        // A TUPLE TYPE — `(Int64, Bool)`, `(a: Int64, b: Bool)`, and either nested. A
+        // STRUCTURAL type has no nominal name, so it does NOT arrive classified as
+        // `Expr::TypeValue`; it arrives as the tuple literal it is spelled as, and this is
+        // the arm that reads it as the type it denotes.
+        //
+        // NOT `try_occurrence_to_term`, whose twin for this shape is the reflect
+        // `TupleLiteral(_1: …)` DATUM — a different term from the `NamedTuple{fields}` the
+        // loader builds for the same type written in a type position, so the two spellings
+        // would disagree about what `Map[K = (Int64, Bool)]` means. `make_named_tuple_type`
+        // is the loader's own builder (`load.rs`'s arrow-parameter arm calls it), and the
+        // field keys are minted the same way: written names as written, positionals through
+        // `intern::positional_label` (WI-790 owns that convention).
+        //
+        // FOUND BY CENSUSING THE SHAPES AN AUTHOR CAN WRITE against their ground twins, not
+        // by reading: with this arm missing, `Map[K = (Int64, Bool)]` reached through a rule
+        // variable FALSELY REFUSED a correct program (`expected bottom, got (_1: Int64, _2:
+        // Bool)`) while the ground spelling loaded clean — the exact failure this ticket
+        // calls THE WRONG FIX. (/code-review found the tuple; the census found the named and
+        // nested ones beside it.)
+        Expr::TupleLit { positional, named } => tuple_type_denoted(kb, positional, named),
+        // …AND THE SAME TYPE IN ITS OTHER SPELLING. A written `(…)` reaches an operation
+        // body as the reflect `TupleLiteral(_1: …, name: …)` CONSTRUCTOR (WI-1014 Part B:
+        // "ALL-NAMED, zero positional, positionals carrying `_N` labels") and as
+        // [`Expr::TupleLit`] on the materialize-from-term path. Both carriers must key alike
+        // (WI-1016) or one written type decides two ways depending on which producer built
+        // the node — so they share `tuple_type_denoted` rather than each restating it. The
+        // `[simp]` redex supplies the CONSTRUCTOR spelling; that is the one measured.
+        //
+        // The `named` list is read as-is: the loader has already put the `_N` labels on the
+        // positionals, which is exactly the keying `tuple_type_denoted` would mint. A
+        // distributive projection desugars into this same constructor (WI-762) and is NOT a
+        // type — it needs no guard here, because its children are field accesses and the
+        // recursion refuses them, which is a structural answer rather than a flag to keep in
+        // step.
+        Expr::Constructor { name, pos_args, named_args, .. }
+            if kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL)) == Some(*name) =>
+        {
+            tuple_type_denoted(kb, pos_args, named_args)
+        }
+        // NO `Expr::Ref(s) if kind_of(s) == Sort` ARM, and that is a decision rather than an
+        // omission. An earlier cut had one — a bare name admitted when the symbol table says
+        // it is a sort — and it is exactly the reader [`Expr::TypeValue`]'s own doc exists to
+        // abolish: "every reader that had to recognise one asked the symbol table itself
+        // (`kind_of(..) == Sort`) at four separate sites … four readers agreeing about a
+        // shape is not one decision, it is four that can drift". The classification IS the
+        // recorded answer, so this asks it and nothing else. MEASURED, four spellings, every
+        // one arriving classified: a bare `Bool` in an operation body, a nested
+        // `Map[K = Bool, V = Int64]`, and (both refused earlier, at name resolution) a
+        // rule-body goal and a qualified `anthill.prelude.Bool`. The arm never fired.
+        _ => None,
+    }
+}
+
 struct SubstTypeRewrite<'a> {
     subst: &'a Substitution,
 }
 impl TypeChildRewrite for SubstTypeRewrite<'_> {
+    /// WI-20260903-H054K — [`subst_type_term`], not `KnowledgeBase::apply_subst`. That one
+    /// is term-world and DROPS a var bound to a non-`Term` carrier, which in a type
+    /// position silently typed a wrong program clean; its replacement reads σ
+    /// carrier-neutrally and asks what TYPE the binding denotes. The measurements — and why
+    /// the KB's OWN carrier-neutral σ is the wrong tool here — are at that function.
     fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
-        let nt = kb.apply_subst(t, self.subst);
+        let nt = subst_type_term(kb, t, self.subst);
         (nt, nt != t)
     }
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
         substitute_occurrence(kb, n, self.subst)
     }
+}
+
+/// WI-20260903-H054K — the NAMED-TUPLE TYPE a tuple spelling denotes, shared by the two
+/// occurrence carriers a written `(…)` can arrive on.
+///
+/// `make_named_tuple_type` is the LOADER's own builder — `load.rs`'s arrow-parameter arm
+/// calls it for the same source — and the field keys are minted the same way: a written name
+/// as written, a positional through `intern::positional_label`, which WI-790 owns. That
+/// matters more than it looks: the alternative, `try_occurrence_to_term`, has a perfectly
+/// good twin for this shape and it is the reflect `TupleLiteral(_1: …)` DATUM, a different
+/// term from the type the loader builds for `Map[K = (Int64, Bool)]` written out. Using it
+/// would make the two spellings of one type disagree.
+///
+/// `None` as soon as any element denotes no type, so `(Int64, someCall())` is refused whole
+/// rather than half-built.
+fn tuple_type_denoted(
+    kb: &mut KnowledgeBase,
+    positional: &[Rc<NodeOccurrence>],
+    named: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<TermId> {
+    let mut fields: Vec<(Symbol, TermId)> = Vec::with_capacity(positional.len() + named.len());
+    for (n, c) in named {
+        fields.push((*n, type_denoted_by_occurrence(kb, c)?));
+    }
+    for (i, c) in positional.iter().enumerate() {
+        let key = kb.intern(&crate::intern::positional_label(i));
+        fields.push((key, type_denoted_by_occurrence(kb, c)?));
+    }
+    Some(kb.make_named_tuple_type(&fields))
 }
 
 /// WI-246: does the occurrence contain any `Expr::Var(Var::Global)` leaf?
@@ -4968,8 +5191,8 @@ pub fn substitute_occurrence(
         return reassemble_pattern(occ, &subst_children);
     }
     // WI-378 step 2 / WI-342-P3: apply σ inside a Type/EffectExpr occurrence's
-    // spine (a Global in a ground `TermId` child via `apply_subst`, child
-    // occurrences by recursion) — symmetric with the De Bruijn rewriters.
+    // spine (a Global in a ground `TermId` child via the [`SubstTypeRewrite`] leaf,
+    // child occurrences by recursion) — symmetric with the De Bruijn rewriters.
     if matches!(occ.kind, NodeKind::Type(_) | NodeKind::EffectExpr(_)) {
         return rewrite_type_occurrence(&SubstTypeRewrite { subst }, kb, occ)
             .unwrap_or_else(|| Rc::clone(occ));
@@ -4979,9 +5202,12 @@ pub fn substitute_occurrence(
     };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
-        // WI-298: Apply.type_args is a TermId field — apply σ to it via
-        // `apply_subst` so a Global appearing in a type argument gets the same
-        // rewrite as elsewhere, mirroring the opener's `open_type_args` arm.
+        // WI-298: apply σ to `Apply`'s TYPE channels — the `type_args` bracket and
+        // (WI-20260829-W6JH0) the form-(3) `recv_type` — so a Global appearing in one
+        // gets the same rewrite as elsewhere, mirroring the opener's `open_type_args`
+        // arm. Both go through [`SubstTypeRewrite`], whose leaf reads σ carrier-neutrally
+        // (WI-20260903-H054K): a type-position variable the typer's `[simp]` fire bound
+        // to a `Value::Node` is instantiated here, not silently kept.
         Expr::Apply {
             functor,
             pos_args,
@@ -5314,9 +5540,14 @@ fn rewrite_ref_expr(
 
 /// WI-298/WI-342 S4b: apply σ to a call site's `type_args` (`(name?,
 /// type-Value)` pairs) via the carrier-agnostic `subst_value_type` — the
-/// substitution twin of `open_type_args` / `close_type_args`. A ground
-/// `Value::Term` is rewritten via `apply_subst`; a `Value::Node` type carries
-/// no σ-substitutable vars, so it passes through unchanged.
+/// substitution twin of `open_type_args` / `close_type_args`.
+///
+/// ONE OF THE TWO CHANNELS a type position rides on, the other being the sibling
+/// `recv_type` arm in [`substitute_occurrence`]; both reach the same [`SubstTypeRewrite`]
+/// leaf, so a claim about "the type position" is a claim about both. NO FIXTURE DRIVES
+/// THIS ONE: a `[simp]` RHS cannot carry a call-site bracket at all (refused at load,
+/// WI-20260829-BAD3V), so WI-20260903-H054K's rows all ride `recv_type` and pin that
+/// refusal instead — see `wi_h054k_type_position_subst_test`'s channel census.
 fn subst_type_args(
     kb: &mut KnowledgeBase,
     items: &[(Option<Symbol>, Value)],

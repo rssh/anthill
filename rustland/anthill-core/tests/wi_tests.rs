@@ -1594,3 +1594,6 @@ mod wi_w9d4z_one_mistake_one_diagnosis_test;
 
 #[path = "include/wi_2m5xr_fact_spelling_frame_test.rs"]
 mod wi_2m5xr_fact_spelling_frame_test;
+
+#[path = "include/wi_h054k_type_position_subst_test.rs"]
+mod wi_h054k_type_position_subst_test;

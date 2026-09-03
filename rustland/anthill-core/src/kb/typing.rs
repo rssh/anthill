@@ -5324,6 +5324,10 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
         NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => {
             kb.local_name_of(*s).to_string()
         }
+        // Carrier-paired with `type_display_name`'s `Term::Bottom` arm (WI-1016: both
+        // carriers must key alike) — `materialize_from_handle` turns that term into this
+        // occurrence, so the two spellings of one `⊥` must name it identically.
+        NodeKind::Expr { expr: Expr::Bottom, .. } => "bottom".to_string(),
         NodeKind::Expr {
             expr: Expr::DotApply { receiver, name, pos_args, named_args },
             ..
@@ -5872,6 +5876,15 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
         // exactly that way. No test pins it, so this is a latent fix stated rather than
         // claimed as measured.
         Term::Const(lit) => literal_display(lit),
+        // WI-20260903-H054K — `bottom`, the spelling `persistence::print` gives the same
+        // term, not the `{:?}` `TermId(3485)` this fell to. A `⊥` reaches a TYPE position
+        // when σ binds a type-position variable to a carrier that denotes no type (see
+        // `node_occurrence::type_denoted_by`), and `Term::Bottom` is GROUND
+        // (`type_value_is_ground_g`), so it is CHECKED and named in a diagnostic rather
+        // than skipped — which makes how it renders part of whether that diagnostic says
+        // anything. The `{:?}` also embeds an allocation-order index, which the
+        // `Term::Var` arm below rejects for `build_canonical_effects_rows`' sort key.
+        Term::Bottom => "bottom".to_string(),
         _ => format!("{:?}", ty),
     }
 }

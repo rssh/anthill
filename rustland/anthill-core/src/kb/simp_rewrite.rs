@@ -1038,34 +1038,36 @@ pub(super) fn instantiate_rhs_verbatim(
 /// spine, a `Pattern`'s annotation. This ticket's first cut substituted only the leaves
 /// `for_each_child` yields and copied the rest verbatim; `/code-review` found it.
 ///
-/// ── A RULE VARIABLE IN A TYPE POSITION IS STILL NOT INSTANTIATED ────────────
+/// ── A RULE VARIABLE IN A TYPE POSITION IS INSTANTIATED TOO (WI-20260903-H054K) ──
 ///
-/// AND ROUTING THROUGH `substitute_occurrence` DOES NOT FIX IT, which is measured rather
-/// than assumed. With `import anthill.prelude.Map.{empty, put, size}`, driven by
-/// `size(put(mk(…), "a", 1))` — the mismatch is `"a"` against the receiver's `K`:
+/// BUT NOT BY ROUTING THROUGH `substitute_occurrence`, which is what this ticket did and
+/// what it measured as insufficient. With `import anthill.prelude.Map.{empty, put, size}`,
+/// driven by `size(put(mk(…), "a", 1))` — the mismatch is `"a"` against the receiver's `K`:
 ///
-/// | `[simp]` RHS                                 | before this ticket | now |
-/// |---|---|---|
-/// | `Map[K = Bool, V = Int64].empty()` (GROUND)  | 0 errors | **1** |
-/// | `Map[K = ?k,   V = Int64].empty()` (VARIABLE)| 0 errors | 0 |
-/// | the same call written directly in an operation body | 1 | 1 |
+/// | `[simp]` RHS                                 | before FCZ3N | FCZ3N | + H054K |
+/// |---|---|---|---|
+/// | `Map[K = Bool, V = Int64].empty()` (GROUND)  | 0 errors | **1** | 1 |
+/// | `Map[K = ?k,   V = Int64].empty()` (VARIABLE)| 0 errors | 0 | **1** |
+/// | the same call written directly in an operation body | 1 | 1 | 1 |
 ///
-/// The GROUND row is this ticket's own gain: the term path dropped `recv_type`
-/// altogether, so the receiver the author wrote was never checked at all, and it now
-/// agrees with the direct spelling. The VARIABLE row is UNMOVED — 0 before, 0 after — and
-/// the reason is a layer below this one: the typer's fire binds every rule variable to a
-/// `Value::Node` (the redex's children are occurrences), and a type position is a
-/// `Value::Term` whose σ is `KnowledgeBase::apply_subst`, which is term-world and
-/// documents that "a var bound to a non-`Term` carrier stays the var". So `?k` stays the
-/// throwaway `fresh` global, which unifies with anything.
+/// The GROUND row is THIS ticket's gain: the term path dropped `recv_type` altogether, so
+/// the receiver the author wrote was never checked at all. The VARIABLE row was UNMOVED —
+/// 0 before, 0 after — and the reason was a layer below: step 3's owner substituted a type
+/// position with `KnowledgeBase::apply_subst`, which is term-world and documents that "a
+/// var bound to a non-`Term` carrier stays the var", so `?k` stayed the throwaway `fresh`
+/// global, which unifies with anything. That asymmetry — one spelling fixed beside its
+/// twin left silent — is what made the older defect visible.
 ///
-/// NOT REFUSED AT LOAD EITHER, and that is the same measurement: whether the binding can
-/// be represented depends on the REDEX, so a load-time refusal would also refuse the
-/// resolver's term-bound case, which works. Censused: **0** of the 21 `[simp]`/`[unfold]`
-/// equations in a stdlib load carry a type position at all, so nothing shipped depends on
-/// either answer today. **OWNED BY WI-20260903-H054K**, which has to decide between
-/// converting a type-shaped `Value::Node` binding into a type term and refusing at the
-/// FIRE, where the carrier is known.
+/// H054K closed it AT THE LEAF rather than here: `node_occurrence::subst_type_term` reads
+/// σ CARRIER-NEUTRALLY (`resolve_as_value` sees the `Value::Node` binding) and asks what
+/// TYPE that binding denotes. Both spellings now report the same sentence, and this step is
+/// unchanged by it — which is the point, σ over an occurrence having ONE owner.
+///
+/// THE BOUND ON EITHER TICKET'S BLAST RADIUS, censused and kept here because it is the only
+/// place it sits beside the code: **0** of the 21 `[simp]`/`[unfold]` equations in a stdlib
+/// load carry a type position (`recv_type` or `type_args`) in their RHS at all, let alone a
+/// variable in one. So nothing shipped depended on the old answer, and nothing shipped
+/// depends on the new one; the rows that do are H054K's own.
 ///
 /// ── WHY STEP 4 EXISTS: ONE WALK, TWO QUESTIONS ABOUT A FREE VARIABLE ────────
 ///
