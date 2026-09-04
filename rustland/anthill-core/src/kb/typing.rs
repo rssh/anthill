@@ -18852,12 +18852,22 @@ fn check_apply_iter(
                                 // operation declared `-> String` reported "expected String,
                                 // got ??param".
                                 //
-                                // ONLY ON `Ok`. On the `WrapSome` arm the argument is the UN-COERCED value, so
-                            // unifying it against an `Option[…]` slot can only fail — and
-                            // failing there leaves the slot's `T` free exactly where the
-                            // coercion has just determined it, so a `ret_ty` mentioning it
-                            // would come back `??param` instead of `Int64`. Found by
-                            // `/code-review`.
+                                // ONLY ON `Ok`. On the `WrapSome` arm the argument is the
+                                // UN-COERCED value, so unifying it against an `Option[…]`
+                                // slot can only fail — and failing there leaves the slot's
+                                // `T` free exactly where the coercion has just determined
+                                // it, so a `ret_ty` mentioning it would come back
+                                // `??param` instead of `Int64`. Found by `/code-review`.
+                                //
+                                // WHAT A FAILED UNIFY LEAVES BEHIND IS NOT SETTLED HERE.
+                                // `unify_types` binds as it descends and does not roll
+                                // back, so a pair that conforms by SUBTYPING but not by
+                                // EQUALITY keeps whatever it bound before the mismatch —
+                                // and since this ticket, that σ is READ (`ret_ty` below).
+                                // Raised by `/code-review`; NOT repaired here, because the
+                                // discarded-boolean idiom is this file's, not this site's:
+                                // ten call sites share it and fixing two would leave the
+                                // other eight. WI-20260904-60143 owns the census.
                                 ArgValidation::Ok => {
                                     unify_types(kb, &mut subst, &arg_result.ty, slot_type);
                                 }
@@ -41078,33 +41088,15 @@ fn validate_arg_against_param(
         if nominal_head_mismatch(kb, subst, &actual_g, &declared_g, HeadPosition::Argument) {
             return ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context));
         }
-        // WI-20260904-50B2K — A CALLABLE AGAINST A CALLABLE-FREE TYPE IS DECIDED, whatever
-        // the variables inside turn out to be. The KIND sibling of the nominal-head verdict
-        // above, and it exists for the same reason that one does: a silent pass is the worst
-        // outcome available at this gate.
-        //
-        // NARROWER THAN [`nominal_head_mismatch`] ON PURPOSE, which withholds at a callable
-        // head entirely because WI-836 measured `Function[A = ?X, B = Int64]` against `Int64`
-        // arising from a NESTED descent in a program that must load. That pairing reaches
-        // this gate with `List` on both sides, so neither head is callable here and this
-        // verdict declines — the withholding it needs is untouched.
-        //
-        // `type_contains_callable` on the OTHER side, not a head test, is what keeps the
-        // WI-408 some-coercion: a lambda handed to an `Option[T = Function[…]]` slot has a
-        // callable head against a non-callable `Option` head, and must be WRAPPED rather
-        // than refused. `Option[T = Function[…]]` contains a callable, so this declines and
-        // the coercion below runs. An `Int64` field contains none, and
-        // `plain(lambda x -> x)` against `entity plain(v: Int64)` is refused.
-        // WI-20260904-50B2K — see [`callable_against_callable_free`] for the verdict and
-        // both directions' measurements. Asked HERE as well as inside
-        // [`nominal_head_mismatch`] because the two reach different pairs: this one sees
-        // the whole argument against the whole declared type (a lambda in an `Int64`
-        // field), that one the per-binding descent (a lambda inside a `List[T = Int64]`).
-        if callable_against_callable_free(kb, &actual_g, &declared_g) {
-            return ArgValidation::Fail(conformance_error(
-                kb, declared_g, actual_g, span, context,
-            ));
-        }
+        // THE CALLABLE-KIND VERDICT IS NOT ASKED AGAIN HERE, and it was until
+        // `/code-review` read the call above. `nominal_head_mismatch`'s FIRST statement is
+        // `callable_against_callable_free(actual, declared)` on these same two values, so a
+        // second call on the line below could never be true — the comment defending it
+        // ("the two reach different pairs: this one sees the whole argument, that one the
+        // per-binding descent") described where the verdict was FIRST placed, not where it
+        // ended up. MEASURED before removing it: neutralized, the anthill-core suite is
+        // 5605/0, unchanged. The whole-argument pair is covered — by the call inside
+        // `nominal_head_mismatch`, which the head test above reaches with it.
         return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
@@ -41294,6 +41286,12 @@ fn nominal_head_mismatch(
     // verdict is the OTHER pairing, actual callable against a callable-free declared, and
     // `takes_list([lambda x -> 7])` against `takes_list(l: List[T = Int64])` is decided at
     // the `T` binding no matter what the lambda's binder turns out to be.
+    // THE ONE SITE, and it serves BOTH pairs — this function is called with the WHOLE
+    // argument against the WHOLE declared type at `validate_arg_against_param`'s
+    // non-ground branch (a lambda in an `Int64` field: `plain(lambda x -> x)` against
+    // `entity plain(v: Int64)`) and again on each descent (a lambda inside a
+    // `List[T = Int64]`). The gate used to ask the verdict a second time for the first of
+    // those; measured dead and removed.
     if callable_against_callable_free(kb, actual, declared) {
         return true;
     }
@@ -54591,12 +54589,30 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // is a second finding in its own right: the arms of this table that the
                 // corpus never exercises are unknown, and a census of which of them a
                 // program can actually reach has not been done.
+                // `poly_type` IS THE ONE SAME-FORM PAIR THAT IS NOT AN OMISSION, and the
+                // first cut of this assert did not except it — `/code-review` found it.
+                // [`type_dispatch_name_view`] NAMES `PolyType` precisely so that a ∀
+                // reaching the structural arms is a MISMATCH no arm accepts ("what it must
+                // never do if it somehow does is MATCH `arrow`"), so `false` here is the
+                // decision, not a missing wire. Without the exception a debug build would
+                // ABORT on the pair its own design says to refuse.
+                //
+                // NOT DRIVEN EITHER WAY, and that is the honest state: `check_bare_ref`
+                // instantiates a ∀ at the reference — the one mint's one consumer — so no
+                // program in the corpus reaches this dispatch with two of them. The
+                // exception is written from the design decision 5000 lines away rather
+                // than from a red row.
+                // Everything stays INSIDE the macro so release builds evaluate none of
+                // it — a `let` above the assert would have paid for two
+                // `type_dispatch_name_view` calls on every fall-through.
                 debug_assert!(
                     !matches!(
                         (type_dispatch_name_view(kb, &a), type_dispatch_name_view(kb, &e)),
-                        (Some(x), Some(y)) if x == y
+                        (Some(x), Some(y)) if x == y && x != "poly_type"
                     ),
-                    "types_compatible_view_structural: no arm for the shared form {:?} —                      the term dispatch has a peer this one is missing; wire it rather than                      letting it read as a form mismatch",
+                    "types_compatible_view_structural: no arm for the shared form {:?} \
+                     — the term dispatch has a peer this one is missing; wire it rather \
+                     than letting it read as a form mismatch",
                     type_dispatch_name_view(kb, &a),
                 );
                 false
@@ -65223,7 +65239,12 @@ fn check_operation_bodies(
                 //
                 // The unify's boolean is DISCARDED: `types_compatible` below is still the
                 // verdict, since unify is EQUALITY while conformance is SUBTYPING plus the
-                // refinement retry.
+                // refinement retry. WHAT A FAILED UNIFY LEAVES IN σ is a separate question
+                // and an open one — it binds as it descends and does not roll back, so a
+                // subtyping-conformant pair keeps whatever it bound before the mismatch,
+                // and the `walk_type_deep_value` below now READS that σ. Raised by
+                // `/code-review`; the census of the ~10 sites sharing this idiom is
+                // WI-20260904-60143, and it is a file-wide rule rather than this site's.
                 unify_types(kb, &mut subst, &result.ty, &effective_return);
                 // PURE σ (`walk_type_deep_value`), not the grounding
                 // `resolve_type_deep_value`: this file singles the pair out at

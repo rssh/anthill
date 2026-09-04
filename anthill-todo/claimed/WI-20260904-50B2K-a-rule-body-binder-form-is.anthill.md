@@ -452,6 +452,43 @@ all. Pinned as
 `wi_qqpq2_tuple_carrier_test::known_gap_a_rule_body_lambdas_binders_zip_by_slot`, which
 asserts the CURRENT value with a message naming this ticket's part (b) as its owner.
 
+A SECOND /CODE-REVIEW PASS (high, run 2026-09-04 on the QQPQ2 tree) FOUND FOUR MORE ON
+THIS TICKET'S SHIPPED CODE. Three fixed, one filed:
+
+  * THE CALLABLE-KIND VERDICT WAS ASKED TWICE AND THE SECOND CALL COULD NEVER BE TRUE.
+    `nominal_head_mismatch`'s FIRST statement is `callable_against_callable_free(actual,
+    declared)`; the gate calls that predicate on the SAME two values, in straight-line
+    order, right after calling `nominal_head_mismatch` on them. So the "FOURTH EDIT" above
+    did not add a second reach — it MOVED the verdict, and the comment defending the
+    outer call ("the two reach different pairs: this one sees the whole argument, that one
+    the per-binding descent") described where the verdict was first placed, not where it
+    ended up. MEASURED before removing it: neutralized, anthill-core is 5605/0, unchanged.
+    Removed; the surviving site's comment now says it serves BOTH pairs.
+
+  * THE NEW `debug_assert` IN `types_compatible_view_structural` WOULD ABORT ON A PAIR
+    THE DESIGN SAYS TO REFUSE. `type_dispatch_name_view` NAMES `PolyType` precisely so a ∀
+    reaching the structural arms is a MISMATCH no arm accepts, and there is no `poly_type`
+    arm — so `(poly_type, poly_type)` is a DELIBERATE `false`, and the assert's predicate
+    ("same form name ⇒ an omission") is exactly wrong for it. Excepted. Still not driven
+    either way: `check_bare_ref` instantiates a ∀ at the reference, so no corpus program
+    reaches this dispatch with two of them; the exception is written from the decision
+    5000 lines away rather than from a red row.
+
+  * THE ASSERT MESSAGE CARRIED TWO BAKED-IN 22-SPACE RUNS — a lost `\` line continuation,
+    the same footgun this repo has been bitten by before. Repaired, with the whole
+    expression kept INSIDE the macro so a release build still evaluates none of it (the
+    first repair hoisted a `let` and would have paid for two `type_dispatch_name_view`
+    calls on every fall-through).
+
+  * WHAT A FAILED `unify_types` LEAVES IN σ IS NOW READ, and is NOT repaired here. Edits 2
+    and 5 made the argument check's σ live — `ret_ty`, the effect row, and the op-return's
+    compared value all resolve through it — while `unify_types` binds as it descends and
+    does not roll back, so a pair that conforms by SUBTYPING but not EQUALITY keeps
+    whatever it bound before the mismatch. NOT an inline fix at these two sites: the
+    discarded-boolean idiom is the FILE's, ~10 call sites share it, and repairing two
+    would leave eight and two rules. Filed as WI-20260904-60143 with the census it owes,
+    and pointed at from both sites.
+
 NOTE ON THIS TICKET'S OWN HISTORY. Three drafts diagnosed this wrongly before reading
 `make_type_var`'s doc: "no expected type reached the binder", then "a type that cannot
 unify", then "a wildcard, not a variable". The first two were led by
