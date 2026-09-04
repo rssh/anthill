@@ -5312,3 +5312,91 @@ mod czj2n_nullary_sort_type_head_test {
         ));
     }
 }
+
+/// WI-20260904-B1KFS — THE GROUNDNESS GATE ANSWERS ONE TYPE THE SAME WAY ON EITHER CARRIER.
+#[cfg(test)]
+mod groundness_gate_carrier_agreement_test {
+    //! `KnowledgeBase::fn_value` builds a `Value::Entity` for ANY application with a
+    //! non-leaf child, so a type carrying an occurrence child IS an `Entity` — and that is
+    //! exactly what `KnowledgeBase::reify` hands back for such a type. Until this,
+    //! [`super::super::resolved_type_is_ground_g`] gave the hash-consed spelling the
+    //! structural walk and the `Entity` spelling `_ => false`, i.e. NOT GROUND — which at
+    //! this gate's callers means SKIP THE CHECK. One type, two answers, and the disagreeing
+    //! one silently withholds a type check.
+    //!
+    //! WHY A UNIT ROW AND NOT A PROGRAM: censused at delivery, **0** `Value::Entity`s reach
+    //! this gate across 36 binaries and 6 376 tests, so no `.anthill` fixture can drive it
+    //! today — the disagreement is LATENT. It is still worth removing, because latent is
+    //! how it bit: WI-20260903-H054K's natural repair (route the type position's σ through
+    //! `reify`) produced exactly this carrier and reported ZERO errors on a wrong program,
+    //! and that ticket had to route around the gate rather than fix it.
+    //!
+    //! BACKED OUT (restore `_ => false` in `resolved_type_is_ground_g`): the GROUND pair
+    //! fails — the term half says ground, the entity half says not — and the NON-GROUND
+    //! pair keeps passing BY DESIGN, both halves answering `false` for different reasons.
+    //! That is what makes the ground pair the measuring row and the other one the control:
+    //! a fixture with only the non-ground pair would be green either way.
+    use super::super::*;
+    use crate::eval::value::Value;
+    use crate::intern::SymbolKind;
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    /// `Map[K = <child>]` built twice: hash-consed, and as the `Value::Entity` twin.
+    fn both_spellings(kb: &mut KnowledgeBase, child: TermId) -> (Value, Value) {
+        let g = kb.global_scope();
+        let map = kb.define_symbol("Map", "Map", SymbolKind::Sort, g);
+        let k = kb.intern("K");
+        let term = kb.alloc(Term::Fn {
+            functor: map,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(k, child)]),
+        });
+        let entity = Value::Entity {
+            functor: map,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(vec![(k, Value::term(child))]),
+        };
+        (Value::term(term), entity)
+    }
+
+    #[test]
+    fn one_type_answers_the_same_on_a_term_and_on_an_entity() {
+        let mut kb = KnowledgeBase::new();
+        let g = kb.global_scope();
+        let boolean = kb.define_symbol("Bool", "Bool", SymbolKind::Sort, g);
+        let concrete = kb.alloc(Term::Ref(boolean));
+        let (term, entity) = both_spellings(&mut kb, concrete);
+
+        assert_eq!(
+            resolved_type_is_ground(&kb, &term),
+            resolved_type_is_ground(&kb, &entity),
+            "`Map[K = Bool]` is one type — the carrier it rides on must not change the \
+             verdict, because at this gate's callers `false` means SKIP THE CHECK"
+        );
+        assert!(
+            resolved_type_is_ground(&kb, &entity),
+            "…and the answer is GROUND, not merely equal: a pair that agreed on `false` \
+             would be the skip this row exists to remove, agreeing by accident"
+        );
+    }
+
+    /// THE CONTROL, and the reason the row above measures something: the gate must still
+    /// SAY NO. A free type variable in the same slot is non-ground on both carriers, so the
+    /// agreement above is not bought by the predicate having started answering `true`.
+    #[test]
+    fn a_free_variable_is_non_ground_on_both_carriers() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("T");
+        let vid = kb.fresh_var(name);
+        let open = kb.alloc(Term::Var(Var::Global(vid)));
+        let (term, entity) = both_spellings(&mut kb, open);
+
+        for (label, v) in [("term", &term), ("entity", &entity)] {
+            assert!(
+                !resolved_type_is_ground(&kb, v),
+                "{label}: `Map[K = ?T]` has a free type variable in it and is not ground"
+            );
+        }
+    }
+}

@@ -40419,25 +40419,68 @@ fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
 /// parameter once that parameter's skolem reads as concrete, and the coverage check demands
 /// a `requires` the source already wrote.
 fn type_value_is_ground_g(kb: &KnowledgeBase, tid: TermId, rigid_ok: bool) -> bool {
-    match kb.get_term(tid) {
-        Term::Var(Var::Rigid(_)) => rigid_ok,
-        Term::Var(_) => false,
-        Term::Ref(sym) | Term::Ident(sym) => !is_sort_param_symbol(kb, *sym),
-        Term::Fn {
+    type_view_is_ground_g(kb, &TermIdView(tid), rigid_ok)
+}
+
+/// WI-20260904-B1KFS — THE SAME QUESTION, ASKED THROUGH [`TermView`] SO EVERY CARRIER ANSWERS
+/// IT THE SAME WAY.
+///
+/// **CARRIER-NEUTRAL MEANS `Fn{Map, K = Bool}` AND ITS `Value::Entity` TWIN CANNOT ANSWER
+/// DIFFERENTLY**, and until this they did: the hash-consed spelling got the structural walk
+/// and the `Value::Entity` spelling got [`resolved_type_is_ground_g`]'s `_ => false`, i.e.
+/// "not ground" — which at this gate's callers means SKIP THE CHECK. One type, two answers,
+/// and the disagreeing one silently withholds a type check.
+///
+/// The two spellings are not exotic: `KnowledgeBase::fn_value` builds the `Entity` for ANY
+/// application with a non-leaf child, so a type carrying an occurrence child IS an
+/// `Entity` — which is exactly what `KnowledgeBase::reify` hands back, and exactly why
+/// routing a type position's σ through `reify` reported ZERO errors on a wrong program
+/// (WI-20260903-H054K measured that and routed around it; this removes the reason it had
+/// to). Censused at delivery: **0** `Value::Entity`s reach this gate across 36 binaries and
+/// 6 376 tests, so this is a HARDENING and not a live fix — no existing row moves. What
+/// drives it is the carrier-agreement property itself, asserted directly:
+/// `tests::groundness_gate_carrier_agreement_test`.
+///
+/// TWO SIBLINGS STILL DISAGREE and are **WI-20260904-B1KFS**, not fixed here:
+/// [`type_display_name_value`] renders this same type `"Map[K = Bool]"` as a term and `"Map"`
+/// as an entity — the bindings dropped from a user-facing diagnostic — and
+/// [`walk_type_deep_value_g`]'s `other => other.clone()` never σ-resolves an entity-carried
+/// type's inner vars, which is the mistake WI-441 records having already made and fixed for
+/// `Value::Node`. Both are measured there; the display one is a merge of two hand-kept
+/// renderers rather than an arm, which is why it is a ticket.
+///
+/// ONE WALK, not a third: [`type_value_is_ground_g`] is now a thin delegate, so the
+/// `TermId` reading and the `Value` reading cannot drift the way they just did.
+fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(Var::Rigid(_)) => rigid_ok,
+        ViewHead::Var(_) => false,
+        ViewHead::Const(_) | ViewHead::Bottom => true,
+        ViewHead::Ident(sym) => !is_sort_param_symbol(kb, sym),
+        // A NULLARY functor is the bare sort reference (WI-20260902-CZJ2N retired the
+        // separate `Ref` head), so `Ref(S)` and `Fn{S, …}` are one arm — as they were in the
+        // term walk this replaces, whose `Ref | Ident` and `Fn` arms asked the same question
+        // of the functor symbol.
+        ViewHead::Functor {
             functor,
-            pos_args,
-            named_args,
+            pos_arity,
+            named_arity: _,
         } => {
-            !is_sort_param_symbol(kb, *functor)
-                && pos_args
-                    .iter()
-                    .all(|a| type_value_is_ground_g(kb, *a, rigid_ok))
-                && named_args
-                    .iter()
-                    .all(|(_, a)| type_value_is_ground_g(kb, *a, rigid_ok))
+            if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
+                return false;
+            }
+            (0..pos_arity).all(|i| {
+                v.pos_arg(kb, i)
+                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
+            }) && v.named_keys(kb).iter().all(|k| {
+                v.named_arg(kb, *k)
+                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
+            })
         }
-        Term::Const(_) | Term::Bottom => true,
-        Term::ParseAux(_) => false,
+        // A carrier with no structure to read — a closure, a stream, a `ParseAux`. It is not
+        // a type and cannot be judged one; `false` withholds the verdict, which is what the
+        // term walk's `ParseAux` arm already answered.
+        ViewHead::Opaque => false,
     }
 }
 
@@ -40471,8 +40514,20 @@ fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> b
         // / row-tail leaf — the same predicate `type_value_is_ground` applies to the
         // hash-consed twin, walked structurally so a flipped GROUND arrow reads as
         // ground (and is WI-385-checked) instead of being skipped as "non-Term".
+        // THE OCCURRENCE CARRIER KEEPS ITS OWN ARM, and not because a view cannot reach it:
+        // three of its judgments are TYPE-SPECIFIC rather than structural, and a view walk
+        // would silently answer all three differently — a `denoted`'s CLOSEDNESS (which
+        // additionally refuses a binder-local param reference, WI-470), a `PolyType` being a
+        // schema rather than a determined type (WI-1083), and a guarded effect atom whose
+        // GUARD is deliberately not read (WI-478). Those are deferrals with named owners,
+        // not the missing arm this ticket removed.
         Value::Node(occ) => node_type_is_ground_g(kb, occ, rigid_ok),
-        _ => false,
+        // EVERY OTHER CARRIER through the shared view walk — `Value::Entity` and
+        // `Value::Tuple` (a type application whose child is not leaf-lowering), the scalar
+        // carriers of a §4.5 value-in-type, `Value::SymbolRef`, `Value::Var`. This was
+        // `_ => false`, which is where one type got two answers depending on the carrier it
+        // rode in on. See [`type_view_is_ground_g`].
+        other => type_view_is_ground_g(kb, other, rigid_ok),
     }
 }
 
