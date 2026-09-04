@@ -61,3 +61,9 @@ distinction stops riding on a name.
   kind, `unify_types` branches on it, reflect renders it). A fourth kind is a bigger blast
   radius than 02ERR's carrier change, and the population is every `match` on `Var` — census
   the CATCH-ALLS first, since a `_ =>` treating the new kind as flex is the silent failure.
+## Changes
+
+### 2026-09-04T19:39:56Z — feedback — user
+
+At first, it is not about global vars only - rigid vars also can be from typing.  At second - how ids can clash? after typing? We know that befre typng wer have no unvloded typing variables.  And befroe running we have no global non-typing variables (because they are deBjumed). So,  if we see non-de-Buijed variable before rule, this is from typing. Can open vaiable be not -error,  maybe it should be deBjuined back after typing ?
+

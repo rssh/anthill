@@ -41215,9 +41215,26 @@ enum HeadPosition {
     /// The outer ARGUMENT (or entity-field) position. Directed — the pair is `actual <:
     /// declared` — and the ONE place the two boundary conversions can apply.
     Argument,
-    /// A nested binding, or a callback component. Neither conversion reaches here, and the
-    /// parameter's declared VARIANCE is not read, so only a verdict both directions agree
-    /// on may be claimed.
+    /// A nested binding, or a callback component. Neither boundary conversion reaches
+    /// here.
+    ///
+    /// **THE PAIR IS STILL DIRECTED, and that is the correction /code-review found.** The
+    /// sentence that stood here — "the parameter's declared VARIANCE is not read, so only
+    /// a verdict both directions agree on may be claimed" — was true while every verdict
+    /// under this position was symmetric, and stopped being true when WI-20260904-50B2K
+    /// put [`callable_against_callable_free`], a ONE-DIRECTIONAL verdict, at
+    /// [`nominal_head_mismatch`]'s top. It is claimed here, and soundly: every caller
+    /// hands `(subtype-candidate, supertype-candidate)` in that order, and the
+    /// CONTRAVARIANT caller reaches that convention by SWAPPING its operands rather than
+    /// by asking a different question (see the arity-1 arrow-parameter arm). A directed
+    /// verdict inside therefore reads one relation at both callers.
+    ///
+    /// **WHAT IS STILL NOT READ is the sort parameter's own VARIANCE at the per-binding
+    /// descent**, which pairs `actual`'s binding with `declared`'s at the same label — a
+    /// covariant reading. A verdict claimed there is wrong for a parameter declared
+    /// contravariant. Nothing in the corpus reaches that (see the measurement at
+    /// `callable_against_callable_free`), and this states the exposure rather than
+    /// pretending the old sentence still covers it.
     Nested,
 }
 
@@ -41630,15 +41647,34 @@ fn validate_arrow_param_result(
             // ?t])`, and the mirror with the variable on the DECLARED side, both loaded
             // clean while the all-ground pair beside them was refused.
             //
-            // SYMMETRIC, unlike the top-level call: the parameter position is
-            // CONTRAVARIANT, so `d_param` is the subtype here — and rather than rely on
-            // getting that flip right at a second site, the predicate is asked for the
-            // verdict BOTH variance readings agree on. At arity ≠ 1 the slot is a parameter
+            // OPERANDS SWAPPED, because the parameter position is CONTRAVARIANT: the
+            // obligation is `d_param <: a_param`, so `d_param` is the subtype-candidate
+            // and goes in the `actual` slot. The swap is how this caller reaches the
+            // convention every caller of [`nominal_head_mismatch`] uses, rather than a
+            // second reading of the same predicate. At arity ≠ 1 the slot is a parameter
             // LIST (WI-782), which is a `named_tuple` and therefore not a nominal head on
             // either side, so this arm decides only the arity-1 pair — a lone parameter's
-            // own type. A callable component needs no guard at this call: the predicate
-            // withholds at a callable HEAD itself, which is where WI-836's evidence
-            // applies and is the same rule the top-level gate gets.
+            // own type.
+            //
+            // THE SENTENCE THAT STOOD HERE IS VOID, and /code-review found it: "a callable
+            // component needs no guard at this call: the predicate withholds at a callable
+            // HEAD itself". WI-20260904-50B2K's fourth edit put
+            // [`callable_against_callable_free`] ABOVE that withholding, so a callable
+            // component now reaches a DIRECTED verdict here. It is asked in the sound
+            // direction — the swap above means the question is "is a function admissible
+            // where `a_param` is expected", which has no coercion when `a_param` carries
+            // no callable — and the reverse pairing, the one with the eta-lift and the
+            // zero-arg thunk (`wi_cbrsw_permission_effect_test::a_denial_of_a_sub_capability_
+            // does_not_forbid_the_super_capability`), is excluded by that predicate's own
+            // first conjunct. MEASURED: with the verdict computed beside this call and
+            // reported, it fires ZERO times across the WHOLE `wi_tests` binary (4121 rows,
+            // 0 failed) while the SAME probe at the per-binding descent fires ONCE — a
+            // positive control, so the zero is a reach that is unwitnessed rather than a
+            // probe that cannot fire. The probe APPENDS to a file rather than printing:
+            // `O_APPEND` is atomic for a short write, so a marker cannot be torn by the
+            // default test parallelism, which is what an `eprintln!` version would risk on
+            // a control that fires exactly once. A lower bound, not a proof: the corpus is
+            // not the population.
             if nominal_head_mismatch(kb, subst, &d_param_r, &a_param_r, HeadPosition::Nested) {
                 return Some(mismatch(kb, subst));
             }
@@ -66011,6 +66047,9 @@ fn type_rule_bodies(
                         n,
                         BodyPos::Goal(GoalCommit::Top),
                         rule_sym,
+                        // A rule's top-level atom sits in no slot, so nothing declares a
+                        // type for it (WI-20260904-50B2K part (b)).
+                        None,
                         errors,
                     );
                     debug_assert_eq!(
@@ -68103,6 +68142,12 @@ fn dispatch_calls_in_occ(
     // has to edit, not the callee it names (review-found — every other rule-body site in
     // this file passes the enclosing symbol). `None` only if the head carries no functor.
     rule_sym: Option<Symbol>,
+    // WI-20260904-50B2K part (b) — THE DECLARED TYPE OF THE SLOT THIS NODE WAS WRITTEN
+    // IN, when the enclosing DATA term had one to give ([`data_slot_arg_hints`]). `None`
+    // at the seed — a rule's top-level atom sits in no slot — and `None` for every child
+    // whose parent declares nothing about it, which is what this walk handed every child
+    // before this ticket.
+    expected: Option<Value>,
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
     // ONE predicate for the shapes this walk decides, shared with the pre-scan
@@ -68150,10 +68195,14 @@ fn dispatch_calls_in_occ(
             let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
             for_each_child(expr, |c| children.push(Rc::clone(c)));
             let child_pos = child_body_positions(kb, expr, pos, children.len());
+            // WI-20260904-50B2K part (b) — and WHAT TYPE each slot declares, over the same
+            // order and the same length.
+            let child_expected = data_slot_arg_hints(kb, shape, expr, children.len());
             let new_children: Vec<Rc<NodeOccurrence>> = children
                 .iter()
                 .zip(child_pos)
-                .map(|(c, p)| dispatch_calls_in_occ(kb, env, c, p, rule_sym, errors))
+                .zip(child_expected)
+                .map(|((c, p), e)| dispatch_calls_in_occ(kb, env, c, p, rule_sym, e, errors))
                 .collect();
             super::simp_rewrite::reassemble(occ, &new_children)
         }
@@ -68168,6 +68217,10 @@ fn dispatch_calls_in_occ(
         CallDispatch::DataTerm => Some(data_functor_error(kb, &walked, rule_sym)),
         _ => None,
     };
+    // WI-20260904-50B2K part (b) — `expected` IS DROPPED HERE, and that is not a lost
+    // channel: neither of these two shapes ever reaches `type_check_node`, so there is
+    // nothing to hand it to. A `Subgoal` has no signature to check against and a
+    // `DataTerm` is name-checked only, both for the reasons at their own doc sites.
     if let Some(found) = checked_not_typed {
         if let Some(e) = found {
             if !already_reported(kb, &errors[mark..], &e) {
@@ -68185,7 +68238,7 @@ fn dispatch_calls_in_occ(
     // time a node reaches `type_check_node` the answer exists nowhere else. Everything
     // BENEATH the handed-over node is data, which is why [`NodePos`] has two values where
     // [`BodyPos`] has four — the typer never descends into a goal.
-    match type_check_node_at(kb, env, &walked, None, node_pos_of(pos)) {
+    match type_check_node_at(kb, env, &walked, expected, node_pos_of(pos)) {
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
         // the same form an op body's call rewrites to.
@@ -68490,6 +68543,137 @@ fn child_body_positions(
             (_, false) => BodyPos::Goal(child_commit),
         };
     }
+    out
+}
+
+/// WI-20260904-50B2K part (b) — the top-down TYPE HINT for each child of a rule-body
+/// DATA term, in [`for_each_child`] order and of the same length as
+/// [`child_body_positions`].
+///
+/// THE `None` THIS CLOSES. WI-1058 does not type-check a `DataTerm` node
+/// ([`data_functor_error`] states the three measured reasons), so a child it walks into
+/// was typed with `expected: None` — and for a LAMBDA that is the difference between
+/// having a binder type and not. `?r <=> apply1(lambda x -> x, 2)` gives the binder no
+/// evidence of its own; only `apply1`'s declared `f: Function[A = Int64, B = Int64]` says
+/// what `x` is, and until now nothing carried it one level down. The same `None` decided
+/// the binder LABELS: [`bind_and_label_pattern`] takes a tuple pattern's labels from the
+/// expected type (WI-803), so `apply2(lambda (a, b) -> a - b, (b: 2, a: 1))` had none and
+/// zipped its binders to the LITERAL's source order — a WRONG VALUE, not an absent one,
+/// which is what
+/// `wi_50b2k_binder_inference_test::part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name`
+/// measures (it stood as a `known_gap_` row in `wi_qqpq2_tuple_carrier_test` until this
+/// change closed it).
+///
+/// **NOT A TYPE-CHECK OF THE PARENT, and the distinction is exactly WI-1058's three
+/// reasons.** Those are about handing the DATA NODE to `check_apply_iter`: it would lose
+/// the node's own expectation, be typed outside its binders' scope, and have its subtree
+/// REWRITTEN redex-free into the stored rule. None of that happens here — the parent is
+/// still only name-checked, its children are still walked by this walk under the scoping
+/// it already had, and nothing is rewritten that was not rewritten before. What crosses
+/// is one DECLARED TYPE per slot, read off the callee's signature.
+///
+/// **ONE OWNER FOR "WHAT DOES THIS SLOT HINT".** The hints come from
+/// [`apply_arg_hints`], the same function an OPERATION body's call uses, so a rule-body
+/// and an operation-body spelling of one call cannot come to hint differently — which is
+/// the asymmetry this ticket exists to remove. That also inherits its narrowness for
+/// free: only a lambda / bare reference in a callable slot ([`hof_arg_hint`]), a call in
+/// a ground slot, a sort name in a `Type` slot, and a constructor application in a
+/// variant slot get anything at all; every other child still gets `None`.
+///
+/// **IT ADDS NO REWRITING, and that is worth saying because WI-1058's third reason is a
+/// rewrite.** A hint is consumed only by a child this walk hands to `type_check_node_at`
+/// — a `Checked` dot, a `BodyLessSpecOp`/`Call` atom, a `BinderForm` — and three of those
+/// four already STORE the re-typed node ([`dispatch_calls_in_occ`]'s `Ok(result) if shape
+/// != CallDispatch::Call`), hint or no hint. A `DataTerm` and a `Subgoal` never reach the
+/// typer at all, so the hint computed for them is dropped. What an expectation can change
+/// is therefore WHICH rewrite an already-rewriting shape produces — a WI-408 some-coercion
+/// where the slot is `Option[T = …]`, say — and it changes it toward the reading the same
+/// call written in an operation body already gets. `holds(ite(true, 10, 20))` becoming
+/// `holds(10)` is the hazard that reason names, and it is a `[simp]` REDEX fold on a shape
+/// this hint cannot reach.
+///
+/// `known` is EMPTY here, and that is not a stub: it is the map of sibling argument types
+/// [`check_apply_iter`] fills from typed results, and this walk has typed no siblings.
+/// Its two readers ([`hint_instantiation_subst`], [`bind_spec_params_for_hint`]) both
+/// return nothing for an empty map, so a hint that would need a sibling's type is simply
+/// not made — the declared type rides through as written.
+fn data_slot_arg_hints(
+    kb: &mut KnowledgeBase,
+    shape: Option<CallDispatch>,
+    expr: &Expr,
+    n_children: usize,
+) -> SmallVec<[Option<Value>; 8]> {
+    // Asked before anything is allocated: this runs at EVERY recursing node of every rule
+    // body, and only a data term has a declaration to read.
+    if shape != Some(CallDispatch::DataTerm) {
+        return smallvec::smallvec![None; n_children];
+    }
+    let unhinted: SmallVec<[Option<Value>; 8]> = smallvec::smallvec![None; n_children];
+    let Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    } = expr
+    else {
+        return unhinted;
+    };
+    // AN OPERATION'S PARAMETERS, AND DELIBERATELY NOT AN ENTITY'S FIELDS. The pair
+    // [`constrain_application`] reads one pass earlier is (operation params, entity
+    // fields), and the second half is left out here because THE HINT CHAINS ARE NOT THE
+    // SAME ONE: a constructor's fields hint through [`arrow_slot_arg_hint`] and the
+    // `*_from_ctor` readings, which have no lambda arm at all — [`hof_arg_hint`] is the
+    // operation chain's. Running an entity's fields through THIS chain would hint a
+    // rule-body constructor's lambda field where the OPERATION-body spelling of the same
+    // build hints nothing, which is this ticket's own asymmetry pointing the other way.
+    //
+    // SO A LAMBDA IN AN ENTITY FIELD STILL TAKES NO HINT — in a rule body and in an
+    // operation body alike, which is what makes it a different gap and not this one.
+    // Pinned by `wi_50b2k_binder_inference_test::
+    // known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`, which asserts the
+    // SYMMETRY: both spellings load the same ill-typed program today.
+    //
+    // READ OFF THE CACHED SIGNATURE, NOT THROUGH [`lookup_operation_info_full`], and that
+    // is a cost decision with teeth rather than a style one: that function's fast path is
+    // the same `op_record` map read, but a symbol with NO record falls through to a
+    // LINEAR SCAN of every `OperationInfo` fact — and "no record" is every data term
+    // headed by an entity or a plain predicate, which is most of what a rule body is made
+    // of. The map read is the gate `type_rule_bodies`' goal walk already calls "cheap map
+    // lookup" at its own version of this question. Post-WI-1082 the cache is also the
+    // AUTHORITY, not just the accelerator (`elaborate_self_ties` rewrites it), so reading
+    // it is what keeps this hint agreeing with the call check.
+    let Some(params) = kb
+        .op_record(*functor)
+        .and_then(|r| r.signature.as_ref())
+        .map(|sig| sig.params.clone())
+    else {
+        return unhinted;
+    };
+    let (pos_hints, named_hints) = apply_arg_hints(
+        kb,
+        *functor,
+        Some(&params),
+        &None,
+        pos_args,
+        named_args,
+        &HashMap::new(),
+    );
+    let out: SmallVec<[Option<Value>; 8]> = pos_hints.into_iter().chain(named_hints).collect();
+    // ASSERTED, NOT PADDED. `for_each_child` yields `pos_args` then `named_args` and
+    // `apply_arg_hints` returns them in that order, so the two lists are aligned by
+    // construction — and a `resize` here would keep them aligned by SLIDING, which is how
+    // a hint silently lands on the wrong slot. If an `Expr::Apply` ever grows a child that
+    // is not one of its arguments, this is where the walk must be told about it.
+    // `assert_eq!`, NOT `debug_assert_eq!` — /code-review found the release hole. The
+    // caller zips `children`, `child_pos` and this list, and a `zip` TRUNCATES to the
+    // shortest: a short hint list would silently drop the tail children from the walk,
+    // and a long one would reach `reassemble` and panic out of bounds inside
+    // `ChildCursor::take` with nothing naming this site. Two `usize`s, once per data term.
+    assert_eq!(
+        out.len(),
+        n_children,
+        "WI-20260904-50B2K: a data term's hint list must be its child list, one per slot",
+    );
     out
 }
 

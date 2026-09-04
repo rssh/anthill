@@ -545,9 +545,10 @@ records the fact, declares universe stratification out of scope, and moves on.
   `is_modifiable` / `facts_of` / `term_as_entity` citing this proposal).
 - Add `type_value[T]` (post-WI-708).
 - Give `->` a signature in value position (§2) — `arrow(param: Type, result: Type)
-  -> Type`, arity 1. Depends on un-annotated lambda binders getting a real
-  inference variable (WI-20260904-50B2K part (a)); until then a body cannot pin
-  `t : Type`. Read WI-361's constructor removal at its site first.
+  -> Type`, arity 1. Depended on un-annotated lambda binders getting a real
+  inference variable (WI-20260904-50B2K part (a)), so a body could pin `t : Type`;
+  **that landed 2026-09-04 and the dependency is discharged**. Read WI-361's
+  constructor removal at its site first.
 - The "qualified name not accepted in binding-value position" wart noted in
   the `Type` instance facts' comment — re-examine once the cluster moves,
   since the move changes which short names resolve as siblings.

@@ -265,8 +265,9 @@ fn a_permuted_named_tuple_binds_by_name_not_by_slot() {
 /// BOTH ORDERINGS, because `a - b` is order-sensitive and `a + b` would have summed to
 /// the same answer under either correspondence. The permuted row answers by NAME (-1, not
 /// 1): `spread_labels` carries `A`'s components in declared order (WI-1087) and the
-/// spread resolves through them — which is exactly the channel a rule-body LAMBDA does
-/// not get, see `known_gap_a_rule_body_lambdas_binders_zip_by_slot` below.
+/// spread resolves through them — which was exactly the channel a rule-body LAMBDA did
+/// not get until WI-20260904-50B2K part (b) reached it with the callee's declared
+/// parameter type (see the note where that gap's row stood, below).
 ///
 /// FAILS ON BACK-OUT A — both orderings, one FLOUNDERED solution each. Green under
 /// back-out B: the value is name-keyed, so the `_N` question does not arise.
@@ -288,50 +289,22 @@ fn an_op_ref_spreads_a_bridged_tuple_and_keeps_its_labels() {
     }
 }
 
-/// **A KNOWN GAP THIS TICKET MAKES VISIBLE, AND IT IS A WRONG VALUE, NOT AN ABSENT ONE.**
-///
-/// A lambda's binder list in a RULE body destructures a permuted named tuple BY SLOT
-/// where every other spelling of the same program binds BY NAME:
-///
-/// ```text
-///   rule  apply_named(lambda (a: Int64, b: Int64) -> a - b, (b: 2, a: 1))   ->  1
-///   op    apply_named(lambda (a: Int64, b: Int64) -> a - b, (b: 2, a: 1))   -> -1
-///   rule  named_sub((b: 2, a: 1))                    (a `match` pattern)    -> -1
-/// ```
-///
-/// THE CAUSE IS ON THE PATTERN SIDE, MEASURED, NOT ON THE CARRIER SIDE. A tuple pattern
-/// takes its labels from the EXPECTED type (`bind_and_label_pattern`, WI-803), and a
-/// lambda written in a rule-body DATA slot receives no expectation at all — WI-1058 does
-/// not type-check the `DataTerm` parent, which is the same `None` that leaves
-/// WI-20260904-50B2K's rung 2 unreachable. With no labels, `match_tuple_pattern` zips in
-/// source order, and the value's source order is the LITERAL's, not the binders'. The
-/// `match` and `let` spellings are unaffected because their labels come from the
-/// operation's DECLARED parameter type, which is present.
-///
-/// SO ITS OWNER IS 50B2K PART (b) — "is an argument's synthesized type unified against
-/// the callee's declared param type in a rule-body data slot" — the one change that
-/// would put an expectation on this lambda. Recorded there too.
-///
-/// WHAT THIS TICKET CHANGED: before the carrier repair this program had NO answer (a
-/// residual); now it has a WRONG one. That trade is stated rather than hidden — the four
-/// rows above are the programs it buys, all of which write their components in
-/// declaration order, where slot and name agree. The row asserts the CURRENT value: when
-/// it becomes -1 the gap is closed, and this row should be deleted with a note naming the
-/// change that closed it.
-#[test]
-fn known_gap_a_rule_body_lambdas_binders_zip_by_slot() {
-    let mut kb = load(
-        "zzqqpq2.binderslot",
-        "  rule value(?r) :- ?r <=> apply2(lambda (a: Int64, b: Int64) -> a - b, (b: 2, a: 1))\n",
-    );
-    assert_eq!(
-        only_int(&mut kb, "zzqqpq2.binderslot.value"),
-        1,
-        "KNOWN GAP: a rule-body lambda's binders zip a permuted named tuple BY SLOT. \
-         If this is now -1 the expectation reaches the lambda (50B2K part (b)) and the \
-         gap is closed: delete this row and say which change closed it",
-    );
-}
+// THE GAP THAT STOOD HERE IS CLOSED, and the row is gone rather than flipped. Written as
+// a plain comment, not a doc one, so it attaches to nothing: a `///` block with no item
+// under it is read as the NEXT item's documentation.
+//
+// `known_gap_a_rule_body_lambdas_binders_zip_by_slot` asserted that a rule-body lambda's
+// binder list destructured a permuted named tuple BY SLOT — `apply2(lambda (a: Int64,
+// b: Int64) -> a - b, (b: 2, a: 1))` answered 1, where every other spelling of the same
+// program answered -1. Its cause was on the PATTERN side: a tuple pattern takes its
+// labels from the EXPECTED type (`bind_and_label_pattern`, WI-803) and a lambda written
+// in a rule-body DATA slot received no expectation at all.
+//
+// CLOSED BY WI-20260904-50B2K PART (b) — `data_slot_arg_hints`, which carries the
+// callee's declared parameter type one level down into the children of a `DataTerm`. The
+// row now lives with the change that closed it, as `wi_50b2k_binder_inference_test::
+// part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name`, which asserts
+// -1 and fails on that change's own back-out.
 
 /// **A KNOWN GAP, PINNED RATHER THAN LEFT TO BE REDISCOVERED.** An operation NAME in a
 /// rule-body function slot is not callable: it arrives as a `Value::Node(Ref(op))` and
@@ -373,4 +346,64 @@ end
          If it is now DEFINITE the gap is closed: delete this row and say which change \
          closed it. Got {all:?}",
     );
+}
+
+/// **A USER-WRITTEN `_1` LABEL IS NOT A SYNTHETIC ONE, AND THE TWO CARRIERS MUST STILL
+/// AGREE.** Found by `/code-review` (high) on this ticket's shipped code, and DRIVEN —
+/// against a comment at the site that called the shape undrivable.
+///
+/// `tuple_components_from_view` puts the synthetic `_N` components back in `pos` so the
+/// occurrence carrier answers `is_name_keyed` the way the native one does. It asked
+/// WI-790's owner about the FILTERED subsequence of `_N` labels, which RENUMBERS them: a
+/// `_1` written at slot 1 becomes index 0 of that subsequence, passes the owner's test,
+/// and is promoted — so `iter()` yields it FIRST and the components are silently
+/// REORDERED. The owner's whole contract is that `_N` is synthetic only at ITS OWN index
+/// (CLAUDE.md: `_0`, `_01`, a `_2` written first are USER labels).
+///
+/// `a - b` over `(x: 1, _1: 2)` is the order-sensitive witness: `-1` in source order and
+/// `1` reordered. FAILS ON THE BACK-OUT (the run restored to a filtered subsequence) with
+/// the RULE side answering 1 while the OPERATION side answers -1 — one program, two
+/// answers, which is the disagreement this whole function exists to remove.
+///
+/// THE CONTROL IS THE SAME PROGRAM WITH THE LABEL RENAMED to `y`: both sides answer -1
+/// under the back-out too, so the `_N` spelling is the cause and not the fixture.
+///
+/// THE ROUTE MATTERS: the lambda sits in an ENTITY FIELD, the one slot shape
+/// WI-20260904-50B2K part (b) deliberately does not hint, so the binder list gets no
+/// expected type, `labels` is empty and `match_tuple_pattern` takes its SOURCE-ORDER arm
+/// — which is the arm this promotion feeds. If that gap is ever closed
+/// (`wi_50b2k_binder_inference_test::known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`),
+/// this row needs another way to reach the source-order arm.
+#[test]
+fn a_user_written_underscore_label_is_not_promoted_and_both_carriers_agree() {
+    for (tag, label) in [("u1", "_1"), ("ctl", "y")] {
+        let ns = format!("zzqqpq2.{tag}");
+        let src = format!(
+            "\
+namespace {ns}
+  import anthill.prelude.{{Int64, Function}}
+  sort Holder
+    entity holder(f: Function[A = (x: Int64, {label}: Int64), B = Int64])
+  end
+  operation runit(h: Holder, p: (x: Int64, {label}: Int64)) -> Int64 =
+    match h
+      case holder(f) -> f(p)
+  operation w() -> Int64 =
+    runit(holder(f: lambda (u: Int64, v: Int64) -> u - v), (x: 1, {label}: 2))
+  rule rule_side(?r) :- ?r <=> runit(holder(f: lambda (u: Int64, v: Int64) -> u - v), \
+(x: 1, {label}: 2))
+  rule op_side(?r)   :- ?r <=> w()
+end
+"
+        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{ns}: must load; got {errs:?}"));
+        let rule_side = only_int(&mut kb, &format!("{ns}.rule_side"));
+        let op_side = only_int(&mut kb, &format!("{ns}.op_side"));
+        assert_eq!(
+            (rule_side, op_side),
+            (-1, -1),
+            "{ns}: a `{label}` component must keep its written position on BOTH carriers",
+        );
+    }
 }

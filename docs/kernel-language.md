@@ -3711,6 +3711,13 @@ Two consequences:
   value's own component order, which is then the only reading available. The same
   applies to a **positional** tuple, whose labels are the synthetic `_1.._n` — for
   it the two readings coincide by construction.
+  A lambda written in a rule body's **data slot** is not in that fallback
+  (WI-20260904-50B2K): the enclosing term is not type-checked (§8.6, a rule-body data
+  slot is name-checked only), but the callee's DECLARED parameter type is still carried
+  one level down as the lambda's expected type, so the binder list is labelled from the
+  declaration exactly as the same call written in an operation body is. The fallback is
+  for a pattern nothing declares a type for — not for one whose type was merely never
+  passed along.
 
 A binder list whose length differs from its expected tuple's component count is a
 **mismatch**, reported where it occurs; it is not silently narrowed to the

@@ -723,19 +723,27 @@ fn tuple_components_from_view<'a>(
     // makes the two carriers disagree about which arm `match_tuple_pattern` takes.
     //
     // `labels_are_positional` is WI-790's owner of "these labels say positional tuple",
-    // and it is asked about the SYNTHETIC SUBSEQUENCE rather than the whole key list —
-    // one rule, no exception for the mixed shape. `(1, b: 2)` then reconstructs as
-    // `pos: [1], named: [(b, 2)]`, which is exactly what the native carrier holds, and
-    // a user-written `(_2: x, _1: y)` still stays name-keyed because the owner refuses
-    // an `_N` that is not the synthetic name for its own index.
+    // and it is asked about the LEADING RUN of `_N` labels, indexed where they actually
+    // stand. `(1, b: 2)` — which arrives all-named as `[(_1, 1), (b, 2)]` — reconstructs
+    // as `pos: [1], named: [(b, 2)]`, exactly what the native carrier holds, and a
+    // user-written `(_2: x, _1: y)` stays name-keyed because the owner refuses an `_N`
+    // that is not the synthetic name for its own index.
     //
-    // NOT DRIVABLE, and that is stated rather than left to look like coverage: parse
-    // REFUSES a mixed literal ("tuple literal cannot mix positional and named
-    // arguments", convert.rs) — but it reports and CONTINUES, folding the positionals in
-    // after the named ones, so the shape is reachable by a caller that runs past a load
-    // error rather than being impossible. Asking the owner about the subsequence costs a
-    // partition and removes the assumption; special-casing it would have needed the same
-    // undrivable branch to say so.
+    // IT WAS ASKED ABOUT THE FILTERED SUBSEQUENCE, AND THAT WAS A REORDERING BUG —
+    // /code-review found it and DROVE it, against a comment here that called the shape
+    // undrivable. Filtering renumbers: a `_1` written at slot 1 becomes index 0 of the
+    // subsequence, passes the owner's test, and is promoted into `pos` — so `iter()`
+    // yields it FIRST. `(x: 1, _1: 2)` destructured as `2 - 1` on this carrier and
+    // `1 - 2` on the native one, one program with two answers, which is the disagreement
+    // this whole function exists to remove. `_1` there is a USER label (CLAUDE.md: only
+    // `_N` at its own index is synthetic), and the undrivable-shape note was about a
+    // MIXED positional/named literal, which parse refuses — it said nothing about an
+    // all-named literal one of whose labels happens to spell `_N`, and that is ordinary.
+    //
+    // THE RUN MUST BE A PREFIX, not a set: promoting a scattered `_N` moves it past the
+    // user labels written before it. A `_N` after the run is a user label at the wrong
+    // index and stays named, which leaves source order intact because `iter()` is
+    // `pos ++ named`.
     //
     // Normalized through `short_name_of` on both sides, exactly as
     // `by_label_index`'s `_N` arm and `labels_are_positional` do — a label read off a
@@ -745,16 +753,20 @@ fn tuple_components_from_view<'a>(
         crate::intern::positional_label_index(crate::kb::typing::short_name_of(kb.local_name_of(k)))
             .is_some()
     };
-    let synthetic_keys: Vec<Symbol> = named
-        .iter()
-        .map(|(k, _)| *k)
-        .filter(|k| is_synthetic(*k))
-        .collect();
-    if pos.is_empty() && TupleComponents::labels_are_positional(kb, &synthetic_keys) {
-        let mut promoted: Vec<Value> = Vec::with_capacity(synthetic_keys.len());
+    let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
+    let synthetic_run = keys.iter().take_while(|k| is_synthetic(**k)).count();
+    // BACK-OUT of the prefix rule, for whoever re-measures it: replace the two lines above
+    // with a `.filter(is_synthetic)` collect and index the loop on `is_synthetic(k)` rather
+    // than on `i < synthetic_run`. `a_user_written_underscore_label_is_not_promoted_and_
+    // both_carriers_agree` then fails with the rule side answering 1 and the operation side
+    // -1; its renamed-label control stays green.
+    // `labels_are_positional` answers `false` for an empty slice, so a list that opens
+    // with a user label declines here rather than needing its own guard.
+    if pos.is_empty() && TupleComponents::labels_are_positional(kb, &keys[..synthetic_run]) {
+        let mut promoted: Vec<Value> = Vec::with_capacity(synthetic_run);
         let mut rest: Vec<(Symbol, Value)> = Vec::new();
-        for (k, v) in named {
-            if is_synthetic(k) {
+        for (i, (k, v)) in named.into_iter().enumerate() {
+            if i < synthetic_run {
                 promoted.push(v);
             } else {
                 rest.push((k, v));

@@ -108,7 +108,11 @@ asks. BY NAME, WHICH IS A HYPOTHESIS AND NOT A MEASUREMENT: redo it site by site
                     loud error over a silent skip" it wants a DIAGNOSTIC, not an inert
                     type. Its own question; not this ticket's.
 
-    "to be inferred" — must commit:
+    "to be inferred" — must commit. THE THREE ROWS BELOW THAT ARE NOT `?param` ARE STILL
+    THIS TICKET'S: a spin-off was written and DELETED as a verbatim copy of this section
+    (user, 2026-09-04) — restating a census in a second file adds a queue entry and no
+    information, and the ticket's own ordering rule already says "scope it to rung 3
+    first, then take the rest of the column one at a time":
       ?param        RUNG 3 — DONE (this ticket)
       ?pat          `scrutinee_type.or_else(annotation).unwrap_or_else(…)` — the SAME
                     three-rung ladder as rung 3, one level down (a sub-pattern of a
@@ -374,7 +378,78 @@ program" was FALSIFIED — the body's own `Int64` literal pins the binder throug
       a child that is checked anyway. THE INFORMATION IS PRESENT; inferring beats
       generalizing wherever it is.
 
-  (c) GENERALIZE WHAT IS GENUINELY UNCONSTRAINED — the "if it can't be inferred it's
+      DONE 2026-09-04, AND IT IS AN EXPECTATION, NOT A POST-HOC UNIFICATION — which the
+      ticket's own second reading ("the same `None`", one layer over, at the tuple LABELS)
+      already implied and the first ("one unification") did not. A unification run AFTER
+      the child is typed is too late for BOTH consumers: the lambda's body is checked at
+      the moment the binder is bound, and `bind_and_label_pattern` takes the tuple labels
+      at that same moment. So `dispatch_calls_in_occ` now carries an `expected` down, and
+      `data_slot_arg_hints` computes one per slot from the callee's cached signature.
+
+      THROUGH `apply_arg_hints`, THE OPERATION BODY'S OWN HINT CHAIN, so the two spellings
+      cannot come to hint differently — the asymmetry this ticket exists to remove. It is
+      narrow for free: only a lambda / bare reference in a callable slot, a call in a
+      ground slot, a sort name in a `Type` slot, a constructor application in a variant
+      slot get anything; every other child still gets `None`.
+
+      WHAT IT BUYS, MEASURED, and the first witness written for it MEASURED NOTHING —
+      recorded so it is not re-invented. `apply1(lambda x -> x + x, 2)` answers 4 WITH the
+      hint and WITHOUT it: after (a) the binder is a real inference variable, so the
+      `Additive` dispatch DEFERS instead of tying and the runtime picks `Int64` off the
+      actual argument. An un-pinned binder is observable only where the body's use
+      CONTRADICTS the declaration, or where LABELS are read:
+
+        FAIL-OPEN -> REFUSAL.  `?r <=> apply1(lambda x -> takes_str(x), 2)` LOADED CLEAN
+          and ANSWERED 7, running an `Int64` through a `String` parameter. It now reports
+          "type mismatch in takes_str.s (op-arg): expected String, got Int64" — the SAME
+          message, to the token, that its operation-body twin and its annotated twin
+          already reported, which is what makes this an agreement rather than a new
+          refusal the rule-body spelling invented.
+        WRONG VALUE -> RIGHT VALUE.  `apply2(lambda (a, b) -> a - b, (b: 2, a: 1))`
+          answered 1 (zipped BY SLOT against the literal's written order) and now answers
+          -1 (BY NAME, from the callee's declared tuple). QQPQ2's
+          `known_gap_a_rule_body_lambdas_binders_zip_by_slot` is DELETED — its own
+          instruction — and replaced by
+          `wi_50b2k_binder_inference_test::part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name`.
+
+      THE BACK-OUT IS EXACT: `data_slot_arg_hints` returning `unhinted` unconditionally
+      fails TWO rows of 4118 in `wi_tests` — the two above — and nothing else. Baseline
+      6420/0 workspace-wide before the change, 6423/0 after (four new rows, one deleted).
+
+      AND (b) ABSORBED (a)'S ONLY WITNESS — found by driving the (a) back-out again after
+      (b) landed, not predicted. `?r <=> apply1(lambda x -> x + 1, 2)` fell on the (a)
+      back-out when (a) shipped; (b) now reaches that same slot with `apply1`'s declared
+      type, so the binder is typed at RUNG 2 and rung 3 is never asked — the row passes
+      with (a) backed out and measures "at least one of the two halves". A row that
+      isolates (a) had to be built from a slot (b) does not hint, and the entity field is
+      that slot: `runit(holder(f: lambda x -> x + 1), 2)` answers 3 with (a) and is
+      REFUSED without it, in both (b) states, and its OPERATION-BODY twin moves with it
+      (an entity field takes no lambda hint in either body). Filed in the test file as the
+      three-cell matrix, all cells driven:
+
+        (a) out    1 row   part_a_a_binder_no_declaration_reaches_is_still_inferred_…
+        (b) out    2 rows  the two part_b_ rows
+        both out   4 rows  those three plus the row the ticket was opened on
+
+      SCOPED TO AN OPERATION'S PARAMETERS, DELIBERATELY, NOT AN ENTITY'S FIELDS: the two
+      have DIFFERENT hint chains and the constructor chain has no lambda arm at all
+      (`arrow_slot_arg_hint` reads a bare operation NAME). Hinting an entity field here
+      would make the rule-body spelling of a build behave differently from its
+      operation-body twin — this ticket's own asymmetry pointing the other way. Measured
+      and pinned as `known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`, which
+      asserts the SYMMETRY: both spellings load the same ill-typed program today.
+
+      A SEPARATE DEFECT MEASURED OUT OF THIS WORK AND FILED AS WI-20260904-EMVCB, not
+      fixed here: a rule-body lambda whose RESULT IS ITS ARGUMENT answers the argument's
+      `Value::Node`, where the operation-body twin answers `Value::Int` —
+      `apply1(lambda x -> x, 2)` and `apply1(lambda x -> takes_int(x), 2)`, both unmoved
+      by (b) in either direction, while `x + x` and `0 - x` in the same position answer
+      scalars. It is an evaluation question (QQPQ2's carrier boundary, the RESULT side)
+      and not a typing one.
+
+  (c) NOT DONE — and still this ticket's, for the same reason the census rows are: a
+      spin-off was written and deleted as a re-typing of the three bullets below.
+      GENERALIZE WHAT IS GENUINELY UNCONSTRAINED — the "if it can't be inferred it's
       polytype" half. A binder nothing pins should generalize, and a deferred requirement
       should ride the result: `∀T. Additive[T] => T -> T`, with the USE discharging
       `Additive`. Today that cannot be expressed: `PolyType(binders, body)` has no context
@@ -383,6 +458,24 @@ program" was FALSIFIED — the body's own `Int64` literal pins the binder throug
       binder set, so a lambda's unsolved binder extends THAT, not a parallel path. Lands
       in proposal 060's requirement channel. LARGEST of the three; do it last, and only
       for binders (b) leaves open.
+
+      WHAT (a) + (b) LEAVE FOR IT, measured 2026-09-04 and stated so the population is not
+      re-derived by guess: after (a) an un-pinned binder no longer TIES a dispatch — the
+      variable defers and the runtime picks the carrier off the actual argument, so
+      `?r <=> apply1(lambda x -> x + x, 2)` answers 4 with (b) and without it. So the
+      residue is NOT the ambiguity this ticket opened on; it is that such a lambda has no
+      TYPE to state, and therefore nothing can be said about it at a second use site or in
+      a signature. A fixture for (c) must make that observable — a row that merely answers
+      is green already and measures nothing.
+
+      CONTROLS (c) OWES, both green today and both must stay green: wi620's
+      `all_match(?xs, lambda (x) -> is_pos(x))`, a binder pinned by its own body through a
+      callee's declaration; and
+      `part_b_a_binder_typed_from_the_declaration_refuses_a_body_that_contradicts_it`,
+      which must keep REFUSING — a generalization that admits it has replaced a type error
+      with a ∀. And `known_gap_the_declaration_may_solve_a_binder_the_body_contradicts` is
+      (c)'s to DECIDE, not to inherit: its own text says flipping it to a refusal is the
+      question of whether a lambda binder's uses constrain it.
 
 CONTROLS.
 
@@ -448,9 +541,11 @@ above they happen to be `a` and `b`, matching the type's component names. A bind
 is the author's local name and a component name is the type's — one name, two questions.
 
 VISIBLE ONLY SINCE QQPQ2: before the tuple-carrier repair that program had NO answer at
-all. Pinned as
+all. It was pinned as
 `wi_qqpq2_tuple_carrier_test::known_gap_a_rule_body_lambdas_binders_zip_by_slot`, which
-asserts the CURRENT value with a message naming this ticket's part (b) as its owner.
+asserted the wrong value with a message naming this ticket's part (b) as its owner. PART
+(b) IS DONE and that row is deleted; the same program is now asserted at -1 by
+`wi_50b2k_binder_inference_test::part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name`.
 
 A SECOND /CODE-REVIEW PASS (high, run 2026-09-04 on the QQPQ2 tree) FOUND FOUR MORE ON
 THIS TICKET'S SHIPPED CODE. Three fixed, one filed:
@@ -496,3 +591,70 @@ unify", then "a wildcard, not a variable". The first two were led by
 in logical vocabulary, which reads as a contradiction since a logical variable IS a
 placeholder. That sentence is reworded at its site by this ticket.
 
+A /CODE-REVIEW (high) PASS ON THE PART-(b) TREE FOUND THREE, and it also reviewed the
+two commits before it. All three addressed; the first was a live wrong-value defect in
+SHIPPED code and is the one worth carrying forward.
+
+  * A USER-WRITTEN `_1` LABEL WAS PROMOTED AND THE COMPONENTS SILENTLY REORDERED —
+    WI-20260904-QQPQ2's `tuple_components_from_view`, found and DRIVEN by the reviewer
+    against a comment at the site that called the shape UNDRIVABLE. The synthetic-`_N`
+    promotion asked WI-790's owner about the FILTERED subsequence of `_N` labels, which
+    RENUMBERS them: a `_1` written at slot 1 becomes index 0 of that subsequence, passes
+    "is this the synthetic name for its own index", and is promoted into `pos` — so
+    `iter()` yields it FIRST. `(x: 1, _1: 2)` destructured `2 - 1` on the occurrence
+    carrier and `1 - 2` on the native one: ONE PROGRAM, TWO ANSWERS, which is the exact
+    disagreement that function exists to remove.
+
+    THE UNDRIVABLE NOTE WAS ABOUT A DIFFERENT SHAPE. It excused a MIXED positional/named
+    literal, which parse refuses; it said nothing about an ALL-NAMED literal one of whose
+    labels happens to spell `_N`, and that is ordinary text. `_1` at slot 1 is a USER
+    label by CLAUDE.md's own rule.
+
+    FIXED by promoting the LEADING RUN of `_N` labels, indexed where they actually stand.
+    A `_N` after the run is a user label at the wrong index and stays named, which leaves
+    source order intact because `iter()` is `pos ++ named`. Pinned by
+    `wi_qqpq2_tuple_carrier_test::a_user_written_underscore_label_is_not_promoted_and_both_carriers_agree`,
+    whose CONTROL is the same program with the label renamed to `y` — green under the
+    back-out too, so the `_N` spelling is the cause and not the fixture.
+
+  * A DIRECTED VERDICT UNDER A POSITION WHOSE DOC SAID ONLY SYMMETRIC ONES MAY BE CLAIMED.
+    `HeadPosition::Nested` read "the parameter's declared VARIANCE is not read, so only a
+    verdict both directions agree on may be claimed" — true while every verdict there was
+    symmetric, and false since this ticket's FOURTH EDIT put the one-directional
+    `callable_against_callable_free` at `nominal_head_mismatch`'s top. The arrow-parameter
+    caller's own comment carried the now-VOID reason "a callable component needs no guard
+    at this call: the predicate withholds at a callable HEAD itself" — the verdict was
+    moved above that withholding by this ticket.
+
+    THE REVIEWER'S DIRECTION CLAIM DID NOT HOLD, checked before acting: that caller SWAPS
+    its operands because the parameter position is contravariant, so the directed question
+    it asks is `d_param <: a_param` — the sound direction. The reverse pairing, the one
+    with the eta-lift and the zero-arg thunk, is excluded by the predicate's own first
+    conjunct. What was real is the two stale sentences, and they are repaired: the
+    convention is now stated once ("every caller hands (subtype-candidate,
+    supertype-candidate); the contravariant caller reaches it by swapping"), and the
+    exposure that REMAINS is named — the per-binding descent pairs bindings at the same
+    label, a COVARIANT reading, so a verdict claimed there is wrong for a parameter
+    declared contravariant.
+
+    MEASURED rather than argued: with the verdict computed beside the arrow-parameter call
+    and reported, it fires ZERO times across the WHOLE `wi_tests` binary (4121 rows, 0
+    failed) while the SAME probe at the per-binding descent fires ONCE — a positive
+    control, so the zero is an unwitnessed reach and not a probe that cannot fire. A lower
+    bound; the corpus is not the population.
+
+    THE PROBE'S OWN MECHANISM COST AN HOUR AND IS RECORDED SO IT IS NOT REPEATED. An
+    `eprintln!` marker can be TORN by the default test parallelism, and with a control
+    that fires exactly ONCE a single lost line flips the verdict — so the first pass was
+    run `--test-threads=1`, which serializes 4121 tests to buy write atomicity and was
+    heading for ~75 minutes. Appending to a file opened `O_APPEND` is atomic for a short
+    write whatever the thread count: same rigor, full parallelism, 356s. The run also went
+    through `scripts/test.sh` the second time, so `test-status.sh` could see it — a raw
+    `cargo test` writes neither the pid file nor the log symlink that script reads (user,
+    2026-09-04).
+
+  * THE HINT/CHILD ALIGNMENT WAS GUARDED ONLY IN DEBUG. `data_slot_arg_hints`' length
+    guarantee was a `debug_assert_eq!`, and the caller zips three lists — a `zip`
+    TRUNCATES, so a short list would silently drop the tail children from the walk and a
+    long one would panic out of bounds inside `ChildCursor::take` with nothing naming the
+    site. Promoted to `assert_eq!`: two `usize`s, once per data term.
