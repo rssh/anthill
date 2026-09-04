@@ -1706,10 +1706,21 @@ pub enum TypeChild {
 
 /// Structural `Type`-sort IR (WI-342). One arm per `Type` entity variant that
 /// can sit on a `denoted` spine for the first migrated producer
-/// (`{-Modify[c]}`). Variants the slice doesn't yet mint (`sort_ref`,
-/// `type_var`, `nothing`, `named_tuple`) are not represented here — they carry no
-/// `denoted`, so they ride in [`TypeChild::Interned`]; arms are added only when a
-/// producer carries one on a poisoned spine.
+/// (`{-Modify[c]}`). THE MEMBERSHIP RULE: a form gets an arm here iff it can
+/// TRANSITIVELY CONTAIN a `denoted`. `sort_ref`, `type_var` and `nothing` are LEAVES —
+/// no children, so no `denoted` can ever be beneath them — which is why they have no arm
+/// and always ride [`TypeChild::Interned`]. That is also the answer to "why is a `Ref`
+/// not a `Node`": not a preference for interning, but that it can never need the other
+/// carrier.
+///
+/// (The old wording listed `named_tuple` here as unrepresented, which is STALE:
+/// [`TypeNode::NamedTuple`] exists — a tuple has children, so it can carry a `denoted`.
+/// The list was "variants the slice doesn't yet mint" and outlived its slice.)
+///
+/// A CONSEQUENCE WORTH STATING, because a proposal runs into it: giving a LEAF an arm
+/// here — a type VARIABLE, for provenance or to keep it out of the term store
+/// (WI-20260904-02ERR) — is not filling a gap in this rule, it is EXTENDING the rule to
+/// "can carry a `denoted`, OR needs an identity of its own".
 ///
 /// "carry no `denoted`", not "are always ground", which is what this said: `type_var`
 /// is not ground in the LOGICAL sense at all. See [`TypeChild`] for the two readings

@@ -34,6 +34,28 @@ nothing releases, against CLAUDE.md's rule that transient terms are not interned
 is bounded by (binders x type-check passes), not unbounded, so it was recorded at the mint
 rather than treated as a blocker.
 
+THE SHARPER ANSWER, 2026-09-04 — WI-1079 HALF-LANDED, and the contradiction is inside ONE
+file. Two sites disagree about the same question:
+
+  `type_head` (WI-1079)          "A BARE LOGICAL VARIABLE IS A TYPE, and before this arm
+                                  it was the one form that reached `Error` while being
+                                  perfectly well-formed."
+  `value_to_type_child` (WI-342) "A scalar/`Var`/`Entity` is a typer bug here (types are
+                                  `Term`/`Node`)."
+
+Both are about a variable in TYPE POSITION. WI-1079 admitted it at the READING end — the
+`type_head` arm, and the `FlexVar` / `Skolem` reflect forms `extract` had been reporting as
+`Error` — and the occurrence-BUILDING path never got the matching arm. So this ticket's
+`Value::term(type_param_var_term(..))` is not "the slot's shape" as first answered here; it
+is a WORKAROUND for a half-delivered rule: the variable is laundered through the term store
+to get past a slot WI-1079 should have taught to accept it.
+
+WHICH RE-FRAMES THE FIX. The third carrier is not a new idea, it is FINISHING WI-1079 AT
+THE BUILDING END — and that is the argument that says it is a correction rather than a
+feature. Whoever takes it should read WI-1079 first and check whether any OTHER builder
+was left behind by the same half-landing; `value_to_type_child` was found by driving this
+one mint, so it is a LOWER BOUND on that population, not a census.
+
 THE FIX IS A THIRD `TypeChild` CARRIER, and it is written up in the sibling
 WI-20260904-DTY3B ("why TypeChild accepts a hash-consed TermId"), which asks the same
 question from the slot's side: keep `Interned` for shared persistent structure and `Node`

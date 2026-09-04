@@ -49296,8 +49296,15 @@ pub fn unify_types<A: TermView, B: TermView>(
         // At least one `Value` carrier (hash-cons identity is lost). Dispatch
         // structurally through the carrier-agnostic [`TermView`] arms (WI-342
         // P4): a `Value`-carried `denoted` / `parameterized` unifies against its
-        // ground twin (cross-carrier) or another `Value` carrier. Forms not yet
-        // wired return `false` (sound: refuses rather than mis-unifies).
+        // ground twin (cross-carrier) or another `Value` carrier.
+        //
+        // "Forms not yet wired return `false` (sound: refuses rather than
+        // mis-unifies)" is what this said, and it is STALE and teaches the wrong
+        // reading. An unwired form is a SILENT SKIP, not a sound refusal — it is
+        // indistinguishable from a genuine mismatch at every reader. The arms are
+        // now measured to be in step with the term dispatch, and the `_` arm of
+        // `types_compatible_view_structural` asserts loudly when a SAME-FORM pair
+        // reaches it, which is the only shape an omission can take.
         _ => unify_view_structural(kb, subst, &a, &b),
     }
 }
@@ -54561,6 +54568,37 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
             if value_is_row_shaped(kb, &a) || value_is_row_shaped(kb, &e) {
                 subtype_effect_rows(kb, subst, &a, &e)
             } else {
+                // WI-20260904-50B2K — A SAME-FORM PAIR HERE IS AN UNWIRED ARM, NOT A
+                // MISMATCH, and the two must not look alike. The doc above claims "every
+                // non-`false` arm of the term dispatch now has a peer here"; that is TRUE
+                // TODAY (measured: this table is the term table plus `denoted`) and is
+                // enforced by NOTHING. Add an arm to one dispatch and forget the other and
+                // a real relation silently becomes `false`, wearing the same clothes as a
+                // legitimate form mismatch — the two-lists-one-rule failure this file has
+                // been bitten by before.
+                //
+                // The predicate separates them exactly: DIFFERENT form names is the
+                // mismatch this arm exists to answer, while the SAME form name on both
+                // sides means this dispatch has no arm for a form both sides share, which
+                // can only be an omission. A variable side reports `None` and is not a
+                // form, so it stays `false` as before.
+                //
+                // NOT DRIVEN BY THE CORPUS, stated so it does not read as covered. It was
+                // attempted: removing the `named_tuple` arm from THIS table alone (the
+                // term table keeping its own) did not make the assert fire, so no pair of
+                // named tuples reaches this dispatch through the `Value` carrier in the
+                // suite. That is a trap for a FUTURE omission, not a tested path — and it
+                // is a second finding in its own right: the arms of this table that the
+                // corpus never exercises are unknown, and a census of which of them a
+                // program can actually reach has not been done.
+                debug_assert!(
+                    !matches!(
+                        (type_dispatch_name_view(kb, &a), type_dispatch_name_view(kb, &e)),
+                        (Some(x), Some(y)) if x == y
+                    ),
+                    "types_compatible_view_structural: no arm for the shared form {:?} —                      the term dispatch has a peer this one is missing; wire it rather than                      letting it read as a form mismatch",
+                    type_dispatch_name_view(kb, &a),
+                );
                 false
             }
         }
