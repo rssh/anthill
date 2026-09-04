@@ -37,8 +37,10 @@
 //! `<=>`, `===` and a goal-position `let` name no functor either — and WI-909 made it
 //! true by migrating them, so no converter mint resolves through the tier now. A second
 //! WI-909 pass then took the rung to FOUR rows — the constructors `cons` / `nil` /
-//! `some` / `none`, the only names a person writes bare in SOURCE; that is a different
-//! question, and `kb::load::PRELUDE_QUALIFIED` is where it is asked.
+//! `some` / `none`, the only names a person writes bare in SOURCE — and a third emptied
+//! it and DELETED the machinery. There is no tier and no `kb::load::PRELUDE_QUALIFIED`
+//! to ask; a bare constructor needs an import like any other written name. Kept as
+//! history rather than cut because it records WHY the migration went in three passes.
 //!
 //! THOSE TWO LIVE IN `pratt`, NOT HERE, and the split is by who mints rather than by
 //! what the target is: this module is the CONVERTER's table, and `<=>` / `===` are minted

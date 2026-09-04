@@ -149,6 +149,191 @@ fn a_desugared_field_access_carries_its_address() {
     );
 }
 
+/// EVERY ADDRESS THE CONVERTER OR THE INFIX DESUGAR MINTS, as one list — `dt::ALL`
+/// chained with pratt's three functor tables.
+///
+/// EXTRACTED IN WI-910 so the two invariants over this domain cannot drift apart: the
+/// orphan row below asks whether each address DENOTES something, and
+/// `no_two_minted_addresses_share_a_short_name` asks whether any two of them collapse
+/// onto one short spelling. Before the extraction the domain was built inline in one of
+/// them, which is how a `.chain` gets added to one question and not the other.
+///
+/// REPEATS ARE DELIBERATE AND LOAD-BEARING. `EQ_FUNCTOR` arrives TWICE — from
+/// `SPEC_OP_FUNCTORS` and again from `EQUALITY_FAMILY_FUNCTORS`, walked whole so a
+/// FOURTH equality spelling joins by being added to the family list rather than by
+/// someone noticing. The orphan row does not care. The distinctness row MUST dedupe by
+/// ADDRESS before it compares short names, or it reports `eq` colliding with itself;
+/// that is why `first_short_name_collision` keys on the address and not on a count.
+///
+/// `pratt::ARROW_FUNCTOR` / `ARROW_EFFECT_FUNCTOR` are OUT OF DOMAIN and not an
+/// oversight: they carry no `..` marker, so they are not addresses at all, and
+/// `dt::qualified` panics rather than answering on them.
+fn every_minted_address() -> Vec<&'static str> {
+    dt::ALL
+        .iter()
+        .copied()
+        .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
+        // WI-20260825-P9Y67: the boolean connectives carry addresses too, at
+        // `anthill.kernel` rather than a prelude spec. Same claim, same row — an
+        // address that denotes nothing is the failure the orphan test exists to name.
+        .chain(
+            anthill_core::parse::pratt::CONNECTIVE_FUNCTORS
+                .iter()
+                .copied(),
+        )
+        // WI-909: `unify` / `struct_eq` carry kernel addresses too.
+        .chain(
+            anthill_core::parse::pratt::EQUALITY_FAMILY_FUNCTORS
+                .iter()
+                .copied(),
+        )
+        .collect()
+}
+
+/// The first pair of DISTINCT addresses in `targets` sharing a short name, or `None`.
+///
+/// KEYED ON THE ADDRESS, so the same address arriving twice — which `EQ_FUNCTOR` does
+/// by construction — is not a collision. Returns both members, which is what WI-910's
+/// acceptance asks a report to name.
+fn first_short_name_collision<'a>(targets: &[&'a str]) -> Option<(&'a str, &'a str)> {
+    let mut seen: Vec<(&'a str, &'a str)> = Vec::new();
+    for &target in targets {
+        let short = dt::short(target);
+        match seen.iter().find(|(s, _)| *s == short) {
+            Some(&(_, prev)) if prev != target => return Some((prev, target)),
+            Some(_) => {}
+            None => seen.push((short, target)),
+        }
+    }
+    None
+}
+
+/// NO TWO DISTINCT ADDRESSES SHARE A SHORT NAME — WI-910's invariant, re-homed onto the
+/// tables that replaced the two it was filed against.
+///
+/// WI-910 asked this of `kb::load`'s implicit tier, where resolution WAS a linear `find`
+/// by last dot-segment over 61 entries: a duplicate short name made the second entry
+/// unreachable by every consumer, silently. Both tables it named are gone —
+/// `KERNEL_VOCAB_QUALIFIED` with WI-20260825-5W3RJ, `PRELUDE_QUALIFIED` with WI-909 —
+/// and the fallback RUNG that consulted them with it.
+///
+/// WHAT DID NOT GO IS SHORT-NAME LOOKUP ITSELF, and saying otherwise is the error this
+/// row is written against. Ordinary scope resolution still resolves a short name against
+/// a scope's locals, and `register_stdlib_scopes` still DEFINES nine of these addresses
+/// under `dt::short(X)`. So the currency WI-910 was about is still live; only the
+/// lowest-precedence table lookup is gone. Readers that key on a last segment today:
+///   * `dt::is`'s third arm (`name == short(target)`) — a collision makes one written
+///     name answer `true` for two targets.
+///   * `kb::node_occurrence::expr_form_key`, the dispatch key of the hand-written
+///     `match` arms in `visit_fn` / `is_reflect_form_functor`. It covers EIGHT of
+///     `dt::ALL`, not all twelve — `field_access`, `ho_apply`, `cut` and
+///     `find_dictionary` have no arm.
+///   * `kb::load::register_stdlib_scopes`.
+///   * `kb::resolve`'s `ho_apply` gate (`local_name_of(f) == dt::short(dt::HO_APPLY)`)
+///     and `Some("ListLiteral")` in `bounded_list_elements`.
+///   * `kb::load`'s `ho_apply` intern fallback and `type_expr_base_name`, which names a
+///     `TypeExpr::Tuple` by `dt::short(dt::TUPLE_LITERAL)`.
+///   * `kb::node_occurrence`'s `debug_assert!(!dot_chain || key == "field_access", …)`,
+///     whose own comment says the safety is one name collision away.
+///
+/// WHAT THIS ROW DOES NOT COVER, said plainly so the census is not read as complete.
+/// The dispatch KEY SPACE is wider than this domain: `visit_fn` matches roughly twenty
+/// strings, and `register_stdlib_scopes` hand-writes `apply` / `constructor` / `var_ref`
+/// / the `*_lit` family into the same scopes the `dt::short` defines land in. A
+/// collision between a minted address and one of THOSE is the same hazard and is not
+/// measured here. `expr_form_key` is namespace-blind, so `is_reflect_form_functor`
+/// already answers `true` for `anthill.reflect.Substitution.apply` and
+/// `anthill.prelude.Function.apply` — a live, pre-existing defect, older than this
+/// ticket and not repaired by it.
+///
+/// THE SAME-SCOPE HALF IS ALREADY LOUD, which is why this row is about the rest.
+/// `SymbolTable::define` MERGES on a name already bound in the scope — it calls
+/// `add_kind` and early-returns — so a collision inside one scope leaves the SECOND
+/// address unregistered in `by_qualified_name`, and
+/// `every_desugar_target_is_declared_by_the_standard_load` above reports it as a named
+/// orphan. It is a collision ACROSS scopes, or one in a reader that never touches the
+/// symbol table, that says nothing.
+///
+/// IT PASSES TODAY AND IS A ROT GUARD. `node_occurrence`'s
+/// `the_hand_written_dispatch_arms_still_key_off_their_addresses` already pins eight of
+/// these pairwise-distinct by driving `expr_form_key`; what is new here is the other
+/// twenty-two addresses and every cross-product, including the cross-table pairs
+/// WI-910's acceptance names ("within a list, or ACROSS the two").
+#[test]
+fn no_two_minted_addresses_share_a_short_name() {
+    let domain = every_minted_address();
+
+    // A LOWER BOUND ON WHAT WAS SWEPT, derived rather than pinned to a magic number: an
+    // empty or shrunken domain returns the same `None` as a clean sweep, which is the
+    // silent-shrinkage failure this file's own orphan row was rewritten to avoid. A
+    // dropped `.chain` reds here.
+    assert_eq!(
+        domain.len(),
+        dt::ALL.len()
+            + anthill_core::parse::pratt::SPEC_OP_FUNCTORS.len()
+            + anthill_core::parse::pratt::CONNECTIVE_FUNCTORS.len()
+            + anthill_core::parse::pratt::EQUALITY_FAMILY_FUNCTORS.len(),
+        "`every_minted_address` lost a table; the sweep below would still report None"
+    );
+
+    assert_eq!(
+        first_short_name_collision(&domain),
+        None,
+        "two distinct minted addresses share a short name. Which readers break depends \
+         on which pair: see this row's doc for the census — `dt::is`, `expr_form_key`'s \
+         eight arms, `register_stdlib_scopes`, the `ho_apply` gate. A pair reachable by \
+         none of them is still a defect: the short spelling no longer identifies one \
+         address"
+    );
+}
+
+/// THE DETECTOR, DRIVEN OVER A COLLISION — a separate `#[test]` on purpose.
+///
+/// `assert_eq!` panics, so folding this into the row above would make the control
+/// unreachable at exactly the moment anyone reads it: a real collision reds the first
+/// assertion and the detector's own evidence never runs. Separate functions also mean a
+/// broken detector is reported under a name that says so, instead of under a name
+/// asserting the opposite.
+///
+/// FOUR ELEMENTS, COLLIDING AT 1 AND 3, and the shape is the measurement: a two-element
+/// probe cannot tell "finds the earlier colliding member" from "returns `targets[0]`",
+/// and an adjacent pair cannot tell a full scan from one comparing only its neighbour.
+/// Each of those mutations passes a two-element probe while missing a real collision
+/// between the ends of `dt::ALL`.
+///
+/// THE SECOND ROW IS THE `EQ_FUNCTOR` CASE, which is not hypothetical: that address is
+/// in the domain twice, so a detector keyed on the short name alone would fail
+/// `no_two_minted_addresses_share_a_short_name` on a perfectly healthy tree.
+#[test]
+fn the_short_name_collision_detector_finds_what_it_is_given() {
+    // Synthetic — same last segment as `MATCH_EXPR`, different namespace. Nothing
+    // declares it; it never reaches a load.
+    //
+    // DERIVED FROM THE CONSTANT, NOT SPELLED OUT. A hardcoded `…Pattern.match_expr`
+    // stops colliding the moment `MATCH_EXPR` is renamed, and this row would then fail
+    // saying the DETECTOR cannot name both members — sending the reader after a helper
+    // nobody touched when all that moved was an address. Raised by `/code-review`.
+    let pattern_twin = format!("..anthill.reflect.Pattern.{}", dt::short(dt::MATCH_EXPR));
+    let probe = [
+        anthill_core::parse::pratt::ADD_FUNCTOR,
+        dt::MATCH_EXPR,
+        dt::CUT,
+        pattern_twin.as_str(),
+    ];
+    assert_eq!(
+        first_short_name_collision(&probe),
+        Some((dt::MATCH_EXPR, pattern_twin.as_str())),
+        "the detector must find a non-adjacent collision and name BOTH members"
+    );
+
+    assert_eq!(
+        first_short_name_collision(&[dt::MATCH_EXPR, dt::MATCH_EXPR]),
+        None,
+        "one ADDRESS repeated is not a collision — `EQ_FUNCTOR` reaches the real \
+         domain twice by construction"
+    );
+}
+
 /// EVERY DESUGAR TARGET IS DECLARED AFTER A STANDARD LOAD — the invariant the deleted
 /// `implicit_target_orphans` half used to cover, restored as a row over the constants
 /// the converter actually mints.
@@ -202,30 +387,7 @@ fn every_desugar_target_is_declared_by_the_standard_load() {
     // address. (The pratt-side doc once claimed this test covered them while it walked
     // `desugar_target`'s ten by hand; it walks `dt::ALL` now, so that is fixed rather
     // than merely reported.)
-    let targets: Vec<&str> = dt::ALL
-        .iter()
-        .copied()
-        .chain(anthill_core::parse::pratt::SPEC_OP_FUNCTORS.iter().copied())
-        // WI-20260825-P9Y67: the boolean connectives carry addresses too, at
-        // `anthill.kernel` rather than a prelude spec. Same claim, same row — an
-        // address that denotes nothing is the failure this test exists to name.
-        .chain(
-            anthill_core::parse::pratt::CONNECTIVE_FUNCTORS
-                .iter()
-                .copied(),
-        )
-        // WI-909: `unify` / `struct_eq` carry kernel addresses too. Walking the whole
-        // EQUALITY family re-walks `EQ_FUNCTOR`, which `SPEC_OP_FUNCTORS` already
-        // covers — harmless, and preferable to naming the two by hand, because a
-        // FOURTH equality spelling would join the family list (that is where
-        // `is_equality_family_functor` reads it) and would otherwise arrive here
-        // uncovered.
-        .chain(
-            anthill_core::parse::pratt::EQUALITY_FAMILY_FUNCTORS
-                .iter()
-                .copied(),
-        )
-        .collect();
+    let targets = every_minted_address();
     let orphans: Vec<&str> = targets
         .iter()
         .copied()
