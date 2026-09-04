@@ -9883,7 +9883,7 @@ impl KnowledgeBase {
     ///   [`Self::collect_type_node_unbound_vars`] /
     ///   [`Self::collect_effect_node_unbound_vars`] — the resolve-time twins of
     ///   the loader's `collect_type_node_vars` / `collect_effect_node_vars` —
-    ///   chasing a `TypeChild::Ground` term via [`Self::collect_unbound_vars`] and
+    ///   chasing a `TypeChild::Interned` term via [`Self::collect_unbound_vars`] and
     ///   recursing a `TypeChild::Node` back through the occurrence walker.
     /// - a tuple / named-tuple type value recurses into its element types.
     /// - scalars / runtime handles carry no type vars (the loader twin's tail
@@ -10006,7 +10006,7 @@ impl KnowledgeBase {
     }
 
     /// WI-504: resolve-time, subst-aware twin of the loader's `collect_type_child`
-    /// (node_occurrence). A `TypeChild::Ground` term is chased through the
+    /// (node_occurrence). A `TypeChild::Interned` term is chased through the
     /// existing subst-aware term walker [`Self::collect_unbound_vars`] (so a
     /// ground `Term::Var(Global)` opened from a DeBruijn var — and any var→var
     /// alias chain it sits in — is resolved to its final var before the caller-var
@@ -10020,7 +10020,7 @@ impl KnowledgeBase {
         out: &mut Vec<VarId>,
     ) {
         match child {
-            TypeChild::Ground(t) => self.collect_unbound_vars(*t, subst, out),
+            TypeChild::Interned(t) => self.collect_unbound_vars(*t, subst, out),
             TypeChild::Node(n) => self.collect_unbound_vars_node(n, subst, out),
         }
     }
@@ -15146,7 +15146,7 @@ mod tests {
 
     /// WI-504: a caller var inside a `Value::Node` type-arg spine that is a
     /// `Type`-kind occurrence (not an `Expr` leaf) — here a parameterized type
-    /// `List[Elem = ?caller]` whose binding rides a `TypeChild::Ground(Var)` — must
+    /// `List[Elem = ?caller]` whose binding rides a `TypeChild::Interned(Var)` — must
     /// be detected. Before the fix the occurrence walker's `None` arm dropped a
     /// Type/EffectExpr spine, so a caller var that `with_fresh_vars` opened from a
     /// DeBruijn var inside it would be silently missed (the exact under-delay
@@ -15169,11 +15169,11 @@ mod tests {
         let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
 
         // The Node-carried type-arg: a Type-kind occurrence `List[Elem = ?caller]`,
-        // the caller var living in a `TypeChild::Ground(Var)` binding.
+        // the caller var living in a `TypeChild::Interned(Var)` binding.
         let list_type = NodeOccurrence::new_type(
             TypeNode::Parameterized {
-                base: TypeChild::Ground(list_ref),
-                bindings: vec![(elem_sym, TypeChild::Ground(caller_term))],
+                base: TypeChild::Interned(list_ref),
+                bindings: vec![(elem_sym, TypeChild::Interned(caller_term))],
             },
             span,
             None,
@@ -15242,7 +15242,7 @@ mod tests {
         // effects_rows(present(label: ?free)) — caller var in an EffectExpr spine.
         let present = NodeOccurrence::new_effect_expr(
             EffectExprNode::Present {
-                label: TypeChild::Ground(free_term),
+                label: TypeChild::Interned(free_term),
             },
             span,
             None,
@@ -15265,8 +15265,8 @@ mod tests {
                     span,
                     None,
                 )),
-                effects: TypeChild::Ground(bound_term),
-                arity: TypeChild::Ground(arity_term),
+                effects: TypeChild::Interned(bound_term),
+                arity: TypeChild::Interned(arity_term),
             },
             span,
             None,

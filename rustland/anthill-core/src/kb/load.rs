@@ -22621,7 +22621,7 @@ impl<'a> Loader<'a> {
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(pid));
         let owner = self.current_owner;
         Some(match self.lower_effect_row(&effects, span, owner) {
-            node_occurrence::TypeChild::Ground(t) => t,
+            node_occurrence::TypeChild::Interned(t) => t,
             node_occurrence::TypeChild::Node(_) => {
                 self.diagnose_gated_value_in_type("type argument", &TypeExpr::EffectRow(effects));
                 self.kb.build_canonical_effects_rows(&[])
@@ -24562,7 +24562,7 @@ impl<'a> Loader<'a> {
         let span = self.type_expr_span(ty);
         let owner = self.current_owner;
         match self.type_expr_to_child(ty, span, owner) {
-            node_occurrence::TypeChild::Ground(t) => crate::eval::value::Value::term(t),
+            node_occurrence::TypeChild::Interned(t) => crate::eval::value::Value::term(t),
             node_occurrence::TypeChild::Node(n) => crate::eval::value::Value::Node(n),
         }
     }
@@ -24581,7 +24581,8 @@ impl<'a> Loader<'a> {
 
     /// The structural type lowering (WI-366: absorbed the ground arms of the
     /// retired `type_expr_to_term`), returning a [`node_occurrence::TypeChild`]:
-    /// `Ground(TermId)` when the sub-tree is fully ground (the hash-consed form),
+    /// `Interned(TermId)` when the sub-tree carries no `denoted` (the hash-consed form —
+    /// NOT "fully ground", which is the other reading of that word; see [`TypeChild`]),
     /// or `Node(Rc<NodeOccurrence>)` when it carries a `denoted`. The carrier of a
     /// `parameterized` follows its bindings — any `Node` binding poisons the
     /// whole type to `Node`. Only the value-in-type shapes are Node-aware
@@ -24665,9 +24666,9 @@ impl<'a> Loader<'a> {
         if segs.len() == 2 {
             // Single value-reference receiver: a ground occurrence `Ref(head)`. The
             // resulting `ExprCarried` term is fully ground (receiver + member both
-            // ground), so it rides as a hash-consed `TypeChild::Ground`.
+            // ground), so it rides as a hash-consed `TypeChild::Interned`.
             let receiver_term = self.kb.alloc(crate::kb::term::Term::Ref(head_sym));
-            Some(node_occurrence::TypeChild::Ground(
+            Some(node_occurrence::TypeChild::Interned(
                 self.kb.make_expr_carried(receiver_term, member_sym),
             ))
         } else {
@@ -25102,7 +25103,7 @@ impl<'a> Loader<'a> {
                         .make_rigid_projection(decl_sort, subject, member_sym);
                     // WI-429: record for the end-of-load formation sweep.
                     self.kb.rigid_projection_formations.push((proj, span));
-                    return Some(node_occurrence::TypeChild::Ground(proj));
+                    return Some(node_occurrence::TypeChild::Interned(proj));
                 }
             }
         }
@@ -25142,7 +25143,7 @@ impl<'a> Loader<'a> {
                     .rsplit_once('.')
                     .is_some_and(|(parent, _)| parent == sort_qn)
                 {
-                    return Some(node_occurrence::TypeChild::Ground(
+                    return Some(node_occurrence::TypeChild::Interned(
                         self.kb.make_sort_ref(member_resolved),
                     ));
                 }
@@ -25161,7 +25162,7 @@ impl<'a> Loader<'a> {
             // member to existentialize — it stays the loud conflation error, as before.
             if self.bare_spec_sugar.is_some() && !self.kb.sort_has_constructors(head_sort_sym) {
                 let var = self.mint_bare_spec_carrier(head_sort_sym, member_name);
-                return Some(node_occurrence::TypeChild::Ground(var));
+                return Some(node_occurrence::TypeChild::Interned(var));
             }
         } else {
             // A NON-param child of the head sort (`Outer.Inner` for a nested alias
@@ -25239,7 +25240,7 @@ impl<'a> Loader<'a> {
             };
             if let Some(child) = direct.filter(|c| type_admissible(self.kb, *c)) {
                 if visible(self.kb, child, self.current_scope) {
-                    return Some(node_occurrence::TypeChild::Ground(
+                    return Some(node_occurrence::TypeChild::Interned(
                         self.kb.make_sort_ref(child),
                     ));
                 }
@@ -25249,7 +25250,7 @@ impl<'a> Loader<'a> {
                 // denotes nothing when in fact it denotes something they may not see.
                 let joined = format!("{head_name}.{member_name}");
                 let picked = self.push_forbidden_internal(child, &joined, span.span);
-                return Some(node_occurrence::TypeChild::Ground(
+                return Some(node_occurrence::TypeChild::Interned(
                     self.kb.make_sort_ref(picked),
                 ));
             }
@@ -25261,7 +25262,7 @@ impl<'a> Loader<'a> {
             };
             match provided {
                 ResolveResult::Found(child) => {
-                    return Some(node_occurrence::TypeChild::Ground(
+                    return Some(node_occurrence::TypeChild::Interned(
                         self.kb.make_sort_ref(child),
                     ));
                 }
@@ -25272,7 +25273,7 @@ impl<'a> Loader<'a> {
                 ResolveResult::Ambiguous(candidates) => {
                     let joined = format!("{head_name}.{member_name}");
                     let picked = self.push_ambiguous_symbol(&joined, &candidates, span.span);
-                    return Some(node_occurrence::TypeChild::Ground(
+                    return Some(node_occurrence::TypeChild::Interned(
                         self.kb.make_sort_ref(picked),
                     ));
                 }
@@ -25302,7 +25303,7 @@ impl<'a> Loader<'a> {
                     if let Some(h) = hidden {
                         let joined = format!("{head_name}.{member_name}");
                         let picked = self.push_forbidden_internal(h, &joined, span.span);
-                        return Some(node_occurrence::TypeChild::Ground(
+                        return Some(node_occurrence::TypeChild::Interned(
                             self.kb.make_sort_ref(picked),
                         ));
                     }
@@ -25333,7 +25334,7 @@ impl<'a> Loader<'a> {
             .make_rigid_projection(head_sort_sym, subject, member_sym);
         // WI-429: record for the end-of-load formation sweep.
         self.kb.rigid_projection_formations.push((proj, span));
-        Some(node_occurrence::TypeChild::Ground(proj))
+        Some(node_occurrence::TypeChild::Interned(proj))
     }
 
     /// WI-201: mint (or reuse) the carrier-direct `?P` for a bare `Spec.Member` in the
@@ -25547,7 +25548,7 @@ impl<'a> Loader<'a> {
                     .symbols
                     .is_type_param(self.current_scope, &short_name)
                 {
-                    return node_occurrence::TypeChild::Ground(
+                    return node_occurrence::TypeChild::Interned(
                         self.type_param_var(sort_sym, &short_name),
                     );
                 }
@@ -25580,7 +25581,7 @@ impl<'a> Loader<'a> {
                         self.kb.make_denoted_occ_ref(sort_sym, span, owner),
                     )
                 } else {
-                    node_occurrence::TypeChild::Ground(self.kb.make_sort_ref(sort_sym))
+                    node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(sort_sym))
                 }
             }
             TypeExpr::Parameterized { name, bindings } => {
@@ -25681,7 +25682,7 @@ impl<'a> Loader<'a> {
                         bindings: child_bindings
                             .iter()
                             .map(|(s, c)| match c {
-                                node_occurrence::TypeChild::Ground(t) => {
+                                node_occurrence::TypeChild::Interned(t) => {
                                     (*s, crate::eval::value::Value::term(*t))
                                 }
                                 node_occurrence::TypeChild::Node(n) => {
@@ -25693,7 +25694,7 @@ impl<'a> Loader<'a> {
                     });
                 if any_node {
                     node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
-                        node_occurrence::TypeChild::Ground(base_term),
+                        node_occurrence::TypeChild::Interned(base_term),
                         child_bindings,
                         span,
                         owner,
@@ -25706,13 +25707,13 @@ impl<'a> Loader<'a> {
                     let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
                         .into_iter()
                         .map(|(s, c)| match c {
-                            node_occurrence::TypeChild::Ground(t) => (s, t),
+                            node_occurrence::TypeChild::Interned(t) => (s, t),
                             node_occurrence::TypeChild::Node(_) => {
                                 unreachable!("checked !any_node")
                             }
                         })
                         .collect();
-                    node_occurrence::TypeChild::Ground(
+                    node_occurrence::TypeChild::Interned(
                         self.kb.make_parameterized_type(base_term, &ground_bindings),
                     )
                 }
@@ -25760,11 +25761,11 @@ impl<'a> Loader<'a> {
                         let ground: Vec<(Symbol, TermId)> = fields
                             .into_iter()
                             .map(|(k, c)| match c {
-                                TypeChild::Ground(t) => (k, t),
+                                TypeChild::Interned(t) => (k, t),
                                 TypeChild::Node(_) => unreachable!("checked !any"),
                             })
                             .collect();
-                        TypeChild::Ground(self.kb.make_named_tuple_type(&ground))
+                        TypeChild::Interned(self.kb.make_named_tuple_type(&ground))
                     }
                 };
                 let result_child = self.type_expr_to_child(return_type, span, owner);
@@ -25791,13 +25792,13 @@ impl<'a> Loader<'a> {
                     // children already built (no second structural walk;
                     // the signature never re-grounds through that path).
                     let ground = |c: TypeChild| match c {
-                        TypeChild::Ground(t) => t,
+                        TypeChild::Interned(t) => t,
                         TypeChild::Node(_) => unreachable!("checked !any_node"),
                     };
                     let param_t = ground(param_child);
                     let result_t = ground(result_child);
                     let effect_ts: Vec<TermId> = effect_children.into_iter().map(ground).collect();
-                    return TypeChild::Ground(
+                    return TypeChild::Interned(
                         self.kb
                             .make_arrow_type(param_t, result_t, &effect_ts, arity),
                     );
@@ -25838,11 +25839,11 @@ impl<'a> Loader<'a> {
                     let ground: Vec<(Symbol, TermId)> = children
                         .into_iter()
                         .map(|(k, c)| match c {
-                            TypeChild::Ground(t) => (k, t),
+                            TypeChild::Interned(t) => (k, t),
                             TypeChild::Node(_) => unreachable!("checked !any_node"),
                         })
                         .collect();
-                    TypeChild::Ground(self.kb.make_named_tuple_type(&ground))
+                    TypeChild::Interned(self.kb.make_named_tuple_type(&ground))
                 }
             }
             TypeExpr::Variable {
@@ -25855,7 +25856,7 @@ impl<'a> Loader<'a> {
                 for desc_text in descriptions {
                     self.emit_desc_fact(kb_id, desc_text, self.current_domain());
                 }
-                node_occurrence::TypeChild::Ground(kb_id)
+                node_occurrence::TypeChild::Interned(kb_id)
             }
             TypeExpr::Denoted(t) => {
                 // WI-342: value-in-type literal (`3` in `Vector[Int64, 3]` / `g[3]`)
@@ -25878,8 +25879,8 @@ impl<'a> Loader<'a> {
                 let inner_child = self.type_expr_to_child(inner, span, owner);
                 self.in_effect_absence = saved_absence;
                 match inner_child {
-                    node_occurrence::TypeChild::Ground(t) => {
-                        node_occurrence::TypeChild::Ground(self.kb.make_effect_expression_absent(t))
+                    node_occurrence::TypeChild::Interned(t) => {
+                        node_occurrence::TypeChild::Interned(self.kb.make_effect_expression_absent(t))
                     }
                     node_occurrence::TypeChild::Node(n) => node_occurrence::TypeChild::Node(
                         self.kb
@@ -25914,9 +25915,9 @@ impl<'a> Loader<'a> {
                     .collect();
                 let label_child = self.type_expr_to_child(label, span, owner);
                 match label_child {
-                    node_occurrence::TypeChild::Ground(label_t) => {
+                    node_occurrence::TypeChild::Interned(label_t) => {
                         let guard_list = self.kb.build_list(&guard_terms);
-                        node_occurrence::TypeChild::Ground(
+                        node_occurrence::TypeChild::Interned(
                             self.kb.make_effect_expression_guarded(label_t, guard_list),
                         )
                     }
@@ -25971,11 +25972,11 @@ impl<'a> Loader<'a> {
             let effect_ts: Vec<TermId> = effect_children
                 .into_iter()
                 .map(|c| match c {
-                    TypeChild::Ground(t) => t,
+                    TypeChild::Interned(t) => t,
                     TypeChild::Node(_) => unreachable!("checked !any_node"),
                 })
                 .collect();
-            return TypeChild::Ground(self.kb.build_canonical_effects_rows(&effect_ts));
+            return TypeChild::Interned(self.kb.build_canonical_effects_rows(&effect_ts));
         }
         // Denoted-bearing — fold into an `effects_rows` occurrence via the
         // shared absent-aware helper (the same fold the `Arrow` arm uses).
@@ -26011,7 +26012,7 @@ impl<'a> Loader<'a> {
             // VAR as a present LABEL, losing the tail (the ground path's
             // `build_canonical_effects_rows` applies the same rule).
             let row_var = match &child {
-                TypeChild::Ground(t) => self.kb.row_tail_var_of(*t),
+                TypeChild::Interned(t) => self.kb.row_tail_var_of(*t),
                 TypeChild::Node(_) => None,
             };
             // WI-478: a guarded atom (like an `EffectAbsent` `absent(…)`) is already
@@ -26023,7 +26024,7 @@ impl<'a> Loader<'a> {
             ) {
                 child
             } else if let Some(v) = row_var {
-                TypeChild::Node(self.kb.make_open_occ(TypeChild::Ground(v), span, owner))
+                TypeChild::Node(self.kb.make_open_occ(TypeChild::Interned(v), span, owner))
             } else {
                 TypeChild::Node(self.kb.make_present_occ(child, span, owner))
             };

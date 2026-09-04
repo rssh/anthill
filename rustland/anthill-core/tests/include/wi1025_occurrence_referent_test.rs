@@ -85,7 +85,7 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
     let base_tid = interp.kb_mut().alloc(Term::Ref(sym));
     let occ_type = Value::Node(NodeOccurrence::new_type(
         TypeNode::Parameterized {
-            base: TypeChild::Ground(base_tid),
+            base: TypeChild::Interned(base_tid),
             bindings: vec![(v_param, TypeChild::Node(denoted))],
         },
         span(),

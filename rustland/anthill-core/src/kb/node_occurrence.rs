@@ -1272,7 +1272,7 @@ pub enum NodeKind {
     /// distinct NodeKind. The poisoned spine is `Rc<NodeOccurrence>`-linked
     /// (uniform with `Expr`/`Pattern`, so `TermView` / `Drop` / occurrence
     /// substitution read it through the existing machinery); ground subtrees
-    /// stay hash-consed `TermId` (carried in `TypeChild::Ground`).
+    /// stay hash-consed `TermId` (carried in `TypeChild::Interned`).
     Type(TypeNode),
     /// EffectExpression content (WI-342). The sibling carrier for the
     /// `EffectExpression` sort, reached because a `denoted`-bearing effect
@@ -1677,12 +1677,22 @@ impl Pattern {
 
 // ── TypeNode / EffectExprNode (WI-342) ──────────────────────────
 
-/// A child slot of a [`TypeNode`] / [`EffectExprNode`] — either a **ground**
+/// A child slot of a [`TypeNode`] / [`EffectExprNode`] — either an **interned**
 /// hash-consed subtree (no `denoted` beneath it, so it stays a `TermId`) or a
 /// **poisoned** subtree on the `denoted` spine, carried as a sibling
 /// `Rc<NodeOccurrence>` (a `NodeKind::Type` or `NodeKind::EffectExpr`). The
 /// minimal-`Value`-spine principle: only the path from a container down to a
 /// `denoted` is `Value`-carried; everything else stays interned.
+///
+/// **`Interned`, NOT `Ground` — the variant was renamed because the word meant two
+/// things in one crate.** Here the question is HASH-CONSABILITY, and the opposite of
+/// this arm is POISONED, not variable-bearing. Elsewhere `ground` is the LOGICAL
+/// property — `resolved_type_is_ground`, `GroundCheck::Ground`, `BuiltinTag::Ground`
+/// behind `anthill.reflect.ground` — meaning no variable anywhere, so a relation may
+/// decide. The two disagree on exactly one shape and it is a common one: a
+/// `Term::Var(Var::Global(v))` type is INTERNED (a `TermId`, no `denoted`) and is NOT
+/// ground. Under the old name the doc below said `type_var` is "always ground", which
+/// is true only in this arm's sense and false in the other.
 ///
 /// `Rc<NodeOccurrence>` (not `Box<TypeNode>`) so a poisoned child is read
 /// through `TermView::pos_arg`/`named_arg` as a `ViewItem::Node`, drained by
@@ -1690,16 +1700,20 @@ impl Pattern {
 /// machinery `Expr`/`Pattern` children already use.
 #[derive(Clone, Debug)]
 pub enum TypeChild {
-    Ground(TermId),
+    Interned(TermId),
     Node(Rc<NodeOccurrence>),
 }
 
 /// Structural `Type`-sort IR (WI-342). One arm per `Type` entity variant that
 /// can sit on a `denoted` spine for the first migrated producer
 /// (`{-Modify[c]}`). Variants the slice doesn't yet mint (`sort_ref`,
-/// `type_var`, `nothing`, `named_tuple`) are not represented here — they are
-/// always ground, so they ride in `TypeChild::Ground(TermId)`; arms are added
-/// only when a producer carries one on a poisoned spine.
+/// `type_var`, `nothing`, `named_tuple`) are not represented here — they carry no
+/// `denoted`, so they ride in [`TypeChild::Interned`]; arms are added only when a
+/// producer carries one on a poisoned spine.
+///
+/// "carry no `denoted`", not "are always ground", which is what this said: `type_var`
+/// is not ground in the LOGICAL sense at all. See [`TypeChild`] for the two readings
+/// the old wording ran together.
 #[derive(Debug)]
 pub enum TypeNode {
     /// `denoted(value: NodeOccurrence)` — the poison source. `value` is an
@@ -1769,7 +1783,7 @@ pub enum TypeNode {
     /// `KnowledgeBase::make_expr_carried`); THIS carrier is for `a.b.T`, where the
     /// receiver is itself an occurrence (a `DotApply` field access — now structural,
     /// WI-397). `value` is the receiver occurrence (`TypeChild::Node`); `member` is
-    /// the projected type member as `TypeChild::Ground(Ref(sym))` — mirroring the
+    /// the projected type member as `TypeChild::Interned(Ref(sym))` — mirroring the
     /// term form so `TermView` reads both carriers identically.
     ExprCarried { value: TypeChild, member: TypeChild },
 }
@@ -2798,7 +2812,7 @@ fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value
 // (a parameter binding `Vector[Int, ?n]`, an effect label `Modify[?c]`) was
 // neither closed, opened, nor substituted. The var-collector likewise skipped
 // it. No producer mints such a var today (denoteds are `Ref`/`Const`, type-vars
-// stay ground `TypeChild::Ground` — see the carrier rule), so this is
+// stay ground `TypeChild::Interned` — see the carrier rule), so this is
 // forward-correct substrate; wiring it lets the same machinery handle a type
 // occurrence the moment a dependent-type producer (WI-373 gap 1) emits one.
 //
@@ -2832,9 +2846,9 @@ fn map_type_child<R: TypeChildRewrite>(
     child: &TypeChild,
 ) -> (TypeChild, bool) {
     match child {
-        TypeChild::Ground(t) => {
+        TypeChild::Interned(t) => {
             let (nt, ch) = r.term(kb, *t);
-            (TypeChild::Ground(nt), ch)
+            (TypeChild::Interned(nt), ch)
         }
         TypeChild::Node(n) => {
             let nn = r.node(kb, n);
@@ -3385,7 +3399,7 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
             // driven walk reaches a Type occurrence only once the deferred
             // type-field→occurrence-child migration routes those fields through
             // `for_each_child` — which must also thread `kb` here (this walker has
-            // none, so it can't read a ground `TypeChild::Ground(TermId)`). Until
+            // none, so it can't read a ground `TypeChild::Interned(TermId)`). Until
             // then a type occurrence reaching here is a bug, so assert.
             NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
                 debug_assert!(false, "type/effect occurrence in for_each_child var walk (type-field migration must thread kb here)");
@@ -3639,7 +3653,7 @@ fn collect_type_child(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match child {
-        TypeChild::Ground(t) => kb.collect_vars_rec(*t, vars, seen),
+        TypeChild::Interned(t) => kb.collect_vars_rec(*t, vars, seen),
         TypeChild::Node(n) => collect_type_or_expr_node_vars(kb, n, vars, seen),
     }
 }
@@ -4180,7 +4194,7 @@ fn type_args_list_term(
 /// [`occurrence_to_term`].
 fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> TermId {
     match child {
-        TypeChild::Ground(t) => *t,
+        TypeChild::Interned(t) => *t,
         TypeChild::Node(occ) => occurrence_to_term(kb, occ),
     }
 }
@@ -4231,7 +4245,7 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             // `Ref(sym)` by construction.
             let v = type_child_to_term(kb, value);
             let member_sym = match member {
-                TypeChild::Ground(t) => match kb.get_term(*t) {
+                TypeChild::Interned(t) => match kb.get_term(*t) {
                     Term::Ref(s) => Some(*s),
                     _ => None,
                 },
@@ -5385,7 +5399,7 @@ pub fn substitute_occurrence(
 /// `Modify[c]` to the caller's `Modify[s]` (call-site param substitution) and a
 /// fresh result-region to the enclosing op's `result` (region escape). Only the
 /// spines an effect label takes are walked (`denoted` / `parameterized` /
-/// `effects_rows` / `arrow` + the row algebra); a `Ground` `TypeChild` carries no
+/// `effects_rows` / `arrow` + the row algebra); an `Interned` `TypeChild` carries no
 /// occurrence `Ref` (its hash-consed `Term::Ref`s are re-keyed by the term-world
 /// `substitute_ref_syms`), so it passes through. A non-`Type`/`EffectExpr`
 /// occurrence is never an effect label and is returned unchanged.
@@ -5464,14 +5478,14 @@ pub(crate) fn substitute_ref_syms_occ(
     }
 }
 
-/// Re-key Refs inside a [`TypeChild`]. `Ground` is hash-consed `Term` (re-keyed,
+/// Re-key Refs inside a [`TypeChild`]. `Interned` is hash-consed `Term` (re-keyed,
 /// if ever needed, by the term-world `substitute_ref_syms`); `Node` recurses.
 fn rewrite_ref_child(
     child: &TypeChild,
     map: &std::collections::HashMap<Symbol, Symbol>,
 ) -> TypeChild {
     match child {
-        TypeChild::Ground(t) => TypeChild::Ground(*t),
+        TypeChild::Interned(t) => TypeChild::Interned(*t),
         TypeChild::Node(n) => TypeChild::Node(substitute_ref_syms_occ(n, map)),
     }
 }
@@ -8278,13 +8292,13 @@ mod tests {
     // ── WI-378 step 2 / WI-342-P3: Type-occurrence var walk ─────────
     //
     // No producer mints a logical var inside a Type occurrence today (denoteds
-    // are Ref/Const, type-vars stay ground TypeChild::Ground), so these tests
+    // are Ref/Const, type-vars stay ground TypeChild::Interned), so these tests
     // hand-build the substrate case: a `Parameterized` type carrying a `Var` in
-    // BOTH a ground `TypeChild::Ground(TermId)` binding and a `TypeChild::Node`
+    // BOTH a ground `TypeChild::Interned(TermId)` binding and a `TypeChild::Node`
     // child occurrence (the shape a denoted-bearing dependent type would mint).
     // They pin that collect / De Bruijn close+open / σ all descend the type spine.
 
-    /// Build `param(base = Bottom, bg = Ground(Var(vg)), bn = Node(Var(vn)))`.
+    /// Build `param(base = Bottom, bg = Interned(Var(vg)), bn = Node(Var(vn)))`.
     fn type_with_vars(kb: &mut KnowledgeBase, vg: VarId, vn: VarId) -> Rc<NodeOccurrence> {
         let span = make_span();
         let base_t = kb.alloc(Term::Const(Literal::Int(0)));
@@ -8294,9 +8308,9 @@ mod tests {
         let node_child = NodeOccurrence::new_expr(Expr::Var(Var::Global(vn)), span, None);
         NodeOccurrence::new_type(
             TypeNode::Parameterized {
-                base: TypeChild::Ground(base_t),
+                base: TypeChild::Interned(base_t),
                 bindings: vec![
-                    (bg, TypeChild::Ground(vg_t)),
+                    (bg, TypeChild::Interned(vg_t)),
                     (bn, TypeChild::Node(node_child)),
                 ],
             },
@@ -8346,7 +8360,7 @@ mod tests {
         let closed = node_to_debruijn(&mut kb, &ty, &[vg, vn]);
         let (bg, bn) = param_bindings(&closed);
         match bg {
-            TypeChild::Ground(t) => assert!(
+            TypeChild::Interned(t) => assert!(
                 matches!(kb.terms.get(t), Term::Var(Var::DeBruijn(1))),
                 "ground binding var closes to DeBruijn(1), got {:?}",
                 kb.terms.get(t),
@@ -8371,7 +8385,7 @@ mod tests {
         let opened = open_debruijn_node(&mut kb, &closed, &[fa, fb]);
         let (bg, bn) = param_bindings(&opened);
         match bg {
-            TypeChild::Ground(t) => assert!(
+            TypeChild::Interned(t) => assert!(
                 matches!(kb.terms.get(t), Term::Var(Var::Global(v)) if *v == fb),
                 "ground binding DeBruijn(1) re-opens to Global(fresh[1]=fb), got {:?}",
                 kb.terms.get(t),
@@ -8468,7 +8482,7 @@ mod tests {
         let out = substitute_occurrence(&mut kb, &ty, &subst);
         let (bg, bn) = param_bindings(&out);
         match bg {
-            TypeChild::Ground(t) => assert_eq!(t, seven, "vg in a ground type child rewrites to 7"),
+            TypeChild::Interned(t) => assert_eq!(t, seven, "vg in a ground type child rewrites to 7"),
             other => panic!("expected Ground, got {other:?}"),
         }
         match bn {

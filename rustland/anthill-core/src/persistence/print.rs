@@ -248,7 +248,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// nested occurrence (`write_occurrence`), uniformly (WI-348/349).
     fn write_type_child(&self, child: &TypeChild, buf: &mut String) {
         match child {
-            TypeChild::Ground(t) => self.write_term(*t, buf),
+            TypeChild::Interned(t) => self.write_term(*t, buf),
             TypeChild::Node(occ) => self.write_occurrence(occ, buf),
         }
     }
@@ -310,7 +310,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 // rides as `TypeChild::Node`, and a Ground-only test would leave
                 // exactly that arrow printing as an n-parameter list.
                 let param_is_tuple = match param {
-                    TypeChild::Ground(t) => self.is_named_tuple_term(*t),
+                    TypeChild::Interned(t) => self.is_named_tuple_term(*t),
                     TypeChild::Node(occ) => {
                         matches!(&occ.kind, NodeKind::Type(TypeNode::NamedTuple { .. }))
                     }
@@ -1273,7 +1273,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     fn write_arrow_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
         let arity = self
             .named_arg(named, "arity")
-            .and_then(|a| self.type_child_arity(&TypeChild::Ground(a)));
+            .and_then(|a| self.type_child_arity(&TypeChild::Interned(a)));
         match self.named_arg(named, "param") {
             None => buf.push_str("()"),
             Some(p) => {
@@ -1398,7 +1398,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     /// any other shape — the caller then keeps the pre-WI-791 rendering rather
     /// than inventing a parenthesisation.
     fn type_child_arity(&self, child: &TypeChild) -> Option<usize> {
-        let TypeChild::Ground(t) = child else {
+        let TypeChild::Interned(t) = child else {
             return None;
         };
         match self.view.term(*t) {

@@ -5310,7 +5310,7 @@ impl KnowledgeBase {
     /// Incref the ground `TermId` leaves reachable in a value head (WI-348
     /// Phase B), keeping them alive for the rule's lifetime — including those
     /// carried *inside* a `Value::Node` occurrence (e.g. a `denoted` Type's
-    /// `TypeChild::Ground`), which the occurrence builders do NOT refcount
+    /// `TypeChild::Interned`), which the occurrence builders do NOT refcount
     /// themselves (review #1): without this, a hash-consed term shared with a
     /// term-carrier fact would dangle when that fact is retracted. Walks the
     /// head through `TermView` — the same surface the discrimination tree
@@ -8348,7 +8348,7 @@ impl KnowledgeBase {
     // the `TermStore` — they wrap occurrences — and are NOT yet called from the
     // live loader (dual-path; the `TermId` builders stay the live path until
     // P3 routes `unify_types` onto `TermView`). Ground children ride in
-    // `TypeChild::Ground(TermId)`; only the `denoted` spine is occurrence-linked.
+    // `TypeChild::Interned(TermId)`; only the `denoted` spine is occurrence-linked.
 
     /// `denoted(value: NodeOccurrence)` carried as a Type occurrence
     /// (`TypeNode::Denoted`). `value` is the carried source content — for
@@ -8436,7 +8436,7 @@ impl KnowledgeBase {
         let mut elems: Vec<Value> = Vec::with_capacity(fields.len());
         for (field_name, child) in fields {
             let type_value = match child {
-                TypeChild::Ground(t) => Value::term(t),
+                TypeChild::Interned(t) => Value::term(t),
                 TypeChild::Node(o) => Value::Node(o),
             };
             let name_ref = Value::term(self.alloc(Term::Ref(field_name)));
@@ -8472,7 +8472,7 @@ impl KnowledgeBase {
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
-        let arity = node_occurrence::TypeChild::Ground(self.make_arity_term(arity));
+        let arity = node_occurrence::TypeChild::Interned(self.make_arity_term(arity));
         self.make_arrow_occ_child(param, result, effects, arity, span, owner)
     }
 
@@ -9190,7 +9190,7 @@ impl KnowledgeBase {
         node_occurrence::NodeOccurrence::new_type(
             node_occurrence::TypeNode::ExprCarried {
                 value: node_occurrence::TypeChild::Node(receiver),
-                member: node_occurrence::TypeChild::Ground(member_ref),
+                member: node_occurrence::TypeChild::Interned(member_ref),
             },
             span,
             owner,
@@ -11106,8 +11106,8 @@ mod tests {
             let m = kb.intern(member);
             Value::Node(NodeOccurrence::new_type(
                 TypeNode::ExprCarried {
-                    value: TypeChild::Ground(kb.alloc(Term::Ident(v))),
-                    member: TypeChild::Ground(kb.alloc(Term::Ident(m))),
+                    value: TypeChild::Interned(kb.alloc(Term::Ident(v))),
+                    member: TypeChild::Interned(kb.alloc(Term::Ident(m))),
                 },
                 span,
                 None,
@@ -12537,7 +12537,7 @@ mod tests {
         // ── Value-carried spine (the new producer builders). ──
         let denoted_occ = kb.make_denoted_occ_ref(c_sym, span, None);
         let param_occ = kb.make_parameterized_occ(
-            TypeChild::Ground(modify_base),
+            TypeChild::Interned(modify_base),
             vec![(t_sym, TypeChild::Node(Rc::clone(&denoted_occ)))],
             span,
             None,
@@ -12545,15 +12545,15 @@ mod tests {
         let absent_occ = kb.make_absent_occ(TypeChild::Node(Rc::clone(&param_occ)), span, None);
         let merge_occ = kb.make_merge_occ(
             TypeChild::Node(Rc::clone(&absent_occ)),
-            TypeChild::Ground(empty_row_tid),
+            TypeChild::Interned(empty_row_tid),
             span,
             None,
         );
         let effects_rows_occ =
             kb.make_effects_rows_occ(TypeChild::Node(Rc::clone(&merge_occ)), span, None);
         let arrow_occ = kb.make_arrow_occ(
-            TypeChild::Ground(param_ty),
-            TypeChild::Ground(result_ty),
+            TypeChild::Interned(param_ty),
+            TypeChild::Interned(result_ty),
             TypeChild::Node(Rc::clone(&effects_rows_occ)),
             1,
             span,

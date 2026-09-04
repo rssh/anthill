@@ -638,9 +638,9 @@ fn value_to_term_denoted_round_trips_to_ground_twin() {
     let three_occ = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), sp, None);
     let denoted_occ = kb.make_denoted_occ(three_occ, sp, None);
     let param_occ = kb.make_parameterized_occ(
-        TypeChild::Ground(foo),
+        TypeChild::Interned(foo),
         vec![
-            (t_sym, TypeChild::Ground(int_ref)),
+            (t_sym, TypeChild::Interned(int_ref)),
             (n_sym, TypeChild::Node(denoted_occ)),
         ],
         sp,

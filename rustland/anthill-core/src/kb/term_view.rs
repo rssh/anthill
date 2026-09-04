@@ -1366,7 +1366,7 @@ fn occ_pos_child(
 /// The named child keyed by `sym` of an Apply/Constructor occurrence, or — for
 /// a Value-carried Type / EffectExpression occurrence (WI-342) — the matching
 /// named field. A poisoned `TypeChild::Node` child is itself a child
-/// occurrence; a `TypeChild::Ground` child is a hash-consed `TermId`, which
+/// occurrence; a `TypeChild::Interned` child is a hash-consed `TermId`, which
 /// `occ_named_child` cannot return as an `Rc<NodeOccurrence>` — Type/EffectExpr
 /// callers go through [`type_node_named`] / [`effect_expr_named`] (returning a
 /// `ViewItem`) instead. This `Rc`-returning helper stays Expr-only.
@@ -1530,7 +1530,7 @@ fn effect_functor_sym(kb: &KnowledgeBase, short: &str) -> Option<Symbol> {
 /// returned item is free of the caller's borrow.
 pub(crate) fn type_child_view_item<'a>(child: &TypeChild) -> ViewItem<'a> {
     match child {
-        TypeChild::Ground(t) => ViewItem::Term(*t),
+        TypeChild::Interned(t) => ViewItem::Term(*t),
         TypeChild::Node(rc) => ViewItem::Node(Rc::clone(rc)),
     }
 }
@@ -1542,7 +1542,7 @@ pub(crate) fn type_child_view_item<'a>(child: &TypeChild) -> ViewItem<'a> {
 /// type, not a type constructor"); anything else is malformed → `None`.
 fn parameterized_base_functor(base: &TypeChild, kb: &KnowledgeBase) -> Option<Symbol> {
     match base {
-        TypeChild::Ground(t) => match kb.get_term(*t) {
+        TypeChild::Interned(t) => match kb.get_term(*t) {
             Term::Ref(s) | Term::Ident(s) => Some(*s),
             _ => None,
         },

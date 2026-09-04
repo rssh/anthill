@@ -3385,7 +3385,7 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
 /// it defensively so we don't panic.
 fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
     match v {
-        Value::Term { id: t, .. } => TypeChild::Ground(*t),
+        Value::Term { id: t, .. } => TypeChild::Interned(*t),
         Value::Node(occ) => TypeChild::Node(Rc::clone(occ)),
         other => {
             // A scalar/`Var`/`Entity` is a typer bug here (types are `Term`/`Node`);
@@ -3395,7 +3395,7 @@ fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
                 "WI-342: non-type Value in a TypeChild slot: {other:?}"
             );
             let sym = kb.intern("?ungrounded");
-            TypeChild::Ground(kb.make_type_var(sym))
+            TypeChild::Interned(kb.make_type_var(sym))
         }
     }
 }
@@ -3427,7 +3427,7 @@ fn parameterized_value(
         for (s, v) in bindings {
             children.push((*s, value_to_type_child(kb, v)));
         }
-        Value::Node(kb.make_parameterized_occ(TypeChild::Ground(base), children, span, owner))
+        Value::Node(kb.make_parameterized_occ(TypeChild::Interned(base), children, span, owner))
     } else {
         // Closed: every binding is a `Value::Term` (checked above) — hash-consed.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
@@ -4722,7 +4722,7 @@ fn thread_expected_tuple_fields(
 
 /// WI-470: build an `arrow(param, result, effects)` type as an occurrence —
 /// always a `Value::Node` (occurrence-primary; the representation note disclaims
-/// hash-consing for arrows/binders). A ground child rides as `TypeChild::Ground`
+/// hash-consing for arrows/binders). A ground child rides as `TypeChild::Interned`
 /// (poison flows up, not down), so a fully-ground arrow is a Node spine over
 /// interned leaves; a denoted-bearing child (e.g. a lambda body effect `Modify[c]`)
 /// is CARRIED as a poisoned `TypeChild::Node`. Consumers read either through
@@ -4746,7 +4746,7 @@ fn make_arrow_value(
     // a `Value::Node` occurrence — the representation note disclaims hash-consing
     // for arrows/binders, so the typer no longer chooses the hash-consed
     // `make_arrow_type` for the ground case. A ground child still rides as
-    // `TypeChild::Ground(TermId)` (poison flows up, not down), so a fully-ground
+    // `TypeChild::Interned(TermId)` (poison flows up, not down), so a fully-ground
     // arrow is a Node spine over interned leaves; consumers read it through
     // `TermView` (already carrier-agnostic — `unify_*`, `extract_type`,
     // `decompose_effect_row`), and a genuine TermId demand materializes via
@@ -4768,7 +4768,7 @@ fn make_arrow_value(
         let atom = match label {
             Value::Term { id: t, .. } if kb.row_tail_var_of(*t).is_some() => {
                 let tail = kb.row_tail_var_of(*t).expect("checked is_some");
-                kb.make_open_occ(TypeChild::Ground(tail), span, owner)
+                kb.make_open_occ(TypeChild::Interned(tail), span, owner)
             }
             _ => {
                 let label_child = value_to_type_child(kb, label);
@@ -4997,7 +4997,7 @@ fn walk_type_deep_value_g(
 }
 
 /// WI-441: deep-resolve vars inside a NODE-carried type occurrence by
-/// rebuilding it with every `TypeChild::Ground` mapped through
+/// rebuilding it with every `TypeChild::Interned` mapped through
 /// [`walk_type_deep`] and every `TypeChild::Node` recursed. Share-preserving:
 /// an unchanged subtree returns its original `Rc` (so an all-ground-stable
 /// tree costs only the traversal). `Denoted` (a VALUE occurrence — no type
@@ -5018,12 +5018,12 @@ fn rewrite_type_occ_deep(
         changed: &mut bool,
     ) -> TypeChild {
         match c {
-            TypeChild::Ground(t) => {
+            TypeChild::Interned(t) => {
                 let w = walk_type_deep_g(kb, subst, *t, ground);
                 if w != *t {
                     *changed = true;
                 }
-                TypeChild::Ground(w)
+                TypeChild::Interned(w)
             }
             TypeChild::Node(n) => {
                 let r = rewrite_type_occ_deep(kb, subst, n, ground);
@@ -5304,7 +5304,7 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
 /// via [`type_display_name_occ`].
 fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild) -> String {
     match child {
-        TypeChild::Ground(t) => type_display_name(kb, *t),
+        TypeChild::Interned(t) => type_display_name(kb, *t),
         TypeChild::Node(n) => type_display_name_occ(kb, n),
     }
 }
@@ -11673,7 +11673,7 @@ fn visit_type(
                     // (`value_to_type_child`: "A scalar/`Var`/`Entity` is a typer bug
                     // here"), measured as `WI-342: non-type Value in a TypeChild slot:
                     // Var(Global(..))` on every row in `wi_50b2k_binder_inference_test`.
-                    // `TypeChild::Ground` holds a `TermId`, so a variable in TYPE position
+                    // `TypeChild::Interned` holds a `TermId`, so a variable in TYPE position
                     // is interned by construction. The cost stands and is bounded by
                     // (binders x passes); removing it needs a transient type-term carrier,
                     // which is a representation change and not this ticket's.
@@ -14210,7 +14210,7 @@ fn build_type(
             // WI-470: the lambda's arrow type is minted as an occurrence
             // (`Value::Node`, occurrence-primary). A denoted-bearing child (a
             // `Modify[c]` body effect) is CARRIED as a poisoned child rather than
-            // re-grounded; a ground child rides as `TypeChild::Ground`. The
+            // re-grounded; a ground child rides as `TypeChild::Interned`. The
             // op-boundary return check compares it cross-carrier via `TermView`.
             // WI-791: the lambda's arity is its WRITTEN binder count, read from the
             // param pattern — `param_type` cannot supply it (an unannotated lambda's
@@ -40706,7 +40706,7 @@ fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> b
 /// other decides the same program two ways.
 fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok: bool) -> bool {
     let child_ground = |c: &TypeChild| match c {
-        TypeChild::Ground(t) => type_value_is_ground_g(kb, *t, rigid_ok),
+        TypeChild::Interned(t) => type_value_is_ground_g(kb, *t, rigid_ok),
         TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok),
     };
     match &occ.kind {
@@ -42602,7 +42602,7 @@ fn reorder_named_args_in_apply(
 ///    [`TypeChild`](super::node_occurrence::TypeChild) — `TypeNode::EffectsRows
 ///    { effects_expr }`, and `EffectExprNode`'s `Merge{left, right}` / `Present{label}` /
 ///    `Guarded{label}` / `Absent{label}` / `Open{tail}` — and `TypeChild` has two
-///    variants, `Ground(TermId)` and `Node(Rc<NodeOccurrence>)`. The one non-`TypeChild`
+///    variants, `Interned(TermId)` and `Node(Rc<NodeOccurrence>)`. The one non-`TypeChild`
 ///    child anywhere in the algebra is `Guarded.guard`, a `List[reflect.Term]`, which is
 ///    not a row. [`type_child_view_item`](super::term_view::type_child_view_item) maps
 ///    those two onto `ViewItem::Term` / `ViewItem::Node` and [`view_item_value`] onto
@@ -45038,7 +45038,7 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
         return true;
     }
     let child = |c: &TypeChild| match c {
-        TypeChild::Ground(t) => term_contains_callable(kb, *t),
+        TypeChild::Interned(t) => term_contains_callable(kb, *t),
         TypeChild::Node(n) => node_contains_callable(kb, n),
     };
     match &occ.kind {
@@ -46945,10 +46945,10 @@ fn eliminate_type_projections(
 /// carries a `denoted` value-in-type, e.g. the callback param `(x: s.T) -> Bool @
 /// {EffP, -Modify[x]}` or `Stream[T = l.T, E = {Modify[c]}]`. The Node twin of
 /// [`rewrite_term_projections`]'s recursion into `Term::Fn` children: descend the
-/// occurrence tree, route each GROUND (`TypeChild::Ground`) child through
+/// occurrence tree, route each GROUND (`TypeChild::Interned`) child through
 /// `rewrite_term_projections` and each NODE child through this function, then rebuild the
 /// carrier with the `make_*_occ` builders. A child that GROUNDS from a Node to a concrete
-/// `Term` (a compound `a.b.T` reducing to `Int64`) collapses to `TypeChild::Ground` via
+/// `Term` (a compound `a.b.T` reducing to `Int64`) collapses to `TypeChild::Interned` via
 /// [`value_to_type_child`]. `denoted` values (`Modify[c]`, `-Modify[x]`) carry no type
 /// projection and are returned untouched. A `named_tuple` carrier holding a projection is
 /// NOT yet rewritten (its fields ride a `Value`-carried list the `TypeChild` descent does
@@ -46972,7 +46972,7 @@ fn eliminate_node_projections(
         span: Option<Span>,
     ) -> Result<TypeChild, TypeError> {
         match c {
-            TypeChild::Ground(t) => Ok(TypeChild::Ground(rewrite_term_projections(
+            TypeChild::Interned(t) => Ok(TypeChild::Interned(rewrite_term_projections(
                 kb, *t, arg_types, arg_syms, ctx, span,
             )?)),
             TypeChild::Node(n) => {
@@ -50173,7 +50173,7 @@ fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
 /// hash-consed [`occurs_in`]; a poisoned child recurses.
 fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) -> bool {
     let child = |kb: &KnowledgeBase, c: &TypeChild| match c {
-        TypeChild::Ground(t) => occurs_in(kb, vid, *t),
+        TypeChild::Interned(t) => occurs_in(kb, vid, *t),
         TypeChild::Node(n) => occ_contains_var(kb, vid, n),
     };
     if let Some(tn) = occ.as_type() {

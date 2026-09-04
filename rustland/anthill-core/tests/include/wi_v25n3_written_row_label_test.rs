@@ -473,7 +473,7 @@ end
 /// `E` binding and the unregistered `Beep` beside the LAWFUL place went unjudged.
 /// MEASURED loading clean, while the identical row in a `provides` clause was refused.
 ///
-/// BACKED OUT (the recorded bindings narrowed back to `TypeChild::Ground`): red, and
+/// BACKED OUT (the recorded bindings narrowed back to `TypeChild::Interned`): red, and
 /// `a_row_type_argument_…_unregistered_kind` stays green — the two differ only by the
 /// lawful `Modify` beside the bad label.
 #[test]

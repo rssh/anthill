@@ -1015,7 +1015,7 @@ mod p4_tests {
         let base = kb.make_sort_ref(modify);
         let denoted_occ = kb.make_denoted_occ_ref(sym, span(), None);
         kb.make_parameterized_occ(
-            TypeChild::Ground(base),
+            TypeChild::Interned(base),
             vec![(p, TypeChild::Node(denoted_occ))],
             span(),
             None,
@@ -1219,8 +1219,8 @@ mod p4_tests {
 
         // Occurrence carrier (the poisoned-receiver shape) `parameterized{Box, [T = Int64]}`.
         let node = kb.make_parameterized_occ(
-            TypeChild::Ground(box_ref),
-            vec![(box_t, TypeChild::Ground(int_ref))],
+            TypeChild::Interned(box_ref),
+            vec![(box_t, TypeChild::Interned(int_ref))],
             span(),
             None,
         );
@@ -1309,8 +1309,8 @@ mod p4_tests {
         let present = kb.make_present_occ(TypeChild::Node(label), span(), None);
         let rows = kb.make_effects_rows_occ(TypeChild::Node(present), span(), None);
         kb.make_arrow_occ(
-            TypeChild::Ground(unit_ref),
-            TypeChild::Ground(unit_ref),
+            TypeChild::Interned(unit_ref),
+            TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
             span(),
@@ -1344,7 +1344,7 @@ mod p4_tests {
         let tuple = Value::Node(kb.make_named_tuple_occ(
             vec![
                 (f, TypeChild::Node(value_arrow_c)),
-                (n, TypeChild::Ground(int_ref)),
+                (n, TypeChild::Interned(int_ref)),
             ],
             span(),
             None,
@@ -1401,8 +1401,8 @@ mod p4_tests {
         let present = kb.make_present_occ(TypeChild::Node(label), span(), None);
         let rows = kb.make_effects_rows_occ(TypeChild::Node(present), span(), None);
         let arrow = kb.make_arrow_occ(
-            TypeChild::Ground(v_term),
-            TypeChild::Ground(unit_ref),
+            TypeChild::Interned(v_term),
+            TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
             span(),
@@ -5103,7 +5103,7 @@ mod ctd6d_row_carrier_tests {
     fn node_bare_row(kb: &mut KnowledgeBase) -> Value {
         let label_sym = kb.intern("CtdLabel");
         let label = kb.make_sort_ref(label_sym);
-        let present = kb.make_present_occ(TypeChild::Ground(label), span(), None);
+        let present = kb.make_present_occ(TypeChild::Interned(label), span(), None);
         let empty = kb.make_empty_row_occ(span(), None);
         Value::Node(kb.make_merge_occ(
             TypeChild::Node(present),

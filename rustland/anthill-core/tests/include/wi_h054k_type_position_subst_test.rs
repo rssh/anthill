@@ -109,7 +109,7 @@
 //!     the bracket gains a channel here this file goes red and asks for a row.
 //!   * the `TypeNode` / `EffectExpr` spine (`map_type_child`). NOT DRIVEN — WI-378's own
 //!     note says no producer mints a σ-substitutable var on that spine today ("denoteds
-//!     are `Ref`/`Const`, type-vars stay ground `TypeChild::Ground`"), and this ticket did
+//!     are `Ref`/`Const`, type-vars stay ground `TypeChild::Interned`"), and this ticket did
 //!     not find one either. It shares the leaf, so it moves with the other two.
 
 use anthill_core::eval::Value;

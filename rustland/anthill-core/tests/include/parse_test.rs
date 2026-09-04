@@ -263,7 +263,7 @@ end
     // `sort_ref(c)` — i.e. `c` is treated as a value indexing the effect.
     let binding_node = match &bindings[0].1 {
         TypeChild::Node(n) => n,
-        TypeChild::Ground(g) => panic!(
+        TypeChild::Interned(g) => panic!(
             "binding value must be a denoted Node, got ground term {:?}",
             kb.get_term(*g),
         ),
@@ -329,7 +329,7 @@ end
 
     let binding_node = match &bindings[0].1 {
         TypeChild::Node(n) => n,
-        TypeChild::Ground(g) => panic!(
+        TypeChild::Interned(g) => panic!(
             "binding value must be a denoted Node, got ground term {:?}",
             kb.get_term(*g),
         ),
@@ -421,7 +421,7 @@ end
                 NodeKind::Type(TypeNode::Denoted { value }) => std::rc::Rc::clone(value),
                 other => panic!("expected denoted, got {other:?}"),
             },
-            TypeChild::Ground(g) => {
+            TypeChild::Interned(g) => {
                 panic!("expected a denoted Node, got ground {:?}", kb.get_term(*g))
             }
         }

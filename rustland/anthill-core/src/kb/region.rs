@@ -556,7 +556,7 @@ end
         let sp = SourceSpan::new(SourceId::from_raw(0), 0, 0);
         let denoted = kb.make_denoted_occ_ref(resource, sp, None);
         Value::Node(kb.make_parameterized_occ(
-            TypeChild::Ground(base),
+            TypeChild::Interned(base),
             vec![(t, TypeChild::Node(denoted))],
             sp,
             None,

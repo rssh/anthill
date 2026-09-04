@@ -4057,7 +4057,7 @@ fn classify_effect_label(
         Value::Term { id, .. } => kind_of(*id),
         Value::Node(occ) => match &occ.kind {
             NodeKind::Type(TypeNode::Parameterized {
-                base: TypeChild::Ground(t),
+                base: TypeChild::Interned(t),
                 ..
             }) => kind_of(*t),
             _ => EffectLabel::Unreadable,
