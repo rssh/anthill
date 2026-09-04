@@ -90,12 +90,35 @@ is new; the consumers are already written for the head.
   arms — every match is exhaustive, so `cargo check` ENUMERATES the work and there is no
   silent-skip surface. That is the opposite of the risk profile a new variant usually has.
 
-  THE HAZARD THAT COMES WITH IT, from the same `ViewHead::Var` doc: the DISCRIMINATION TREE
-  reads the kind off that head and treats a flex `Global` as a WILDCARD EDGE matching any
-  subterm. WI-20260904-50B2K listed this hazard for the interned spelling and never
-  demonstrated it either way; it applies to this carrier too and is still owed a
-  measurement. Do that BEFORE the 170 sites, not after — it is the one thing that could
-  make the whole shape wrong.
+  THE HAZARD THAT COMES WITH IT, AND IT IS NOT "WILDCARD IS WRONG". This ticket said the
+  discrimination tree treating a flex `Global` as a WILDCARD EDGE was the risk. That was
+  sloppy: a flex var IS an unfilled variable and matching any subterm is unification
+  working correctly. The risk is SCOPE, not semantics —
+
+      an inference variable is scoped to ONE type-check pass;
+      an INDEXED term outlives it.
+
+  A per-binder flex var that escapes into the tree is DANGLING — meaningless outside the
+  pass that minted it — and the wildcard behaviour is what makes that leak SILENT: it
+  quietly over-matches instead of failing.
+
+  WHICH IS AN ARGUMENT ABOUT THE CHANGE ALREADY MADE, not only about this one. The old
+  inert `type_var` is a FUNCTOR term, structurally ground: leaking into an index it keys as
+  a CONCRETE edge — wrong, but VISIBLE. A flex var leaks as a wildcard — over-matching, and
+  INVISIBLE. So rung 3's fix may have moved a potential leak from loud to quiet.
+
+  AND IT IS NOT THIS TICKET'S TO DECIDE — the hazard does NOT discriminate between the two
+  shapes, which is why it was wrong to file it here as a decision input. An escaped
+  `Global` is an escaped `Global` in ANY carrier: `Term::Var(Global)` interned as a `TermId`
+  and a `TypeNode::Var` occurrence behave IDENTICALLY at the index. This ticket's `Node`
+  shape fixes the LEAK and adds PROVENANCE; it does not make an escape checkable, and
+  nothing about the carrier could. That needs a fourth `Var` KIND —
+  WI-20260904-5NM85, filed separately.
+
+  MEASURED ANYWAY, since it was a debt on the rung-3 change already shipped: a probe in
+  `DiscrimTree::insert_walk` watching for a `Var::Global` named `?param` / `?pat` fired
+  ZERO times across 1485 tests. Unrealized in the corpus, which is a LOWER BOUND and not a
+  proof. Recorded so this measurement is not re-run as if it were open.
 
 THE POPULATION IS SMALL, AND NOT WHERE THIS TICKET FIRST SAID. "~110 `TypeChild` match
 sites and their `_ =>` arms" was the wrong census: a match on `TypeChild` is EXHAUSTIVENESS-

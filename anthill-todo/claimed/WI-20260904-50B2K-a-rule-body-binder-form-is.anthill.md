@@ -335,7 +335,20 @@ program" was FALSIFIED — the body's own `Int64` literal pins the binder throug
 
       TWO HAZARDS, BOTH NAMED BY WI-963'S OWN DOC. (1) A `Var::Global` is read by the
       DISCRIMINATION TREE as "a wildcard edge matching any subterm" — this changes a TYPE
-      position, not an indexed term, but that must be SHOWN, not assumed. (2) Structural
+      position, not an indexed term, but that must be SHOWN, not assumed. STILL NOT SHOWN
+      as of the delivery below. And the risk is SCOPE, not semantics: wildcard is CORRECT
+      for a flex var. What would be wrong is an inference variable — scoped to one
+      type-check pass — escaping into an INDEXED term that outlives it, where the wildcard
+      makes the leak SILENT. Note the direction: the inert `type_var` it replaces is a
+      functor term, so the same leak would key CONCRETELY — wrong but visible. This change
+      may have moved a potential leak from loud to quiet.
+
+      MEASURED 2026-09-04 AND UNREALIZED: a probe in `DiscrimTree::insert_walk` watching
+      for a `Var::Global` named `?param` / `?pat` fired ZERO times across 1485 tests. A
+      LOWER BOUND, not a proof — the corpus is not the population. The hazard cannot be
+      CHECKED structurally because an inference variable and a resolution variable are the
+      same type (`Var::Global`); that is WI-20260904-5NM85. And it is not fixed by any
+      carrier choice, so WI-20260904-02ERR does not owe it. (2) Structural
       equality of undetermined types goes away: today two are the same term, after the
       change each site allocates a fresh var. WI-963 states that as the cost of the
       alternative; here it is the POINT, but anything relying on the old equality moves.
