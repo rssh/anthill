@@ -110,8 +110,23 @@
 //!
 //! An unannotated binder whose body PINS it from its own call is unaffected — measured on
 //! `wi620_paren_lambda_param_test`'s `all_match(?xs, lambda (x) -> is_pos(x))`, which
-//! loads clean. Supplying the argument slot's declared arrow as the binder form's expected
-//! type is **WI-20260904-50B2K**; this ticket does not settle it.
+//! loads clean.
+//!
+//! **SETTLED BY WI-20260904-50B2K, and NOT the way this note guessed.** "Supplying the
+//! argument slot's declared arrow as the binder form's expected type" was the wrong
+//! altitude. The binder was not missing an EXPECTATION: rung 3 of the lambda's type ladder
+//! minted a `TypeExtractor.TypeVar`, whose whole content is that it is never bound — the
+//! right form for "no type is available here" (`value_type_term`'s run-time fallback) and
+//! the wrong one for a type TO BE INFERRED. Both programs above now work with no
+//! expectation supplied anywhere:
+//!
+//! ```text
+//!   :- ?r <=> apply1(lambda x -> x + 1, 2)     ANSWERS 3   (`wi_50b2k_binder_inference_test`)
+//! ```
+//!
+//! and `?y <=> (lambda t -> (t -> t))` was a DESIGN question, not a defect — proposal 055
+//! §2 now gives `->` a signature in value position, so `t` is a `Type`-valued binder its
+//! own body solves.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::{

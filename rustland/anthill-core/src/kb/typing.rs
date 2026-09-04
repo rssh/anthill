@@ -11614,8 +11614,11 @@ fn visit_type(
             //   2. the expected arrow's param slot (checking direction —
             //      e.g. `let f: Function[A, B] = lambda q -> ...` already
             //      threads `Function[A, B]` here as `expected`),
-            //   3. a fresh type var (synthesis — left for body usage and
+            //   3. a fresh LOGIC variable (synthesis — left for body usage and
             //      the eventual call site to pin via unification).
+            // WI-20260904-50B2K: rung 3 used to mint a `type_var`, which the line
+            // above already said was wrong — a `type_var` CANNOT be pinned by
+            // unification. See the mint site below.
             // Previously this used only (1), so an unannotated lambda left
             // its param unbound in the body env and every reference to it
             // failed resolution as `UnresolvedName`.
@@ -11648,8 +11651,35 @@ fn visit_type(
                         .and_then(|exp| extract_function_param_type(kb, exp))
                 })
                 .unwrap_or_else(|| {
+                    // WI-20260904-50B2K — SYNTHESIS MINTS THE ENGINE'S OWN VARIABLE, and
+                    // the two forms answer different questions. A `type_var` means "no
+                    // type is available here": INERT by design, compatible with anything
+                    // WITHOUT committing (`KnowledgeBase::make_type_var`'s doc, the M6
+                    // flounder posture), which is right for `value_type_term`'s runtime
+                    // fallback — a run-time reader must not commit what typing never
+                    // decided — and wrong here. An un-annotated binder is not a type
+                    // nobody could name; it is a type TO BE INFERRED, and inference is
+                    // exactly what must commit. Note the ladder comment above stated that
+                    // intent all along ("to pin via unification") while the mint could
+                    // not honour it.
+                    // INTERNED, AND THE ALTERNATIVE WAS TRIED AND DOES NOT EXIST HERE.
+                    // `/code-review` found that `type_param_var_term` reaches its `alloc`
+                    // fallback unconditionally for a brand-new `VarId` — its own doc calls
+                    // that "not a case any caller here is expected to hit" — so each
+                    // un-annotated binder leaves a refcounted `Term::Var` in the store,
+                    // against CLAUDE.md's rule that transient terms are not interned. The
+                    // proposed `Value::Var(Var::Global(..))` carrier FAILS: a type value
+                    // reaching a `TypeChild` slot must be a `Term` or a `Node`
+                    // (`value_to_type_child`: "A scalar/`Var`/`Entity` is a typer bug
+                    // here"), measured as `WI-342: non-type Value in a TypeChild slot:
+                    // Var(Global(..))` on every row in `wi_50b2k_binder_inference_test`.
+                    // `TypeChild::Ground` holds a `TermId`, so a variable in TYPE position
+                    // is interned by construction. The cost stands and is bounded by
+                    // (binders x passes); removing it needs a transient type-term carrier,
+                    // which is a representation change and not this ticket's.
                     let fresh = kb.intern("?param");
-                    Value::term(kb.make_type_var(fresh))
+                    let vid = kb.fresh_var(fresh);
+                    Value::term(type_param_var_term(kb, Var::Global(vid)))
                 });
             let mut lambda_env = (*env).clone();
             // WI-794: at arity 1 `param_type` IS the annotation (it won the priority
@@ -18727,10 +18757,16 @@ fn check_apply_iter(
             // treating it as Ok, which would leave a value bare in memory while
             // its type says `Option[T]` (the WI-385 interim WI-408 replaced).
             //
-            // `subst` is fresh and stays local: unlike Path 1 there is no callee
-            // signature to instantiate here — an arrow VALUE's type is already
-            // whatever the environment resolved it to — so nothing outside these
-            // loops reads a binding they make.
+            // `subst` is fresh: unlike Path 1 there is no callee SIGNATURE to
+            // instantiate here. WI-20260904-50B2K — but its bindings ARE read, at the
+            // return below. The premise this comment used to state ("an arrow VALUE's
+            // type is already whatever the environment resolved it to — so nothing
+            // outside these loops reads a binding they make") held only while an
+            // un-annotated lambda binder was minted as an inert `type_var`. Once rung 3
+            // mints the engine's own variable, a let-bound `lambda q -> q` has type
+            // `?v -> ?v`, checking the argument binds `?v`, and DISCARDING that binding
+            // returned `?v` as the call's type: `let g = lambda q -> q  g(x)` in a
+            // `-> String` operation reported "expected String, got ??param".
             let mut subst = Substitution::new();
             let mut arg_errors: Vec<TypeError> = Vec::new();
             // WI-408: `(child-index, declared Option type)`, materialized below.
@@ -18805,7 +18841,26 @@ fn check_apply_iter(
                                     param: *param_sym,
                                 },
                             ) {
-                                ArgValidation::Ok => {}
+                                // WI-20260904-50B2K — BIND THE ARROW'S OWN HOLES from the
+                                // argument, exactly as Path 1's argument loop does. The
+                                // boolean is DISCARDED for the reason that site states:
+                                // unify is EQUALITY while the check above is SUBTYPING plus
+                                // three conversions, so a unify-false must not reject. What
+                                // it is FOR is the slot's variables — an un-annotated
+                                // `lambda q -> q` has type `?v -> ?v`, and with nothing
+                                // binding `?v` the call `g(x)` returned `?v` and an
+                                // operation declared `-> String` reported "expected String,
+                                // got ??param".
+                                //
+                                // ONLY ON `Ok`. On the `WrapSome` arm the argument is the UN-COERCED value, so
+                            // unifying it against an `Option[…]` slot can only fail — and
+                            // failing there leaves the slot's `T` free exactly where the
+                            // coercion has just determined it, so a `ret_ty` mentioning it
+                            // would come back `??param` instead of `Int64`. Found by
+                            // `/code-review`.
+                                ArgValidation::Ok => {
+                                    unify_types(kb, &mut subst, &arg_result.ty, slot_type);
+                                }
                                 ArgValidation::WrapSome { declared } => {
                                     some_wraps.push((i, declared))
                                 }
@@ -18916,7 +18971,14 @@ fn check_apply_iter(
                             param: param_sym,
                         },
                     ) {
-                        ArgValidation::Ok => {}
+                        // WI-20260904-50B2K — the named twin of the positional bind above;
+                        // see its note, including why it is `Ok`-only. Written at BOTH
+                        // loops rather than once, because a rule written twice at one site
+                        // and not the other is the asymmetry this file has been bitten by
+                        // before.
+                        ArgValidation::Ok => {
+                            unify_types(kb, &mut subst, &arg_result.ty, &param_type);
+                        }
                         ArgValidation::WrapSome { declared } => {
                             some_wraps.push((pos_args.len() + i, declared));
                         }
@@ -19028,6 +19090,17 @@ fn check_apply_iter(
                 named_node = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
                 &named_node
             };
+            // WI-20260904-50B2K — resolved through the argument check's own `subst`, the
+            // same way Path 1 resolves its declared return. For a ground arrow this is an
+            // identity. BOTH HALVES, and Path 1 is the precedent: resolving only the
+            // return type would have one call reporting two states of one σ — a variable
+            // the argument check pinned, solved in the type and unsolved in the effect
+            // row. Found by `/code-review`.
+            let ret_ty = resolve_type_deep_value(kb, &subst, &ret_ty);
+            let effects: Vec<Value> = effects
+                .into_iter()
+                .map(|e| resolve_type_deep_value(kb, &subst, &e))
+                .collect();
             return Ok(TypeResult {
                 ty: ret_ty,
                 env: env.clone(),
@@ -41005,6 +41078,33 @@ fn validate_arg_against_param(
         if nominal_head_mismatch(kb, subst, &actual_g, &declared_g, HeadPosition::Argument) {
             return ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context));
         }
+        // WI-20260904-50B2K — A CALLABLE AGAINST A CALLABLE-FREE TYPE IS DECIDED, whatever
+        // the variables inside turn out to be. The KIND sibling of the nominal-head verdict
+        // above, and it exists for the same reason that one does: a silent pass is the worst
+        // outcome available at this gate.
+        //
+        // NARROWER THAN [`nominal_head_mismatch`] ON PURPOSE, which withholds at a callable
+        // head entirely because WI-836 measured `Function[A = ?X, B = Int64]` against `Int64`
+        // arising from a NESTED descent in a program that must load. That pairing reaches
+        // this gate with `List` on both sides, so neither head is callable here and this
+        // verdict declines — the withholding it needs is untouched.
+        //
+        // `type_contains_callable` on the OTHER side, not a head test, is what keeps the
+        // WI-408 some-coercion: a lambda handed to an `Option[T = Function[…]]` slot has a
+        // callable head against a non-callable `Option` head, and must be WRAPPED rather
+        // than refused. `Option[T = Function[…]]` contains a callable, so this declines and
+        // the coercion below runs. An `Int64` field contains none, and
+        // `plain(lambda x -> x)` against `entity plain(v: Int64)` is refused.
+        // WI-20260904-50B2K — see [`callable_against_callable_free`] for the verdict and
+        // both directions' measurements. Asked HERE as well as inside
+        // [`nominal_head_mismatch`] because the two reach different pairs: this one sees
+        // the whole argument against the whole declared type (a lambda in an `Int64`
+        // field), that one the per-binding descent (a lambda inside a `List[T = Int64]`).
+        if callable_against_callable_free(kb, &actual_g, &declared_g) {
+            return ArgValidation::Fail(conformance_error(
+                kb, declared_g, actual_g, span, context,
+            ));
+        }
         return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
@@ -41129,6 +41229,43 @@ enum HeadPosition {
     Nested,
 }
 
+/// WI-20260904-50B2K — is `actual` a FUNCTION where `declared` can hold none? A decided
+/// mismatch whatever the variables inside either side turn out to be, so it is claimable
+/// on a NON-GROUND pair, which is the whole point: once an un-annotated lambda binder is
+/// the engine's own variable, every type carrying one is non-ground and the groundness
+/// gate withholds every verdict about it.
+///
+/// ONE DIRECTION, and the asymmetry is measured on both sides.
+///   * ACTUAL callable, DECLARED callable-free: decided. There is no coercion from a
+///     function to a type with no function anywhere in it.
+///   * The REVERSE has two: an eta-lift and a zero-arg thunk. Claiming it broke
+///     `wi_cbrsw_permission_effect_test::a_denial_of_a_sub_capability_does_not_forbid_the_
+///     super_capability` with "expected () -> Unit, got Unit" on a program that must load.
+///
+/// `type_contains_callable` on the declared side, not a head test, is what keeps the
+/// WI-408 some-coercion: a lambda handed to an `Option[T = Function[…]]` slot must be
+/// WRAPPED, and that declared type contains a callable, so this declines.
+fn callable_against_callable_free(kb: &KnowledgeBase, actual: &Value, declared: &Value) -> bool {
+    // THE REFLECT-`Term` ESCAPE IS PART OF THE VERDICT, not of its callers. `value->Term`
+    // is a TOTAL conversion — `validate_arg_against_param` states it as "accept any actual
+    // vs declared Term" — so a function IS admissible in a `Term` slot and this claim must
+    // decline. Found by `/code-review`, MEASURED: with the check left to the callers, this
+    // verdict answered first at `nominal_head_mismatch`'s top and
+    // `term_to_string(lambda x -> x)` flipped from LOADS CLEAN to "expected Term, got
+    // ??param -> ??param" — while its ANNOTATED twin kept loading, because a ground pair
+    // never reaches the non-ground branch at all. Asking it HERE is what makes one owner
+    // cover both call sites; a caller-side guard is the shape that goes missing at the
+    // second one.
+    //
+    // UNCONDITIONAL, where `nominal_head_mismatch`'s own reflect guard is
+    // `HeadPosition::Argument`-gated: this verdict is an ADDITION, so declining more widely
+    // than necessary can only withhold a refusal, never invent one.
+    !is_reflect_term_type(kb, declared)
+        && type_head_is_callable(kb, actual)
+        && !type_contains_callable(kb, declared)
+        && resolved_type_is_determined(kb, declared)
+}
+
 fn nominal_head_mismatch(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -41151,6 +41288,15 @@ fn nominal_head_mismatch(
     // reaches — `Config[Fmt = Text[Trust = ?t], Hook = Function[…]]` — leaves the `Fmt`
     // disagreement perfectly decidable, and the coarse test would have dropped it. An
     // ARROW head needs no mention: it is not a nominal head, so it declines below anyway.
+    // WI-20260904-50B2K — ABOVE the withholding below, because that withholding is
+    // SYMMETRIC where its evidence is one-directional. WI-836's program descends to
+    // actual `Int64` against declared `Function[A = ?X, B = Int64]` and must load; this
+    // verdict is the OTHER pairing, actual callable against a callable-free declared, and
+    // `takes_list([lambda x -> 7])` against `takes_list(l: List[T = Int64])` is decided at
+    // the `T` binding no matter what the lambda's binder turns out to be.
+    if callable_against_callable_free(kb, actual, declared) {
+        return true;
+    }
     if type_head_is_callable(kb, actual) || type_head_is_callable(kb, declared) {
         return false;
     }
@@ -48622,6 +48768,22 @@ fn bind_and_label_pattern(
             let ty = scrutinee_type
                 .or_else(|| ann_ty.map(|(_, v)| v))
                 .unwrap_or_else(|| {
+                    // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, and the
+                    // measurement is why. Flipping this to the engine's own variable (as
+                    // rung 3 of the lambda's ladder now is) failed FOUR rows, all one
+                    // error: "type mismatch in match.rule (rule): expected Int64, got
+                    // ??pat". The shape is `match s case SetLiteral(a, _, _) -> a` over a
+                    // `Set[T = Int64]` — `SetLiteral` is a parse-level marker with NO
+                    // declared field types, so its sub-patterns reach here with no context
+                    // type and nothing can ever pin them.
+                    //
+                    // SO THIS SITE SERVES BOTH QUESTIONS AT ONCE — the same conflation the
+                    // ticket separates one level up. A tuple binder's component
+                    // (`lambda (a, b) -> …` with no annotation) is a type TO BE INFERRED;
+                    // an undeclared constructor's field is a type NOBODY CAN NAME. Until
+                    // the two are told apart HERE, the inert form is the one that keeps
+                    // both working. Splitting them is the next step of
+                    // WI-20260904-50B2K's census, not a drive-by.
                     let fresh = kb.intern("?pat");
                     Value::term(kb.make_type_var(fresh))
                 });
@@ -64999,8 +65161,41 @@ fn check_operation_bodies(
                 // refined to the receiver's projections (`List` → `List[T = l.T]`) so a
                 // provided return threading the projection conforms. Purely additive — only
                 // attempted on the unrefined failure — so no delivered accept regresses.
-                let conforms = types_compatible(kb, &mut subst, &result.ty, &effective_return)
-                    || match refine_self_receiver_body_type(kb, &result.node, &result.ty) {
+                // WI-20260904-50B2K — SOLVE THE BODY'S OWN HOLES FROM THE DECLARATION,
+                // then compare the SOLVED type. This is the checking direction at the
+                // return position: a body type carrying a free variable is one the body
+                // did not determine, and the declaration is what determines it.
+                //
+                // BOTH HALVES ARE LOAD-BEARING, and the first cut had only the unify —
+                // measured, it changed NOTHING. `unify_types` binds into `subst`
+                // correctly (`?param := Int64`, verified by probe), but `types_compatible`
+                // was still handed the UNRESOLVED `result.ty` and never saw the binding.
+                // Resolving is what makes the unify count.
+                //
+                // WHY IT IS NEEDED: `let f = lambda v -> set_cell(s, v)` then `f` RETURNED.
+                // The body pins `v` (`set_cell` declares `v: Int64`) but that call is
+                // Path 1, whose argument unification binds `?v` into the CALLEE-
+                // INSTANTIATION σ and drops it with the call — no substitution is threaded
+                // through an operation body, so a binding made in one call cannot reach
+                // the lambda that owns the variable. Both neighbours already work and say
+                // this is the only hole: the same lambda written DIRECTLY in the return
+                // position takes rung 2, and the ANNOTATED `lambda (v: Int64)` takes rung
+                // 1. Until an un-annotated binder was a real variable this never showed,
+                // because an inert `type_var` conformed to anything.
+                //
+                // The unify's boolean is DISCARDED: `types_compatible` below is still the
+                // verdict, since unify is EQUALITY while conformance is SUBTYPING plus the
+                // refinement retry.
+                unify_types(kb, &mut subst, &result.ty, &effective_return);
+                // PURE σ (`walk_type_deep_value`), not the grounding
+                // `resolve_type_deep_value`: this file singles the pair out at
+                // `validate_arg_against_param` — a rigid projection must stay an inert
+                // neutral leaf. WI-491/WI-1059 keep `-> List[T = s.T]` neutral on BOTH
+                // sides; grounding only the body side would re-open the asymmetry WI-1059
+                // closed. Found by `/code-review`.
+                let body_ty = walk_type_deep_value(kb, &subst, &result.ty);
+                let conforms = types_compatible(kb, &mut subst, &body_ty, &effective_return)
+                    || match refine_self_receiver_body_type(kb, &result.node, &body_ty) {
                         Some(refined) => {
                             let mut probe = Substitution::new();
                             let ok = types_compatible(kb, &mut probe, &refined, &effective_return);
@@ -65019,7 +65214,7 @@ fn check_operation_bodies(
                     errors.push(conformance_error(
                         kb,
                         effective_return.clone(),
-                        result.ty.clone(),
+                        body_ty.clone(),
                         None,
                         TypeErrorContext::OperationReturn {
                             op_name: op.op_sym,
@@ -65027,7 +65222,7 @@ fn check_operation_bodies(
                         },
                     ));
                 } else if let Some(e) =
-                    abstracting_return_error(kb, &result.ty, &effective_return, op.op_sym)
+                    abstracting_return_error(kb, &body_ty, &effective_return, op.op_sym)
                 {
                     // WI-401: the body conforms, but only by a provider UPCAST to a bare
                     // abstract spec — the sealing return that would let an abstract member

@@ -3,7 +3,7 @@
 **Status:** Draft (2026-07-13; revised 2026-08-23 after the proposals 060/062 compatibility review)
 **Depends on:** WI-311 (grammar `application` merge — the parser does not distinguish type from term application; the loader does), WI-361 (`Type` = opaque, term-backed handle; structure reified on demand by `extract`), WI-206 / WI-707 (sort names and parameterized types as value arguments, accepted where the position expects `Type`), WI-709 / WI-710 (`check_sort_type_args` on all four lowering paths; the depth + bracket-surface instance-claim gates), [022-typing-as-facts](022-typing-as-facts.md) (`TypeOf` judgments as KB facts), proposal 037 (the `Modifiable` marker the first consumer, `is_modifiable`, reads)
 **Related:** [052-rules-as-stream-valued-operations](052-rules-as-stream-valued-operations.md) (`Relation[T]` — what makes type-indexed facts first-class composable queries), [053-fact-mutability](053-fact-mutability.md) (`constant` loader-emitted reflection facts), [049-equality-and-unification](049-equality-and-unification.md), [060-clause-level-requirements-and-typed-heads](060-clause-level-requirements-and-typed-heads.md) (typed declarations compile to ordinary goals; brackets retain type-parameter/requirement meaning), [062-bounded-sort-parameters](062-bounded-sort-parameters.md) (`is_entity_of(Trust, TrustLevel)` passes types as ordinary goal arguments), WI-302 (`denoted` — the mirror crossing, value into type position), WI-708 (the dead body-side type-arg frame channel — prerequisite for `type_value[T]` in generic bodies), WI-010 (self-hosted type resolver — the largest planned consumer of types-as-values), proposal 029 + WI-089 (profile-keyed codegen mapping facts — the substrate of §5), proposal 039 (`const` — the future compile-time-folding channel of §5.3)
-**Affects:** stdlib (move the `Type` cluster `anthill.prelude` → `anthill.reflect`), loader + typer (type-checking reaching lowering paths 3 and 4; qualified-name updates), cpp-gen / rust-gen (the profile fence), `docs/kernel-language.md` (new §4 subsection; §5 fact note), reflect interface (consolidation pass). **Grammar: no changes required for nominal types** — WI-311 already merged the productions; the parse IR records the `[…]`-vs-`(…)` surface (WI-710); an empirical recheck (end of §2) confirmed every §2 nominal value occurrence parses and documents two pre-existing edges. Structural tuple/arrow types use `type_value[…]()`.
+**Affects:** stdlib (move the `Type` cluster `anthill.prelude` → `anthill.reflect`), loader + typer (type-checking reaching lowering paths 3 and 4; qualified-name updates), cpp-gen / rust-gen (the profile fence), `docs/kernel-language.md` (new §4 subsection; §5 fact note), reflect interface (consolidation pass). **Grammar: no changes required for nominal types** — WI-311 already merged the productions; the parse IR records the `[…]`-vs-`(…)` surface (WI-710); an empirical recheck (end of §2) confirmed every §2 nominal value occurrence parses and documents two pre-existing edges. Statically written structural tuple/arrow types use `type_value[…]()`; a COMPUTED arrow over `Type` values is `->` itself, given a signature (§2).
 
 **Implementation design:** [`../design/055-implementation.md`](../design/055-implementation.md)
 owns the resolved-IR shape, complete value-expression occurrence audit,
@@ -128,6 +128,64 @@ value and expression/operator syntax, so they are reified explicitly:
 type_value[(left: Int64, right: String)]()
 type_value[(Int64) -> String]()
 ```
+
+**A COMPUTED arrow is `->` itself** (decided 2026-09-04). The exception above
+covers a *statically written* arrow, whose operands are type expressions and
+whose reification is therefore static — `type_value[…]`'s operand is a bracket
+`TypeExpr` (§8: "the type parameterizes the **signature**… Static,
+erased/monomorphized"). It cannot express an arrow whose operands are `Type`
+*values*, known only at call time:
+
+```anthill
+lambda t -> (t -> t)
+```
+
+Nothing here declares `t`. Its type is a **temporary logical variable**, and the
+body is what solves it: `->`'s operands are `Type`, so the variable unifies to
+`Type` and the lambda is `Type -> Type`. The `Type` is a *result* of inference,
+not a given — which is why this rule cannot land before an un-annotated binder
+gets a real variable to solve (see the work list).
+
+So `->` in a value position is an ordinary operator over `Type`:
+
+```anthill
+arrow(param: Type, result: Type) -> Type
+arrow_effect(param: Type, result: Type, effects: EffectExpression) -> Type
+```
+
+and the exception narrows to: a statically written tuple or arrow type still
+uses `type_value[…]()`; `->` written over `Type`-valued operands builds one.
+
+**The fence holds.** This is *construction* — two `Type` values in, one `Type`
+value out — so rule 4 above stands: a `Type`-sorted value still never
+dereferences into the type it names.
+
+**Why a lambda body can only mean this.** A bare `->` in expression position is
+never a lambda (`LoadError::ArrowTermInExprPosition`, WI-605), so `(t -> t)`
+inside a lambda body is an arrow *type* and its binder binds a **value**. There
+is no type-level binder here and no `PolyType`: WI-1083's "every binder is
+attached to a DECLARATION … never to a free-floating type" is untouched.
+
+**Arity is the one thing the surface cannot supply, and it bounds this rule.**
+The `Type` backing is `Arrow(param, result, effects, arity)`; `arity` is WI-791's,
+added because without it `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` are the
+same term and each is accepted where the other is required. Two `Type` values
+cannot distinguish them — a named-tuple `param` is either one parameter of tuple
+type or *n* parameters, and nothing in the values says which. So the
+value-position `->` builds **arity 1**; a multi-parameter computed arrow is out
+of scope for this form and goes through the reflect construction route
+(`make_fn` + `term_as_sort`) or a later widened surface.
+
+**Read WI-361's removal before implementing.**
+`stdlib/anthill/reflect/typing.anthill` records that the deep `Type.sort_ref(...)`
+/ `parameterized(...)` / `arrow(...)` / `named_tuple(...)` constructors were
+removed when structural subtyping moved to the Rust term-backed typer. That
+reason is about *pattern-matching type structure in anthill rules*, not about
+writing `->` in value position — but it is the nearest prior decision and must be
+read at the site rather than assumed either way. `Function[A, B, E]` is the
+declared nominal twin whose variance facts `arrow_compatible` /
+`arrow_function_compatible` already hardcode for the structural form; that bridge
+is where the signature sits.
 
 The complete occurrence audit and resolved-IR invariant are implementation
 facts, not further language exceptions; they live in
@@ -486,6 +544,10 @@ records the fact, declares universe stratification out of scope, and moves on.
 - Document the §8 conventions on the interface itself (doc comments on
   `is_modifiable` / `facts_of` / `term_as_entity` citing this proposal).
 - Add `type_value[T]` (post-WI-708).
+- Give `->` a signature in value position (§2) — `arrow(param: Type, result: Type)
+  -> Type`, arity 1. Depends on un-annotated lambda binders getting a real
+  inference variable (WI-20260904-50B2K part (a)); until then a body cannot pin
+  `t : Type`. Read WI-361's constructor removal at its site first.
 - The "qualified name not accepted in binding-value position" wart noted in
   the `Type` instance facts' comment — re-examine once the cluster moves,
   since the move changes which short names resolve as siblings.

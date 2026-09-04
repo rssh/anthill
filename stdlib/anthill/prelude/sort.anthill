@@ -413,12 +413,39 @@ enum anthill.prelude.TypeExtractor
   import anthill.reflect.{Symbol, NodeOccurrence, Term}
 
   entity SortRef(name: Symbol)
-  {< A type the extractor could not NAME — an un-annotated lambda binder (`?param`)
-     or a carrier the effect-row lowering could not read (`?_`). A PLACEHOLDER, not a
-     logical variable: the engine's variables are `FlexVar` / `Skolem` below, and a
-     DECLARED type parameter reads as `SortRef`. WI-1079 kept the three apart rather
-     than adding a rigidity FIELD here, because a flag on this entity would be
-     answering a question this entity does not ask. >}
+  {< NO TYPE IS AVAILABLE HERE — a carrier the effect-row lowering could not read
+     (`?_`), and the total fallback when the CARRIED TYPE OF A RUNTIME VALUE is
+     under-determined (WI-578 `value_type_term`: an unbound var, an opaque carrier).
+     Carries a `name` and NO `id`, where `FlexVar` / `Skolem` below carry both, and is
+     hash-consed per name — about seven of these exist in total. See
+     `KnowledgeBase::make_type_var` for that argument; WI-963 drives it as tests.
+
+     A VALUE CARRIES NO TYPE — there is no tag. `value_type_term` DERIVES one by walking
+     the value's structure (`TermView`); the per-value `Value::ty` cache was built, never
+     wired in, and removed as dead code. So this form is what that walk returns when the
+     structure determines nothing — for an unbound logic variable it is that variable's
+     unfilledness, restated in the type vocabulary because the walk is TOTAL and returns
+     a type rather than an `Option`.
+
+     INERT ON PURPOSE, and it is live in ONE of the three readers: the requirement-supply
+     path unifies the derived type against a declared param type (`unify_types`), where
+     compatible-with-anything leaves the slot UNDER-DETERMINED instead of binding wrongly
+     — WI-20260830-NX4FD's "a recorded absence". That is the M6 flounder posture doing
+     real work. The other two readers ([simp] redex arg sorts; the WI-067 bound check)
+     convert it to `None` via `sort_functor_of_view` before any comparison, so there it is
+     a totality SENTINEL and an `Option` would say it directly. Two questions, one form,
+     one layer below the one named next.
+
+     THAT IS A DIFFERENT QUESTION FROM "this type is TO BE INFERRED", which wants a
+     variable that DOES commit — the engine's own, below. The typer has minted this form
+     for inference holes too (an un-annotated lambda binder, `?param`); that pairing is
+     WI-20260904-50B2K and is a defect, not this entity's meaning.
+
+     NOT "a placeholder, not a logical variable", which is what this said: an
+     operational claim in logical vocabulary, and it reads as a contradiction since a
+     logical variable IS a placeholder. A DECLARED type parameter reads as `SortRef`.
+     WI-1079 kept the three apart rather than adding a rigidity FIELD here, because a
+     flag on this entity would be answering a question this entity does not ask. >}
   entity TypeVar(name: Symbol)
   {< WI-1079: the engine's own logical variables, which had NO reflect form at all
      before — `extract` reported both as `Error`, whose payload its own doc calls
