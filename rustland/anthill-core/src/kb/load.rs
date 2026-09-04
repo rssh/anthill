@@ -20534,7 +20534,21 @@ impl<'a> Loader<'a> {
     /// child Visits; when the frame fires it consumes its children's
     /// kb_ids from the result stack and assembles the parent. Runs in
     /// O(1) host stack regardless of source nesting depth.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> (TermId, Rc<NodeOccurrence>) {
+    ///
+    /// `parse_id` INDEXES `self.parsed.terms`, not the KB store. The two share the
+    /// `TermId` type (`parse::ir` reuses it for `SimpleTermStore`, a plain `Vec` with a
+    /// span per entry and no hash-consing) and this walk needs the PARSE one specifically:
+    /// it reads `is_minted` provenance, indexes `pos_args` BY POSITION (the marker layout
+    /// only the desugar produces), takes a span per node, and keys each binder's gensym on
+    /// its `pattern_var` parse node so `let x = 0` and `let x = 1` alpha-rename apart. All
+    /// four are questions about a PLACE, which is why no `TermView` — the carrier-neutral
+    /// view over KB-side terms and values — could stand in here; see `entity_slot_origin`,
+    /// which states the same rule for its key. That the two stores share ONE id TYPE, so
+    /// passing the wrong one compiles, is **WI-20260904-BZYQX**.
+    ///
+    /// RETURNS THE OCCURRENCE ALONE. The KB terms are built and are load-bearing INSIDE
+    /// the walk, but the root handle is not returned — see the pop at the tail for why.
+    fn convert_expr_term(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
         let mut work = std::mem::take(&mut self.expr_work);
         let mut results = std::mem::take(&mut self.expr_results);
         work.clear();
@@ -20585,7 +20599,18 @@ impl<'a> Loader<'a> {
             1,
             "iterative loader: expected exactly one result"
         );
-        let kb_id = results.pop().expect("iterative loader: empty result stack");
+        // WI-20260903-FC2X4 — POPPED AND DROPPED. The walk assembles KB terms on this
+        // stack (a Build frame reads its children's handles to allocate the parent, and
+        // `create_occurrence` keys `term_spans` / `functor_spans` on each), so the terms
+        // are load-bearing INSIDE the walk; the ROOT handle has had no consumer since
+        // WI-305 dropped the `OperationInfo` / `OperationImpl` body fields, and all three
+        // call sites discarded it. Returning it was a write-only channel, and this ticket
+        // made it a drifting one: for a compound expression in a RULE this walk allocates
+        // the reflect NAMED form while `convert_term`'s memo for the SAME parse node holds
+        // the positional MARKER, so a future reader would get whichever was built last.
+        // The pop stays — it is what makes the `results.len() == 1` invariant above mean
+        // something, and it leaves the stack empty for the next borrow.
+        let _root_term = results.pop().expect("iterative loader: empty result stack");
         self.expr_work = work;
         self.expr_results = results;
 
@@ -20606,7 +20631,7 @@ impl<'a> Loader<'a> {
             self.expr_match_metas.is_empty(),
             "convert_expr_term: leftover branch metas"
         );
-        (kb_id, occ)
+        occ
     }
 
     /// Dispatch a single parse-time expression term: produce a leaf
@@ -22938,7 +22963,7 @@ impl<'a> Loader<'a> {
             return Some(Rc::clone(occ));
         }
         let saved = std::mem::replace(&mut self.lowering_rule_compound_expr, true);
-        let (_kb_id, occ) = self.convert_expr_term(parse_id);
+        let occ = self.convert_expr_term(parse_id);
         self.lowering_rule_compound_expr = saved;
         self.compound_expr_occ
             .insert(parse_id.raw(), Rc::clone(&occ));
@@ -29022,7 +29047,7 @@ impl<'a> Loader<'a> {
 
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).
         if let Some(value_tid) = c.value {
-            let (_handle, node) = self.convert_expr_term(value_tid);
+            let node = self.convert_expr_term(value_tid);
             // WI-605: a body poisoned by a bare-arrow recovery Bottom is not
             // stored — the load is already failing with the targeted error.
             if !self.expr_body_bottom_recovery {
@@ -29353,14 +29378,16 @@ impl<'a> Loader<'a> {
             }
         }
 
-        // Convert expression body if present. WI-305: discard the term handle;
-        // the occurrence is the sole stored body (op_body_node side-table). The
-        // handle is no longer kept in any fact field (OperationInfo/OperationImpl
-        // body fields dropped). The term is still built transiently inside
-        // `convert_expr_term` because the native node-build reads it.
+        // Convert expression body if present. WI-305: the occurrence is the sole stored
+        // body (op_body_node side-table) — the term handle is no longer kept in any fact
+        // field (OperationInfo/OperationImpl body fields dropped). The term is still built
+        // transiently inside `convert_expr_term` because the native node-build reads it;
+        // WI-20260903-FC2X4 stopped that walk RETURNING the root handle, since this site
+        // and the two others all discarded it and it had begun to disagree with
+        // `convert_term`'s memo for the same parse node.
         let has_body = match o.body {
             Some(body_tid) => {
-                let (_handle, node) = self.convert_expr_term(body_tid);
+                let node = self.convert_expr_term(body_tid);
                 // WI-605: a body poisoned by a bare-arrow recovery Bottom is
                 // not stored — the load is already failing with the targeted
                 // error, and the typer would loudly reject the Bottom leaf as
