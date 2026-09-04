@@ -41,7 +41,7 @@ fn streamed(param: &str, op: &str) -> String {
 fn an_unwritten_row_is_rigid_in_the_body() {
     let msg = refusal(&streamed("Stream[T = Int64]", "feed"));
     assert!(
-        msg.contains("E = s.E") && msg.contains("E = {empty_row}"),
+        msg.contains("E = s.E") && msg.contains("E = {}"),
         "the refusal must name the row it cannot assume and the row it was handed to: {msg}",
     );
 }
@@ -63,7 +63,7 @@ fn an_unwritten_row_is_rigid_in_the_body() {
 fn an_op_type_param_row_is_rigid_in_the_body() {
     let msg = refusal(&streamed("Stream[T = Int64, E = E]", "feed[E]"));
     assert!(
-        msg.contains("E = ?E") && msg.contains("E = {empty_row}"),
+        msg.contains("E = ?E") && msg.contains("E = {}"),
         "the refusal must name the skolem it cannot assume and the row it was handed to: \
          {msg}",
     );

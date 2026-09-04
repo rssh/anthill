@@ -403,7 +403,7 @@ end
     // the order bindings render in is not part of the type. `mplus`'s parameter partially
     // writes the sort (`LogicalStream[T = ?A]`), so the tie now materializes its elided `E`
     // and `rigidify_unwritten_sort_params` rebuilds the application in the SORT's declared
-    // parameter order — the message reads `LogicalStream[E = {empty_row}, T = Int64]`. It
+    // parameter order — the message reads `LogicalStream[E = {}, T = Int64]`. It
     // still names both elements, which is the whole of what this control asserts.
     assert!(
         errs.iter()

@@ -4929,6 +4929,69 @@ fn walk_type_deep_value_g(
         // pass missed them (the body then unified/leaked the raw Global).
         // Rebuild share-preservingly: unchanged subtrees keep their Rc.
         Value::Node(occ) => Value::Node(rewrite_type_occ_deep(kb, subst, occ, ground)),
+        // WI-20260904-B1KFS — AN ENTITY-CARRIED TYPE'S INNER VARS ARE WALKED TOO. This
+        // was `other => other.clone()`, so `Map[K = ?T]` had its `?T` resolved as a term
+        // and left RAW as its `Value::Entity` twin — one type, two answers, and the
+        // disagreeing one silently skips the resolution. That entity is not exotic:
+        // `KnowledgeBase::fn_value` builds it for ANY application with a non-leaf child,
+        // which is what `KnowledgeBase::reify` hands back for a type carrying an
+        // occurrence. It is the SAME mistake the WI-441 note above records having already
+        // been made and fixed for `Value::Node` — "the old `Nodes carry Refs, not
+        // type-param vars` assumption left those un-walked, so the rigidify pass missed
+        // them (the body then unified/leaked the raw Global)" — on the untouched twin.
+        //
+        // `Value::Tuple` rides the same arm: it is the functor-LESS application, and a
+        // child of one is reached exactly as a child of an entity is.
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => Value::Entity {
+            functor: *functor,
+            pos: pos
+                .iter()
+                .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
+                .collect(),
+            named: named
+                .iter()
+                .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
+                .collect(),
+        },
+        Value::Tuple { pos, named } => Value::Tuple {
+            pos: pos
+                .iter()
+                .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
+                .collect(),
+            named: named
+                .iter()
+                .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
+                .collect(),
+        },
+        // A `Value::Var` CHILD IS RESOLVED HERE, and the first draft of this arm said it
+        // was "resolved by the caller's walk — see `walk_value_to_resolved`". That was
+        // WRONG and the error is worth keeping visible: `walk_value_to_resolved` chases
+        // the TOP-LEVEL var chain only and never descends into an entity (its own doc says
+        // "every other form (`Value::Node`, entities) is already resolved"). So
+        // `Entity{K: Value::Var(?T)}` walked to itself with `?T` raw while its term twin
+        // `Map[K = Term::Var(?T)]` resolved — the SAME carrier disagreement this ticket
+        // removes, surviving on the other VAR SPELLING. And the shape is producible
+        // precisely because a `Value::Var` is a LEAF (`lowers_to_leaf_term`): `fn_value`
+        // builds the entity as soon as a SIBLING child is non-leaf, so a var rides beside
+        // it. `reify_value` (kb/mod.rs) needed both this arm and the children arms above
+        // for the same reason; one without the other is half a walk.
+        //
+        // Cycle-guarded by the same `visited` reasoning as `walk_value_to_resolved`: a
+        // bound var's value is walked, and an unbound one (or a cycle, which
+        // `resolve_as_value` terminates) is returned as itself.
+        Value::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
+            Some(bound) => {
+                let bound = bound.clone();
+                walk_type_deep_value_g(kb, subst, &bound, ground)
+            }
+            None => e.clone(),
+        },
+        // A LEAF: a scalar, a rigid/De Bruijn var (neither is σ-bound), an interpreter
+        // handle. Nothing beneath it to resolve.
         other => other.clone(),
     }
 }
@@ -5156,71 +5219,21 @@ fn walk_pattern_field_type_deep(kb: &mut KnowledgeBase, subst: &Substitution, ty
 
 // ── Helpers ────────────────────────────────────────────────────
 
-/// WI-342 effects-vertical: display name of a carrier-agnostic effect label.
-/// A ground label uses [`type_display_name`]; a `Value::Node` label renders via
-/// its [`TermView`] functor (adequate for the effect-name comparison; full
-/// occurrence pretty-printing is out of scope).
+/// Render a type `Value` — the `Value` face of [`type_display_name_view`], which every
+/// carrier goes through so one type cannot have two names.
 ///
-/// WI-702: shared with [`crate::kb::KnowledgeBase::effect_row_blocking_equations`]
-/// so the defining-equation request sites render a declined op's row identically.
 /// WI-860 made this `pub` (its `TermId` twin [`type_display_name`] already was): the
 /// answers of a reflect relation read through SLD arrive on BOTH carriers — a name
 /// normalized by `extract_sort_ref` as a `Value::Term`, a field read straight off a
 /// matched fact as a `Value::Node` — so anything comparing a relation's answers to a
-/// rendering needs the carrier-neutral face.
+/// rendering needs the carrier-neutral face. WI-702: shared with
+/// [`crate::kb::KnowledgeBase::effect_row_blocking_equations`] so the defining-equation
+/// request sites render a declined op's row identically.
 pub fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
     match v {
-        Value::Term { id: t, .. } => type_display_name(kb, *t),
-        // WI-342 E2: render a `Value::Node` label to the SAME string
-        // `type_display_name` produces for the equivalent term (see
-        // [`type_display_name_occ`]) — the op-boundary check compares declared
-        // vs. actual labels by name across carriers, so the two must agree.
+        // The one occurrence-only shape lives there; see [`type_display_name_occ`].
         Value::Node(occ) => type_display_name_occ(kb, occ),
-        other => match resolved_functor_name(kb, other) {
-            Some(name) => name.to_string(),
-            None => "?".to_string(),
-        },
-    }
-}
-
-/// Render a `Value::Node` `Type` / `EffectExpression` effect-label occurrence to
-/// the SAME string [`type_display_name`] produces for the equivalent hash-consed
-/// term. Carrier-paired with that function arm-for-arm (a `denoted` shows its
-/// carried value; `parameterized` shows `base[p = v, …]`; `effects_rows` shows
-/// `{…}`) so a declared label and a structurally-equal actual label compare
-/// equal regardless of which carrier each rode in on.
-/// Render a `denoted`'s carried VALUE occurrence to a display string: a single
-/// `Ref(c)` shows `c`; a WI-302 field path `DotApply(Ref(c), contents)` shows
-/// `c.contents` (recursing the receiver spine), so a diagnostic naming a compound
-/// value-in-type label is legible instead of the bare `?`. Mirrors how
-/// `persistence::print` renders the same occurrence (the carrier-paired-display
-/// contract). An unrecognized carried shape stays `?`.
-fn denoted_value_display(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
-    match &occ.kind {
-        NodeKind::Expr {
-            expr: Expr::Ref(s), ..
-        } => kb.local_name_of(*s).to_string(),
-        NodeKind::Expr {
-            expr: Expr::DotApply { receiver, name, .. },
-            ..
-        } => {
-            format!(
-                "{}.{}",
-                denoted_value_display(kb, receiver),
-                kb.local_name_of(*name)
-            )
-        }
-        // WI-404: a value-in-type LITERAL (`3` in `Vec[N = 3]`, carried as
-        // `Expr::Const` — see `value_term_to_occ`) renders as the literal value, so a
-        // type error naming a denoted-bearing parameterized type is legible (`N = 3`
-        // vs `N = 4`) rather than the `?` fallthrough that hid which binding clashed.
-        // The comparison itself was already correct (it reads the carried value, not
-        // this display); this is the rendering half of the ticket's symptom.
-        NodeKind::Expr {
-            expr: Expr::Const(lit),
-            ..
-        } => literal_display(lit),
-        _ => "?".to_string(),
+        other => type_display_name_view(kb, other),
     }
 }
 
@@ -5251,115 +5264,40 @@ fn literal_display(lit: &Literal) -> String {
     }
 }
 
+/// Render a `Value::Node` `Type` / `EffectExpression` occurrence — the OCCURRENCE face of
+/// [`type_display_name_view`], which does the whole of the work bar the one shape below.
+///
+/// THE ONE SHAPE THE SHARED HEAD CANNOT NAME, kept here for the same reason the
+/// groundness gate keeps its own `Value::Node` arm: it is a deferral with a named owner,
+/// not a missing arm. `type_node_head` reads a `Parameterized`'s head functor off its
+/// BASE (WI-361 — the bindings are the named args, so the carrier and its term twin read
+/// alike), and `parameterized_base_functor` has no symbol to give when that base is
+/// itself an occurrence — a projection in base position, which `elim_child` can build.
+/// The view then heads `Opaque` and the shared walk could only say `?`, dropping the base
+/// AND the bindings. No term twin of this shape exists, so nothing disagrees with it;
+/// what it must not do is regress.
 fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
-    match &occ.kind {
-        NodeKind::Type(TypeNode::Denoted { value }) => denoted_value_display(kb, value),
-        NodeKind::Type(TypeNode::Parameterized { base, bindings }) => {
-            let base_name = type_child_display_name(kb, base);
-            if bindings.is_empty() {
-                base_name
-            } else {
-                let params: Vec<String> = bindings
-                    .iter()
-                    .map(|(p, c)| format!("{} = {}", kb.local_name_of(*p), type_child_display_name(kb, c)))
-                    .collect();
-                format!("{}[{}]", base_name, params.join(", "))
-            }
+    if let NodeKind::Type(TypeNode::Parameterized { base, bindings }) = &occ.kind {
+        if !matches!(occ.head(kb), ViewHead::Opaque) {
+            return type_display_name_view(kb, occ);
         }
-        NodeKind::Type(TypeNode::EffectsRows { effects_expr }) => {
-            format!("{{{}}}", type_child_display_name(kb, effects_expr))
+        let base_name = type_child_display_name(kb, base);
+        if bindings.is_empty() {
+            return base_name;
         }
-        // WI-791: carrier-paired with `type_display_name`'s `Arrow` arm, including
-        // the arity-1 param wrap — a declared arrow and an inferred one must render
-        // to the SAME string or a cross-carrier diagnostic reads as a mismatch.
-        NodeKind::Type(TypeNode::Arrow { param, result, arity, .. }) => {
-            let arity = match arity {
-                TypeChild::Ground(t) => const_usize_of(kb, *t),
-                TypeChild::Node(_) => None,
-            };
-            format!(
-                "{} -> {}",
-                display_arrow_param(
-                    type_child_display_name(kb, param),
-                    arity,
-                    type_child_is_named_tuple(kb, param),
-                ),
-                type_child_display_name(kb, result)
-            )
-        }
-        // Mirrors `type_display_name`'s `named_tuple` arm: `(f: T, n: U)`. WI-361:
-        // decode the `Value`-carried `List[TypeField]` and display each field type.
-        NodeKind::Type(TypeNode::NamedTuple { fields }) => {
-            let parts: Vec<String> = list_records_to_pairs(kb, fields, "name", "type")
-                .into_iter()
-                .map(|(n, v)| format!("{}: {}", kb.local_name_of(n), type_display_name_value(kb, &v)))
-                .collect();
-            format!("({})", parts.join(", "))
-        }
-        NodeKind::EffectExpr(EffectExprNode::Present { label })
-        | NodeKind::EffectExpr(EffectExprNode::Absent { label })
-        // WI-478: a guarded atom displays as its label (the conservatively-present
-        // view), like `present`/`absent` — so a Node-form guarded effect named in a
-        // diagnostic is legible rather than the `?` fallthrough.
-        | NodeKind::EffectExpr(EffectExprNode::Guarded { label, .. }) => {
-            type_child_display_name(kb, label)
-        }
-        NodeKind::EffectExpr(EffectExprNode::Merge { left, right }) => format!(
-            "{}, {}",
-            type_child_display_name(kb, left),
-            type_child_display_name(kb, right)
-        ),
-        NodeKind::EffectExpr(EffectExprNode::Open { tail }) => type_child_display_name(kb, tail),
-        NodeKind::EffectExpr(EffectExprNode::EmptyRow) => String::new(),
-        // WI-397: a compound-receiver projection `(a.b).M` — render `receiver.member`
-        // rather than the `?` fallthrough, so a type error naming it is legible.
-        NodeKind::Type(TypeNode::ExprCarried { value, member }) => format!(
-            "{}.{}",
-            type_child_display_name(kb, value),
-            type_child_display_name(kb, member)
-        ),
-        // WI-400: a receiver-expression occurrence inside a projection's neutral type — a
-        // value reference (`s`) or a field-access path (`s.provider`) — so the neutral
-        // prints legibly (`s.provider.K`, not `?.K`) in a type error.
-        NodeKind::Expr { expr: Expr::Ref(s) | Expr::Ident(s), .. } => {
-            kb.local_name_of(*s).to_string()
-        }
-        // Carrier-paired with `type_display_name`'s `Term::Bottom` arm (WI-1016: both
-        // carriers must key alike) — `materialize_from_handle` turns that term into this
-        // occurrence, so the two spellings of one `⊥` must name it identically.
-        NodeKind::Expr { expr: Expr::Bottom, .. } => "bottom".to_string(),
-        NodeKind::Expr {
-            expr: Expr::DotApply { receiver, name, pos_args, named_args },
-            ..
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            format!("{}.{}", type_display_name_occ(kb, receiver), kb.local_name_of(*name))
-        }
-        // WI-860 — a TYPE APPLICATION carried as an occurrence: `Box[T = E]` read off a
-        // matched `SortProvidesInfo` fact's carrier binding arrives as an `Expr::Apply`,
-        // not as a `TypeNode::Parameterized`. Rendered exactly as `type_display_name`'s
-        // generic `Fn{S, named}` arm renders the same type as a TERM — the two carriers
-        // of one type must name it identically, which is the standing rule for this pair
-        // of functions (WI-342 E2) and the sibling of the `Ref`/`Ident` arm above.
-        // Positional args stay on the `?` fallthrough: a type application has none, so an
-        // occurrence that carries them is some other expression.
-        NodeKind::Expr { expr: Expr::Apply { functor, pos_args, named_args, .. }, .. }
-            if pos_args.is_empty() =>
-        {
-            let base = kb.local_name_of(*functor).to_string();
-            if named_args.is_empty() {
-                base
-            } else {
-                let params: Vec<String> = named_args
-                    .iter()
-                    .map(|(p, c)| {
-                        format!("{} = {}", kb.local_name_of(*p), type_display_name_occ(kb, c))
-                    })
-                    .collect();
-                format!("{}[{}]", base, params.join(", "))
-            }
-        }
-        _ => "?".to_string(),
+        let params: Vec<String> = bindings
+            .iter()
+            .map(|(p, c)| {
+                format!(
+                    "{} = {}",
+                    kb.local_name_of(*p),
+                    type_child_display_name(kb, c)
+                )
+            })
+            .collect();
+        return format!("{}[{}]", base_name, params.join(", "));
     }
+    type_display_name_view(kb, occ)
 }
 
 /// Display name of a [`TypeChild`]: ground via [`type_display_name`], poisoned
@@ -5690,216 +5628,363 @@ fn arrow_param_list_is_own(kb: &KnowledgeBase, ty: &Value, arity: usize) -> bool
         && named_tuple_fields(kb, &param).len() == arity
 }
 
-/// WI-791: is this type a `named_tuple`? The structural test
-/// [`display_arrow_param`] needs, carrier-agnostic over a [`TypeChild`].
-fn type_child_is_named_tuple(kb: &KnowledgeBase, child: &TypeChild) -> bool {
-    match child {
-        TypeChild::Ground(t) => matches!(type_head(kb, &TermIdView(*t)), TypeHead::NamedTuple),
-        TypeChild::Node(occ) => {
-            matches!(&occ.kind, NodeKind::Type(TypeNode::NamedTuple { .. }))
-        }
-    }
+/// The name a diagnostic shows for a hash-consed type — the `TermId` face of the ONE
+/// walk every carrier goes through. See [`type_display_name_view`].
+pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
+    type_display_name_view(kb, &TermIdView(ty))
 }
 
-pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
-    match kb.get_term(ty) {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
+/// WI-20260904-B1KFS — ONE DISPLAY WALK, SO ONE TYPE HAS ONE NAME ON WHATEVER CARRIER IT
+/// RIDES.
+///
+/// **THE DEFECT.** This was two hand-kept renderers — a `TermId` one keyed on
+/// `Term::Fn`'s functor and a `Value::Node` one keyed on `TypeNode`/`EffectExprNode` —
+/// and a THIRD carrier that reached neither: [`type_display_name_value`]'s
+/// `other => resolved_functor_name(…)` answered a `Value::Entity` with its BARE FUNCTOR.
+/// So `Map[K = Bool]` rendered `"Map[K = Bool]"` as a term and `"Map"` as its entity
+/// twin, with the bindings SILENTLY DROPPED from a user-facing type error — the shape of
+/// message that sends an author to the wrong place. The entity spelling is not exotic:
+/// `KnowledgeBase::fn_value` builds it for ANY application with a non-leaf child, which
+/// is exactly what `KnowledgeBase::reify` hands back for a type carrying an occurrence.
+///
+/// Keyed on [`ViewHead`], so every arm below is reached from every carrier. The nine
+/// meta-constructor arms are the term renderer's, unchanged in what they print; the
+/// effect-atom, `dot_apply` and `Ident` arms are the occurrence renderer's, which the
+/// term carrier had been missing (a `Term::Ident` fell to `format!("{:?}")` and printed
+/// `TermId(8960)` — the id, not even the term).
+///
+/// KEYED ON THE LOCAL NAME, with the looseness that implies — a user sort named `Arrow`
+/// renders as an arrow. That is the rule the term renderer already ran on and WI-CZJ2N
+/// restated for `Nothing`; one rule, not a new one.
+///
+/// **THE ORDER KEY IS A DIFFERENT QUESTION, and this is why it now has its own name.**
+/// `build_canonical_effects_rows` sorts effect atoms by a display string, and under the
+/// occurrence renderer's atom arms `present(A)` and `absent(A)` both render `"A"` — one
+/// key for two different atoms. `sort_by_cached_key` is STABLE, so a shared key leaves
+/// their order to the INPUT order and `{A, -A}` and `{-A, A}` canonicalize to two
+/// different terms that then fail to unify. That reader takes
+/// [`effect_atom_order_key`] instead, which is this walk's generic arm and nothing else.
+fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
+    match v.head(kb) {
+        // WI-307 code-review #7: render variables by their NAME, not a `{:?}` that
+        // embeds allocation-order indices and would break the
+        // canonical-form-stable-across-runs claim of `build_canonical_effects_rows`.
+        // Two distinct vars sharing a textual name sort together, deliberately.
+        ViewHead::Var(Var::Global(vid)) | ViewHead::Var(Var::Rigid(vid)) => {
+            format!("?{}", kb.local_name_of(vid.name()))
+        }
+        // A De Bruijn index has no name. In practice these do not reach a type display
+        // (the typer runs post-binder-open); the arm keeps the walk total.
+        ViewHead::Var(Var::DeBruijn(_)) => "?".to_string(),
+        // WI-404 / WI-6RXGD: a value-in-type LITERAL (`3` in `Vec[N = 3]`) renders as the
+        // literal, so a mismatch reads `N = 3` vs `N = 4` rather than `TermId(8960)`.
+        ViewHead::Const(lit) => literal_display(&lit),
+        // WI-H054K: `bottom`, the spelling `persistence::print` gives the same term. A
+        // `⊥` reaches a type position when σ binds a type-position variable to a carrier
+        // denoting no type, and it is GROUND, hence CHECKED and named in a diagnostic.
+        ViewHead::Bottom => "bottom".to_string(),
+        ViewHead::Ident(s) => kb.local_name_of(s).to_string(),
+        // A carrier with no structure to read — a closure, a stream. Not a type and not
+        // nameable as one; `?` is what the occurrence renderer already answered.
+        ViewHead::Opaque => "?".to_string(),
+        // A functor-LESS application is a `Value::Tuple`, which no type has a twin for
+        // (every hash-consed type application carries a functor). `?`, as before.
+        ViewHead::Functor { functor: None, .. } => "?".to_string(),
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity: _,
         } => {
-            let fname = kb.local_name_of(*functor);
-            // WI-361: a bare sort is `Term::Ref(S)` (the `Term::Ref` arm below),
-            // and a parameterized type is `Fn{S, named}` whose functor is the base
-            // sort — handled by the generic `_` arm (renders `S[p = v, …]`). The
-            // remaining structural forms are the `TypeExtractor.*` entities.
-            match fname {
-                "Arrow" => {
-                    // Arrow(param, result, effects) — WI-307/WI-331: `effects` is
-                    // a singular `EffectsRows(EffectExpression)` Type, not a
-                    // legacy `List[Type]`.
-                    let p = get_named_arg(kb, named_args, "param")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    let r = get_named_arg(kb, named_args, "result")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    // WI-791: an arity-1 tuple param is ONE parameter, not a list.
-                    let arity =
-                        get_named_arg(kb, named_args, "arity").and_then(|t| const_usize_of(kb, t));
-                    let param_is_tuple = get_named_arg(kb, named_args, "param").is_some_and(|t| {
-                        matches!(type_head(kb, &TermIdView(t)), TypeHead::NamedTuple)
-                    });
-                    format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
-                }
-                "TypeVar" => extract_ref_field(kb, named_args, "name")
-                    .map(|s| format!("?{}", kb.local_name_of(s)))
-                    .unwrap_or_else(|| "?".to_string()),
-                "NamedTuple" => {
-                    let fields_tid = get_named_arg(kb, named_args, "fields");
-                    let fields = fields_tid.map(|f| list_to_vec(kb, f)).unwrap_or_default();
-                    let parts: Vec<String> = fields
-                        .iter()
-                        .map(|f| {
-                            if let Term::Fn { named_args: fa, .. } = kb.get_term(*f) {
-                                let n = extract_ref_field(kb, fa, "name")
-                                    .map(|s| kb.local_name_of(s).to_string())
-                                    .unwrap_or_else(|| "?".to_string());
-                                let t = get_named_arg(kb, fa, "type")
-                                    .map(|v| type_display_name(kb, v))
-                                    .unwrap_or_else(|| "?".to_string());
-                                format!("{}: {}", n, t)
-                            } else {
-                                "?".to_string()
-                            }
-                        })
-                        .collect();
-                    format!("({})", parts.join(", "))
-                }
-                "Nothing" => "nothing".to_string(),
-                // WI-400: a single-ref expression-carried projection (`l.T`) — render
-                // `receiver.member`, not the generic `ExprCarried[value = …]` fallback, so
-                // a neutral-projection type error reads legibly (mirrors the Node-carrier
-                // `type_display_name_occ` arm for the compound `s.provider.K` form).
-                "ExprCarried" => {
-                    let v = get_named_arg(kb, named_args, "value")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    let m = get_named_arg(kb, named_args, "member")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    format!("{v}.{m}")
-                }
-                // WI-428: a rigid type-receiver projection — render `subject.member`
-                // (`P.Key` / `MemStore.Key`), mirroring the `ExprCarried` arm.
-                "RigidTypeProjection" => {
-                    let v = get_named_arg(kb, named_args, "var")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    let m = get_named_arg(kb, named_args, "member")
-                        .map(|t| type_display_name(kb, t))
-                        .unwrap_or_else(|| "?".to_string());
-                    format!("{v}.{m}")
-                }
-                "Denoted" => {
-                    // WI-302: value-in-type — render the carried value directly
-                    // (`Modify[c]` shows `c`, not `denoted[value = c]`).
-                    get_named_arg(kb, named_args, "value")
-                        .map(|v| type_display_name(kb, v))
-                        .unwrap_or_else(|| "?".to_string())
-                }
-                "EffectsRows" => {
-                    // WI-320: EffectExpression-in-Type — render with row braces
-                    // (`{…}`) around the wrapped expression. The inner is an
-                    // EffectExpression term (present / absent / open / merge /
-                    // empty_row); a dedicated EffectExpression pretty-printer
-                    // is a WI-307 follow-on. For now the inner term renders
-                    // through type_display_name's generic Fn fallback, which is
-                    // readable enough for diagnostics until row machinery lands.
-                    get_named_arg(kb, named_args, "effects_expr")
-                        .map(|e| format!("{{{}}}", type_display_name(kb, e)))
-                        .unwrap_or_else(|| "{?}".to_string())
-                }
-                _ => {
-                    // Fallback: raw term display (for non-type terms)
-                    let name = fname.to_string();
-                    let params: Vec<String> = named_args
-                        .iter()
-                        .map(|(s, v)| {
-                            format!("{} = {}", kb.local_name_of(*s), type_display_name(kb, *v))
-                        })
-                        .collect();
-                    if params.is_empty() {
-                        name
-                    } else {
-                        format!("{}[{}]", name, params.join(", "))
-                    }
-                }
+            // THE LOWERCASE FORMS ARE KEYED ON THE QUALIFIED NAME, and the capitalized
+            // `TypeExtractor` ones below on the LOCAL name. That is not an inconsistency:
+            // the capitalized set has no homonym and has been keyed loosely since it was
+            // written, while `guarded`, `merge` and `open` each name a SECOND, unrelated
+            // stdlib constructor — `anthill.reflect.LogicalQuery.guarded(query,
+            // condition)` beside `EffectExpression.guarded(label, guard)`,
+            // `SortedSet.merge` beside `EffectExpression.merge`. Keyed locally, a
+            // `LogicalQuery.guarded` term reaching the "raw term display" fallback would
+            // render `"?"` (it has no `label` child) instead of its children — a silent
+            // drop, in the walk that exists to remove them. `is_list_cons_cell` already
+            // keys this way.
+            if let Some(rendered) = qualified_form_display(kb, v, f) {
+                return rendered;
+            }
+            match kb.local_name_of(f) {
+            // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
+            // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
+            "Arrow" => {
+                let p = named_child_display(kb, v, "param");
+                let r = named_child_display(kb, v, "result");
+                // WI-791: an arity-1 tuple param is ONE parameter, not a list.
+                let arity = named_child(kb, v, "arity")
+                    .and_then(|c| c.literal_int64(kb))
+                    .and_then(|n| usize::try_from(n).ok());
+                let param_is_tuple = named_child(kb, v, "param")
+                    .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
+                format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
+            }
+            "TypeVar" => named_child(kb, v, "name")
+                .and_then(|c| view_ref_symbol(kb, &c))
+                .map(|s| format!("?{}", kb.local_name_of(s)))
+                .unwrap_or_else(|| "?".to_string()),
+            // `(f: T, n: U)`. WI-361: the fields ride as a `List[TypeField]` on BOTH
+            // carriers, and [`list_records_to_pairs`] already decodes either.
+            // ELEMENT-WISE, NOT VIA `list_records_to_pairs`, and the difference is a
+            // SILENT DROP. That decoder skips a cell whose record is missing `name` or
+            // `type` and walks on, so `(a: A, <malformed>)` would render `(a: A)` — a
+            // component vanishing without trace. The term renderer emitted `?: ?` there,
+            // which is the louder answer and the one kept; reading each field's children
+            // through the same walk keeps both carriers on it.
+            "NamedTuple" => {
+                let parts: Vec<String> = named_child(kb, v, "fields")
+                    .map(|fs| value_list_elements(kb, &fs))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|f| {
+                        format!(
+                            "{}: {}",
+                            named_child_display(kb, &f, "name"),
+                            named_child_display(kb, &f, "type")
+                        )
+                    })
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
+            // WI-CZJ2N — `Nothing` is a NULLARY constructor, and a nullary functor IS the
+            // bare reference, so the two spellings the term renderer needed two arms for
+            // are one arm here.
+            "Nothing" => "nothing".to_string(),
+            // WI-400 / WI-397: a projection renders `receiver.member`, not the generic
+            // `ExprCarried[value = …]`, so a neutral-projection type error reads legibly.
+            "ExprCarried" => format!(
+                "{}.{}",
+                named_child_display(kb, v, "value"),
+                named_child_display(kb, v, "member")
+            ),
+            // WI-428: a rigid type-receiver projection — `P.Key` / `MemStore.Key`.
+            "RigidTypeProjection" => format!(
+                "{}.{}",
+                named_child_display(kb, v, "var"),
+                named_child_display(kb, v, "member")
+            ),
+            // WI-302: value-in-type — render the carried value directly (`Modify[c]`
+            // shows `c`, not `denoted[value = c]`).
+            "Denoted" => named_child_display(kb, v, "value"),
+            // WI-320: EffectExpression-in-Type — row braces around the wrapped
+            // expression, whose atoms are the arms just below.
+            "EffectsRows" => format!("{{{}}}", named_child_display(kb, v, "effects_expr")),
+            // A plain application: a parameterized type `S[p = v, …]` (WI-860: the same
+            // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
+            // or an `Expr::Apply` read off a matched fact's carrier binding), and the
+            // raw-term fallback for everything that is not one of the forms above.
+                _ => type_application_display(kb, v, f, pos_arity),
             }
         }
-        // WI-20260902-CZJ2N — `Nothing` IS A NULLARY `TypeExtractor` CONSTRUCTOR, and
-        // the only one: every other structural form (`Arrow`, `TypeVar`, `NamedTuple`,
-        // `Denoted`, `ExprCarried`, `RigidTypeProjection`, `EffectsRows`, `PolyType`)
-        // carries named args. It is stored bare now, so the `Fn` arm's `"Nothing" =>
-        // "nothing"` case above stopped firing and an effects row rendered `{Nothing}`
-        // where the surface spelling is `{nothing}`. Keyed on the LOCAL name, exactly as
-        // that arm is — same looseness, one rule.
-        Term::Ref(s) if kb.local_name_of(*s) == "Nothing" => "nothing".to_string(),
-        Term::Ref(s) => kb.local_name_of(*s).to_string(),
-        Term::Var(v) => {
-            // WI-307 code-review #7: render variables by their name (not
-            // TermId Debug, which would embed allocation-order indices and
-            // break the canonical-form-stable-across-runs claim of
-            // `build_canonical_effects_rows`). All three Var variants —
-            // Global, DeBruijn, Rigid — carry a `name: Symbol`; resolve it
-            // so two distinct vars sharing a textual name (e.g. `T` from
-            // different scopes) sort together.
-            let name_sym = match v {
-                crate::kb::term::Var::Global(vid) => vid.name(),
-                crate::kb::term::Var::DeBruijn(_) => {
-                    // De Bruijn indices have no name; render as `?` so they
-                    // sort consistently. In practice these don't reach
-                    // `type_display_name` because the typer operates on
-                    // post-binder-open terms, but the arm keeps the
-                    // function total.
-                    return "?".to_string();
-                }
-                crate::kb::term::Var::Rigid(vid) => vid.name(),
-            };
-            format!("?{}", kb.local_name_of(name_sym))
-        }
-        // WI-20260824-6RXGD — THE OTHER HALF OF THE CARRIER PAIRING. This function and
-        // [`type_display_name_occ`] claim, in both their docs, to render arm-for-arm; the
-        // Node side has rendered a value-in-type LITERAL through `literal_display` since
-        // WI-404, and the term side had no `Term::Const` arm, so the same denoted fell to
-        // the `{:?}` below and printed `TermId(8960)` — the id, not even the term's Debug.
-        //
-        // ADDED BECAUSE THIS TICKET MADE IT DRIVABLE, which is the part a reader should
-        // not have to reconstruct: [`ground_literal_denoted`] puts a `Term::Const` denoted
-        // into σ for every written type-argument bracket, so a MISMATCH renders one.
-        // Driven on an ordinary op with no `field_access` in sight —
-        // `mk[T, N]() -> Vec[T = T, N = N]` called as
-        // `use2() -> Vec[T = Int64, N = 4] = mk[Int64, 3]()` — which reported
-        // `got Vec[T = Int64, N = TermId(8960)]` without this arm and `N = 3` with it.
-        // That is precisely the message WI-404 exists to keep legible, and its own tests
-        // stay green either way because none of them writes a call bracket:
-        // `wi6rxgd_field_access_call_test::a_written_literal_bracket_renders_its_literal`
-        // is the row that fails when this arm is removed.
-        // (An earlier draft of this comment asserted the opposite — that nothing could
-        // drive it. `/code-review` built the fixture above and disproved it.)
-        //
-        // IT IS ALSO A SORT KEY, not only a message. `build_canonical_effects_rows`
-        // (kb/mod.rs) orders effect atoms by `sort_by_cached_key(type_display_name)`, and
-        // the `Term::Var` arm below already says in as many words that a `{:?}` key
-        // "would embed allocation-order indices and break the canonical-form-
-        // stable-across-runs claim" of that function. A `Term::Const` atom was keyed
-        // exactly that way. No test pins it, so this is a latent fix stated rather than
-        // claimed as measured.
-        Term::Const(lit) => literal_display(lit),
-        // WI-20260903-H054K — `bottom`, the spelling `persistence::print` gives the same
-        // term, not the `{:?}` `TermId(3485)` this fell to. A `⊥` reaches a TYPE position
-        // when σ binds a type-position variable to a carrier that denotes no type (see
-        // `node_occurrence::type_denoted_by`), and `Term::Bottom` is GROUND
-        // (`type_value_is_ground_g`), so it is CHECKED and named in a diagnostic rather
-        // than skipped — which makes how it renders part of whether that diagnostic says
-        // anything. The `{:?}` also embeds an allocation-order index, which the
-        // `Term::Var` arm below rejects for `build_canonical_effects_rows`' sort key.
-        Term::Bottom => "bottom".to_string(),
-        _ => format!("{:?}", ty),
     }
 }
 
-/// Extract a Ref(sym) from a named arg field.
-fn extract_ref_field(
+/// WI-20260904-B1KFS — the forms keyed on their QUALIFIED constructor name: the
+/// `anthill.prelude.EffectExpression.*` atoms with the ROW they spell, and `dot_apply`.
+/// `None` for any other functor, which then takes the local-name arms above.
+///
+/// **A ROW IS RENDERED AS A ROW, not as its fold.** `build_canonical_effects_rows` folds
+/// a row into `merge(a₁, merge(a₂, …, empty_row))`, so a naive `merge => "{l}, {r}"` plus
+/// an empty `empty_row` prints `{External, }` — a trailing separator on every row in the
+/// system, empty rows included. [`join_row_parts`] drops the empty terminator instead.
+///
+/// **AND AN `absent` KEEPS ITS `-`.** Rendering it as its bare LABEL — which is what the
+/// occurrence renderer did, and what the first draft of this merge adopted — makes
+/// `{External}` and `{-External}` the SAME STRING, so a mismatch between them prints
+/// `expected Stream[E = {External}], got Stream[E = {External}]` and trips the
+/// identical-rendering backstop for the one difference the message exists to show.
+/// Proposal 064's negative claim is not decoration; it cannot be dropped from the
+/// rendering of the row that makes it. `-` therefore belongs HERE, on the atom, and not
+/// (as it was) only in [`effect_atom_display`]'s caller-side arm — one spelling, on
+/// whatever carrier and in whatever position the atom is read.
+///
+/// WI-478: a `guarded` atom shows its label and deliberately does not read its GUARD (the
+/// conservatively-present view), matching the occurrence renderer.
+fn qualified_form_display<V: TermView>(
     kb: &KnowledgeBase,
-    named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    key: &str,
-) -> Option<Symbol> {
-    get_named_arg(kb, named_args, key).and_then(|tid| match kb.get_term(tid) {
-        Term::Ref(s) => Some(*s),
-        Term::Ident(s) => Some(*s),
+    v: &V,
+    functor: Symbol,
+) -> Option<String> {
+    let qualified = kb.qualified_name_of(functor);
+    // WI-302 field path `c.contents` inside a `denoted`, and the `s.provider.K` receiver
+    // spine of a neutral projection. ARGUMENT-FREE ONLY: a `dot_apply` carrying arguments
+    // is a CALL, and rendering it `r.n` would drop them — the silent drop this walk exists
+    // to remove — so it falls through to the generic arm, which shows every child it has.
+    //
+    // Compared to `dt::qualified(…)` — the marker-stripped address a resolved KB symbol
+    // reports and the one `wrapped_expr_head` interns for the occurrence carrier — and
+    // NOT through `dt::is`, which additionally admits the bare short name. Short-name
+    // admission is the looseness this whole dispatch exists to avoid.
+    if qualified == dt::qualified(dt::DOT_APPLY) {
+        if named_child(kb, v, "args").is_some_and(|a| is_list_cons_cell(kb, &a)) {
+            return None;
+        }
+        return Some(format!(
+            "{}.{}",
+            named_child_display(kb, v, "receiver"),
+            named_child_display(kb, v, "name")
+        ));
+    }
+    let short = qualified.strip_prefix("anthill.prelude.EffectExpression.")?;
+    match short {
+        "present" => Some(named_child_display(kb, v, "label")),
+        "absent" => Some(format!("-{}", named_child_display(kb, v, "label"))),
+        "guarded" => Some(named_child_display(kb, v, "label")),
+        "open" => Some(named_child_display(kb, v, "tail")),
+        // The closed empty row. `{}` is how the language spells it; the term renderer had
+        // no arm and leaked the CONSTRUCTOR name, so `Stream[E = {}]` read
+        // `Stream[E = {empty_row}]` on that carrier. Five refusal assertions pinned that
+        // text and now pin `E = {}` (WI-1059 ×2, WI-1061 ×2, WI-1063).
+        "empty_row" => Some(String::new()),
+        "merge" => Some(join_row_parts(
+            named_child_display(kb, v, "left"),
+            named_child_display(kb, v, "right"),
+        )),
+        // A constructor under this prefix that is none of the above: not a form this
+        // renders, so it takes the generic application arm and shows its children rather
+        // than being guessed at.
         _ => None,
-    })
+    }
+}
+
+/// Join two rendered halves of a `merge` spine, dropping an EMPTY one — which is what the
+/// `empty_row` terminator renders to. Without this every row carries a trailing `", "`.
+fn join_row_parts(left: String, right: String) -> String {
+    match (left.is_empty(), right.is_empty()) {
+        (true, _) => right,
+        (_, true) => left,
+        _ => format!("{left}, {right}"),
+    }
+}
+
+/// The generic `name(pos…)[k = v, …]` rendering — [`type_display_name_view`]'s default
+/// arm, and the whole of [`effect_atom_order_key`].
+///
+/// POSITIONAL ARGUMENTS ARE SHOWN. The term renderer iterated `named_args` only and
+/// printed a bare `S` for `Fn{S, [a], []}`; a type application has no positional
+/// arguments, so what that silently dropped was always a NON-type term reaching the
+/// "raw term display" fallback — and dropping its children is the same defect in
+/// miniature as dropping `Map`'s bindings.
+fn type_application_display<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    functor: Symbol,
+    pos_arity: usize,
+) -> String {
+    let mut out = kb.local_name_of(functor).to_string();
+    if pos_arity > 0 {
+        let ps: Vec<String> = (0..pos_arity)
+            .map(|i| match v.pos_arg(kb, i) {
+                Some(c) => type_display_name_item(kb, &c),
+                None => "?".to_string(),
+            })
+            .collect();
+        out.push_str(&format!("({})", ps.join(", ")));
+    }
+    let keys = v.named_keys(kb);
+    if !keys.is_empty() {
+        let ps: Vec<String> = keys
+            .iter()
+            .map(|k| {
+                format!(
+                    "{} = {}",
+                    kb.local_name_of(*k),
+                    match v.named_arg(kb, *k) {
+                        Some(c) => type_display_name_item(kb, &c),
+                        None => "?".to_string(),
+                    }
+                )
+            })
+            .collect();
+        out.push_str(&format!("[{}]", ps.join(", ")));
+    }
+    out
+}
+
+/// WI-20260904-B1KFS — THE CANONICAL ORDER KEY FOR AN EFFECT ATOM, which is NOT its
+/// display and must not become it again.
+///
+/// `KnowledgeBase::build_canonical_effects_rows` sorts a row's atoms by this and folds
+/// them in that order, so two rows written in different orders reach the SAME term and
+/// unify. It used to sort by [`type_display_name`], which was safe only while that
+/// function rendered an atom as `present[label = A]`. It no longer does: an atom now
+/// shows its LABEL, so `present(A)` and `absent(A)` render the same string —
+/// `sort_by_cached_key` is stable, their order would fall back to the INPUT order, and
+/// `{A, -A}` and `{-A, A}` would canonicalize to two different terms.
+///
+/// This is the generic application rendering applied UNCONDITIONALLY — the atom's
+/// FUNCTOR and every child it has, so `present(A)`, `absent(A)` and two `guarded(A, …)`
+/// with different guards each key differently. That is the property the sort needs:
+/// INJECTIVE on the atom, and deterministic.
+///
+/// IT IS NOT THE OLD KEY BYTE-FOR-BYTE, and an earlier draft of this doc claimed it was.
+/// The children render through [`type_display_name_item`], i.e. the NEW walk, so an atom
+/// whose label is a `denoted` keys `present[label = c]` where it used to key
+/// `present[label = Denoted[value = c]]`; positional arguments now show too. The ORDER of
+/// atoms within a canonical row can therefore differ from before. That is harmless and is
+/// not the same claim: a canonical form needs one representative per row, not the same
+/// representative it had last release — rows are rebuilt from source at load, and both
+/// sides of any comparison go through this one key.
+pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
+    let v = TermIdView(t);
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } => type_application_display(kb, &v, f, pos_arity),
+        // Not an application (a bare row-tail var, a literal) — nothing to disambiguate,
+        // so the display IS the key.
+        _ => type_display_name_view(kb, &v),
+    }
+}
+
+/// One named child of `v`, or `None` when the key is absent / unresolvable.
+fn named_child<'a, V: TermView>(
+    kb: &'a KnowledgeBase,
+    v: &'a V,
+    key: &str,
+) -> Option<ViewItem<'a>> {
+    kb.lookup_symbol(key).and_then(|s| v.named_arg(kb, s))
+}
+
+/// One named child of `v`, rendered — `?` when absent, which is what every hand-written
+/// arm this walk replaced answered for a missing field.
+fn named_child_display<V: TermView>(kb: &KnowledgeBase, v: &V, key: &str) -> String {
+    match named_child(kb, v, key) {
+        Some(c) => type_display_name_item(kb, &c),
+        None => "?".to_string(),
+    }
+}
+
+/// A child, rendered through the entry point its carrier owns — so a `Value::Node` child
+/// still reaches [`type_display_name_occ`]'s one occurrence-only shape.
+fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>) -> String {
+    match item {
+        ViewItem::Term(t) => type_display_name(kb, *t),
+        ViewItem::Node(occ) => type_display_name_occ(kb, occ),
+        ViewItem::Value(v) => type_display_name_value(kb, v),
+        ViewItem::Owned(v) => type_display_name_value(kb, v),
+    }
+}
+
+/// The symbol a view names, when it names one: a bare reference (`Ref` / nullary
+/// application) or an unresolved `Ident`. The carrier-neutral face of the
+/// `extract_ref_field` this replaced, which read `Term::Ref`/`Term::Ident` only.
+fn view_ref_symbol<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    match v.head(kb) {
+        ViewHead::Ident(s) => Some(s),
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(f),
+        _ => None,
+    }
 }
 
 /// Functor symbols of a sort's constructor children.
@@ -51170,29 +51255,26 @@ fn row_self_contradiction<'a>(
 
 /// WI-20260825-CBRSW — render ONE effect-row atom the way it is WRITTEN.
 ///
-/// [`type_display_name_value`] renders a type, and a row ATOM is not one: an absence is
-/// the term `absent(label: K)`, which the type renderer prints as `absent[label = K]` —
-/// internal row syntax in a user diagnostic, for a spelling the author wrote as `-K`. A
-/// row that a message prints element by element must print what the author can find in
-/// their file. Presence (`present(label: K)`) renders bare, which is its default written
-/// form; a guarded atom keeps the type rendering, since its guard is a rule body this
-/// has no reader for.
+/// THE RULE IS UNCHANGED AND THE OWNER MOVED. An absence is the term `absent(label: K)`
+/// and a diagnostic must show the `-K` the author wrote, not internal row syntax;
+/// presence renders bare, its default written form; a guarded atom shows its label,
+/// since its guard is a rule body this has no reader for. That was implemented HERE
+/// because [`type_display_name_value`] printed `absent[label = K]`. WI-20260904-B1KFS
+/// merged the display onto one `TermView` walk and put these three renderings on the
+/// ATOM (`effect_expression_display`), where every carrier and every position reads them
+/// — so this function is now the display, and repeating the arms would print `--K`.
 ///
 /// `label_key` is the caller's already-interned `"label"` — the same shape
 /// [`peel_effect_atom`] takes, and for the same reason: interning needs `&mut`, and every
-/// caller here holds a row it is about to walk element by element.
-fn effect_atom_display(kb: &KnowledgeBase, v: &Value, label_key: Symbol) -> String {
-    match resolved_functor_name(kb, v) {
-        Some("absent") => match named_child_value(kb, v, label_key) {
-            Some(l) => format!("-{}", type_display_name_value(kb, &l)),
-            None => type_display_name_value(kb, v),
-        },
-        Some("present") => match named_child_value(kb, v, label_key) {
-            Some(l) => type_display_name_value(kb, &l),
-            None => type_display_name_value(kb, v),
-        },
-        _ => type_display_name_value(kb, v),
-    }
+/// caller here holds a row it is about to walk element by element. Unused since the arms
+/// moved; kept so the callers' shape does not churn.
+fn effect_atom_display(kb: &KnowledgeBase, v: &Value, _label_key: Symbol) -> String {
+    // WI-20260904-B1KFS — THE WHOLE OF THIS IS NOW THE DISPLAY. The two arms it used to
+    // carry — unwrap a `present` to its label, and prefix an `absent`'s label with `-` —
+    // were a caller-side repair for a renderer that printed `present[label = External]`.
+    // `effect_expression_display` renders both, so keeping them here would print `--X`
+    // for an absence. The parameter stays for the callers that intern the key.
+    type_display_name_value(kb, v)
 }
 
 /// WI-20260825-CBRSW (proposal 064) — does a PRESENT label violate an ABSENT one?

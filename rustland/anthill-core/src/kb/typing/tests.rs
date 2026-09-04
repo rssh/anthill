@@ -5400,3 +5400,238 @@ mod groundness_gate_carrier_agreement_test {
         }
     }
 }
+
+/// WI-20260904-B1KFS — THE DISPLAY AND THE σ-WALK ANSWER ONE TYPE THE SAME ON EITHER
+/// CARRIER.
+#[cfg(test)]
+mod type_reader_carrier_agreement_test {
+    //! The sibling of [`super::groundness_gate_carrier_agreement_test`], for the two
+    //! readers that still disagreed after it. `KnowledgeBase::fn_value` builds a
+    //! `Value::Entity` for ANY application with a non-leaf child — which is exactly what
+    //! `KnowledgeBase::reify` hands back for a type carrying an occurrence — and both
+    //! readers had an `other =>` arm that answered that carrier differently:
+    //!
+    //!  1. `type_display_name_value` fell to `resolved_functor_name`, i.e. the BARE
+    //!     FUNCTOR. `Map[K = Bool]` rendered `"Map[K = Bool]"` as a term and `"Map"` as
+    //!     its entity twin — the bindings silently dropped from a user-facing type error.
+    //!  2. `walk_type_deep_value_g` fell to `other.clone()`, so an entity-carried type's
+    //!     inner vars were never σ-resolved. That is the mistake the WI-441 comment one
+    //!     line above it records having already been made and fixed for `Value::Node`.
+    //!
+    //! WHY UNIT ROWS AND NOT A PROGRAM: censused on the groundness gate at part 1, **0**
+    //! `Value::Entity`s reach these readers across the corpus, so no `.anthill` fixture
+    //! can drive either site today — the disagreement is LATENT, and latent is how it
+    //! bit: WI-H054K's natural repair produced exactly this carrier and reported ZERO
+    //! errors on a wrong program.
+    //!
+    //! WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT (restore `resolved_functor_name` /
+    //! `other.clone()`):
+    //!
+    //!  * `a_generic_application_shows_its_bindings_on_either_carrier` — FAILS: the
+    //!    entity half renders `"Map"`.
+    //!  * `an_arrow_is_an_arrow_on_either_carrier` — FAILS: the entity half renders
+    //!    `"Arrow"`. This is the row the ticket asks for by name — fixing the generic
+    //!    application while a meta-constructor still rendered as its bare functor would
+    //!    leave a disagreement HARDER to see than the one it removed.
+    //!  * `an_entity_carried_types_inner_var_is_resolved` — FAILS: the entity half keeps
+    //!    the raw `?T`.
+    //!  * `a_bare_sort_reference_agrees_either_way` — PASSES EITHER WAY BY DESIGN, and
+    //!    that is its job: with no bindings to drop, the bare functor IS the whole
+    //!    rendering, so a fixture built only from bare references would be green against
+    //!    the defect. It is what keeps the agreement above from being bought by the
+    //!    renderer having started answering one string to everything.
+    //!  * `a_ground_type_walks_to_itself_on_either_carrier` — PASSES EITHER WAY BY
+    //!    DESIGN, the σ-walk's control: with no var to resolve, `other.clone()` and the
+    //!    structural walk agree, so this row measures the walk's *stability*, not its
+    //!    reach.
+    use super::super::*;
+    use crate::eval::value::Value;
+    use crate::intern::SymbolKind;
+    use smallvec::SmallVec;
+    use std::rc::Rc;
+
+    /// `<base>[<param> = <child>]` built twice: hash-consed, and as the `Value::Entity`
+    /// twin `KnowledgeBase::fn_value` would build for the same application.
+    fn both_spellings(
+        kb: &mut KnowledgeBase,
+        base: &str,
+        bindings: &[(&str, TermId)],
+    ) -> (Value, Value) {
+        let g = kb.global_scope();
+        let f = kb.define_symbol(base, base, SymbolKind::Sort, g);
+        let named: Vec<(Symbol, TermId)> =
+            bindings.iter().map(|(p, c)| (kb.intern(p), *c)).collect();
+        let term = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_vec(named.clone()),
+        });
+        let entity = Value::Entity {
+            functor: f,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(
+                named
+                    .into_iter()
+                    .map(|(p, c)| (p, Value::term(c)))
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        (Value::term(term), entity)
+    }
+
+    fn sort_ref(kb: &mut KnowledgeBase, name: &str) -> TermId {
+        let g = kb.global_scope();
+        let s = kb.define_symbol(name, name, SymbolKind::Sort, g);
+        kb.alloc(Term::Ref(s))
+    }
+
+    #[test]
+    fn a_generic_application_shows_its_bindings_on_either_carrier() {
+        let mut kb = KnowledgeBase::new();
+        let boolean = sort_ref(&mut kb, "Bool");
+        let (term, entity) = both_spellings(&mut kb, "Map", &[("K", boolean)]);
+
+        assert_eq!(
+            type_display_name_value(&kb, &term),
+            type_display_name_value(&kb, &entity),
+            "`Map[K = Bool]` is one type — the carrier it rides on must not change the \
+             name a diagnostic shows for it"
+        );
+        assert_eq!(
+            type_display_name_value(&kb, &entity),
+            "Map[K = Bool]",
+            "…and the shared answer is the FULL application, not the bare functor: a pair \
+             that agreed on `\"Map\"` would be the silent drop this row exists to remove, \
+             agreeing by accident"
+        );
+    }
+
+    /// THE ROW THE TICKET NAMES. A meta-constructor is where the bare-functor fallback is
+    /// least visible: `"Arrow"` reads like a type, so a reader does not see that the
+    /// parameter and result were dropped.
+    #[test]
+    fn an_arrow_is_an_arrow_on_either_carrier() {
+        let mut kb = KnowledgeBase::new();
+        let int = sort_ref(&mut kb, "Int64");
+        let string = sort_ref(&mut kb, "String");
+        let (term, entity) =
+            both_spellings(&mut kb, "Arrow", &[("param", int), ("result", string)]);
+
+        assert_eq!(
+            type_display_name_value(&kb, &term),
+            type_display_name_value(&kb, &entity),
+            "an arrow is an arrow on whichever carrier it rides"
+        );
+        assert_eq!(
+            type_display_name_value(&kb, &entity),
+            "Int64 -> String",
+            "…and both name it as the ARROW, not as `\"Arrow\"`"
+        );
+    }
+
+    /// THE DISPLAY CONTROL, and the reason the two rows above measure something: a bare
+    /// sort reference has no bindings to drop, so the bare functor IS the whole
+    /// rendering and both carriers said `"Map"` before this change too.
+    #[test]
+    fn a_bare_sort_reference_agrees_either_way() {
+        let mut kb = KnowledgeBase::new();
+        let (term, entity) = both_spellings(&mut kb, "Map", &[]);
+
+        assert_eq!(type_display_name_value(&kb, &term), "Map");
+        assert_eq!(type_display_name_value(&kb, &entity), "Map");
+    }
+
+    #[test]
+    fn an_entity_carried_types_inner_var_is_resolved() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("T");
+        let vid = kb.fresh_var(name);
+        let open = kb.alloc(Term::Var(Var::Global(vid)));
+        let boolean = sort_ref(&mut kb, "Bool");
+        let (term, entity) = both_spellings(&mut kb, "Map", &[("K", open)]);
+
+        let mut subst = Substitution::new();
+        subst.bind(&kb, vid, boolean);
+
+        let walked_term = walk_type_deep_value(&mut kb, &subst, &term);
+        let walked_entity = walk_type_deep_value(&mut kb, &subst, &entity);
+        // The GROUND answer, built on the entity carrier, to compare both walks against.
+        let (_, ground_entity) = both_spellings(&mut kb, "Map", &[("K", boolean)]);
+
+        // STRUCTURALLY, NOT THROUGH THE DISPLAY. Reading this row's verdict off
+        // `type_display_name_value` would make it fail when the DISPLAY half of this
+        // ticket is backed out — one fixture measuring its neighbour's defect, and two
+        // rows that could no longer tell the two axes apart. `views_structurally_equal`
+        // is the carrier-aware compare, so it answers this question and only this one.
+        assert!(
+            views_structurally_equal(&kb, &walked_term, &walked_entity),
+            "`Map[K = ?T]` under `?T ↦ Bool` is one resolved type on either carrier"
+        );
+        assert!(
+            views_structurally_equal(&kb, &walked_entity, &ground_entity),
+            "…and the var is RESOLVED, not merely equal: a pair that agreed on \
+             `Map[K = ?T]` would be the skipped resolution this row exists to remove"
+        );
+    }
+
+    /// WI-20260904-B1KFS review finding 2 — A `Value::Var` CHILD IS RESOLVED TOO.
+    ///
+    /// The entity arm walks its children, but a `Value::Var` child is a LEAF and fell to
+    /// `other.clone()`, so `?T` stayed raw where the term twin `Term::Var(?T)` resolved —
+    /// the same carrier disagreement, on the other var spelling. The shape is producible
+    /// exactly because the var IS a leaf: `fn_value` builds the entity when a SIBLING
+    /// child is non-leaf, so this fixture gives `Map` a second, `Value::Node`-carried
+    /// binding to stand in for that sibling.
+    ///
+    /// BACKED OUT (drop the `Value::Var(Var::Global(..))` arm): THIS ROW FAILS and
+    /// [`an_entity_carried_types_inner_var_is_resolved`] PASSES — that row's var rides as
+    /// `Value::term(Term::Var(..))`, which the `Value::Term` arm already resolved. Two
+    /// spellings of "a variable in a child slot", and only one of them was reached.
+    #[test]
+    fn a_value_var_child_of_an_entity_is_resolved() {
+        let mut kb = KnowledgeBase::new();
+        let g = kb.global_scope();
+        let map = kb.define_symbol("Map", "Map", SymbolKind::Sort, g);
+        let k = kb.intern("K");
+        let name = kb.intern("T");
+        let vid = kb.fresh_var(name);
+        let boolean = sort_ref(&mut kb, "Bool");
+
+        let entity = Value::Entity {
+            functor: map,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(vec![(k, Value::Var(Var::Global(vid)))]),
+        };
+        let mut subst = Substitution::new();
+        subst.bind(&kb, vid, boolean);
+
+        let walked = walk_type_deep_value(&mut kb, &subst, &entity);
+        let expected = Value::Entity {
+            functor: map,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(vec![(k, Value::term(boolean))]),
+        };
+        assert!(
+            views_structurally_equal(&kb, &walked, &expected),
+            "`Map[K = ?T]` with the var carried as a `Value::Var` must resolve to \
+             `Map[K = Bool]` — a `Value::Var` child is a leaf, not a thing already resolved"
+        );
+    }
+
+    /// THE σ-WALK CONTROL: with nothing to resolve, the clone and the structural walk
+    /// agree, so this row stays green with the change backed out. It pins that the new
+    /// arm does not DISTURB a ground entity — the failure mode a rebuild invites.
+    #[test]
+    fn a_ground_type_walks_to_itself_on_either_carrier() {
+        let mut kb = KnowledgeBase::new();
+        let boolean = sort_ref(&mut kb, "Bool");
+        let (term, entity) = both_spellings(&mut kb, "Map", &[("K", boolean)]);
+        let subst = Substitution::new();
+
+        let walked_term = walk_type_deep_value(&mut kb, &subst, &term);
+        let walked_entity = walk_type_deep_value(&mut kb, &subst, &entity);
+
+        assert!(views_structurally_equal(&kb, &walked_term, &term));
+        assert!(views_structurally_equal(&kb, &walked_entity, &entity));
+    }
+}

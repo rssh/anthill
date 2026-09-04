@@ -115,7 +115,7 @@ const LAUNDER: &str = "namespace test.wi1063.launder\n\
 /// witness and is correct as written — refusing it is the universal reading, which costs 40
 /// tests and demands the wrong quantifier).
 ///
-/// Asserted on `E = ?E` against `E = {empty_row}`: the `got` side must carry the skolem the
+/// Asserted on `E = ?E` against `E = {}`: the `got` side must carry the skolem the
 /// opening minted. Without that the assertion would also pass on a change that refused the
 /// call for some unrelated reason.
 ///
@@ -130,7 +130,7 @@ fn a_bare_return_is_opened_at_the_consumer_and_the_producer_still_loads() {
          whose body packs a witness: {msg}",
     );
     assert!(
-        msg.contains("E = ?E") && msg.contains("E = {empty_row}"),
+        msg.contains("E = ?E") && msg.contains("E = {}"),
         "the refusal must name the skolem the call opened and the row it was handed to: {msg}",
     );
 }

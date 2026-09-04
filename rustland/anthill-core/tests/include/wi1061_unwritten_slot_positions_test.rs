@@ -132,7 +132,7 @@ fn a_nested_unwritten_row_is_rigid() {
          caller that hands `feed` an effectful list: {msg}",
     );
     assert!(
-        msg.contains("E = ?E") && msg.contains("E = {empty_row}"),
+        msg.contains("E = ?E") && msg.contains("E = {}"),
         "the refusal must name the nested row it cannot assume and the row it was handed \
          to: {msg}",
     );
@@ -313,7 +313,7 @@ fn a_return_position_unwritten_row_is_opened_at_the_call_not_the_declaration() {
 fn an_effectful_stream_no_longer_reaches_a_pure_slot_through_a_return() {
     let msg = refusal(WIDEN);
     assert!(
-        msg.contains("E = ?E") && msg.contains("E = {empty_row}"),
+        msg.contains("E = ?E") && msg.contains("E = {}"),
         "the refusal must name the fresh skolem the call opened and the row it was handed \
          to: {msg}",
     );

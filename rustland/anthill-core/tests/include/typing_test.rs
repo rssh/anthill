@@ -3432,6 +3432,99 @@ fn arrow_effects_canonical_form_hash_cons_stable() {
     );
 }
 
+/// WI-20260904-B1KFS — THE CANONICAL ORDER KEY IS NOT THE DISPLAY, and this is the row
+/// that measures it.
+///
+/// The sort above is keyed on a STRING, and it was `type_display_name`. That was safe
+/// only while an effect atom rendered as `guarded[label = Boom, guard = …]`. This
+/// ticket merged the term and occurrence renderers into one walk and the occurrence
+/// side's arms won, so an atom now shows its LABEL: two `guarded` atoms on the SAME
+/// label with DIFFERENT guards render one string. `sort_by_cached_key` is STABLE, so a
+/// shared key leaves their order to the INPUT order — and two rows written in opposite
+/// orders stop hash-consing to one term, which is the whole point of the canonical form.
+///
+/// So the sort takes `typing::effect_atom_order_key` instead: the generic
+/// `name[k = v, …]` rendering, unconditionally, which is byte-for-byte what the display
+/// used to produce here.
+///
+/// BACKED OUT (point the sort back at `type_display_name`): THIS ROW FAILS — the two
+/// orders produce different `TermId`s. [`arrow_effects_canonical_form_hash_cons_stable`]
+/// above PASSES EITHER WAY BY DESIGN and is the control: its two atoms are plain labels
+/// with DISTINCT names, so they never shared a key and no reordering could touch them.
+/// A suite holding only rows of that shape is green against this defect.
+#[test]
+fn two_atoms_sharing_a_display_still_canonicalize_to_one_row() {
+    let mut kb = load_stdlib_kb();
+    let label = kb.make_name_term("Boom");
+    let g1 = kb.make_name_term("g1");
+    let g2 = kb.make_name_term("g2");
+    let guard1 = kb.build_list(&[g1]);
+    let guard2 = kb.build_list(&[g2]);
+    // Same LABEL, different GUARD — two distinct atoms that DISPLAY identically
+    // (`Boom`), which is exactly the collision a display-keyed sort cannot separate.
+    let a1 = kb.make_effect_expression_guarded(label, guard1);
+    let a2 = kb.make_effect_expression_guarded(label, guard2);
+    assert_ne!(a1, a2, "the two atoms must actually differ, or this row measures nothing");
+    assert_eq!(
+        anthill_core::kb::typing::type_display_name(&kb, a1),
+        anthill_core::kb::typing::type_display_name(&kb, a2),
+        "…and they must DISPLAY the same, or the collision this row exists for is absent"
+    );
+
+    let forward = kb.build_canonical_effects_rows(&[a1, a2]);
+    let reverse = kb.build_canonical_effects_rows(&[a2, a1]);
+    assert_eq!(
+        forward, reverse,
+        "one row written in two orders must hash-cons to one term; forward={forward:?}          reverse={reverse:?}"
+    );
+}
+
+/// WI-20260904-B1KFS review finding 1 — A ROW RENDERS AS A ROW, AND AN ABSENCE KEEPS ITS
+/// `-`.
+///
+/// `build_canonical_effects_rows` folds a row into `merge(a₁, merge(a₂, …, empty_row))`,
+/// so the two things a row renderer must not do are glue a separator onto the empty
+/// terminator and lose the present/absent distinction. The first draft of this ticket's
+/// merged walk did both — it adopted the occurrence renderer's `merge => "{l}, {r}"` and
+/// its bare-label `absent`, onto the TERM carrier every canonical row rides on — and
+/// printed `{External, }` for both `{External}` and `{-External}`. A mismatch between
+/// those two then reads `expected Stream[E = {External, }], got Stream[E = {External, }]`:
+/// the message shows the same type twice for the one difference it exists to report.
+///
+/// BACKED OUT (`"absent" => label` without the `-`, or `merge` joining unconditionally):
+/// THIS ROW FAILS on the corresponding half. Both halves are needed — they are separate
+/// defects that happened to arrive together, and either alone still prints a row a reader
+/// cannot act on. The `{}` row below PASSES EITHER WAY BY DESIGN: an empty row has no
+/// atom to lose and no separator to strand, which is exactly why the five refusal
+/// assertions this ticket updated (all of them on `E = {}`) did not catch either defect.
+#[test]
+fn a_canonical_effect_row_renders_as_a_row() {
+    let mut kb = load_stdlib_kb();
+    let ext = kb.make_name_term("External");
+    let err = kb.make_name_term("Error");
+
+    let present = kb.make_effect_expression_present(ext);
+    let absent = kb.make_effect_expression_absent(ext);
+    let one = kb.build_canonical_effects_rows(&[present]);
+    let denied = kb.build_canonical_effects_rows(&[absent]);
+    let present_err = kb.make_effect_expression_present(err);
+    let two = kb.build_canonical_effects_rows(&[present_err, present]);
+    let empty = kb.build_canonical_effects_rows(&[]);
+
+    let d = |t| anthill_core::kb::typing::type_display_name(&kb, t);
+    assert_eq!(d(one), "{External}", "no trailing separator from the `empty_row` fold");
+    assert_eq!(d(denied), "{-External}", "an absence keeps proposal 064's `-`");
+    assert_ne!(
+        d(one),
+        d(denied),
+        "…and so `{{External}}` and `{{-External}}` are not one string — a mismatch \
+         between them must not print the same type twice"
+    );
+    assert_eq!(d(two), "{Error, External}", "two atoms, one separator");
+    // THE CONTROL: green either way, and the reason the rows above are the measuring ones.
+    assert_eq!(d(empty), "{}", "the empty row was never the case that broke");
+}
+
 /// Empty effects, in two orderings, also produce identical TermIds —
 /// guards against a regression where an empty input fell into a different
 /// path (e.g. a stray `Vec::new()` branch) than the general one.

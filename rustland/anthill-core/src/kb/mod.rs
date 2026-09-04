@@ -8733,7 +8733,7 @@ impl KnowledgeBase {
     /// WI-307 v1a row-substrate: `effects` is the singular
     /// `effects_rows(EffectExpression)` Type — not `List[Type]`. The caller
     /// still passes a flat `&[TermId]` of effect labels for ergonomics; we
-    /// canonicalize internally (sort by `type_display_name`, dedup, fold into
+    /// canonicalize internally (sort by `typing::effect_atom_order_key`, dedup, fold into
     /// a right-associated `merge`-chain ending in `empty_row` for closed
     /// rows or `open(tail)` when a `Var::Global` is present). Mixing concrete
     /// labels and a row-tail `Var::Global` in one list is the documented row
@@ -9031,8 +9031,16 @@ impl KnowledgeBase {
                 }
             }
         }
-        // Canonical ordering: sort by type_display_name, then dedup.
-        atoms.sort_by_cached_key(|&t| crate::kb::typing::type_display_name(self, t));
+        // Canonical ordering, then dedup. WI-20260904-B1KFS — keyed by
+        // `effect_atom_order_key`, NOT by `type_display_name`: an atom now DISPLAYS as
+        // its label, so `present(A)` and `absent(A)` render one string, and a shared key
+        // leaves their order to the INPUT order (`sort_by_cached_key` is stable) — which
+        // would canonicalize `{A, -A}` and `{-A, A}` to two different, non-unifying
+        // terms. The key is the generic `name[k = v, …]` rendering — INJECTIVE on the
+        // atom, which is what this sort needs; it is NOT the old string byte-for-byte,
+        // so the atom order within a row may differ from before (harmless: a canonical
+        // form needs one representative, not the same one it had last release).
+        atoms.sort_by_cached_key(|&t| crate::kb::typing::effect_atom_order_key(self, t));
         atoms.dedup();
 
         // Right-fold: innermost tail first (additional tails as open(…)
