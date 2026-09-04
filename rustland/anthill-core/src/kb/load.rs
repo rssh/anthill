@@ -3273,6 +3273,42 @@ fn binder_form_layout(name: &str) -> Option<(usize, usize)> {
     }
 }
 
+/// WI-20260903-FC2X4 — the five COMPOUND EXPRESSION surfaces, by the functor the
+/// converter mints for each.
+///
+/// THE SET IS `convert::is_expr_body_kind`'s, one lowering step later: those are the
+/// alternatives `_expr_body` admits beyond `_term`, and WI-20260829-YBBC3 made every one
+/// of them admissible in every DELIMITED value position — a call argument, a
+/// named-argument value, a list element, a tuple component, inside `paren_expr`. So all
+/// five reach a rule head and a rule body, and all five arrive as a POSITIONAL marker
+/// that only [`Loader::visit_load`]'s arms can read.
+///
+/// ADDING A SIXTH `_expr_body` ALTERNATIVE MEANS ADDING IT HERE, and the omission would
+/// be silent — it would simply keep the `⊥`-filled round-trip. Held to the set
+/// BEHAVIOURALLY rather than by a name list, because the two sides are not mechanically
+/// mappable (one is tree-sitter node kinds, `"let_chain"` / `"proof_statement"`; this one
+/// is minted functor addresses): every member is DRIVEN in a rule body by
+/// `wi_fc2x4_lambda_in_a_rule_test` — the lambda by
+/// `a_lambda_in_a_rule_body_is_applied_and_answers_three`, the other four by
+/// `the_other_compound_surfaces_carry_what_was_written`, each asserting the written tree
+/// and no `⊥`.
+///
+/// `match_branch` and the `pattern_*` markers are deliberately absent: they exist only
+/// UNDER one of these five, so `visit_load` reaches them from its own arms and they never
+/// stand at a rule term slot on their own.
+///
+/// Compared with `==` and not [`dt::is`] because every caller is gated on
+/// `SimpleTermStore::is_minted` first — see `desugar_target`'s "Reading one back".
+/// `proof_stmt` has no `desugar_target` address (it is minted under its short name), and
+/// its arm in `visit_load` spells it the same way.
+fn is_compound_expression_marker(name: &str) -> bool {
+    name == dt::LAMBDA_EXPR
+        || name == dt::IF_EXPR
+        || name == dt::LET_EXPR
+        || name == dt::MATCH_EXPR
+        || name == "proof_stmt"
+}
+
 /// Render a constraint label as ` 'label'` for diagnostics, or `""` if unlabeled.
 pub(crate) fn label_suffix(label: &Option<String>) -> String {
     match label {
@@ -18210,6 +18246,27 @@ struct Loader<'a> {
     loaded_paths: &'a mut HashSet<String>,
     // Map from parse-time TermId → KB TermId
     term_map: HashMap<u32, TermId>,
+    /// WI-20260903-FC2X4 — is [`Loader::compound_expression_occurrence`] currently
+    /// lending [`Loader::visit_load`] to a compound expression written IN A RULE?
+    ///
+    /// That walk was built for OPERATION BODIES and one of its arms asks a question whose
+    /// answer differs by position: a bare `->`. In an operation body it is always the
+    /// WI-605 keyword-less-lambda typo; in a RULE it is an arrow TYPE, because types are
+    /// terms there — `rule same_ty[t](?y) :- Eq[t], ?y <=> (t -> t)` is a loading program
+    /// (`wi618_bare_arrow_logic_test::lowercase_rule_type_var_arrow_still_loads`). The
+    /// rule side has its own, more careful reader (`check_bare_arrow_typo`, which SCOPES
+    /// binders through `binder_form_layout`), so firing the op-body arm underneath it told
+    /// an author writing `lambda t -> (t -> t)` that "a lambda needs the `lambda` keyword"
+    /// — advice contradicted by the keyword three characters to the left. MEASURED as
+    /// `wi618_bare_arrow_logic_test::lambda_binder_under_inner_arrow_still_loads`, the one
+    /// row this ticket's first cut moved.
+    lowering_rule_compound_expr: bool,
+    /// WI-20260903-FC2X4 — the occurrence [`Loader::compound_expression_occurrence`] built
+    /// for a compound-expression marker parse node, so the two walks that can reach one
+    /// such node (a `[simp]` head's term conversion and its RHS occurrence) delegate to
+    /// `convert_expr_term` ONCE. Keyed by PARSE node, like `entity_slot_origin` and for
+    /// its reason: the question is about a place, not about a structure.
+    compound_expr_occ: HashMap<u32, Rc<NodeOccurrence>>,
     /// WI-20260902-2SZ88 — per ENTITY-headed parse node, the `(field, parse child)`
     /// pairs its lowering ASSIGNED, in no particular order (the reader looks up by
     /// symbol). A declared field missing from the list was INVENTED by
@@ -18631,6 +18688,8 @@ impl<'a> Loader<'a> {
             resolver,
             loaded_paths,
             term_map: HashMap::new(),
+            compound_expr_occ: HashMap::new(),
+            lowering_rule_compound_expr: false,
             entity_slot_origin: HashMap::new(),
             descs_emitted_by_convert: false,
             sym_map: HashMap::new(),
@@ -20703,7 +20762,11 @@ impl<'a> Loader<'a> {
                     // typer never sees the Bottom (its loud `BottomExpr`
                     // post-elaboration invariant would otherwise add a second,
                     // internal-jargon error at the same site).
-                    Some(n) if pratt::is_arrow_functor(n) => {
+                    // WI-20260903-FC2X4 — …IN AN OPERATION BODY. A rule lends this walk
+                    // its compound expressions, and there a bare `->` is an arrow TYPE,
+                    // not a typo — the rule side reads it with `check_bare_arrow_typo`,
+                    // which scopes binders. See [`Self::lowering_rule_compound_expr`].
+                    Some(n) if pratt::is_arrow_functor(n) && !self.lowering_rule_compound_expr => {
                         self.errors.push(LoadError::ArrowTermInExprPosition {
                             span: self.parsed.terms.span(parse_id),
                         });
@@ -22803,6 +22866,85 @@ impl<'a> Loader<'a> {
         occ
     }
 
+    /// WI-20260903-FC2X4 — IS THIS PARSE NODE ONE OF THE FIVE COMPOUND EXPRESSION
+    /// SURFACES, and if so, its occurrence — built by the walk that owns their layout.
+    ///
+    /// `lambda` / `if` / `let` / `match` / `proof` are lowered by the CONVERTER into
+    /// POSITIONAL marker terms (`convert.rs`'s `alloc_marker_term`:
+    /// `lambda_expr(param, body)`), and exactly one walk reads that layout —
+    /// [`Self::visit_load`], whose marker arms index `pos_args` by position, push the
+    /// binder's names onto `local_names_stack`, and build the reflect NAMED form
+    /// (`lambda_expr(param: …, body: …)`) beside a `NodeKind::Pattern` occurrence for the
+    /// binder. The rule-body occurrence walk had no such arm: `lambda_expr` is a
+    /// [`node_occurrence::is_reflect_form_functor`] name, so a marker reached
+    /// [`node_occurrence::materialize_from_handle_spanned`], whose `visit_fn` reads the
+    /// NAMED keys — found none — and built the form with `⊥` in every slot.
+    ///
+    /// WHAT THAT COST, MEASURED on the delivered WI-20260903-FCZ3N tree, one program per
+    /// row (`?y <=> …` binds without typing, which is why four of the five are silent):
+    ///
+    /// ```text
+    ///   :- apply1(lambda (x: Int64) -> x + 1, 2) = 3   REFUSED  "<bottom>.expr" at 1:1
+    ///   :- ?y <=> (if 1 = 1 then 10 else 20)           ANSWERS  If{⊥, ⊥, ⊥}
+    ///   :- ?y <=> (let a = 5  a + 1)                   ANSWERS  Let{pattern: <marker>, ⊥, ⊥}
+    ///   :- ?y <=> (match 1 case 1 -> 100 case _ -> 200) ANSWERS Match{⊥, branches: []}
+    /// ```
+    ///
+    /// The lambda is the LOUD TAIL of that population, not the whole of it: its `⊥` body
+    /// reaches the typer through an operation argument and trips the post-elaboration
+    /// invariant, while the other three bind a `⊥`-filled node to `?y` and say nothing.
+    ///
+    /// THE TERM CARRIER IS DELIBERATELY NOT MOVED. [`Self::convert_term`] still builds the
+    /// positional marker for a fact head, a rule head and a query pattern, so
+    /// `fact p(lambda x -> 1)` and a goal `p(lambda x -> 1)` still do not unify — that is
+    /// **WI-20260829-8VGRW**, an open question with three answers (make it match, refuse
+    /// it, or make the reflect spelling the only one) and a family the ticket's own
+    /// feedback says must move together. Lowering the term here would move ONE member:
+    /// `if` has no binder, so the two sides would agree and start matching, while `lambda`
+    /// and `let` alpha-rename their binder per SITE ([`Self::binder_sym`] is
+    /// `intern_unique`) and would not — the exact asymmetry that ticket exists to avoid.
+    /// `wi_ybbc3_compound_expression_positions_test::a_compound_form_in_a_rule_data_position_loads_and_matches_nothing`
+    /// is the row that pins it, and it is unmoved by this ticket.
+    ///
+    /// `None` for anything else, so the caller keeps its ordinary reading.
+    ///
+    /// GATED ON PROVENANCE, like every other marker reader: `is_minted` means the
+    /// CONVERTER built this node, so a user-written `lambda_expr(a, b)` call is untouched
+    /// and keeps its own "unknown functor" diagnostic. The comparison is `==` against the
+    /// address rather than `dt::is`, which is what a mint gate licenses (see
+    /// `desugar_target`'s "Reading one back").
+    ///
+    /// MEMOIZED per parse node. Two walks reach one node — [`Self::convert_subject_term`]
+    /// builds a `[simp]` head's term and [`Self::equation_rhs_occurrence`] then asks for
+    /// the RHS occurrence over the same parse subtree — and `convert_expr_term` is not
+    /// free of side effects (it emits inline-description facts and mints occurrences), so
+    /// running it twice for one node would double them.
+    fn compound_expression_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        // Already inside `convert_expr_term` — that walk has its own marker arms and is
+        // documented non-reentrant, so a nested delegation would clobber its stacks.
+        if self.in_op_body_value {
+            return None;
+        }
+        if !self.parsed.terms.is_minted(parse_id) {
+            return None;
+        }
+        let Term::Fn { functor, .. } = self.parsed.terms.get(parse_id) else {
+            return None;
+        };
+        if !is_compound_expression_marker(self.parsed.symbols.local_name(*functor)) {
+            return None;
+        }
+        if let Some(occ) = self.compound_expr_occ.get(&parse_id.raw()) {
+            return Some(Rc::clone(occ));
+        }
+        let saved = std::mem::replace(&mut self.lowering_rule_compound_expr, true);
+        let (_kb_id, occ) = self.convert_expr_term(parse_id);
+        self.lowering_rule_compound_expr = saved;
+        self.compound_expr_occ
+            .insert(parse_id.raw(), Rc::clone(&occ));
+        Some(occ)
+    }
+
     /// WI-1039 — every converted node of `parse_id`'s subtree, keyed by the `TermId`
     /// `convert_term` produced for it, with the span the PARSE node carries.
     ///
@@ -23719,6 +23861,15 @@ impl<'a> Loader<'a> {
                 // decides which of this node's arguments are themselves goals.
                 let at_goal = std::mem::replace(&mut self.in_body_goal, false);
                 let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
+                // WI-20260903-FC2X4 — A COMPOUND EXPRESSION IS LOWERED BY THE WALK THAT
+                // OWNS ITS LAYOUT. Asked FIRST, before any reading below: a marker's
+                // functor IS a reflect-form name, so leaving it to the round-trip is what
+                // built `lambda_expr(param: ⊥, body: ⊥)`. Asked AFTER the two flags are
+                // consumed, so the delegated subtree is entered as the value expression it
+                // is — a lambda body is not a goal, and neither is an `if` branch.
+                if let Some(occ) = self.compound_expression_occurrence(parse_id) {
+                    return occ;
+                }
                 // WI-20260901-719FJ — A BODY GOAL IS A LOGICAL SUBJECT, so a dotted
                 // paren-less citation written here is the NAME, exactly as the
                 // one-segment `:- tgt` already is (P85Z7). Asked at the GOAL and not in

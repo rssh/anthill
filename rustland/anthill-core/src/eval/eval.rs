@@ -2300,8 +2300,17 @@ impl Interpreter {
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
             find_local(&self.kb, &top.locals, &target_name).and_then(|v| match v {
                 Value::Closure(_) | Value::OpRef { .. } => Some(v.clone()),
+                // WI-20260903-FC2X4 — …AND A LAMBDA THE RESOLVER PROVED, which rides on
+                // the OCCURRENCE carrier. See [`Self::closure_of_applied_lambda_node`].
+                Value::Node(o) if occurrence_is_lambda(o) => Some(v.clone()),
                 _ => None,
             })
+        };
+        // WI-20260903-FC2X4 — a `Value::Node(Expr::Lambda)` local becomes a closure HERE,
+        // where it is being APPLIED, and nowhere earlier. See the method's doc.
+        let local_callable = match local_callable {
+            Some(v @ Value::Node(_)) => Some(self.closure_of_applied_lambda_node(&v)),
+            other => other,
         };
         match local_callable {
             Some(Value::Closure(handle)) => {
@@ -3145,6 +3154,57 @@ impl Interpreter {
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
+    }
+
+    /// WI-20260903-FC2X4 — a LAMBDA THE RESOLVER PROVED, as the closure this apply can
+    /// enter. Anything else is returned unchanged.
+    ///
+    /// A lambda written in an OPERATION body is reduced at its own site
+    /// ([`Self::reduce_lambda`]) and reaches a frame as a `Value::Closure`. A lambda
+    /// written in a RULE is proved by the resolver, which has no closure arena — it walks
+    /// the atom's occurrence and hands `bridge_op_to_eval` a
+    /// `Value::Node(Expr::Lambda { … })`. The lookup above then found a local that was
+    /// neither a `Closure` nor an `OpRef`, fell through to operation resolution, and
+    /// reported `unknown operation: apply1.f` — which is why
+    /// `rule d(1) :- apply1(lambda (x: Int64) -> x + 1, 2) = 3` answered nothing while the
+    /// same call written in an operation body answered 3.
+    ///
+    /// CONVERTED AT THE APPLY, NOT AT THE BRIDGE, and the difference is measured. The
+    /// first cut converted every lambda argument at [`Self::call_op_bridged`], gated on
+    /// the callee's declared parameter type; two things went wrong with that and both are
+    /// closed by moving the conversion here:
+    ///
+    ///  * A `[simp]` MACRO reaches that same entry and reads its lambda argument as
+    ///    SYNTAX — `guarded_of(r: NodeOccurrence, cond: NodeOccurrence)` compiles the row
+    ///    lambda into a query. Converting on the way in felled 85 rows across the whole
+    ///    relation algebra. A macro never APPLIES its argument, so it never reaches here.
+    ///  * A `Function`-typed parameter the callee RETURNS rather than applies
+    ///    (`operation idf(f: Function[…]) -> Function[…] = f`) handed the resolver back an
+    ///    opaque `Value::Closure` — not unifiable, not deep-ground, not printable — where
+    ///    it had had a `Value::Node` it could carry. Nothing is converted on a
+    ///    pass-through path now, so that rule binds the occurrence it always did.
+    ///
+    /// The captured environment is EMPTY, and that is right rather than a simplification
+    /// of `reduce_lambda`'s frame snapshot: this lambda was written in a RULE, so its free
+    /// names are the rule's variables, and `bridge_op_to_eval` applied σ to the occurrence
+    /// and refused the call unless every argument came back deep-ground. Requirements and
+    /// type arguments are empty for the same reason — a rule body carries no enclosing
+    /// sort or requirement frame.
+    fn closure_of_applied_lambda_node(&mut self, v: &Value) -> Value {
+        let Value::Node(occ) = v else {
+            return v.clone();
+        };
+        let Some(Expr::Lambda { param, body }) = occ.as_expr() else {
+            return v.clone();
+        };
+        let handle = self.closures.alloc(super::closure::Closure {
+            param_pattern: Rc::clone(param),
+            body: Rc::clone(body),
+            env: SmallVec::new(),
+            requirements: SmallVec::new(),
+            type_args: SmallVec::new(),
+        });
+        Value::Closure(handle)
     }
 
     fn enter_closure(
@@ -4367,4 +4427,13 @@ pub fn lookup_operation_body(
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let body = rec.body_node?;
     Some((body, rec.params))
+}
+
+/// WI-20260903-FC2X4 — is this occurrence an `Expr::Lambda`?
+///
+/// A free function because it is read inside a `match` GUARD over a borrowed `Value`,
+/// where a `&mut self` method cannot go. See
+/// [`Interpreter::closure_of_applied_lambda_node`], which owns the reason.
+fn occurrence_is_lambda(occ: &std::rc::Rc<NodeOccurrence>) -> bool {
+    matches!(occ.as_expr(), Some(Expr::Lambda { .. }))
 }

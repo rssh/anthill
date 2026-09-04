@@ -67854,7 +67854,14 @@ fn dispatch_calls_in_occ(
     // ONE predicate for the shapes this walk decides, shared with the pre-scan
     // ([`occ_needs_call_dispatch`]) so a shape walked but not acted on, or acted on
     // but not walked, is impossible. It answers WHICH shape, because the error tail
-    // below is not the same for all three (WI-1043).
+    // below is not the same for all of them (WI-1043).
+    //
+    // WI-20260903-FC2X4 — that pairing is why `CallDispatch::BinderForm` was added THERE
+    // rather than as an arm of the `match` below. A first cut short-circuited a binder
+    // form in this function alone, which left the pre-scan answering `true` for a body
+    // whose only dispatch-shaped node sits inside a lambda while this walk did nothing —
+    // the "acted on but not walked" case the sentence above says cannot happen. Raised by
+    // `/code-review`.
     let shape = occ.as_expr().and_then(|e| call_dispatch_shape(kb, e, pos));
     // WI-1043 — a BODY-LESS spec-op call is walked INTO as well as decided, so every
     // node beneath it keeps the decision and the error policy it had before this
@@ -67882,7 +67889,7 @@ fn dispatch_calls_in_occ(
         // is never read as a call on a functor that names nothing, and a type's sort-name
         // leaves are never read as unresolved values.
         (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
-        (Some(CallDispatch::Checked), _) | (_, None) => Rc::clone(occ),
+        (Some(CallDispatch::Checked | CallDispatch::BinderForm), _) | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
             // Collect child clones first so the immutable borrow on `occ` ends
             // before the mutable-`kb` recursion below.
@@ -67953,7 +67960,10 @@ fn dispatch_calls_in_occ(
             match shape {
                 // Owns its whole subtree and does not recurse, so `mark` is its own
                 // start and there is nothing beneath it to have reported already.
-                CallDispatch::Checked => {
+                // WI-20260903-FC2X4 — `BinderForm` shares this arm and shares its reason:
+                // it does not recurse either, so `mark` is its own start and there is
+                // nothing beneath it to have reported already.
+                CallDispatch::Checked | CallDispatch::BinderForm => {
                     debug_assert_eq!(
                         mark,
                         errors.len(),
@@ -68172,11 +68182,20 @@ fn child_body_positions(
     let mut out: SmallVec<[BodyPos; 8]> = smallvec::smallvec![BodyPos::Value; n_children];
     // A BINDER'S PATTERN is not data. In an operation body these arrive as Pattern-kind
     // occurrences, which `as_expr` answers `None` for and the walk already skips; a RULE
-    // body is materialized from a term, so the same pattern arrives as a structural
+    // body was materialized from a term, so the same pattern arrived as a structural
     // `Expr::Apply` on the parse-level meta-functor (`pattern_var`, `pattern_wildcard`,
     // …) — names the KB declares nothing under, by design. MEASURED on `rule all_pos(?xs)
     // :- all_match(?xs, lambda (x) -> is_pos(x))`, which reported `pattern_var` as an
     // unknown functor (`wi620_paren_lambda_param_test`).
+    //
+    // WI-20260903-FC2X4 — THE RULE-BODY HALF OF THAT IS HISTORY, and the marking is kept
+    // for the reason it was written rather than for the shape it described. A rule's
+    // compound expressions are now lowered by the walk that owns their layout, so a rule
+    // body's binder pattern IS a `NodeKind::Pattern` and the `as_expr` skip above already
+    // covers it. What still reaches here as an `Expr::Apply` on a marker functor is a
+    // binder the delegation did not build — a reflect form the AUTHOR wrote, or a form
+    // reached at a position the delegation declines — and for those the marking is the
+    // only thing keeping a meta-functor out of the value walk.
     for i in pattern_child_indices(expr) {
         if let Some(p) = out.get_mut(i) {
             *p = BodyPos::Untyped;
@@ -68424,6 +68443,12 @@ enum CallDispatch {
     /// NAMES something ([`data_functor_error`]); never type-checked, for three measured
     /// reasons stated at [`call_dispatch_shape`].
     DataTerm,
+    /// WI-20260903-FC2X4 — a BINDER FORM (`lambda` / `let` / `match`), whose children are
+    /// not readable without it. Same policy as [`Self::Checked`]: does NOT recurse —
+    /// `type_check_node`'s own `Expr::Lambda` / `Expr::Let` / `Expr::Match` arms bind the
+    /// pattern into Γ (`bind_and_label_pattern`) and type the subtree under it, which is
+    /// the one place in the typer that knows how — and reports leaf by leaf.
+    BinderForm,
 }
 
 /// WI-282 / WI-1026 / WI-1043: is THIS node a call [`dispatch_calls_in_occ`] must decide
@@ -68553,6 +68578,23 @@ fn call_dispatch_shape(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> Option<
         // the parametric leg — so it returns early for exactly the population this arm
         // added, and pays the leg twice only for the handful of DEFAULTED spec-op call
         // sites (WI-1036 counted 4–5 of those).
+        // WI-20260903-FC2X4 — A BINDER FORM IS DECIDED AS A UNIT, because its children
+        // name something only it introduces. `lambda x -> x + 1`'s body names `x`, and
+        // only the LAMBDA puts `x` in Γ; this walk has no Γ to extend, so descending
+        // typed `plus(x, 1)` in an empty environment and reported the binder as an
+        // unresolved NAME. Handing the whole node to `type_check_node` instead reuses the
+        // binder scoping that already exists there.
+        //
+        // NOT REACHABLE BEFORE THIS TICKET, which is why the arm is new rather than
+        // long-missing: a rule body's lambda was materialized from a POSITIONAL marker
+        // term whose named keys `visit_fn` could not find, so its body was `⊥` and there
+        // was no `x` to resolve. [`child_body_positions`]'s note about a binder's PATTERN
+        // child records the same shape from the other side.
+        //
+        // Derived from [`pattern_child_indices`] rather than re-listing the forms: that
+        // function is the one place every binding constructor is enumerated, and its own
+        // doc says a missing row there is silent.
+        _ if !pattern_child_indices(expr).is_empty() => Some(CallDispatch::BinderForm),
         Expr::Apply {
             functor, pos_args, ..
         } => {

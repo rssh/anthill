@@ -1190,7 +1190,20 @@ fn reparent_spliced(
                         from.owner,
                     )
                 } else if node.as_pattern().is_some() {
-                    node_occurrence::reassemble_pattern(&node, &new_children)
+                    // WI-20260903-FC2X4 — …AND ITS OWNER MOVES WITH ITS SIBLINGS'. The
+                    // `Expr` branch above passes `from.owner`, and this one used to
+                    // rebuild with `occ.owner` — the rule's, which is `None` as the loader
+                    // builds body atoms. So a spliced lambda's `param` and the
+                    // `Expr::Lambda` holding it disagreed about which declaration they sit
+                    // in, the silent move `reparented_from`'s own doc warns about
+                    // ("quietly under readers in `typing` and `resolve` that ask which
+                    // declaration a node sits in"). Raised by `/code-review` on
+                    // WI-20260903-W9D4Z and NOT DRIVABLE THEN: a probe on this branch
+                    // recorded ZERO hits over the whole `wi_tests` binary, because a rule
+                    // body's lambda param was built as a reflect `Expr::Apply` and never
+                    // became a `NodeKind::Pattern` at all. This ticket is what makes it
+                    // one, so the branch starts being taken.
+                    node_occurrence::reassemble_pattern_at(&node, &new_children, from.owner)
                 } else {
                     Rc::clone(&node)
                 };
@@ -2575,6 +2588,101 @@ mod tests {
         assert!(
             Rc::ptr_eq(&cur, &seven),
             "innermost redex should reuse the matched `7`"
+        );
+    }
+
+    /// WI-20260903-FC2X4 — A SPLICED `NodeKind::Pattern` CARRIES THE REDEX'S OWNER, like
+    /// its `Expr` siblings.
+    ///
+    /// Raised by `/code-review` on WI-20260903-W9D4Z: [`reparent_spliced`]'s `Expr` branch
+    /// passes `from.owner` to [`NodeOccurrence::reparented_from`] while its `Pattern`
+    /// branch rebuilt with the node's OWN owner — so a spliced lambda's `param` and the
+    /// `Expr::Lambda` holding it would disagree about which declaration they sit in, the
+    /// silent move that method's doc warns about.
+    ///
+    /// DRIVEN HERE AND NOT THROUGH A PROGRAM, and the reason is a measurement rather than
+    /// convenience: `from.owner` is `None` at EVERY splice in the corpus. Instrumented at
+    /// this function over the whole `wi_tests` binary — **542 fires, `owner_is_some=false`
+    /// on all 542**, and exactly ONE reach of the pattern branch (a `[simp]` RHS carrying
+    /// a lambda, which is what this ticket makes buildable at all) with `from.owner` and
+    /// the node's owner both `None`. Every `Expr` / `Pattern` occurrence the loader builds
+    /// takes `owner: None` (`node_occurrence::build_frame`,
+    /// `Loader::build_body_atom_occurrence_inner`); `current_owner` reaches TYPE
+    /// occurrences, not expression ones. So an end-to-end row would compare `None` with
+    /// `None` and pass under the back-out — a homogeneous fixture that cannot contain the
+    /// defect. This one varies the deciding axis directly.
+    ///
+    /// RED under the back-out (`reassemble_pattern` in place of
+    /// `reassemble_pattern_at(.., from.owner)`): the lambda gets `Some(owner)` and its
+    /// param stays `None`. The binder has no children and no annotation, so the plain
+    /// reassembly's "nothing moved" fast path hands back the stored rule's own `Rc` —
+    /// which is the second half of the same finding, and why
+    /// [`crate::kb::node_occurrence::reassemble_pattern_at`] treats a changed owner as a
+    /// change.
+    #[test]
+    fn a_spliced_pattern_takes_the_redexs_owner() {
+        let mut kb = KnowledgeBase::new();
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 1);
+        let owner = kb.intern("the_consumer");
+        let x = kb.intern("x");
+        let f = kb.intern("f");
+
+        // The stored rule's RHS: `lambda x -> 1`, owned by nothing (as the loader builds it).
+        let param = NodeOccurrence::new_pattern_annotated(
+            crate::kb::node_occurrence::Pattern::Var { name: x },
+            None,
+            span,
+            None,
+        );
+        let body = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), span, None);
+        let rhs = NodeOccurrence::new_expr(
+            Expr::Lambda {
+                param: Rc::clone(&param),
+                body,
+            },
+            span,
+            None,
+        );
+        // The redex it is spliced onto, sitting in a declaration that HAS a name.
+        let from = NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: f,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            span,
+            Some(owner),
+        );
+
+        let pass = simp_pass(&mut kb);
+        let spliced = reparent_spliced(&rhs, &from, pass);
+        assert_eq!(
+            spliced.owner,
+            Some(owner),
+            "the spliced lambda takes the redex's owner (the `Expr` branch, unchanged)",
+        );
+        let Some(Expr::Lambda { param: p, .. }) = spliced.as_expr() else {
+            panic!("expected the spliced Expr::Lambda, got {:?}", spliced.kind);
+        };
+        assert!(
+            matches!(p.kind, NodeKind::Pattern { .. }),
+            "the param must still BE a pattern after the splice",
+        );
+        assert_eq!(
+            p.owner,
+            Some(owner),
+            "…and its binder must sit in the same declaration as the node holding it",
+        );
+        assert!(
+            !Rc::ptr_eq(p, &param),
+            "…on its OWN node: stating a different owner is a change, so the \
+             `reassemble_pattern` fast path must not hand back the stored rule's `Rc` \
+             (a `Pattern::Var` has zero children, so nothing else would have moved). \
+             Where the owners already AGREE the `Rc` is still shared, and harmlessly — a \
+             Pattern node carries no typer `RefCell`s, and an annotated one rebuilds \
+             anyway because its `type_ann` is an `Expr` the branch above re-parented.",
         );
     }
 }

@@ -1586,6 +1586,8 @@ mod wi_2sz88_entity_ctor_native_occurrence_test;
 #[path = "include/wi_2nxac_collection_literal_native_occurrence_test.rs"]
 mod wi_2nxac_collection_literal_native_occurrence_test;
 
+#[path = "include/wi_fc2x4_lambda_in_a_rule_test.rs"]
+mod wi_fc2x4_lambda_in_a_rule_test;
 #[path = "include/wi_fcz3n_simp_rhs_occurrence_test.rs"]
 mod wi_fcz3n_simp_rhs_occurrence_test;
 

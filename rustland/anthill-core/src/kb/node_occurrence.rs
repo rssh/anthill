@@ -2211,13 +2211,36 @@ pub fn reassemble_pattern(
     occ: &Rc<NodeOccurrence>,
     new_children: &[Rc<NodeOccurrence>],
 ) -> Rc<NodeOccurrence> {
+    reassemble_pattern_at(occ, new_children, occ.owner)
+}
+
+/// WI-20260903-FC2X4 — [`reassemble_pattern`] STATING THE OWNER, for a caller that is
+/// moving the node into another declaration's tree.
+///
+/// The pattern twin of [`NodeOccurrence::reparented_from`]'s `owner` argument, and it
+/// exists for that method's reason: `owner` says which declaration a node SITS IN, and a
+/// walk that relocates a subtree has to state it rather than inherit it. `[simp]`'s
+/// splice ([`crate::kb::simp_rewrite`]) is the caller — it re-parents every `Expr` node of
+/// a fired RHS onto the redex, and a `NodeKind::Pattern` beside them (a lambda's binder, a
+/// `match` arm's pattern) went through the plain `reassemble_pattern` and kept the RULE's
+/// owner, so parent and child disagreed about the declaration they are in.
+///
+/// A CHANGED OWNER IS A CHANGE, so the same-`Rc` fast path below does not fire on it —
+/// otherwise a binder with no sub-patterns and no annotation (`Pattern::Var`, which has
+/// zero children) would be handed back verbatim, sharing the stored rule's node and its
+/// owner across every fire.
+pub fn reassemble_pattern_at(
+    occ: &Rc<NodeOccurrence>,
+    new_children: &[Rc<NodeOccurrence>],
+    owner: Option<Symbol>,
+) -> Rc<NodeOccurrence> {
     let (pat, ann) = match &occ.kind {
         NodeKind::Pattern { pattern, type_ann } => (pattern, type_ann),
         _ => return Rc::clone(occ),
     };
     // Detect any move first; if every new child is ptr-eq to the
     // original, reuse `occ`. Otherwise rebuild.
-    let mut changed = false;
+    let mut changed = owner != occ.owner;
     {
         let mut i = 0;
         for_each_pattern_child(occ, |c| {
@@ -2272,7 +2295,7 @@ pub fn reassemble_pattern(
     // WI-819: the annotation is the LAST child for every variant — taken after
     // the per-variant arms, exactly as `for_each_pattern_child` enumerates it.
     let new_ann = ann.as_ref().map(|_| take());
-    NodeOccurrence::new_pattern_annotated(new_pat, new_ann, occ.span, occ.owner)
+    NodeOccurrence::new_pattern_annotated(new_pat, new_ann, occ.span, owner)
 }
 
 // ── De Bruijn opening (rule-body atoms) ─────────────────────────
