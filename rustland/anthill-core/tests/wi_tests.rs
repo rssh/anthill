@@ -1602,3 +1602,6 @@ mod wi_2m5xr_fact_spelling_frame_test;
 
 #[path = "include/wi_h054k_type_position_subst_test.rs"]
 mod wi_h054k_type_position_subst_test;
+
+#[path = "include/wi_qqpq2_tuple_carrier_test.rs"]
+mod wi_qqpq2_tuple_carrier_test;

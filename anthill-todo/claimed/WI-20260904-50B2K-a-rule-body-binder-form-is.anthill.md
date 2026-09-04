@@ -426,6 +426,32 @@ does NOT depend on (b) — the pinning is from its own body, the same shape as w
 `all_match(?xs, lambda (x) -> is_pos(x))` control, differing only in whether the pinning
 callee has a declaration (`is_pos` declares `n: Int64`; `arrow` declared nothing).
 
+PART (b) NOW HAS A DRIVEN CONSEQUENCE, MEASURED 2026-09-04 WHILE DELIVERING QQPQ2, and
+it is a WRONG VALUE rather than a withheld one. A rule-body lambda's BINDER LIST
+destructures a PERMUTED named tuple BY SLOT where every other spelling of the same
+program binds BY NAME:
+
+  rule  apply2(lambda (a: Int64, b: Int64) -> a - b, (b: 2, a: 1))   ->  1   (2 - 1)
+  op    apply2(lambda (a: Int64, b: Int64) -> a - b, (b: 2, a: 1))   -> -1   (1 - 2)
+  rule  named_sub((b: 2, a: 1))   -- a `match` pattern, same carrier                -> -1
+
+THE CAUSE IS THE SAME `None` PART (b) IS ABOUT, one layer over. A tuple pattern takes
+its labels from the EXPECTED type (`bind_and_label_pattern`, WI-803); a lambda written
+in a rule-body DATA slot receives no expectation, so `labels` is EMPTY and
+`match_tuple_pattern` falls to its source-order zip — and the value's source order is
+the LITERAL's, not the binders'. The `match` and `let` spellings are unaffected because
+their labels come from the operation's DECLARED parameter type, which is present. So
+(b) buys the LABELS as well as the binder TYPE, and that is a second reason to do it.
+
+The binder NAMES are not a substitute, and the temptation is worth naming: in the row
+above they happen to be `a` and `b`, matching the type's component names. A binder name
+is the author's local name and a component name is the type's — one name, two questions.
+
+VISIBLE ONLY SINCE QQPQ2: before the tuple-carrier repair that program had NO answer at
+all. Pinned as
+`wi_qqpq2_tuple_carrier_test::known_gap_a_rule_body_lambdas_binders_zip_by_slot`, which
+asserts the CURRENT value with a message naming this ticket's part (b) as its owner.
+
 NOTE ON THIS TICKET'S OWN HISTORY. Three drafts diagnosed this wrongly before reading
 `make_type_var`'s doc: "no expected type reached the binder", then "a type that cannot
 unify", then "a wildcard, not a variable". The first two were led by

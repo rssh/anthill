@@ -2873,7 +2873,7 @@ impl Interpreter {
                 // So the note's own remedy is what is below — route through the labels —
                 // and WI-784's rule that a lambda and an operation are INTERCHANGEABLE is
                 // the reason it is not optional.
-                let Some(components) = arg_values[0].tuple_components() else {
+                let Some(components) = arg_values[0].tuple_components(&self.kb) else {
                     return Err(mismatch());
                 };
                 if components.len() != arity {

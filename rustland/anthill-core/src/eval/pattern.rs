@@ -235,7 +235,7 @@ fn match_tuple_pattern(
     labels: &[Symbol],
     scrutinee: &Value,
 ) -> Option<Bindings> {
-    let components = scrutinee.tuple_components()?;
+    let components = scrutinee.tuple_components(interp.kb())?;
     let mut bindings = SmallVec::new();
 
     // The by-label arm needs the correspondence to be REAL on all three counts:

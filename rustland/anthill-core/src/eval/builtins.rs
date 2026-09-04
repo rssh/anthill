@@ -833,9 +833,11 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // destructuring must resolve a label exactly as `t.x` does or the relation
         // and the reader diverge again (WI-800, WI-805).
         (Value::Tuple { .. }, _) => receiver
-            .tuple_components()
-            .and_then(|c| c.by_label(interp.kb(), field_name.as_str()))
-            .cloned()
+            .tuple_components(interp.kb())
+            // Bound, not chained: `tuple_components` may now OWN its halves for a
+            // non-native carrier (WI-20260904-QQPQ2), so a `by_label` borrow inside
+            // an `and_then` would outlive the temporary it reads from.
+            .and_then(|c| c.by_label(interp.kb(), field_name.as_str()).cloned())
             .ok_or_else(|| {
                 EvalError::Internal(format!(
                     "field_access: tuple has no component '{}'",

@@ -5,6 +5,7 @@
 //! that's already hash-consed. Promotion to `TermId` happens only at KB
 //! boundaries (assert_fact, Modify writes, SharedStream caching).
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use crate::intern::Symbol;
@@ -498,9 +499,10 @@ impl Value {
         }
     }
 
-    /// WI-787: a tuple's components in SOURCE order, or `None` when this is not
-    /// a `Value::Tuple`. THE owning reader for the `pos ++ named` invariant —
-    /// read a tuple's components through this, never off one half.
+    /// WI-787: a tuple's components in SOURCE order, or `None` when this value is not
+    /// a tuple ON ANY CARRIER (see "one read for every carrier" below). THE owning
+    /// reader for the `pos ++ named` invariant — read a tuple's components through
+    /// this, never off one half.
     ///
     /// `classify_ctor_arg` (eval/eval.rs) owns the SPLIT and documents why `pos`
     /// is always a source-order PREFIX and `named` the remainder in order; this
@@ -545,10 +547,61 @@ impl Value {
     /// things — exporting a source-order guarantee to a carrier that does not
     /// have it. `constructor_sub_values` (eval/pattern.rs) stays separate for
     /// this reason.
-    pub fn tuple_components(&self) -> Option<TupleComponents<'_>> {
-        match self {
-            Value::Tuple { pos, named } => Some(TupleComponents { pos, named }),
-            _ => None,
+    ///
+    /// ## ONE READ FOR EVERY CARRIER (WI-20260904-QQPQ2)
+    ///
+    /// A tuple does not only arrive as a `Value::Tuple`. A rule body hands its
+    /// operands to the SLD→eval bridge on the carrier the resolver proved them on
+    /// (`bridge_op_to_eval`, kb/resolve.rs), so a written `(a: 1, b: 2)` reaches a
+    /// bridged operation as a `Value::Node` occurrence — and a fact-matched one as a
+    /// `Value::Term`. This used to answer `None` for both, which is not "not a
+    /// tuple": every tuple DESTRUCTURING in a bridged body failed. FOUR spellings,
+    /// measured — a multi-binder lambda's parameter list, `match p case (x, y)`,
+    /// `let (x, y) = p`, and the positional twin of the last two — each raised
+    /// `MatchFailed`, which the bridge residualizes, so the enclosing rule FLOUNDERED
+    /// where its operation-body twin answers.
+    ///
+    /// This is `constructor_sub_values`' repair (WI-20260827-3ZNBC) on the sibling
+    /// reader: read the components through [`TermView`], so the arm serves every
+    /// carrier instead of one. Kept behind ONE accessor rather than fixed at
+    /// `match_tuple_pattern` alone, because [`TupleComponents::by_label_index`] is
+    /// documented as the one rule two readers must agree on, and a per-site fallback
+    /// would leave the NEXT reader with the `Value::Tuple`-only answer.
+    ///
+    /// `spread_eta_args` — the OTHER reader — is fixed by the same edit and DRIVEN, but
+    /// its fixture had to route around a second defect to reach it: an operation NAME in
+    /// a rule-body function slot is not callable at all (WI-20260904-833DK), so the
+    /// obvious `apply2(sum2op, (a: 1, b: 2))` dies `UnknownOperation` before any argument
+    /// is read. The row that does drive it mints the `OpRef` in an OPERATION body and
+    /// threads the BRIDGED tuple in as a parameter —
+    /// `wi_qqpq2_tuple_carrier_test::an_op_ref_spreads_a_bridged_tuple_and_keeps_its_labels`.
+    ///
+    /// THE NON-NATIVE CARRIER IS NORMALIZED INTO THE NATIVE LAYOUT, not merely
+    /// forwarded, and the difference is measurable: a positional `(1, 2)` is
+    /// `Tuple { pos: [1, 2], named: [] }` natively, while its occurrence twin is
+    /// all-named with the synthetic `_1`/`_2` labels (`convert.rs`'s `TupleLiteral`
+    /// build; the parser refuses a MIXED literal, so exactly one half is ever
+    /// populated). Forwarding that as-is would make the two carriers disagree about
+    /// [`TupleComponents::is_name_keyed`], which gates the by-label arm — so the `_N`
+    /// half is put back where the native carrier holds it, through
+    /// [`TupleComponents::labels_are_positional`], WI-790's owner of "these labels say
+    /// positional tuple".
+    pub fn tuple_components<'a>(
+        &'a self,
+        kb: &crate::kb::KnowledgeBase,
+    ) -> Option<TupleComponents<'a>> {
+        // The same carrier-algebra cancellation `constructor_sub_values` applies
+        // (WI-1025), and here it is load-bearing rather than defensive: `occ_head`
+        // reads THROUGH a top-level `Spliced` while `occ_named_keys` does not, so a
+        // wrapped tuple occurrence would announce N named components and then hand
+        // back an EMPTY key list — a head and a child walk disagreeing, which is a
+        // short component list and not a refusal.
+        match self.carried() {
+            Value::Tuple { pos, named } => Some(TupleComponents {
+                pos: Cow::Borrowed(pos),
+                named: Cow::Borrowed(named),
+            }),
+            other => tuple_components_from_view(kb, other),
         }
     }
 
@@ -590,8 +643,132 @@ impl Value {
 /// halves know their own lengths — and cannot be asked about a different value
 /// than the one being walked.
 pub struct TupleComponents<'a> {
-    pos: &'a [Value],
-    named: &'a [(Symbol, Value)],
+    /// `Cow` because the components do not always LIVE in a `Value::Tuple`: a
+    /// bridged rule-body operand carries its tuple as a `Value::Node` occurrence
+    /// (or a `Value::Term`), whose components have to be read out through
+    /// [`TermView`] and therefore owned. The native carrier still borrows and
+    /// allocates nothing — see [`Value::tuple_components`].
+    pos: Cow<'a, [Value]>,
+    named: Cow<'a, [(Symbol, Value)]>,
+}
+
+/// [`Value::tuple_components`] for a tuple that is NOT a `Value::Tuple` — the
+/// occurrence / term carriers a rule body's operands ride on.
+///
+/// Gated on the functor DENOTING `TupleLiteral` through [`dt::is`], the shared owner
+/// of "does this name that desugar target" — the three carrier spellings (the
+/// converter's marked address, a resolved KB symbol's qualified name, a hand-written
+/// short name) are exactly what that function exists to collapse.
+fn tuple_components_from_view<'a>(
+    kb: &crate::kb::KnowledgeBase,
+    value: &Value,
+) -> Option<TupleComponents<'a>> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    use crate::parse::desugar_target as dt;
+
+    let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        ..
+    } = value.head(kb)
+    else {
+        return None;
+    };
+    if !dt::is(kb.qualified_name_of(f), dt::TUPLE_LITERAL) {
+        return None;
+    }
+
+    let mut pos: Vec<Value> = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        // A slot BELOW the arity the head announced that does not read back is a
+        // broken view, not an absent component — loud in debug, and NOT a tuple
+        // rather than a silently SHORT component list, which would slide every
+        // later component down one slot. Same stance as `constructor_sub_values`.
+        let Some(arg) = value.pos_arg(kb, i) else {
+            debug_assert!(
+                false,
+                "tuple_components_from_view: head announced {pos_arity} positional \
+                 components but slot {i} does not read back",
+            );
+            return None;
+        };
+        pos.push(arg.to_value());
+    }
+    let keys = value.named_keys(kb);
+    let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(keys.len());
+    for k in keys {
+        // THE SAME STANCE AS THE POSITIONAL LOOP, and it did not have it at first —
+        // `/code-review` caught the asymmetry. A key the view itself just handed over
+        // that does not read back is a broken view, and answering `None` here would
+        // mean "not a tuple", which reaches `match_tuple_pattern` as a DECLINED match
+        // → `MatchFailed` → residualize: the exact failure this function exists to
+        // remove, re-introduced quietly for a `named_keys` / `named_arg` disagreement.
+        let Some(arg) = value.named_arg(kb, k) else {
+            debug_assert!(
+                false,
+                "tuple_components_from_view: `named_keys` yielded {} but `named_arg` \
+                 does not read it back",
+                kb.local_name_of(k),
+            );
+            return None;
+        };
+        named.push((k, arg.to_value()));
+    }
+
+    // THE SYNTHETIC `_N` COMPONENTS GO BACK TO `pos`, so this carrier answers
+    // `is_name_keyed` — and hands `iter()` its components in SOURCE order — the way the
+    // native one does. The occurrence twin of `(1, 2)` is ALL-NAMED with `_1`/`_2`
+    // labels (convert.rs's `TupleLiteral` build), while `finish_constructor` puts the
+    // positionally-supplied components in `pos`; forwarding the view's halves unchanged
+    // makes the two carriers disagree about which arm `match_tuple_pattern` takes.
+    //
+    // `labels_are_positional` is WI-790's owner of "these labels say positional tuple",
+    // and it is asked about the SYNTHETIC SUBSEQUENCE rather than the whole key list —
+    // one rule, no exception for the mixed shape. `(1, b: 2)` then reconstructs as
+    // `pos: [1], named: [(b, 2)]`, which is exactly what the native carrier holds, and
+    // a user-written `(_2: x, _1: y)` still stays name-keyed because the owner refuses
+    // an `_N` that is not the synthetic name for its own index.
+    //
+    // NOT DRIVABLE, and that is stated rather than left to look like coverage: parse
+    // REFUSES a mixed literal ("tuple literal cannot mix positional and named
+    // arguments", convert.rs) — but it reports and CONTINUES, folding the positionals in
+    // after the named ones, so the shape is reachable by a caller that runs past a load
+    // error rather than being impossible. Asking the owner about the subsequence costs a
+    // partition and removes the assumption; special-casing it would have needed the same
+    // undrivable branch to say so.
+    //
+    // Normalized through `short_name_of` on both sides, exactly as
+    // `by_label_index`'s `_N` arm and `labels_are_positional` do — a label read off a
+    // TYPE's field list can arrive qualified, and a reader that normalized one branch
+    // and not the other is the inconsistency those two already record.
+    let is_synthetic = |k: Symbol| {
+        crate::intern::positional_label_index(crate::kb::typing::short_name_of(kb.local_name_of(k)))
+            .is_some()
+    };
+    let synthetic_keys: Vec<Symbol> = named
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| is_synthetic(*k))
+        .collect();
+    if pos.is_empty() && TupleComponents::labels_are_positional(kb, &synthetic_keys) {
+        let mut promoted: Vec<Value> = Vec::with_capacity(synthetic_keys.len());
+        let mut rest: Vec<(Symbol, Value)> = Vec::new();
+        for (k, v) in named {
+            if is_synthetic(k) {
+                promoted.push(v);
+            } else {
+                rest.push((k, v));
+            }
+        }
+        return Some(TupleComponents {
+            pos: Cow::Owned(promoted),
+            named: Cow::Owned(rest),
+        });
+    }
+    Some(TupleComponents {
+        pos: Cow::Owned(pos),
+        named: Cow::Owned(named),
+    })
 }
 
 impl<'a> TupleComponents<'a> {
@@ -606,7 +783,7 @@ impl<'a> TupleComponents<'a> {
 
     /// The components in SOURCE order — `pos` then `named`, per the invariant
     /// on [`Value::tuple_components`]. Allocation-free.
-    pub fn iter(&self) -> impl Iterator<Item = &'a Value> {
+    pub fn iter(&self) -> impl Iterator<Item = &Value> {
         self.pos.iter().chain(self.named.iter().map(|(_, v)| v))
     }
 
@@ -678,7 +855,7 @@ impl<'a> TupleComponents<'a> {
     ///
     /// Step 2 cannot compete with step 1 for the same tuple, per the one-half
     /// invariant stated on [`Self::is_name_keyed`].
-    pub fn by_label(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<&'a Value> {
+    pub fn by_label(&self, kb: &crate::kb::KnowledgeBase, label: &str) -> Option<&Value> {
         self.by_label_index(kb, label)
             .and_then(|i| self.component_at(i))
     }
@@ -714,7 +891,7 @@ impl<'a> TupleComponents<'a> {
 
     /// The component at an [`Self::iter`]-order index — the inverse of
     /// [`Self::by_label_index`], over the same `pos ++ named` sequence.
-    pub fn component_at(&self, flat: usize) -> Option<&'a Value> {
+    pub fn component_at(&self, flat: usize) -> Option<&Value> {
         match self.pos.get(flat) {
             Some(v) => Some(v),
             None => self.named.get(flat - self.pos.len()).map(|(_, v)| v),
@@ -887,7 +1064,7 @@ mod tests {
         fn qualified_positional_label_resolves_like_a_qualified_named_one() {
             let mut kb = KnowledgeBase::new();
             let t = positional_tuple(&[3, 10]);
-            let c = t.tuple_components().expect("tuple");
+            let c = t.tuple_components(&kb).expect("tuple");
             assert!(matches!(c.by_label(&kb, "_1"), Some(Value::Int(3))));
             assert!(
                 matches!(c.by_label(&kb, "ns._1"), Some(Value::Int(3))),
@@ -910,7 +1087,7 @@ mod tests {
         fn synthetic_labels_do_not_resolve_against_a_name_keyed_carrier() {
             let mut kb = KnowledgeBase::new();
             let t = named_tuple(&mut kb, &[("x", 1), ("y", 2)]);
-            let c = t.tuple_components().expect("tuple");
+            let c = t.tuple_components(&kb).expect("tuple");
             assert!(
                 c.by_label(&kb, "_1").is_none(),
                 "no component is called `_1` and `pos` is empty — this is exactly \
@@ -941,7 +1118,7 @@ mod tests {
         fn colliding_labels_report_the_same_index() {
             let mut kb = KnowledgeBase::new();
             let t = named_tuple(&mut kb, &[("a", 1), ("b", 2)]);
-            let c = t.tuple_components().expect("tuple");
+            let c = t.tuple_components(&kb).expect("tuple");
             assert_eq!(c.by_label_index(&kb, "a"), c.by_label_index(&kb, "ns.a"));
             assert_ne!(c.by_label_index(&kb, "a"), c.by_label_index(&kb, "b"));
         }

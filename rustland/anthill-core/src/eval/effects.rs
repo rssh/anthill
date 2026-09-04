@@ -327,11 +327,10 @@ fn detect_cycle(
         // WI-787: through the owning accessor, not an open-coded chain. Order is
         // immaterial to a cycle search, but a half-read would MISS children.
         Value::Tuple { .. } => {
-            for v in value
-                .tuple_components()
-                .expect("matched Value::Tuple")
-                .iter()
-            {
+            let components = value
+                .tuple_components(&interp.kb)
+                .expect("matched Value::Tuple");
+            for v in components.iter() {
                 detect_cycle(interp, target, v, depth + 1)?;
             }
             Ok(())
