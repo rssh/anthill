@@ -55,6 +55,7 @@ fn inline_lambda_param_typed_from_function_slot() {
     let src = r#"
 namespace test.wi275.inline
   import anthill.prelude.{List, Int64, Function}
+  import anthill.prelude.List.{cons, nil}
 
   operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
@@ -79,6 +80,7 @@ fn bare_named_operation_eta_lifted_to_function_value() {
     let src = r#"
 namespace test.wi275.named
   import anthill.prelude.{List, Int64, Function}
+  import anthill.prelude.List.{cons, nil}
 
   operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
@@ -105,6 +107,7 @@ fn wrong_typed_operation_in_function_slot_is_rejected() {
     let src = r#"
 namespace test.wi275.neg
   import anthill.prelude.{List, Int64, String, Function, Bool}
+  import anthill.prelude.List.{cons, nil}
 
   operation my_map(xs: List[T = Int64], f: Function[Int64, Int64]) -> List[T = Int64] =
     match xs
@@ -139,6 +142,7 @@ fn body_less_builtin_in_function_slot_is_rejected_not_crashed() {
 namespace test.wi275.builtin
   import anthill.prelude.{List, Int64, Function}
   import anthill.reflect.{Term, as_term}
+  import anthill.prelude.List.{cons, nil}
 
   operation my_map(xs: List[T = Int64], f: Function[Int64, Term]) -> List[T = Term] =
     match xs

@@ -23,6 +23,7 @@ const SRC: &str = r#"
 namespace test.wi714ref
   import anthill.prelude.{String, Int64, Option, List, Pair, Unit}
   import anthill.prelude.Relation.{negate, union}
+  import anthill.prelude.Option.{none, some}
 
   sort Person
     entity person(name: String, age: Int64)

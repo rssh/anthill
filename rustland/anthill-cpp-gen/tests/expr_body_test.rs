@@ -133,6 +133,7 @@ fn expression_body_takes_precedence_over_carrier_dispatch() {
         namespace test.expr_a
           import anthill.prelude.{Int64}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
           sort Calc
             operation get(self: Calc) -> Int64 = 99
           end

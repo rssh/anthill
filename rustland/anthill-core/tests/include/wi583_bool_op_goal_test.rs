@@ -37,6 +37,7 @@ const BOOL_OP_SRC: &str = r#"
 namespace test.wi583
   import anthill.prelude.{Bool, Int64}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.Option.{some}
   operation is_five(x: Int64) -> Bool = eq(x, 5)
   rule five_yes() :- is_five(5)
   rule five_no()  :- is_five(3)

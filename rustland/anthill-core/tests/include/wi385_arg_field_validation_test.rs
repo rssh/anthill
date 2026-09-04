@@ -148,6 +148,7 @@ fn option_field_accepts_bare_value() {
     let src = r#"
 namespace test.wi385.optfield
   import anthill.prelude.{Int64, Option}
+  import anthill.prelude.Option.{some}
   entity Box(v: Option[T = Int64])
   operation box() -> Box = Box(v: 5)
 end
@@ -220,6 +221,7 @@ fn bare_option_field_accepts_value() {
     let src = r#"
 namespace test.wi385.bareopt
   import anthill.prelude.{Int64, Option}
+  import anthill.prelude.Option.{some}
   entity Box2(v: Option)
   operation box2() -> Box2 = Box2(v: 5)
 end

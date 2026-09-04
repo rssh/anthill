@@ -45,6 +45,7 @@ fn rule_body_for(kb: &KnowledgeBase, qn: &str) -> Vec<Rc<NodeOccurrence>> {
 fn nested_impl_in_rule_body_parses_and_loads() {
     let src = r#"
         namespace test.nested.parse
+          import anthill.prelude.List.{cons}
           sort Step
             entity step_root
           end
@@ -107,6 +108,7 @@ fn nested_impl_round_trips_through_printer() {
 fn nested_impl_multi_binder_multi_antecedent() {
     let src = r#"
         namespace test.nested.multi
+          import anthill.prelude.List.{cons}
           sort M
             entity m_root
           end

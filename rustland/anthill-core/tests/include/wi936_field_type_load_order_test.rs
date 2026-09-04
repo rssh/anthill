@@ -140,6 +140,7 @@ const UNTYPED: &str = r#"
 namespace test.wi936.untyped
   import anthill.prelude.{Set, Int64}
   import anthill.prelude.List.{cons}
+  import anthill.prelude.Option.{none, some}
 
   fact loose([1, 2, 3])
 

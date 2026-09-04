@@ -117,6 +117,7 @@ fn a_bare_two_hop_carrier_conforms_to_a_bound_spec_view() {
             r#"
 namespace test.gnpg7_bare
   import anthill.prelude.{{Int64, List, Iterable, Stream}}
+  import anthill.prelude.List.{{nil}}
   operation ti(c: {param}) -> Int64 = 1
   operation drive() -> Int64 = ti(nil())
 end

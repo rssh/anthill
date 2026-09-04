@@ -16,6 +16,11 @@
 sort anthill.prelude.LogicalStream
   import anthill.prelude.{Stream, Option, Pair, Unit, Bool, Int64}
   import anthill.prelude.Pair.{pair}
+  -- WI-909: the constructors left the implicit tier, so a bare `some` / `none` takes a
+  -- member import. Importing the SORT does not bring its members into scope (§8.6),
+  -- and a constructor in a HEAD ARGUMENT has no loud check — see the driven case at
+  -- `stdlib/anthill/reflect/typing.anthill`.
+  import anthill.prelude.Option.{some, none}
 
   sort T = ?
   -- WI-714 / proposal 052: LogicalStream carries the search access-effect row E

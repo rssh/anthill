@@ -5331,6 +5331,7 @@ fn load_operation_with_match_body() {
     let mut kb = load_with_stdlib(
         r#"
 namespace test.expr
+  import anthill.prelude.Option.{none}
   sort Nat
     entity zero
     entity succ(pred: Nat)

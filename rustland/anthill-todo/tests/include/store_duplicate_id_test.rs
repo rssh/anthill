@@ -25,6 +25,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 /// the two rows then land in the same status group where the emit walk keys on
 /// id alone.
 const DUPLICATE: &str = r#"
+import anthill.prelude.Option.{some}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",
@@ -53,6 +54,7 @@ fact WorkItem(
 /// Two separate collisions, one of them three records deep — the shape a
 /// parallel-branch merge produces.
 const MANY_DUPLICATES: &str = r#"
+import anthill.prelude.Option.{some}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",
@@ -97,6 +99,7 @@ fact WorkItem(
 /// The same store with the collision resolved. Descriptions still MENTION a
 /// repeated id in prose, which the gate must not mistake for a record.
 const CLEAN: &str = r#"
+import anthill.prelude.Option.{some}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",

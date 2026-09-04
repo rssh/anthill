@@ -14,6 +14,7 @@ fn carrier_artifact_becomes_include_directive() {
         namespace test.car_inc.dev
           import anthill.prelude.{List, Option, String}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none}
 
           sort GPS end
 

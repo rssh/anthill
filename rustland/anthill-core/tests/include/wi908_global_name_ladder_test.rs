@@ -166,25 +166,34 @@ fn a_short_name_outside_the_implicit_tier_no_longer_resolves_absolutely() {
 ///
 /// Needs the stdlib: the tier resolves a name only when its target is LOADED (WI-900).
 ///
-/// `cons` SINCE WI-909, which took the reflection result sorts off the tier. This row
-/// used `SortView` — one of the eight — and the claim it makes is about the RUNG, not
-/// about that name, so it is repointed rather than deleted. `cons` is a fair substitute
-/// on the property that mattered: it carries no resident facts, so the mount is decided
-/// by the ladder rather than refused early as a `ResidentCollision` (which is the
-/// single-owner rule, and was why `SortView` was picked over its sibling `SortInfo`).
+/// INVERTED IN WI-909's THIRD PASS, and it took two repointings to get here: this row
+/// used `SortView` until the reflection sorts left the tier, then `cons` until the
+/// constructors left it too. There is no third name — `PRELUDE_QUALIFIED` is empty — so
+/// the claim itself is what changes rather than its subject.
 ///
-/// WHAT NO LONGER HAS A TIER SPELLING is the resident-facts half of that pair — every
-/// remaining tier name is a constructor and none carries clauses. `ResidentCollision` is
-/// WI-908's own subject elsewhere, not this row's.
+/// THE HALF THAT SURVIVES IS STILL THE POINT. WI-908's finding was that a mount name is
+/// read through the ordinary ladder (`resolve_name_in_global`) rather than an absolute
+/// lookup of its own; that is unchanged and is what the qualified arm below measures.
+/// What is gone is the rung the ladder used to END with, so a SHORT name with no scope
+/// presence now denotes nothing and cannot be mounted.
+///
+/// THE REFUSAL IS THE MIGRATION, and it is loud: a host mounting `cons` is told the name
+/// resolves to nothing rather than silently taking an extent on a symbol it did not mean.
 #[test]
-fn a_short_implicit_tier_name_still_mounts_with_no_scope_presence() {
+fn a_short_name_with_no_scope_presence_no_longer_mounts() {
     let mut kb = crate::common::load_kb_with("namespace wi908.anchor\n  fact a908(1)\nend\n");
 
-    mount(&mut kb, "cons").expect("`cons` is an implicit-tier name");
+    mount(&mut kb, "cons").expect_err(
+        "the implicit tier is empty since WI-909, so a bare `cons` denotes nothing at \
+         `<global>` and there is no functor to mount",
+    );
 
+    // CONTROL — the ladder itself is intact: the QUALIFIED name still mounts, which is
+    // what says the row above measures the missing rung rather than a broken mount.
+    mount(&mut kb, "anthill.prelude.List.cons").expect("the qualified name still mounts");
     assert!(
         kb.extent_owner(kb.resolve_symbol("anthill.prelude.List.cons"))
             .is_some(),
-        "the implicit tier maps the bare short name to its qualified target",
+        "the mount lands on the qualified target",
     );
 }

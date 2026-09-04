@@ -47,6 +47,7 @@ fn type_mapping_passing_guard_applies() {
     // A guarded base overlay whose guard HOLDS contributes its host type.
     let host = money_base(
         r#"
+          import anthill.prelude.Option.{none, some}
           entity FastMath(on: Bool)
           fact FastMath(on: true)
           rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
@@ -68,6 +69,7 @@ fn type_mapping_failing_guard_contributes_nothing() {
     // The same rule with a FAILING guard resolves no row — `Money` has no base.
     let host = money_base(
         r#"
+          import anthill.prelude.Option.{none, some}
           entity FastMath(on: Bool)
           fact FastMath(on: false)
           rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
@@ -87,6 +89,7 @@ fn type_mapping_duplicate_answers_are_deduped_not_ambiguous() {
     // (identical rows are one mapping). This is the duplicate-vs-conflict line.
     let host = money_base(
         r#"
+          import anthill.prelude.Option.{none, some}
           entity Cond(tag: String)
           fact Cond(tag: "a")
           fact Cond(tag: "b")
@@ -111,6 +114,7 @@ fn type_mapping_competing_answers_at_one_key_are_ambiguous() {
     // exists, so selection rejects it loudly (never the old silent first-wins).
     let err = money_base(
         r#"
+          import anthill.prelude.Option.{none, some}
           fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
                            host_type: "float", lift: none, lower: none)
           fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
@@ -273,6 +277,7 @@ fn emit_sensor_traits(body: &str) -> Result<String, String> {
         namespace test.wi833.naming
           import anthill.prelude.{{Unit, String, Option, Bool}}
           import anthill.realization.{{Implementation, CarrierBinding, NamingConvention}}
+          import anthill.prelude.Option.{{none}}
 
           sort Sensor
             operation ping(self: Sensor) -> Unit

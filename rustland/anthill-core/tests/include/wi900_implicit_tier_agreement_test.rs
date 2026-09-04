@@ -86,6 +86,12 @@ fn a_stdlib_less_kb_does_not_collapse_two_sorts_onto_one_global() {
 /// That is why the fixture above uses `and`, and it is why removing `and` from the tier
 /// strands THIS direction rather than that one. `cons` is an ordinary surviving entry and
 /// serves here: the rule is about the TIER, and the name was never the subject.
+/// NO MEMBER IMPORT, DELIBERATELY -- the second fixture in this ticket to be broken by
+/// WI-909's mechanical sweep, after `wi521_prelude_test`'s. The pass added
+/// `import anthill.prelude.List.{cons}` here because the fixture writes `cons`; but this
+/// fixture writes it precisely to observe what an UNIMPORTED head does, so the import
+/// made the heads resolve and the row below assert the opposite of what it ran. A sweep
+/// cannot distinguish a negative fixture from an unmigrated one; only reading can.
 const TWO_SORTS_ONE_TIER_NAME: &str = r#"
 namespace wi900.loaded
   sort A
@@ -99,24 +105,37 @@ namespace wi900.loaded
 end
 "#;
 
-/// THE OTHER DIRECTION OF THE SAME RULE, and the control that the fix did not simply
-/// invert the guard: when the implicit target IS loaded, the name already means
+/// THE OTHER DIRECTION OF THE SAME RULE — INVERTED IN WI-909's third pass, which took
+/// the last four rows (the constructors) off `PRELUDE_QUALIFIED` and left it empty.
+///
+/// The row used to say: when the implicit target IS loaded, the name already means
 /// something, so the head REFERENCES it and introduces nothing (WI-530's decision, which
-/// keeps a `[simp]` law about `List.cons` a law about `List.cons`).
+/// kept a `[simp]` law about `List.cons` a law about `List.cons`). That decision is
+/// unchanged; what changed is its PREMISE. A rule head is RESOLVED, not declared
+/// (WI-896), and resolution no longer has a rung below scope — so an unimported `cons`
+/// head in `wi900.loaded.A` reaches nothing and MINTS `wi900.loaded.A.cons`, exactly as
+/// `cut` / `unify` / `struct_eq` did when they left the tier before it.
+///
+/// Kept and inverted rather than deleted: "a bare tier name in a head is a reference"
+/// was the rule this file established, and this is where a reader looks for it. The
+/// stdlib's own laws about `List.cons` are unaffected — `list.anthill` is inside the
+/// sort that declares it, where scope resolution answers.
 #[test]
-fn a_loaded_implicit_target_is_referenced_not_introduced() {
+fn a_loaded_implicit_target_is_now_introduced_not_referenced() {
     let kb = crate::common::load_kb_with(TWO_SORTS_ONE_TIER_NAME);
     for qn in ["wi900.loaded.A.cons", "wi900.loaded.B.cons"] {
         assert!(
-            !kb.has_qualified_name(qn),
-            "`{qn}` must NOT be minted: with the stdlib loaded `cons` resolves to \
-             `anthill.prelude.List.cons`, so the head is a clause ABOUT it",
+            kb.has_qualified_name(qn),
+            "`{qn}` must be minted: `cons` is off the tier, so an unimported head \
+             spelled that way introduces a scope-local name instead of adding a clause \
+             to `anthill.prelude.List.cons`",
         );
     }
     assert!(
         kb.has_qualified_name("anthill.prelude.List.cons"),
-        "control: the tier's target must actually be present, or the row above proves \
-         nothing",
+        "control, and it still discriminates after the inversion: the target IS present, \
+         so the heads above mint because `cons` is off the TIER — not because the stdlib \
+         failed to load and there was nothing to reference either way",
     );
 }
 
@@ -130,6 +149,14 @@ fn a_loaded_implicit_target_is_referenced_not_introduced() {
 /// this same table; the converter now names each target outright
 /// (`parse::desugar_target`), so there is no second list to fall out of agreement with
 /// the declarations. `wi040_reserved_vocab_test` is where that half is measured now.
+///
+/// AND SINCE WI-909's THIRD PASS THIS ROW IS VACUOUS, said plainly rather than left for
+/// a reader to discover: `PRELUDE_QUALIFIED` is EMPTY, so `implicit_target_orphans`
+/// walks nothing and cannot report. It is kept, and kept green, because the invariant it
+/// states is a property of the TABLE rather than of any entry — a future row added
+/// without a declaration is exactly what it would catch. If the table and its accessors
+/// are deleted outright (the dead-code follow-on WI-909 leaves open), this row goes with
+/// them; it should not be repaired into asserting something else.
 #[test]
 fn every_implicit_target_is_declared_by_the_standard_load() {
     let kb = crate::common::load_kb_with("namespace wi900.empty\n  fact anchor900(1)\nend\n");

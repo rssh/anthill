@@ -30,6 +30,7 @@ namespace wi495.nonstream
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Iterable.{isEmpty, find}
   import anthill.prelude.FiniteCollection.{size}
+  import anthill.prelude.Option.{none, some}
 
   -- A concrete non-Stream Iterable: a bag of Int64s backed by a List, but NOT
   -- itself a Stream (no `splitFirst`). Provides Iterable directly, with a

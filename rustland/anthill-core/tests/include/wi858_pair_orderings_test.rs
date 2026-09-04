@@ -99,6 +99,7 @@ const BY_FST: &str = r#"
 
 /// Render a `List[Pair[Int64, Int64]]` as `(1,9)(2,1)`.
 const RENDER: &str = r#"
+    import anthill.prelude.List.{cons, nil}
     import anthill.prelude.String.{concat}
     import anthill.prelude.Int64.{to_string}
     operation render(l: List[T = Pair[Int64, Int64]]) -> String =

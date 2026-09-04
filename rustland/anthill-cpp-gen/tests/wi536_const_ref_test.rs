@@ -17,6 +17,7 @@ use anthill_cpp_gen::{emit_namespace_header, emit_traits_struct};
 use common::{find_cxx, load_kb_with, scratch_dir};
 
 const EMITTER_CARRIER: &str = r#"
+          import anthill.prelude.Option.{none, some}
           fact Implementation(
             target:        "test.wi536.Emitter",
             artifact:      "webots/Emitter.hpp",

@@ -5185,10 +5185,6 @@ pub fn scan_definitions_with_sources(
 /// its own message. The rung covered eight of ten members of one vocabulary. The eight
 /// now answer as the two always did.
 const PRELUDE_QUALIFIED: &[&str] = &[
-    "anthill.prelude.List.cons",
-    "anthill.prelude.List.nil",
-    "anthill.prelude.Option.some",
-    "anthill.prelude.Option.none",
     // WI-20260825-KD9SW REMOVED THE TWELVE SPEC OPERATIONS FROM THIS TABLE —
     // `add sub neg mul div mod eq neq lt lte gt gte`. They were here so that a minted
     // operator's SHORT functor had somewhere to resolve, which made this table the
@@ -10906,7 +10902,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         },
     );
     // WI-521: defined (registers in `by_qualified_name`) but NOT `<global>`-imported
-    // — the prelude resolves these via the `prelude_qualified` fallback.
+    // — WI-909: defined so the QUALIFIED spelling resolves (and so bootstrap tag
+    // registration can find them); there is no fallback rung for a bare one.
     let cons_sym = kb.symbols.define(
         "cons",
         "anthill.prelude.List.cons",
@@ -11135,7 +11132,8 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             is_enclosing: true,
         },
     );
-    // WI-521: defined but NOT `<global>`-imported (prelude_qualified fallback).
+    // WI-521 / WI-909: defined but NOT `<global>`-imported. The fallback rung that
+    // used to answer a bare spelling is gone; the definition serves the qualified one.
     let some_sym = kb.symbols.define(
         "some",
         "anthill.prelude.Option.some",
@@ -11349,8 +11347,9 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     // "namespace prefix for 'anthill.prelude.Divisible.div' not found".
     //
     // `div` alone on `Divisible` and `mod` alone on `EuclideanDomain` — the two the
-    // implicit tier points at (`PRELUDE_QUALIFIED`) and the two carrying resolver
-    // builtins. `rem` needs neither, so it is left to the stdlib load like every other
+    // implicit tier used to point at (WI-20260825-KD9SW retired those rows, and WI-909
+    // the table) and the two carrying resolver builtins, which is what still needs them
+    // pre-registered. `rem` needs neither, so it is left to the stdlib load like every other
     // member; pre-registering more than the bootstrap requires would be a second,
     // silently-drifting copy of the sorts' contents.
     let divisible_sort_sym = kb.symbols.define(
@@ -11883,20 +11882,30 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         kernel_scope,
     );
 
-    // WI-521: the user-facing PRELUDE (cons / nil / some / none, the arithmetic
-    // and comparison operator targets eq / neq / gt / lt / gte / lte / add / sub /
-    // mul / to_bigint / to_int, and the logic operators not / or) is NOT
-    // `<global>`-imported. It resolves via the lowest-precedence `prelude_qualified`
-    // fallback in `remap_name_str` / `resolve_name_in_kb`: a user's local
-    // definition or explicit import always wins, and the prelude name can never go
-    // AMBIGUOUS against a user name (the failure mode the old flat `<global>`
-    // injection had — see the WI-476 collision blocklist that WI-040 removed).
+    // WHY THESE ARE `define`d WITH NO `<global>` IMPORT, which is the question this
+    // comment exists to answer and whose ANSWER CHANGED in WI-909.
     //
-    // The reflection `*Info` result sorts (SortInfo / FieldInfo / …) also resolve
-    // via `prelude_qualified` (a reflection vocabulary, queried bare by the
-    // reflect bridge / CLI). Their `define` calls remain (registering them in
-    // `by_qualified_name`, which the fallback looks up); only the `<global>` imports
-    // are gone.
+    // WI-521 made the user-facing prelude a lowest-precedence FALLBACK rather than a flat
+    // `<global>` injection: a user's own name always won, and a prelude name could never
+    // go AMBIGUOUS against one (the failure mode the injection had — see the WI-476
+    // collision blocklist WI-040 removed). That rung is GONE. WI-909 emptied
+    // `PRELUDE_QUALIFIED` in three passes: the converter mints took addresses, the eleven
+    // names reachable only from a CLI query were retired, and the four constructors
+    // (`cons` / `nil` / `some` / `none`) followed once the corpus was migrated to member
+    // imports.
+    //
+    // SO THE `define` CALLS ARE NOW DOING ONE JOB, not two. They register each symbol in
+    // `by_qualified_name`, which is what makes the QUALIFIED spelling resolve — for a
+    // written `import anthill.prelude.List.{cons}`, for a host name spelled in full, and
+    // for the bootstrap tag registration that runs before any stdlib source is read. What
+    // they no longer do is make a BARE spelling resolve anywhere; there is no rung left
+    // for a short name to fall to, and one that is not in scope denotes nothing.
+    //
+    // The reflection `*Info` result sorts (SortInfo / FieldInfo / …) are registered the
+    // same way and for the same single reason. They were the second-largest group WI-909
+    // retired, on the measurement that `MemberInfo` and `DescriptionInfo` — the same
+    // vocabulary, the same block, never on the tier — had always required the qualified
+    // spelling or `-i anthill.reflect.*`, and nobody had noticed.
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -17373,8 +17382,9 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         .resolve_in_scope(name, scope)
         // WI-917: the dotted rung answers in this same vocabulary, so `or_else` carries
         // the stop to it too — a contested HEAD SEGMENT is returned rather than folded
-        // into "unresolved". Not for the tier's sake, which is keyed on a name's LAST
-        // SEGMENT (`prelude_qualified`) and can never answer a dotted one, but
+        // into "unresolved". Not for the tier's sake — WI-909 emptied it, and it was
+        // keyed on a name's LAST SEGMENT (`prelude_qualified`) so could never have
+        // answered a dotted one anyway — but
         // because `NotFound` is what sends every caller to its ABSENCE handling: the
         // false "no rule, fact, or declaration is in scope for it".
         .or_else(|| resolve_dotted_in_kb(kb, name, scope, DottedVisibility::VisibleOnly))

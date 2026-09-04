@@ -99,37 +99,20 @@ fn kb_importing(namespaces: &[&str]) -> KnowledgeBase {
 #[test]
 fn an_ambiguous_query_name_does_not_fall_through_to_the_implicit_tier() {
     let mut kb = kb_importing(&["wi907.alpha", "wi907.beta"]);
-    let tier = kb.resolve_symbol("anthill.prelude.List.cons");
-    // CONTROL, and WI-909 had to restate it. It used to be "the tier target carries
-    // clauses", so that binding it would be visible as SOLUTIONS — true of
-    // `anthill.reflect.SortInfo`, false of every name left on the tier. The precondition
-    // this row actually needs is weaker and exact: the rung must ANSWER for this name,
-    // or there is nothing to fall through to and the assertions below hold vacuously.
-    // That is the sibling row `an_unshadowed_implicit_tier_name_still_binds_its_target`,
-    // named here so the pair is read together.
+    // THE TIER-SPECIFIC HALF OF THIS ROW IS GONE (WI-909's third pass emptied
+    // `PRELUDE_QUALIFIED`), and it is removed rather than reworded. It used to assert
+    // `bound != tier` -- that the ladder did not DESCEND past the ambiguity into the
+    // implicit rung -- guarded by a control showing the rung would otherwise have
+    // answered. With no rung there is nothing to descend to, so both the assertion and
+    // its control now hold by construction. Keeping them would be exactly the vacuous
+    // control this file exists to warn about.
     //
-    // COMPARED BY QUALIFIED NAME, not by `Symbol`, because the unshadowed reading needs
-    // a SECOND KnowledgeBase (this one has the imports that make the name ambiguous).
-    // A `Symbol` is an index into its own `SymbolTable`, so comparing one across two KBs
-    // is only coincidentally right — both load the same stdlib deterministically today,
-    // and any change to allocation order would either fail this spuriously or match an
-    // unrelated symbol that happens to share the index. The latter is a SILENT false
-    // pass, in the one file whose subject is controls that stop measuring. Found by
-    // `/code-review`.
-    assert_eq!(
-        crate::common::query_pattern_functor_qn(&mut kb_importing(&[]), "cons(?h, ?t)"),
-        kb.qualified_name_of(tier),
-        "control: with nothing in scope the tier DOES answer this name, so the \
-         fall-through this row forbids is a thing that could happen",
-    );
-
+    // WHAT SURVIVES IS THE HARDER HALF, and it is untouched by the removal: the ladder
+    // must bind NEITHER CANDIDATE. Picking one would decide the conflict in the author's
+    // favour -- "the same fault with a nearer symbol" -- and that is still reachable,
+    // still wrong, and still what the assertion below measures.
     let bound = query_pattern_functor(&mut kb, "cons(?h, ?t)");
 
-    assert_ne!(
-        bound, tier,
-        "the ladder must STOP at the ambiguity: the tier target is not even \
-         among the candidates the name is ambiguous between",
-    );
     assert!(
         kb.kind_of(bound).is_none(),
         "and what is left must be the WI-476 bare intern — a symbol that DECLARES \
@@ -156,19 +139,31 @@ fn a_single_import_still_shadows_the_implicit_tier() {
     );
 }
 
-/// CONTROL, green on both sides: with NOTHING shadowing it the tier still answers. This
-/// is the rung the fix stops descending TO, and it must keep working for the names it is
-/// for — a bare `cons` / `nil` in a query (WI-040 / WI-521).
+/// INVERTED IN WI-909's THIRD PASS. This was the file's CONTROL -- green on both sides of
+/// WI-907, pinning that the rung the fix stopped descending TO still answered for the
+/// names it was for. `PRELUDE_QUALIFIED` is empty now, so there is no such rung and no
+/// such name: an unshadowed bare short name at `<global>` binds NOTHING.
+///
+/// It is kept, inverted, because it is the counterpart of the row above and the two must
+/// be read together: that row says an AMBIGUOUS name binds neither candidate, this one
+/// says an UNCONTESTED one binds nothing either. Together they say the query position
+/// has no fallback left, which is the whole of WI-909.
 #[test]
-fn an_unshadowed_implicit_tier_name_still_binds_its_target() {
+fn an_unshadowed_short_name_now_binds_nothing() {
     let mut kb = kb_importing(&[]);
 
     let bound = query_pattern_functor(&mut kb, "cons(?h, ?t)");
 
+    assert!(
+        kb.kind_of(bound).is_none(),
+        "with the tier empty a bare `cons` reaches no declaration, so the pattern gets \
+         the WI-476 bare intern -- a symbol that declares nothing and heads no clause",
+    );
     assert_eq!(
-        bound,
-        kb.resolve_symbol("anthill.prelude.List.cons"),
-        "no user declaration is in scope at `<global>`, so the tier is the answer",
+        crate::common::query_pattern_functor_qn(&mut kb, "anthill.prelude.List.cons(?h, ?t)"),
+        "anthill.prelude.List.cons",
+        "control: the ladder is intact -- the QUALIFIED name still binds, so the row \
+         above measures the missing rung and not a broken query position",
     );
 }
 

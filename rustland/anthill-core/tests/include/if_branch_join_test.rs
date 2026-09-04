@@ -123,6 +123,7 @@ fn if_bare_vs_parameterized_branches_join_in_both_orders() {
     let none_then = r#"
 namespace test.if_optjoin.a
   import anthill.prelude.{Int64, Bool, Option}
+  import anthill.prelude.Option.{none, some}
 
   sort Driver
     operation pick(c: Bool) -> Option[T = Int64] =
@@ -134,6 +135,7 @@ end
     let some_then = r#"
 namespace test.if_optjoin.b
   import anthill.prelude.{Int64, Bool, Option}
+  import anthill.prelude.Option.{none, some}
 
   sort Driver
     operation pick(c: Bool) -> Option[T = Int64] =

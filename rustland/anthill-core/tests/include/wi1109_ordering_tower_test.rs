@@ -63,6 +63,7 @@ const ASCENDING: &str = r#"
 "#;
 
 const READ: &str = r#"
+  import anthill.prelude.List.{cons, nil}
   sort Read
     operation first(l: List[T = String]) -> String =
       match l

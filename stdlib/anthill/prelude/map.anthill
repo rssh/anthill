@@ -4,6 +4,11 @@ sort anthill.prelude.Map
   -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{neq}
+  -- WI-909: the constructors left the implicit tier, so a bare `some` / `none` takes a
+  -- member import. Importing the SORT does not bring its members into scope (§8.6),
+  -- and a constructor in a HEAD ARGUMENT has no loud check — see the driven case at
+  -- `stdlib/anthill/reflect/typing.anthill`.
+  import anthill.prelude.Option.{some, none}
 
   sort K = ?
   sort V = ?

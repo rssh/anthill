@@ -73,6 +73,7 @@ fn stdout(out: &std::process::Output) -> String {
 /// Two items in different states, one of them carrying both kinds of satellite, plus
 /// the store-level stamp. Enough to exercise all three of the store's routes.
 const ITEMS: &str = r#"fact StoreFormat(version: 1)
+import anthill.prelude.Option.{some}
 
 fact WorkItem(
   id: "WI-001",

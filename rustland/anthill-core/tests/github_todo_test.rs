@@ -259,6 +259,7 @@ fn blocked_resolves_three() {
 /// the item's solutions.
 const WI717_OMITTED_OPTIONALS: &str = r#"
 namespace anthill.stage0
+  import anthill.prelude.Option.{none}
   fact WorkItem(id: "WI-NODEPS", created: "2026-01-01T00:00:00Z", description: "omits depends_on entirely",
                 acceptance: [], status: Open)
   fact WorkItem(id: "WI-NODESC", created: "2026-01-01T00:00:00Z", acceptance: [], depends_on: [], status: Open)
@@ -397,6 +398,8 @@ fn wi501_workitem_round_trips_through_store() {
     use anthill_core::persistence::term_ser;
     let extra = r#"
 namespace anthill.stage0
+  import anthill.prelude.List.{cons}
+  import anthill.prelude.Option.{none, some}
   fact WorkItem(id: "WI-RT", created: "2026-01-01T00:00:00Z", description: some(value: "round trip"),
                 context: none, acceptance: [], depends_on: none,
                 generates: none, requires_capability: none, status: Open)

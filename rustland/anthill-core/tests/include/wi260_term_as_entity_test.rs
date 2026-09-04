@@ -13,6 +13,7 @@ use crate::common::interp_for;
 fn term_as_entity_materializes_workitem_into_typed_entity() {
     let src = r#"
 namespace test.wi260
+  import anthill.prelude.Option.{some}
   sort Inventory
     entity Item(id: String, name: String, count: Int64)
   end
@@ -113,6 +114,7 @@ fn term_as_entity_returns_none_for_non_constructor() {
     // String literal isn't a Fn — should return `none()`.
     let src = r#"
 namespace test.wi260_none
+  import anthill.prelude.Option.{none}
   operation main() -> Int64 = 0
 end
 "#;
@@ -150,6 +152,7 @@ fn term_as_entity_returns_none_for_unregistered_functor() {
     // `none()` because `strict_parent_sort` reports `None`.
     let src = r#"
 namespace test.wi260_unregistered
+  import anthill.prelude.Option.{none}
   operation main() -> Int64 = 0
 end
 "#;
@@ -192,6 +195,7 @@ fn term_as_entity_recurses_into_nested_constructor() {
     // constructor terms recurse through `materialize_entity`.
     let src = r#"
 namespace test.wi260_nested
+  import anthill.prelude.Option.{some}
   sort Tree
     entity Inner(tag: String)
     entity Outer(name: String, child: Inner)

@@ -84,6 +84,7 @@ const ALPHABETICAL: &str = r#"
 
 /// `first`, so a `List[T = String]` result can be asserted as a plain `Value::Str`.
 const FIRST: &str = r#"
+    import anthill.prelude.List.{cons, nil}
     operation first(l: List[T = String]) -> String =
       match l
         case nil() -> "<empty>"

@@ -123,35 +123,79 @@ end
 /// which is what stops the row from quietly becoming a tautology. Found by
 /// `/code-review`: an earlier cut of this ticket left the old fixture in place with
 /// imports added, so the test's own name asserted the opposite of what it ran.
+///
+/// INVERTED IN WI-909'S THIRD PASS, and renamed with it. The constructors were the LAST
+/// four rows; with them gone `PRELUDE_QUALIFIED` is empty and no name resolves without
+/// an import. This row is the founding test of the tier, so it is inverted rather than
+/// deleted — "a bare prelude name resolves" is exactly the belief a reader of this area
+/// arrives with, and the file that established it is where the correction belongs.
+///
+/// THE SPLIT THE OLD ROW PINNED IS NOW A UNIFORMITY, which is the whole result: `cons`
+/// and `add` were the two halves of a distinction (tier vs. addressed spec operation),
+/// and a bare write of either is now the same ordinary unresolved name. Both arms are
+/// kept so the collapse is visible rather than inferred.
 #[test]
-fn bare_prelude_names_resolve_without_import() {
+fn bare_prelude_names_no_longer_resolve_without_import() {
+    // TWO THINGS ARE DELIBERATE HERE, and WI-909's fixture sweep got both wrong before
+    // `/code-review`-grade re-reading caught them.
+    //
+    // NO MEMBER IMPORT -- this fixture's whole subject is a name written WITHOUT one, so
+    // the mechanical pass that added `import anthill.prelude.List.{cons, nil}` to every
+    // fixture using a constructor made this row assert the opposite of what it ran. A
+    // sweep cannot tell a negative fixture from an unmigrated one; only reading can.
+    //
+    // A RULE BODY, not an operation body: `load_stdlib_errors` runs `load::load_all`
+    // with NO TYPER, so an unresolved name in an operation body produces NOTHING here
+    // (the `run_typer: false` boundary, WI-20260902-Q8NH5) -- measured, `got: []`. A
+    // rule-body TERM is refused at load by WI-1058, so claim and instrument match.
     let src = r#"
 namespace test.wi521.use
   import anthill.prelude.{Int64, List, Option}
-  operation one() -> List[T = Int64] = cons(head: 1, tail: nil)
-  operation just() -> Option[T = Int64] = some(value: 7)
+  fact seed521(1)
+  rule uses521(?l) :- seed521(?), ?l <=> cons(head: 1, tail: nil())
 end
 "#;
     let errs = load_stdlib_errors(src);
     assert!(
-        errs.is_empty(),
-        "`cons` / `nil` / `some` / `none` are still on the tier and must resolve with no \
-         import naming them; got: {errs:?}"
+        errs.iter().any(|e| e.contains("cons")),
+        "importing the SORT does not bring its members into scope (§8.6), and there is \
+         no rung below scope any more, so a bare `cons` is an unresolved name; \
+         got: {errs:?}"
     );
 
-    // THE SPLIT, and the half that makes the row above mean something: a spec operation
-    // is NOT on the tier, so the byte-identical treatment of `add` is a load error.
+    // THE OTHER HALF, byte-identical treatment of a spec operation — which used to be
+    // the COUNTER-example and is now simply the same case.
+    // Also stripped of the sweep's import (it added `List.{cons}` to a fixture that
+    // names no constructor at all -- the block boundary ran past this fixture's end into
+    // the next one), and also moved to a rule body for the oracle reason above.
     let spec_op = r#"
 namespace test.wi521.specop
   import anthill.prelude.{Int64}
-  operation plus(x: Int64, y: Int64) -> Int64 = add(x, y)
+  fact seed521b(1)
+  rule uses521b(?r) :- seed521b(?x), ?r <=> add(?x, 1)
 end
 "#;
     let errs = load_stdlib_errors(spec_op);
     assert!(
         errs.iter().any(|e| e.contains("add")),
-        "a bare `add` must NOT resolve — the tier no longer carries it, and a minted `+` \
-         needs no tier because it names `..anthill.prelude.Additive.add` outright; \
-         got: {errs:?}"
+        "a bare `add` must NOT resolve either — and since WI-909 that is no longer a \
+         CONTRAST with `cons` above but the same rule reaching both; got: {errs:?}"
+    );
+
+    // …AND THE IMPORT IS THE MIGRATION. Without this arm the two above would pass just
+    // as well if the loader had broken outright, which is the failure mode this file's
+    // own history warns about (an earlier cut asserted the opposite of what it ran).
+    let imported = r#"
+namespace test.wi521.imported
+  import anthill.prelude.{Int64, List, Option}
+  import anthill.prelude.List.{cons, nil}
+  fact seed521(1)
+  rule uses521(?l) :- seed521(?), ?l <=> cons(head: 1, tail: nil())
+end
+"#;
+    let errs = load_stdlib_errors(imported);
+    assert!(
+        errs.is_empty(),
+        "the same program with member imports must load clean; got: {errs:?}"
     );
 }

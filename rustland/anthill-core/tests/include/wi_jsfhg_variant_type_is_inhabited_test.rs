@@ -296,6 +296,7 @@ fn a_parametric_variant_type_is_inhabited() {
     let src = r#"
 namespace test.jsfhg.parametric
   import anthill.prelude.{Int64, Option, some}
+  import anthill.prelude.Option.{some}
   operation takeSome(o: Option.some[T = Int64]) -> Int64 = 21
   operation takeAny(o: Option[T = Int64]) -> Int64 = 22
   operation driveSome() -> Int64 = takeSome(some(1))
@@ -752,6 +753,7 @@ fn known_gap_the_auto_some_coercion_is_withheld_at_a_variant_typed_field() {
     let src = r#"
 namespace test.jsfhg.coerce
   import anthill.prelude.{Int64, Option, some}
+  import anthill.prelude.Option.{some}
   sort Holder
     entity holder(o: Option.some[T = Int64])
   end

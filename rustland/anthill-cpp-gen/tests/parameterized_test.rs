@@ -180,6 +180,7 @@ fn carrier_overrides_parameterized_default() {
         namespace test.params
           import anthill.prelude.{Float, List, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           entity Polyline(points: List[T = Float])
 

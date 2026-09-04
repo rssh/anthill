@@ -60,6 +60,7 @@ fn register_prelude_marks_prelude_constructors() {
 const PROJECT_SRC: &str = r#"
     namespace test.wi718
       import anthill.prelude.Option
+      import anthill.prelude.Option.{none, some}
 
       entity Thing(id: String, note: Option[String])
 

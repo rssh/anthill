@@ -109,6 +109,7 @@ fn load_toml_int_float_bool() {
     // Register a simple entity with numeric fields
     let src = r#"
 namespace test
+  import anthill.prelude.List.{nil}
 sort Nums { entity Nums(x: Int64, y: Float, flag: Bool) }
 end
 "#;
@@ -552,6 +553,7 @@ fn wi498_deserialized_entity_matches_source_loaded_form() {
     // `id` is declared first but interned after `description`/`status`.
     let src = r#"
 namespace test
+  import anthill.prelude.List.{cons}
 entity Pre(aafield: String)
 entity Rec(zzfield: String, aafield: String)
 fact Rec(zzfield: "z", aafield: "a")
@@ -684,6 +686,7 @@ fn serialize_nested_option_some_none_errors_loudly() {
         r#"
 namespace test
 import anthill.prelude.{Option, Int64}
+  import anthill.prelude.Option.{none}
 sort Box { entity Box(inner: Option[T = Option[T = Int64]]) }
 end
 "#,
@@ -737,6 +740,7 @@ fn serialize_user_entity_named_cons_is_not_flattened_as_list() {
         r#"
 namespace test
 import anthill.prelude.{List, Int64}
+  import anthill.prelude.List.{cons}
 sort Holder { entity Holder(c: Pair, tags: List[T = Int64]) }
 sort Pair { entity cons(x: Int64, y: Int64) }
 end

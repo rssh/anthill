@@ -23,6 +23,7 @@ namespace test.wi730
   import anthill.prelude.PartialEq.{eq, neq}
   import anthill.prelude.PartialOrd.{gte}
   import anthill.prelude.Bool.{and, or, not}
+  import anthill.prelude.List.{nil}
 
   sort Person
     entity person(name: String, age: Int64)

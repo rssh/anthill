@@ -272,6 +272,7 @@ namespace test.yqb1ynested
   import anthill.prelude.{String, Int64, Bool, List}
   import anthill.prelude.Relation.{join}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.List.{cons}
   sort Person
     entity person(name: String, age: Int64)
   end

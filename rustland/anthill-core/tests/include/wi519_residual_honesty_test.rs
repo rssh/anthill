@@ -108,6 +108,7 @@ fn definite_solution_survives_definite_only() {
     let src = r#"
         namespace wi519.def
           import anthill.prelude.{Int64}
+          import anthill.prelude.Option.{none}
           sort Thing
             entity thing(id: Int64)
           end

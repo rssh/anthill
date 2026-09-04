@@ -77,6 +77,8 @@ fn make_list(kb: &mut KnowledgeBase, elems: &[TermId]) -> TermId {
 /// scenario. Loaded fresh per test (mirrors the forall_impl suite).
 const FIXTURE: &str = r#"
     namespace test.wi027
+      import anthill.prelude.List.{cons, nil}
+      import anthill.prelude.Option.{some}
       enum Item
         entity a
         entity b

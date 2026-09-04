@@ -409,7 +409,7 @@ fn only_the_bracket_surface_is_the_list_literal() {
     let src = r#"
 namespace wi1096.surface
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.List.{cons}
   -- WI-20260825-5W3RJ: a WRITTEN `ListLiteral(…)` is an ordinary reference to the
   -- reflect entity, so this file imports it like any other name. Only the `[…]`
   -- SURFACE is desugared, and the desugar names its target itself.
@@ -584,7 +584,7 @@ fn a_list_literal_written_by_name_with_named_args_is_not_lowered() {
     let src = r#"
 namespace wi1096.namedargs
   import anthill.prelude.{List, Int64}
-  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.List.{nil}
   fact mark(1)
   fact named(ListLiteral(elements: 1))
   rule is_nil(?m) :- mark(?m), named(nil())

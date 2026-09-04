@@ -71,6 +71,7 @@ namespace dotfind
   import anthill.prelude.{List, Bool, Option, String, Int64, Iterable, Stream}
   import anthill.prelude.Iterable.{find}
   import anthill.prelude.List.{filterElems, length}
+  import anthill.prelude.Option.{none, some}
 
   sort Row
     entity row(name: String, flag: Bool)
@@ -84,7 +85,7 @@ end
 /// The consumer file: `DECLS` plus `ops`, so every case shares one declaration set.
 fn program(ops: &str) -> String {
     format!(
-        "\nnamespace dotfind\n  import anthill.prelude.{{List, Bool, Option, String, Int64, Iterable, Stream}}\n  import anthill.prelude.Iterable.{{find}}\n  import anthill.prelude.List.{{filterElems, length}}\n  import dotfind.{{Row, rows}}\n  import dotfind.Row.{{row}}\n{ops}\nend\n"
+        "\nnamespace dotfind\n  import anthill.prelude.{{List, Bool, Option, String, Int64, Iterable, Stream}}\n  import anthill.prelude.Iterable.{{find}}\n  import anthill.prelude.List.{{filterElems, length}}\n  import anthill.prelude.Option.{{none, some}}\n  import dotfind.{{Row, rows}}\n  import dotfind.Row.{{row}}\n{ops}\nend\n"
     )
 }
 

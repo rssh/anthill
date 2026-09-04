@@ -547,6 +547,7 @@ fn ground_alias_stays_a_term_fact() {
     let src = r#"
 namespace test.wi366.ground
   import anthill.prelude.{Int64}
+  import anthill.prelude.List.{cons}
   sort Bar = Int64
 end
 "#;

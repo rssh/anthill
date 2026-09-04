@@ -12,6 +12,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 /// depends on WI-005 which is already Delivered, so WI-004 is unblocked. The
 /// `seq` tag covers WI-001..WI-003 and points at a missing WI-999.
 const FIXTURE: &str = r#"
+import anthill.prelude.Option.{some}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",

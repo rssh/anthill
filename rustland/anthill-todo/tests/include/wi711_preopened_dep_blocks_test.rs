@@ -19,6 +19,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 /// WI-005 (PreOpened) depends on the still-Open WI-002 → blocked within the
 /// PreOpened group (status-agnostic split).
 const FIXTURE: &str = r#"
+import anthill.prelude.Option.{some}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",

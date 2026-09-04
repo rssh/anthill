@@ -180,6 +180,7 @@ fn wi729_value_receiver_still_reroutes_first() {
 namespace test.wi729shadow
   import anthill.prelude.{String, Int64, List, Bool}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.List.{cons, nil}
 
   sort Person
     entity person(name: String, age: Int64)

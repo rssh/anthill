@@ -264,6 +264,7 @@ fn a_self_reference_nested_in_a_binding_keeps_the_sort_tie() {
     crate::common::load_kb_with(
         "namespace test.wi1061.selftie\n\
          \x20 import anthill.prelude.{Int64, List}\n\
+         \x20 import anthill.prelude.List.{cons}\n\
          \x20 sort Wrap\n\
          \x20   sort T = ?\n\
          \x20   entity Wrap(v: T)\n\

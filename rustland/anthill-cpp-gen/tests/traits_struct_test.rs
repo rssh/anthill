@@ -17,6 +17,7 @@ fn simple_sort_with_two_operations() {
         namespace test.simple
           import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Greeter
             operation greet(self: Greeter, name: String) -> Unit
@@ -66,6 +67,7 @@ fn emitted_bodies_actually_compile() {
         namespace test.bodies
           import anthill.prelude.{Int64, Unit, String, Modify, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Counter
             operation increment(self: Counter) -> Unit
@@ -187,6 +189,7 @@ fn parameterized_return_bodies_compile() {
         namespace test.params_compile
           import anthill.prelude.{Int64, Float, Unit, List, Option, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Sensor
             operation samples(self: Sensor) -> List[T = Float]
@@ -278,6 +281,7 @@ fn parameterized_return_types_emit_bodies() {
         namespace test.params_in_ops
           import anthill.prelude.{Int64, Float, Unit, String, Modify, List, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           entity Sample(value: Float)
 

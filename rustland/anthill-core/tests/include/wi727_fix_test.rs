@@ -351,6 +351,7 @@ fn wi727_fix_value_may_be_a_compound_entity() {
 namespace test.wi727fixpt
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.Relation.{fix}
+  import anthill.prelude.Option.{none}
   sort Point
     entity point(x: Int64, y: Int64)
   end

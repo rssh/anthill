@@ -66,6 +66,7 @@ namespace test.wi204_smoke_lookup
   import anthill.reflect.{Term}
   import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
+  import anthill.prelude.Option.{none}
 
   sort Driver
     operation drive(s: Cell[WIS], id: String) -> Option[T = WorkItem]

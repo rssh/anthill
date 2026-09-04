@@ -688,6 +688,7 @@ namespace capmatrixcons
   import anthill.prelude.List.{{foldLeft, foldRight, length}}
   import anthill.prelude.FiniteCollection.{{size, collect}}
   import capmatrixcons.Row.{{row, a_of, is_set}}
+  import anthill.prelude.Option.{{none, some}}
 {FIXTURE}
   operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
   operation cell(xs: List[T = Row]) -> Int64 =

@@ -106,6 +106,7 @@ fn a_rule_body_call_site_type_argument_list_is_refused_as_unsupported_not_as_a_s
 namespace test.wi710.callsite_body
   import anthill.prelude.{Int64, Bool, List}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.List.{nil}
 
   operation pick[T](xs: List[T = T]) -> Bool = true
   rule ok(?b) :- eq(?b, pick[T = Int64](nil))

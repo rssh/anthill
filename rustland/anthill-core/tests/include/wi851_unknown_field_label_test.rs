@@ -195,6 +195,7 @@ fn prelude_zero_field_constructors_accept_no_labels() {
         r#"
 namespace test.wi851.nil_ctor
   import anthill.prelude.{Int64, List}
+  import anthill.prelude.List.{nil}
   sort Box
     entity mk(xs: List)
   end
@@ -209,6 +210,7 @@ end
         r#"
 namespace test.wi851.none_ctor
   import anthill.prelude.{Int64, Option}
+  import anthill.prelude.Option.{none}
   sort Box
     entity mk(v: Option)
   end

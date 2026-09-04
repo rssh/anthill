@@ -45,6 +45,7 @@ fn bare_arrow_in_op_body_is_single_targeted_error() {
         r#"
 namespace test.wi605.bare
   import anthill.prelude.{List, nil, cons, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   operation sum_inc(xs: List[T=Int64]) -> List[T=Int64] =
     List.foldRight(xs, nil, (x, acc) -> cons(head: x + 1, tail: acc))
@@ -100,6 +101,7 @@ fn lambda_keyword_form_resolves_params() {
     let src = r#"
 namespace test.wi605.keyword
   import anthill.prelude.{List, nil, cons, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   operation sum_inc(xs: List[T=Int64]) -> List[T=Int64] =
     List.foldRight(xs, nil, lambda (x, acc) -> cons(head: x + 1, tail: acc))
@@ -219,6 +221,7 @@ fn non_callable_arrow_symbol_does_not_disable_hint() {
         r#"
 namespace test.wi605.sortarrow
   import anthill.prelude.{List, nil, cons, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   sort arrow = ?
 

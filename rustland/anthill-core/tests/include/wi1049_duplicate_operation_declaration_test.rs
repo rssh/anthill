@@ -271,6 +271,7 @@ fn same_name_on_two_sorts_is_not_a_duplicate() {
 fn an_identical_repeat_is_refused_too() {
     let src = r#"
         namespace wi1049dup.same
+          import anthill.prelude.List.{cons}
           sort R
             sort T = ?
             operation r_op(x: T) -> T

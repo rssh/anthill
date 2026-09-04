@@ -471,6 +471,7 @@ fn some_coercion_reaches_a_position_the_gate_used_to_skip() {
 namespace test.wi836.wrap
   import anthill.prelude.{List, Option, Int64, some, none}
   import anthill.prelude.List.{nil}
+  import anthill.prelude.Option.{none, some}
   operation li() -> List[T = Int64] = nil()
   operation f[X](a: List[T = X], b: Option[T = X]) -> Int64 =
     match b

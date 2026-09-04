@@ -75,6 +75,7 @@ const TWO_MONOIDS: &str = r#"
 /// `an_op_scoped_selection_that_could_differ_is_refused_not_ignored`, and WI-1091,
 /// which owns lifting it.
 const FOLDER: &str = r#"
+  import anthill.prelude.List.{cons, nil}
   sort Folder
     sort FT = ?
     requires Monoid[T = FT]
@@ -547,6 +548,7 @@ fn a_subgoal_tie_names_the_subgoal_spec_and_offers_no_bracket() {
     let src = r#"
 namespace wi843.subtie
   import anthill.prelude.{Int64}
+  import anthill.prelude.Option.{none}
   sort Show
     sort ST = ?
     operation show(x: ST) -> Int64
@@ -621,6 +623,7 @@ fn a_specificity_ordered_pair_silently_takes_the_more_specific() {
     let src = r#"
 namespace wi843.specpair
   import anthill.prelude.{Int64, List}
+  import anthill.prelude.List.{cons, nil}
   sort Monoid
     sort T = ?
     operation tag(x: T) -> Int64
@@ -665,6 +668,7 @@ fn a_bare_co_provision_of_partial_eq_is_not_an_eq_ambiguity() {
     let src = r#"
 namespace wi843.bareeq
   import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.Option.{none}
   sort Coin
     entity coin(n: Int64)
   end

@@ -54,6 +54,7 @@ fn collect_global_var_names(occ: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
 fn op_body_param_var_shares_operationinfo_symbol() {
     let src = r#"
         namespace wi487.peek
+          import anthill.prelude.Option.{none}
           sort Box
             entity box(value: Int64)
             operation peek(b: Box) -> Int64 = 42

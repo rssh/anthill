@@ -45,6 +45,7 @@ namespace wi738.operand
   import anthill.prelude.{Int64, Bool}
   import anthill.prelude.Numeric.{add, sub}
   import anthill.prelude.PartialEq.{eq, neq}
+  import anthill.prelude.Option.{some}
 
   sort N
     entity num(v: Int64)

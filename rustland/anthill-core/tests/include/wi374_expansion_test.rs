@@ -45,6 +45,7 @@ fn bare_annotation_keeps_inferred_params() {
     let src = r#"
 namespace test.wi374.bare_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> Int64 =
     let s : Stream = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
@@ -66,6 +67,7 @@ fn partial_annotation_keeps_written_and_inferred() {
     let src = r#"
 namespace test.wi374.partial_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> Int64 =
     let s : Stream[T = Int64] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
@@ -86,6 +88,7 @@ fn wrong_written_binding_still_rejected() {
     let src = r#"
 namespace test.wi374.wrong_ann
   import anthill.prelude.{Int64, String, List, Stream, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> Int64 =
     let s : Stream[T = String] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
@@ -109,6 +112,7 @@ fn member_tie_conflicting_elements_rejected() {
     let src = r#"
 namespace test.wi374.tie_reject
   import anthill.prelude.{Int64, String, List, nil, cons, append}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> List =
     append(cons(head: 1, tail: nil), cons(head: "x", tail: nil))
@@ -127,6 +131,7 @@ fn member_tie_same_elements_accepted() {
     let src = r#"
 namespace test.wi374.tie_accept
   import anthill.prelude.{Int64, List, nil, cons, append}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> List =
     append(cons(head: 1, tail: nil), cons(head: 2, tail: nil))
@@ -150,6 +155,7 @@ fn foreign_two_bare_params_stay_independent() {
     let src = r#"
 namespace test.wi374.foreign_indep
   import anthill.prelude.{Int64, String, List, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation twoLists(a: List, b: List) -> Int64 = 42
 
@@ -173,6 +179,8 @@ fn member_tie_refinement_accepted() {
     let src = r#"
 namespace test.wi374.tie_refine
   import anthill.prelude.{Int64, List, Option, nil, cons, append, some, none}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Option.{none, some}
 
   operation listy() -> List =
     append(cons(head: nil, tail: nil), cons(head: cons(head: 1, tail: nil), tail: nil))
@@ -247,6 +255,7 @@ fn masked_member_violation_still_rejected() {
     let src = r#"
 namespace test.wi374.masking
   import anthill.prelude.{Int64, String, List, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   sort Box
     sort T = ?
@@ -277,6 +286,7 @@ fn annotated_let_match_exhaustiveness_kept() {
     let src = r#"
 namespace test.wi374.exhaustive
   import anthill.prelude.{Int64, Option, some, none}
+  import anthill.prelude.Option.{some}
 
   operation f() -> Int64 =
     let o : Option = some(5)
@@ -305,6 +315,7 @@ fn wildcard_annotation_keeps_inferred() {
     let src = r#"
 namespace test.wi374.wildcard_ann
   import anthill.prelude.{Int64, List, Stream, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> Int64 =
     let s : Stream[T = ?] = anthill.prelude.Iterable.iterator(cons(head: 1, tail: nil))
@@ -351,6 +362,7 @@ fn ctor_member_tie_self_sort_field_rejected() {
     let src = r#"
 namespace test.wi374.ctor_tail
   import anthill.prelude.{Int64, String, List, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation driver() -> List =
     cons(head: 1, tail: cons(head: "x", tail: nil))
@@ -370,6 +382,7 @@ fn ctor_member_tie_consistent_and_refinement_accepted() {
     let src = r#"
 namespace test.wi374.ctor_ok
   import anthill.prelude.{Int64, List, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   sort Box
     sort T = ?
@@ -462,6 +475,7 @@ fn foreign_bare_return_op_loads_but_no_longer_narrows() {
 namespace test.wi374.foreign_ret
   import anthill.prelude.{Int64, Option, List, nil, cons}
   import anthill.prelude.List.{nth}
+  import anthill.prelude.List.{cons, nil}
 
   operation makeList() -> List = cons(head: 1, tail: nil)
 
@@ -493,6 +507,7 @@ fn bare_value_stays_unusable() {
     let src = r#"
 namespace test.wi374.bare_value
   import anthill.prelude.{Int64, List, Stream, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   sort Src
     entity mkSrc

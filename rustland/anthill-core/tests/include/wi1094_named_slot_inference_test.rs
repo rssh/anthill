@@ -89,6 +89,7 @@ const DOUBLED: &str = r#"
 
 /// Read the first element of a set built by inserting `7` then `3`.
 const HEAD: &str = r#"
+    import anthill.prelude.List.{cons, nil}
     operation head(l: List[T = Int64]) -> Int64 =
       match l
         case nil() -> -1

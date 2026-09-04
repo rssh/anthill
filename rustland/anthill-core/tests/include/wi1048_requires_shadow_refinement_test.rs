@@ -506,6 +506,7 @@ fn wi1052_expanded_return_type_warns_identically() {
 const ALIAS_SPELLING: &str = r#"
     namespace wi1052.alias
       import anthill.prelude.{Int64, List, nil}
+      import anthill.prelude.List.{nil}
       sort IntList = List[T = Int64]
       sort ASpec
         sort T = ?
@@ -525,6 +526,7 @@ const ALIAS_SPELLING: &str = r#"
 const EXPANDED_SPELLING: &str = r#"
     namespace wi1052.alias
       import anthill.prelude.{Int64, List, nil}
+      import anthill.prelude.List.{nil}
       sort IntList = List[T = Int64]
       sort ASpec
         sort T = ?

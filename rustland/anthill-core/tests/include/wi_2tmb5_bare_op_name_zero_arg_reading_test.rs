@@ -174,6 +174,7 @@ fn a_body_less_builtin_in_an_arrow_slot_names_itself() {
 namespace wi2tmb5.builtin
   import anthill.prelude.{List, Int64, Function}
   import anthill.reflect.{Term, as_term}
+  import anthill.prelude.List.{cons, nil}
   operation my_map(xs: List[T = Int64], f: Function[Int64, Term]) -> List[T = Term] =
     match xs
       case nil() -> nil()
@@ -201,6 +202,7 @@ fn a_body_less_builtin_with_no_expected_type_is_refused() {
 namespace wi2tmb5.builtinbare
   import anthill.prelude.{Option, Int64, some}
   import anthill.reflect.{Term, as_term}
+  import anthill.prelude.Option.{some}
   operation go() -> Option[T = Term] = some(as_term)
 end
 "#,
@@ -257,6 +259,7 @@ end
     const VIA: &str = r#"
 namespace wi2tmb5.polyslot
   import anthill.prelude.{Option, Int64, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   operation sub2(x: Int64, acc: Int64) -> Int64 = x - acc
   operation via_option(o: Option[T = Function[A = (x: Int64, acc: Int64), B = Int64]])
       -> Int64 =

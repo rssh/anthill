@@ -9,6 +9,7 @@ fn dump_match_binding_shapes() {
     let source = r#"
         namespace test.dump_mb
           import anthill.prelude.{Int64, Option}
+          import anthill.prelude.Option.{none, some}
           sort Calc
             operation unwrap(o: Option[T = Int64]) -> Int64 =
               match o

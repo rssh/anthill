@@ -331,6 +331,7 @@ fn a_coerced_argument_is_wrapped_before_it_becomes_a_component() {
     let src = r#"
 namespace test.wi801.coerce
   import anthill.prelude.{Int64, Option, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   operation pick(t: (o: Option[T = Int64], d: Int64)) -> Int64 =
     match t.o
       case none() -> t.d

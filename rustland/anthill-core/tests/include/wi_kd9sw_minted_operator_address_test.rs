@@ -68,6 +68,7 @@ end
 namespace kd9sw.use
   import anthill.prelude.{Int64}
   import kd9sw.lib.Weird.{add}
+  import anthill.prelude.Option.{some}
   operation viaOperator() -> Int64 = 1 + 2
   operation viaBareCall() -> Int64 = add(1, 2)
 end

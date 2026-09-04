@@ -124,6 +124,7 @@ fn unify_recurses_and_binds_subvar() {
     // (the case today's `eq` instead FAILS — unify is the honest substrate).
     let src = r#"
         namespace wi523.rec
+          import anthill.prelude.Option.{some}
           rule go(?x)
             :- some(?x) <=> some(3)
         end
@@ -145,6 +146,7 @@ fn unify_occurs_check_fails() {
     // rejected (no infinite term). The goal fails: zero solutions.
     let src = r#"
         namespace wi523.occurs
+          import anthill.prelude.Option.{some}
           rule go(?v)
             :- ?v <=> some(?v)
         end
@@ -164,6 +166,7 @@ fn unify_chase_then_mismatch_fails() {
     // mismatch) ⇒ fail. Exercises the working-subst read-through.
     let src = r#"
         namespace wi523.clash
+          import anthill.prelude.Option.{none, some}
           rule go(?x)
             :- ?x <=> some(1), ?x <=> none
         end

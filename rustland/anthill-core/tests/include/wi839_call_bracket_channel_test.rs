@@ -303,6 +303,7 @@ fn a_positional_after_a_named_binding_over_applies() {
         r#"
 namespace test.wi839.named_then_pos
   import anthill.prelude.{Int64, String}
+  import anthill.prelude.Option.{none}
   sort Driver
     operation idy[T](n: T) -> T = n
     operation main(n: Int64) -> Int64 = idy[T = Int64, String](n)

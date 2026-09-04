@@ -326,6 +326,7 @@ namespace wi818.comb
   import anthill.prelude.FiniteCollection.{map, filter}
   import anthill.prelude.Numeric.{add}
   import anthill.prelude.PartialOrd.{gt}
+  import anthill.prelude.Option.{none}
 
   sort Use
     operation mh() -> Int64 effects Error[EmptyStream] =

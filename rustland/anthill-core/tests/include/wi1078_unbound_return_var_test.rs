@@ -118,6 +118,7 @@ use crate::wi1012_static_supplier_tie_test::refusal;
 /// whole file was re-run to confirm no verdict moved.
 const PRE: &str = "namespace test.wi1078.rows\n\
     \x20 import anthill.prelude.{Int64, Stream, Error, List, Function}\n\
+    \x20 import anthill.prelude.List.{cons, nil}\n\
     \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n";
 
 fn rows(decl: &str) -> String {

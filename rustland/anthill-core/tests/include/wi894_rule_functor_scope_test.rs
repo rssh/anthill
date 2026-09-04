@@ -84,6 +84,8 @@ fn each_sort_uses_its_own_rules() {
 /// `wi896_labeled_predicate_head_test`; the rows here keep the SHAPES honest.
 const HEAD_SHAPES: &str = r#"
 namespace wi894.labels
+  import anthill.prelude.List.{cons}
+  import anthill.prelude.Option.{some}
   sort S
     import anthill.prelude.{Int64, Bool}
     rule {

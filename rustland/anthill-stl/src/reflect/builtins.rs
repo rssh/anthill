@@ -1420,6 +1420,7 @@ end
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.reflect_sorts
+  import anthill.prelude.List.{cons}
   sort Color
     entity red
   end
@@ -1483,6 +1484,7 @@ end
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.wi438
+  import anthill.prelude.List.{cons}
   sort Alpha = ?
   sort Beta = ?
   describe Alpha {< first alpha >}
@@ -2013,6 +2015,7 @@ end
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.wi1016_seam
+  import anthill.prelude.Option.{some}
   sort Color
     entity red
   end
@@ -2413,6 +2416,7 @@ end
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.subst_bindings
+  import anthill.prelude.List.{cons}
   sort X
     entity x
   end
@@ -2606,7 +2610,7 @@ end
     /// declared operation, two backings, and after WI-984 they may not answer
     /// differently — for what the tier ANSWERS and for what it does not.
     #[test]
-    fn lookup_symbol_reads_the_implicit_tier() {
+    fn lookup_symbol_no_longer_reads_a_bare_prelude_name() {
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.wi913_stl
@@ -2616,8 +2620,19 @@ namespace test.wi913_stl
 end
 "#,
         );
+        // WI-909's THIRD PASS took the constructors off the tier too, emptying it, so
+        // this half is inverted like the reflect-sort half below. WI-913's finding is
+        // untouched -- `lookup_symbol` still reads the LADDER rather than
+        // `by_qualified_name` -- and the qualified arm is what keeps that visible: the
+        // row would otherwise pass just as well if the operation had stopped resolving
+        // anything at all.
+        assert!(
+            looked_up_name(&mut interp, "cons").is_err(),
+            "the implicit tier is empty; a bare `cons` denotes nothing at `<global>`",
+        );
         assert_eq!(
-            looked_up_name(&mut interp, "cons").expect("cons denotes its target"),
+            looked_up_name(&mut interp, "anthill.prelude.List.cons")
+                .expect("control: the qualified name is the migration and still resolves"),
             "anthill.prelude.List.cons",
         );
         // …AND A REFLECT RESULT SORT DOES NOT (WI-909 took the eight of them off the

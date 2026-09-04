@@ -1936,6 +1936,7 @@ fn wi297_sub_occurrences_empty_vs_nonempty() {
     // list is matched intra-frame; an int marker propagates the outcome.
     let source = concat!(
         "namespace wi297.su\n",
+        "  import anthill.prelude.List.{cons, nil}\n",
         // WI-20260825-5W3RJ: reflection code imports what it names. Before this
         // ticket the desugaring vocab resolved bare from any namespace through a
         // reserved-name rung; that rung is gone, and these are ordinary names.
@@ -1983,6 +1984,7 @@ fn wi682_node_pattern_binds_reflectable_child() {
     // child), `?h` could not re-reflect and the chain would fail.
     let source = concat!(
         "namespace wi682.chain\n",
+        "  import anthill.prelude.List.{cons, nil}\n",
         // WI-20260825-5W3RJ: reflection code imports what it names. Before this
         // ticket the desugaring vocab resolved bare from any namespace through a
         // reserved-name rung; that rung is gone, and these are ordinary names.
@@ -2328,6 +2330,7 @@ fn wi420_eta_of_curried_requires_op_is_loud_type_error() {
     let src = r#"
 namespace test.wi420.curried
   import anthill.prelude.{List, Int64, Bool, Function}
+  import anthill.prelude.List.{cons, nil}
   sort Wrap
     requires anthill.prelude.Eq[T = Int64]
     sort T = ?
@@ -5730,6 +5733,7 @@ end
 fn type_check_sorts_parameterized_field_correct() {
     // List[T=Int64] field with correct cons(head: 1, tail: nil) — no errors
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort Container
   import anthill.prelude.List
   entity Box(items: List[T = Int64])
@@ -5749,6 +5753,7 @@ fact Box(items: cons(head: 42, tail: nil))
 fn type_check_sorts_parameterized_field_wrong_element() {
     // List[T=Int64] field with wrong element type (String instead of Int64)
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort Container
   import anthill.prelude.List
   entity Box(items: List[T = Int64])
@@ -5790,6 +5795,7 @@ fact Foo(x: "wrong")
 fn ho_predicate_parses_as_ho_apply() {
     // ?P(nil) should parse and load as ho_apply(?P, nil)
     let source = r#"
+import anthill.prelude.List.{nil}
 rule test_induction(?P) :- ?P(nil)
 "#;
     let mut kb = load_with_source(source);
@@ -6068,6 +6074,7 @@ fn rule_typing_stdlib_no_spurious_errors() {
 fn pattern_fragment_valid_ho_apply_in_body() {
     // ?P(nil) in body — valid pattern fragment
     let source = r#"
+import anthill.prelude.List.{nil}
 sort TestSort
   rule test(?P) :- ?P(nil)
 end
@@ -6179,6 +6186,7 @@ use anthill_core::kb::typing::TypingEnv;
 fn constructor_infers_type_param_from_int_field() {
     // Direct test: type_check_expr on cons(head: 42, tail: nil) should produce a parameterized List type
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort TestSort
   import anthill.prelude.List
   entity Holder(items: List[T = Int64])
@@ -6198,6 +6206,7 @@ fact Holder(items: cons(head: 42, tail: nil))
 #[test]
 fn constructor_infers_type_param_from_string_field() {
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort TestSort
   import anthill.prelude.List
   entity Holder(items: List[T = String])
@@ -6218,6 +6227,7 @@ fn constructor_two_different_instantiations() {
     // Two fields with different T bindings: List[T=Int64] and List[T=String]
     // Both should be checked correctly — shared Var must not cause conflict
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort Container
   import anthill.prelude.List
   entity Holder(ints: List[T = Int64], strings: List[T = String])
@@ -6238,6 +6248,7 @@ fn constructor_two_instantiations_mismatch() {
     // List[T=Int64] field with String value — should detect mismatch
     // List[T=String] field with Int64 value — should also detect
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort Container
   import anthill.prelude.List
   entity Holder(ints: List[T = Int64], strings: List[T = String])
@@ -6276,6 +6287,7 @@ end
 fn constructor_type_param_mismatch_detected() {
     // cons(head: 42) in a List[T=String] field — should detect mismatch
     let source = r#"
+import anthill.prelude.List.{cons, nil}
 sort TestSort
   import anthill.prelude.List
   entity Holder(items: List[T = String])
@@ -6992,6 +7004,7 @@ fn wi237_pattern_subst_concrete_field_type() {
     let source = r#"
 namespace test.wi237_concrete
   import anthill.prelude.{Option}
+  import anthill.prelude.Option.{none, some}
   operation pick(o: Option[T = String]) -> String =
     match o
       case some(v) -> v
@@ -7028,6 +7041,7 @@ namespace test.wi237_buried
   import anthill.prelude.{List}
   import anthill.prelude.String.{concat}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.List.{cons, nil}
   enum Container
     sort T = ?
     entity wrapped(items: List[T = T])

@@ -194,6 +194,7 @@ fn the_bound_dictionary_names_the_carrier_that_provides_the_spec() {
 namespace x9pb4_d
   import anthill.prelude.{List, String, Bool, Int64, FiniteCollection}
   import anthill.prelude.FiniteCollection.{size}
+  import anthill.prelude.Option.{none}
 
   sort Box
     entity Box(items: List[T = String])

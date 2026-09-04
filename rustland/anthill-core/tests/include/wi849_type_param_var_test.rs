@@ -115,6 +115,7 @@ fn a_type_param_entry_that_is_not_a_variable_is_reported() {
 namespace test.wi849.handwritten
   import anthill.prelude.{Int64}
   import anthill.reflect.{OperationInfo}
+  import anthill.prelude.List.{cons, nil}
   sort Driver
     operation victim(n: Int64) -> Int64 = n
   end
@@ -173,6 +174,7 @@ fn a_type_params_field_that_is_not_a_list_is_reported() {
 namespace test.wi849.notalist
   import anthill.prelude.{Int64}
   import anthill.reflect.{OperationInfo}
+  import anthill.prelude.List.{nil}
   sort Driver
     operation victim(n: Int64) -> Int64 = n
   end
@@ -209,6 +211,7 @@ fn a_hand_written_operation_info_with_only_declared_fields_still_loads() {
 namespace test.wi849.handwritten_ok
   import anthill.prelude.{Int64}
   import anthill.reflect.{OperationInfo}
+  import anthill.prelude.List.{nil}
   sort Driver
     operation victim(n: Int64) -> Int64 = n
   end

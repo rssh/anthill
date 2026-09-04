@@ -92,6 +92,7 @@ fn an_arrow_pinned_one_level_out_reaches_the_nested_name() {
     let src = r#"
 namespace wi5nszy.headline
   import anthill.prelude.{Option, Int64, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   operation inc(x: Int64) -> Int64 = x + 1
   operation apply_it(o: Option[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 =
     match o
@@ -122,6 +123,7 @@ fn a_multi_parameter_callback_spreads_by_label_through_the_nesting() {
     let src = r#"
 namespace wi5nszy.labels
   import anthill.prelude.{Option, Int64, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   operation sub2(x: Int64, acc: Int64) -> Int64 = x - acc
   operation via_option(o: Option[T = Function[A = (x: Int64, acc: Int64), B = Int64]])
       -> Int64 =
@@ -151,6 +153,7 @@ fn a_requires_carrying_operation_mints_its_dictionary_through_the_nesting() {
     let src = r#"
 namespace wi5nszy.dict
   import anthill.prelude.{Option, Int64, Bool, Function, PartialEq, some, none}
+  import anthill.prelude.Option.{none, some}
   operation same[T](a: T, b: T) -> Bool requires PartialEq[T] = PartialEq.eq(a, b)
   operation via(o: Option[T = Function[A = (Int64, Int64), B = Bool]], w: Int64) -> Int64 =
     match o
@@ -245,6 +248,7 @@ fn a_constructor_nested_in_a_constructor_field_threads_too() {
     let src = r#"
 namespace wi5nszy.ctorfield
   import anthill.prelude.{Option, Int64, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   sort Holder
     import anthill.prelude.{Option, Int64, Function}
     entity holder(o: Option[T = Function[A = Int64, B = Int64]])
@@ -272,6 +276,7 @@ fn a_slot_that_pins_no_arrow_still_refuses() {
     let src = r#"
 namespace wi5nszy.noarrow
   import anthill.prelude.{Option, Int64, some, none}
+  import anthill.prelude.Option.{none, some}
   operation inc(x: Int64) -> Int64 = x + 1
   operation apply_it(o: Option[T = Int64]) -> Int64 =
     match o
@@ -308,6 +313,7 @@ fn the_inline_lambda_twin_needed_none_of_this() {
     let src = r#"
 namespace wi5nszy.lambda
   import anthill.prelude.{Option, Int64, Function, some, none}
+  import anthill.prelude.Option.{none, some}
   operation apply_it(o: Option[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 =
     match o
       case none() -> 0

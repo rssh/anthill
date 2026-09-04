@@ -250,6 +250,7 @@ fn a_self_sort_return_is_not_opened_but_a_foreign_one_on_a_member_is() {
     crate::common::load_kb_with(
         "namespace test.wi1063.selfret\n\
          \x20 import anthill.prelude.{Int64, List}\n\
+         \x20 import anthill.prelude.List.{cons, nil}\n\
          \x20 sort Wrap\n\
          \x20   sort T = ?\n\
          \x20   entity Wrap(v: T)\n\

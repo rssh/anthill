@@ -67,6 +67,7 @@ fn program(ops: &str) -> String {
         r#"
 namespace wiybbc3
   import anthill.prelude.{{Int64, Bool, List, Set}}
+  import anthill.prelude.List.{{cons, nil}}
   sort Row
     import anthill.prelude.{{Int64, Bool}}
     entity row(a: Int64, flag: Bool)

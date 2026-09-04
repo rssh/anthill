@@ -113,6 +113,7 @@ fn let_pattern(occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
 const TWO_LETS: &str = r#"
 namespace wi819.keys
   import anthill.prelude.{Int64, String, Option}
+  import anthill.prelude.Option.{none}
   operation as_int() -> Int64
     = let x: Option[T = Int64] = none()
       1
@@ -395,6 +396,7 @@ end
     let errs = load_errors(&[r#"
 namespace wi819.wildcard_bad
   import anthill.prelude.{Int64, String}
+  import anthill.prelude.List.{cons}
   operation f() -> Int64
     = let _: String = 1
       2

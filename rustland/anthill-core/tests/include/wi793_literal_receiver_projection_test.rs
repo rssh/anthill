@@ -114,6 +114,7 @@ fn a_cons_spine_and_a_call_receiver_resolve_too() {
     let src = r#"
 namespace test.wi793.otherreceivers
   import anthill.prelude.{Int64, List, nil, cons}
+  import anthill.prelude.List.{cons, nil}
 
   operation mk() -> List[T = Int64] = [1, 2, 3]
 

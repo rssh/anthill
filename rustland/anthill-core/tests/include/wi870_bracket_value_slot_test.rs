@@ -71,6 +71,11 @@ const PRELUDE: &str = r#"
   import anthill.prelude.{Int64, String, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq, Pair, List, SortedSet}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Numeric.{sub}
+  -- WI-909: `the_nested_pin_survives_into_a_bracket_less_later_call` matches a
+  -- `SortedSet.toList` result with `case nil()` / `case cons(h, t)`. The constructors
+  -- left the implicit tier, and the match arms are spliced in by a caller, so the
+  -- import belongs to this shared template rather than to any one `ops` string.
+  import anthill.prelude.List.{cons, nil}
 
   enum Duo
     import anthill.prelude.{PartialEq, Eq}

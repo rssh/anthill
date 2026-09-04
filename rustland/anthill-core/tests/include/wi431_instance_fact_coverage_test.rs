@@ -59,6 +59,7 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 #[test]
 fn instance_fact_op_binding_satisfies_coverage() {
     let snippet = r#"namespace test.wi431.cps_accept
+  import anthill.prelude.Option.{none, some}
   import anthill.prelude.Option
 
   sort CpsMonad[F[T]]
@@ -90,6 +91,7 @@ end
 #[test]
 fn instance_fact_missing_op_binding_is_loud() {
     let snippet = r#"namespace test.wi431.cps_missing
+  import anthill.prelude.Option.{some}
   import anthill.prelude.Option
 
   sort CpsMonad[F[T]]
@@ -345,6 +347,7 @@ end
 #[test]
 fn instance_fact_spec_default_op_needs_no_binding() {
     let snippet = r#"namespace test.wi431.cps_default
+  import anthill.prelude.Option.{none, some}
   import anthill.prelude.Option
 
   sort CpsMonad[F[T]]
@@ -488,6 +491,7 @@ end
 #[test]
 fn instance_fact_higher_kinded_binding_signature_fails_open() {
     let snippet = r#"namespace test.wi431.sig_hk
+  import anthill.prelude.Option.{none, some}
   import anthill.prelude.Option
 
   sort CpsMonad[F[T]]

@@ -914,6 +914,7 @@ end
     let unrelated = r#"
 namespace test.v25n3.solo3
   import anthill.prelude.{String}
+  import anthill.prelude.Option.{none}
   sort LaterS
     entity laters(t: String)
   end
@@ -1263,6 +1264,7 @@ end
     let unrelated = r#"
 namespace test.v47vwx.inc2
   import anthill.prelude.{String}
+  import anthill.prelude.Option.{none}
   sort LaterZ
     entity laterz(t: String)
   end
@@ -1449,6 +1451,7 @@ end
     let unrelated = r#"
 namespace test.v47vwx.fwd2
   import anthill.prelude.{String}
+  import anthill.prelude.Option.{none}
   sort LaterF
     entity laterf(t: String)
   end

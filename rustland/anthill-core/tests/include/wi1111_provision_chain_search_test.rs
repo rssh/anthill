@@ -631,6 +631,7 @@ fn an_opless_multi_parameter_floor_is_still_a_conversion() {
 const OPLESS_SRC: &str = r#"
 namespace wi1111.opless
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Option.{some}
   sort Low
     sort T = ?
     sort E = ?
@@ -766,6 +767,7 @@ fn a_requires_chain_ending_in_a_conversion_reaches_the_provider() {
     let src = r#"
 namespace wi1111.reqconv
   import anthill.prelude.{Int64}
+  import anthill.prelude.Option.{some}
   sort Low
     sort T = ?
     operation probe(a: T) -> Int64

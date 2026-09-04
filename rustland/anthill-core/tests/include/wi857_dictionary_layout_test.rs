@@ -320,6 +320,7 @@ fn a_sub_goal_the_provider_supplies_resolves_witness_local() {
 namespace wi857.locality
   import anthill.prelude.{Int64, Bool, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
   import anthill.prelude.Numeric.{sub}
+  import anthill.prelude.Option.{none}
   
   enum Duet
     import anthill.prelude.{PartialEq, Eq}

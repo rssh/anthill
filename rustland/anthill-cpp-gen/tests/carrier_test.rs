@@ -17,6 +17,7 @@ fn carrier_table_picks_up_implementation_facts() {
         namespace test.carriers
           import anthill.prelude.{String, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Money
           end
@@ -60,6 +61,7 @@ fn entity_field_uses_carrier_type() {
         namespace test.carriers
           import anthill.prelude.{String, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Money
           end
@@ -103,6 +105,7 @@ fn carrier_bound_sort_skipped_in_namespace_emission() {
         namespace test.carriers
           import anthill.prelude.{String, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Money
           end
@@ -150,6 +153,7 @@ fn carrier_overrides_primitive_default() {
         namespace test.carriers
           import anthill.prelude.{Int64, Option}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort SmallInt
           end

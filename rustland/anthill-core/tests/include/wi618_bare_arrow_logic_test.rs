@@ -32,6 +32,7 @@ fn bare_arrow_in_rule_body_is_flagged() {
         r#"
 namespace test.wi618.rulebody
   import anthill.prelude.{List, nil, cons, Int64}
+  import anthill.prelude.List.{cons}
 
   rule build_list(?y)
     :- ?y <=> ((x, acc) -> cons(head: x, tail: acc))
@@ -78,6 +79,7 @@ fn nested_bare_arrow_in_rule_body_is_flagged() {
         r#"
 namespace test.wi618.nested
   import anthill.prelude.{List, nil, cons, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   rule build_list(?y)
     :- ?y <=> cons(head: (x) -> x, tail: nil)
@@ -174,6 +176,7 @@ fn arrow_types_over_resolved_leaves_still_load() {
         r#"
 namespace test.wi618.legit
   import anthill.prelude.{List, nil, Int64, String}
+  import anthill.prelude.List.{nil}
 
   rule arrow_type_data(?t)
     :- ?t <=> (Int64 -> Int64)

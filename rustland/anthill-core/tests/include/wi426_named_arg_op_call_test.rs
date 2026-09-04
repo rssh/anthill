@@ -166,6 +166,7 @@ namespace test.wi426.sib
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.Iterable.{find}
   import anthill.prelude.FiniteCollection.{size}
+  import anthill.prelude.Option.{none, some}
   sort IntBag
     import anthill.prelude.{List, Int64, Stream, Iterable, FiniteCollection, FiniteStream}
     entity ibag(items: List[T = Int64])

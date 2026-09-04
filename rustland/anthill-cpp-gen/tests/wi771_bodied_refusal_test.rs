@@ -28,6 +28,7 @@ fn bodied_generated_rule_is_refused_loudly() {
         namespace test.wi771_gen
           import anthill.prelude.{String, Option, Bool}
           import anthill.realization.Generated
+          import anthill.prelude.Option.{none}
 
           entity Toggle(on: Bool)
           fact Toggle(on: true)
@@ -67,6 +68,7 @@ fn bodied_implementation_rule_is_refused_loudly() {
         namespace test.wi771_impl
           import anthill.prelude.{String, Option, Bool}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none}
 
           sort Money
           end
@@ -112,6 +114,7 @@ fn plain_generated_and_implementation_facts_still_read() {
         namespace test.wi771_ok
           import anthill.prelude.{String, Option}
           import anthill.realization.{Generated, Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none}
 
           sort Money
           end

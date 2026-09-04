@@ -99,6 +99,7 @@ fn realized_effects_lower_fine() {
         namespace test.wi576.ok
           import anthill.prelude.{Int64, Unit, Modify, Error}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           sort Robot
             operation bump(self: Robot, n: Int64) -> Unit
@@ -148,6 +149,7 @@ fn effect_row_parameter_is_not_gated() {
     let source = r#"
         namespace test.wi576.poly
           import anthill.prelude.{Int64}
+          import anthill.prelude.Option.{none}
           sort Runner
             operation run[EffP](n: Int64) -> Int64 effects {EffP}
           end

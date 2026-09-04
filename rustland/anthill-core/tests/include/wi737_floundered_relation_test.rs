@@ -40,6 +40,8 @@ namespace test.wi737
   import anthill.prelude.{Int64, List, Unit, Bool}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialEq.{neq}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Option.{some}
 
   sort Num
     entity num(v: Int64)

@@ -42,6 +42,7 @@ end
 const BASE: &str = r#"
 namespace xbbq.base
   import anthill.prelude.{Int64}
+  import anthill.prelude.Option.{some}
   sort Thing
     entity thing(id: Int64)
   end

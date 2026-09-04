@@ -67,6 +67,7 @@ use anthill_core::eval::value::Value;
 const TEMPLATE: &str = r#"
 namespace wi865.tie
   import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.Option.{none}
 
   sort Base
     sort T = ?

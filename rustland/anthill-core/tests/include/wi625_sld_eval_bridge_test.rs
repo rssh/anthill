@@ -163,6 +163,8 @@ const REC_SRC: &str = r#"
     namespace gap1.recop
       import anthill.prelude.{Int64, List}
       import anthill.prelude.PartialEq.{eq}
+      import anthill.prelude.List.{cons, nil}
+      import anthill.prelude.Option.{some}
       operation last(xs: List[T = Int64]) -> Int64 =
         match xs
           case nil() -> 0
@@ -304,6 +306,7 @@ const CONTAINS_SRC: &str = r#"
       import anthill.prelude.{Int64, Float, List, Bool, Eq}
       import anthill.prelude.List.{contains}
       import anthill.prelude.PartialEq.{eq}
+      import anthill.prelude.List.{cons, nil}
       -- A carrier with NO lawful Eq: the fire-time guard must block has_elem over
       -- it, proving the transitive requirement is real, not vacuous.
       --
@@ -1025,6 +1028,7 @@ const INSTFACT_SRC: &str = r#"
     namespace gap2.instfact
       import anthill.prelude.{Int64, Bool, Eq, PartialEq}
       import anthill.prelude.PartialEq.{eq}
+      import anthill.prelude.Option.{some}
       sort Tagged
         entity tagged(key: Int64, note: Int64)
       end

@@ -73,6 +73,7 @@ namespace test.wi1127
   import anthill.prelude.Relation.{where, join}
   import anthill.prelude.PartialEq.{eq}
   import anthill.prelude.Bool.{and}
+  import anthill.prelude.List.{nil}
 
   sort Person
     entity person(name: String, age: Int64, rank: Int64)

@@ -527,6 +527,7 @@ fn wi580_catchall_arm_declines_no_overgeneration() {
         namespace test.wi580ca
           import anthill.prelude.{Int64, String}
           import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.Option.{some}
           operation label(n: Int64) -> String =
             match n
               case 0 -> "zero"
@@ -563,6 +564,7 @@ fn wi580_op_call_other_operand_declines() {
         namespace test.wi580oc
           import anthill.prelude.List.{append, cons, nil}
           import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.Option.{some}
           rule q(?a, ?b) :- eq(append(?a, cons(head: 3, tail: nil)), append(?b, cons(head: 4, tail: nil)))
         end
     "#;
@@ -732,6 +734,7 @@ fn wi580_member_relational_unground_residualizes_not_wrong() {
         namespace test.wi580memr
           import anthill.prelude.{Int64, Bool, List}
           import anthill.prelude.List.{contains, cons, nil}
+          import anthill.prelude.Option.{some}
           rule contains5(?l) :- contains(?l, 5)
         end
     "#;

@@ -115,6 +115,7 @@ namespace wi845.use
   import anthill.prelude.Int64
   import wi845.base.{{Desc, Leaf, Holder}}
   import wi845.rival.Rival
+  import anthill.prelude.Option.{{some}}
 
   sort Driver
     operation drive(n: Int64) -> Int64 = {call}

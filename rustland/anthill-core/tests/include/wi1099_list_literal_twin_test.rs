@@ -385,6 +385,7 @@ fn the_goal_form_matches_the_twin_not_the_reflect_data_vocabulary() {
 const RT_SRC: &str = r#"
 namespace wi1099.rt
   import anthill.prelude.{Int64}
+  import anthill.prelude.List.{cons}
   -- WI-20260825-5W3RJ: a WRITTEN `ListLiteral(…)` is an ordinary reference to the
   -- reflect entity and is imported like any other name. The RELOAD half below
   -- deliberately does NOT import it — the persisted text has to carry its own address,

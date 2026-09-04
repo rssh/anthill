@@ -173,6 +173,7 @@ fn a_contradictory_receiver_bracket_in_a_rule_body() {
 namespace test.w6jh0rb
   import anthill.prelude.{Map, Int64, String, Bool}
   import anthill.prelude.Map.{put, get, size}
+  import anthill.prelude.List.{nil}
   rule r(?n) :- ?n = size(put(Map[K = Bool, V = Bool].empty(), "a", 1))
 end
 "#;
@@ -346,6 +347,11 @@ fn an_unread_receiver_bracket_is_refused_rather_than_dropped() {
 namespace test.w6jh0u
   import anthill.prelude.{{Map, Option, List, Int64, String, Bool}}
   import anthill.prelude.Map.{{put, size}}
+  -- WI-909: one `body` writes a BARE `nil()` beside the bracketed
+  -- `List[Bogus = Int64].cons(...)` it is really testing. Without this import that bare
+  -- name is a second error and the row's `errs.len() == 1` reads 2 -- the refusal it
+  -- asserts is still there, joined by an unrelated one.
+  import anthill.prelude.List.{{nil}}
   operation build() -> Int64 = {body}
 end
 "#

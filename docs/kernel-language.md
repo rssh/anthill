@@ -1056,7 +1056,8 @@ to *declare* `n`, not merely to have imported it — so name the declaring scope
 because `int64.anthill` imported it there).
 
 **A resolution with no file** — a query pattern, or a host-supplied name — reads only
-imports that belong to no file: the implicit prelude, and those supplied by the
+imports that belong to no file: the implicit prelude (empty since WI-909, so this half is
+now vacuous), and those supplied by the
 **invocation** (`anthill query -i <name>`). A program file's imports do not reach it,
 having no file to be local to.
 
@@ -1441,8 +1442,9 @@ A minted operator names its target **absolutely** now (§5.5), so no tier entry 
 What has **not** changed is that a carrier gives a spec operation its own meaning by **provision** (`provides PartialEq[T = MySort]`), which attaches an implementation to the one symbol and selects it by carrier at the call site (§8.7). That was the repair the refusal pointed at, and it is still the way to implement a spec operation; it is simply no longer the *only* thing a same-spelled declaration can be.
 
 **The question is what the name denotes, not which table it is in.** The declared name
-runs the ordinary ladder at its own address (§8.6) — enclosing scopes and imports first,
-the implicit prelude last — and the refusal fires when what
+runs the ordinary ladder at its own address (§8.6) — enclosing scopes, then imports, then
+the dotted readings, with nothing below them since WI-909 emptied the implicit prelude —
+and the refusal fires when what
 comes back is a spec operation other than the declaration itself. Three consequences,
 each of which a membership test would get wrong:
 
@@ -1467,10 +1469,13 @@ each of which a membership test would get wrong:
   latter is not an answer to "what did this name mean here" at all. Standing down on
   either would let the one line that makes the collision real defeat the rule.
 
-A **hidden `internal`** name is the one rung that does *not* stand it down, and that is
-the ladder's own order rather than an exception: a reference whose only match is an
-`internal` name it cannot see consults the implicit tier **before** the forbidden-access
-diagnostic (§8.6), so the tier is genuinely what such a name denotes.
+A **hidden `internal`** name used to be the one rung that did *not* stand it down: a
+reference whose only match was an `internal` name it could not see consulted the implicit
+tier **before** the forbidden-access diagnostic (§8.6), so the tier was genuinely what
+such a name denoted. **WI-909 removed that case rather than changing it** — the tier is
+empty, so there is nothing for the descent to reach and the forbidden-access diagnostic is
+now the answer. The paragraph is kept because the ORDER it describes is unchanged and
+still visible in `remap_name_str_inner`; only its last rung is gone.
 
 **Read per file, refused for any reader.** An import resolves only in the file that
 wrote it (§8.6), so two files writing text at one address can read one name
@@ -1518,8 +1523,10 @@ Four things are outside it, each for its own reason.
   sort, which cannot be the subject of a `provides` clause at all.
 - Nothing here reaches a **sort**, an **entity** or a **`const`** — the rule is gated on
   the declaration category, and only `operation` is in it. A user's own `sort List` is a
-  genuinely different type from `anthill.prelude.List` and must keep shadowing it — that
-  is the whole reason the implicit tier sits below scope resolution. A `const` taking a
+  genuinely different type from `anthill.prelude.List` and must keep shadowing it — which
+  is why the implicit tier sat below scope resolution for as long as it existed, and why
+  it could be removed without disturbing this rule: a user's `sort List` now shadows
+  nothing, because nothing answers below scope. A `const` taking a
   spec-operation name is the same *shape* as this rule; widening to it needs its own
   census, which is what would decide it.
 
@@ -1530,11 +1537,14 @@ and refused on the same terms. That address is also the one where such a declara
 name is reachable from inside the stdlib's own namespaces, where it ties with the
 prelude's.
 
-**Why the language wants this.** The implicit tier is the lowest-precedence rung
-specifically so that a user's own `eq` can shadow the prelude's without the two going
-ambiguous — the footgun a flat `<global>` injection had (§8.6). That requirement exists
-only because the rival is permitted, so refusing the rival is what lets the tier stop
-being load-bearing for spec-operation names.
+**Why the language wants this.** The implicit tier *was* the lowest-precedence rung
+specifically so that a user's own `eq` could shadow the prelude's without the two going
+ambiguous — the footgun a flat `<global>` injection had (§8.6). That requirement existed
+only because the rival is permitted, so refusing the rival is what let the tier stop being
+load-bearing for spec-operation names — and, once the same argument had been made for
+every other group, what let WI-909 remove the tier altogether. The rule stated here is
+what survived it: the shadowing problem is gone because there is no longer a prelude name
+to shadow.
 
 **A declaration may not capture a name it does not override** (proposal 059 R4
 clause 3; `check_name_captures`, `kb/load.rs`). A name can already mean something
@@ -4327,7 +4337,8 @@ model) were removed in WI-291.
 2. an **imported alias** in `scope` → resolved, **if the asking file wrote it**
    (WI-995): an alias written by another file is not there at all, and resolution
    continues to the parents as if the import had never been written. Aliases
-   belonging to no file — the implicit prelude, and `-i` invocation flags — are
+   belonging to no file — `-i` invocation flags, and formerly the implicit prelude,
+   which WI-909 emptied — are
    read by every asker;
 3. otherwise recurse into the **parent** scopes. A *non-enclosing* parent is
    skipped when the name is (a) a type parameter of that parent, (b) marked
@@ -4406,12 +4417,17 @@ head, which owns every path beneath it: an `internal` member there is a member
 the citing scope is forbidden, reported as such, not a licence to bind a
 same-spelled top-level path instead.
 
-**The lowest rung is the implicit prelude, and only that.** It is the user-facing
-vocabulary available in every namespace with no `import` line, and since WI-909 that is
-the fundamental **constructors** — `cons`, `nil`, `some`, `none` — and nothing else. It
-sits at the **bottom** of the ladder, which is what lets a user name shadow one without
-conflict: a local declaration or an explicit import is found first, so a user's own name
-wins and can never go *ambiguous* against a member.
+**There is no lowest rung. The implicit prelude is empty.** WI-909 finished what its
+earlier passes began: `PRELUDE_QUALIFIED` held four constructors — `cons`, `nil`, `some`,
+`none` — and now holds none, so **every** name resolves through scope, imports and the
+dotted ladder, with nothing beneath them. Importing a SORT does not bring its members into
+scope, so a program that pattern-matches a list writes
+`import anthill.prelude.List.{cons, nil}` like any other name it uses.
+
+The rung existed so a user name could shadow a prelude name without conflict — it sat at
+the bottom, so a local declaration or explicit import was found first and could never go
+*ambiguous* against a member. That property is now free: there is no member to be
+shadowed.
 
 **What has left it, and the rule that decides.** A name belongs on this rung only if a
 PERSON writes it bare. A functor the CONVERTER supplies for a surface form that names
@@ -4442,6 +4458,20 @@ justified for names written bare in SOURCE and merely convenient for the rest. A
 `anthill query 'SortInfo(name: ?n)'` is now refused, naming `-i anthill.reflect.*` as the
 remedy.
 
+**And the constructors went last, on a third rule: whether a miss is LOUD.** They were
+the only rows the first two rules justified keeping — written bare, in source. What
+removed them is that keeping four rows cost a whole resolution rung, five accessors and a
+body of doc, to save an `import` line in eleven files. Measured: of 38 corpus files using
+a constructor, 27 already wrote the member import.
+
+THAT MIGRATION CANNOT BE DRIVEN BY LOAD ERRORS, and this is the trap worth recording. A
+constructor in a rule-body goal is refused by WI-1034 and in a body term by WI-1058, but a
+constructor in a rule- or fact-HEAD ARGUMENT has neither check. Driven, in the stdlib
+itself: `reflect/typing.anthill` writes `rule list_contains(?x, cons(head: ?x, tail: ?))`
+and imported only the `List` *sort*, so removing the rung made `list_contains` answer
+**no solutions** where it had answered `true` — while the file loaded clean with an
+identical fact and rule count. The sites must be found by reading, not by running.
+
 That refusal is a *consistency*, not a loss, and the reflection sorts are the case that
 shows it: `MemberInfo` and `DescriptionInfo` belong to the same vocabulary — the same
 result sorts, emitted by the same loader — and were never on the rung, so they have always
@@ -4471,7 +4501,8 @@ never re-read as a top-level path.
 is a demand, not an offer, so `Numeric.lt` names nothing even though `Numeric requires
 PartialOrd[T]`. That costs nothing, because what a requirement brings is reachable **bare**
 inside the requiring scope, which is where a requirement's contents belong — measured on a
-name the implicit prelude cannot rescue: with `Mid provides Base[T = T]`, a sort writing
+name nothing can rescue (the implicit prelude that once might have is empty since
+WI-909): with `Mid provides Base[T = T]`, a sort writing
 `requires Mid[T]` calls `Base`'s `zug(x)` bare, and writes `Mid.zug(x)` only because the
 `provides` is there. The enclosing namespace is not followed either: `Numeric.List` names
 nothing, `List` being a *sibling* of `Numeric`. Each hop asks the same qualified-name

@@ -329,13 +329,58 @@ fn assign_default_namespace(pf: &mut ParsedFile) {
         segments,
         span: Span::default(),
     };
+    // WI-909 — THE WRAPPER CARRIES THE CONSTRUCTOR IMPORTS, and it must, because imports
+    // are FILE-LOCAL (WI-995 / WI-1074). The doc above says this wrapper "reuses the scope
+    // the project's `domain.anthill` set up (entity definitions + prelude imports)"; the
+    // first half is true and the second never was. A scope carries DECLARATIONS across
+    // files, not imports -- so `domain.anthill`'s `import anthill.prelude.Option.{some}`
+    // has never been visible here, and a document's `some(value: "x")` resolved solely
+    // through `kb::load`'s implicit tier.
+    //
+    // WI-909 emptied that tier, which made this the ON-DISK FORMAT'S problem rather than
+    // a test's: the printer emits `some(value: …)` into every stored item document, and a
+    // synthesized wrapper with no imports could no longer resolve it. MEASURED -- the
+    // delete / tag / document-format suites failed with
+    // `match_failed(occurrence: Node, scrutinee: Term)`, a RUNTIME failure, because a
+    // document's facts load clean and only misbehave when matched against.
+    //
+    // Supplied here rather than at the tier because this is exactly what a file-local
+    // import is for, and because the store is the component that knows these facts are
+    // `anthill.stage0` ones. The names are the four the printer can emit: `Option`'s pair
+    // for a wrapped optional, `List`'s for a `depends_on` chain.
+    let mut imports = Vec::new();
+    for (owner, members) in SYNTHETIC_WRAPPER_IMPORTS {
+        let mut path: SmallVec<[anthill_core::intern::Symbol; 2]> = SmallVec::new();
+        path.push(pf.symbols.intern("anthill"));
+        path.push(pf.symbols.intern("prelude"));
+        path.push(pf.symbols.intern(owner));
+        let selected = members
+            .iter()
+            .map(|m| {
+                let mut segs: SmallVec<[anthill_core::intern::Symbol; 2]> = SmallVec::new();
+                segs.push(pf.symbols.intern(m));
+                Name {
+                    segments: segs,
+                    span: Span::default(),
+                }
+            })
+            .collect();
+        imports.push(anthill_core::parse::ir::Import {
+            path: Name {
+                segments: path,
+                span: Span::default(),
+            },
+            kind: anthill_core::parse::ir::ImportKind::Selective(selected),
+        });
+    }
+
     let items = std::mem::take(&mut pf.items);
     pf.items.push(Item::Namespace(Namespace {
         name,
         // Synthetic ownership wrapper, not a source declaration: it has no written
         // description blocks of its own.
         descriptions: Vec::new(),
-        imports: Vec::new(),
+        imports,
         items,
         span: Span::default(),
     }));
@@ -3327,12 +3372,27 @@ fn hoist_status(
     with_named_arg(parsed, term, &field_name, record, span)
 }
 
+/// WI-909 — THE FUNCTOR IS AN ADDRESS, not the short name. This is a HOST-SIDE MINT: it
+/// builds an `Option` node straight into a `ParsedFile`, and the loader then resolves that
+/// functor through the ordinary name ladder. While `some` sat on `kb::load`'s implicit
+/// tier the short spelling resolved from anywhere; the tier is empty now, so a short name
+/// here reaches nothing and the synthesized node silently stops matching.
+///
+/// MEASURED: with the tier rows removed and every `.anthill` import in place,
+/// `anthill-todo`'s delete/tag/document suites failed with
+/// `match_failed(occurrence: Node, scrutinee: Term)` -- a RUNTIME failure, not a load
+/// error, because a synthesized node names nothing to fail about at load. Restoring the
+/// rows made them pass, which is what identified this site.
+///
+/// Same rule as `parse::desugar_target` and `parse::pratt`: a functor a PROGRAM never
+/// wrote must carry its target outright. `..` is unspellable by any identifier, so it
+/// cannot be captured by a user declaration either.
 fn some_of(parsed: &mut ParsedFile, value: TermId, span: anthill_core::span::Span) -> TermId {
     let mut named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
     named.push((parsed.symbols.intern("value"), value));
     parsed.terms.alloc(
         Term::Fn {
-            functor: parsed.symbols.intern("some"),
+            functor: parsed.symbols.intern("..anthill.prelude.Option.some"),
             pos_args: SmallVec::new(),
             named_args: named,
         },
@@ -3343,7 +3403,7 @@ fn some_of(parsed: &mut ParsedFile, value: TermId, span: anthill_core::span::Spa
 fn none_of(parsed: &mut ParsedFile, span: anthill_core::span::Span) -> TermId {
     parsed.terms.alloc(
         Term::Fn {
-            functor: parsed.symbols.intern("none"),
+            functor: parsed.symbols.intern("..anthill.prelude.Option.none"),
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         },
@@ -3570,15 +3630,59 @@ fn orphan_satellites(
 /// Namespaces are descended rather than counted, and the synthetic one
 /// [`assign_default_namespace`] wraps a bare fact file in is exactly why: counted,
 /// every project file would look like it held one non-fact item.
+/// Is `ns` the wrapper [`assign_default_namespace`] builds, rather than a namespace the
+/// source wrote?
+///
+/// EVERY FIELD IT SETS IS CHECKED, which is what makes this a shape match rather than a
+/// provenance guess: the name it mints, the default span it stamps, the absence of
+/// descriptions, and the exact prelude-constructor imports it supplies. A file that
+/// genuinely writes `namespace anthill.stage0` carries a real span and fails the second
+/// clause; one that writes different imports fails the last.
+fn is_synthetic_wrapper(ns: &anthill_core::parse::ir::Namespace) -> bool {
+    use anthill_core::span::Span;
+    if ns.span != Span::default() || !ns.descriptions.is_empty() {
+        return false;
+    }
+    ns.imports.len() == SYNTHETIC_WRAPPER_IMPORTS.len()
+}
+
+/// The imports [`assign_default_namespace`] supplies, as `(owner, members)`. One source
+/// of truth for the wrapper and for [`is_synthetic_wrapper`], so the two cannot drift.
+const SYNTHETIC_WRAPPER_IMPORTS: [(&str, [&str; 2]); 2] =
+    [("Option", ["some", "none"]), ("List", ["cons", "nil"])];
+
 fn item_census(parsed: &ParsedFile) -> (usize, usize) {
     use anthill_core::parse::ir::Item;
+    use anthill_core::span::Span;
 
     fn walk(items: &[Item], facts: &mut usize, others: &mut usize) {
         for item in items {
             match item {
                 Item::Fact(_) => *facts += 1,
                 Item::Namespace(ns) => {
-                    *others += ns.imports.len() + ns.descriptions.len();
+                    // WI-909 — THE SYNTHETIC WRAPPER'S IMPORTS ARE NOT CONTENT. Since
+                    // `assign_default_namespace` began supplying the prelude constructor
+                    // imports its facts need, a bare fact file carries imports it did not
+                    // write, and counting them here made every such file look like it held
+                    // non-fact content -- which is exactly what `migrate` refuses to
+                    // consume. Driven: seven `wi1118_migrate_test` rows failed on
+                    // `migrate(&proj).status.success()` with no other symptom.
+                    //
+                    // MATCHED ON THE WRAPPER'S EXACT SHAPE, not on a sentinel span. A bare
+                    // `ns.span == Span::default()` test would be a provenance guess on a
+                    // one-way rewrite that DELETES files: any future producer of a
+                    // zero-span namespace would silently stop `migrate` counting written
+                    // imports and let it consume a file it must refuse. `is_synthetic_
+                    // wrapper` instead asserts everything `assign_default_namespace`
+                    // constructs -- the `anthill.stage0` name, the default span, no
+                    // descriptions, and exactly the import set it supplies -- so a
+                    // namespace that is not that wrapper cannot be mistaken for it.
+                    // Raised by `/code-review`, which also caught the comment here citing
+                    // import spans: `parse::ir::Import` has no span field.
+                    if !is_synthetic_wrapper(ns) {
+                        *others += ns.imports.len();
+                    }
+                    *others += ns.descriptions.len();
                     walk(&ns.items, facts, others);
                 }
                 _ => *others += 1,

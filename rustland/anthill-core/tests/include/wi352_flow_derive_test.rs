@@ -18,6 +18,7 @@ use smallvec::SmallVec;
 const REDUCE: &str = r#"
 namespace anthill.test.wi352
   import anthill.prelude.{List, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   operation reduce(xs: List[T = Int64], z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64 =
     match xs

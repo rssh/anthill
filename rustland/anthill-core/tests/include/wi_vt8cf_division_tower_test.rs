@@ -128,6 +128,7 @@ fn bigint_division_now_exists() {
 namespace test.vt8cf.bdiv
   import anthill.prelude.{Int64, BigInt, Option}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.Option.{some}
   -- The divisor is a COMPUTED expression, not a literal, so `eq(b, 0)` cannot be
   -- refuted and the guarded effect stays conservatively present — WI-478's rule, not
   -- anything specific to BigInt. The `Int64` rows above need no declaration because

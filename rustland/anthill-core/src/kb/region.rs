@@ -506,6 +506,7 @@ mod wi353_tests {
     const OPS: &str = r#"
 namespace anthill.test.wi353
   import anthill.prelude.{List, Unit, Cell, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   -- foreach: the callback is applied to each element of `l`, so the element
   -- place `f.a` is fed `element_of` from `l`.

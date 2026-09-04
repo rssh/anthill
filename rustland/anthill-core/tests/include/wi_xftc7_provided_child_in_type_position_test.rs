@@ -326,6 +326,7 @@ fn a_member_that_is_not_a_type_is_refused_at_the_declaration() {
             r#"
 namespace test.xftc7.kind
   import anthill.prelude.{{Int64}}
+  import anthill.prelude.Option.{{some}}
   sort Base
     sort T = ?
     operation Zero() -> Int64 = 0

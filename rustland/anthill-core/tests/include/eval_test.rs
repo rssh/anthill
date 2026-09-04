@@ -606,6 +606,7 @@ fn m2_list_literal_builds_cons_chain() {
     let src = r#"
 namespace test.m2_list
   import anthill.prelude.{List}
+  import anthill.prelude.List.{cons}
 
   operation first(xs: List[T = Int64]) -> Int64 =
     match xs
@@ -670,6 +671,7 @@ fn m2_empty_list_matches_nil() {
     let src = r#"
 namespace test.m2_empty_list
   import anthill.prelude.{List}
+  import anthill.prelude.List.{nil}
 
   operation is_empty(xs: List[T = Int64]) -> Int64 =
     match xs
@@ -695,6 +697,7 @@ fn m2_list_recursive_walk_with_tco() {
     let src = r#"
 namespace test.m2_walk
   import anthill.prelude.{List}
+  import anthill.prelude.List.{cons, nil}
 
   operation walk(xs: List[T = Int64]) -> Int64 =
     match xs
@@ -742,6 +745,7 @@ fn m2_user_defined_reduce_on_list_and_set() {
     let src = r#"
 namespace test.m2_reduce
   import anthill.prelude.{List, Set, Function, Int64}
+  import anthill.prelude.List.{cons, nil}
 
   operation reduce_list(xs: List[T = Int64], acc: Int64, f: Function[(Int64, Int64), Int64]) -> Int64 =
     match xs
@@ -782,6 +786,7 @@ fn m2_hof_inference_sort_and_map() {
 namespace test.m2_hof_inf
   import anthill.prelude.{List, Function, Int64, Bool}
   import anthill.prelude.PartialOrd.{lt}
+  import anthill.prelude.List.{cons, nil}
 
   operation insert_by(x: Int64, xs: List[T = Int64], lt: Function[(Int64, Int64), Bool]) -> List[T = Int64] =
     match xs
@@ -1267,7 +1272,7 @@ fn wi413_lazy_filter_skips_via_self_recursion() {
     let src = r#"
 namespace test.wi413filter
   import anthill.prelude.{List, Int64, Stream, Bool, Option}
-  import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.List.{cons}
   -- Phase C (WI-589) + WI-599: the eager consumers live on FiniteCollection. The
   -- finite `FiniteCollection.filter` (→ a `filtered` carrier the WI-590 witness
   -- gives FiniteCollection) replaces the lazy `FilteredStream.filter` (→ bare
@@ -1326,6 +1331,7 @@ fn wi414_nth_dispatches_concrete_eq() {
 namespace test.wi414
   import anthill.prelude.{List, Int64, Option}
   import anthill.prelude.List.{nth}
+  import anthill.prelude.Option.{none, some}
 
   operation unwrap(o: Option[Int64]) -> Int64 =
     match o
@@ -1895,6 +1901,7 @@ fn m3_bigint_to_int_fits() {
 namespace test.m3_bigint_to_int
   import anthill.prelude.{BigInt, Option, Int64}
   import anthill.prelude.BigInt.{to_bigint, to_int}
+  import anthill.prelude.Option.{none, some}
 
   operation main() -> Int64 =
     match to_int(to_bigint(42))
@@ -2096,6 +2103,7 @@ fn m3_string_concat_and_length() {
     let src = r#"
 namespace test.m3_string
   import anthill.prelude.String.{concat, length}
+  import anthill.prelude.Option.{none}
   operation greeting() -> String = concat("hi ", "there")
   operation main() -> Int64 = length(greeting())
 end
@@ -2147,6 +2155,7 @@ namespace test.m4_ancestor
   import anthill.prelude.{LogicalStream}
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
+  import anthill.prelude.Option.{none, some}
 
   sort Person
     entity alice
@@ -2245,6 +2254,7 @@ namespace test.m4_multi
   import anthill.prelude.{LogicalStream}
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
+  import anthill.prelude.Option.{none, some}
 
   sort Person
     entity alice
@@ -2335,6 +2345,7 @@ namespace test.m4_take
   import anthill.prelude.LogicalStream.{splitFirst}
   import anthill.prelude.Pair.{pair}
   import anthill.prelude.Ord.{gt}
+  import anthill.prelude.Option.{none, some}
 
   operation takeN(s: LogicalStream, n: Int64) -> Int64 effects s.E =
     if gt(n, 0) then

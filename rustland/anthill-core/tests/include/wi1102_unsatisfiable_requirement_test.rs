@@ -437,6 +437,7 @@ fn a_failing_conditional_provision_is_not_reported_as_a_missing_one() {
     const SRC: &str = r#"
 namespace wi1102.cond
   import anthill.prelude.{Int64}
+  import anthill.prelude.Option.{none}
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64
@@ -615,6 +616,7 @@ fn a_self_representing_spec_does_not_file_its_element_as_the_carrier() {
     const SRC: &str = r#"
 namespace wi1102.selfrep
   import anthill.prelude.{Int64}
+  import anthill.prelude.Option.{none}
   sort Container
     sort T = ?
     -- RECEIVES ON THE SORT: self-representing. `T` is the element type.

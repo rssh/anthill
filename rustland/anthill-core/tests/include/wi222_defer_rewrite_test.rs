@@ -218,6 +218,7 @@ fn requirement_name_tracks_requires_chain_entry() {
     let src = r#"
 namespace test.wi222.multi_requires
   import anthill.prelude.{Eq, Ord, WeakOrd, Int64}
+  import anthill.prelude.List.{cons}
   sort Wi222Multi
     sort T = ?
     requires Eq[T]

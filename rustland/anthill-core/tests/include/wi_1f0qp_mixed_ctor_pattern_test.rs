@@ -525,6 +525,7 @@ fn mixed_query_types_its_positional_argument_from_the_field_it_ranks_to() {
     const BAG: &str = r#"
 namespace test.wi1f0qp.bagns
   import anthill.prelude.{Int64, List}
+  import anthill.prelude.List.{cons}
   sort Bag
     entity bag(tag: Int64, xs: List[T = Int64])
   end

@@ -75,6 +75,7 @@ fn positional_single_param_preserves_existing_behaviour() {
 namespace test.wi071_single
   import anthill.prelude.{List, Option, Int64}
   import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Option.{none}
 
   operation make_list() -> List[Int64] = cons(1, nil())
   operation maybe() -> Option[Int64] = none()

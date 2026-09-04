@@ -32,6 +32,7 @@ fn marshalled_lift_wraps_carrier_return() {
         namespace test.conv
           import anthill.prelude.{Float, Int64, Unit, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -93,6 +94,7 @@ fn marshalled_lower_wraps_carrier_argument() {
         namespace test.lower
           import anthill.prelude.{Float, Unit, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -145,6 +147,7 @@ fn marshalled_argument_without_lower_is_loud() {
         namespace test.nolower
           import anthill.prelude.{Float, Unit, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -210,6 +213,7 @@ fn no_marshal_fact_keeps_decl_only_for_entity_returns() {
         namespace test.no_conv
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -246,6 +250,7 @@ fn marshalled_lift_body_compiles() {
         namespace test.conv_compile
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 

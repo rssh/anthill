@@ -590,6 +590,7 @@ fn the_instance_dictionary_channel_never_forwards_an_op_slot() {
         r#"
 namespace wi822.instchan
   import anthill.prelude.{{Int64, Bool}}
+  import anthill.prelude.Option.{{none, some}}
 {INSTANCES}
   sort Coll
     sort CT = ?

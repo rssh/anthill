@@ -205,6 +205,7 @@ fn one_level_conditional_resolves_via_subgoal() {
     let src = r#"
         namespace test.wi224.one_level
           import anthill.prelude.{Eq, List, Int64}
+          import anthill.prelude.Option.{some}
           sort EqList
             sort A = ?
             requires Eq[T = A]

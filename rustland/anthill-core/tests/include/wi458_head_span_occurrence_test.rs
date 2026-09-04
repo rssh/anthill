@@ -27,6 +27,7 @@ end
 
 const FILE_B: &str = r#"
 namespace wi458b
+  import anthill.prelude.List.{cons}
   fact enabled(feature: "x")
 end
 "#;

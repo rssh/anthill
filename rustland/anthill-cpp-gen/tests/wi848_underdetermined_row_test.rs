@@ -129,6 +129,7 @@ fn emit_sensor_traits(body: &str) -> Result<String, String> {
         namespace test.wi848.naming
           import anthill.prelude.{{Unit, String, Option, Bool}}
           import anthill.realization.{{Implementation, CarrierBinding, NamingConvention}}
+          import anthill.prelude.Option.{{none}}
 
           sort Sensor
             operation ping(self: Sensor) -> Unit

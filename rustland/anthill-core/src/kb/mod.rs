@@ -8136,9 +8136,16 @@ impl KnowledgeBase {
     /// (`load::resolve_name_in_kb`) with `<global>` as the scope; spelling it
     /// separately is how a mount comes to take a functor its author never named (WI-908).
     ///
-    /// A SHORT name therefore resolves only if it is IN SCOPE or in the IMPLICIT TIER
-    /// (`load::resolve_implicit` — `SortInfo`, `cons`, …, which is short-name keyed and
-    /// still answers here). The absolute rung is dotted-only, per WI-476.
+    /// A SHORT name therefore resolves only if it is IN SCOPE at `<global>` — which, for
+    /// a host name, means an INVOCATION import (`-i <ns>.*`) put it there. There is no
+    /// rung below scope any more: WI-909 emptied `load::PRELUDE_QUALIFIED`, so the
+    /// implicit tier this doc used to name (`SortInfo`, `cons`, …) answers nothing. The
+    /// absolute rung is dotted-only, per WI-476, so a host that means a particular symbol
+    /// spells it in full.
+    ///
+    /// Driven by `wi908_global_name_ladder_test::
+    /// a_short_name_with_no_scope_presence_no_longer_mounts`, which is this row inverted:
+    /// a bare `cons` no longer mounts and the qualified name still does.
     pub fn resolve_name_in_global(&mut self, name: &str) -> ResolveResult {
         let global = self.global_scope();
         crate::kb::load::resolve_name_in_kb(self, name, global)

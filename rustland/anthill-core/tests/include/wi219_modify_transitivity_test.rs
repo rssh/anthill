@@ -106,6 +106,7 @@ namespace anthill.test.wi219.commit_test
   import anthill.prelude.Meta.{Meta}
   import anthill.persistence.{Store, persist}
   import anthill.reflect.{Term}
+  import anthill.prelude.List.{nil}
 
   -- A backing store impl satisfying anthill.persistence.Store
   sort MyBackend

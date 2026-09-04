@@ -91,6 +91,7 @@ namespace test.x7nk
   import anthill.prelude.{String, Int64, Bool, List, Option}
   import anthill.prelude.Stream.{isEmpty}
   import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.Option.{some}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -405,6 +406,7 @@ fn x7nk_a_real_member_failing_for_another_reason_keeps_its_own_error() {
 fn x7nk_an_unmarked_constructor_arg_keeps_the_member_message() {
     let errs = load_errs(&src_with(
         r#"
+  import anthill.prelude.Option.{some}
   operation bad() -> Option[T = String] effects Error =
     let r = person_row
     some(value: r.nosuch)

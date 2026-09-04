@@ -10,6 +10,7 @@ fn dump_generated_profile_shape() {
         namespace test.diag_gen
           import anthill.prelude.{Option}
           import anthill.realization.{Generated}
+          import anthill.prelude.Option.{none, some}
           fact Generated(
             source:      "test.diag_gen.X",
             artifact:    "out/X",

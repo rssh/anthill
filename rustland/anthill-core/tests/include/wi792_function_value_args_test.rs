@@ -231,6 +231,7 @@ fn some_coercion_is_applied_at_a_function_value_application() {
     let src = r#"
 namespace test.wi792.opt
   import anthill.prelude.{Int64, Option, some, none}
+  import anthill.prelude.Option.{none, some}
   operation orElse(o: Option[T = Int64], d: Int64) -> Int64 =
     match o
       case none() -> d

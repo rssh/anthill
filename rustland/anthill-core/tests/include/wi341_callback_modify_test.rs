@@ -34,6 +34,7 @@ fn each_src(decl: &str) -> String {
         r#"
 namespace anthill.test.wi341
   import anthill.prelude.{{List, Unit, Cell}}
+  import anthill.prelude.List.{{cons, nil}}
 
   operation each(l: List[T = Cell], f: (a: Cell) -> Unit @ Modify[a]) -> Unit{decl} =
     match l
@@ -101,6 +102,7 @@ fn non_modifying_callback_needs_no_effect() {
     let src = r#"
 namespace anthill.test.wi341pure
   import anthill.prelude.{List, Unit, Cell}
+  import anthill.prelude.List.{cons, nil}
 
   operation each(l: List[T = Cell], f: (a: Cell) -> Unit) -> Unit =
     match l

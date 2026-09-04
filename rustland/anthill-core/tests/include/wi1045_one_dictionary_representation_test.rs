@@ -75,6 +75,7 @@ use anthill_core::kb::term_view::{views_structurally_equal, TermView, ViewHead};
 const SRC: &str = r#"
 namespace test.wi1045
   import anthill.prelude.Int64
+  import anthill.prelude.List.{nil}
 
   sort Base
     sort T = ?

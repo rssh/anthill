@@ -233,6 +233,7 @@ fn structural_induction_proves_property_via_auto_generated_rule() {
     //                where ?t = !tail — discharged from the assumption.
     let src = r#"
         namespace test.forall_impl.struct_ind
+          import anthill.prelude.List.{cons}
           enum IntList
             entity i_nil
             entity i_cons(head: Int64, tail: IntList)
@@ -539,6 +540,7 @@ fn structural_induction_on_stdlib_polymorphic_list() {
     let src = r#"
         namespace test.forall_impl.poly_list
           import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.List.{cons, nil}
           rule poly_pred(nil) :- eq(1, 1)
           rule poly_pred(cons(head: ?_h, tail: ?t)) :- poly_pred(?t)
         end

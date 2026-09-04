@@ -139,6 +139,7 @@ namespace test.wi204_form_c_runtime
   import anthill.reflect.{Term}
   import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
+  import anthill.prelude.Option.{none}
 
   sort Driver
     sort S = ?

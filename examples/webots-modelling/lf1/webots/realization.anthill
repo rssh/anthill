@@ -13,6 +13,11 @@ namespace anthill.examples.lf1.webots.realization
   import anthill.prelude.{List, Option, String, Int64}
   import anthill.realization.{Implementation, CarrierBinding,
                               NamespaceMapping, TypeMapping}
+  -- WI-909: the constructors left the implicit tier, so a bare `some` / `none` takes a
+  -- member import. Importing the SORT does not bring its members into scope (§8.6),
+  -- and a constructor in a HEAD ARGUMENT has no loud check — see the driven case at
+  -- `stdlib/anthill/reflect/typing.anthill`.
+  import anthill.prelude.Option.{some, none}
 
   -- ================================================================
   -- C++ enum encoding facts

@@ -145,6 +145,8 @@ namespace test.wi204_let_ctor_env_let
   import anthill.prelude.{Cell, Int64, Option, List, none, nil}
   import anthill.stage0.{WorkItem, StatusChange, Open}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
+  import anthill.prelude.List.{nil}
+  import anthill.prelude.Option.{none}
 
   sort Main
     sort State = ?

@@ -1,5 +1,10 @@
 namespace anthill.reflect.typing
   import anthill.prelude.{List, Bool}
+  -- WI-909: `list_contains` below matches `cons(...)` in a rule-HEAD ARGUMENT, and the
+  -- implicit tier that used to answer that bare name is gone. A head argument has no
+  -- backstop — WI-1034 covers a body GOAL and WI-1058 a body TERM, neither reaches
+  -- here — so without this import the rule loads clean and silently matches nothing.
+  import anthill.prelude.List.{cons}
   -- Sorts named in the variance facts below (`Covariant`/`Contravariant`).
   import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq}
 

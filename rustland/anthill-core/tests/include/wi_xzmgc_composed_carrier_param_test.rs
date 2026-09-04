@@ -126,6 +126,7 @@ fn bare_program(param: &str) -> String {
         r#"
 namespace test.xzmgc_bare
   import anthill.prelude.{{Int64, List, Iterable, Stream}}
+  import anthill.prelude.List.{{nil}}
   operation ti(c: {param}) -> Int64 = 1
   operation drive() -> Int64 = ti(nil())
 end

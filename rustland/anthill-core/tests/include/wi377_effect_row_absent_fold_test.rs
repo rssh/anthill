@@ -51,6 +51,7 @@ fn lacks_atom_in_denoted_effect_row_is_not_double_wrapped() {
     let src = r#"
 namespace anthill.test.wi377
   import anthill.prelude.{List, Unit, Cell}
+  import anthill.prelude.List.{cons, nil}
 
   operation each(l: List[T = Cell], f: (a: Cell) -> Unit @ {Modify[a], -Branch}) -> Unit effects Modify[l] =
     match l
@@ -79,6 +80,7 @@ fn lacks_atom_without_declaration_still_surfaces_only_the_modify() {
     let src = r#"
 namespace anthill.test.wi377nodecl
   import anthill.prelude.{List, Unit, Cell}
+  import anthill.prelude.List.{cons, nil}
 
   operation each(l: List[T = Cell], f: (a: Cell) -> Unit @ {Modify[a], -Branch}) -> Unit =
     match l

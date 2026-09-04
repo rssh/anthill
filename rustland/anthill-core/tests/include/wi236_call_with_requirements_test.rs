@@ -215,6 +215,7 @@ namespace test.wi236_multi
   import anthill.prelude.{Cell, Option, String, Int64}
   import anthill.stage0.{WorkItem}
   import anthill.todo.store.{WorkItemStore, FileBasedWorkitemStore, WIS}
+  import anthill.prelude.Option.{none, some}
 
   sort Driver
     sort State = ?

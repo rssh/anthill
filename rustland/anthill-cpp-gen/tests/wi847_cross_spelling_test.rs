@@ -34,6 +34,7 @@ fn qualified_type_mapping_overrides_short_at_the_same_key() {
         namespace test.xspell
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
@@ -106,6 +107,7 @@ fn binding_overlay_under_short_shadows_base_under_qualified() {
         namespace test.xspell2
           import anthill.prelude.{Float, Modify}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
+          import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 

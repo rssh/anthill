@@ -14,6 +14,7 @@ use crate::common::try_load_kb_with;
 
 const GRAPH: &str = r#"
 namespace test.wi023
+  import anthill.prelude.Option.{some}
   sort Node
     entity a
     entity b

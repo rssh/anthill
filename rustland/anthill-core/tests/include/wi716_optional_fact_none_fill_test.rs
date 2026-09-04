@@ -54,6 +54,7 @@ fn call(kb: &mut KnowledgeBase, qn: &str, args: &[TermId]) -> TermId {
 const SRC: &str = r#"
     namespace test.wi716
       import anthill.prelude.Option
+      import anthill.prelude.Option.{some}
 
       entity Thing(id: String, note: Option[String])
 
@@ -112,6 +113,7 @@ fn omitted_field_pattern_still_matches_all() {
 const SRC_DERIVED: &str = r#"
     namespace test.wi716d
       import anthill.prelude.Option
+      import anthill.prelude.Option.{some}
       entity Thing(id: String, note: Option[String])
 
       fact src("C")
@@ -144,6 +146,7 @@ const SRC_REFLECT: &str = r#"
     namespace test.wi716r
       import anthill.prelude.Option
       import anthill.reflect.Term
+      import anthill.prelude.Option.{none}
       entity Thing(id: String, note: Option[String])
       entity Holder(pat: Term)
 

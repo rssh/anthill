@@ -24,6 +24,7 @@ fn sort_body_const_emits_static_constexpr_member() {
         namespace test.wi533
           import anthill.prelude.{Int64, Bool, String}
           import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
           sort Emitter
             const BROADCAST_CHANNEL: Int64 = -1
             operation send(self: Emitter, payload: String) -> Bool

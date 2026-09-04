@@ -338,6 +338,7 @@ fn insert_before_non_bracket_depends_succeeds() {
     let proj = setup_project(
         &tmp,
         r#"
+import anthill.prelude.List.{nil}
 fact WorkItem(
   id: "WI-001",
   created: "2026-01-01T00:00:00Z",

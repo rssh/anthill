@@ -344,6 +344,7 @@ fn dot_field_generic_param_substitutes_and_evals() {
 namespace wi279.genfield
   import anthill.prelude.{Int64, Option}
   import anthill.prelude.Option.some
+  import anthill.prelude.Option.{some}
   operation read(o: Option[T = Int64]) -> Int64 = ?o.value
   operation t() -> Int64 = read(some(value: 42))
 end

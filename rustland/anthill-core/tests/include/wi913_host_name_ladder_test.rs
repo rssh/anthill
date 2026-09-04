@@ -125,17 +125,33 @@ fn one_term_arg(interp: &mut Interpreter) -> Value {
 
 // ── The ticket's FIRST STEP: one operation, two backings ─────────
 
-/// FAILS PRE-FIX (0 solutions — `builtin_lookup_symbol` read `by_qualified_name`,
-/// where a bare `cons` has no entry). `cons` is the implicit tier's own name, so
-/// this is not a contrived spelling: it is what an anthill program building a list
-/// goal writes.
+/// INVERTED IN WI-909's THIRD PASS, which removed the last four rows (the constructors)
+/// and left `load::PRELUDE_QUALIFIED` EMPTY. There is no implicit tier: at `<global>` a
+/// bare name resolves only if something is in scope there, and nothing is.
+///
+/// The row is kept and inverted rather than deleted because WI-913's finding lives in
+/// it — `builtin_lookup_symbol` used to read `by_qualified_name`, which consults no
+/// scope, and the fix was to give it the ladder. That fix STANDS; what changed is that
+/// the ladder's lowest rung is gone, so the ladder's answer for a bare short name is
+/// now "nothing". A future reader asking "did WI-913 regress?" needs to see that
+/// distinction here rather than infer it from an absence.
+///
+/// THE QUALIFIED NAME IS THE MIGRATION, and asserting it is what keeps this row from
+/// passing merely because the whole operation broke.
 #[test]
-fn sld_lookup_symbol_reads_the_implicit_tier() {
+fn sld_lookup_symbol_no_longer_reads_a_bare_prelude_name() {
     let mut kb = load_kb_with(FIXTURE);
     assert_eq!(
         sld_lookup_symbol(&mut kb, "cons").as_deref(),
+        None,
+        "the implicit tier is empty since WI-909, so a bare `cons` denotes nothing at \
+         `<global>` -- it is neither in scope there nor on any rung below",
+    );
+    assert_eq!(
+        sld_lookup_symbol(&mut kb, "anthill.prelude.List.cons").as_deref(),
         Some("anthill.prelude.List.cons"),
-        "a bare implicit-tier name denotes its target at <global>",
+        "control: the ladder itself still works -- the QUALIFIED name resolves, which is \
+         what says the row above measures the missing rung and not a broken operation",
     );
 }
 
@@ -179,16 +195,30 @@ fn sld_lookup_symbol_does_not_read_the_reflect_sorts() {
 
 // ── make_fn / make_apply ─────────────────────────────────────────
 
-/// FAILS PRE-FIX (`EvalError::Internal("make_fn: unknown symbol `cons`")`). The
-/// declaration in `stdlib/anthill/reflect/reflect.anthill` says the functor "is
-/// resolved by qualified-or-short name" — before this, only qualified.
+/// INVERTED WITH ITS SIBLING ABOVE (WI-909's third pass). `make_fn` still resolves
+/// "by qualified-or-short name" exactly as `reflect.anthill` declares -- but a SHORT
+/// name now has nowhere to resolve, so the bare spelling is refused and the qualified
+/// one answers. The refusal is LOUD (`EvalError::Internal`), which is the whole reason
+/// this position needs no migration guard: a program handing `make_fn` a bare `cons`
+/// finds out.
 #[test]
-fn make_fn_resolves_an_implicit_tier_functor() {
+fn make_fn_refuses_a_bare_prelude_name_and_takes_the_qualified_one() {
     let mut interp = interp_for(FIXTURE);
     let args = one_term_arg(&mut interp);
-    let built = interp
+    let err = interp
         .call("anthill.reflect.make_fn", &[Value::Str("cons".into()), args])
-        .expect("make_fn accepts a bare implicit-tier name");
+        .expect_err("a bare `cons` denotes nothing since the tier was emptied");
+    assert!(
+        format!("{err:?}").contains("cons"),
+        "the refusal must name the symbol it could not resolve: {err:?}"
+    );
+    let args = one_term_arg(&mut interp);
+    let built = interp
+        .call(
+            "anthill.reflect.make_fn",
+            &[Value::Str("anthill.prelude.List.cons".into()), args],
+        )
+        .expect("control: the qualified name is the migration and still resolves");
     assert_eq!(
         term_fn_functor_name(&interp, &built),
         "anthill.prelude.List.cons",
@@ -218,14 +248,15 @@ fn make_fn_still_resolves_a_qualified_functor() {
 /// `make_apply` is `make_fn`'s occurrence-building twin (WI-722); it took the same
 /// absolute-only reading of the same kind of name.
 ///
-/// THE NAME MOVED FROM `not` TO `cons` (WI-20260826-XED22) and the subject did not: this
-/// row is about a HOST passing a bare string and the tier answering it, so it needs the
-/// name to be a tier entry and nothing more. `not` stopped being one when
-/// WI-20260825-P9Y67 gave `!` an address and the written name lost its tier rung — there
-/// is no import to add here, because there is no source file. `cons` is an ordinary
-/// surviving entry.
+/// THE NAME MOVED TWICE AND THEN THE SUBJECT DID. It was `not` until WI-20260826-XED22,
+/// then `cons`; both moves kept the row's subject — a HOST passing a bare string that the
+/// tier answers. WI-909's third pass emptied the tier, so there is no bare string left
+/// for it to answer and the subject is now the QUALIFIED spelling: `make_apply` must
+/// still resolve a host-supplied name through the ladder (WI-722's finding), and the
+/// ladder's answer for a short one is nothing. Its `make_fn` twin above carries the
+/// refusal half; this row carries the positive half, so the pair still reads together.
 #[test]
-fn make_apply_resolves_an_implicit_tier_functor() {
+fn make_apply_resolves_a_qualified_functor() {
     use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
     use anthill_core::span::{SourceId, SourceSpan};
 
@@ -246,9 +277,13 @@ fn make_apply_resolves_an_implicit_tier_functor() {
     let built = interp
         .call(
             "anthill.reflect.make_apply",
-            &[Value::Str("cons".into()), args, from],
+            &[
+                Value::Str("anthill.prelude.List.cons".into()),
+                args,
+                from,
+            ],
         )
-        .expect("make_apply accepts a bare implicit-tier name");
+        .expect("WI-909: the tier is empty, so the QUALIFIED name is the one that resolves");
     let Value::Node(occ) = &built else {
         panic!("make_apply returns a NodeOccurrence, got {built:?}");
     };
@@ -273,7 +308,7 @@ fn make_apply_resolves_an_implicit_tier_functor() {
 /// The store argument is a `FileStore`-shaped value only because `monotonicity`
 /// validates its shape; it selects nothing (1-to-1 routing binds the functor).
 #[test]
-fn monotonicity_resolves_an_implicit_tier_functor_name() {
+fn monotonicity_resolves_a_qualified_functor_name() {
     use anthill_core::persistence::file_store::{FileConvention, FileStore};
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -317,9 +352,9 @@ fn monotonicity_resolves_an_implicit_tier_functor_name() {
     let answer = interp
         .call(
             "anthill.persistence.Store.monotonicity",
-            &[store_val, Value::Str("cons".into())],
+            &[store_val, Value::Str("anthill.prelude.List.cons".into())],
         )
-        .expect("monotonicity understands a bare implicit-tier functor name");
+        .expect("WI-909: the tier is empty, so `monotonicity` takes the QUALIFIED name");
     let expected = interp
         .kb_mut()
         .try_resolve_symbol("anthill.reflect.Monotonicity.monotone")
