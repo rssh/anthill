@@ -1471,3 +1471,44 @@ label-preserving; `TupleLiteral` is exempt from `canonicalize_record_named_args`
 walk-end `classify` lands on the REBUILT node because `occ` is shadowed before the dispatch
 section, so deferral does not orphan the stamp; and the new `debug_assert` in
 `types_compatible_view_structural` is unreachable for legitimate mismatches.
+
+### What part (c) does NOT do next, and both answers are measurements
+
+**THE CONTAINER CONVERSION HAS NO WITNESS.** The plan recorded twice above — solutions
+travelling WITH the result instead of the walk-lifetime `WalkSolutions`, which would scope
+them to the subtree that produced them and make the watermark unnecessary rather than merely
+correct — was a HYPOTHESIS, and it is now measured. Instrumenting `TypeBuildFrame::LambdaBody`
+over the whole `wi_tests` binary:
+
+    46,169  lambda bodies typed
+         7  arrows the reader CHANGES  (before=??param, after=Int64 / String)
+         1  solutions in the walk's substitution at every one of those 7 (nsol=1)
+
+All seven are this ticket's own fixtures. A reader that never sees more than ONE binding has
+nothing for a foreign subtree's binding to be confused with, so the leak the conversion would
+prevent has no population on this corpus. It is architecture with no measured defect behind
+it, and by the rule this ticket has applied throughout — `?T`, the variance arm, the shared
+collector's missing arm — it does not ship. The watermark stays what makes the scoping true.
+
+**THE REMAINING HALF IS BLOCKED, AND MY OWN DESIGN NOTE FOR IT WAS WRONG.** The known-gap row
+said the answer is "a `PolyType` whose CONTEXT carries `Additive[x]`". `TypeExtractor.PolyType`'s
+DECLARATION says otherwise, in so many words:
+
+>  A BINDER CARRIES NO BOUND. … Bounds live at SORT level as `requires` clauses and are
+>  already reflected as `SortRequiresInfo`; duplicating one here would give it two owners.
+
+So the ∀ says WHICH VARIABLES and nothing else; the derived requirement set keeps its existing
+owner, the dictionary channel, whose lambda-shaped IR is `lambda_within` — WI-816 option (b),
+which the user's 2026-09-05 feedback there says must NOT be deleted precisely because part (c)
+is intended: (c) is what makes a closure arrow type non-monomorphic, the case WI-817 searched
+for and could not write. The row's doc is corrected to say this.
+
+AND IT IS BLOCKED ON WI-817's RULE A. That ticket measured the operation-side call-site supply
+failing wherever it must CHANGE instantiation — `build_dep_projection` Strategy 1 forwards a
+sole covering wildcard entry blindly — with outcomes that are SILENTLY WRONG, not loud:
+`drive(0..2)` answers 1 at every depth where correct is 1, 12, 122; a relayed closure reads
+111 where correct is 551. Its own conclusion: "across EVERY measurement in this ticket the
+lambda machinery has not failed once; the operation-side call-site supply has failed everywhere
+it was asked to change instantiation." Rule A (gate Strategy 1 on the σ-class check instead of
+only tie-breaking with it) is upstream of anything part (c)'s last half wants, and its witnesses
+are already committed as pinned tests.

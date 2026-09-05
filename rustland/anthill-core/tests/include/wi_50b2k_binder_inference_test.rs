@@ -778,10 +778,28 @@ fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
 }
 
 /// **A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED**, and this is the half of part (c)
-/// that is NOT delivered: the answer such a lambda wants is a `PolyType` whose CONTEXT
-/// carries `Additive[x]` out of the walk to be discharged wherever it is finally applied.
-/// Until that exists the conservative verdict is today's refusal, and this row is what
-/// says so out loud rather than leaving the absence to look like coverage.
+/// that is NOT delivered: the answer such a lambda wants is `∀T. Additive[T] => T -> T` —
+/// a ∀ over the binder, plus a requirement that travels out of the walk to be discharged
+/// wherever the lambda is finally applied. Until that exists the conservative verdict is
+/// today's refusal, and this row says so out loud rather than leaving the absence to look
+/// like coverage.
+///
+/// **THE REQUIREMENT DOES NOT RIDE THE BINDER, AND THE PRELUDE SAYS SO IN SO MANY WORDS.**
+/// `TypeExtractor.PolyType`'s declaration states "A BINDER CARRIES NO BOUND … Bounds live
+/// at SORT level as `requires` clauses and are already reflected as `SortRequiresInfo`;
+/// duplicating one here would give it two owners." So the ∀ says WHICH VARIABLES, and the
+/// derived requirement set keeps its existing owner — the dictionary channel, whose
+/// lambda-shaped IR is `lambda_within` (WI-816 option (b), which the user's 2026-09-05
+/// feedback there says must NOT be deleted precisely because part (c) is intended: it is
+/// (c) that makes a closure arrow type non-monomorphic, which is the case WI-817 searched
+/// for and could not write).
+///
+/// AND IT IS BLOCKED, NOT MERELY UNBUILT. WI-817 measured that the operation-side call-site
+/// supply is wrong wherever it is asked to CHANGE instantiation — a sole covering wildcard
+/// entry is forwarded blindly, giving silently wrong answers — and that "the lambda
+/// machinery has not failed once". Its Rule A (gate `build_dep_projection`'s Strategy 1 on
+/// the σ-class check instead of only tie-breaking with it) is upstream of anything this row
+/// wants.
 ///
 /// GREEN BEFORE THIS CHANGE TOO — stated, because a row that passes either way measures
 /// nothing on its own. What it measures is the SCOPE of the licence beside it: the two
