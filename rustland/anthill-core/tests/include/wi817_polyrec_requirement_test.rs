@@ -966,3 +966,148 @@ fn unconditioned_parametric_fact_refused_at_abstract_call() {
          (WI-824: no bogus Unique); got:\n{text}"
     );
 }
+
+// ── The 50B2K part (c) re-measure: the SECOND trigger this ticket names ──
+//
+// WI-817's negative verdict — "this witness produces NO case where `lambda_within`
+// is needed" — rests on one sentence: "the lambda that would NEED per-invocation
+// instances (created ONCE, invoked at MANY types) is not WRITABLE — a closure arrow
+// type is MONOMORPHIC." The user's 2026-09-05 feedback qualifies that as a statement
+// about TODAY'S TYPER and names WI-20260904-50B2K part (c) as a second re-measure
+// trigger, independent of Rule A: (c) is what makes such a lambda writable.
+//
+// PART (c) HAS LANDED (both slices, 6859b92d). These rows are that re-measure.
+
+/// **THE (c)-WRITABLE POLYMORPHIC CLOSURE COMPUTES CORRECTLY, AND ITS CONTROL AGREES.**
+///
+/// `lambda w -> Desc.describe(w)` has an UNPINNED binder: before part (c) the abstract
+/// `Desc.describe` dispatch was refused outright ("missing `requires Desc[T = …]`"), so
+/// this program could not be written. (c) defers that requirement and discharges it from
+/// the carriers the walk observes — here `Leaf` and `Wrap[A = Leaf]`, which need DIFFERENT
+/// `Desc` instances, the second being the CONDITIONAL one.
+///
+/// ONE CLOSURE, TWO INSTANCES, and `Closure.requirements` snapshots the creation frame
+/// ONCE — the exact configuration the ticket predicted would break. It does not: the
+/// depth coding reads 1·1000 + 12, and the closure-free control computes the same number.
+/// The dispatch inside the body is VALUE-DIRECTED (this file's own finding), so the
+/// runtime value selects `Leaf.describe` / `WrapDesc.describe` and the conditional chain
+/// is constructed at the impl's own call site, not carried by the closure.
+///
+/// SO THE PREDICTED ASYMMETRY IS STILL UNOBSERVED — now for a MEASURED reason rather than
+/// an unwritable program.
+#[test]
+fn part_c_polymorphic_closure_at_two_types_matches_its_control() {
+    for (tag, body, want) in [
+        (
+            "closure",
+            "  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+             let g = lambda w -> Desc.describe(w)\n      \
+             add(mul(1000, g(leaf())), g(wrap(leaf())))\n  end",
+            1012,
+        ),
+        (
+            "control",
+            "  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+             add(mul(1000, Desc.describe(leaf())), Desc.describe(wrap(leaf())))\n  end",
+            1012,
+        ),
+    ] {
+        let ns = format!("wi817c.two_types_{tag}");
+        let src = with_instances(&ns, body);
+        let got = eval_fresh(&src, &format!("{ns}.Driver.drive"), 0);
+        assert!(
+            matches!(got, Ok(Value::Int(v)) if v == want),
+            "{tag}: expected the depth-coded Ok(Int({want})); got {got:?}"
+        );
+    }
+}
+
+/// The same closure at TWO CONDITIONAL DEPTHS — `Wrap[Leaf]` and `Wrap[Wrap[Leaf]]`, so
+/// both invocations go through `WrapDesc` and each needs a different chain. 12·1000 + 122.
+///
+/// Separate from the row above because that one's first call (`leaf()`) reaches the BASE
+/// instance, where no dictionary is built at all; this one keeps every call on the
+/// conditional path, so a single snapshotted dictionary would have to serve two chains.
+#[test]
+fn part_c_polymorphic_closure_at_two_conditional_depths() {
+    let ns = "wi817c.depths";
+    let src = with_instances(
+        ns,
+        "  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+         let g = lambda w -> Desc.describe(w)\n      \
+         add(mul(1000, g(wrap(leaf()))), g(wrap(wrap(leaf()))))\n  end",
+    );
+    let got = eval_fresh(&src, &format!("{ns}.Driver.drive"), 0);
+    assert!(
+        matches!(got, Ok(Value::Int(12122))),
+        "expected Ok(Int(12122)) — 12 at depth 1, 122 at depth 2, through ONE closure; \
+         got {got:?}"
+    );
+}
+
+/// **THE CASE THAT WOULD DECIDE WI-816 IS STILL NOT WRITABLE, AND THE BLOCKING REASON HAS
+/// MOVED.** This is the finding the re-measure exists to produce.
+///
+/// A closure that ESCAPES its creation scope to a GENERIC applier is refused at load. Part
+/// (c) licenses an unpinned binder from the CONCRETE carriers the walk observes, and a
+/// generic slot (`ap[X](fn: Function[A = X, B = Int64], …)`) supplies a type PARAMETER, not
+/// a carrier — so there is nothing to discharge against and the deferred requirement is
+/// raised.
+///
+/// THE TWO CONTROLS ISOLATE IT TO THE GENERIC SLOT, not to the escape and not to the
+/// multiplicity: a MONOMORPHIC applier pins the binder at rung 2 (part (b)'s hint) and
+/// loads; an ANNOTATED binder never asks the question and loads. Both answer 1. And the
+/// generic row is refused with ONE type, so it is not about being invoked at many.
+///
+/// WHAT THIS MEANS FOR WI-816: its delete-vs-implement still cannot be settled, and the
+/// trigger for the next re-measure is NOT part (c) but part (c)'s REMAINING half — the ∀
+/// and its requirement travelling WITH the type, out of the walk, so an escaped closure
+/// carries its own obligation. The 2026-09-05 feedback named (c) as the trigger; measured,
+/// only that half of it fires.
+#[test]
+fn known_gap_a_part_c_licensed_closure_is_refused_by_a_generic_applier() {
+    let generic = "  sort Applier\n    operation ap[X](fn: Function[A = X, B = Int64], a: X) -> Int64 = fn(a)\n  end\n";
+    let ns = "wi817c.escape_generic";
+    let src = with_instances(
+        ns,
+        &format!(
+            "{generic}  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+             let g = lambda w -> Desc.describe(w)\n      Applier.ap(g, leaf())\n  end"
+        ),
+    );
+    let errs = load_errs(&src);
+    assert!(
+        errs.iter().any(|e| e.contains(MISSING_REQUIRES)
+            && e.contains(&format!("{ns}.Desc.describe.requires"))),
+        "expected the WI-325 ladder's missing-`requires` at the escaped call; got {errs:?}"
+    );
+
+    // CONTROL 1 — a MONOMORPHIC applier pins the binder, so (c) is never asked.
+    let mono_ns = "wi817c.escape_mono";
+    let mono = with_instances(
+        mono_ns,
+        "  sort Applier\n    operation ap(fn: Function[A = Leaf, B = Int64], a: Leaf) -> Int64 = fn(a)\n  end\n  \
+         sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+         let g = lambda w -> Desc.describe(w)\n      Applier.ap(g, leaf())\n  end",
+    );
+    let got = eval_fresh(&mono, &format!("{mono_ns}.Driver.drive"), 0);
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "monomorphic applier: expected Ok(Int(1)); got {got:?}"
+    );
+
+    // CONTROL 2 — the SAME generic applier with the binder ANNOTATED.
+    let ann_ns = "wi817c.escape_annotated";
+    let ann = with_instances(
+        ann_ns,
+        &format!(
+            "{generic}  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+             let g = lambda (w: Leaf) -> Desc.describe(w)\n      Applier.ap(g, leaf())\n  end"
+        ),
+    );
+    let got = eval_fresh(&ann, &format!("{ann_ns}.Driver.drive"), 0);
+    assert!(
+        matches!(got, Ok(Value::Int(1))),
+        "annotated binder through the generic applier: expected Ok(Int(1)); got {got:?}"
+    );
+}

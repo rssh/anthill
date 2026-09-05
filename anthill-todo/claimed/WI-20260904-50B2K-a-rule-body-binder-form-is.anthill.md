@@ -1490,18 +1490,35 @@ prevent has no population on this corpus. It is architecture with no measured de
 it, and by the rule this ticket has applied throughout — `?T`, the variance arm, the shared
 collector's missing arm — it does not ship. The watermark stays what makes the scoping true.
 
-**THE REMAINING HALF IS BLOCKED, AND MY OWN DESIGN NOTE FOR IT WAS WRONG.** The known-gap row
-said the answer is "a `PolyType` whose CONTEXT carries `Additive[x]`". `TypeExtractor.PolyType`'s
-DECLARATION says otherwise, in so many words:
+**THE REMAINING HALF IS A `PolyType` CONTEXT AFTER ALL — I READ THE DECLARATION TOO STRONGLY
+AND THE USER CORRECTED IT (2026-09-05).** The known-gap row says the answer is a `PolyType`
+whose CONTEXT carries `Additive[x]`. I then read `TypeExtractor.PolyType`'s declaration —
+"A BINDER CARRIES NO BOUND … duplicating one here would give it two owners" — as ruling that
+out. It does not, on three counts, and they are recorded because the misreading is easy to
+repeat:
 
->  A BINDER CARRIES NO BOUND. … Bounds live at SORT level as `requires` clauses and are
->  already reflected as `SortRequiresInfo`; duplicating one here would give it two owners.
+  * What the paragraph forbids is a PER-BINDER bound, an element of `binders` carrying its
+    own, and its reason is GRAMMATICAL: §5.4 is `TypeParam ::= Name` and WI-850 refused the
+    `= default` arm, so there is no spelling for `T: Additive` on a binder.
+  * A SEPARATE CONTEXT SLOT — `∀a. C a => t` — is a different construct and the paragraph
+    does not address it.
+  * The "two owners" reason is about a SORT, whose written clause `SortRequiresInfo` already
+    reflects. A LAMBDA has no declaration and therefore no such entry, so a context on its
+    type duplicates nothing: it is the only owner there is.
 
-So the ∀ says WHICH VARIABLES and nothing else; the derived requirement set keeps its existing
-owner, the dictionary channel, whose lambda-shaped IR is `lambda_within` — WI-816 option (b),
-which the user's 2026-09-05 feedback there says must NOT be deleted precisely because part (c)
-is intended: (c) is what makes a closure arrow type non-monomorphic, the case WI-817 searched
-for and could not write. The row's doc is corrected to say this.
+THE USER'S FRAMING, WHICH IS THE POINT I INVERTED: a BOUND is the primary notion and a
+`requires` clause is the declaration-level spelling that a bound DRIVES — not a rival owner
+of it. Carrying `Additive[X]` in the type is that same fact in the form a type with no
+declaration site can hold. So the two halves are COMPLEMENTARY rather than alternatives: the
+TYPE carries the constraint (`PolyType` context, static) and the IR carries the dictionary
+(`lambda_within` / `Closure.requirements`, dynamic) — which is WI-816 option (b) with both
+sides, not a choice between them. The user's 2026-09-05 feedback on WI-816 says that variant
+must NOT be deleted precisely because part (c) is intended.
+
+COST, CENSUSED: 17 `TypeNode::PolyType` match sites, 13 `TypeExtractor::PolyType`, across 9
+source files, plus the prelude entity gaining a third field and the `..`-pattern hazard a new
+field always carries. The prelude paragraph itself should gain a sentence saying what it does
+and does not forbid, so the next reader does not repeat this.
 
 AND IT IS BLOCKED ON WI-817's RULE A. That ticket measured the operation-side call-site supply
 failing wherever it must CHANGE instantiation — `build_dep_projection` Strategy 1 forwards a

@@ -784,15 +784,27 @@ fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
 /// today's refusal, and this row says so out loud rather than leaving the absence to look
 /// like coverage.
 ///
-/// **THE REQUIREMENT DOES NOT RIDE THE BINDER, AND THE PRELUDE SAYS SO IN SO MANY WORDS.**
-/// `TypeExtractor.PolyType`'s declaration states "A BINDER CARRIES NO BOUND … Bounds live
-/// at SORT level as `requires` clauses and are already reflected as `SortRequiresInfo`;
-/// duplicating one here would give it two owners." So the ∀ says WHICH VARIABLES, and the
-/// derived requirement set keeps its existing owner — the dictionary channel, whose
-/// lambda-shaped IR is `lambda_within` (WI-816 option (b), which the user's 2026-09-05
-/// feedback there says must NOT be deleted precisely because part (c) is intended: it is
-/// (c) that makes a closure arrow type non-monomorphic, which is the case WI-817 searched
-/// for and could not write).
+/// **THE CONSTRAINT BELONGS IN THE TYPE, AND A CONTEXT SLOT IS NOT WHAT THE DECLARATION
+/// FORBIDS.** `TypeExtractor.PolyType`'s declaration says "A BINDER CARRIES NO BOUND …
+/// duplicating one here would give it two owners", and an earlier revision of this comment
+/// read that as ruling the whole design out. It does not, and the distinction is worth
+/// keeping because it is easy to misread twice (user correction, 2026-09-05):
+///
+///   * What it forbids is a PER-BINDER bound — an element of `binders` carrying its own —
+///     and its reason is grammatical: §5.4 is `TypeParam ::= Name` and WI-850 refused the
+///     `= default` arm, so there is no spelling for `T: Additive` on a binder.
+///   * A SEPARATE CONTEXT SLOT (`∀a. C a => t`) is a different construct and that paragraph
+///     does not address it.
+///   * The "two owners" reason is about a SORT, whose written clause `SortRequiresInfo`
+///     already reflects. A lambda has no declaration and so no such entry: a context on its
+///     type duplicates nothing and would be the only owner.
+///
+/// A BOUND IS THE PRIMARY NOTION AND `requires` IS THE SPELLING IT DRIVES, not a rival to
+/// it — so carrying `Additive[X]` in the type is that fact in the form a type with no
+/// declaration site can hold. The static and dynamic halves are COMPLEMENTARY, not
+/// alternatives: the TYPE carries the constraint, and the IR carries the dictionary
+/// (`lambda_within` — WI-816 option (b), which the user's 2026-09-05 feedback there says
+/// must NOT be deleted precisely because part (c) is intended).
 ///
 /// AND IT IS BLOCKED, NOT MERELY UNBUILT. WI-817 measured that the operation-side call-site
 /// supply is wrong wherever it is asked to CHANGE instantiation — a sole covering wildcard
