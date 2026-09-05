@@ -13,14 +13,23 @@
 //!
 //! | form | carrier | means |
 //! |---|---|---|
-//! | `TypeVar(name)` | `make_type_var` | a PLACEHOLDER — a type the extractor could not name (`?param` for an un-annotated lambda binder, `?_` for an un-lowerable carrier) |
+//! | `TypeVar(name)` | `make_type_var` | a PLACEHOLDER — a type the extractor could not name (`?_` for an un-lowerable carrier, `?pat` for a sub-pattern of a constructor that declares no field types) |
 //! | `FlexVar(name, id)` | `Term::Var(Var::Global)` | an INSTANTIATED forall — unifies with anything |
 //! | `Skolem(name, id)` | `Term::Var(Var::Rigid)` | an OPENED existential or a body-check rigid — unifies with nothing but itself |
 //!
 //! WHY NOT A `rigid: Bool` FIELD ON `TypeVar`, which was the smaller option: `TypeVar` is not
-//! the variable. Measured at its producers — it is minted for `?param` and `?_`, never for an
-//! engine variable, and a DECLARED type parameter reads as `SortRef(T)`. A flag would have
-//! given one entity two questions, which is the defect class this repo names most often.
+//! the variable. Measured at its producers — it is minted for a type nobody can name, never
+//! for an engine variable, and a DECLARED type parameter reads as `SortRef(T)`. A flag would
+//! have given one entity two questions, which is the defect class this repo names most often.
+//!
+//! **THE `?param` ROW MOVED, WI-20260904-50B2K.** This table said `TypeVar` was what an
+//! un-annotated lambda binder gets, and that was true when it was written. It is now a
+//! `FlexVar`: such a binder's type is TO BE INFERRED, and a placeholder that never binds and
+//! an inference variable that must want opposite things. `?pat` — the sub-pattern one level
+//! down — is SPLIT on the same rule: a tuple component whose parent type is itself a hole is
+//! `FlexVar`, an undeclared constructor's field stays `TypeVar`, because there the missing
+//! thing is the DECLARATION and no enclosing type can supply it. So the table's left column
+//! is now keyed on the REASON for the absence, not on the writing position.
 //!
 //! ## `id` IS THE IDENTITY AND `name` IS NOT
 //!

@@ -174,3 +174,19 @@ answer). Under either shape a variable child makes its container non-interned by
 rule a `denoted` child does, so `(a: ?T, b: Int64)` — today interned variables and all, and
 shareable with nothing since `?T` is unique per site — stops being interned with nobody
 writing a special case.
+
+A SECOND PRODUCER, AND A SHARPER BOUND — /code-review on WI-20260904-50B2K's `?pat` split,
+2026-09-04.
+
+  * THE `?pat` SITE MINTS ONE TOO. `bind_and_label_pattern`'s fallback now takes the same
+    `Value::term(type_param_var_term(kb, Var::Global(vid)))` route for a tuple binder's
+    component whose parent type is an inference hole. So the producer count is TWO, one
+    per binder and one per un-typed component of a binder list, and a fix that moves only
+    rung 3 leaves the other.
+
+  * THE COST IS NOT BOUNDED THE WAY THE SITE'S COMMENT SAYS. That comment calls it
+    "bounded by (binders x passes)", which reads as a constant of the program. It is not:
+    nothing releases the refcount, so a process that LOADS REPEATEDLY (an embedder, a
+    long-lived CLI session, the `*_across_loads` test shape) accumulates one pinned
+    `TermStore` slot per binder per load, without bound. That is the part worth measuring
+    before choosing a representation — a per-load figure, not a per-program one.

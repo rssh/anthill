@@ -11702,6 +11702,12 @@ fn visit_type(
                 // asserted-in-a-comment: an empty sink is what makes discarding it safe.
                 PatternRole::Binder,
                 &mut param_repoints,
+                // WI-20260904-50B2K: the SEED, and it is only ever read when
+                // `param_type` gives a sub-pattern nothing. Nothing encloses a lambda's
+                // parameter list, so there is no question to inherit — the tuple arm
+                // below answers for the components from `param_type` itself, which is a
+                // fresh variable exactly when rung 3 minted it.
+                UnpinnedBinder::Unnameable,
                 &mut binder_errors,
             );
             debug_assert!(
@@ -13709,6 +13715,12 @@ fn build_type(
                 bound_ty,
                 PatternRole::Binder,
                 &mut let_repoints,
+                // WI-20260904-50B2K: the seed, as at the lambda site. A `let` whose bound
+                // value has NO type (`bound_ty` is `None`) keeps the inert form
+                // deliberately — the evidence would have to come from the value's own
+                // expression, which is a different channel from this one and is not
+                // measured here.
+                UnpinnedBinder::Unnameable,
                 &mut binder_errors,
             );
             debug_assert!(
@@ -13942,6 +13954,9 @@ fn build_type(
                     Some(scr_ty.clone()),
                     PatternRole::MatchArm,
                     &mut repointed,
+                    // WI-20260904-50B2K: the seed. The scrutinee type is always present
+                    // here, so the tuple arm answers from it and this is never read.
+                    UnpinnedBinder::Unnameable,
                     &mut branch_binder_errors,
                 );
                 // WI-511: coverage reads the Pattern occurrence directly — no
@@ -41232,9 +41247,15 @@ enum HeadPosition {
     /// **WHAT IS STILL NOT READ is the sort parameter's own VARIANCE at the per-binding
     /// descent**, which pairs `actual`'s binding with `declared`'s at the same label — a
     /// covariant reading. A verdict claimed there is wrong for a parameter declared
-    /// contravariant. Nothing in the corpus reaches that (see the measurement at
-    /// `callable_against_callable_free`), and this states the exposure rather than
-    /// pretending the old sentence still covers it.
+    /// contravariant.
+    ///
+    /// **CLOSED — the descent now READS the declared variance** (see the loop in
+    /// [`nominal_head_mismatch`]). /code-review asked for an owner rather than prose and
+    /// was right that a hazard nothing fails on rots; the owner turned out to be three
+    /// lines, because [`declared_variance`] has existed since WI-293 and this loop simply
+    /// never called it. A ticket was written for it first and DELETED — the description
+    /// was longer than the fix, which is this repo's own test for whether something is a
+    /// follow-up.
     Nested,
 }
 
@@ -41363,7 +41384,37 @@ fn nominal_head_mismatch(
         else {
             continue;
         };
-        if nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested) {
+        // WI-20260904-50B2K — BY THE PARAMETER'S DECLARED VARIANCE, which this loop used
+        // to ignore. Pairing `actual`'s binding with `declared`'s at the same label is a
+        // COVARIANT reading, and it was the only one here: for a parameter declared
+        // CONTRAVARIANT the pair is the wrong way round, so a verdict claimed on it
+        // refuses a correct program.
+        //
+        // THIS IS NOT HYPOTHETICAL AND THAT IS WHY IT IS FIXED RATHER THAN NOTED:
+        // `Function`'s `A` is declared `Contravariant` (WI-293's facts,
+        // `stdlib/anthill/reflect/typing.anthill`), and a `Function` nested inside another
+        // type — `List[T = Function[A = …, B = …]]` — descends here. The exposure was
+        // stated in prose at [`HeadPosition::Nested`] while nothing failed on it; a
+        // /code-review pass asked for an owner, and the owner turned out to be three lines
+        // because [`declared_variance`] already exists and `d_base` is in hand.
+        //
+        // THE FOUR ARMS ARE [`check_binding_by_variance`]'s, read for a DECIDED-MISMATCH
+        // predicate rather than for a compatibility one, which flips what each means:
+        // covariant asks the pair as written, contravariant asks it SWAPPED, invariant
+        // must hold in BOTH so either direction deciding is a mismatch, and bivariant
+        // accepts EITHER so neither direction can decide and this withholds.
+        let decided = match declared_variance(kb, d_base, *param) {
+            Variance::Covariant => nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested),
+            Variance::Contravariant => {
+                nominal_head_mismatch(kb, subst, dv, &av, HeadPosition::Nested)
+            }
+            Variance::Invariant => {
+                nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested)
+                    || nominal_head_mismatch(kb, subst, dv, &av, HeadPosition::Nested)
+            }
+            Variance::Bivariant => false,
+        };
+        if decided {
             return true;
         }
     }
@@ -46115,15 +46166,38 @@ fn arrow_positional_param_slots(
         TypeExtractor::Arrow { .. } => {
             let slots = declared.map(|d| d.to_vec());
             // A non-arity-1 `arrow` carries its list as a `named_tuple` at every
-            // producer — a NULLARY one carries the EMPTY tuple, measured, so zero
-            // reaches this arm as `Some(vec![])` and its applications ARE arity-
-            // checked. Anything else is a malformed arrow, and returning `None`
-            // for it would SILENTLY DISABLE the whole argument check at that call
-            // — precisely the WI-791 failure mode, where a hand-built arrow
-            // missing a child left two tests green while covering nothing. Loud
-            // where it can be: under test, the only place such a term exists.
+            // producer THAT KNOWS ITS PARAMETER TYPE — a NULLARY one carries the EMPTY
+            // tuple, measured, so zero reaches this arm as `Some(vec![])` and its
+            // applications ARE arity-checked. Anything else is a malformed arrow, and
+            // returning `None` for it would SILENTLY DISABLE the whole argument check at
+            // that call — precisely the WI-791 failure mode, where a hand-built arrow
+            // missing a child left two tests green while covering nothing. Loud where it
+            // can be: under test, the only place such a term exists.
+            //
+            // THE ONE PRODUCER THAT DOES NOT KNOW IT, and this assert used to claim it
+            // away (WI-20260904-50B2K). An UN-ANNOTATED BINDER LIST mints its arrow with
+            // `arity` = the WRITTEN binder count and `param` = whatever the type ladder
+            // could supply, and rung 3 supplies a variable — `lambda_written_arity`'s own
+            // comment says so in as many words ("`param_type` cannot supply it — an
+            // unannotated lambda's is a fresh type var"). So the two comments
+            // CONTRADICTED each other and this one was the wrong half: driven,
+            // `let g = lambda (a, b) -> a  g((a: 1, b: 2))` aborted a debug build here,
+            // and its ANNOTATED twin `lambda (a: Int64, b: Int64)` aborted identically —
+            // per-binder annotations are read one level down, so the arrow's param is a
+            // variable either way and the mint form is not what decides it.
+            //
+            // AN UNDETERMINED PARAM IS A WITHHOLDING, NOT A MALFORMED TERM, and `None` is
+            // the same answer the rest of this file gives for one: `validate_arg_against_
+            // param`'s "everything above this line treats 'not ground' as 'not mine to
+            // decide'". There is no parameter list to check against yet, and inventing
+            // one would invent its LABELS — which WI-803 takes from the EXPECTED type,
+            // never from the binder names. Making the arrow's param a real
+            // `named_tuple` of per-component variables is the deeper repair (it would
+            // also let one unification at a use site solve every component at once); it
+            // is a change to what a binder-list lambda's param type IS, so it is
+            // WI-20260904-34J8Z and not this assert.
             debug_assert!(
-                slots.is_some(),
+                slots.is_some() || arrow_param_is_undetermined(kb, fn_type),
                 "WI-792: an `arrow` of arity != 1 must carry its parameter list as a \
                  `named_tuple`; a term reaching here without one is malformed and would \
                  silently skip the argument check (build it with `make_arrow_type` / \
@@ -46133,6 +46207,29 @@ fn arrow_positional_param_slots(
         }
         _ => None,
     }
+}
+
+/// WI-20260904-50B2K — is an arrow's parameter type UNDETERMINED, so that no parameter
+/// list can be read off it yet?
+///
+/// The one legitimate reason [`arrow_positional_param_slots`] finds no `named_tuple` at
+/// arity != 1: a lambda's arity is its WRITTEN binder count and its param type comes from
+/// a ladder whose bottom rung is a variable, so the two can disagree while the term is
+/// perfectly well formed. Everything else reaching that arm without a list IS malformed.
+///
+/// BOTH UNDETERMINED FORMS, because rung 3 has minted each in turn: `TypeVar` is the
+/// inert placeholder it minted before WI-20260904-50B2K and still mints for a type nobody
+/// can name, `FlexVar` is the inference variable it mints now. `Skolem` is deliberately
+/// NOT here — a rigidified parameter is DETERMINED (opaque, but decided), so an arrow
+/// whose param is one and whose arity says "list" really is malformed.
+fn arrow_param_is_undetermined(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> bool {
+    let TypeExtractor::Arrow { param, .. } = fn_type else {
+        return false;
+    };
+    matches!(
+        extract_type(kb, param),
+        TypeExtractor::TypeVar(_) | TypeExtractor::FlexVar { .. }
+    )
 }
 
 /// The param type of a callable (`arrow` or `Function[A, B, E]`), used to type a
@@ -48474,6 +48571,66 @@ enum PatternRole {
     Binder,
 }
 
+/// WI-20260904-50B2K — WHAT AN ABSENT TYPE AT A SUB-PATTERN POSITION MEANS, which is the
+/// one thing that decides what a binder with no type mints.
+///
+/// [`bind_and_label_pattern`] reaches its fallback whenever no type threads into a
+/// binder's slot, and until now it minted the same inert `type_var` for BOTH reasons an
+/// absence can have. That is the conflation this ticket separates one level up, found one
+/// level down, and it was MEASURED: flipping the fallback wholesale to the engine's own
+/// variable failed four rows, all `match s case SetLiteral(a, _, _) -> a` over a
+/// `Set[T = Int64]`, with "expected Int64, got ??pat".
+///
+/// The two questions, and why the answer differs:
+///
+///   * `Unnameable` — the DECLARATION is what is missing. `SetLiteral` is a parse-level
+///     marker with no declared field types, so its sub-patterns arrive with no context
+///     type and NOTHING CAN EVER PIN THEM. An inference variable here stays unsolved
+///     forever and reaches a conformance check unbound, which is a fail-open; the inert
+///     form is structurally ground, so the check runs and compatible-with-anything is
+///     exactly the M6 flounder posture `make_type_var` documents.
+///   * `ToBeInferred` — a type EXISTS one level up and is itself a hole. `lambda (a, b)`
+///     whose param type is rung 3's fresh variable is the case: the components are
+///     precisely what inference must solve, and inference must COMMIT.
+///
+/// Not derivable at the fallback itself — it is a property of the PARENT, and by then the
+/// parent's type is gone. So it is threaded, and each recursing arm answers for its own
+/// children: a constructor field always `Unnameable` (no parent type can supply a
+/// declaration the entity does not have), a tuple component from whether the parent type
+/// is an unsolved variable, and either arm INHERITS when it has no type of its own — a
+/// tuple nested in an undeclared constructor field is still unnameable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UnpinnedBinder {
+    /// Nothing can ever supply a type here. Keep the inert form.
+    Unnameable,
+    /// The type is to be INFERRED. Mint the engine's own variable, as the lambda's
+    /// rung 3 does.
+    ToBeInferred,
+}
+
+/// WI-20260904-50B2K — is a sub-pattern's PARENT type itself an inference hole, so that
+/// its components are to be inferred rather than unnameable?
+///
+/// `Var::Global` ONLY. A `Var::Rigid` is a type parameter rigidified for the duration of
+/// a body check (WI-392 / WI-1059) — a type that IS named, just abstract — and its
+/// components are no more solvable than an undeclared field's. A concrete parent type
+/// that simply is not a tuple is not a hole either: that is an arity or shape defect
+/// belonging to whichever check owns it, and minting a bindable variable there would
+/// invent evidence.
+///
+/// BOTH CARRIERS, because a type value is carrier-neutral in this file: rung 3 mints a
+/// `Value::Term` wrapping a `Term::Var` (a variable in TYPE position is interned by
+/// construction — `TypeChild::Interned` holds a `TermId`), while WI-109's `Value::Var` is
+/// the same variable spelled at the value level. Reading only one of them would answer
+/// `false` for a hole depending on which side built it.
+fn parent_type_is_inference_hole(kb: &KnowledgeBase, parent: &Value) -> bool {
+    match parent {
+        Value::Var(Var::Global(_)) => true,
+        Value::Term { id, .. } => matches!(kb.get_term(*id), Term::Var(Var::Global(_))),
+        _ => false,
+    }
+}
+
 /// WI-20260827-EJ5F5 — re-point an arm's body / guard at the constructors the pattern
 /// rewrite resolved, replacing every reference to a binder the rewrite REMOVED.
 ///
@@ -48644,6 +48801,10 @@ fn bind_and_label_pattern(
     // `VarRef` at the now-removed binder's fresh symbol and resolves to nothing. Empty
     // for `PatternRole::Binder`, which never rewrites.
     repointed: &mut Vec<(Symbol, Symbol)>,
+    // WI-20260904-50B2K: what an ABSENT type at THIS position means — see
+    // [`UnpinnedBinder`]. Read only by the `Pattern::Var` fallback; every recursing arm
+    // answers it afresh for its own children, or inherits when it has no type either.
+    unpinned: UnpinnedBinder,
     // WI-794: contradictions between a binder's WRITTEN annotation and the type the
     // context threads into its slot. An out-param rather than a `Result` because
     // env-extension must CONTINUE past a bad binder — every other binder in the same
@@ -48802,24 +48963,38 @@ fn bind_and_label_pattern(
             let ty = scrutinee_type
                 .or_else(|| ann_ty.map(|(_, v)| v))
                 .unwrap_or_else(|| {
-                    // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, and the
-                    // measurement is why. Flipping this to the engine's own variable (as
-                    // rung 3 of the lambda's ladder now is) failed FOUR rows, all one
-                    // error: "type mismatch in match.rule (rule): expected Int64, got
-                    // ??pat". The shape is `match s case SetLiteral(a, _, _) -> a` over a
-                    // `Set[T = Int64]` — `SetLiteral` is a parse-level marker with NO
-                    // declared field types, so its sub-patterns reach here with no context
-                    // type and nothing can ever pin them.
+                    // WI-20260904-50B2K — THIS SITE SERVED BOTH QUESTIONS AT ONCE, the
+                    // same conflation the ticket separates one level up, found one level
+                    // down. It is now SPLIT, and [`UnpinnedBinder`] carries which one is
+                    // being asked; the split is what the first attempt lacked, measured:
+                    // flipping the whole site to the engine's variable failed FOUR rows,
+                    // all `match s case SetLiteral(a, _, _) -> a` over a `Set[T = Int64]`
+                    // with "type mismatch in match.rule (rule): expected Int64, got
+                    // ??pat".
                     //
-                    // SO THIS SITE SERVES BOTH QUESTIONS AT ONCE — the same conflation the
-                    // ticket separates one level up. A tuple binder's component
-                    // (`lambda (a, b) -> …` with no annotation) is a type TO BE INFERRED;
-                    // an undeclared constructor's field is a type NOBODY CAN NAME. Until
-                    // the two are told apart HERE, the inert form is the one that keeps
-                    // both working. Splitting them is the next step of
-                    // WI-20260904-50B2K's census, not a drive-by.
+                    // THE NAME IS SHARED and only the FORM differs, which is the point:
+                    // both are still "the sub-pattern's type", so a diagnostic that
+                    // prints one reads the same as before.
                     let fresh = kb.intern("?pat");
-                    Value::term(kb.make_type_var(fresh))
+                    match unpinned {
+                        // A type EXISTS one level up and is itself a hole — a tuple
+                        // binder whose param type is the lambda's own rung 3. The
+                        // components are exactly what inference must solve, so this mints
+                        // what rung 3 mints, for the same reason and with the same
+                        // interning caveat (a variable in TYPE position is interned by
+                        // construction; see the `?param` site).
+                        UnpinnedBinder::ToBeInferred => {
+                            let vid = kb.fresh_var(fresh);
+                            Value::term(type_param_var_term(kb, Var::Global(vid)))
+                        }
+                        // The DECLARATION is what is missing and no parent can supply it.
+                        // `SetLiteral` is a parse-level marker with no declared field
+                        // types, so nothing will ever pin this; the inert form is
+                        // structurally ground, which keeps the conformance check RUNNING
+                        // and compatible-with-anything rather than withheld on an
+                        // unsolvable variable.
+                        UnpinnedBinder::Unnameable => Value::term(kb.make_type_var(fresh)),
+                    }
                 });
             env.bind_var(*name, ty);
             // Pattern-bound names are local — effects on them shouldn't escape
@@ -48909,7 +49084,20 @@ fn bind_and_label_pattern(
                     (None, _) => None,
                 };
                 rebuilt.push(bind_and_label_pattern(
-                    kb, env, sub_pat, field_type, role, repointed, errors,
+                    kb,
+                    env,
+                    sub_pat,
+                    field_type,
+                    role,
+                    repointed,
+                    // WI-20260904-50B2K: a constructor field with no declared type is
+                    // UNNAMEABLE whatever the scrutinee is — the missing thing is the
+                    // ENTITY's declaration, and no parent type can supply it. Not
+                    // inherited and not computed from `scrutinee_type`: a `SetLiteral`
+                    // under an as-yet-unsolved scrutinee is no more solvable than one
+                    // under a concrete `Set[T = Int64]`.
+                    UnpinnedBinder::Unnameable,
+                    errors,
                 ));
             }
             // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
@@ -48926,7 +49114,15 @@ fn bind_and_label_pattern(
                     (None, _) => None,
                 };
                 rebuilt.push(bind_and_label_pattern(
-                    kb, env, sub_pat, field_type, role, repointed, errors,
+                    kb,
+                    env,
+                    sub_pat,
+                    field_type,
+                    role,
+                    repointed,
+                    // The positional loop's reason, unchanged by binding position.
+                    UnpinnedBinder::Unnameable,
+                    errors,
                 ));
             }
             // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
@@ -48968,6 +49164,30 @@ fn bind_and_label_pattern(
             // dispatch-ambiguous. So a misaligned component still types its binder, and
             // the arity defect is left to whichever check genuinely owns it.
             let aligned = fields.as_ref().is_none_or(|f| f.len() == positional.len());
+            // WI-20260904-50B2K: a component with no type of its own asks the question its
+            // PARENT's type answers — an unsolved variable one level up makes every
+            // component an inference hole (`lambda (a, b) -> a + b` at rung 3), while no
+            // parent type at all leaves the question exactly as it reached here (a tuple
+            // nested in an undeclared constructor field is still unnameable).
+            //
+            // Computed ONCE, above the loop: it is a property of this node, not of slot
+            // `i`. And read only when `fields` gave the child nothing — a component that
+            // IS typed never reaches the fallback.
+            //
+            // EACH COMPONENT GETS ITS OWN INDEPENDENT VARIABLE, AND NOTHING TIES IT TO
+            // THE PARENT'S — /code-review, and it is the LIMIT of what this change buys.
+            // Solving the parent at a use site (`?p := (a: Int64, b: Int64)`) therefore
+            // does not solve `?a` / `?b`, so a tuple binder is still reached by inference
+            // only through its own BODY. Tying them means minting the parent as a
+            // `named_tuple` OVER these variables — which is the same repair the arity
+            // disagreement at [`arrow_positional_param_slots`] wants, and it is
+            // WI-20260904-34J8Z because it must first answer where the tuple's LABELS
+            // come from (WI-803: from the EXPECTED type, never from the binder names).
+            let child_unpinned = match scrutinee_type.as_ref() {
+                Some(t) if parent_type_is_inference_hole(kb, t) => UnpinnedBinder::ToBeInferred,
+                Some(_) => UnpinnedBinder::Unnameable,
+                None => unpinned,
+            };
             let mut rebuilt: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(positional.len());
             for (i, sub_pat) in positional.iter().enumerate() {
                 let comp = fields
@@ -48975,10 +49195,28 @@ fn bind_and_label_pattern(
                     .and_then(|f| f.get(i))
                     .map(|(_, v)| v.clone());
                 rebuilt.push(if aligned {
-                    bind_and_label_pattern(kb, env, sub_pat, comp, role, repointed, errors)
+                    bind_and_label_pattern(
+                        kb,
+                        env,
+                        sub_pat,
+                        comp,
+                        role,
+                        repointed,
+                        child_unpinned,
+                        errors,
+                    )
                 } else {
                     let mut misaligned = Vec::new();
-                    bind_and_label_pattern(kb, env, sub_pat, comp, role, repointed, &mut misaligned)
+                    bind_and_label_pattern(
+                        kb,
+                        env,
+                        sub_pat,
+                        comp,
+                        role,
+                        repointed,
+                        child_unpinned,
+                        &mut misaligned,
+                    )
                 });
             }
             // WI-803: the LABELS, recorded only when there is one component per
@@ -54641,6 +54879,17 @@ fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // Everything stays INSIDE the macro so release builds evaluate none of
                 // it — a `let` above the assert would have paid for two
                 // `type_dispatch_name_view` calls on every fall-through.
+                //
+                // KEPT AS A `debug_assert` RATHER THAN A DIAGNOSTIC, asked again by
+                // /code-review ("a user program hitting an unwired pair crashes a debug
+                // build") and declined: the condition is not one a PROGRAM can create.
+                // Both tables are compiled in, so they can only disagree because someone
+                // edited one and not the other — the reader this fires for is the
+                // DEVELOPER who did, which is what a `debug_assert` is for. A user on a
+                // release build gets `false`, the safe refusal, either way. What WOULD
+                // change the answer is the census this comment already says is undone: if
+                // some arm turns out to be reachable only through a form pair the corpus
+                // never produces, the pair stops being a developer error.
                 debug_assert!(
                     !matches!(
                         (type_dispatch_name_view(kb, &a), type_dispatch_name_view(kb, &e)),
@@ -68238,6 +68487,10 @@ fn dispatch_calls_in_occ(
     // time a node reaches `type_check_node` the answer exists nowhere else. Everything
     // BENEATH the handed-over node is data, which is why [`NodePos`] has two values where
     // [`BodyPos`] has four — the typer never descends into a goal.
+    // WI-20260904-50B2K: kept for the slot CHECK below — `type_check_node_at` consumes
+    // the expectation to type the child, and the check compares what came back against
+    // the same declared type.
+    let expected_for_check = expected.clone();
     match type_check_node_at(kb, env, &walked, expected, node_pos_of(pos)) {
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
@@ -68249,8 +68502,67 @@ fn dispatch_calls_in_occ(
         // is reason 3 of the three at [`data_functor_error`] — a check that changes what
         // a rule MEANS is not a check. It still returns `walked`, so a dot its children
         // dispatched is kept. Review-found.
-        Ok(result) if shape != CallDispatch::Call => result.node,
-        Ok(_) => walked,
+        Ok(result) => {
+            // WI-20260904-50B2K — AND THE HINT IS NOW CHECKED, not only supplied.
+            //
+            // Part (b) carried a callee's declared slot type down as an EXPECTATION and
+            // stopped there, which left the rule-body spelling accepting a child whose
+            // WHOLE TYPE contradicts the slot — measured by `/code-review` as a WRONG
+            // VALUE, not a missing refusal: `apply1(lambda x -> "no", 2)` loaded and
+            // answered a `String` from a call declared `-> Int64`, while its
+            // operation-body twin was refused. The binder half was already closed (the
+            // hint types the binder, so the body's own calls are checked); this is the
+            // whole-arrow half, which in an operation body is the argument POSITION and
+            // which a rule-body data term has no site for (WI-1058).
+            //
+            // A FRESH σ, AND THAT IS NOT A FAIL-OPEN — the objection this fix was first
+            // filed as a ticket for, then measured. `validate_arg_against_param` GATES on
+            // groundness ("everything above this line treats 'not ground' as 'not mine to
+            // decide'"), so a generic callee whose declared param type is its own type
+            // parameter reaches that gate unresolved and is WITHHELD, which is exactly the
+            // subset a fresh σ can answer. Driven both ways: the concrete slot is refused
+            // with "expected Function[A = Int64, B = Int64], got Int64 -> String", while
+            // `pick[X](f: Function[A = X, B = X], v: X)` still loads.
+            //
+            // IT IS THIS FUNCTION AND NOT A BARE `types_compatible`, so the three
+            // conversions an operation body's argument gets are the same three here: the
+            // reflect-`Term` escape, WI-408's some-coercion and the provider-admissible
+            // carrier. A narrower comparison would refuse programs the op-body spelling
+            // accepts — inventing the asymmetry this ticket exists to remove.
+            //
+            // ONLY WHERE A HINT WAS GIVEN. `expected` is `Some` exactly at a data slot
+            // `data_slot_arg_hints` could read a declaration for, so a slot that gets no
+            // hint gets no check — `control_a_non_callable_slot_hints_a_rule_body_lambda_
+            // with_nothing`.
+            //
+            // THE CONTEXT NAMES THE RULE, NOT THE SLOT (`value.body (rule)` where the
+            // op-body twin says `apply1.f (op-arg)`), and that is a known shortfall rather
+            // than a decision: pairing each hint with its PARAM symbol means threading
+            // `apply_arg_hints`' internal positional-to-field ranking (WI-20260827-1F0QP's
+            // rank-among-NOT-named rule) out through this channel. The error locates the
+            // same span either way.
+            if let (Some(exp), Some(rs)) = (expected_for_check.as_ref(), rule_sym) {
+                let mut sigma = Substitution::new();
+                if let ArgValidation::Fail(e) = validate_arg_against_param(
+                    kb,
+                    &mut sigma,
+                    &result.ty,
+                    exp,
+                    Some(walked.span.span),
+                    TypeErrorContext::Rule {
+                        name: rs,
+                        field: RuleField::Body,
+                    },
+                ) {
+                    errors.push(e);
+                }
+            }
+            if shape != CallDispatch::Call {
+                result.node
+            } else {
+                walked
+            }
+        }
         // Every failure is a REAL error — surface it, never a silent skip
         // (project principle: loud over silent; the `Err(_) => Rc::clone(occ)`
         // catch-all this replaced masked genuine errors — a member-not-found on

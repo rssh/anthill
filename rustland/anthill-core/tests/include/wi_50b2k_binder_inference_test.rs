@@ -24,15 +24,19 @@
 //!        `anthill.prelude.Additive` … and the call selects none
 //! ```
 //!
-//! TWO BACK-OUTS, because this ticket is two changes and each row names the one it
-//! measures:
+//! FOUR BACK-OUTS, because this ticket is three changes — and the third is a SPLIT, whose
+//! two halves must be backed out separately or one would credit the other:
 //!
 //!   * **(a)** rung 3 restored to `make_type_var` — the binder gets an INERT type again.
 //!   * **(b)** `data_slot_arg_hints` returning `unhinted` unconditionally — the callee's
 //!     declared slot type stops reaching a rule-body data term's children.
+//!   * **(pat-infer)** `parent_type_is_inference_hole` forced `false` — a tuple binder's
+//!     component stops being an inference hole when its parent type is one.
+//!   * **(pat-inert)** the `match unpinned` dropped for an unconditional variable — an
+//!     UNDECLARED constructor's field becomes one when it can never be solved.
 //!
-//! THE MATRIX, DRIVEN — all three cells, because the two halves OVERLAP and a one-cell
-//! reading would have credited the wrong one:
+//! THE MATRIX, DRIVEN — every cell, because the halves OVERLAP and a one-cell reading
+//! would have credited the wrong one:
 //!
 //! ```text
 //!   (a) out            1 row   part_a_a_binder_no_declaration_reaches_…
@@ -40,6 +44,10 @@
 //!                              part_b_a_permuted_named_tuple_binds_…
 //!   both out           4 rows  those three, plus
 //!                              an_unannotated_binder_in_a_rule_body_is_inferred_from_its_own_body
+//!   pat-infer out      1 row   pat_a_tuple_binders_component_is_inferred_… (all 3 arms)
+//!   pat-inert out      1 row   control_an_undeclared_constructors_field_stays_unnameable
+//!                              — plus four PRE-EXISTING rows outside this file, named at
+//!                              that row's site
 //! ```
 //!
 //! THE OVERLAP IS THE FINDING. The row this ticket was OPENED on fell on the (a) back-out
@@ -502,4 +510,339 @@ end
             "a lambda in a reflect `Term` slot must be accepted ({lam}); got: {errs:?}",
         );
     }
+}
+
+/// **THE `?pat` CENSUS ROW — A TUPLE BINDER'S COMPONENT IS INFERRED WHEN THE PARENT TYPE
+/// IS ITSELF A HOLE.** The direct sibling of rung 3, one level down.
+///
+/// `bind_and_label_pattern`'s fallback minted the same inert `type_var` for two different
+/// absences, and the ticket measured what flipping it wholesale costs: FOUR rows, all
+/// `match s case SetLiteral(a, _, _) -> a`, because an undeclared constructor's field can
+/// never be pinned. It is now SPLIT on [`UnpinnedBinder`] — this row drives the half that
+/// commits, `control_an_undeclared_constructors_field_stays_unnameable` the half that
+/// does not.
+///
+/// THE ERROR IT REMOVES IS THE INERTNESS' OWN SIGNATURE, the same one the ticket was
+/// opened on and for the same reason: a type compatible with everything that commits to
+/// nothing leaves ALL three instances, not none.
+///
+/// ```text
+///   ambiguous dispatch of `anthill.prelude.Additive.add`: 3 instances provide
+///   `anthill.prelude.Additive` … and the call selects none
+/// ```
+///
+/// THREE ARMS, and the second and third are the SYMMETRY this ticket exists to keep: a
+/// lambda in an ENTITY FIELD takes no hint in either body (see
+/// `known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`), so both spellings sat
+/// on the fallback and both move together. A fix that moved only one of them would have
+/// put back the asymmetry the ticket removes.
+///
+/// MEASURED — all three arms are REFUSED with the `Additive` ambiguity when
+/// `parent_type_is_inference_hole` is neutralized to `false`, and answer 2 with it.
+#[test]
+fn pat_a_tuple_binders_component_is_inferred_when_the_parent_type_is_a_hole() {
+    // A LET-BOUND lambda in an operation body: no expectation reaches it in EITHER
+    // spelling, so the whole param type is rung 3's fresh variable and the components
+    // are the fallback's.
+    let mut kb = crate::common::try_load_kb_with(&format!(
+        "namespace zz50b2k.patlet\n  import anthill.prelude.{{Int64, Function}}\n  \
+         operation apply2(f: Function[A = (a: Int64, b: Int64), B = Int64], \
+         p: (a: Int64, b: Int64)) -> Int64 = f(p)\n  \
+         operation viaop() -> Int64 = let g = lambda (a, b) -> a + 1  apply2(g, (a: 1, b: 2))\n  \
+         rule value(?r) :- ?r <=> viaop()\n{}",
+        "end\n"
+    ))
+    .unwrap_or_else(|errs| panic!("let arm must load; got:\n{}", errs.join("\n")));
+    assert_eq!(only_int(&mut kb, "zz50b2k.patlet.value"), 2);
+
+    // AN ENTITY FIELD, both bodies. `data_slot_arg_hints` deliberately does not hint one,
+    // so neither spelling reaches rung 2 and both sit on the fallback.
+    for (ns, body) in [
+        (
+            "zz50b2k.patent",
+            "  rule value(?r) :- ?r <=> runit2(holder2(f: lambda (a, b) -> a + 1), (a: 1, b: 2))\n",
+        ),
+        (
+            "zz50b2k.patentop",
+            "  operation w() -> Int64 = runit2(holder2(f: lambda (a, b) -> a + 1), (a: 1, b: 2))\n  \
+               rule value(?r) :- ?r <=> w()\n",
+        ),
+    ] {
+        let mut kb = crate::common::try_load_kb_with(&holder2_src(ns, body))
+            .unwrap_or_else(|errs| panic!("{ns} must load; got:\n{}", errs.join("\n")));
+        assert_eq!(only_int(&mut kb, &format!("{ns}.value")), 2, "{ns}");
+    }
+}
+
+/// A TUPLE-parameter callable in an entity field, so a lambda written there destructures
+/// components no declaration reaches — the one slot shape part (b) does not hint, in
+/// either body.
+fn holder2_src(ns: &str, body: &str) -> String {
+    format!(
+        "\
+namespace {ns}
+  import anthill.prelude.{{Int64, Function}}
+  sort Holder2
+    entity holder2(f: Function[A = (a: Int64, b: Int64), B = Int64])
+  end
+  operation runit2(h: Holder2, p: (a: Int64, b: Int64)) -> Int64 =
+    match h
+      case holder2(f) -> f(p)
+{body}end
+"
+    )
+}
+
+/// **THE OTHER HALF OF THE SPLIT, AND IT IS WHAT THE FIRST ATTEMPT GOT WRONG.**
+/// `SetLiteral` is a parse-level marker with NO declared field types, so its sub-patterns
+/// arrive with no context type and nothing will EVER pin them. An inference variable here
+/// would stay unsolved and reach the op-return conformance unbound — the flip that failed
+/// four rows with "type mismatch in match.rule (rule): expected Int64, got ??pat".
+///
+/// The scrutinee here is a CONCRETE `Set[T = Int64]`, which is the point: the absence is
+/// the ENTITY's declaration, not the parent's type, so no parent could have supplied it.
+/// `bind_and_label_pattern`'s constructor arm therefore answers `Unnameable` outright
+/// rather than reading the scrutinee.
+///
+/// BACK-OUT: make the fallback mint the engine's variable unconditionally (drop the
+/// `match unpinned`) and this row fails, along with `eval_test::m2_set_literal_as_entity`,
+/// `wi1094_named_slot_inference_test::two_inferred_sets_agree_and_merge`,
+/// `wi1094_named_slot_inference_test::inference_does_not_override_a_dictionary_the_caller_supplies`
+/// and `wi844_sorted_set_driver_test::omitting_the_ordering_is_resolved_and_runs`.
+#[test]
+fn control_an_undeclared_constructors_field_stays_unnameable() {
+    let src = "namespace zz50b2k.setlit\n  import anthill.prelude.{Int64, Set}\n  \
+       operation first_of_three(s: Set[T = Int64]) -> Int64 =\n    \
+         match s\n      case SetLiteral(a, _, _) -> a\n      case _ -> 0\n  \
+       rule value(?r) :- ?r <=> first_of_three({10, 20, 30})\nend\n";
+    let mut kb = crate::common::try_load_kb_with(src)
+        .unwrap_or_else(|errs| panic!("must load; got:\n{}", errs.join("\n")));
+    // READ THROUGH BOTH CARRIERS, not `only_int`. The arm's result IS its bound pattern
+    // variable, which is WI-20260904-EMVCB's shape exactly: such a result answers the
+    // argument's `Value::Node` where an arithmetic one answers a `Value::Int`. That is an
+    // evaluation question and not this row's — asserting the VALUE either way keeps the
+    // row measuring the mint, and it will keep passing when EMVCB lands.
+    let mut vs = crate::common::definite_unary(&mut kb, "zz50b2k.setlit.value");
+    assert_eq!(vs.len(), 1, "expected exactly one answer, got {vs:?}");
+    assert_eq!(int_through_any_carrier(&vs.pop().unwrap()), 10);
+}
+
+/// The `Int64` a value carries, on either carrier — see the EMVCB note at the one caller.
+fn int_through_any_carrier(v: &anthill_core::eval::Value) -> i64 {
+    use anthill_core::kb::node_occurrence::NodeKind;
+    if let Some(i) = v.as_int() {
+        return i;
+    }
+    if let anthill_core::eval::Value::Node(occ) = v {
+        if let NodeKind::Expr { expr, .. } = &occ.kind {
+            if let anthill_core::kb::node_occurrence::Expr::Const(
+                anthill_core::kb::term::Literal::Int(i),
+            ) = expr
+            {
+                return *i;
+            }
+        }
+    }
+    panic!("expected an Int64 answer on some carrier, got {v:?}")
+}
+
+/// **THE RESIDUE, PINNED SO PART (c) HAS ITS POPULATION AND NOT A GUESS.** A binder that
+/// nothing pins ANYWHERE is still refused, and the split does not change that in either
+/// direction — measured both ways.
+///
+/// `lambda (a, b) -> a + b` has two unpinned operands, so `Additive` has no evidence to
+/// select on wherever the mint comes from. Its single-binder twin
+/// `lambda x -> x + x` behaves identically at rung 3's `?param`, which part (a) already
+/// owns — so this is not a `?pat` gap but the "if it can't be inferred it's polytype"
+/// half. The evidence exists only at the LATER USE (`apply2(g, …)`), a channel neither
+/// (a) nor this row's site reads.
+///
+/// GREEN UNDER BOTH CELLS BY DESIGN, and stated rather than left to look like coverage.
+///
+/// **PART (c) MUST FLIP THIS ROW, and this is the instruction to do it.** "If it can't be
+/// inferred it's polytype" is exactly this program: nothing constrains the binder, so it
+/// should GENERALIZE rather than be refused. When `PolyType` gains a context field and
+/// `generalize_eta_arrow` a constraint slot, replace the refusal assertion with the
+/// answer (3 for the tuple arm, 4 for the single) — do not delete the row, since the
+/// program is (c)'s own acceptance.
+#[test]
+fn known_gap_a_binder_with_no_evidence_in_its_body_is_still_ambiguous() {
+    for (tag, decl) in [
+        (
+            "tuple",
+            "let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))",
+        ),
+        ("single", "let g = lambda x -> x + x  g(2)"),
+    ] {
+        let src = format!(
+            "namespace zz50b2k.patgap\n  import anthill.prelude.{{Int64, Function}}\n  \
+             operation apply2(f: Function[A = (a: Int64, b: Int64), B = Int64], \
+             p: (a: Int64, b: Int64)) -> Int64 = f(p)\n  \
+             operation viaop() -> Int64 = {decl}\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| panic!("{tag}: expected a refusal, but it loaded"));
+        // THE TWO ARMS REPORT DIFFERENTLY and both are the same absence, so the assertion
+        // names what they share rather than one arm's wording: `tuple` reports the
+        // requirement channel ("missing `requires Additive[T = …]` on enclosing sort")
+        // and `single` the dispatch one ("3 instances … selects none").
+        assert!(
+            errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+            "{tag}: expected an unresolved `Additive`, got: {errs:?}",
+        );
+    }
+}
+
+/// **A DIRECT APPLICATION OF A MULTI-BINDER LAMBDA ABORTED THE TYPER**, found by
+/// /code-review on this change and fixed with it.
+///
+/// `let g = lambda (a, b) -> a  g((a: 1, b: 2))` hit
+/// `arrow_positional_param_slots`' `debug_assert!` — "an `arrow` of arity != 1 must carry
+/// its parameter list as a `named_tuple`" — because a lambda's arity is its WRITTEN
+/// binder count while its param type comes from the three-rung ladder, whose bottom rung
+/// is a variable. `lambda_written_arity`'s own comment says exactly that ("`param_type`
+/// cannot supply it — an unannotated lambda's is a fresh type var"), so the two comments
+/// CONTRADICTED each other and the assert was the wrong half.
+///
+/// **THE ANNOTATED ARM IS THE CONTROL AND IT ABORTED IDENTICALLY**, which is what says
+/// the MINT is not what decides this: per-binder annotations are read one level down, so
+/// the arrow's param is a variable in both spellings. A row driving only the un-annotated
+/// one would have read a pre-existing defect as this ticket's.
+///
+/// PRE-EXISTING — the same two programs abort on `origin/main`, where rung 3 minted the
+/// inert `type_var` (equally not a `named_tuple`). Fixed here because this change makes
+/// the shape a first-class INFERRED form, and the fixture that drives it
+/// (`pat_a_…`) uses the INDIRECT `apply2(g, …)` spelling — one call shape away.
+///
+/// BACK-OUT: drop `|| arrow_param_is_undetermined(kb, fn_type)` from that assert and both
+/// arms abort. In RELEASE the assert is absent and the same shape silently returns `None`,
+/// which is the withholding this fix makes the debug build agree with.
+///
+/// THE PERMUTED ARM IS A KNOWN GAP, DRIVEN AND ASSERTED AT ITS WRONG VALUE: `g((b: 2,
+/// a: 1))` answers 2, not 1. Nothing declares this lambda's parameter type, so
+/// `bind_and_label_pattern` has no labels and `match_tuple_pattern` falls to source order
+/// — kernel-language.md §6.7's documented fallback, and the reason it cannot be closed
+/// here is WI-20260904-34J8Z: the labels would have to be INVENTED, and WI-803 takes them
+/// from the expected type.
+#[test]
+fn a_direct_application_of_a_multi_binder_lambda_no_longer_aborts_the_typer() {
+    for (tag, binders, arg, want) in [
+        ("unannotated", "(a, b)", "(a: 1, b: 2)", 1),
+        (
+            "annotated control",
+            "(a: Int64, b: Int64)",
+            "(a: 1, b: 2)",
+            1,
+        ),
+        (
+            "known gap: permuted binds by SLOT, not by name",
+            "(a, b)",
+            "(b: 2, a: 1)",
+            2,
+        ),
+    ] {
+        let src = format!(
+            "namespace zz50b2k.direct\n  import anthill.prelude.{{Int64, Function}}\n  \
+             operation viaop() -> Int64 = let g = lambda {binders} -> a  g({arg})\n  \
+             rule value(?r) :- ?r <=> viaop()\nend\n"
+        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{tag} must load; got:\n{}", errs.join("\n")));
+        assert_eq!(only_int(&mut kb, "zz50b2k.direct.value"), want, "{tag}");
+    }
+}
+
+/// **PART (b)'s HINT IS ALSO CHECKED** — a `/code-review` finding on the `?pat` tree,
+/// fixed rather than filed.
+///
+/// Part (b) carried the callee's declared slot type down and stopped there, so a lambda
+/// whose WHOLE ARROW contradicts the slot still loaded in a rule body — and this was a
+/// WRONG VALUE, not a missing refusal: the rule answered a `String` from a call declared
+/// `-> Int64`.
+///
+/// ```text
+///   BEFORE  rule apply1(lambda x -> "no", 2)   loads, answers "no"
+///   AFTER   type mismatch in value.body (rule):
+///           expected Function[A = Int64, B = Int64], got Int64 -> String
+///   TWIN    operation … = apply1(lambda x -> "no", 2)
+///           type mismatch in apply1.f (op-arg): expected …, got Int64 -> String
+/// ```
+///
+/// FOUR ARMS, and the last two are what say the fix is narrow rather than merely present:
+///
+///   1. the rule-body spelling, now REFUSED (it was the gap);
+///   2. its operation-body twin, refused before and after — the AGREEMENT is the point,
+///      and the two messages differ only in which context names the site;
+///   3. a CORRECT lambda in the same slot still answers 3, so the check refuses a
+///      contradiction and not the channel;
+///   4. a GENERIC callee (`pick[X](f: Function[A = X, B = X], v: X)`) still LOADS. This
+///      is the objection the fix was first filed as a ticket for: the check runs on a
+///      FRESH σ, which cannot bind a callee's type parameters. It is not a fail-open
+///      because `validate_arg_against_param` gates on GROUNDNESS — an unresolved declared
+///      param reaches that gate and is withheld, which is exactly the subset a fresh σ can
+///      answer. Driven, not argued.
+///
+/// BACK-OUT: drop the `validate_arg_against_param` call in `dispatch_calls_in_occ`'s `Ok`
+/// arm. Measured over the whole binary: **1 row of 4126** — this one — so what the check
+/// refuses in the corpus is this program and nothing else.
+#[test]
+fn part_b_a_rule_body_data_slot_checks_its_children_against_the_declaration() {
+    let src_of = |body: &str| {
+        format!(
+            "namespace zz50b2k.slotcheck\n  import anthill.prelude.{{Int64, String, Function}}\n  \
+             operation apply1(f: Function[A = Int64, B = Int64], n: Int64) -> Int64 = f(n)\n  \
+             operation pick[X](f: Function[A = X, B = X], v: X) -> X = f(v)\n\
+             {body}end\n"
+        )
+    };
+    const WHOLE_ARROW: &str = "expected Function[A = Int64, B = Int64], got Int64 -> String";
+
+    // 1. THE GAP, CLOSED — the rule-body spelling is refused.
+    let errs = crate::common::try_load_kb_with(&src_of(
+        "  rule value(?r) :- ?r <=> apply1(lambda x -> \"no\", 2)\n",
+    ))
+    .err()
+    .expect("a lambda contradicting its slot must be refused in a rule body");
+    assert!(
+        errs.iter().any(|e| e.contains(WHOLE_ARROW)),
+        "expected the whole-arrow mismatch, got: {errs:?}",
+    );
+
+    // 2. THE OPERATION-BODY TWIN, refused before and after — the agreement is the point.
+    let errs = crate::common::try_load_kb_with(&src_of(
+        "  operation w() -> Int64 = apply1(lambda x -> \"no\", 2)\n",
+    ))
+    .err()
+    .expect("the operation-body twin must be refused");
+    assert!(
+        errs.iter().any(|e| e.contains(WHOLE_ARROW)),
+        "expected the same mismatch in the op body, got: {errs:?}",
+    );
+
+    // 3. A CORRECT lambda in the same slot still ANSWERS — the check refuses a
+    //    contradiction, not the channel.
+    let mut kb = crate::common::try_load_kb_with(&src_of(
+        "  rule value(?r) :- ?r <=> apply1(lambda x -> x + 1, 2)\n",
+    ))
+    .unwrap_or_else(|errs| {
+        panic!(
+            "a conforming lambda must still load; got:\n{}",
+            errs.join("\n")
+        )
+    });
+    assert_eq!(only_int(&mut kb, "zz50b2k.slotcheck.value"), 3);
+
+    // 4. A GENERIC callee still LOADS — the fresh σ cannot bind `X`, so the groundness
+    //    gate withholds rather than refusing. This is the row that says the fix is not a
+    //    fail-open for the case it cannot decide.
+    crate::common::try_load_kb_with(&src_of(
+        "  rule value(?r) :- ?r <=> pick(lambda z -> z, 5)\n",
+    ))
+    .unwrap_or_else(|errs| {
+        panic!(
+            "a generic callee's slot must be WITHHELD, not refused; got:\n{}",
+            errs.join("\n")
+        )
+    });
 }

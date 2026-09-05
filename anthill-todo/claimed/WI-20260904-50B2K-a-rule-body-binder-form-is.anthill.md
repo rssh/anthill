@@ -114,9 +114,9 @@ asks. BY NAME, WHICH IS A HYPOTHESIS AND NOT A MEASUREMENT: redo it site by site
     information, and the ticket's own ordering rule already says "scope it to rung 3
     first, then take the rest of the column one at a time":
       ?param        RUNG 3 — DONE (this ticket)
-      ?pat          `scrutinee_type.or_else(annotation).unwrap_or_else(…)` — the SAME
-                    three-rung ladder as rung 3, one level down (a sub-pattern of a
-                    tuple-destructuring binder). The direct sibling; take it first.
+      ?pat          DONE (this ticket) — SPLIT, not flipped. See "ITEM 1 OF THE CENSUS"
+                    below: the site serves BOTH questions and only one of them may
+                    commit.
       ?T  x2        an EMPTY list/set literal's element type (`element_type` is `None`
                     because there are no elements). The consumer pins it —
                     `let xs: List[T = Int64] = []`.
@@ -289,6 +289,90 @@ conflation this ticket separates one level up, found one level down.
 So `?pat` cannot be flipped wholesale. It must be SPLIT first — a sub-pattern of a binder
 whose parent type is a variable is an inference hole; a sub-pattern of a constructor that
 declares no field types is not. Reverted, with the measurement recorded at the mint.
+
+THE SPLIT IS DONE 2026-09-04, and it is exactly that sentence in code. `UnpinnedBinder`
+(`Unnameable` / `ToBeInferred`) is threaded into `bind_and_label_pattern` and read ONLY by
+the `Pattern::Var` fallback; each recursing arm answers it afresh for its own children:
+
+    CONSTRUCTOR arm   always `Unnameable`, and deliberately NOT computed from the
+                      scrutinee: what is missing is the ENTITY's declaration, which no
+                      parent type can supply. A `SetLiteral` under an unsolved scrutinee
+                      is no more solvable than one under a concrete `Set[T = Int64]`.
+    TUPLE arm         `ToBeInferred` when the parent type IS an unsolved variable
+                      (`parent_type_is_inference_hole`), else `Unnameable`; INHERITS when
+                      it has no type of its own, so a tuple nested in an undeclared
+                      constructor field stays unnameable.
+    the three outer   seed `Unnameable`. Never read at the lambda and match sites (a type
+    call sites        is always present there), and at the `let` site it holds the
+                      `bound_ty == None` case unchanged — that evidence would come from
+                      the bound VALUE's expression, a different channel, unmeasured here.
+
+`Var::Global` ONLY. A `Var::Rigid` is a parameter rigidified for a body check — named,
+just abstract — and its components are no more solvable than an undeclared field's. Both
+CARRIERS are read (`Value::Term` wrapping a `Term::Var`, and WI-109's `Value::Var`), since
+a type value is carrier-neutral here and reading one would answer `false` for a hole
+depending on which side built it.
+
+WHAT IT BUYS, MEASURED, AND THE FIRST TWO WITNESSES MEASURED NOTHING — recorded so they
+are not re-invented. `let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))` is refused
+BOTH ways: two unpinned operands leave `Additive` no evidence wherever the mint comes
+from, and its single-binder twin `let g = lambda x -> x + x  g(2)` is refused at rung 3's
+already-fixed `?param` for the same reason. That is the (c) residue, not a `?pat` gap, and
+it is pinned as `known_gap_a_binder_with_no_evidence_in_its_body_is_still_ambiguous`.
+`lambda (a, b) -> takes_int(a)` also loads both ways — the callee's declaration pins the
+component through Path 1 whatever the mint is.
+
+THE WITNESS IS ONE PINNED OPERAND AND ONE UNPINNED: `lambda (a, b) -> a + 1`, refused with
+the ambiguity that is the inertness' own signature and now answering 2. Three arms, all
+driven, and the second and third are the SYMMETRY:
+
+    let g = lambda (a, b) -> a + 1   in an operation body, applied through apply2
+    holder2(f: lambda (a, b) -> a + 1)   in a RULE body      (entity field: no hint)
+    holder2(f: lambda (a, b) -> a + 1)   in an OPERATION body (entity field: no hint)
+
+The two entity-field spellings move TOGETHER — refused before, 2 after — which is the
+same shape part (a)'s isolating row uses and for the same reason: an entity field takes no
+lambda hint in either body, so both sat on the fallback. A fix that moved only one of them
+would have put back the asymmetry this ticket removes. The ANNOTATED twin of each answers
+2 under both cells (rung 1 wins, never reaching the mint).
+
+THE BACK-OUT IS EXACT, one per HALF of the split, because a single-cell reading would
+credit the wrong one:
+
+    `parent_type_is_inference_hole` forced false   1 of 4124 rows in `wi_tests`:
+      `pat_a_tuple_binders_component_is_inferred_when_the_parent_type_is_a_hole`
+      (all three arms are in that one row), and nothing else.
+    the `match unpinned` dropped for an              5 rows in anthill-core, 5608/5:
+    unconditional variable                             eval_test::m2_set_literal_as_entity
+                                                       wi1094::two_inferred_sets_agree_and_merge
+                                                       wi1094::inference_does_not_override_a_dictionary_the_caller_supplies
+                                                       wi844::omitting_the_ordering_is_resolved_and_runs
+                                                       control_an_undeclared_constructors_field_stays_unnameable
+
+Both halves are load-bearing and each is measured on its own; a single cell would have
+credited the other. Workspace 6425/0 before, 6428/0 after (three new rows).
+
+THE DISCRIMINATION-TREE HAZARD PART (a) LEFT "STILL NOT SHOWN" IS NOW SHOWN, and this
+change is what made re-running it necessary rather than optional: (a)'s probe watched for
+a `Var::Global` named `?param` OR `?pat`, and at that time `?pat` could not mint one — so
+that half of the probe was VACUOUS and its zero said nothing about this site. Re-run with
+`?pat` live, over the whole `wi_tests` binary (4124 rows, 0 failed), writing `O_APPEND`
+from `DiscrimTree::insert_walk`:
+
+    ?pat   / ?param  reaching an indexed term      0
+    any other `Var::Global` var-edge insertion     2,974,466      (the positive control)
+
+So an inference variable minted for a binder does not escape into a term that outlives its
+pass, on this corpus. A LOWER BOUND — the corpus is not the population — and the hazard
+still cannot be CHECKED structurally, because an inference variable and a resolution
+variable are the same type (WI-20260904-5NM85).
+
+A STALE SPEC SENTENCE FIXED, left by part (a) and found here: kernel-language.md §
+("How the opened slot is REPRESENTED") named "an un-annotated lambda binder" as the
+example of a `TypeVar`. It has not been one since (a). The sentence now says what a
+`TypeVar` is for — a runtime carried type, and a sub-pattern of a constructor that
+declares no field types — and states the rule as this ticket found it: the distinction is
+by REASON FOR THE ABSENCE, not by position.
 
 WHAT THE ATTEMPT DID DELIVER, kept: the rule-body/operation-body ASYMMETRY exists at the
 tuple level too (`?r <=> apply2(lambda (a, b) -> a + b, (a: 1, b: 2))` was refused with the
@@ -658,3 +742,131 @@ SHIPPED code and is the one worth carrying forward.
     TRUNCATES, so a short list would silently drop the tail children from the walk and a
     long one would panic out of bounds inside `ChildCursor::take` with nothing naming the
     site. Promoted to `assert_eq!`: two `usize`s, once per data term.
+
+A /CODE-REVIEW (high) PASS ON THE `?pat` TREE FOUND SIX. One fixed here, one declined with
+its reason, three given owners, one folded into an existing ticket.
+
+  * A DIRECT APPLICATION OF A MULTI-BINDER LAMBDA ABORTED THE TYPER — FIXED HERE.
+    `let g = lambda (a, b) -> a  g((a: 1, b: 2))` hit
+    `arrow_positional_param_slots`' `debug_assert!` ("an `arrow` of arity != 1 must carry
+    its parameter list as a `named_tuple`"), because a lambda's arity is its WRITTEN
+    binder count while its param comes from the type ladder, whose bottom rung is a
+    variable. THE TWO COMMENTS CONTRADICTED EACH OTHER: `lambda_written_arity`'s own text
+    says "`param_type` cannot supply it — an unannotated lambda's is a fresh type var".
+    The assert was the wrong half, and now excepts an UNDETERMINED param
+    (`arrow_param_is_undetermined`: `TypeVar` or `FlexVar`, deliberately not `Skolem` — a
+    rigidified parameter is decided, just opaque).
+
+    I DROVE THE ANNOTATED TWIN AND IT ABORTED IDENTICALLY, which is the finding the
+    reviewer's own report did not have: `lambda (a: Int64, b: Int64)` aborts the same way,
+    because per-binder annotations are read one level down. So the MINT is not what
+    decides this and a row driving only the un-annotated spelling would have credited this
+    ticket with a pre-existing defect. Both arms now answer 1. Back-out: drop the
+    disjunct, 1 row of 4126 fails.
+
+    IN RELEASE THE SHAPE WAS ALREADY `None` — the whole argument check stood down
+    silently. The fix makes the debug build agree with that, and the site now says WHY
+    `None` is right here: an undetermined param is the withholding `validate_arg_against_
+    param`'s groundness gate performs everywhere else, not a malformed term.
+
+  * THE DEEPER REPAIR IS ONE THING ANSWERING TWO FINDINGS — WI-20260904-34J8Z, THE ONE
+    FOLLOW-UP THAT SURVIVED BEING ATTEMPTED. The reviewer's second finding is that a tuple
+    binder's components are INDEPENDENT variables with nothing tying them to the parent's,
+    so solving the parent at a use site solves neither; minting the param as a
+    `named_tuple` OVER those variables answers that and the arity disagreement at once.
+
+    BUILT AND MEASURED RATHER THAN ARGUED, and the ticket's first draft named the wrong
+    obstacle. It said the blocker was the LABELS. The mint was written with `_1.._n` and
+    the whole binary run: 4124 passed, 2 FAILED, and neither failure was about labels.
+    (1) `wi517_typed_lambda_binder_test::typed_tuple_binders_pin_elements_without_expected_context`
+    — a MINTED context is not a context, but `bind_and_label_pattern` cannot tell, and
+    WI-517's rule that the context beats the annotation then DISCARDS the user's written
+    `: A` / `: B`. (2) The application flips into an arity error, "expected 2 arguments …
+    got 1 argument", which runs into WI-775's settled rule that `f(3, 10)` and `f((3, 10))`
+    are both legal at a `Function` slot. Reverted; the ticket now carries both.
+
+  * A RULE-BODY DATA SLOT HINTED AND DID NOT CHECK — FIXED HERE, after being written up
+    as a ticket and then attempted. `apply1(lambda x -> "no", 2)` loaded in a rule body and
+    answered a `String` from a call declared `-> Int64`; its operation-body twin was
+    refused. It now reports "expected Function[A = Int64, B = Int64], got Int64 -> String"
+    in both. `dispatch_calls_in_occ` compares the child's synthesized type back against
+    the same declared type part (b) handed down.
+
+    THE REASON I FILED IT INSTEAD OF DOING IT WAS WRONG, AND MEASURING SETTLED IT IN ONE
+    RUN. The objection was that the comparison needs a σ binding the callee's type
+    parameters, so a FRESH σ would pass concrete signatures and FAIL OPEN on generic ones.
+    It does not: `validate_arg_against_param` GATES ON GROUNDNESS, so a declared param that
+    is the callee's own type parameter reaches that gate unresolved and is WITHHELD. The
+    fresh σ answers exactly the subset it can answer, and the gate that makes that true was
+    already there. Driven: `pick[X](f: Function[A = X, B = X], v: X)` still loads.
+
+    THAT FUNCTION AND NOT A BARE `types_compatible`, so the reflect-`Term` escape, WI-408's
+    some-coercion and the provider-admissible carrier apply here exactly as at an operation
+    body's argument — a narrower comparison would refuse programs the op-body spelling
+    accepts, inventing the asymmetry this ticket removes.
+
+    BACK-OUT: 1 row of 4126,
+    `part_b_a_rule_body_data_slot_checks_its_children_against_the_declaration`, whose four
+    arms are the rule spelling (refused), the op twin (refused, the AGREEMENT), a
+    conforming lambda (still answers 3, so the check refuses a contradiction and not the
+    channel) and the generic callee (still loads).
+
+    WHAT IT DOES NOT DO: the context names the RULE (`value.body (rule)`) where the op-body
+    twin names the SLOT (`apply1.f (op-arg)`). Pairing each hint with its param symbol
+    means threading `apply_arg_hints`' positional-to-field ranking out through this
+    channel; recorded at the site, not done.
+
+  * THE CONTRAVARIANCE EXPOSURE IS CLOSED, not ticketed — and the ticket I wrote for it
+    first was WRONG ON ITS FACTS. It claimed "variance is not plumbed to that descent at
+    all, so there is nothing to gate on yet". Variance has been plumbed since WI-293:
+    [`declared_variance`] reads the `Covariant` / `Contravariant` facts, and
+    `Function`'s `A` is DECLARED contravariant — so the exposure was live-reachable, not
+    hypothetical. `nominal_head_mismatch`'s descent simply never called it. It does now,
+    on all four arms, read for a DECIDED-MISMATCH predicate rather than a compatibility
+    one: covariant asks the pair as written, contravariant SWAPPED, invariant must hold
+    both ways so either direction deciding is a mismatch, bivariant accepts either so
+    neither can decide.
+
+    MEASURED, AND NO VERDICT MOVES ON THIS CORPUS — 4126/0 with the change. A probe
+    reporting the arm and both directions at every reach:
+
+        Invariant       145,858 reaches      Contravariant   0
+        Covariant        50,480 reaches      Bivariant       0
+
+    so `Contravariant` at this descent is an UNWITNESSED reach with ~196k reaches as the
+    positive control. What says the change is not vacuous is that the two DIRECTIONS
+    disagree where they are consulted: of the decided reaches, two are `cov=false,
+    con=true` — direction matters at this site, and the corpus simply contains no
+    contravariant parameter to witness the wrong one.
+
+  * THE INTERNING COST ALREADY HAD AN OWNER — WI-20260904-02ERR, updated rather than
+    re-filed. Two things it did not have: the `?pat` split adds a SECOND producer, and the
+    site's "bounded by (binders x passes)" reads as a constant of the program when nothing
+    releases the refcount — a process that loads repeatedly accumulates without bound.
+
+  * THE `debug_assert` IN `types_compatible_view_structural` IS KEPT — declined, with the
+    reason at the site. The reviewer read it as "a user program hitting an unwired pair
+    crashes a debug build"; the condition is not one a PROGRAM can create. Both dispatch
+    tables are compiled in, so they can only disagree because someone edited one and not
+    the other, and the reader it fires for is that developer. A release build gets the
+    safe `false` either way. What WOULD change the answer is the census the site already
+    says is undone.
+
+THREE FOLLOW-UPS WERE WRITTEN AND TWO WERE DELETED — user, 2026-09-04 ("why you wrote new
+tickets?"), and they were right. This repo's own rule is "if the size of code in change is
+less than the ticket description, do not open a new ticket, make it inline". Each
+description ran 60-80 lines and I had ATTEMPTED NONE of the three. Attempting them took one
+measurement each and changed the answer twice:
+
+    0DGXR  contravariance   3 lines. The ticket's premise ("variance is not plumbed")
+                            was false — it has been since WI-293. DELETED.
+    0ZB9N  the slot check   ~15 lines. The ticket's objection (a fresh σ fails open on a
+                            generic callee) was false — the groundness gate withholds.
+                            DELETED.
+    34J8Z  the named_tuple  survives, and is a BETTER ticket for having been built: the
+           param            obstacle it named was wrong and the two real ones are measured.
+
+It is the same failure as the FFYAM spin-off in a different shape — that one re-typed work
+that already had an owner; this one wrote a description in place of the attempt. THE TEST
+IS CHEAP AND IT IS THE ONLY ONE THAT WORKS: build it, run it, and let the failures decide
+whether it is a ticket.
