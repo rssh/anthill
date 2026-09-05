@@ -437,9 +437,23 @@ enum anthill.prelude.TypeExtractor
      one layer below the one named next.
 
      THAT IS A DIFFERENT QUESTION FROM "this type is TO BE INFERRED", which wants a
-     variable that DOES commit — the engine's own, below. The typer has minted this form
-     for inference holes too (an un-annotated lambda binder, `?param`); that pairing is
-     WI-20260904-50B2K and is a defect, not this entity's meaning.
+     variable that DOES commit — the engine's own, below. The typer used to mint this form
+     for inference holes too (an un-annotated lambda binder, `?param`); WI-20260904-50B2K
+     SEPARATED THEM and such a binder is now a `FlexVar`.
+
+     WHAT REMAINS HERE IS DECIDED BY THE REASON FOR THE ABSENCE, not by the position. A
+     sub-pattern of a CONSTRUCTOR THAT DECLARES NO FIELD TYPES (`case SetLiteral(a, _, _)`)
+     is still this form: what is missing is the entity's declaration, and no enclosing type
+     can supply it, so an inference variable there would stay unsolved and reach a
+     conformance check unbound. A component of a BINDER LIST whose own type is still an
+     inference variable is the other half and is a `FlexVar`. Measured: flipping both at
+     once failed four rows, all of the `SetLiteral` shape.
+
+     AN EMPTY LIST / SET LITERAL'S ELEMENT TYPE is also still this form, and there the
+     reason is different again — it is not that nobody CAN name it, it is that the literal
+     is genuinely unconstrained and wants a `∀`. The flip was built and measured INERT
+     (identical diagnostics either way), so the inert form stands in for the quantifier
+     until one exists.
 
      NOT "a placeholder, not a logical variable", which is what this said: an
      operational claim in logical vocabulary, and it reads as a contradiction since a

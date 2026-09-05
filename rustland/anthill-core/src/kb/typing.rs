@@ -14375,8 +14375,29 @@ fn build_type(
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
-                let fresh = kb.intern("?T");
-                Value::term(kb.make_type_var(fresh))
+                // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
+                // An EMPTY literal has no element to infer FROM, so the census that put
+                // `?T` in the "to be inferred, must commit" column had it in the wrong
+                // one: its type is genuinely unconstrained, which is part (c)'s question.
+                //
+                // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
+                // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
+                // that could tell the two apart. Both readings accept the same programs for
+                // OPPOSITE reasons — the inert form is compatible-with-anything, the
+                // variable is NON-GROUND so the check is withheld — and a shape mismatch is
+                // refused under both, because the head (`List` / `Set`) is concrete and
+                // `nominal_head_mismatch` decides on the head whatever the binding is:
+                //
+                //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
+                //     addI([], 1)  where addI declares Int64                   refused, both
+                //
+                // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
+                // drive), so it is not made. What DOES change here is part (c)'s job:
+                // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
+                // inert form is the closest thing to that ∀ the typer has.
+                // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `[…]` path reaches
+                // the CONSTRUCTOR checker below instead.
+                let fresh = kb.intern("?T");                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: the QUALIFIED sort name. A bare `"List"` interns a symbol
             // whose qualified name is `"List"`, which `canonical_sort_sym` (keyed
@@ -14420,8 +14441,29 @@ fn build_type(
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
             let t_val = element_type.unwrap_or_else(|| {
-                let fresh = kb.intern("?T");
-                Value::term(kb.make_type_var(fresh))
+                // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
+                // An EMPTY literal has no element to infer FROM, so the census that put
+                // `?T` in the "to be inferred, must commit" column had it in the wrong
+                // one: its type is genuinely unconstrained, which is part (c)'s question.
+                //
+                // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
+                // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
+                // that could tell the two apart. Both readings accept the same programs for
+                // OPPOSITE reasons — the inert form is compatible-with-anything, the
+                // variable is NON-GROUND so the check is withheld — and a shape mismatch is
+                // refused under both, because the head (`List` / `Set`) is concrete and
+                // `nominal_head_mismatch` decides on the head whatever the binding is:
+                //
+                //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
+                //     addI([], 1)  where addI declares Int64                   refused, both
+                //
+                // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
+                // drive), so it is not made. What DOES change here is part (c)'s job:
+                // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
+                // inert form is the closest thing to that ∀ the typer has.
+                // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `{…}` path reaches
+                // the CONSTRUCTOR checker below instead.
+                let fresh = kb.intern("?T");                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: QUALIFIED, like the `ListLit` frame and the `SetLiteral`
             // constructor path — a bare `"Set"` never canonicalizes for the
@@ -41249,13 +41291,16 @@ enum HeadPosition {
     /// covariant reading. A verdict claimed there is wrong for a parameter declared
     /// contravariant.
     ///
-    /// **CLOSED — the descent now READS the declared variance** (see the loop in
-    /// [`nominal_head_mismatch`]). /code-review asked for an owner rather than prose and
-    /// was right that a hazard nothing fails on rots; the owner turned out to be three
-    /// lines, because [`declared_variance`] has existed since WI-293 and this loop simply
-    /// never called it. A ticket was written for it first and DELETED — the description
-    /// was longer than the fix, which is this repo's own test for whether something is a
-    /// follow-up.
+    /// **BUILT, MEASURED AND NOT SHIPPED**, and the measurement is at the descent loop in
+    /// [`nominal_head_mismatch`] rather than repeated here. The short of it: the gate is
+    /// three lines ([`declared_variance`] has existed since WI-293), the INVARIANT default
+    /// must ask the un-swapped direction or it refuses WI-836's program the moment its
+    /// container is a user sort, and CONTRAVARIANT — the only arm that could then change
+    /// an answer — reaches this descent zero times against ~196k reaches as the positive
+    /// control. So the exposure is real and stated, and closing it waits for a program
+    /// that reaches it. /code-review asked twice for an owner rather than prose; a ticket
+    /// was written and deleted, because the description was longer than the fix and the
+    /// fix turned out to be unmeasurable.
     Nested,
 }
 
@@ -41384,37 +41429,37 @@ fn nominal_head_mismatch(
         else {
             continue;
         };
-        // WI-20260904-50B2K — BY THE PARAMETER'S DECLARED VARIANCE, which this loop used
-        // to ignore. Pairing `actual`'s binding with `declared`'s at the same label is a
-        // COVARIANT reading, and it was the only one here: for a parameter declared
-        // CONTRAVARIANT the pair is the wrong way round, so a verdict claimed on it
-        // refuses a correct program.
+        // WI-20260904-50B2K — READING THE DECLARED VARIANCE HERE WAS BUILT, MEASURED AND
+        // NOT SHIPPED, recorded so the next reader does not re-derive it. Pairing
+        // `actual`'s binding with `declared`'s at the same label is a COVARIANT reading
+        // and the only one this loop has; [`HeadPosition::Nested`]'s doc states the
+        // exposure. [`declared_variance`] has existed since WI-293, so the gate is three
+        // lines — and the three lines are the wrong trade:
         //
-        // THIS IS NOT HYPOTHETICAL AND THAT IS WHY IT IS FIXED RATHER THAN NOTED:
-        // `Function`'s `A` is declared `Contravariant` (WI-293's facts,
-        // `stdlib/anthill/reflect/typing.anthill`), and a `Function` nested inside another
-        // type — `List[T = Function[A = …, B = …]]` — descends here. The exposure was
-        // stated in prose at [`HeadPosition::Nested`] while nothing failed on it; a
-        // /code-review pass asked for an owner, and the owner turned out to be three lines
-        // because [`declared_variance`] already exists and `d_base` is in hand.
+        //   COVARIANT     is what this loop already does.
+        //   INVARIANT     is the DEFAULT (every sort with no variance fact), and asking
+        //                 the swapped direction there DECIDES where the design says
+        //                 withhold — the predicates under this descent are
+        //                 one-directional by construction, this ticket's own fourth edit
+        //                 having made them so. Driven: WI-836's program over a user sort
+        //                 `Holder[T = Function[A = X, B = Int64]]` given `holder(v: 1)`
+        //                 went from loading to "expected Holder[T = Function[A = ?X,
+        //                 B = Int64]], got Holder[T = Int64]", while the identical program
+        //                 over `List` (covariant) loads — WI-836's own row. So invariant
+        //                 must ask the un-swapped direction, i.e. behave as covariant.
+        //   CONTRAVARIANT is then the ONLY arm that could change an answer, and
+        //                 `Contravariant(sort: Function, param: A)` is the only such fact
+        //                 in the stdlib — so it needs a `Function` on BOTH sides, agreeing
+        //                 at the head, reaching the non-ground branch. Probed over the
+        //                 whole binary: ZERO reaches, against 145,858 Invariant and 50,480
+        //                 Covariant as the positive control; two hand-built programs did
+        //                 not reach it either.
+        //   BIVARIANT     needs both facts on one parameter. Nothing asserts both.
         //
-        // THE FOUR ARMS ARE [`check_binding_by_variance`]'s, read for a DECIDED-MISMATCH
-        // predicate rather than for a compatibility one, which flips what each means:
-        // covariant asks the pair as written, contravariant asks it SWAPPED, invariant
-        // must hold in BOTH so either direction deciding is a mismatch, and bivariant
-        // accepts EITHER so neither direction can decide and this withholds.
-        let decided = match declared_variance(kb, d_base, *param) {
-            Variance::Covariant => nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested),
-            Variance::Contravariant => {
-                nominal_head_mismatch(kb, subst, dv, &av, HeadPosition::Nested)
-            }
-            Variance::Invariant => {
-                nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested)
-                    || nominal_head_mismatch(kb, subst, dv, &av, HeadPosition::Nested)
-            }
-            Variance::Bivariant => false,
-        };
-        if decided {
+        // A four-arm match whose two live arms are the current behaviour and whose other
+        // two cannot be driven READS as "variance is handled here" while nothing exercises
+        // it — worse than this comment. Ship it when a program reaches it.
+        if nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested) {
             return true;
         }
     }
@@ -43623,8 +43668,30 @@ fn check_seq_literal_constructor(
         merge_effects_into(kb, &mut effects, &r.effects);
     }
     let t_val = element_type.unwrap_or_else(|| {
-        let fresh = kb.intern("?T");
-        Value::term(kb.make_type_var(fresh))
+        // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
+        // An EMPTY literal has no element to infer FROM, so the census that put
+        // `?T` in the "to be inferred, must commit" column had it in the wrong
+        // one: its type is genuinely unconstrained, which is part (c)'s question.
+        //
+        // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
+        // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
+        // that could tell the two apart. Both readings accept the same programs for
+        // OPPOSITE reasons — the inert form is compatible-with-anything, the
+        // variable is NON-GROUND so the check is withheld — and a shape mismatch is
+        // refused under both, because the head (`List` / `Set`) is concrete and
+        // `nominal_head_mismatch` decides on the head whatever the binding is:
+        //
+        //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
+        //     addI([], 1)  where addI declares Int64           refused, both
+        //
+        // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
+        // drive), so it is not made. What DOES change here is part (c)'s job:
+        // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
+        // inert form is the closest thing to that ∀ the typer has.
+        // MEASURED REACHABILITY: EIGHT reaches across the whole binary. THE ONLY ONE OF THE THREE THAT
+        // FIRES, and the ticket's census named the other two and missed this one — a
+        // row list is not a population.
+        let fresh = kb.intern("?T");        Value::term(kb.make_type_var(fresh))
     });
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
@@ -66296,8 +66363,9 @@ fn type_rule_bodies(
                         n,
                         BodyPos::Goal(GoalCommit::Top),
                         rule_sym,
-                        // A rule's top-level atom sits in no slot, so nothing declares a
-                        // type for it (WI-20260904-50B2K part (b)).
+                        // A rule's top-level atom sits in no slot, so nothing hints or
+                        // declares a type for it (WI-20260904-50B2K part (b)).
+                        None,
                         None,
                         errors,
                     );
@@ -68397,6 +68465,11 @@ fn dispatch_calls_in_occ(
     // whose parent declares nothing about it, which is what this walk handed every child
     // before this ticket.
     expected: Option<Value>,
+    // WI-20260904-50B2K: the DECLARED type of this slot, read straight off the callee's
+    // cached signature — the CHECK channel, beside `expected`'s HINT channel. Wider on
+    // purpose: every slot with a declaration has one, where a hint is supplied only where
+    // imposing a type top-down is correct.
+    declared: Option<Value>,
     errors: &mut Vec<TypeError>,
 ) -> Rc<NodeOccurrence> {
     // ONE predicate for the shapes this walk decides, shared with the pre-scan
@@ -68446,12 +68519,23 @@ fn dispatch_calls_in_occ(
             let child_pos = child_body_positions(kb, expr, pos, children.len());
             // WI-20260904-50B2K part (b) — and WHAT TYPE each slot declares, over the same
             // order and the same length.
-            let child_expected = data_slot_arg_hints(kb, shape, expr, children.len());
+            let (child_expected, child_declared) =
+                data_slot_arg_hints(kb, shape, expr, children.len());
+            // WI-20260904-50B2K — AND WHAT EACH SLOT DECLARES, which is a WIDER list than
+            // the hints and answers a different question. A hint is only supplied where a
+            // top-down type is CORRECT to impose (a lambda in a callable slot, a call in a
+            // ground slot, …), and gating the CHECK on that left every other slot
+            // unchecked: measured, `?r <=> addI([], 1)` LOADED in a rule body where its
+            // operation-body twin was refused "expected Int64, got List[T = ??T]" — a
+            // collection literal is not one of the shapes `apply_arg_hints` hints.
             let new_children: Vec<Rc<NodeOccurrence>> = children
                 .iter()
                 .zip(child_pos)
                 .zip(child_expected)
-                .map(|((c, p), e)| dispatch_calls_in_occ(kb, env, c, p, rule_sym, e, errors))
+                .zip(child_declared)
+                .map(|(((c, p), e), d)| {
+                    dispatch_calls_in_occ(kb, env, c, p, rule_sym, e, d, errors)
+                })
                 .collect();
             super::simp_rewrite::reassemble(occ, &new_children)
         }
@@ -68487,10 +68571,6 @@ fn dispatch_calls_in_occ(
     // time a node reaches `type_check_node` the answer exists nowhere else. Everything
     // BENEATH the handed-over node is data, which is why [`NodePos`] has two values where
     // [`BodyPos`] has four — the typer never descends into a goal.
-    // WI-20260904-50B2K: kept for the slot CHECK below — `type_check_node_at` consumes
-    // the expectation to type the child, and the check compares what came back against
-    // the same declared type.
-    let expected_for_check = expected.clone();
     match type_check_node_at(kb, env, &walked, expected, node_pos_of(pos)) {
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
@@ -68525,15 +68605,29 @@ fn dispatch_calls_in_occ(
             // `pick[X](f: Function[A = X, B = X], v: X)` still loads.
             //
             // IT IS THIS FUNCTION AND NOT A BARE `types_compatible`, so the three
-            // conversions an operation body's argument gets are the same three here: the
-            // reflect-`Term` escape, WI-408's some-coercion and the provider-admissible
+            // conversions an operation body's argument gets ACCEPT the same values here:
+            // the reflect-`Term` escape, WI-408's some-coercion and the provider-admissible
             // carrier. A narrower comparison would refuse programs the op-body spelling
-            // accepts — inventing the asymmetry this ticket exists to remove.
+            // accepts — inventing the asymmetry this ticket exists to remove, and
+            // `control_a_non_callable_slot_hints_a_rule_body_lambda_with_nothing` is the
+            // row that measures it (a lambda in a reflect `Term` slot, which a bare
+            // `types_compatible` would refuse). ACCEPTANCE ONLY: see the `WrapSome` arm
+            // below for the conversion whose REWRITE this site does not perform.
             //
-            // ONLY WHERE A HINT WAS GIVEN. `expected` is `Some` exactly at a data slot
-            // `data_slot_arg_hints` could read a declaration for, so a slot that gets no
-            // hint gets no check — `control_a_non_callable_slot_hints_a_rule_body_lambda_
-            // with_nothing`.
+            // ONLY WHERE THE CALLEE DECLARED SOMETHING — `declared`, NOT the hint, and
+            // that is the wider of the two lists on purpose. Gating the check on the HINT
+            // left every slot `apply_arg_hints` correctly says nothing about unchecked: a
+            // lambda in an `Int64` slot loaded in a rule body and was refused in an
+            // operation body (`a_lambda_in_a_non_callable_slot_is_refused_in_both_bodies`).
+            // A slot with no DECLARATION still gets no check.
+            //
+            // THE THIRD CONJUNCT IS REPORT-ONCE. If anything beneath this node already
+            // complained, that complaint IS this slot's error said at the place the author
+            // must look, and adding a second one makes the rule-body spelling report TWO
+            // where the operation body reports one — measured on the first cut of the
+            // wider version, `wi1056::the_rule_body_and_the_operation_body_report_the_same_error`.
+            // `already_reported` cannot do it: it matches on (span, text), and these two
+            // differ in both.
             //
             // THE CONTEXT NAMES THE RULE, NOT THE SLOT (`value.body (rule)` where the
             // op-body twin says `apply1.f (op-arg)`), and that is a known shortfall rather
@@ -68541,9 +68635,10 @@ fn dispatch_calls_in_occ(
             // `apply_arg_hints`' internal positional-to-field ranking (WI-20260827-1F0QP's
             // rank-among-NOT-named rule) out through this channel. The error locates the
             // same span either way.
-            if let (Some(exp), Some(rs)) = (expected_for_check.as_ref(), rule_sym) {
+            if let (Some(exp), Some(rs), true) = (declared.as_ref(), rule_sym, errors.len() == mark)
+            {
                 let mut sigma = Substitution::new();
-                if let ArgValidation::Fail(e) = validate_arg_against_param(
+                match validate_arg_against_param(
                     kb,
                     &mut sigma,
                     &result.ty,
@@ -68554,7 +68649,18 @@ fn dispatch_calls_in_occ(
                         field: RuleField::Body,
                     },
                 ) {
-                    errors.push(e);
+                    ArgValidation::Fail(e) => errors.push(e),
+                    // ACCEPTED, AND THE ACCEPT IS ALL THIS SITE CLAIMS — spelled out
+                    // rather than folded into the `Ok` arm, because /code-review read the
+                    // comment above as promising the some-INSERTION too. It does not: the
+                    // WI-408 rewrite wraps the ARGUMENT OCCURRENCE and belongs to
+                    // `check_apply_iter`, which is the pass a rule-body data term does not
+                    // get (WI-1058). So a rule body stores the bare value in an
+                    // `Option[T = …]` slot where an operation body stores `some(…)` — a
+                    // REWRITE asymmetry this check does not close and does not pretend to.
+                    // Not silently dropped: `Ok` and `WrapSome` are the same verdict for
+                    // the question asked here, which is only "does this conform".
+                    ArgValidation::Ok | ArgValidation::WrapSome { .. } => {}
                 }
             }
             if shape != CallDispatch::Call {
@@ -68909,18 +69015,37 @@ fn child_body_positions(
 /// Its two readers ([`hint_instantiation_subst`], [`bind_spec_params_for_hint`]) both
 /// return nothing for an empty map, so a hint that would need a sibling's type is simply
 /// not made — the declared type rides through as written.
+/// WI-20260904-50B2K — TWO LISTS, ONE SIGNATURE READ, and they answer DIFFERENT
+/// questions about the same slots:
+///
+///   * `.0` THE HINT — what to IMPOSE on this child before typing it. Narrow on purpose
+///     (see the paragraphs above): a top-down type is only correct at a handful of shapes.
+///   * `.1` THE DECLARATION — what the callee DECLARED here, which every slot with a
+///     signature has. This is the CHECK channel, and it is deliberately wider: gating the
+///     check on the hint left a collection literal in an `Int64` slot unchecked, so
+///     `?r <=> addI([], 1)` loaded where its operation-body twin was refused.
+///
+/// RETURNED TOGETHER rather than from two functions, which is a cost decision AND a
+/// correctness one — /code-review. The `op_record` map lookup and the `params.clone()` are
+/// paid ONCE per data term instead of twice on the rule-body hot path, and the two lists
+/// cannot come to read a different signature or a different slot mapping, since there is
+/// only one of each.
 fn data_slot_arg_hints(
     kb: &mut KnowledgeBase,
     shape: Option<CallDispatch>,
     expr: &Expr,
     n_children: usize,
-) -> SmallVec<[Option<Value>; 8]> {
+) -> (SmallVec<[Option<Value>; 8]>, SmallVec<[Option<Value>; 8]>) {
     // Asked before anything is allocated: this runs at EVERY recursing node of every rule
     // body, and only a data term has a declaration to read.
     if shape != Some(CallDispatch::DataTerm) {
-        return smallvec::smallvec![None; n_children];
+        return (
+            smallvec::smallvec![None; n_children],
+            smallvec::smallvec![None; n_children],
+        );
     }
     let unhinted: SmallVec<[Option<Value>; 8]> = smallvec::smallvec![None; n_children];
+    let nothing = || (unhinted.clone(), unhinted.clone());
     let Expr::Apply {
         functor,
         pos_args,
@@ -68928,7 +69053,7 @@ fn data_slot_arg_hints(
         ..
     } = expr
     else {
-        return unhinted;
+        return nothing();
     };
     // AN OPERATION'S PARAMETERS, AND DELIBERATELY NOT AN ENTITY'S FIELDS. The pair
     // [`constrain_application`] reads one pass earlier is (operation params, entity
@@ -68959,7 +69084,7 @@ fn data_slot_arg_hints(
         .and_then(|r| r.signature.as_ref())
         .map(|sig| sig.params.clone())
     else {
-        return unhinted;
+        return nothing();
     };
     let (pos_hints, named_hints) = apply_arg_hints(
         kb,
@@ -68986,7 +69111,33 @@ fn data_slot_arg_hints(
         n_children,
         "WI-20260904-50B2K: a data term's hint list must be its child list, one per slot",
     );
-    out
+    // AND THE DECLARATIONS, over the same `params` and through the CALL PATH'S OWN slot
+    // owners — [`positional_param_indices`] (the rank-among-NOT-named rule,
+    // WI-20260827-1F0QP) and [`match_named_arg_param`] (a written label against a
+    // possibly-qualified parameter, by `same_label`). A raw index zip here was this
+    // channel's first cut and was WRONG, driven: a named argument CONSUMES a parameter, so
+    // in `f3(lambda x -> x, a: 1)` over `f3(a: Int64, b: Function[…])` the lambda is
+    // parameter `b`, and reading `params[0]` compared it against `a: Int64` and REFUSED a
+    // program its operation-body twin accepts — the exact asymmetry this ticket exists to
+    // remove, created by the check meant to close one. `Symbol` equality for the named
+    // lookup was the same defect quieter: it finds nothing and SKIPS the check.
+    let slots = positional_param_indices(kb, &params, pos_args.len(), named_args);
+    let declared: SmallVec<[Option<Value>; 8]> = slots
+        .iter()
+        .map(|slot| slot.and_then(|i| params.get(i)).map(|(_, t)| t.clone()))
+        .chain(
+            named_args
+                .iter()
+                .map(|(name, _)| match_named_arg_param(kb, &params, *name).map(|(_, t)| t.clone())),
+        )
+        .collect();
+    assert_eq!(
+        declared.len(),
+        n_children,
+        "WI-20260904-50B2K: a data term's declared-type list must be its child list, \
+         one per slot"
+    );
+    (out, declared)
 }
 
 /// WI-1058 — the child indices of `expr` (in [`for_each_child`] order) that hold a

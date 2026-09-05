@@ -367,9 +367,18 @@ fn known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies() {
 /// and the lambda is typed exactly as it was before this ticket. The row that says the
 /// hint is the callee's DECLARED type and not "an arrow, everywhere a lambda is written".
 ///
-/// GREEN EITHER WAY BY DESIGN, under both back-outs. It is the acceptance half of
+/// GREEN EITHER WAY BY DESIGN, under every back-out. It is the acceptance half of
 /// `a_lambda_in_a_reflect_term_slot_is_still_accepted` moved into a RULE body, where part
 /// (b) is what could newly have refused it.
+///
+/// AND IT SAYS MORE SINCE THE SLOT CHECK LANDED. A reflect `Term` slot now HAS a declared
+/// type reaching the check, and this program still loads — because the check runs through
+/// `validate_arg_against_param`, which carries the reflect-`Term` ESCAPE. A bare
+/// `types_compatible` in its place would refuse this row, which is the measurement that
+/// says reusing the operation body's own argument checker was the load-bearing choice and
+/// not a convenience. Its sibling
+/// `a_lambda_in_a_non_callable_slot_is_refused_in_both_bodies` is the same shape at a slot
+/// with NO escape, and it is refused.
 #[test]
 fn control_a_non_callable_slot_hints_a_rule_body_lambda_with_nothing() {
     let src = "\
@@ -845,4 +854,58 @@ fn part_b_a_rule_body_data_slot_checks_its_children_against_the_declaration() {
             errs.join("\n")
         )
     });
+}
+
+/// **THE SLOT CHECK READS WHAT THE SLOT DECLARES, NOT WHAT IT HINTS** — and that is a
+/// WIDER list, which is the whole of what this row measures.
+///
+/// A hint is supplied only where imposing a type top-down is CORRECT (a lambda in a
+/// callable slot, a call in a ground slot, …), so gating the check on the hint left every
+/// other slot unchecked. A lambda written in a slot declaring `Int64` is exactly such a
+/// slot: `hof_arg_hint` declines it — correctly, there is no arrow to impose — and its
+/// declared type is nonetheless what the operation-body spelling compares against.
+///
+/// ```text
+///   rule value(?r) :- ?r <=> addI(lambda x -> x, 1)
+///     BEFORE  loads
+///     AFTER   type mismatch in value.body (rule): expected Int64, got ??param -> ??param
+///   operation w() -> Int64 = addI(lambda x -> x, 1)
+///     type mismatch in addI.a (op-arg): expected Int64, got ??param -> ??param
+/// ```
+///
+/// THE OPERATION-BODY TWIN IS THE CONTROL and it was refused all along — so this row
+/// measures the two spellings COMING INTO AGREEMENT, which is what the ticket is for, and
+/// not a new refusal the rule-body spelling invented.
+///
+/// BACK-OUT: have the check read `expected` (the hint) instead of `declared`. The rule arm
+/// then loads and the op arm still refuses — the asymmetry, restored. `data_slot_declared_types`
+/// returning `undeclared` unconditionally backs out the same row.
+///
+/// ITS NEIGHBOUR IS `control_a_non_callable_slot_hints_a_rule_body_lambda_with_nothing`,
+/// the same shape at a reflect `Term` slot, which still LOADS — the escape is in the
+/// checker, so widening what is checked did not widen what is refused.
+#[test]
+fn a_lambda_in_a_non_callable_slot_is_refused_in_both_bodies() {
+    let src_of = |body: &str| {
+        format!(
+            "namespace zz50b2k.widen\n  import anthill.prelude.{{Int64}}\n  \
+             operation addI(a: Int64, b: Int64) -> Int64 = 9\n{body}end\n"
+        )
+    };
+    for (tag, body) in [
+        (
+            "rule",
+            "  rule value(?r) :- ?r <=> addI(lambda x -> x, 1)\n",
+        ),
+        ("op", "  operation w() -> Int64 = addI(lambda x -> x, 1)\n"),
+    ] {
+        let errs = crate::common::try_load_kb_with(&src_of(body))
+            .err()
+            .unwrap_or_else(|| panic!("{tag}: a lambda in an Int64 slot must be refused"));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("expected Int64, got ??param -> ??param")),
+            "{tag}: expected the arrow-against-Int64 mismatch, got: {errs:?}",
+        );
+    }
 }

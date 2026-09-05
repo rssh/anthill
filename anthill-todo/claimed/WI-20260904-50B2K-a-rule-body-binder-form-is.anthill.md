@@ -117,9 +117,21 @@ asks. BY NAME, WHICH IS A HYPOTHESIS AND NOT A MEASUREMENT: redo it site by site
       ?pat          DONE (this ticket) — SPLIT, not flipped. See "ITEM 1 OF THE CENSUS"
                     below: the site serves BOTH questions and only one of them may
                     commit.
-      ?T  x2        an EMPTY list/set literal's element type (`element_type` is `None`
-                    because there are no elements). The consumer pins it —
-                    `let xs: List[T = Int64] = []`.
+      ?T  x3        ANSWERED (this ticket) — and the answer is DO NOT FLIP IT, plus a
+                    correction to this row. It is `x3`, not `x2`: the two sites named
+                    here are the `ListLit` / `SetLit` build frames, and the third,
+                    `check_seq_literal_constructor`, was missed. Probed: the two named
+                    fire ZERO times across the whole binary and the unnamed one fires
+                    EIGHT — the census named the dead sites and missed the live one.
+                    THE COLUMN WAS ALSO WRONG. An EMPTY literal has no element to infer
+                    FROM, so this is part (c)'s question and not (b)'s. Flipped anyway
+                    and measured: 4127/0, byte-identical diagnostics on every shape that
+                    could tell the two forms apart. Both accept the same programs for
+                    OPPOSITE reasons — inert is compatible-with-anything, a variable is
+                    NON-GROUND so the check is withheld — and a shape mismatch is refused
+                    under both, since the `List`/`Set` head is concrete and
+                    `nominal_head_mismatch` decides on the head. A change with no witness
+                    is not a fix; recorded at all three mints instead.
       ?logical_var  a free `?x` with no binding — "declared signatures resolve it on the
                     consumer side" (its own doc). Genuine, and the LARGEST blast radius:
                     every rule body. Take it last.
@@ -870,3 +882,107 @@ It is the same failure as the FFYAM spin-off in a different shape — that one r
 that already had an owner; this one wrote a description in place of the attempt. THE TEST
 IS CHEAP AND IT IS THE ONLY ONE THAT WORKS: build it, run it, and let the failures decide
 whether it is a ticket.
+
+THE `?T` CENSUS ROW, AND WHAT PROBING IT TURNED UP — 2026-09-04.
+
+The row is answered by a MEASUREMENT rather than a change (see the census entry above),
+and the probe that answered it surfaced a live asymmetry that the part-(b) slot check did
+not cover:
+
+    rule value(?r) :- ?r <=> addI([], 1)      LOADED
+    operation w() -> Int64 = addI([], 1)      type mismatch in addI.a (op-arg):
+                                              expected Int64, got List[T = ??T]
+
+THE CAUSE IS THAT THE CHECK WAS GATED ON THE HINT. `data_slot_arg_hints` supplies a type
+only where imposing one top-down is CORRECT — a lambda in a callable slot, a call in a
+ground slot, a sort name in a `Type` slot, a constructor application in a variant slot —
+and a collection literal is deliberately none of those. Its DECLARED slot type is
+nonetheless exactly what the operation-body spelling compares against.
+
+FIXED BY SPLITTING THE TWO CHANNELS. `data_slot_declared_types` is the sibling of
+`data_slot_arg_hints`: same cached signature, same slot mapping, but it answers "what did
+the callee DECLARE here" for EVERY slot rather than "what should I impose". The hint still
+types the child; the check now reads the declaration.
+
+THE WITNESS IS A LAMBDA IN A NON-CALLABLE SLOT, not the list literal —
+`addI(lambda x -> x, 1)` is refused in a rule body now and was refused in an operation
+body all along, so the row measures the two spellings COMING INTO AGREEMENT. Pinned by
+`a_lambda_in_a_non_callable_slot_is_refused_in_both_bodies`; back-out (the check reading
+`expected` instead of `declared`) fails exactly that 1 row of 4127.
+
+AND THE REFLECT-`Term` CONTROL NOW SAYS MORE THAN IT DID: `term_to_string(lambda x -> x)`
+in a rule body still LOADS, because the check runs through `validate_arg_against_param`,
+which carries the reflect-`Term` escape. A bare `types_compatible` would refuse it. That
+is the measurement saying reusing the operation body's own argument checker was
+load-bearing and not a convenience.
+
+WHAT IS STILL NOT CHECKED, MEASURED AND NOT FIXED — the list literal itself. A child with
+NO dispatch shape (a collection literal) returns before the type check, and one that is a
+`DataTerm` returns at `checked_not_typed`, so neither reaches the comparison:
+
+    rule  addI([], 1)          loads     (no dispatch shape -> returns early)
+    rule  addI(box(v: 1), 1)   loads     (a DataTerm -> `checked_not_typed` returns early)
+    rule  addI(strOp(), 1)     loads
+
+ATTEMPTED: checking un-dispatched children too, by typing them before the shape gate. It
+FAILS TWO ROWS and both are real. (1) `wi1056::the_rule_body_and_the_operation_body_report_
+the_same_error` — the rule body reports TWO errors where the operation body reports one, and
+an `errors.len() == mark` gate does not suppress it. (2)
+`wi_qqpq2_tuple_carrier_test::a_positional_tuple_meeting_a_name_keyed_pattern_reads_by_slot`
+— a program that must load is refused, "expected (a: Int64, b: Int64), got (_1: Int64,
+_2: Int64)": the child's SYNTHESIZED type carries `_N` labels where the operation-body path
+compares the argument AS REWRITTEN (WI-803's relabelling). Reverted. Both are the WI-1058
+boundary — typing a node the rule-body walk deliberately does not type — and neither is a
+small edit.
+
+A /CODE-REVIEW (high) PASS ON THE `?T` TREE FOUND NINE. The two that mattered were both
+MINE and both real; one change was REVERTED on its own evidence.
+
+  * THE SLOT CHECK CREATED THE ASYMMETRY IT CLOSES — HIGH, and the reviewer's own fixture
+    did not reproduce it. `data_slot_declared_types` mapped positional arguments by RAW
+    INDEX, but a named argument CONSUMES a parameter: in `f3(lambda x -> x, a: 1)` over
+    `f3(a: Int64, b: Function[…])` the lambda is parameter `b`, and reading `params[0]`
+    compared it against `a: Int64`. Driven — rule REFUSED, operation body LOADED. The
+    named lookup was the same defect quieter: `Symbol` equality where the tree's rule is
+    `same_label`, so a use-site label against a qualified parameter found nothing and
+    SKIPPED the check. Both now go through the CALL PATH'S OWN owners,
+    `positional_param_indices` (WI-20260827-1F0QP) and `match_named_arg_param`. The
+    finding named a program that loads either way; building a DISCRIMINATOR (a slot whose
+    two candidate parameters have different types) is what drove it.
+
+  * THE NEW DOC STOLE ITS NEIGHBOUR'S — the footgun this repo has hit before, and it was
+    in memory when I did it. Inserting `data_slot_declared_types`' doc directly above
+    `fn data_slot_arg_hints` moved that function's ~50-line doc onto the new one and left
+    the old with none. Both re-attached, and the two functions are now ONE, returning both
+    lists from one signature read — which also makes them structurally unable to disagree
+    about the slot mapping, the property the two findings above are about.
+
+  * THE VARIANCE CHANGE IS REVERTED, on the reviewer's evidence plus my own. Finding: the
+    `Invariant` arm — the DEFAULT for every sort with no variance fact — asked the SWAPPED
+    direction, where the predicates under this descent are one-directional by construction.
+    Driven: WI-836's program over a user sort `Holder[T = Function[A = X, B = Int64]]` given
+    `holder(v: 1)` went from LOADING to "expected Holder[T = Function[A = ?X, B = Int64]],
+    got Holder[T = Int64]", while the identical program over `List` (covariant) loads —
+    WI-836's own row. Correcting `Invariant` to the un-swapped direction then left
+    `Contravariant` as the only arm that could change an answer, and
+    `Contravariant(sort: Function, param: A)` is the STDLIB'S ONLY such fact: zero reaches
+    across the binary against ~196k as the positive control, and two hand-built programs
+    did not reach it either. A four-arm match whose live arms are the current behaviour and
+    whose other two cannot be driven READS as "variance is handled here" while nothing
+    exercises it. The exposure keeps its prose at `HeadPosition::Nested`, now carrying the
+    measurement. SAME RULE AS `?T`, APPLIED TO MY OWN CHANGE.
+
+  * FOUR SMALLER ONES FIXED: two stale comments at the check (one still said the check is
+    gated on the HINT, which is exactly what the change stopped being true; the
+    report-once conjunct had no rationale where every neighbour has one), `WrapSome` made
+    an EXPLICIT arm saying the ACCEPT is shared with the operation body but the some-INSERTION
+    is not (that rewrite is `check_apply_iter`'s, the pass a data term does not get), and
+    the stdlib `TypeExtractor.TypeVar` declaration — the AUTHORITY for its own API — which
+    still said an un-annotated lambda binder is one. It now states the rule this ticket
+    arrived at: the form is decided by the REASON FOR THE ABSENCE, not the position.
+
+  * ONE DECLINED, with the reason at its site: the `types_compatible_view_structural`
+    `debug_assert`. Both dispatch tables are compiled in, so they can only disagree because
+    someone edited one and not the other.
+
+Workspace 6430/0 -> 6431/0. scaland 539/0.
