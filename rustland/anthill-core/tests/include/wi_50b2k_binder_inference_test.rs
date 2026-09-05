@@ -388,7 +388,9 @@ namespace zz50b2k.rterm
   rule value(?r) :- ?r <=> term_to_string(lambda x -> x)
 end
 ";
-    let errs = crate::common::try_load_kb_with(src).err().unwrap_or_default();
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default();
     assert!(
         errs.is_empty(),
         "a lambda in a rule-body reflect `Term` slot must still be accepted; got: {errs:?}",
@@ -906,6 +908,72 @@ fn a_lambda_in_a_non_callable_slot_is_refused_in_both_bodies() {
             errs.iter()
                 .any(|e| e.contains("expected Int64, got ??param -> ??param")),
             "{tag}: expected the arrow-against-Int64 mismatch, got: {errs:?}",
+        );
+    }
+}
+
+/// **A POSITIONAL ARGUMENT BESIDE A NAMED ONE WAS HINTED FROM THE WRONG SLOT** — found by
+/// /code-review, and the defect was in the SHARED hint chain rather than in this ticket's
+/// new channel.
+///
+/// `apply_arg_hints` mapped a positional argument with `params[i]`, but a named argument
+/// CONSUMES a parameter, so a positional one beside it does not land at its own index.
+/// The check has always used the rank-among-NOT-named rule
+/// (`positional_param_indices`, WI-20260827-1F0QP); the hint did not. So the two read
+/// DIFFERENT SLOTS, and the visible result is a well-typed program REFUSED:
+///
+/// ```text
+///   operation f4(a: Function[A = String, B = String],
+///                b: Function[A = Int64,  B = Int64]) -> Int64
+///   f4(lambda x -> x + 1, a: g)
+///     BEFORE  type mismatch in add.b (op-arg): expected String, got Int64
+///     AFTER   loads
+/// ```
+///
+/// The lambda is parameter `b`; the raw index hinted it with `a`'s `String`, so its body
+/// was checked at the wrong type.
+///
+/// **BOTH SPELLINGS REPORTED IT IDENTICALLY, AND THAT IS WHY IT SURVIVED.** This ticket's
+/// design point is that a rule body hints through the operation body's OWN chain, so the
+/// two cannot come to hint differently — which is exactly what kept a shared defect
+/// SYMMETRIC and therefore invisible to every rule-vs-op comparison in this file. It
+/// surfaced only because `data_slot_arg_hints`' sibling list was corrected to the right
+/// owner and left this one disagreeing INSIDE ONE FUNCTION.
+///
+/// BACK-OUT: restore `op_params.and_then(|ps| ps.get(i))` in `apply_arg_hints`' positional
+/// loop; both arms below fail. The all-positional arm is the CONTROL — it has no named
+/// argument, so the two mappings agree by construction and it passes either way.
+#[test]
+fn a_positional_argument_beside_a_named_one_is_hinted_from_the_slot_it_takes() {
+    let src_of = |body: &str| {
+        format!(
+            "namespace zz50b2k.slotmap\n  import anthill.prelude.{{Int64, String, Function}}\n  \
+             operation g(s: String) -> String = s\n  \
+             operation f4(a: Function[A = String, B = String], \
+             b: Function[A = Int64, B = Int64]) -> Int64 = 1\n{body}end\n"
+        )
+    };
+    for (tag, body) in [
+        (
+            "rule",
+            "  rule value(?r) :- ?r <=> f4(lambda x -> x + 1, a: g)\n",
+        ),
+        (
+            "op",
+            "  operation w() -> Int64 = f4(lambda x -> x + 1, a: g)\n",
+        ),
+        // CONTROL: no named argument, so raw index and rank-among-unnamed agree.
+        (
+            "all-positional control",
+            "  rule value(?r) :- ?r <=> f4(g, lambda x -> x + 1)\n",
+        ),
+    ] {
+        let errs = crate::common::try_load_kb_with(&src_of(body))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            errs.is_empty(),
+            "{tag}: the lambda is parameter `b` and must be hinted `Int64`; got: {errs:?}",
         );
     }
 }

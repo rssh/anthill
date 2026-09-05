@@ -132,9 +132,11 @@ asks. BY NAME, WHICH IS A HYPOTHESIS AND NOT A MEASUREMENT: redo it site by site
                     under both, since the `List`/`Set` head is concrete and
                     `nominal_head_mismatch` decides on the head. A change with no witness
                     is not a fix; recorded at all three mints instead.
-      ?logical_var  a free `?x` with no binding — "declared signatures resolve it on the
-                    consumer side" (its own doc). Genuine, and the LARGEST blast radius:
-                    every rule body. Take it last.
+      ?logical_var  ANSWERED (this ticket) — DO NOT FLIP IT, and the reason is
+                    STRUCTURAL rather than a thin corpus. 22,798 reaches across the
+                    binary, the most driven of the five, and the flip changed NOTHING:
+                    4127/0, byte-identical diagnostics on a free `?x` at two INCOMPATIBLE
+                    slots, at one slot, as a dot receiver, and in an entity field.
 
     RE-CENSUSED SITE BY SITE 2026-09-04, and ONE ROW MOVED COLUMNS — which is why the
     ticket said the by-name list was a hypothesis:
@@ -986,3 +988,107 @@ MINE and both real; one change was REVERTED on its own evidence.
     someone edited one and not the other.
 
 Workspace 6430/0 -> 6431/0. scaland 539/0.
+
+THE CENSUS IS CLOSED, AND THE COLUMN'S PREDICATE WAS WRONG FROM THE START — 2026-09-05.
+
+All five "to be inferred" rows are now driven, and the two that moved and the three that
+did not have ONE explanation. It is not the one the column was named for.
+
+    ?param        FLIPPED     rung 3 of the lambda ladder
+    ?pat          SPLIT       a tuple component whose parent type is a hole
+    ?T   x3       INERT       an empty list/set literal's element type
+    ?logical_var  INERT       a free `?x` with no binding
+
+NEITHER FORM CAN EVER REFUSE. An inert `type_var` is compatible-with-anything, so a check
+that RUNS on it accepts. A flex variable is NON-GROUND, so the check is WITHHELD. Both
+accept everything, and a mint's choice of form is therefore invisible ON ITS OWN.
+
+THE FLIP CHANGES AN ANSWER EXACTLY WHEN SOMETHING BINDS THE VARIABLE AND A LATER READER
+SEES THE BINDING — which needs a σ or an env SHARED between the mint and that reader. That
+single predicate explains all four measurements, including the two that failed:
+
+    ?param        the binder's type goes into the LAMBDA BODY'S ENV and the body reads it
+                  in the same pass, so `Additive.add`'s signature pins it. THE POINT.
+    ?pat, binder  the same env, one level down. THE POINT.
+    ?pat, undecl  the same env — which is why flipping it wholesale FAILED FOUR ROWS
+                  rather than doing nothing. The variable IS shared, gets bound by
+                  nothing, and reaches the op-return conformance UNBOUND: a fail-open.
+                  Hence the split rather than a flip.
+    ?T            no shared reader. The literal's type is handed to whoever consumes it
+                  and read once.
+    ?logical_var  no shared reader. `validate_arg_against_param`'s σ is the CALLEE
+                  INSTANTIATION and is discarded with the call, so a binding made at one
+                  use is not visible at the next — measured directly with `?x` at two
+                  incompatible slots, which loads under both forms.
+
+SO THE QUESTION TO ASK AT A MINT IS NOT "is this type to be inferred" — every one of the
+five is, in the ordinary sense — BUT "does a later reader in the same pass see what this
+mint produced". Only two sites do. Flipping the other three needs the inference-state
+thread this ticket's wi342 discussion names ("Either that thread is built (real inference
+state), or …"), which is part (c)'s ground.
+
+THE TICKET'S OWN WARNING WAS RIGHT AND SHOULD BE READ TWICE: "BY NAME, WHICH IS A
+HYPOTHESIS AND NOT A MEASUREMENT: redo it site by site." Site by site moved `?result` out
+of the column before any code changed, corrected `?T` from two sites to three (naming the
+two that fire ZERO times and missing the one that fires eight), and has now retired the
+column's predicate entirely.
+
+A /CODE-REVIEW (high) PASS ON THE `?logical_var` TREE FOUND SIX, and the one that mattered
+was a defect this ticket's own DESIGN had been keeping invisible.
+
+  * A POSITIONAL ARGUMENT BESIDE A NAMED ONE WAS HINTED FROM THE WRONG SLOT — and the
+    defect was in `apply_arg_hints`, the SHARED chain, not in this ticket's new channel.
+    That loop mapped a positional argument with `params[i]`; a named argument CONSUMES a
+    parameter, so the two read different slots than the CHECK, which has always used
+    `positional_param_indices` (WI-20260827-1F0QP). Driven, and it is a WELL-TYPED PROGRAM
+    REFUSED rather than a missed hint:
+
+        operation f4(a: Function[A = String, B = String],
+                     b: Function[A = Int64,  B = Int64]) -> Int64
+        f4(lambda x -> x + 1, a: g)
+          -> "type mismatch in add.b (op-arg): expected String, got Int64"
+
+    The lambda is parameter `b` and was hinted with `a`'s `String`, so its body was checked
+    at the wrong type. Fixed at the shared owner, so both spellings move together.
+
+    WHY IT SURVIVED IS THIS TICKET'S OWN DESIGN POINT, TURNED AROUND. Part (b) hints a rule
+    body through the operation body's OWN chain precisely so the two cannot come to hint
+    differently — which is exactly what kept a SHARED defect SYMMETRIC, and therefore
+    invisible to every rule-vs-op comparison in this file. Both spellings reported it
+    identically. It surfaced only because `data_slot_arg_hints`' sibling list had been
+    corrected to the right owner and left this one disagreeing INSIDE ONE FUNCTION.
+    AGREEMENT BETWEEN TWO SPELLINGS IS NOT CORRECTNESS OF EITHER — the rule-vs-op control
+    this ticket leans on cannot see anything the shared chain does to both.
+
+  * MY FORMATTING CHECK WAS UNSOUND, and it let three collapsed lines ship. To avoid the
+    "`cargo fmt` rewrites the whole crate" footgun I had been running standalone `rustfmt`
+    on a COPY and comparing counts; that proxy disagrees with `cargo fmt -p anthill-core --
+    --check`, which flagged all three `?T` sites where a comment insert had swallowed the
+    newline. `--check` rewrites nothing, so the proxy was never needed. Now compared HEAD
+    vs working with the real command (via `git stash`): 7 hunks in my files against 8 on
+    HEAD — one fewer, none new.
+
+  * THE `_N` ALL-SYNTHETIC CARRIER DIVERGENCE DID NOT REPRODUCE. The reviewer predicted
+    that an entirely `_N`-spelled list promotes on the occurrence carrier and not on the
+    native one, so `match_tuple_pattern`'s `is_name_keyed` gate would take different arms.
+    Driven: `(_2: Int64, _1: Int64)` declared against `(_1: 1, _2: 2)`, in-order, and a
+    user-labelled control all answer -1 on BOTH carriers — the declared labels are not
+    `labels_are_positional`, so both take the positional path. The reviewer was right that
+    the CONTROL was missing, so it is now
+    `an_all_synthetic_named_tuple_destructures_alike_on_both_carriers`, stated as measured
+    rather than as proof (it drives the ANSWER, not the predicate).
+
+  * THE INTERNING NOTE SHARPENED AT ITS SITE: this caller is exactly the case
+    `type_param_var_term`'s own doc excludes ("not a case any caller here is expected to
+    hit"), because `kb.fresh_var` never produces an existing variable, so the `alloc`
+    fallback is taken EVERY time. And "bounded by (binders x passes)" reads as a constant
+    of the program and is not one — nothing decrements the refcount. WI-20260904-02ERR owns
+    the repair.
+
+  * ONE ALREADY OWNED (the discarded-boolean σ residue, WI-20260904-60143) and ONE LEFT
+    WHERE IT IS: the op-return solve gap, pinned by
+    `known_gap_the_declaration_may_solve_a_binder_the_body_contradicts`. Measured as not a
+    regression, and its own text says part (c) must DECIDE it — so it stays (c)'s rather
+    than becoming a separate item.
+
+Workspace 6431/0 -> 6433/0. scaland 539/0.

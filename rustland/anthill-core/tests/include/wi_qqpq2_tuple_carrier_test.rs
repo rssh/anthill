@@ -407,3 +407,48 @@ end
         );
     }
 }
+
+/// **AN ALL-SYNTHETIC NAMED LIST, INCLUDING OUT OF ORDER** — the gap /code-review found in
+/// the control beside it.
+///
+/// `a_user_written_underscore_label_is_not_promoted_and_both_carriers_agree` covers a
+/// MIXED list (`(x: 1, _1: 2)`), where the leading-run rule declines. The reviewer noted
+/// that an ENTIRELY `_N`-spelled list is the other side: the occurrence carrier promotes
+/// it into `pos` (so `is_name_keyed()` answers false) while a native `Value::Tuple` keeps
+/// it in `named` (answering true) — and `match_tuple_pattern` gates its by-label arm on
+/// exactly that predicate, so the two carriers could destructure differently.
+///
+/// DRIVEN AND NOT REPRODUCED, which is why this is a control rather than a fix. All three
+/// shapes answer -1 on both carriers, the out-of-order declared `(_2, _1)` included: the
+/// declared labels are not `labels_are_positional`, so both carriers take the POSITIONAL
+/// path and agree. Stated as measured rather than as proof — this drives the ANSWER, not
+/// `is_name_keyed` itself, so a divergence reachable another way is not excluded.
+#[test]
+fn an_all_synthetic_named_tuple_destructures_alike_on_both_carriers() {
+    for (tag, decl, arg) in [
+        ("out of order", "(_2: Int64, _1: Int64)", "(_1: 1, _2: 2)"),
+        ("in order", "(_1: Int64, _2: Int64)", "(_1: 1, _2: 2)"),
+        (
+            "user-labelled control",
+            "(a: Int64, b: Int64)",
+            "(a: 1, b: 2)",
+        ),
+    ] {
+        let src = format!(
+            "namespace zzqqpq2.allsyn\n  import anthill.prelude.{{Int64}}\n  \
+             operation sub2(p: {decl}) -> Int64 =\n    match p\n      case (x, y) -> x - y\n  \
+             operation viaop() -> Int64 = sub2({arg})\n  \
+             rule value(?r) :- ?r <=> sub2({arg})\n  \
+             rule opval(?r) :- ?r <=> viaop()\nend\n"
+        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{tag} must load; got:\n{}", errs.join("\n")));
+        let bridged = crate::common::definite_unary(&mut kb, "zzqqpq2.allsyn.value");
+        let native = crate::common::definite_unary(&mut kb, "zzqqpq2.allsyn.opval");
+        assert_eq!(
+            format!("{bridged:?}"),
+            format!("{native:?}"),
+            "{tag}: one program, two carriers, two answers",
+        );
+    }
+}

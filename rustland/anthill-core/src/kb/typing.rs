@@ -10029,6 +10029,28 @@ fn apply_arg_hints(
         bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
         (!s.is_empty()).then_some(s)
     });
+    // WI-20260904-50B2K — WHICH PARAMETER A POSITIONAL ARGUMENT TAKES IS
+    // [`positional_param_indices`]' QUESTION, not `ps.get(i)`. A named argument CONSUMES a
+    // parameter, so a positional one beside it does not land at its own index — the
+    // rank-among-NOT-named rule (WI-20260827-1F0QP), which `check_apply_iter` has always
+    // used for the CHECK. This loop used a raw index, so the hint and the check read
+    // different slots. Driven, and it is a WRONGLY REFUSED program rather than a missed
+    // hint:
+    //
+    //     operation f4(a: Function[A = String, B = String],
+    //                  b: Function[A = Int64,  B = Int64]) -> Int64
+    //     f4(lambda x -> x + 1, a: g)
+    //       -> "type mismatch in add.b (op-arg): expected String, got Int64"
+    //
+    // The lambda is parameter `b`, and the raw index hinted it with `a`'s `String`, so its
+    // body was checked at the wrong type. BOTH BODIES reported it identically — this loop
+    // is shared, which is what kept the defect symmetric and is why the rule-body/operation-body
+    // agreement never showed it. Found by /code-review on the sibling list in
+    // [`data_slot_arg_hints`], which had been corrected to this owner and left this one
+    // disagreeing INSIDE ONE FUNCTION.
+    let pos_slots = op_params
+        .map(|ps| positional_param_indices(kb, ps, pos_args.len(), named_args))
+        .unwrap_or_default();
     let mut pos_hints = Vec::with_capacity(pos_args.len());
     for (i, arg) in pos_args.iter().enumerate() {
         // WI-707: inside a sort application every argument is a type.
@@ -10036,7 +10058,12 @@ fn apply_arg_hints(
             pos_hints.push(sort_app_hint.clone());
             continue;
         }
-        let pt = op_params.and_then(|ps| ps.get(i)).map(|(_, t)| t.clone());
+        let pt = pos_slots
+            .get(i)
+            .copied()
+            .flatten()
+            .and_then(|slot| op_params.and_then(|ps| ps.get(slot)))
+            .map(|(_, t)| t.clone());
         pos_hints.push(one_arg_hint(kb, functor, arg, pt, known, inst.as_ref()));
     }
     let mut named_hints = Vec::with_capacity(named_args.len());
@@ -11674,9 +11701,20 @@ fn visit_type(
                     // here"), measured as `WI-342: non-type Value in a TypeChild slot:
                     // Var(Global(..))` on every row in `wi_50b2k_binder_inference_test`.
                     // `TypeChild::Interned` holds a `TermId`, so a variable in TYPE position
-                    // is interned by construction. The cost stands and is bounded by
-                    // (binders x passes); removing it needs a transient type-term carrier,
-                    // which is a representation change and not this ticket's.
+                    // is interned by construction. Removing it needs a transient type-term
+                    // carrier, which is a representation change and not this ticket's —
+                    // WI-20260904-02ERR owns it.
+                    //
+                    // AND THIS CALLER IS EXACTLY THE CASE `type_param_var_term`'s OWN DOC
+                    // EXCLUDES — /code-review, and worth stating where the cost is paid
+                    // rather than only where it is filed. That function's `alloc` fallback
+                    // is documented as "not a case any caller here is expected to hit",
+                    // because its other callers hand it a variable that already exists;
+                    // `kb.fresh_var` never does, so this site takes the fallback EVERY
+                    // time. The earlier note called the cost "bounded by (binders x
+                    // passes)", which reads as a constant of the program and is not one:
+                    // nothing decrements the refcount, so a process that LOADS REPEATEDLY
+                    // accumulates without bound.
                     let fresh = kb.intern("?param");
                     let vid = kb.fresh_var(fresh);
                     Value::term(type_param_var_term(kb, Var::Global(vid)))
@@ -12485,6 +12523,32 @@ fn visit_type(
                 _ => None,
             };
             let ty = bound.unwrap_or_else(|| {
+                // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED
+                // INERT, and this mint is the census row that closes the column.
+                //
+                // MEASURED: 22,798 reaches across the whole `wi_tests` binary — the most
+                // heavily driven of the five — and the flip to the engine's own variable
+                // changed NOTHING. 4127/0, and byte-identical diagnostics on every shape
+                // built to tell them apart: a free `?x` at two INCOMPATIBLE slots
+                // (`addI(takes_int(?x), takes_str(?x))`), at one slot, as a dot receiver,
+                // and in an entity field all load under both.
+                //
+                // AND THE REASON IS STRUCTURAL, NOT A THIN CORPUS. Neither form can ever
+                // REFUSE: the inert one is compatible-with-anything so a check that RUNS on
+                // it accepts, and a variable is NON-GROUND so the check is WITHHELD. The
+                // only way the flip changes an answer is if something BINDS the variable
+                // and a later reader sees the binding — which needs a σ or an env SHARED
+                // between this mint and that reader. A free `?x`'s type is read once per
+                // use: `validate_arg_against_param`'s σ is the callee instantiation and is
+                // discarded with the call, so nothing carries a binding from one use to the
+                // next. That is exactly what a binder HAS (its type goes into the body's
+                // env and the body reads it in the same pass), and it is why `?param` and
+                // `?pat` moved and these two did not.
+                //
+                // SO THE COLUMN'S PREDICATE WAS NEVER "is this to be inferred" — it is
+                // "does a later reader in the SAME PASS see what this mint produced".
+                // Flipping this needs the inference-state thread the ticket names in its
+                // wi342 discussion, which is part (c)'s ground and not a re-spelling here.
                 let fresh = kb.intern("?logical_var");
                 Value::term(kb.make_type_var(fresh))
             });
@@ -14397,7 +14461,8 @@ fn build_type(
                 // inert form is the closest thing to that ∀ the typer has.
                 // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `[…]` path reaches
                 // the CONSTRUCTOR checker below instead.
-                let fresh = kb.intern("?T");                Value::term(kb.make_type_var(fresh))
+                let fresh = kb.intern("?T");
+                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: the QUALIFIED sort name. A bare `"List"` interns a symbol
             // whose qualified name is `"List"`, which `canonical_sort_sym` (keyed
@@ -14463,7 +14528,8 @@ fn build_type(
                 // inert form is the closest thing to that ∀ the typer has.
                 // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `{…}` path reaches
                 // the CONSTRUCTOR checker below instead.
-                let fresh = kb.intern("?T");                Value::term(kb.make_type_var(fresh))
+                let fresh = kb.intern("?T");
+                Value::term(kb.make_type_var(fresh))
             });
             // WI-393: QUALIFIED, like the `ListLit` frame and the `SetLiteral`
             // constructor path — a bare `"Set"` never canonicalizes for the
@@ -43696,7 +43762,8 @@ fn check_seq_literal_constructor(
         // MEASURED REACHABILITY: EIGHT reaches across the whole binary. THE ONLY ONE OF THE THREE THAT
         // FIRES, and the ticket's census named the other two and missed this one — a
         // row list is not a population.
-        let fresh = kb.intern("?T");        Value::term(kb.make_type_var(fresh))
+        let fresh = kb.intern("?T");
+        Value::term(kb.make_type_var(fresh))
     });
     let base = kb.make_sort_ref_by_name(base_name);
     let t_sym = kb.intern("T");
