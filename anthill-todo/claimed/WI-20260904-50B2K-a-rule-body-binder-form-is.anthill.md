@@ -1101,3 +1101,67 @@ was a defect this ticket's own DESIGN had been keeping invisible.
     than becoming a separate item.
 
 Workspace 6431/0 -> 6433/0. scaland 539/0.
+
+PART (c) — THE GROUND TRUTH, MEASURED 2026-09-05 BEFORE ANY OF IT IS BUILT.
+
+THE USER'S FORMULATION, which is the one to build to: "create N vars, fill them by solving
+typing; if we have unfilled after typing, make it PolyType" — i.e. generalization is a
+READ-OFF of the residue, not a detection of failure. Free after solving -> the binders;
+constraints mentioning them but not determining them -> the context. "If not inferred"
+MEANS "the constraints left the type free". And: for `let g = lambda x -> x + x` we should
+infer `Additive[T]` and ADD A `requires` TO THE LAMBDA.
+
+THAT MAPS ONTO EXISTING SHAPES, which is the good news. `PolyType(binders: List[Term],
+body: Term)` already IS "the leftover variables" — `binders` is a list of VARIABLES, not
+names, each extracting as a `FlexVar` whose `id` links it to its occurrences in `body`
+(WI-1079's rule, argued at the declaration). And a `requires`-carrying function value
+already works end to end: `wi_5nszy…::a_requires_carrying_operation_mints_its_dictionary_
+through_the_nesting` runs `operation same[T](a: T, b: T) -> Bool requires PartialEq[T]`
+eta'd into an `Option[Function[…]]` slot and answers.
+
+WHAT IS GENUINELY NEW is that a LAMBDA's dictionary CANNOT BE RESOLVED AT THE MINT. In that
+passing row the slot is concrete, so `PartialEq[Int64]` resolves where the value is made.
+A generalized lambda has nothing to resolve against until it is APPLIED, so the constraint
+must ride UNRESOLVED and be filled at the USE. That is the one thing the existing mechanism
+cannot do — and it is exactly `lambda_within`'s purpose (WI-816 / WI-817, noted there).
+
+AND THE BLOCKER UNDER ALL OF IT, now MEASURED rather than inferred:
+
+    (i)   THERE IS NO CHANNEL FOR A SOLVED BINDER. `TypeResult` carries `ty`, `env`,
+          `effects`, `node` — NO substitution. `check_apply_iter` takes `env` IMMUTABLY,
+          and `bind_var` is called at binder-binding sites only (`bind_and_label_pattern`,
+          op-param setup), so a call cannot write a solved type back. `check_operation_
+          bodies`' per-body `rigidify` is a READ-ONLY type-param→rigid map, not an
+          inference σ. So at the `LambdaBody` frame the arrow is built from the ORIGINAL
+          `param_type` and every binder looks unfilled.
+
+    (ii)  BUT THE BINDING DOES HAPPEN, which is what says the design is viable rather than
+          misconceived. Probed at `check_apply_iter`'s argument unification, reporting
+          every variable a unification newly bound, on
+          `operation outer() -> Function[A = Int64, B = Int64] = let f = lambda v ->
+          twice(v)  f`:
+
+              _ 109    R 23    EffP 5    Acc 4    T 3    Eff 2    Dst 2    A 2    ?param 1
+
+          `?param` IS bound — once — to `Int64` by the body's own `twice(v)` call, into the
+          per-call σ that is then DISCARDED. The evidence exists and has nowhere to go.
+
+    (iii) SO NAIVE GENERALIZATION OVER-GENERALIZES, and wi620's control is what would
+          break: `lambda x -> is_pos(x)` would become `∀T. T -> Bool` where it is
+          `Int64 -> Bool`.
+
+THE ORDER IS THEREFORE FORCED, and it is not the order this ticket's (c) bullet implies:
+
+    1. THREAD THE σ — a pass-level substitution the work loop carries, into which
+       `check_apply_iter` binds CALLER-OWNED variables (not the callee's own instantiation
+       vars, which is the distinction the per-call σ exists to keep). Until this, "unfilled"
+       is not answerable. THE BULK OF THE WORK, and no design for it exists anywhere.
+    2. AN UNSOLVED-RECEIVER DISPATCH RECORDS the requirement instead of raising. Today it
+       raises `Ambiguous` on the spot — the constraint is not LEFT free, it is SPENT AS AN
+       ERROR. `DispatchOutcome::Deferred` is NOT this channel: its own doc scopes it to a
+       spec reached through the enclosing sort's `requires` chain, i.e. a constraint already
+       declared, and it carries no payload.
+    3. the leftover vars become `PolyType` binders — the existing shape, no change.
+    4. the constraint rides as an OPEN dictionary, filled at the use rather than the mint.
+
+Steps 3 and 4 have machinery. Steps 1 and 2 do not.
