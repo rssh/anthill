@@ -545,7 +545,16 @@ program" was FALSIFIED — the body's own `Int64` literal pins the binder throug
       scalars. It is an evaluation question (QQPQ2's carrier boundary, the RESULT side)
       and not a typing one.
 
-  (c) NOT DONE — and still this ticket's, for the same reason the census rows are: a
+  (c) NOT DONE. TWO OTHER TICKETS NOW DEPEND ON WHETHER IT HAPPENS — WI-816 and WI-817,
+      noted on both 2026-09-05. WI-817 concluded that `lambda_within` is needed by NO
+      writable program, on the ground that "a closure arrow type is MONOMORPHIC, so every
+      writable lambda is created at a FIXED instantiation"; WI-816's delete-vs-implement
+      decision rests on that. Part (c) is exactly what makes it false — `∀T. Additive[T] =>
+      T -> T` is created once and invoked at many types. So WI-816 must NOT be closed as
+      (a) DELETE while (c) is intended, and (c) is a second re-measure trigger for WI-817
+      beside the Rule A one it already names.
+
+      — and still this ticket's, for the same reason the census rows are: a
       spin-off was written and deleted as a re-typing of the three bullets below.
       GENERALIZE WHAT IS GENUINELY UNCONSTRAINED — the "if it can't be inferred it's
       polytype" half. A binder nothing pins should generalize, and a deferred requirement
