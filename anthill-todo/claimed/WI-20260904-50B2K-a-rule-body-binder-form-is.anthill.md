@@ -1165,3 +1165,75 @@ THE ORDER IS THEREFORE FORCED, and it is not the order this ticket's (c) bullet 
     4. the constraint rides as an OPEN dictionary, filled at the use rather than the mint.
 
 Steps 3 and 4 have machinery. Steps 1 and 2 do not.
+
+PART (c), FIRST SLICE — BUILT, MEASURED, AND BACKED OUT 2026-09-05. The channel WORKS and
+the CONTAINER is wrong, and the difference is the whole record below.
+
+WHAT WAS BUILT. `report_call_solutions` copied a finished call's bindings into a
+walk-level `Substitution`, and the `LambdaBody` frame resolved the arrow through it. It
+DID what it was for: `let f = lambda v -> twice(v)` produced `Int64 -> Int64` instead of
+`??param -> Int64`, and TWO known-gap rows flipped to refusals —
+`known_gap_the_declaration_may_solve_a_binder_the_body_contradicts` (a WRONG VALUE: `?v`
+committed to `String` while the body handed it to an `Int64` parameter) and
+`known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`. Full workspace 6433/0,
+scaland 539/0, both back-outs exact.
+
+WHY IT IS NOT SHIPPED: THE SAFETY ARGUMENT WAS FALSE, AND EACH REPAIR FOUND ANOTHER
+POPULATION. The design rested on one sentence — "`VarId`s are unique, so a callee's
+variable can never be mistaken for a caller's, therefore the WRITER needs no scoping rule
+and the READER filters". /code-review falsified it and three rounds of driving widened the
+hole:
+
+  1. DECLARED TYPE PARAMETERS SHARE ONE CANONICAL VARIABLE.
+     `KnowledgeBase::record_type_param_var` publishes exactly ONE `Var::Global` per
+     type-parameter SYMBOL (`if contains_key { return }`), so a callee's `T` is the SAME
+     variable at every call site. `check_apply_iter`'s own WI-374 note says what kept that
+     sound — a member's self-sort refs ride "the canonical channel AND THE PER-CALL SUBST"
+     — and the per-call σ is precisely what this copied out of. Measured by the reviewer
+     inside ONE walk: `var 1372 kept=String dropped=Int64`.
+  2. THE FILTER WAS ON THE DOMAIN, NOT THE RANGE. "a callee's variable is not IN
+     `param_type`" says nothing about what a reported VALUE contains: `?param := ?T_callee`
+     substitutes a callee-owned variable INTO the arrow, measured as an arrow leaving the
+     walk reading `?_`.
+  3. A CALL'S σ IS NOT TYPE-ONLY. With both gates added, a consistency assert on ground
+     disagreement still fired on 19 OF 19 ROWS, and the colliding variable was `Name`,
+     bound to the string literals `"x"`, `"y"`, `"z"` in one walk — VALUE-level bindings
+     from dispatch and fact lookup. A carrier filter did not catch them either: they ride
+     as `Value::Term` over literal terms.
+
+THREE POPULATIONS IN THREE PATCHES IS THE ANSWER, NOT AN OBSTACLE COURSE. A walk-lifetime
+σ fed by a per-call σ inherits everything that σ carries, and the per-call one is exactly
+what made all of it safe. Bolting on a filter per population is guessing at a set nobody
+has enumerated.
+
+THE CONTAINER THE USER ALREADY NAMED IS THE FIX: "check apply can return changes which
+should be merged in incoming TypeEnv" / "Substitutions can hold those changes". Solutions
+travelling WITH the result scope to the body that produced them, so none of (1)-(3) can
+arise — a sibling call's bindings never reach a frame they do not belong to. CONFIRMED BY
+READING: `check_apply_iter` already returns `env: env.clone()` at FIFTEEN of its return
+points — the input env, copied UNCHANGED — so the channel is in the signature TODAY and is
+a no-op. The one thing in the way is that `LambdaBody` DISCARDS `body_r.env` and uses
+`outer_env`. It is also the shape WI-502 names (`σ → (σ, residual C)`), which matters
+because (c)'s CONSTRAINT half attaches to a σ and must ride the same channel.
+
+WHAT IS KEPT, AND IT IS THE EXPENSIVE PART:
+
+  * THE GROUND TRUTH — `?param` IS bound, once, to `Int64`, by the body's own call
+    (recorded above). The evidence exists; only its container was wrong.
+  * BOTH ARROW HALVES MUST RESOLVE TOGETHER. Resolving only the domain SPLITS a variable
+    occurring in both, and the split is a WRONG ACCEPT: `lambda v -> (a: twice(v), b: v)`
+    against a declared `B = (a: Int64, b: String)` LOADED, because once the domain was
+    `Int64` the codomain's raw `??param` no longer conflicted and the op-return's
+    declaration-solve bound it to `String`. Path 1's own rule is the precedent — resolve
+    the return type AND the effect row, "or one call reports two states of one σ". Whatever
+    builds the arrow next must do all three.
+  * REPORTING AT A RETURN MEASURES EMPTY. `check_apply_iter` has TWENTY-TWO exits and
+    `twice(v)` does not leave by the one Path 1 ends at; the report belongs at the ARGUMENT
+    UNIFICATION, which is where the probe saw `?param` bound.
+  * THE TWO ROWS THAT FLIPPED ARE THE ACCEPTANCE for the rebuilt version, and one of them
+    EARNED ITS KEEP mid-change: with only the arrow fix,
+    `runit(holder(f: lambda x -> takes_str(x)), 2)` was refused in an operation body and
+    still loaded in a rule body, because `data_slot_declared_types` read an operation's
+    parameters alone. Extending the CHECK to an entity's FIELDS closed it — the HINT must
+    still read operations only, or the mirror asymmetry returns. That half is independent
+    of the container and can land on its own.
