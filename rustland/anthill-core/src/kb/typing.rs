@@ -41300,7 +41300,8 @@ enum HeadPosition {
     /// control. So the exposure is real and stated, and closing it waits for a program
     /// that reaches it. /code-review asked twice for an owner rather than prose; a ticket
     /// was written and deleted, because the description was longer than the fix and the
-    /// fix turned out to be unmeasurable.
+    /// fix turned out to be unmeasurable. WI-20260905-175SD owns what is actually missing:
+    /// a PROGRAM that reaches this descent with a non-covariant parameter.
     Nested,
 }
 
@@ -41458,7 +41459,11 @@ fn nominal_head_mismatch(
         //
         // A four-arm match whose two live arms are the current behaviour and whose other
         // two cannot be driven READS as "variance is handled here" while nothing exercises
-        // it — worse than this comment. Ship it when a program reaches it.
+        // it — worse than this comment. Ship it when a program reaches it, which is
+        // WI-20260905-175SD: find the witness first, and if none exists say so
+        // structurally (the likely reason being that a `Function` pair is decided earlier,
+        // by `arrow_compatible`'s hardcoded variance or by the head verdict, and never
+        // reaches this NOMINAL descent).
         if nominal_head_mismatch(kb, subst, &av, dv, HeadPosition::Nested) {
             return true;
         }
