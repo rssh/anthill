@@ -124,7 +124,7 @@ fn an_unannotated_binder_in_a_rule_body_is_inferred_from_its_own_body() {
 /// own body alone.
 ///
 /// The lambda sits in an ENTITY FIELD, which `data_slot_arg_hints` deliberately does not
-/// hint (see `known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`), so part (b)
+/// hint (see `an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binder`), so part (b)
 /// cannot reach it in either direction and rung 3 is the only thing that decides. `x + 1`
 /// then pins the binder through `Additive.add`'s signature — but only if rung 3 minted
 /// something that CAN be pinned.
@@ -152,9 +152,10 @@ fn part_a_a_binder_no_declaration_reaches_is_still_inferred_from_its_body() {
                rule value(?r) :- ?r <=> w()\n",
         ),
     ] {
-        let mut kb = crate::common::try_load_kb_with(&holder_src(ns, body)).unwrap_or_else(|errs| {
-            panic!("{ns}: an un-hinted binder must be pinned by its own body; got: {errs:?}")
-        });
+        let mut kb =
+            crate::common::try_load_kb_with(&holder_src(ns, body)).unwrap_or_else(|errs| {
+                panic!("{ns}: an un-hinted binder must be pinned by its own body; got: {errs:?}")
+            });
         assert_eq!(only_int(&mut kb, &format!("{ns}.value")), 3);
     }
 }
@@ -207,9 +208,6 @@ fn the_operation_body_twin_is_unmoved() {
     assert_eq!(only_int(&mut kb, "zz50b2k.viaop.value"), 3);
 }
 
-
-
-
 /// **PART (b) — THE BINDER TAKES ITS TYPE FROM THE CALLEE'S DECLARATION, AND THE BODY IS
 /// THEN CHECKED AGAINST IT.** `takes_str` declares `s: String` and is handed the binder;
 /// the only statement about that binder in the whole program is `apply1`'s declared
@@ -240,8 +238,9 @@ fn part_b_a_binder_typed_from_the_declaration_refuses_a_body_that_contradicts_it
     .err()
     .unwrap_or_default();
     assert!(
-        errs.iter()
-            .any(|e| e.contains("type mismatch in takes_str.s (op-arg): expected String, got Int64")),
+        errs.iter().any(
+            |e| e.contains("type mismatch in takes_str.s (op-arg): expected String, got Int64")
+        ),
         "the binder must be typed `Int64` from `apply1`'s declaration and its use refused; \
          got: {errs:?}",
     );
@@ -265,8 +264,9 @@ fn part_b_a_binder_typed_from_the_declaration_refuses_a_body_that_contradicts_it
             .err()
             .unwrap_or_default();
         assert!(
-            errs.iter().any(|e| e
-                .contains("type mismatch in takes_str.s (op-arg): expected String, got Int64")),
+            errs.iter()
+                .any(|e| e
+                    .contains("type mismatch in takes_str.s (op-arg): expected String, got Int64")),
             "{ns}: the already-typed spellings must refuse identically; got: {errs:?}",
         );
     }
@@ -321,24 +321,32 @@ fn part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name() {
     assert_eq!(only_int(&mut bare, "zz50b2k.binderlabelbare.value"), -1);
 }
 
-/// **THE SCOPE DECISION PART (b) MADE, PINNED AS A ROW RATHER THAN LEFT IN A COMMENT.**
-/// `data_slot_arg_hints` reads an OPERATION's parameters and deliberately not an ENTITY's
-/// fields: the two have different hint chains, and the constructor chain has no lambda arm
-/// at all (`arrow_slot_arg_hint` reads a bare operation NAME; `hof_arg_hint` is the
-/// operation chain's). So a lambda in an entity FIELD is unhinted — in a rule body and in
-/// an operation body alike.
+/// **THE ENTITY-FIELD GAP IS CLOSED, AND THE ROW IT REPLACES SAID TO WRITE THIS.** Its
+/// instruction was "if BOTH spellings refuse the gap is closed (delete this row, naming
+/// the change)". Both refuse. The change is part (c)'s first slice — the arrow now
+/// reflects what the lambda's BODY solved — plus the check reading an entity's FIELDS.
 ///
-/// THE ASSERTION IS THE SYMMETRY, and that is the point. Both spellings LOAD the same
-/// ill-typed program (an `Int64` binder handed to a `String` parameter) and both answer 7.
-/// If either side starts refusing while the other does not, an asymmetry has been created
-/// where this ticket removed one, and this row says so; if BOTH start refusing, the
-/// entity-field gap has been closed and the row should be deleted with a note naming the
-/// change that closed it.
+/// `runit(holder(f: lambda x -> takes_str(x)), 2)` hands an `Int64` binder to a `String`
+/// parameter. It used to LOAD in both spellings and answer 7: the lambda is in an entity
+/// FIELD, which takes no hint in either body, so its binder stayed unpinned and its arrow
+/// said `??param -> Int64` — nothing to disagree with `Function[A = Int64, B = Int64]`.
+/// Now the body's own `takes_str(x)` call solves the binder to `String`, the arrow reads
+/// `String -> Int64`, and both spellings refuse it.
 ///
-/// GREEN EITHER WAY under both of this ticket's back-outs — it measures a decision, not a
-/// capability, which is stated rather than left to look like coverage.
+/// **THE TWO HALVES HAD TO LAND TOGETHER, AND THE FIRST ONE ALONE CREATED AN ASYMMETRY** —
+/// measured, and this row is what caught it. With only the arrow change, the OPERATION
+/// body refused (its entity-field check compares the argument) while the RULE body still
+/// loaded, because a rule-body data term is name-checked only (WI-1058) and
+/// `data_slot_declared_types` read an operation's parameters alone. Extending the CHECK to
+/// an entity's fields closed it. The HINT still reads operations only, deliberately: a
+/// hint IMPOSES a type and the constructor chain has no lambda arm, so hinting a field
+/// would put the mirror-image asymmetry back.
+///
+/// BACK-OUT, either half: drop the `resolve_type_deep_value` through `body_solutions` at
+/// the `LambdaBody` frame and BOTH arms load again; drop the `entity_field_types` fallback
+/// in `data_slot_arg_hints` and only the rule arm does — which is the asymmetry, restored.
 #[test]
-fn known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies() {
+fn an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binder() {
     for (ns, body) in [
         (
             "zz50b2k.entrule",
@@ -350,15 +358,16 @@ fn known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies() {
                rule value(?r) :- ?r <=> w()\n",
         ),
     ] {
-        let mut kb = crate::common::try_load_kb_with(&holder_src(ns, body)).unwrap_or_else(|errs| {
-            panic!(
-                "KNOWN GAP: an entity-field lambda takes no hint in EITHER body, so this \
-                 ill-typed program loads. {ns} now refuses — if BOTH spellings refuse the \
-                 gap is closed (delete this row, naming the change); if only one does, an \
-                 asymmetry has been created. Got: {errs:?}"
-            )
-        });
-        assert_eq!(only_int(&mut kb, &format!("{ns}.value")), 7);
+        let errs = crate::common::try_load_kb_with(&holder_src(ns, body))
+            .err()
+            .unwrap_or_else(|| {
+                panic!("{ns}: an Int64 binder in a String parameter must be refused")
+            });
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("expected Function[A = Int64, B = Int64], got String -> Int64")),
+            "{ns}: expected the solved-arrow mismatch, got: {errs:?}",
+        );
     }
 }
 
@@ -440,28 +449,45 @@ fn load2(ns: &str, body: &str) -> KnowledgeBase {
          p: (a: Int64, b: Int64)) -> Int64 = f(p)\n{body}end\n"
     );
     crate::common::try_load_kb_with(&src).unwrap_or_else(|errs| {
-        panic!("must load; got {} error(s):\n{}", errs.len(), errs.join("\n"))
+        panic!(
+            "must load; got {} error(s):\n{}",
+            errs.len(),
+            errs.join("\n")
+        )
     })
 }
 
-
-/// **A KNOWN GAP, PINNED RATHER THAN ASSERTED AWAY.** The op-return now SOLVES the body's
-/// free variables from the declaration before comparing, which is what lets a let-bound
-/// un-annotated lambda be returned at all. The same mechanism lets the DECLARATION win
-/// over a constraint the body's own use implies, with nothing recording the body's side:
-/// below, `?v` is committed to `String` while the body hands it to an `Int64` parameter.
+/// **THE BODY'S OWN USE NOW BINDS FIRST, AND THE ROW THIS REPLACES SAID TO WRITE THIS.**
+/// Its instruction was "if it now REFUSES, the gap has been closed: delete this row and
+/// say which change closed it". The change is part (c)'s first slice.
 ///
-/// NOT A REGRESSION, and that is measured — `/code-review` drove it with the op-return
-/// solve BACKED OUT and it loaded clean there too. What this ticket added is the
-/// MECHANISM, so the row exists to say what nothing covers: there is no control asserting
-/// the opposite direction, and if a future change makes the body's use bind first, this
-/// row goes red and points at the paragraph that says why it was left.
+/// The gap was: the op-return SOLVES the body's free variables from the declaration before
+/// comparing (this ticket's fifth edit, which is what lets a let-bound un-annotated lambda
+/// be returned at all), and nothing recorded the body's own side — so the DECLARATION won.
+/// `?v` was committed to `String` while the body handed it to an `Int64` parameter, and
+/// the program LOADED. A wrong value, not a missing refusal.
 ///
-/// The row asserts the CURRENT permissive behaviour deliberately. Flipping it to a
-/// refusal is a decision about whether a lambda binder's uses constrain it — WI-20260904-
-/// 50B2K part (c), the generalization half, is where that lands.
+/// WHAT CLOSED IT: a call now REPORTS what it solved into the walk's substitution
+/// (`report_call_solutions`), and the `LambdaBody` frame resolves the arrow's parameter
+/// through it. The body's `twice(v)` binds `?v := Int64` — it always did, into the σ that
+/// was dropped with the call — so the arrow reads `Int64 -> Int64` and the declaration has
+/// a solved type to disagree with instead of a free variable to bind.
+///
+/// ```text
+///   type mismatch in outer.return (op-return):
+///     expected Function[A = String, B = Int64], got Int64 -> Int64
+/// ```
+///
+/// BACK-OUT: drop the `resolve_type_deep_value` through `body_solutions` at the
+/// `LambdaBody` frame — the arrow reverts to `??param -> Int64`, the declaration solves it
+/// to `String`, and this loads again.
+///
+/// ITS CONTROL IS THE PROGRAM THE FIFTH EDIT EXISTS FOR:
+/// `parse_test::wi342_env_dataflow_let_bound_lambda_carries_modify_effect` returns exactly
+/// this shape with a declaration the body AGREES with, and must stay green — the point is
+/// that the body now decides, not that returning a let-bound lambda stopped working.
 #[test]
-fn known_gap_the_declaration_may_solve_a_binder_the_body_contradicts() {
+fn the_body_use_binds_a_let_bound_lambdas_binder_before_the_declaration_can() {
     let src = "\
 namespace zz50b2k.gap
   import anthill.prelude.{Int64, String, Function}
@@ -473,12 +499,22 @@ end
 ";
     let errs = crate::common::try_load_kb_with(src)
         .err()
+        .expect("the body pins `?v` to Int64; a String declaration must be refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("expected Function[A = String, B = Int64], got Int64 -> Int64")),
+        "expected the solved-arrow mismatch at the op-return, got: {errs:?}",
+    );
+
+    // THE AGREEING TWIN still loads — the body decides, and a declaration that agrees with
+    // it is accepted exactly as before.
+    let ok = src.replace("A = String", "A = Int64");
+    let errs = crate::common::try_load_kb_with(&ok)
+        .err()
         .unwrap_or_default();
     assert!(
         errs.is_empty(),
-        "KNOWN GAP: this loads today — `?v` is solved to `String` from the declaration \
-         while the body hands it to an `Int64` parameter. If it now REFUSES, the gap has \
-         been closed: delete this row and say which change closed it. Got: {errs:?}",
+        "the agreeing declaration must still load; got: {errs:?}"
     );
 }
 
@@ -544,7 +580,7 @@ end
 ///
 /// THREE ARMS, and the second and third are the SYMMETRY this ticket exists to keep: a
 /// lambda in an ENTITY FIELD takes no hint in either body (see
-/// `known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`), so both spellings sat
+/// `an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binder`), so both spellings sat
 /// on the fallback and both move together. A fix that moved only one of them would have
 /// put back the asymmetry the ticket removes.
 ///
@@ -976,4 +1012,58 @@ fn a_positional_argument_beside_a_named_one_is_hinted_from_the_slot_it_takes() {
             "{tag}: the lambda is parameter `b` and must be hinted `Int64`; got: {errs:?}",
         );
     }
+}
+/// **BOTH ARROW HALVES RESOLVE TOGETHER, OR A SHARED BINDER SPLITS** — /code-review on the
+/// first cut of part (c), and it was a WRONG ACCEPT rather than a lost refusal.
+///
+/// That cut resolved only the arrow's DOMAIN through what the body solved. When the
+/// binder's variable occurs in the codomain too, the two halves stop being the same
+/// variable: the domain reads `Int64` while the codomain still reads `??param`, so nothing
+/// conflicts, and the op-return's declaration-solve is free to bind the leftover to
+/// whatever the declaration says.
+///
+/// ```text
+///   operation outer() -> Function[A = Int64, B = (a: Int64, b: String)]
+///     = let f = lambda v -> (a: twice(v), b: v)  f
+///
+///   domain-only   LOADS — `b` accepted as String though `v : Int64`
+///   both halves   type mismatch in outer.return (op-return):
+///                 expected Function[A = Int64, B = (a: Int64, b: String)],
+///                 got Int64 -> (a: Int64, b: Int64)
+/// ```
+///
+/// THE AGREEING TWIN IS THE CONTROL and must load — the point is that the body decides,
+/// not that a lambda returning a tuple stopped working.
+///
+/// BACK-OUT: drop the `body_ty` / `body_effects` resolutions at the `LambdaBody` frame and
+/// the first arm loads again. The frame's own comment states the invariant this protects
+/// ("the arrow's param slot and the body's view of the param agree"), and Path 1 states
+/// the rule: resolve the return type AND the effect row, or one call reports two states of
+/// one σ.
+#[test]
+fn both_halves_of_a_solved_arrow_resolve_together() {
+    let src_of = |b: &str| {
+        format!(
+            "namespace zz50b2k.desync\n  import anthill.prelude.{{Int64, String, Function}}\n  \
+             operation twice(v: Int64) -> Int64 = v\n  \
+             operation outer() -> Function[A = Int64, B = {b}]\n    \
+               = let f = lambda v -> (a: twice(v), b: v)\n      f\nend\n"
+        )
+    };
+    let errs = crate::common::try_load_kb_with(&src_of("(a: Int64, b: String)"))
+        .err()
+        .expect("`v` is Int64 in both halves; a String codomain component must be refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("got Int64 -> (a: Int64, b: Int64)")),
+        "expected the arrow solved in BOTH halves, got: {errs:?}",
+    );
+
+    let errs = crate::common::try_load_kb_with(&src_of("(a: Int64, b: Int64)"))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        errs.is_empty(),
+        "the agreeing declaration must still load; got: {errs:?}"
+    );
 }

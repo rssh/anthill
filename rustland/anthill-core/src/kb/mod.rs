@@ -2591,7 +2591,6 @@ impl KnowledgeBase {
 
     // ── Term allocation ─────────────────────────────────────────
 
-
     /// The `TermId` of an already-interned term, without interning or refcounting it
     /// (WI-849 review). For a caller that only needs to NAME a term it already holds
     /// alive through something else; [`Self::alloc`] would inflate the refcount on every
@@ -2728,6 +2727,22 @@ impl KnowledgeBase {
         scope: ScopeId,
     ) -> Symbol {
         self.symbols.define(short_name, qualified_name, kind, scope)
+    }
+
+    /// WI-20260904-50B2K part (c) — the next `VarId` index that will be handed out, as a
+    /// WATERMARK: every variable minted after this call has `raw() >= ` this, and every
+    /// variable that existed before it has `raw() < `.
+    ///
+    /// PROVENANCE BY ALLOCATION ORDER, which is what [`Self::fresh_var`]'s monotonic
+    /// counter already provides and nothing read. The first cut of part (c)'s solution
+    /// channel tried to tell a caller's inference variable from a callee's by ENUMERATING
+    /// what to exclude, and each round of driving found another population — a declared
+    /// type parameter's shared canonical variable, then a callee variable reachable
+    /// through a reported VALUE, then dispatch's own value-level variables. A watermark
+    /// answers all of them with one question, because none of those is minted during the
+    /// walk that takes it.
+    pub fn var_watermark(&self) -> u32 {
+        self.next_var
     }
 
     /// Allocate a fresh logic variable id, carrying the display name.

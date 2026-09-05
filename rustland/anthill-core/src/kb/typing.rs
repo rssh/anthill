@@ -6728,6 +6728,28 @@ fn type_check_node_gated_at(
         super::simp_rewrite::SIMP_FUEL,
         pos,
     );
+    // WI-20260904-50B2K part (c) — WHAT THE BODY'S OWN CALLS SOLVED, so a frame that
+    // built a type BEFORE its body ran can read what the body decided.
+    //
+    // THE ONE CHANNEL THAT DID NOT EXIST. `TypeResult` carries no substitution,
+    // `check_apply_iter` takes `env` immutably, and `bind_var` is called at binder-binding
+    // sites only — so a call's solving was minted per call and dropped with it. MEASURED
+    // before building this: on `let f = lambda v -> twice(v)`, `?param` IS bound (once, to
+    // `Int64`) by the body's `twice(v)` — the evidence existed and had nowhere to go, which
+    // is why an un-annotated binder could be contradicted by a declaration
+    // (`known_gap_the_declaration_may_solve_a_binder_the_body_contradicts`).
+    //
+    // SCOPED BY A VARIABLE WATERMARK, and the first cut's "no scoping rule needed" was
+    // MEASURED WRONG — see [`report_call_solutions`] for the three populations that
+    // falsified it. `var_watermark` is read once here; a binding is reported only when its
+    // variable and every variable inside its value were minted DURING this walk. The
+    // distinction the per-call σ exists to keep is thereby preserved rather than assumed.
+    //
+    // THIS IS THE GENERAL CHANNEL, CONSUMED BY ONE FRAME SO FAR: `LambdaBody` reads it to
+    // build an arrow that reflects its body. Widening the readership needs no change here.
+    let mut body_solutions = Substitution::new();
+    // The walk's variable WATERMARK — see [`report_call_solutions`].
+    let var_watermark = kb.var_watermark();
     while let Some(op) = work.pop() {
         match op {
             TypeWorkOp::Visit {
@@ -6737,9 +6759,16 @@ fn type_check_node_gated_at(
                 fuel,
                 pos,
             } => visit_type(kb, occ, env, expected, fuel, pos, &mut work, &mut results),
-            TypeWorkOp::Build(frame) => {
-                build_type(kb, frame, simp_enabled, simp_rids, &mut work, &mut results)
-            }
+            TypeWorkOp::Build(frame) => build_type(
+                kb,
+                frame,
+                simp_enabled,
+                simp_rids,
+                &mut work,
+                &mut results,
+                &mut body_solutions,
+                var_watermark,
+            ),
         }
     }
     debug_assert_eq!(
@@ -8129,6 +8158,10 @@ fn build_relation_projection(
         // WI-1104: a synthesized `project_run` call standing in for a tuple field — a
         // VALUE wherever the enclosing tuple is written, goal position included.
         NodePos::Value,
+        // WI-20260904-50B2K part (c): a synthesized projection shape, not a written
+        // body — nothing reads what it solves.
+        None,
+        kb.var_watermark(),
     ))
 }
 
@@ -12871,6 +12904,11 @@ fn build_type(
     simp_rids: &[RuleId],
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
+    // WI-20260904-50B2K part (c): what this walk's calls have solved — see the declaration
+    // at the work loop. Written by the `Apply` arm, read by `LambdaBody`.
+    body_solutions: &mut Substitution,
+    // The walk's variable watermark, for [`report_call_solutions`]' walk-local gate.
+    var_watermark: u32,
 ) {
     match frame {
         TypeBuildFrame::Stamp => {
@@ -13228,6 +13266,8 @@ fn build_type(
                 span,
                 expected,
                 pos,
+                Some(body_solutions),
+                var_watermark,
             );
             results.push(r);
         }
@@ -14296,6 +14336,41 @@ fn build_type(
             // is a fresh type var, and a tuple-typed one is indistinguishable from a
             // binder list). See `lambda_written_arity`.
             let arity = lambda_written_arity(&occ);
+            // WI-20260904-50B2K part (c) — THE ARROW REFLECTS WHAT THE BODY SOLVED.
+            //
+            // `param_type` is the value minted at VISIT time, before the body ran, so an
+            // un-annotated binder's arrow said `?param` however thoroughly the body had
+            // pinned it — and `TypeResult` carries no substitution to correct it with.
+            // The body's calls DO solve it (measured: `let f = lambda v -> twice(v)` binds
+            // `?param` to `Int64` inside `twice`'s own σ); `body_solutions` is where that
+            // now lands, and this is the first reader of it.
+            //
+            // `resolve_type_deep_value` replaces exactly the variables this walk has
+            // solved and leaves every other one alone. THAT IS NOT ITSELF A SCOPING RULE,
+            // and the first cut treated it as one — "a callee's variable is not IN
+            // `param_type`" constrains the σ's DOMAIN and says nothing about its RANGE, so
+            // a binding `?param := ?T_callee` substituted a callee variable straight into
+            // the arrow. The gate lives on the WRITING side now
+            // ([`report_call_solutions`]); this read is a plain resolution again.
+            //
+            // A BINDER THE BODY DID NOT PIN IS UNCHANGED, which is the case part (c)'s
+            // generalization is for — it stays a variable here and has no ∀ to live in
+            // yet.
+            // BOTH HALVES, AND THE EFFECTS — resolving only the domain SPLITS a variable
+            // occurring in both, and the split is a WRONG ACCEPT rather than a lost
+            // refusal. /code-review drove it: `lambda v -> (a: twice(v), b: v)` against a
+            // declared `B = (a: Int64, b: String)` LOADED, because once the domain was
+            // `Int64` the codomain's still-raw `??param` no longer conflicted and the
+            // op-return's declaration-solve bound it to `String`. This is the invariant
+            // the frame's own comment above states ("the arrow's param slot and the body's
+            // view of the param agree"); Path 1's rule is the precedent — resolve the
+            // return type AND the effect row, "or one call reports two states of one σ".
+            let param_type = resolve_type_deep_value(kb, body_solutions, &param_type);
+            let body_ty = resolve_type_deep_value(kb, body_solutions, &body_ty);
+            let body_effects: Vec<Value> = body_effects
+                .into_iter()
+                .map(|e| resolve_type_deep_value(kb, body_solutions, &e))
+                .collect();
             let fn_ty = make_arrow_value(
                 kb,
                 &param_type,
@@ -15381,6 +15456,134 @@ fn surface_of_with(
         .filter(|s| kb.local_name_of(*s) != kb.local_name_of(fn_sym))
 }
 
+/// WI-20260904-50B2K part (c) — copy a finished call's bindings into the walk's
+/// [`Substitution`], so a frame that minted a type before the call ran can see what the
+/// call decided.
+///
+/// THE CHANNEL THAT DID NOT EXIST. A call's σ is minted in `check_apply_iter` and dropped
+/// with the call, so the lambda whose binder a body pinned never saw the pinning —
+/// measured on `let f = lambda v -> twice(v)`, where `?param` IS bound to `Int64` by the
+/// body's own call and the binding went nowhere.
+///
+/// **WALK-LOCAL ONLY, DECIDED BY ALLOCATION ORDER.** `watermark` is
+/// [`KnowledgeBase::var_watermark`] taken when this walk began, so a variable minted
+/// DURING the walk has `raw() >= watermark` and everything older does not.
+///
+/// THE FIRST CUT HAD NO SUCH GATE, on the reasoning that "`VarId`s are unique, so a
+/// callee's variable can never be mistaken for a caller's". /code-review falsified that,
+/// and three rounds of driving found three separate populations — which is what says
+/// ENUMERATING was the wrong method:
+///
+///   1. A DECLARED TYPE PARAMETER'S VARIABLE IS SHARED.
+///      [`KnowledgeBase::record_type_param_var`] publishes exactly ONE `Var::Global` per
+///      type-parameter SYMBOL, so a callee's `T` is the SAME variable at every call site.
+///      `check_apply_iter`'s WI-374 note says what kept that sound — the parametricity tie
+///      rides "the canonical channel AND THE PER-CALL SUBST" — and this copies out of that
+///      σ. Measured in one walk: `var 1372 kept=String dropped=Int64`.
+///   2. THE RANGE LEAKS WHERE THE DOMAIN DOES NOT. `?param := ?T_callee` puts a
+///      callee-owned variable INTO the arrow, and filtering the VARIABLE says nothing
+///      about the VALUE. Measured as an arrow leaving the walk reading `?_`.
+///   3. A CALL'S σ IS NOT TYPE-ONLY. It carries dispatch's value-level bindings —
+///      `Name := "x" / "y" / "z"` collided within one walk, and riding as `Value::Term`
+///      over literal terms they escaped a carrier filter too.
+///
+/// ONE QUESTION RETIRES THE LIST. None of the three is minted during the walk that takes
+/// the watermark: a type parameter's canonical variable and a fact pattern's variables are
+/// allocated at LOAD. BOTH SIDES are asked, because (2) is a RANGE defect — the variable
+/// must be walk-local AND its value must mention no variable that is not.
+///
+/// MEASURED, AND THE ZERO IS THE POINT: with the gate, a consistency check over the whole
+/// `wi_tests` binary sees NO variable bound twice to disagreeing values (4131 rows). The
+/// ungated version disagreed on 19 rows of 19 in one file.
+///
+/// AN OCCURS-CHECK IS PERFORMED HERE, because `bind_value` does not do one — /code-review,
+/// and the first cut's doc claimed it did. That function compares structurally when the
+/// variable is ALREADY bound and does a raw insert otherwise, and this call is filtered to
+/// the unbound case, so it always takes the insert path. Two calls can then contribute
+/// `?a := f(?b)` and `?b := g(?a)`, each acyclic and walk-local on its own, and leave
+/// `body_solutions` CYCLIC for `resolve_type_deep_value` to walk. An ALREADY-BOUND variable
+/// is left alone: the rest of the walk has already been typed against the first answer.
+///
+/// TWO THINGS THIS DOES NOT DO, named because they are unmeasured rather than absent:
+///
+///   * NO ROLLBACK. A report happens when an argument's unification finishes, which is
+///     BEFORE the call is known to type — `unify_types`' boolean is discarded here as it
+///     is at every one of this file's ~10 call sites (WI-20260904-60143), and a call that
+///     later returns `Err` leaves its bindings behind. Combined with first-wins, a
+///     speculative binding could outrank a later well-typed one. No corpus program shows
+///     it; the scoped container below is what would remove the possibility.
+///   * THE PROJECTION-DEFERRED PATH DOES NOT REPORT. The report sits inside the
+///     `!(op_has_projection && value_contains_projection(..))` arm, and WI-398's deferred
+///     elimination unify afterwards has no report of its own. A binder pinned only through
+///     a projection-typed parameter keeps the pre-change behaviour.
+///
+/// AND THE CONTAINER IS STILL WALK-LIFETIME, WHICH IS NOT WHERE THIS BELONGS. Solutions
+/// travelling WITH the result would scope to the body that produced them and make the gate
+/// above unnecessary rather than merely correct — `check_apply_iter` already returns
+/// `env: env.clone()` at fifteen of its return points, so the channel exists and is inert
+/// (user, 2026-09-05; WI-502's `σ → (σ, residual C)` shape).
+fn report_call_solutions(
+    kb: &KnowledgeBase,
+    solved: Option<&mut Substitution>,
+    subst: &Substitution,
+    watermark: u32,
+) {
+    let Some(out) = solved else { return };
+    let fresh: Vec<(VarId, Value)> = subst
+        .iter()
+        .filter(|(v, val)| v.raw() >= watermark && value_vars_all_walk_local(kb, val, watermark))
+        .filter(|(v, _)| out.resolve_as_value(**v).is_none())
+        .filter(|(v, val)| !value_mentions_var(kb, val, **v))
+        .map(|(v, val)| (*v, val.clone()))
+        .collect();
+    for (v, val) in fresh {
+        out.bind_value(kb, v, val);
+    }
+}
+
+/// WI-20260904-50B2K part (c) — does `v` mention `var`? The occurs-check
+/// [`report_call_solutions`] performs itself; see there for why `bind_value` cannot.
+fn value_mentions_var(kb: &KnowledgeBase, v: &Value, var: VarId) -> bool {
+    if matches!(v, Value::Var(Var::Global(iv)) if *iv == var) {
+        return true;
+    }
+    let mut vars: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    super::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
+    vars.contains(&var)
+}
+
+/// WI-20260904-50B2K part (c) — is every variable inside `v` walk-local? The RANGE half of
+/// [`report_call_solutions`]' gate; the measurement that made it necessary is there.
+///
+/// **THE BARE `Value::Var` IS HANDLED HERE AND NOT BY `collect_value_type`**, and the
+/// first cut leant on that collector alone — /code-review, and it made the gate VACUOUS
+/// for exactly the leak it exists to stop. `collect_value_type` has arms for
+/// `Value::Term`, `Value::Node` and `Value::Entity` / `Value::Tuple` and then `_ => {}`:
+/// there is no `Value::Var` arm, so a binding of `?param := Value::Var(T_canonical)` — the
+/// shape `unify_types`' var arm mints when it binds one variable to another's WALKED value
+/// — collected ZERO variables and `all()` answered `true` on an empty list. The value
+/// carrying a load-time canonical type parameter then went straight into the arrow.
+///
+/// FIXED AT THIS CALLER RATHER THAN IN THE COLLECTOR, deliberately. `collect_value_type`
+/// is the shared owner of "which variables does this type mention" and feeds
+/// `signature_bound_vars`, the ONE OWNER of a signature's binder set (WI-1083) — widening
+/// it changes which variables a `∀` quantifies, which is a different question with its own
+/// blast radius. The under-collection is real and is NOT this ticket's to fix: its map twin
+/// `map_value_type` misses the arm too, and WI-1078's reader inherits it. Recorded here
+/// because a gate that reads a blind collector is a gate that reads `true`.
+fn value_vars_all_walk_local(kb: &KnowledgeBase, v: &Value, watermark: u32) -> bool {
+    if let Value::Var(Var::Global(vid)) = v {
+        if vid.raw() < watermark {
+            return false;
+        }
+    }
+    let mut vars: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    super::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
+    vars.iter().all(|vid| vid.raw() >= watermark)
+}
+
 fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -15401,6 +15604,14 @@ fn check_apply_iter(
     // the functional-relation arity + 1 is scoped by. It rides the work-stack frame, not
     // `env`: see [`NodePos`] for why a per-rule env flag separates nothing.
     pos: NodePos,
+    // WI-20260904-50B2K part (c): where this call's solutions are REPORTED, so a frame
+    // that minted a type BEFORE the call ran can read what the call decided (the work
+    // loop's `body_solutions`). `None` from the caller that is not on a written body's
+    // walk — `build_relation_projection` types a SYNTHESIZED projection shape, so nothing
+    // downstream would read what it solved.
+    mut solved: Option<&mut Substitution>,
+    // The walk's variable watermark; see [`report_call_solutions`].
+    var_watermark: u32,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -15960,6 +16171,14 @@ fn check_apply_iter(
                     // recorded so a LATER param projecting THIS one can read it.
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
                         unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
+                        // `check_apply_iter` has 22 exits and an argument's solving is
+                        // complete the moment its unification is: reporting at one exit
+                        // measured EMPTY at the reader, because `twice(v)` leaves by a
+                        // different one. This is also the exact site the probe saw
+                        // `?param` bound at, so it is where the population lives rather
+                        // than merely where a `defer` would have run.
+                        report_call_solutions(kb, solved.as_deref_mut(), &subst, var_watermark);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -16008,6 +16227,14 @@ fn check_apply_iter(
                     // WI-398: defer a projection param's unify (see the positional loop).
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
                         unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
+                        // `check_apply_iter` has 22 exits and an argument's solving is
+                        // complete the moment its unification is: reporting at one exit
+                        // measured EMPTY at the reader, because `twice(v)` leaves by a
+                        // different one. This is also the exact site the probe saw
+                        // `?param` bound at, so it is where the population lives rather
+                        // than merely where a `defer` would have run.
+                        report_call_solutions(kb, solved.as_deref_mut(), &subst, var_watermark);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -65669,7 +65896,23 @@ fn check_operation_bodies(
                 // and the `walk_type_deep_value` below now READS that σ. Raised by
                 // `/code-review`; the census of the ~10 sites sharing this idiom is
                 // WI-20260904-60143, and it is a file-wide rule rather than this site's.
-                unify_types(kb, &mut subst, &result.ty, &effective_return);
+                // PROBE ON A CLONE, COMMIT ONLY ON SUCCESS — the file's own pattern
+                // (`hint_instantiation_subst`), applied here because this σ is READ two
+                // lines down and its reading is USER-VISIBLE. `unify_types` binds as it
+                // descends and does not roll back, so a pair that fails partway leaves its
+                // partial bindings behind; `body_ty` is what `conformance_error` renders,
+                // so on the REFUSAL path — the path
+                // `the_body_use_binds_a_let_bound_lambdas_binder_before_the_declaration_can`
+                // exercises — the "got …" half of the message would be built from a
+                // half-applied substitution. A `Substitution` clone is O(1) (`imbl`,
+                // WI-569), so this costs a refcount bump on the path that already failed.
+                // Raised by `/code-review`; the file-wide census of the ~10 sites sharing
+                // the discarded-boolean idiom is WI-20260904-60143, and this is the one of
+                // them whose σ a diagnostic reads.
+                let mut probe = subst.clone();
+                if unify_types(kb, &mut probe, &result.ty, &effective_return) {
+                    subst = probe;
+                }
                 // PURE σ (`walk_type_deep_value`), not the grounding
                 // `resolve_type_deep_value`: this file singles the pair out at
                 // `validate_arg_against_param` — a rigid projection must stay an inert
@@ -69127,20 +69370,9 @@ fn data_slot_arg_hints(
     else {
         return nothing();
     };
-    // AN OPERATION'S PARAMETERS, AND DELIBERATELY NOT AN ENTITY'S FIELDS. The pair
-    // [`constrain_application`] reads one pass earlier is (operation params, entity
-    // fields), and the second half is left out here because THE HINT CHAINS ARE NOT THE
-    // SAME ONE: a constructor's fields hint through [`arrow_slot_arg_hint`] and the
-    // `*_from_ctor` readings, which have no lambda arm at all — [`hof_arg_hint`] is the
-    // operation chain's. Running an entity's fields through THIS chain would hint a
-    // rule-body constructor's lambda field where the OPERATION-body spelling of the same
-    // build hints nothing, which is this ticket's own asymmetry pointing the other way.
-    //
-    // SO A LAMBDA IN AN ENTITY FIELD STILL TAKES NO HINT — in a rule body and in an
-    // operation body alike, which is what makes it a different gap and not this one.
-    // Pinned by `wi_50b2k_binder_inference_test::
-    // known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`, which asserts the
-    // SYMMETRY: both spellings load the same ill-typed program today.
+    // THE HINT READS AN OPERATION'S PARAMETERS AND DELIBERATELY NOT AN ENTITY'S FIELDS;
+    // THE CHECK READS BOTH. Why the two lists part, and what measured it, is stated where
+    // they actually part — at the `or_else` below.
     //
     // READ OFF THE CACHED SIGNATURE, NOT THROUGH [`lookup_operation_info_full`], and that
     // is a cost decision with teeth rather than a style one: that function's fast path is
@@ -69151,17 +69383,46 @@ fn data_slot_arg_hints(
     // lookup" at its own version of this question. Post-WI-1082 the cache is also the
     // AUTHORITY, not just the accelerator (`elaborate_self_ties` rewrites it), so reading
     // it is what keeps this hint agreeing with the call check.
-    let Some(params) = kb
+    let op_params: Option<Vec<(Symbol, Value)>> = kb
         .op_record(*functor)
         .and_then(|r| r.signature.as_ref())
-        .map(|sig| sig.params.clone())
+        .map(|sig| sig.params.clone());
+    // THE CHECK READS AN ENTITY'S FIELDS TOO; THE HINT DOES NOT — and the two lists part
+    // here rather than sharing one `params`, which is the whole reason they are computed
+    // together. A HINT imposes a type before the child is typed, and the constructor chain
+    // has no lambda arm (`arrow_slot_arg_hint` reads a bare operation NAME), so hinting an
+    // entity field would make a build behave differently from its operation-body twin —
+    // this ticket's own asymmetry pointing the other way. A CHECK imposes nothing: it
+    // compares what the child turned out to be against what the field DECLARES, which is
+    // exactly what the operation-body spelling of the same build already does.
+    //
+    // THE HINT CHAINS ARE NOT THE SAME ONE, which is why only the CHECK widens: a
+    // constructor's fields hint through [`arrow_slot_arg_hint`] and the `*_from_ctor`
+    // readings, which have no lambda arm at all — [`hof_arg_hint`] is the operation
+    // chain's. Running an entity's fields through THAT chain would hint a rule-body
+    // constructor's lambda field where the operation-body spelling hints nothing, which is
+    // this ticket's own asymmetry pointing the other way.
+    //
+    // MEASURED, and the row that pinned the old SYMMETRIC gap is what caught it: once the
+    // arrow began reflecting its body (part (c)'s first slice),
+    // `runit(holder(f: lambda x -> takes_str(x)), 2)` was refused in an operation body and
+    // still LOADED in a rule body — that row failing on its `entop` arm alone, which is
+    // precisely the "if only one does, an asymmetry has been created" its own message
+    // warned about. Now pinned by `wi_50b2k_binder_inference_test::
+    // an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binder`.
+    //
+    // `op_params` IS CLONED ONCE MORE HERE and that is the cheap half of the trade: the
+    // alternative is reading the signature twice, which this function exists to avoid.
+    let Some(params) = op_params
+        .clone()
+        .or_else(|| kb.entity_field_types(*functor).map(|f| f.to_vec()))
     else {
         return nothing();
     };
     let (pos_hints, named_hints) = apply_arg_hints(
         kb,
         *functor,
-        Some(&params),
+        op_params.as_ref(),
         &None,
         pos_args,
         named_args,

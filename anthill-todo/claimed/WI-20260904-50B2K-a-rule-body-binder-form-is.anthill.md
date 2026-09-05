@@ -1166,74 +1166,132 @@ THE ORDER IS THEREFORE FORCED, and it is not the order this ticket's (c) bullet 
 
 Steps 3 and 4 have machinery. Steps 1 and 2 do not.
 
-PART (c), FIRST SLICE — BUILT, MEASURED, AND BACKED OUT 2026-09-05. The channel WORKS and
-the CONTAINER is wrong, and the difference is the whole record below.
+PART (c), FIRST SLICE — DELIVERED 2026-09-05, AFTER BEING BUILT, BACKED OUT, AND REBUILT
+ON A WATERMARK THE USER NAMED.
 
-WHAT WAS BUILT. `report_call_solutions` copied a finished call's bindings into a
-walk-level `Substitution`, and the `LambdaBody` frame resolved the arrow through it. It
-DID what it was for: `let f = lambda v -> twice(v)` produced `Int64 -> Int64` instead of
-`??param -> Int64`, and TWO known-gap rows flipped to refusals —
-`known_gap_the_declaration_may_solve_a_binder_the_body_contradicts` (a WRONG VALUE: `?v`
-committed to `String` while the body handed it to an `Int64` parameter) and
-`known_gap_an_entity_field_lambda_is_unhinted_in_both_bodies`. Full workspace 6433/0,
-scaland 539/0, both back-outs exact.
+WHAT IT DOES. `report_call_solutions` copies a finished call's bindings into the walk's
+`Substitution`; the `LambdaBody` frame resolves the arrow through it. An un-annotated
+binder's arrow now reflects what its BODY pinned rather than the variable minted before the
+body ran: `let f = lambda v -> twice(v)` is `Int64 -> Int64`, not `??param -> Int64`.
 
-WHY IT IS NOT SHIPPED: THE SAFETY ARGUMENT WAS FALSE, AND EACH REPAIR FOUND ANOTHER
-POPULATION. The design rested on one sentence — "`VarId`s are unique, so a callee's
-variable can never be mistaken for a caller's, therefore the WRITER needs no scoping rule
-and the READER filters". /code-review falsified it and three rounds of driving widened the
-hole:
+THE FIRST CUT WAS BACKED OUT BECAUSE ITS SAFETY ARGUMENT WAS FALSE, and the record is kept
+because the failure mode is the reusable part. It rested on "`VarId`s are unique, so a
+callee's variable can never be mistaken for a caller's — the WRITER needs no scoping rule
+and the READER filters". /code-review falsified it and three rounds of driving found THREE
+populations:
 
-  1. DECLARED TYPE PARAMETERS SHARE ONE CANONICAL VARIABLE.
-     `KnowledgeBase::record_type_param_var` publishes exactly ONE `Var::Global` per
-     type-parameter SYMBOL (`if contains_key { return }`), so a callee's `T` is the SAME
-     variable at every call site. `check_apply_iter`'s own WI-374 note says what kept that
-     sound — a member's self-sort refs ride "the canonical channel AND THE PER-CALL SUBST"
-     — and the per-call σ is precisely what this copied out of. Measured by the reviewer
-     inside ONE walk: `var 1372 kept=String dropped=Int64`.
-  2. THE FILTER WAS ON THE DOMAIN, NOT THE RANGE. "a callee's variable is not IN
-     `param_type`" says nothing about what a reported VALUE contains: `?param := ?T_callee`
-     substitutes a callee-owned variable INTO the arrow, measured as an arrow leaving the
-     walk reading `?_`.
-  3. A CALL'S σ IS NOT TYPE-ONLY. With both gates added, a consistency assert on ground
-     disagreement still fired on 19 OF 19 ROWS, and the colliding variable was `Name`,
-     bound to the string literals `"x"`, `"y"`, `"z"` in one walk — VALUE-level bindings
-     from dispatch and fact lookup. A carrier filter did not catch them either: they ride
-     as `Value::Term` over literal terms.
+  1. `record_type_param_var` publishes ONE canonical `Var::Global` per type-parameter
+     SYMBOL, so a callee's `T` is the SAME variable at every call site — measured in one
+     walk as `var 1372 kept=String dropped=Int64`. WI-374's own note says the per-call σ is
+     what kept that sound, and this copied out of it.
+  2. The filter constrained the σ's DOMAIN, not its RANGE: `?param := ?T_callee` put a
+     callee variable INTO the arrow (measured, an arrow leaving the walk reading `?_`).
+  3. A call's σ is NOT type-only. With both gates added, a ground-disagreement assert still
+     fired on 19 ROWS OF 19, colliding on `Name` bound to `"x"` / `"y"` / `"z"` — dispatch's
+     value-level bindings, riding as `Value::Term` so a carrier filter missed them too.
 
-THREE POPULATIONS IN THREE PATCHES IS THE ANSWER, NOT AN OBSTACLE COURSE. A walk-lifetime
-σ fed by a per-call σ inherits everything that σ carries, and the per-call one is exactly
-what made all of it safe. Bolting on a filter per population is guessing at a set nobody
-has enumerated.
+THREE POPULATIONS IN THREE PATCHES SAID THE METHOD WAS WRONG, NOT THE PATCHES. Enumerating
+what to exclude is guessing at a set nobody has enumerated.
 
-THE CONTAINER THE USER ALREADY NAMED IS THE FIX: "check apply can return changes which
-should be merged in incoming TypeEnv" / "Substitutions can hold those changes". Solutions
-travelling WITH the result scope to the body that produced them, so none of (1)-(3) can
-arise — a sibling call's bindings never reach a frame they do not belong to. CONFIRMED BY
-READING: `check_apply_iter` already returns `env: env.clone()` at FIFTEEN of its return
-points — the input env, copied UNCHANGED — so the channel is in the signature TODAY and is
-a no-op. The one thing in the way is that `LambdaBody` DISCARDS `body_r.env` and uses
-`outer_env`. It is also the shape WI-502 names (`σ → (σ, residual C)`), which matters
-because (c)'s CONSTRAINT half attaches to a σ and must ride the same channel.
+THE FIX IS PROVENANCE BY ALLOCATION ORDER (user, 2026-09-05: "env should also contain idx
+of var, to have each new var with new index"). The index ALREADY EXISTED and nothing read
+it: `VarId` carries a `u32` and `fresh_var` is a monotonic counter. `var_watermark()` reads
+it, the walk takes one at its start, and a binding is reported only when the VARIABLE and
+every variable inside its VALUE satisfy `raw() >= watermark`. None of (1)-(3) is minted
+during the walk — a type parameter's canonical variable and a fact pattern's variables come
+from LOAD — so one question retires the list.
 
-WHAT IS KEPT, AND IT IS THE EXPENSIVE PART:
+    MEASURED: with the gate, a consistency check over the whole `wi_tests` binary sees NO
+    variable bound twice to disagreeing values (4131 rows). Ungated: 19 of 19 in one file.
 
-  * THE GROUND TRUTH — `?param` IS bound, once, to `Int64`, by the body's own call
-    (recorded above). The evidence exists; only its container was wrong.
-  * BOTH ARROW HALVES MUST RESOLVE TOGETHER. Resolving only the domain SPLITS a variable
-    occurring in both, and the split is a WRONG ACCEPT: `lambda v -> (a: twice(v), b: v)`
-    against a declared `B = (a: Int64, b: String)` LOADED, because once the domain was
-    `Int64` the codomain's raw `??param` no longer conflicted and the op-return's
-    declaration-solve bound it to `String`. Path 1's own rule is the precedent — resolve
-    the return type AND the effect row, "or one call reports two states of one σ". Whatever
-    builds the arrow next must do all three.
-  * REPORTING AT A RETURN MEASURES EMPTY. `check_apply_iter` has TWENTY-TWO exits and
-    `twice(v)` does not leave by the one Path 1 ends at; the report belongs at the ARGUMENT
-    UNIFICATION, which is where the probe saw `?param` bound.
-  * THE TWO ROWS THAT FLIPPED ARE THE ACCEPTANCE for the rebuilt version, and one of them
+A SECOND /code-review FINDING, ALSO REAL AND ALSO A WRONG ACCEPT: resolving only the
+arrow's DOMAIN splits a binder occurring in both halves. `lambda v -> (a: twice(v), b: v)`
+against a declared `B = (a: Int64, b: String)` LOADED — the domain read `Int64`, the
+codomain's raw `??param` no longer conflicted, and the op-return's declaration-solve bound
+it to `String`. Both halves AND the effects now resolve together, which is the invariant
+the frame's own comment states and the rule Path 1 already follows. Pinned by
+`both_halves_of_a_solved_arrow_resolve_together`.
+
+ROWS: two known gaps flipped to positive, each carrying the instruction to write its
+replacement —
+  * `the_body_use_binds_a_let_bound_lambdas_binder_before_the_declaration_can` (the WRONG
+    VALUE: `?v` committed to `String` while the body handed it to an `Int64` parameter),
+    with the AGREEING twin as control;
+  * `an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binder`, which
     EARNED ITS KEEP mid-change: with only the arrow fix,
     `runit(holder(f: lambda x -> takes_str(x)), 2)` was refused in an operation body and
-    still loaded in a rule body, because `data_slot_declared_types` read an operation's
-    parameters alone. Extending the CHECK to an entity's FIELDS closed it — the HINT must
-    still read operations only, or the mirror asymmetry returns. That half is independent
-    of the container and can land on its own.
+    still LOADED in a rule body. Extending the CHECK to an entity's FIELDS closed it; the
+    HINT still reads operations only, or the mirror asymmetry returns.
+
+BACK-OUTS, ALL DRIVEN: the `LambdaBody` resolve dropped -> 2 rows; the entity-field
+fallback dropped -> 1 row (the asymmetry, restored); the `body_ty` / `body_effects`
+resolutions dropped -> the desync row.
+
+TWO NAMED GAPS RATHER THAN SILENT ONES, both at the site: there is NO ROLLBACK — a report
+happens when an argument's unification finishes, which is before the call is known to type
+(the discarded-boolean idiom WI-20260904-60143 owns), so a speculative binding from a
+failing call could outrank a later one; and THE PROJECTION-DEFERRED PATH DOES NOT REPORT.
+
+THE CONTAINER IS STILL WALK-LIFETIME, which is what makes the watermark NECESSARY rather
+than merely correct. Solutions travelling WITH the result would scope to the body that
+produced them and both gaps above would go with it — `check_apply_iter` already returns
+`env: env.clone()` at FIFTEEN of its return points, so the channel exists and is inert, and
+`LambdaBody` discarding `body_r.env` is the one thing in the way. That is the next step,
+and it is WI-502's `σ → (σ, residual C)` shape, which (c)'s constraint half needs anyway.
+
+Workspace 6433/0 -> 6434/0. scaland 539/0.
+
+A SECOND /code-review PASS ON THE REBUILT SLICE FOUND SEVEN, all addressed. The HIGH is the
+one worth carrying, and it is a lesson about GATES rather than about this ticket.
+
+  * THE GATE READ A BLIND COLLECTOR, so its range half was VACUOUS for exactly the leak it
+    exists to stop. `collect_value_type` has arms for `Value::Term`, `Value::Node` and
+    `Value::Entity` / `Value::Tuple`, then `_ => {}` — there is NO `Value::Var` arm. A
+    binding `?param := Value::Var(T_canonical)` (the shape `unify_types`' var arm mints when
+    it binds one variable to another's walked value) therefore collected ZERO variables, and
+    `vars.iter().all(..)` answered `true` on an empty list. A gate that asks an
+    under-collecting reader answers `true`, not `false`.
+
+    FIXED AT THE CALLER AND DELIBERATELY NOT IN THE COLLECTOR. `collect_value_type` feeds
+    `signature_bound_vars`, the ONE OWNER of a signature's binder set (WI-1083), so widening
+    it changes which variables a `∀` quantifies. MEASURED BOTH WAYS: adding the arm there is
+    green (4130/0), and the shape occurs ZERO times on this corpus — so the wider fix has no
+    witness, and by the rule this ticket has been applying all along it does not ship. The
+    under-collection is real, is NOT this ticket's, and is recorded at the site: its map twin
+    `map_value_type` misses the arm too, and WI-1078's reader inherits it.
+
+  * THE OCCURS-CHECK THE DOC CLAIMED DOES NOT EXIST. `Substitution::bind_value` compares
+    structurally when the variable is already bound and RAW-INSERTS otherwise, and the
+    report is filtered to the unbound case, so it always takes the insert path. Two calls
+    contributing `?a := f(?b)` and `?b := g(?a)` — each acyclic and walk-local alone — would
+    leave `body_solutions` CYCLIC for `resolve_type_deep_value` to walk. The check is now
+    performed here, by `value_mentions_var`.
+
+  * THE DOC-STEAL, THIRD TIME THIS SESSION: `var_watermark` was inserted under `fresh_var`'s
+    doc line and took it. Restored.
+
+  * A `TEMP REVIEW PROBE` TEST WAS LEFT IN THE TREE by the reviewing pass —
+    `zz_probe_canonical_type_param_leak`, a `#[test]` that only prints and asserts NOTHING,
+    which would have committed as permanent zero-signal coverage for the very leak above.
+    Removed. (The first pass's probes reached my saved patch the same way, and had to be
+    stripped out of it before it could be reapplied.)
+
+  * TWO DOC SITES STILL ASSERTED THE FALSIFIED "no scoping rule needed" RATIONALE — at the
+    DECLARATION and at the ONLY CONSUMER, so a maintainer reading either would have removed
+    the watermark gate as redundant. Both now say what was measured.
+
+  * THE OP-RETURN UNIFY PROBES ON A CLONE AND COMMITS ONLY ON SUCCESS. `unify_types` binds
+    as it descends without rolling back, and this σ is read TWO LINES DOWN by the
+    `walk_type_deep_value` whose result `conformance_error` RENDERS — so on the refusal path
+    this ticket's own new row exercises, the "got …" half of the user-visible message was
+    built from a half-applied substitution. `hint_instantiation_subst` is the file's pattern
+    for this and an `imbl` clone is O(1) (WI-569). The file-wide census of the ~10 sites
+    sharing the discarded-boolean idiom stays WI-20260904-60143's; this is the one whose σ a
+    DIAGNOSTIC reads.
+
+  * A duplicated-and-truncated comment block from my own edit, repaired.
+
+THE LESSON THAT GENERALIZES: A GATE IS ONLY AS EXHAUSTIVE AS THE READER IT ASKS. Both the
+first cut's failure (enumerating populations) and this one's (asking a collector with a
+`_ => {}` arm) are the same shape — the gate was written against an idea of the input
+rather than against what the reader actually returns for every carrier.
