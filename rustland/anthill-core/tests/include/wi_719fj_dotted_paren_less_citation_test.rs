@@ -148,7 +148,9 @@ fn answers(kb: &mut KnowledgeBase, pattern: &str) -> usize {
         .count()
 }
 
-fn goal_slice(goal: anthill_core::kb::term::TermId) -> [anthill_core::kb::term::TermId; 1] {
+fn goal_slice(
+    goal: anthill_core::kb::load::QueryPattern,
+) -> [anthill_core::kb::load::QueryPattern; 1] {
     [goal]
 }
 

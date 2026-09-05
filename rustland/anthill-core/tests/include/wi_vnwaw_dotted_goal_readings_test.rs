@@ -32,7 +32,8 @@
 //! through code that was already shared: `Loader::convert_subject_term` (the rule head,
 //! the fact head, the sort-body pre-scan and the proof step) calls
 //! `expand_bare_entity_subject` on ITS dotted branch, and `convert_query_term` calls
-//! `expand_bare_entity_pattern` on its own. Only the rule-body GOAL arm forked, because
+//! `expand_bare_entity_query_name` on its own (`expand_bare_entity_pattern` until
+//! WI-20260904-J0RM4 split the two carriers). Only the rule-body GOAL arm forked, because
 //! there the dotted branch `return`s an occurrence of its own before reaching the
 //! one-segment `Term::Ref` / `Term::Ident` arms that grew the readings. The fix is a FORWARDING to
 //! those arms, in their order, not a third reading.

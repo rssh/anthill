@@ -1354,20 +1354,34 @@ pub fn query_pattern_functor(
     kb: &mut KnowledgeBase,
     pattern: &str,
 ) -> anthill_core::intern::Symbol {
-    use anthill_core::kb::term::Term;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
     let t = query_pattern_term(kb, pattern);
-    match kb.get_term(t) {
-        Term::Fn { functor, .. } => *functor,
+    // WI-20260904-J0RM4: read the head through `TermView`, not through a `Term::Fn`
+    // match — the pattern rides the transient occurrence carrier now. `ViewHead::Functor`
+    // is the same head its hash-consed twin reported, which is the whole contract of the
+    // carrier change (an `Ident`/`Ref`/var/literal head still panics, as before).
+    match TermView::head(&t, kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => f,
         other => panic!("query pattern `{pattern}` is not an application: {other:?}"),
     }
 }
 
-/// The WHOLE term a query pattern converts to, by the same shipped path
+/// The WHOLE pattern a query converts to, by the same shipped path
 /// [`query_pattern_functor`] reads its head off (WI-917 lifted this out of it): a test
 /// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of
 /// the head symbol alone.
+///
+/// WI-20260904-J0RM4 — a `load::QueryPattern` (an `Rc<NodeOccurrence>`), not a `TermId`:
+/// the query converter no longer interns. Every `TermView` consumer takes it unchanged
+/// (`kb.resolve(&[goal], …)` is the common one here); a test that needs to read its
+/// STRUCTURE asks `TermView::head` / `pos_arg` / `named_arg` rather than `kb.get_term`.
 #[allow(dead_code)]
-pub fn query_pattern_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::term::TermId {
+pub fn query_pattern_term(
+    kb: &mut KnowledgeBase,
+    pattern: &str,
+) -> anthill_core::kb::load::QueryPattern {
     let src = format!("fact {pattern}");
     let parsed = parse::parse(&src).expect("parse query pattern");
     // WI-966: MEASURED empty for every pattern the suites pass here, so the

@@ -3,9 +3,9 @@
 - id: WI-20260904-J0RM4-patterns-are-built-on-the
 - created: 2026-09-04T21:24:50Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-04T21:24:50Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-05T09:15:58Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -22,4 +22,26 @@ CARRIER CHOICE IS OPEN (user, at filing): the query pattern can be rewritten to 
 THE ARGUMENT FOR OCCURRENCE is uniformity with what already happened elsewhere: WI-246 made the rule BODY `Vec<Rc<NodeOccurrence>>` and dropped the term body field outright, and WI-348 Phase B made the rule HEAD a carrier-agnostic `Value` (`Value::Term` usually, `Value::Node`/`Entity` for a value fact -- `rule_head` PANICS on those). Between them, neither half of a stored clause is necessarily a `TermId` any more. THE QUERY PATTERN IS THE LAST POSITION THAT STILL MUST BE ONE, which is the strongest form of this ticket's argument and was not stated in the description: it is not that patterns COULD be carrier-neutral, it is that every neighbour already is and this one position was left behind.
 
 THE ARGUMENT FOR VALUE is that CLAUDE.md's representation note names `Value::Node`/`Entity` for exactly this population, and that the fact-head side already carries patterns that way, so a query pattern and the value fact it searches for would ride the same carrier.
+
+### 2026-09-05T09:15:50Z — feedback — user
+
+DELIVERED. The query pattern rides Rc<NodeOccurrence> (load::QueryPattern); convert_query_term makes no kb.alloc. The filler moved to kb/entity_slots.rs and is carrier-parametric (complete_named_slots<C: SlotCarrier>, carriers Interned / Occurrence); fill_entity_named_args -> complete_named_slots, expand_bare_entity_pattern -> expand_bare_entity_term. The query converter carried a FOURTH hand-rolled copy of the fill-and-sort loop three screens below the free function CZJ2N had just unified the other three onto; it is deleted and joined. Three query walks (undefined_query_goal_functors / ambiguous_query_names / ambiguous_query_dispatch) plus collect_vars are now TermView-generic via a new structural_child_views.
+
+CARRIER: the OCCURRENCE one, and the choice is forced, not a preference. Term::Ident -- the WI-476 bare intern a name resolving to no single symbol lands on -- has an Expr::Ident twin and deliberately NO Value variant ('minting an unresolved identifier as a runtime value would be a bug'). The feedback's uniformity argument holds too: a query pattern is a rule body's goal with no rule above it, and WI-246 made that body Vec<Rc<NodeOccurrence>>.
+
+TWO TRAPS THE CARRIER SWAP HIDES, both found and closed here. (1) KnowledgeBase::alloc applies nullary_canon, so the interned path folded Fn{f,[],[]} to Ref(f) for free; the occurrence path does not, and Expr::Apply{f,[],[]} vs Expr::Ref(f) are one HEAD but two NODES -- reduce_op_value opens an Apply and hands anything else back un-reduced, so a query f() on a nullary OPERATION would have silently gained the call reading CZJ2N scoped to RULE BODIES. nullary_canon's test is split out as nullary_name_canons_to_ref and applied on both carriers. (2) The printer: --query-file's LABEL moved from print_term to print_occurrence, and the two did not restore the same list surfaces. write_occurrence now collapses BOTH -- the cons/nil spine and the flat ListLiteral(e...) a rival-collection slot keeps (spec 4.6). MEASURED before the second half: entity Tagged(tags: Set[T = Int64]) labelled ListLiteral(1, 2), with the List-declared sibling still labelling [1, 2] as the control. Found by /code-review, which reproduced it on the built CLI.
+
+THE ACCEPTANCE WAS WRONG IN TWO PLACES, measured rather than argued.
+
+(a) THE VarId COUNTER CANNOT BE HELD FLAT AND MUST NOT BE. A var id is the KB's global numbering; a pattern whose vars could collide with the ones the resolver opens per clause binds two unrelated positions together. It is a u32 counter and retains nothing -- it is not the leak. Recorded as a NOTE row (the_var_counter_still_moves_and_that_is_correct), green either way.
+
+(b) A SECOND, SMALLER LEAK REMAINS, AND IT IS THE RESOLVER'S. MEASURED on the fixture: convert+resolve of a RULE goal grows the store by exactly 1 per query, all of it AFTER the conversion; a FACT-matching goal grows it by 0. The slot is with_fresh_vars' De Bruijn opening -- term_from_debruijn allocs a Term::Var(Global(fresh)) for the head slot a query var linked to -- and Substitution is TermId-keyed throughout, so closing it means moving the substitution layer, which is bigger than this whole ticket. NOT filed as a ticket (the queue is at 170 open): it is ASSERTED instead, by resolution_of_a_rule_goal_still_grows_the_store_by_one, which asserts both halves and goes RED when someone closes it -- an unasserted known leak is how one survives its own fix.
+
+CONTROLS. repeated_conversion_of_one_pattern_does_not_grow_the_term_store FAILS on the baseline (58 -> 61 -> 64 -> 67 over four conversions of Top(a: 1): two omitted fields' fresh vars plus the enclosing Fn, which hash-consing cannot dedup because a fresh VarId makes each one a new term). a_repeated_fact_matching_query_run_is_flat FAILS on the baseline too. distinct_patterns_of_one_functor_do_not_share_fill_variables PASSES EITHER WAY and is deliberate: it is the soundness guard on the cheaper repair this rejects -- a fill var pooled per (functor, field) would make the store constant AND force two independent Top slots to agree on b. The four agreement rows pass either way by design; a carrier change that altered one answer would be the behaviour change this ticket promises not to make.
+
+WHY NOT JUST RELEASE THE PATTERN: TermStore::release is a NO-OP while a scoped-KB layer is applied (WI-SPGBP, a soundness rule -- a re-entering id resurrects a retracted fact's slot), and the reflect kb layer is one of the long-running cases the ticket names. The repair that looks cheapest is unavailable exactly where the leak matters.
+
+/code-review high raised 7 findings, all fixed inline: the ListLiteral label regression above (+ a new driving row), the is_type_functor asymmetry (stated at the site with what mirroring it would take -- write_type_term takes a TermId, so it needs an occurrence-side type writer), tuple_goal_views' undocumented widening, collect_vars_rec's per-node Literal clone (now reads index_var, which every carrier overrides to read the carrier directly), occ_unwrap_list_spine's per-probe String, Occurrence::none's undriven body (now unreachable! naming what to write and to test), and two comment artifacts.
+
+TESTS: rust 36 binaries / 6414 passed / 0 failed via scripts/test.sh; scaland 539 passed. Scaland has no query converter and no entity filler, so it needed no change.
 

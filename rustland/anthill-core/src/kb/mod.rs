@@ -2,6 +2,7 @@ pub(crate) mod body_specialize;
 pub mod call_form;
 pub mod defaults;
 pub(crate) mod discrim;
+pub(crate) mod entity_slots;
 pub(crate) mod eq_derive;
 pub mod execute;
 pub mod extent;
@@ -2682,10 +2683,21 @@ impl KnowledgeBase {
         if !pos_args.is_empty() || !named_args.is_empty() {
             return None;
         }
-        if self.has_kind(*functor, SymbolKind::Sort) {
-            return None;
-        }
-        Some(Term::Ref(*functor))
+        self.nullary_name_canons_to_ref(*functor)
+            .then(|| Term::Ref(*functor))
+    }
+
+    /// [`Self::nullary_canon`]'s TEST, without a term to apply it to — "does a nullary
+    /// application of `functor` spell the same thing as the bare name". The whole of the
+    /// rule is right above: the line is TYPE-HOOD.
+    ///
+    /// WI-20260904-J0RM4 — split out because the transient query carrier has to make the
+    /// same decision and has no `Term` to hand this (`load::nullary_query_canon` builds
+    /// an `Expr::Ref` where the interned path allocs a `Fn` and gets a `Ref` back). Two
+    /// carriers deciding this by two tests is exactly how one spelling stops matching the
+    /// other, which is what the canon exists to prevent.
+    pub(crate) fn nullary_name_canons_to_ref(&self, functor: Symbol) -> bool {
+        !self.has_kind(functor, SymbolKind::Sort)
     }
 
     /// Allocate a term (hash-consed, refcounted). Applies [`Self::nullary_canon`].
@@ -4170,7 +4182,7 @@ impl KnowledgeBase {
         }
     }
 
-    /// Every concrete functor in query pattern `tid` that the KB does not define
+    /// Every concrete functor in query pattern `view` that the KB does not define
     /// AND that sits in a position COMMITTED to its truth — the top-level goal, or
     /// anywhere inside a `not` — so refusing it is correct (WI-863). Generalises
     /// [`Self::undefined_functor`] (head only) to catch a nested undefined
@@ -4223,11 +4235,14 @@ impl KnowledgeBase {
     /// `_non_name_atom_term`), so "not a `query` surface form" was wrong; what keeps it
     /// out is that its antecedents DECLARE the predicates its consequent proves, and
     /// this walk has no rule to collect those hypotheses from.
-    pub fn undefined_query_goal_functors(&self, tid: TermId) -> SmallVec<[Symbol; 4]> {
+    pub fn undefined_query_goal_functors<V: term_view::TermView>(
+        &self,
+        view: &V,
+    ) -> SmallVec<[Symbol; 4]> {
         let mut out = SmallVec::new();
         // The top-level goal commits to its head (WI-754); `under_not` starts
         // false and turns true the moment the walk steps through a `not`.
-        self.collect_undefined_goal_functors(tid, false, &mut out);
+        self.collect_undefined_goal_functors(view, false, &mut out);
         out
     }
 
@@ -4235,19 +4250,20 @@ impl KnowledgeBase {
     /// walk reaches is in a committed position, so its head is always checked; the
     /// gating is on DESCENT — a bare connective (`under_not` false and head not
     /// `not`) is left to resolution and never entered. `out` dedups. Terminates
-    /// because terms are acyclic and every goal child is a strict subterm.
-    fn collect_undefined_goal_functors(
+    /// because a term / occurrence tree is acyclic and every goal child is a strict
+    /// subterm.
+    fn collect_undefined_goal_functors<V: term_view::TermView>(
         &self,
-        tid: TermId,
+        view: &V,
         under_not: bool,
         out: &mut SmallVec<[Symbol; 4]>,
     ) {
-        if let Some(sym) = self.undefined_functor(&tid) {
+        if let Some(sym) = self.undefined_functor(view) {
             // Discrim backstop, per node — an arity-0 proposition reachable only
             // through a rule body is in no functor table but matches the tree.
             // Ord cheap-check first: skip the tree walk for a name already
             // recorded from a sibling branch.
-            if !out.contains(&sym) && self.browse_program_clauses_matching(&tid).is_empty() {
+            if !out.contains(&sym) && self.browse_program_clauses_matching(view).is_empty() {
                 out.push(sym);
             }
         }
@@ -4265,15 +4281,15 @@ impl KnowledgeBase {
         // from, so the policy here is not to enter. MEASURED: without this the query
         // above reported `hyp` as an unknown functor. The DESCENT POLICY is the
         // caller's — the shared table only says which slots are goals.
-        let entering_not = self.is_negation_functor(tid);
-        if (under_not || entering_not) && !self.is_discharge_functor(tid) {
-            for child in self.goal_arg_termids(tid) {
-                self.collect_undefined_goal_functors(child, true, out);
+        let entering_not = self.is_negation_functor(view);
+        if (under_not || entering_not) && !self.is_discharge_functor(view) {
+            for child in self.goal_arg_views(view) {
+                self.collect_undefined_goal_functors(&child, true, out);
             }
         }
     }
 
-    /// WI-917: every functor in query pattern `tid` whose name the citing scope
+    /// WI-917: every functor in query pattern `view` whose name the citing scope
     /// `scope` resolves to TWO OR MORE symbols — the pattern position's half of
     /// the load error a reference gets, and the answer to the tolerance question
     /// stated at [`Self::undefined_query_goal_functors`].
@@ -4290,19 +4306,24 @@ impl KnowledgeBase {
     /// is where the two diverge most sharply: an absent data name's bare intern is
     /// what the FACT's loader produced too, so pattern and fact match; a contested
     /// one's matches neither reading.
-    pub fn ambiguous_query_names(&self, tid: TermId, scope: ScopeId) -> SmallVec<[Symbol; 4]> {
+    pub fn ambiguous_query_names<V: term_view::TermView>(
+        &self,
+        view: &V,
+        scope: ScopeId,
+    ) -> SmallVec<[Symbol; 4]> {
         let mut out = SmallVec::new();
-        self.collect_ambiguous_query_names(tid, scope, &mut out);
+        self.collect_ambiguous_query_names(view, scope, &mut out);
         out
     }
 
     /// Recursive worker for [`Self::ambiguous_query_names`]. Descent is
-    /// unconditional (`Term::subterms` — positional and named args alike), so unlike
-    /// [`Self::collect_undefined_goal_functors`] there is no gate to thread. `out`
-    /// dedups. Terminates because terms are acyclic.
-    fn collect_ambiguous_query_names(
+    /// unconditional ([`Self::structural_child_views`] — positional and named args
+    /// alike), so unlike [`Self::collect_undefined_goal_functors`] there is no gate to
+    /// thread. `out` dedups. Terminates because a term / occurrence tree is acyclic and
+    /// every child is a strict subterm.
+    fn collect_ambiguous_query_names<V: term_view::TermView>(
         &self,
-        tid: TermId,
+        view: &V,
         scope: ScopeId,
         out: &mut SmallVec<[Symbol; 4]>,
     ) {
@@ -4312,24 +4333,24 @@ impl KnowledgeBase {
         // but sits in no functor table — so the two refusals cannot disagree about
         // which symbols are even askable. Ord ladder-read first: an ambiguity is
         // rare and the tree walk is the expensive half.
-        if let Some(sym) = self.undefined_functor(&tid) {
+        if let Some(sym) = self.undefined_functor(view) {
             let ambiguous = matches!(
                 load::resolve_name_in_kb(self, self.local_name_of(sym), scope),
                 ResolveResult::Ambiguous(_)
             );
             if ambiguous
                 && !out.contains(&sym)
-                && self.browse_program_clauses_matching(&tid).is_empty()
+                && self.browse_program_clauses_matching(view).is_empty()
             {
                 out.push(sym);
             }
         }
-        for child in self.get_term(tid).subterms() {
-            self.collect_ambiguous_query_names(child, scope, out);
+        for child in self.structural_child_views(view) {
+            self.collect_ambiguous_query_names(&child, scope, out);
         }
     }
 
-    /// WI-1044 — every SPEC-OP CALL in query pattern `tid` whose carrier has two or
+    /// WI-1044 — every SPEC-OP CALL in query pattern `view` whose carrier has two or
     /// more suppliers (058 §4.9), rendered as the shared refusal sentence.
     ///
     /// ## Why a query needs its own face of a refusal that already exists
@@ -4378,24 +4399,35 @@ impl KnowledgeBase {
     /// narrower than what this closes (a query naming its receiver, which is what a
     /// pattern query is), and it is the same open half WI-938's feedback records for
     /// "make an unreduced call DELAY rather than answer nothing".
-    pub fn ambiguous_query_dispatch(&self, tid: TermId) -> Vec<String> {
+    pub fn ambiguous_query_dispatch<V: term_view::TermView>(&self, view: &V) -> Vec<String> {
         let mut out = Vec::new();
-        self.collect_ambiguous_query_dispatch(tid, &mut out);
+        self.collect_ambiguous_query_dispatch(view, &mut out);
         out
     }
 
-    /// Recursive worker for [`Self::ambiguous_query_dispatch`]. Terminates because
-    /// terms are acyclic.
-    fn collect_ambiguous_query_dispatch(&self, tid: TermId, out: &mut Vec<String>) {
+    /// Recursive worker for [`Self::ambiguous_query_dispatch`]. Terminates because a
+    /// term / occurrence tree is acyclic.
+    fn collect_ambiguous_query_dispatch<V: term_view::TermView>(
+        &self,
+        view: &V,
+        out: &mut Vec<String>,
+    ) {
         use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
-        if let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
+        // WI-20260904-J0RM4 — the head read is `ViewHead::Functor`, where this used to
+        // match `Term::Fn`. That admits a NULLARY head (a bare `Ref`) the `Fn` match did
+        // not, and the widening is inert: an argument-less head gives
+        // `spec_call_runtime_carrier` no value to classify, so it returns `None` and the
+        // verdict is `NoSupplier` before any supplier is read. Left as the plain head
+        // read rather than narrowed to "has arguments", because that narrowing would
+        // EXCLUDE the one 0-argument application the term carrier does keep
+        // (`Fn{S, [], []}` for a `Sort`-kind name, which `nullary_canon` does not fold)
+        // — a distinction that measures nothing here in either direction.
+        if let term_view::ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
             ..
-        } = self.get_term(tid)
+        } = term_view::TermView::head(view, self)
         {
-            let (functor, pos_args, named_args) = (*functor, pos_args.clone(), named_args.clone());
             // The union gate first — a name split plus an `OperationInfo` probe, so an
             // ordinary predicate or constructor leaves before any argument is read.
             if typing::spec_op_call_parent(self, functor).is_some() {
@@ -4435,12 +4467,14 @@ impl KnowledgeBase {
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
-                        named_args
-                            .iter()
-                            .find(|(s, _)| s == p)
-                            .map(|(_, t)| *t)
-                            .or_else(|| pos_args.get(i).copied())
-                            .map(crate::eval::value::Value::term)
+                        // WI-20260904-J0RM4: read through `TermView`, so a query
+                        // pattern on the transient occurrence carrier is classified
+                        // by exactly the arguments its hash-consed twin would be.
+                        // `named_arg` compares by SYMBOL, which is the same
+                        // comparison the `named_args.iter().find` it replaces made.
+                        view.named_arg(self, *p)
+                            .or_else(|| (i < pos_arity).then(|| view.pos_arg(self, i)).flatten())
+                            .map(|c| c.to_value())
                     })
                     .collect();
                 // Which supplier set counts is the half the op belongs to — the same
@@ -4473,46 +4507,89 @@ impl KnowledgeBase {
                 }
             }
         }
-        for child in self.get_term(tid).subterms() {
-            self.collect_ambiguous_query_dispatch(child, out);
+        for child in self.structural_child_views(view) {
+            self.collect_ambiguous_query_dispatch(&child, out);
         }
     }
 
-    /// True iff `tid`'s head is a hereditary-Harrop DISCHARGE (`forall_impl`) — the one
+    /// True iff `view`'s head is a hereditary-Harrop DISCHARGE (`forall_impl`) — the one
     /// goal connective [`Self::collect_undefined_goal_functors`] never enters, because
     /// its antecedents DECLARE the predicates its consequent proves (WI-1046).
-    fn is_discharge_functor(&self, tid: TermId) -> bool {
-        matches!(self.head_functor(tid), Some(f) if self.local_name_of(f) == "forall_impl")
+    fn is_discharge_functor<V: term_view::TermView>(&self, view: &V) -> bool {
+        matches!(self.goal_head_sym_arity(view),
+                 Some((f, _)) if self.local_name_of(f) == "forall_impl")
     }
 
-    /// True iff `tid`'s head is the negation builtin `not` — the one goal
-    /// connective the walk always enters (WI-863).
-    fn is_negation_functor(&self, tid: TermId) -> bool {
-        matches!(self.head_functor(tid), Some(f) if self.builtin_of(f) == Some(BuiltinTag::Not))
+    /// True iff `view`'s head is the negation builtin `not` — the one goal connective
+    /// the walk always enters (WI-863).
+    ///
+    /// Both read the head through [`Self::goal_head_sym_arity`], not
+    /// `ViewHead::functor_sym`: that answers for a `Functor` head and NOT for an `Ident`,
+    /// and an unresolved bare name is exactly the shape a goal naming nothing arrives in
+    /// (the divergence recorded at `goal_head_sym_arity`).
+    fn is_negation_functor<V: term_view::TermView>(&self, view: &V) -> bool {
+        matches!(self.goal_head_sym_arity(view),
+                 Some((f, _)) if self.builtin_of(f) == Some(BuiltinTag::Not))
     }
 
-    /// The child `TermId`s of `tid` the resolver evaluates as GOALS — empty for a
+    /// The children of `view` the resolver evaluates as GOALS — empty for a
     /// plain predicate or data constructor (whose arguments are data, not goals).
     /// The goal connectives: `not`'s negand, the two branches of `push_choice` and
     /// of the surface `or` / `and`, and a bounded quantifier's `tuple(...)` body.
     /// Read for DESCENT only; whether these are followed is gated on negation scope
     /// by [`Self::collect_undefined_goal_functors`].
-    fn goal_arg_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
-        let Term::Fn {
-            functor, pos_args, ..
-        } = self.get_term(tid)
+    fn goal_arg_views<'a, V: term_view::TermView>(
+        &'a self,
+        view: &'a V,
+    ) -> Vec<term_view::ViewItem<'a>> {
+        let term_view::ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } = term_view::TermView::head(view, self)
         else {
-            return SmallVec::new();
+            return Vec::new();
         };
-        let mut out = SmallVec::new();
-        for slot in self.goal_arg_slots(*functor, pos_args.len()) {
-            let Some(&child) = pos_args.get(slot.index) else {
+        let mut out = Vec::new();
+        for slot in self.goal_arg_slots(functor, pos_arity) {
+            let Some(child) = view.pos_arg(self, slot.index) else {
                 continue;
             };
             if slot.tuple_wrapped {
-                out.extend(self.tuple_goal_termids(child));
+                out.extend(self.tuple_goal_views(child));
             } else {
                 out.push(child);
+            }
+        }
+        out
+    }
+
+    /// The STRUCTURAL children of `view` — every positional then every named arg, on
+    /// whatever carrier it rides. The carrier-neutral peer of `Term::subterms`, for the
+    /// two query walks whose descent is unconditional
+    /// ([`Self::collect_ambiguous_query_names`], [`Self::collect_ambiguous_query_dispatch`]).
+    ///
+    /// WI-20260904-J0RM4 — a query pattern is no longer a `TermId`, so `get_term(tid)`
+    /// is not available to these walks. Positional arity comes off the HEAD (which every
+    /// carrier reports) rather than off a `Term::Fn` match, and the named keys off
+    /// `named_keys`, which is the same canonical order the discrimination tree walks.
+    fn structural_child_views<'a, V: term_view::TermView>(
+        &'a self,
+        view: &'a V,
+    ) -> Vec<term_view::ViewItem<'a>> {
+        let mut out = Vec::new();
+        if let term_view::ViewHead::Functor { pos_arity, .. } =
+            term_view::TermView::head(view, self)
+        {
+            for i in 0..pos_arity {
+                if let Some(c) = view.pos_arg(self, i) {
+                    out.push(c);
+                }
+            }
+        }
+        for key in view.named_keys(self) {
+            if let Some(c) = view.named_arg(self, key) {
+                out.push(c);
             }
         }
         out
@@ -4523,7 +4600,7 @@ impl KnowledgeBase {
     /// Empty for a plain predicate or a data constructor, which is what keeps
     /// `Widget(id: absent(42))` out of every goal walk.
     ///
-    /// Three readers, deliberately: the query-pattern walk ([`Self::goal_arg_termids`],
+    /// Three readers, deliberately: the query-pattern walk ([`Self::goal_arg_views`],
     /// WI-863), the rule-body walk ([`Self::body_goal_children`], WI-1034), and the
     /// LOADER's position-directed boolean routing (WI-1046,
     /// `Loader::build_body_atom_occurrence_inner`) — which needs the answer while it is
@@ -4667,13 +4744,36 @@ impl KnowledgeBase {
     /// `tuple(...)` wrapper. A body that is not a tuple is treated as a single
     /// goal (the loader wraps every body, so this is defensive) — returned as-is
     /// rather than dropped, so no goal escapes the walk (loud over silent).
-    fn tuple_goal_termids(&self, tid: TermId) -> SmallVec<[TermId; 2]> {
-        match self.get_term(tid) {
-            Term::Fn {
-                functor, pos_args, ..
-            } if self.local_name_of(*functor) == "tuple" => pos_args.iter().copied().collect(),
-            _ => SmallVec::from_elem(tid, 1),
+    fn tuple_goal_views<'a>(&'a self, item: term_view::ViewItem<'a>) -> Vec<term_view::ViewItem<'a>> {
+        if let term_view::ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } = term_view::TermView::head(&item, self)
+        {
+            // WI-20260904-J0RM4 — the head read widens exactly as its siblings do, and
+            // here the widening is VISIBLE rather than inert, so it is stated: a nullary
+            // `Ref(tuple)` matched `_ => [tid]` under the old `Term::Fn`-only test and
+            // now takes this arm and answers `[]`. That is the better answer — an empty
+            // quantifier body has no goals to walk, where the old reading handed the
+            // wrapper itself back as a goal — and it is unreachable from a loader that
+            // always wraps a body, which is why the arm below still calls itself
+            // defensive.
+            if self.local_name_of(f) == "tuple" {
+                // The borrow is of the ITEM, which this call consumes — so the children
+                // must be materialized before it goes. `ViewItem` is a cheap enum over a
+                // `TermId` / a borrowed `Value` / an owned one, so this is the same
+                // copy the `pos_args.iter().copied()` it replaces made.
+                let kids: Vec<term_view::ViewItem<'a>> = (0..pos_arity)
+                    .filter_map(|i| {
+                        term_view::TermView::pos_arg(&item, self, i)
+                            .map(|c| term_view::ViewItem::Owned(c.to_value()))
+                    })
+                    .collect();
+                return kids;
+            }
         }
+        vec![item]
     }
 
     /// WI-20260822-J38JE — is `functor` at `pos_arity` the GOAL CONJUNCTION
@@ -4932,7 +5032,7 @@ impl KnowledgeBase {
     }
 
     /// The children of `goal` the resolver evaluates as GOALS, each with the span to
-    /// report it at — the occurrence-side peer of [`Self::goal_arg_termids`],
+    /// report it at — the occurrence-side peer of [`Self::goal_arg_views`],
     /// recognising the same connectives, and unwrapping the quantifier body's
     /// `tuple(…)` in the same place ([`Self::tuple_goal_children`]) for the same
     /// reason: the wrapper is never held, so its own head is never mistaken for a
@@ -5001,7 +5101,7 @@ impl KnowledgeBase {
     }
 
     /// Components of a quantifier/discharge body: the positional args of its `tuple(…)`
-    /// wrapper. The occurrence-side peer of [`Self::tuple_goal_termids`], and returned
+    /// wrapper. The occurrence-side peer of [`Self::tuple_goal_views`], and returned
     /// as-is when the body is not a tuple for the same reason that one gives — the
     /// loader wraps every body, so this is defensive, and no goal escapes the walk.
     ///
@@ -6344,6 +6444,20 @@ impl KnowledgeBase {
         self.terms.len()
     }
 
+    /// How many logic variables the KB has minted — the `fresh_var` counter.
+    ///
+    /// WI-20260904-J0RM4's acceptance instrument, beside [`Self::term_store_len`]. The
+    /// two answer DIFFERENT questions and the ticket's own acceptance conflated them:
+    /// the store is what LEAKS (a slot per omitted field, held for the KB's lifetime),
+    /// while this is a `u32` counter that every query must move — a pattern's variables
+    /// have to be distinct from the ones the resolver opens per clause, so a query that
+    /// minted none would be unsound. MEASURED on the fixture: conversion +2 and
+    /// resolution +2 per query before the change, conversion +2 and resolution +2 after.
+    /// What went to zero is the store growth, which was entirely the conversion's.
+    pub fn var_counter(&self) -> u32 {
+        self.next_var
+    }
+
     // ── Term matching ─────────────────────────────────────────────
     //
     // match_term inserts `target` into a temporary discrimination tree and
@@ -6535,42 +6649,42 @@ impl KnowledgeBase {
 
     // ── Variable-aware operations ─────────────────────────────
 
-    /// Collect all VarIds occurring in a term (DFS, deduped).
-    pub fn collect_vars(&self, term: TermId) -> Vec<VarId> {
+    /// Collect all flex `Global` VarIds occurring in `view` (DFS, deduped).
+    ///
+    /// WI-20260904-J0RM4 — carrier-neutral, because the CLI asks it of a QUERY PATTERN
+    /// to name the columns of an answer, and a query pattern is no longer a `TermId`.
+    /// The walk is unchanged: a `Global` var is collected, a `DeBruijn` (bound) one is
+    /// not, and descent is over structural children — which for the `TermId` carrier is
+    /// exactly the `Fn` positional+named recursion it replaces.
+    pub fn collect_vars<V: term_view::TermView>(&self, view: &V) -> Vec<VarId> {
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        self.collect_vars_rec(term, &mut vars, &mut seen);
+        self.collect_vars_rec(view, &mut vars, &mut seen);
         vars
     }
 
-    fn collect_vars_rec(
+    fn collect_vars_rec<V: term_view::TermView>(
         &self,
-        term: TermId,
+        view: &V,
         vars: &mut Vec<VarId>,
         seen: &mut std::collections::HashSet<u32>,
     ) {
-        match self.terms.get(term) {
-            Term::Var(Var::Global(vid)) => {
+        // `index_var`, NOT `head`: the `TermId` and `Value` carriers override it to read
+        // the carrier directly, where `head` CLONES a `Literal` for every `Const` it
+        // passes (WI-1023 records that clone as the thing a hot walk must dodge) — and
+        // a var-free term is nearly all of what this walk touches. Every var KIND ends
+        // the descent, as the `Term::Var(DeBruijn)` arm it replaces did; only a flex
+        // `Global` is collected.
+        if let Some(v) = view.index_var(self) {
+            if let Var::Global(vid) = v {
                 if seen.insert(vid.raw()) {
-                    vars.push(*vid);
+                    vars.push(vid);
                 }
             }
-            Term::Var(Var::DeBruijn(_)) => {}
-            Term::Fn {
-                pos_args,
-                named_args,
-                ..
-            } => {
-                let pos_args = pos_args.clone();
-                let named_args = named_args.clone();
-                for &id in pos_args.iter() {
-                    self.collect_vars_rec(id, vars, seen);
-                }
-                for &(_, id) in named_args.iter() {
-                    self.collect_vars_rec(id, vars, seen);
-                }
-            }
-            _ => {}
+            return;
+        }
+        for child in self.structural_child_views(view) {
+            self.collect_vars_rec(&child, vars, seen);
         }
     }
 
@@ -7057,7 +7171,7 @@ impl KnowledgeBase {
     ) {
         use crate::eval::value::Value;
         match head {
-            Value::Term { id: t, .. } => self.collect_vars_rec(*t, vars, seen),
+            Value::Term { id: t, .. } => self.collect_vars_rec(t, vars, seen),
             Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
                 for c in pos.iter() {
                     self.collect_head_global_vars(c, vars, seen);
@@ -7089,7 +7203,7 @@ impl KnowledgeBase {
     ) {
         use crate::eval::value::Value;
         match head {
-            Value::Term { id: t, .. } => self.collect_vars_rec(*t, vars, seen),
+            Value::Term { id: t, .. } => self.collect_vars_rec(t, vars, seen),
             Value::Node(occ) => {
                 node_occurrence::collect_occurrence_global_vars_ordered(self, occ, vars, seen)
             }
@@ -13027,7 +13141,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
 
-        let vars = kb.collect_vars(term);
+        let vars = kb.collect_vars(&term);
         assert_eq!(vars.len(), 2);
         assert!(vars.contains(&vx));
         assert!(vars.contains(&vy));

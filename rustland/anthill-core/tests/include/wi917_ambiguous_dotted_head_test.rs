@@ -207,7 +207,7 @@ fn a_contested_name_is_found_in_every_position_wi863_tolerates() {
         "w917a(v: SortInfo(name: ?n))",                  // DATA slot, never a goal
     ] {
         let qt = query_pattern_term(&mut kb, pattern);
-        let found = kb.ambiguous_query_names(qt, scope);
+        let found = kb.ambiguous_query_names(&qt, scope);
         assert_eq!(
             found.len(),
             1,
@@ -250,7 +250,7 @@ fn an_absent_name_in_a_tolerated_position_is_still_tolerated() {
     ] {
         let qt = query_pattern_term(&mut kb, pattern);
         assert!(
-            kb.ambiguous_query_names(qt, scope).is_empty(),
+            kb.ambiguous_query_names(&qt, scope).is_empty(),
             "`{pattern}` names nothing at all, and WI-863's reason for tolerating that \
              there — the branch has no solutions to lose — still holds",
         );

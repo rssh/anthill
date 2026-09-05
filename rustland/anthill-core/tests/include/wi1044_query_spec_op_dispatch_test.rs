@@ -143,7 +143,7 @@ fn two_suppliers_query_only(ns: &str) -> String {
 /// [`crate::common::query_pattern_term`]) rather than a hand-built resolver goal.
 /// A hand-built `Term::Fn` would be a different goal from the one `anthill query`
 /// resolves, and this ticket is about the query path specifically.
-fn query_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::term::TermId {
+fn query_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::load::QueryPattern {
     crate::common::query_pattern_term(kb, pattern)
 }
 
@@ -152,15 +152,21 @@ fn query_term(kb: &mut KnowledgeBase, pattern: &str) -> anthill_core::kb::term::
 /// positional and last (WI-938), so that is the slot to read.
 fn query_answers(kb: &mut KnowledgeBase, pattern: &str) -> Vec<(Value, bool)> {
     use anthill_core::kb::resolve::ResolveConfig;
-    use anthill_core::kb::term::Term;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
     let goal = query_term(kb, pattern);
-    let r_var = match kb.get_term(goal) {
-        Term::Fn { pos_args, .. } => *pos_args.last().expect("pattern has no positional args"),
+    // WI-20260904-J0RM4: the last positional read through `TermView`, since the pattern
+    // is no longer a `TermId`. The var it names is what the answer binds.
+    let r_var = match TermView::head(&goal, kb) {
+        ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => {
+            TermView::pos_arg(&goal, kb, pos_arity - 1)
+                .expect("last positional readable")
+                .to_value()
+        }
         other => panic!("query pattern `{pattern}` is not an application: {other:?}"),
     };
     kb.resolve(&[goal], &ResolveConfig::default())
         .iter()
-        .map(|sol| (kb.reify(r_var, &sol.subst), sol.is_definite()))
+        .map(|sol| (kb.reify_value(&r_var, &sol.subst), sol.is_definite()))
         .collect()
 }
 
@@ -234,7 +240,7 @@ fn a_two_supplier_query_is_refused() {
     let src = two_suppliers_query_only(ns);
     let mut kb = crate::common::load_kb_with(&src);
     let qt = query_term(&mut kb, &describe_pattern(ns));
-    let msgs = kb.ambiguous_query_dispatch(qt);
+    let msgs = kb.ambiguous_query_dispatch(&qt);
     let msg = msgs.join("\n");
     assert_eq!(msgs.len(), 1, "one call, one refusal: {msg}");
     assert!(msg.contains("ambiguous dispatch"), "{msg}");
@@ -273,7 +279,7 @@ fn the_query_refusal_shares_the_load_refusals_message_body() {
 
     let mut kb = crate::common::load_kb_with(&two_suppliers_query_only(ns));
     let qt = query_term(&mut kb, &describe_pattern(ns));
-    let query_body = kb.ambiguous_query_dispatch(qt).join("\n");
+    let query_body = kb.ambiguous_query_dispatch(&qt).join("\n");
 
     assert_eq!(
         query_body, load_body,
@@ -317,16 +323,16 @@ fn a_two_supplier_query_never_answers_the_default() {
 /// tests pass through a path they do not claim to exercise.
 #[test]
 fn the_query_goal_carries_no_typer_stamp() {
-    use anthill_core::kb::node_occurrence::materialize_from_handle;
     let ns = "test.wi1044.unstamped";
     let src = one_supplier(ns, "");
     let mut kb = crate::common::load_kb_with(&src);
     let qt = query_term(&mut kb, &describe_pattern(ns));
-    // The goal as the WI-938 hook first sees it — the same `materialize_from_handle`
-    // that hook calls for a `Value::Term` goal.
-    let occ = materialize_from_handle(&kb, qt);
+    // WI-20260904-J0RM4: the goal IS the occurrence the WI-938 hook reads now — the
+    // `materialize_from_handle` round-trip this used to make (of a hash-consed pattern
+    // into the occurrence the hook wants) is gone with the carrier change, so the
+    // assertion is on the very node the hook sees rather than on a twin of it.
     assert!(
-        occ.classified_apply_target().is_none(),
+        qt.classified_apply_target().is_none(),
         "the query goal must arrive unclassified; if a typer pass has started \
          stamping it, the tests above are exercising a different path",
     );

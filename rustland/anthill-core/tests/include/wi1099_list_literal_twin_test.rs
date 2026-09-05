@@ -418,11 +418,7 @@ fn shape(kb: &KnowledgeBase, t: TermId) -> String {
 /// The head term of the single fact `pattern`'s functor names, and its first
 /// positional argument.
 fn fact_head_and_arg(kb: &mut KnowledgeBase, pattern: &str) -> (TermId, TermId) {
-    let probe = crate::common::query_pattern_term(kb, pattern);
-    let sym = match kb.get_term(probe) {
-        Term::Fn { functor, .. } => *functor,
-        other => panic!("pattern `{pattern}` is {other:?}"),
-    };
+    let sym = crate::common::query_pattern_functor(kb, pattern);
     let rids = kb.rules_by_functor(sym);
     assert_eq!(rids.len(), 1, "exactly one fact for `{pattern}`");
     let head = kb.rule_head(rids[0]);

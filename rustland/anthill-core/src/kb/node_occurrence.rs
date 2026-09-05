@@ -3595,7 +3595,7 @@ pub(super) fn collect_value_type(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match v {
-        Value::Term { id: t, .. } => kb.collect_vars_rec(*t, vars, seen),
+        Value::Term { id: t, .. } => kb.collect_vars_rec(t, vars, seen),
         Value::Node(occ) => collect_type_or_expr_node_vars(kb, occ, vars, seen),
         Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
             for c in pos.iter() {
@@ -3639,7 +3639,7 @@ fn collect_type_child(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match child {
-        TypeChild::Ground(t) => kb.collect_vars_rec(*t, vars, seen),
+        TypeChild::Ground(t) => kb.collect_vars_rec(t, vars, seen),
         TypeChild::Node(n) => collect_type_or_expr_node_vars(kb, n, vars, seen),
     }
 }

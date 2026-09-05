@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use anthill_core::codegen::generate_rust;
 use anthill_core::fs_util;
 use anthill_core::intern::{ResolveResult, ScopeId, GLOBAL_SCOPE_NAME};
-use anthill_core::kb::load::{self, FileSourceResolver};
+use anthill_core::kb::load::{self, FileSourceResolver, QueryPattern};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::VarId;
 use anthill_core::kb::{KnowledgeBase, ProgramClause, ProgramClauseMatch};
@@ -1554,7 +1554,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                     println!("--- query: {} ---", label);
                 }
 
-                for &qt in query_terms {
+                for qt in query_terms {
                     // WI-917: a CONTESTED name refuses the pattern in either mode and
                     // wherever it is written. Ahead of the run, not after it: unlike an
                     // undefined functor (WI-754 — resolution can still succeed, so the
@@ -1567,7 +1567,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                     if args.match_heads {
                         // Structural browse: which facts / rule heads unify
                         // with the pattern, no body evaluation.
-                        let results = kb.browse_program_clauses_matching(&qt);
+                        let results = kb.browse_program_clauses_matching(qt);
                         // WI-754: nothing matched — if the head names no known
                         // functor, that is an unresolved name, not an empty
                         // browse. Checked AFTER browsing so a defined functor
@@ -1630,7 +1630,8 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // Not `resolve`: that drops `stats.truncated`, and a
                         // depth-truncated "no solutions" is UNDECIDED, not a
                         // refutation (WI-628).
-                        let (solutions, stats) = kb.resolve_with_stats(&[qt], &config);
+                        let (solutions, stats) =
+                            kb.resolve_with_stats(std::slice::from_ref(qt), &config);
                         // WI-863: refuse a query naming an undefined functor in a
                         // position COMMITTED to its truth — the head, or anywhere
                         // inside a `not` (directly or a connective deep,
@@ -1783,7 +1784,7 @@ fn supply_import_flags(kb: &mut KnowledgeBase, imports: &[String]) -> Result<(),
 fn collect_queries(
     args: &QueryArgs,
     kb: &mut KnowledgeBase,
-) -> Result<(ScopeId, Vec<(String, Vec<anthill_core::kb::term::TermId>)>), i32> {
+) -> Result<(ScopeId, Vec<(String, Vec<QueryPattern>)>), i32> {
     // WI-853: the `-i` flags are supplied on their OWN sources — the pattern / file
     // below is parsed with nothing prepended to it — and they entered `<global>` in
     // `run_query` before this, so the query text scanned here resolves against them.
@@ -1806,7 +1807,7 @@ fn collect_queries(
         let mut terms = Vec::new();
         for item in &parsed.items {
             if let Item::Fact(fact) = item {
-                let tid = load::convert_query_term(
+                let pat = load::convert_query_term(
                     kb,
                     &parsed.terms,
                     &parsed.symbols,
@@ -1814,7 +1815,7 @@ fn collect_queries(
                     global_scope,
                     &mut var_map,
                 );
-                terms.push(tid);
+                terms.push(pat);
             }
         }
         if terms.is_empty() {
@@ -1854,7 +1855,7 @@ fn collect_queries(
         let mut var_map = HashMap::new();
         for item in &parsed.items {
             if let Item::Fact(fact) = item {
-                let tid = load::convert_query_term(
+                let pat = load::convert_query_term(
                     kb,
                     &parsed.terms,
                     &parsed.symbols,
@@ -1862,8 +1863,8 @@ fn collect_queries(
                     global_scope,
                     &mut var_map,
                 );
-                let label = TermPrinter::new(kb).print_term(tid);
-                queries.push((label, vec![tid]));
+                let label = TermPrinter::new(kb).print_occurrence(&pat);
+                queries.push((label, vec![pat]));
             }
         }
         if queries.is_empty() {
@@ -1903,15 +1904,11 @@ fn collect_queries(
 /// (`no solutions`), while a genuinely absent name (and a namespaced name queried
 /// out of scope, whose qualified head the bare query does not match) still heads
 /// no clause and is reported.
-fn report_if_unknown_functor(
-    kb: &KnowledgeBase,
-    global_scope: ScopeId,
-    qt: anthill_core::kb::term::TermId,
-) -> bool {
-    let Some(sym) = kb.undefined_functor(&qt) else {
+fn report_if_unknown_functor(kb: &KnowledgeBase, global_scope: ScopeId, qt: &QueryPattern) -> bool {
+    let Some(sym) = kb.undefined_functor(qt) else {
         return false;
     };
-    if !kb.browse_program_clauses_matching(&qt).is_empty() {
+    if !kb.browse_program_clauses_matching(qt).is_empty() {
         return false;
     }
     report_unknown_functor_name(kb, global_scope, sym);
@@ -1930,7 +1927,7 @@ fn report_if_unknown_functor(
 fn report_contested_query_names(
     kb: &KnowledgeBase,
     global_scope: ScopeId,
-    qt: anthill_core::kb::term::TermId,
+    qt: &QueryPattern,
 ) -> bool {
     let contested = kb.ambiguous_query_names(qt, global_scope);
     for &sym in &contested {
@@ -1951,7 +1948,7 @@ fn report_contested_query_names(
 /// Unlocated, deliberately and unlike the load face: a query pattern is a whole
 /// argument, so `--pattern '<text>'` IS the location, and the multi-pattern
 /// `--query-file` path already prints a `--- query: <label> ---` header above it.
-fn report_ambiguous_query_dispatch(kb: &KnowledgeBase, qt: anthill_core::kb::term::TermId) -> bool {
+fn report_ambiguous_query_dispatch(kb: &KnowledgeBase, qt: &QueryPattern) -> bool {
     let ties = kb.ambiguous_query_dispatch(qt);
     for msg in &ties {
         eprintln!("error: {msg}");
@@ -2287,7 +2284,7 @@ fn print_program_clause_match_results(
 fn print_solutions(
     kb: &mut KnowledgeBase,
     solutions: &[Solution],
-    query_term: anthill_core::kb::term::TermId,
+    query_term: &QueryPattern,
     max: usize,
     truncated: bool,
 ) {

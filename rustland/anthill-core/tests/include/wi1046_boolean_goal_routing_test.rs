@@ -435,7 +435,7 @@ fn a_query_pattern_discharge_does_not_refuse_its_own_hypothesis() {
     let qt =
         crate::common::query_pattern_term(&mut kb, "not((forall(?h), hyp1046(?h) -: hyp1046(?h)))");
     let undefined: Vec<String> = kb
-        .undefined_query_goal_functors(qt)
+        .undefined_query_goal_functors(&qt)
         .iter()
         .map(|s| kb.qualified_name_of(*s).to_string())
         .collect();

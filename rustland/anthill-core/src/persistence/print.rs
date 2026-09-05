@@ -463,9 +463,20 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str(self.view.sym_name(vid.name()));
             }
             Expr::Const(lit) => self.write_literal(lit, buf),
-            // WI-714: a macro-spliced pre-built value has no surface syntax — it
-            // only appears in a post-expansion op body, never in round-tripped
-            // source. Render an opaque marker.
+            // WI-714: a macro-spliced pre-built value generally has no surface syntax —
+            // it appears in a post-expansion op body, never in round-tripped source —
+            // so it renders as an opaque marker.
+            //
+            // …EXCEPT a spliced hash-consed TERM, which has exactly the surface syntax
+            // `write_term` prints. WI-20260904-J0RM4 made that reachable from a place a
+            // user reads: a query pattern carrying a written empty effect row
+            // (`Spec[E = {}]`) splices the canonical `effects_rows` term rather than
+            // rebuilding it transiently, and `anthill query --query-file` labels each
+            // query with this printer. It read `<spliced>` where the term spelling was
+            // available one call away.
+            Expr::Spliced(crate::eval::value::Value::Term { id, .. }) => {
+                self.write_term(*id, buf)
+            }
             Expr::Spliced(_) => buf.push_str("<spliced>"),
             Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym } => {
                 buf.push_str(self.view.sym_name(*sym));
@@ -520,6 +531,46 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                         return;
                     }
                 }
+                // WI-20260904-J0RM4 — THE TWO LIST SURFACES `write_term` COLLAPSES, and
+                // they are here for the same reason: `anthill query --query-file` labels
+                // each query with this printer, and a query pattern is now an occurrence
+                // tree, so a surface `write_term` restored and this one did not is a
+                // visible regression in the label. Both were driven by `/code-review`
+                // against the built CLI.
+                //
+                // (a) A ground cons/nil SPINE — see [`Self::unwrap_list_spine`] for why
+                //     the bare `nil`/`cons` form must not be the printed one. A rule
+                //     body's `[…]` is an `Expr::ListLit` and never reaches here; a spine
+                //     built as occurrences is what does.
+                if let Some(items) = self.occ_unwrap_list_spine(occ) {
+                    self.write_occ_seq('[', ']', &items, buf);
+                    return;
+                }
+                // (b) The FLAT literal `ListLiteral(e…)`, which is what a `[…]` in a slot
+                //     whose declared type names a RIVAL collection stays as
+                //     (`list_literal_lowering` answers `None` there, spec §4.6). MEASURED
+                //     before this: `entity Tagged(tags: Set[T = Int64])` queried with
+                //     `tagged(Tagged(tags: [1, 2]))` labelled `ListLiteral(1, 2)`, with
+                //     the `List`-declared sibling still labelling `[1, 2]` as the control.
+                //     `dt::is` and `named_args.is_empty()` are `write_term`'s own gates —
+                //     the named spelling parses positional-only (WI-560) and folding it
+                //     would drop the payload. No `reload_faithful` arm: that mode is for
+                //     writing facts to disk, and a fact is a term (see the note at
+                //     `TermPrinter::reload_faithful`).
+                if dt::is(fname, dt::LIST_LITERAL) && named_args.is_empty() {
+                    self.write_occ_seq('[', ']', pos_args, buf);
+                    return;
+                }
+                // WHAT IS STILL NOT MIRRORED, said rather than left to be rediscovered:
+                // `write_term`'s `is_type_functor` → `write_type_term` surface rendering
+                // (`(A) -> B @ {E}` for `TypeExtractor.Arrow`, and its siblings). It
+                // cannot be delegated — `write_type_term` takes a `TermId` and this side
+                // has no term to hand it — so mirroring it means an occurrence-side type
+                // writer, which is its own piece of work. What reaches it is narrow: a
+                // NodeKind::Type occurrence is already rendered structurally above, and
+                // an `Expr::Apply` headed by a type functor needs the author to have
+                // written `anthill.prelude.TypeExtractor.Arrow(…)` by name — the `[…]`
+                // and `{}` surfaces both land elsewhere.
                 self.write_occ_fn(fname, pos_args, named_args, buf);
             }
             Expr::ApplyWithin {
@@ -707,6 +758,67 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 buf.push_str("impl: ");
                 buf.push_str(self.view.sym_name(*impl_sort));
                 buf.push(')');
+            }
+        }
+    }
+
+    /// [`Self::unwrap_list_spine`] over the occurrence carrier — the element
+    /// occurrences of a `cons(head:, tail:)` / positional-`cons` chain ending in a bare
+    /// `nil`, or `None` for anything else (a var tail, a non-`nil` end, a `cons` carrying
+    /// extra args, a non-list node).
+    ///
+    /// The ACCEPTANCE CONDITIONS are the term version's, deliberately down to the "exactly
+    /// head+tail" test: a print that folded a `cons` with extras would silently drop them.
+    /// Kept as a second function rather than shared, because the two walk different
+    /// carriers and neither `TermView` nor `TermSource` exposes the "is this node a `Fn`
+    /// with exactly these two named keys" question the fold turns on.
+    fn occ_unwrap_list_spine(&self, occ: &NodeOccurrence) -> Option<Vec<Rc<NodeOccurrence>>> {
+        let mut items: Vec<Rc<NodeOccurrence>> = Vec::new();
+        let mut cur: &NodeOccurrence = occ;
+        // Keeps each visited node alive while `cur` borrows into the next one.
+        let mut owned: Rc<NodeOccurrence>;
+        // BORROWED, not `to_string()`: this runs on every `Expr::Apply` the printer
+        // meets, not only on lists, and the `write_term` twin compares on a `&str`.
+        let short = |s: Symbol| {
+            let n = self.view.sym_name(s);
+            n.rsplit('.').next().unwrap_or(n)
+        };
+        loop {
+            match cur.as_expr()? {
+                Expr::Ref(s) if short(*s) == "nil" => return Some(items),
+                Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                } => {
+                    let name = short(*functor);
+                    if name == "nil" && pos_args.is_empty() && named_args.is_empty() {
+                        return Some(items);
+                    }
+                    if name != "cons" {
+                        return None;
+                    }
+                    let by_key = |k: &str| {
+                        named_args
+                            .iter()
+                            .find(|(s, _)| self.view.sym_name(*s) == k)
+                            .map(|(_, c)| Rc::clone(c))
+                    };
+                    let (head, tail) = match (by_key("head"), by_key("tail")) {
+                        (Some(h), Some(t)) if named_args.len() == 2 && pos_args.is_empty() => {
+                            (h, t)
+                        }
+                        (None, None) if pos_args.len() == 2 && named_args.is_empty() => {
+                            (Rc::clone(&pos_args[0]), Rc::clone(&pos_args[1]))
+                        }
+                        _ => return None,
+                    };
+                    items.push(head);
+                    owned = tail;
+                    cur = &owned;
+                }
+                _ => return None,
             }
         }
     }
