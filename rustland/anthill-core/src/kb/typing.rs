@@ -6747,9 +6747,8 @@ fn type_check_node_gated_at(
     //
     // THIS IS THE GENERAL CHANNEL, CONSUMED BY ONE FRAME SO FAR: `LambdaBody` reads it to
     // build an arrow that reflects its body. Widening the readership needs no change here.
-    let mut body_solutions = Substitution::new();
-    // The walk's variable WATERMARK — see [`report_call_solutions`].
-    let var_watermark = kb.var_watermark();
+    // SCOPED BY A VARIABLE WATERMARK the container carries — see [`WalkSolutions`].
+    let mut solving = WalkSolutions::new(kb);
     while let Some(op) = work.pop() {
         match op {
             TypeWorkOp::Visit {
@@ -6766,11 +6765,14 @@ fn type_check_node_gated_at(
                 simp_rids,
                 &mut work,
                 &mut results,
-                &mut body_solutions,
-                var_watermark,
+                &mut solving,
             ),
         }
     }
+    // WI-20260904-50B2K part (c) — THE DISCHARGE. A spec-op dispatch this walk held
+    // because its carrier was a lambda binder is answered now, against what the binder's
+    // own uses solved. See [`WalkSolutions::discharge`].
+    solving.discharge(kb);
     debug_assert_eq!(
         results.len(),
         1,
@@ -8161,7 +8163,6 @@ fn build_relation_projection(
         // WI-20260904-50B2K part (c): a synthesized projection shape, not a written
         // body — nothing reads what it solves.
         None,
-        kb.var_watermark(),
     ))
 }
 
@@ -10081,6 +10082,24 @@ fn apply_arg_hints(
     // agreement never showed it. Found by /code-review on the sibling list in
     // [`data_slot_arg_hints`], which had been corrected to this owner and left this one
     // disagreeing INSIDE ONE FUNCTION.
+    //
+    // ON AN OVER-APPLIED MIXED CALL THIS HINTS NOTHING, AND THE TWO OVER-ARITY SPELLINGS
+    // THEREFORE DISAGREE. `positional_param_indices` answers `OverArity` with all-`None`
+    // (its own documented decision: which argument is surplus has no answer), while its
+    // `named_args.is_empty()` early return still maps `i < params.len()`. MEASURED:
+    //
+    //   f(lambda x -> x + x, 7, n: 2)   2 errors — the arity error, AND a spurious
+    //                                   `missing requires Additive[T = …]` from the
+    //                                   binder nothing hinted
+    //   f(lambda x -> x + x, 2, 3)      1 error  — the arity error alone
+    //
+    // KEPT, and the reason is that every repair is worse than the symptom. Restoring a
+    // leading-argument guess for the HINT re-creates exactly the defect the comment above
+    // records — hint and check reading different slot owners — and a wrong hint is not
+    // cosmetic: it checks a lambda body at the wrong type and REFUSES. Here the call is
+    // already refused for arity, so what is at stake is one extra true-but-consequential
+    // error on a program that cannot load either way, against re-opening a channel that
+    // wrongly refused a VALID one. Raised by /code-review; measured before deciding.
     let pos_slots = op_params
         .map(|ps| positional_param_indices(kb, ps, pos_args.len(), named_args))
         .unwrap_or_default();
@@ -12904,11 +12923,10 @@ fn build_type(
     simp_rids: &[RuleId],
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
-    // WI-20260904-50B2K part (c): what this walk's calls have solved — see the declaration
-    // at the work loop. Written by the `Apply` arm, read by `LambdaBody`.
-    body_solutions: &mut Substitution,
-    // The walk's variable watermark, for [`report_call_solutions`]' walk-local gate.
-    var_watermark: u32,
+    // WI-20260904-50B2K part (c): this walk's inference state — see [`WalkSolutions`].
+    // Written by the `Apply` arm, read by `LambdaBody` and by the discharge at the work
+    // loop's exit.
+    solving: &mut WalkSolutions,
 ) {
     match frame {
         TypeBuildFrame::Stamp => {
@@ -13266,8 +13284,7 @@ fn build_type(
                 span,
                 expected,
                 pos,
-                Some(body_solutions),
-                var_watermark,
+                Some(solving),
             );
             results.push(r);
         }
@@ -14365,11 +14382,11 @@ fn build_type(
             // the frame's own comment above states ("the arrow's param slot and the body's
             // view of the param agree"); Path 1's rule is the precedent — resolve the
             // return type AND the effect row, "or one call reports two states of one σ".
-            let param_type = resolve_type_deep_value(kb, body_solutions, &param_type);
-            let body_ty = resolve_type_deep_value(kb, body_solutions, &body_ty);
+            let param_type = resolve_type_deep_value(kb, &solving.solved, &param_type);
+            let body_ty = resolve_type_deep_value(kb, &solving.solved, &body_ty);
             let body_effects: Vec<Value> = body_effects
                 .into_iter()
-                .map(|e| resolve_type_deep_value(kb, body_solutions, &e))
+                .map(|e| resolve_type_deep_value(kb, &solving.solved, &e))
                 .collect();
             let fn_ty = make_arrow_value(
                 kb,
@@ -15456,6 +15473,261 @@ fn surface_of_with(
         .filter(|s| kb.local_name_of(*s) != kb.local_name_of(fn_sym))
 }
 
+/// WI-20260904-50B2K part (c) — ONE WALK'S INFERENCE STATE, threaded through the
+/// iterative typer beside its work stack.
+///
+/// It holds the two things a walk learns that outlive the call that learned them, and
+/// they are ONE struct rather than two parameters because they are read TOGETHER: the
+/// deferred requirements below are discharged against the solutions above, and a walk
+/// that reports no solution can license nothing.
+///
+/// LIFETIME IS THE WALK, WHICH IS NOT WHERE THIS BELONGS. Solutions travelling WITH the
+/// result would scope to the body that produced them and make [`Self::watermark`]
+/// unnecessary rather than merely correct — `check_apply_iter` already returns
+/// `env: env.clone()` at fifteen of its return points, so the channel exists and is inert
+/// (user, 2026-09-05; WI-502's `σ → (σ, residual C)` shape). Naming the state here is the
+/// step that makes that move a change of OWNER rather than a re-plumbing.
+pub(crate) struct WalkSolutions {
+    /// What this walk's calls have SOLVED — see [`report_call_solutions`], which is the
+    /// one writer, and `TypeBuildFrame::LambdaBody`, which is the one reader.
+    solved: Substitution,
+    /// The walk's variable WATERMARK: [`KnowledgeBase::var_watermark`] as it stood when
+    /// the walk began, so `raw() >= watermark` IS "minted during this walk". Read by
+    /// [`report_call_solutions`]' scoping gate and by [`walk_minted_carriers`].
+    watermark: u32,
+    /// Abstract spec-op dispatches this walk DEFERRED rather than refused — see
+    /// [`WalkSolutions::defer_abstract_dispatch`].
+    deferred: Vec<DeferredSpecRequirement>,
+}
+
+/// WI-20260904-50B2K part (c) — an abstract spec-op dispatch whose carrier is a LAMBDA
+/// BINDER, held until the walk ends so the binder's own uses can answer it.
+///
+/// The refusal it replaces demands a `requires` clause "on enclosing sort", and for this
+/// carrier there is NO SITE THE AUTHOR COULD WRITE ONE: a lambda binder is not a type
+/// parameter of anything. That is what makes deferral the right answer rather than a
+/// weakening — the question is not "did the author forget a declaration" but "does the
+/// evidence exist yet", and for a binder it arrives at the USE.
+struct DeferredSpecRequirement {
+    /// The call occurrence to classify if the discharge fails.
+    occ: Rc<NodeOccurrence>,
+    /// The walk-minted variables this call's carrier arguments are typed at — the binders
+    /// the requirement falls on. EVERY one must be answered for the call to be licensed.
+    carriers: SmallVec<[VarId; 2]>,
+    /// The spec each carrier must provide.
+    spec_sort: Symbol,
+    /// The classification to raise if the discharge fails — built at the call site, where
+    /// the per-call σ that derived `abstract_params` is still in scope, and carried rather
+    /// than re-derived (the σ is gone by the time this is read).
+    class: CallClass,
+    /// `(binder, concrete carrier)` for every use of these binders this walk has seen.
+    ///
+    /// **PER BINDER, NOT A FLAT SET.** The discharge's question is asked of EACH carrier
+    /// separately — "was this binder answered, and was every answer an instance?" — and a
+    /// flat list cannot state it: with `a` seen at `Int64` and `b` seen at nothing, a flat
+    /// `[Int64]` is non-empty and all-providing, and would license a call half of whose
+    /// carriers have no evidence at all.
+    ///
+    /// **NOT `solved` ALONE, AND THE DIFFERENCE IS A FAIL-OPEN.** [`report_call_solutions`]
+    /// is FIRST-WINS — a variable already bound is left alone, because the rest of the walk
+    /// has been typed against the first answer. Discharging against that one binding would
+    /// license `let g = lambda x -> x + x  let a = g(2)  g(bad)` on the strength of `g(2)`
+    /// alone. Observations are appended at the same site BEFORE that filter, so a second
+    /// use at a second carrier is seen even though it never becomes a solution.
+    observed: Vec<(VarId, Symbol)>,
+}
+
+impl WalkSolutions {
+    fn new(kb: &KnowledgeBase) -> Self {
+        Self {
+            solved: Substitution::new(),
+            watermark: kb.var_watermark(),
+            deferred: Vec::new(),
+        }
+    }
+
+    /// Hold an abstract dispatch instead of refusing it. See [`DeferredSpecRequirement`].
+    fn defer_abstract_dispatch(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+        carriers: SmallVec<[VarId; 2]>,
+        spec_sort: Symbol,
+        class: CallClass,
+    ) {
+        self.deferred.push(DeferredSpecRequirement {
+            occ: Rc::clone(occ),
+            carriers,
+            spec_sort,
+            class,
+            observed: Vec::new(),
+        });
+    }
+
+    /// Record every concrete carrier this call's σ gives a deferred requirement's binders.
+    /// Runs BEFORE [`report_call_solutions`]' first-wins filter — see the `observed` doc.
+    fn observe_deferred_carriers(&mut self, kb: &KnowledgeBase, subst: &Substitution) {
+        for d in &mut self.deferred {
+            for v in &d.carriers {
+                let Some(c) = resolved_carrier_sort(kb, subst, *v) else {
+                    continue;
+                };
+                if !d.observed.contains(&(*v, c)) {
+                    d.observed.push((*v, c));
+                }
+            }
+        }
+    }
+
+    /// THE DISCHARGE, run once when the walk ends: a deferred requirement whose binders
+    /// were all seen at carriers that provide the spec is LICENSED — left as the spec op
+    /// for value-directed eval, exactly as WI-562's and WI-590's licences leave theirs.
+    /// Anything else is classified now, so the walk's refusal is the one it would have
+    /// raised at the call.
+    ///
+    /// **A REQUIREMENT WITH NO OBSERVATION IS REFUSED, NOT LICENSED.** A lambda nothing in
+    /// this walk applies (`operation mk() -> … = lambda x -> x + x`) has no evidence, and
+    /// the answer it wants is a `PolyType` CONTEXT that outlives the walk — part (c)'s
+    /// remaining half. Until that exists, the conservative verdict is today's refusal.
+    fn discharge(self, kb: &mut KnowledgeBase) {
+        for d in self.deferred {
+            // EVERY binder answered, and EVERY answer an instance. Both halves are the
+            // licence: a binder with no observation has no evidence, and an observation
+            // that provides nothing is the requirement failing rather than deferring.
+            let licensed = d.carriers.iter().all(|v| {
+                let mut answered = false;
+                for (_, c) in d.observed.iter().filter(|(w, _)| w == v) {
+                    answered = true;
+                    if !carrier_provides_spec(kb, *c, d.spec_sort) {
+                        return false;
+                    }
+                }
+                answered
+            });
+            if !licensed {
+                classify(kb, &d.occ, d.class);
+            }
+        }
+    }
+}
+
+/// WI-20260904-50B2K part (c) — the CONCRETE sort `var` stands for under `subst`, or
+/// `None` while it stands for nothing concrete.
+///
+/// [`Substitution::resolve_as_value`] is ONE HOP (plus the parent chain), and a call's σ
+/// routinely binds one variable to another before either reaches a type — `?param :=
+/// ?T_callee`, `?T_callee := Int64`. Asking one hop would read that as "not concrete" and
+/// the walk would refuse a call its own evidence answers, so the chain is followed. Bounded
+/// and visited-guarded because a σ is not guaranteed acyclic here: `bind_value` raw-inserts
+/// on the unbound path (see [`report_call_solutions`], which performs its own occurs-check
+/// for the same reason).
+fn resolved_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -> Option<Symbol> {
+    let mut cur = var;
+    let mut seen: SmallVec<[VarId; 4]> = SmallVec::new();
+    loop {
+        if seen.contains(&cur) {
+            return None;
+        }
+        seen.push(cur);
+        let val = subst.resolve_as_value(cur)?;
+        match val {
+            Value::Var(Var::Global(next)) => cur = *next,
+            other => return sort_functor_of_view(kb, other),
+        }
+    }
+}
+
+/// WI-20260904-50B2K part (c) — does `carrier` supply `spec`? The discharge's question,
+/// asked through BOTH channels the abstract-dispatch guard itself reads: a sort's own
+/// out-edges ([`sort_provides`]) and a provision another sort declares FOR it
+/// ([`carrier_provided_by_witness`], WI-1043). Asking only the first would refuse a
+/// witness-supplied carrier the call can actually dispatch — the exact wrong answer that
+/// ticket was opened on.
+fn carrier_provides_spec(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    sort_provides(kb, carrier, spec) || carrier_provided_by_witness(kb, spec, carrier)
+}
+
+/// WI-20260904-50B2K part (c) — the variables minted DURING this walk that a call's
+/// argument types are stated at.
+///
+/// A non-empty answer is what says "this call's carrier is a LAMBDA BINDER": a declared
+/// type parameter's variable is minted once, at the declaration, and so is older than
+/// every walk. MEASURED over `wi_tests` — 79,414 abstract-dispatch classifications, of
+/// which **3** have a walk-minted carrier, and all three are the fixtures this ticket
+/// added. The predicate is therefore narrow by measurement, not by argument.
+///
+/// The bare `Value::Var` arm is written HERE and not left to `collect_value_type`, for the
+/// reason [`value_vars_all_walk_local`] states at length: that collector has no
+/// `Value::Var` arm and a `_ => {}`, so a carrier that IS a variable — which is this
+/// function's whole population — would collect nothing and read as empty.
+///
+/// **EVERY ARGUMENT POSITION, NOT THE CARRIER POSITIONS**, and the imprecision is stated
+/// because it is a deliberate approximation rather than an oversight. A spec op whose
+/// NON-carrier parameter is also typed at a binder would have that binder demanded of the
+/// discharge too. That direction can only OVER-REFUSE — the discharge requires every listed
+/// variable to be answered AND to provide, so a SUPERSET of the carriers is a stricter
+/// licence — and the whole measured population is `Additive.add`, where both parameters ARE
+/// the carrier. Narrowing to the declared carrier slots would be machinery with no witness.
+///
+/// **THE CONVERSE IS NOT SYMMETRIC, AND MY FIRST DOC CLAIMED IT WAS.** A SUBSET is a LOOSER
+/// licence: a carrier this list omits is never demanded of the discharge, so the call is
+/// licensed on the other binders' evidence alone — the exact half-evidence case
+/// [`DeferredSpecRequirement::observed`] is per-binder to prevent. Raised by /code-review
+/// against the collector, and the reason this reads
+/// [`collect_value_type_and_bare_vars`] rather than the shared collector, whose missing
+/// `Value::Var` arm produces precisely that subset.
+fn walk_minted_carriers(
+    kb: &KnowledgeBase,
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    watermark: u32,
+) -> SmallVec<[VarId; 2]> {
+    let mut out: SmallVec<[VarId; 2]> = SmallVec::new();
+    for r in pos_results.iter().chain(named_results.iter()).flatten() {
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        collect_value_type_and_bare_vars(kb, &r.ty, &mut vars, &mut seen);
+        for v in vars {
+            if v.raw() >= watermark && !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// WI-20260904-50B2K part (c) — the one call an argument-unification site makes: OBSERVE
+/// what this σ gives a deferred requirement's binders, then REPORT what it solved.
+///
+/// The order is load-bearing. [`report_call_solutions`] is first-wins, and observation
+/// must see a second use's carrier even where the solving does not — see
+/// [`DeferredSpecRequirement::observed`].
+///
+/// **`unified` GATES THE OBSERVATION AND NOT THE SOLVING, AND THE ASYMMETRY IS THE POINT.**
+/// `unify_types` binds as it DESCENDS and never rolls back, so a pair that agrees partway
+/// and then disagrees — `Function[A = Int64, B = String]` against `?p -> ?p` binds
+/// `?p := Int64` before failing on `B` — leaves real bindings behind on a unification that
+/// did NOT hold. For the solutions half that is the documented no-rollback hazard and its
+/// consequence is ORDERING (first-wins). For the observation half the consequence is a
+/// LICENCE: [`WalkSolutions::discharge`] drops a requirement on the strength of what was
+/// observed, so an observation drawn from a failed unify would license a call on evidence
+/// this file is elsewhere careful to say is not evidence. Raised by /code-review.
+///
+/// This does not touch the discarded-boolean idiom itself, which is shared by ~10 sites and
+/// is WI-20260904-60143's census — the boolean is READ here, for this one consumer, and
+/// every existing caller's verdict is unchanged.
+fn report_walk_solutions(
+    kb: &KnowledgeBase,
+    solving: Option<&mut WalkSolutions>,
+    subst: &Substitution,
+    unified: bool,
+) {
+    let Some(w) = solving else { return };
+    if unified {
+        w.observe_deferred_carriers(kb, subst);
+    }
+    report_call_solutions(kb, Some(&mut w.solved), subst, w.watermark);
+}
+
 /// WI-20260904-50B2K part (c) — copy a finished call's bindings into the walk's
 /// [`Substitution`], so a frame that minted a type before the call ran can see what the
 /// call decided.
@@ -15541,46 +15813,80 @@ fn report_call_solutions(
     }
 }
 
+/// WI-20260904-50B2K part (c) — [`collect_value_type`]'s walk PLUS THE ARM IT LACKS: a
+/// bare `Value::Var`, at EVERY depth.
+///
+/// **THE SHARED COLLECTOR CANNOT ANSWER THIS QUESTION, AND ANSWERING IT WRONG IS SILENT.**
+/// `collect_value_type` has arms for `Value::Term`, `Value::Node` and `Value::Entity` /
+/// `Value::Tuple`, then `_ => {}` — a bare `Value::Var` contributes NOTHING. Its three
+/// callers here all ask "which variables does this value mention?", and for all three an
+/// under-collecting answer fails in the UNSAFE direction: a walk-local gate answers `true`
+/// on an empty list, an occurs-check answers "no cycle", and a carrier list omits a binder
+/// the discharge would otherwise have demanded evidence for.
+///
+/// THE FIRST CUT HANDLED THE TOP LEVEL ONLY, in each of the three, and /code-review found
+/// all three: `Value::Tuple { … Value::Var(?a) … }` walks straight past the special case
+/// into the shared collector, which recurses into the children WITH ITSELF and drops the
+/// var. So the special case covered exactly the depth-0 shape and nothing under it.
+///
+/// **NOT FIXED IN `collect_value_type` ITSELF, AND THAT IS THE SAME DECISION AS BEFORE.**
+/// That collector feeds [`signature_bound_vars`], the ONE OWNER of a signature's binder set
+/// (WI-1083) — widening it changes which variables a `∀` quantifies. It is measurably green
+/// either way and the shape occurs ZERO times on this corpus, so the wider change still has
+/// no witness. This one is LOCAL to the three functions part (c) owns, has no other reader,
+/// and can only TIGHTEN; the under-collection in the shared collector is real, is NOT this
+/// ticket's, and is recorded at its site.
+fn collect_value_type_and_bare_vars(
+    kb: &KnowledgeBase,
+    v: &Value,
+    vars: &mut Vec<VarId>,
+    seen: &mut HashSet<u32>,
+) {
+    match v {
+        Value::Var(Var::Global(vid)) => {
+            if !vars.contains(vid) {
+                vars.push(*vid);
+            }
+        }
+        // Recurse with THIS function, not the shared one: the shared one recurses into a
+        // carrier's children with ITSELF, which is exactly where the bare var is lost.
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+            for c in pos.iter() {
+                collect_value_type_and_bare_vars(kb, c, vars, seen);
+            }
+            for (_, c) in named.iter() {
+                collect_value_type_and_bare_vars(kb, c, vars, seen);
+            }
+        }
+        other => super::node_occurrence::collect_value_type(kb, other, vars, seen),
+    }
+}
+
 /// WI-20260904-50B2K part (c) — does `v` mention `var`? The occurs-check
 /// [`report_call_solutions`] performs itself; see there for why `bind_value` cannot.
 fn value_mentions_var(kb: &KnowledgeBase, v: &Value, var: VarId) -> bool {
-    if matches!(v, Value::Var(Var::Global(iv)) if *iv == var) {
-        return true;
-    }
     let mut vars: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
-    super::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
+    collect_value_type_and_bare_vars(kb, v, &mut vars, &mut seen);
     vars.contains(&var)
 }
 
 /// WI-20260904-50B2K part (c) — is every variable inside `v` walk-local? The RANGE half of
 /// [`report_call_solutions`]' gate; the measurement that made it necessary is there.
 ///
-/// **THE BARE `Value::Var` IS HANDLED HERE AND NOT BY `collect_value_type`**, and the
-/// first cut leant on that collector alone — /code-review, and it made the gate VACUOUS
-/// for exactly the leak it exists to stop. `collect_value_type` has arms for
-/// `Value::Term`, `Value::Node` and `Value::Entity` / `Value::Tuple` and then `_ => {}`:
-/// there is no `Value::Var` arm, so a binding of `?param := Value::Var(T_canonical)` — the
-/// shape `unify_types`' var arm mints when it binds one variable to another's WALKED value
-/// — collected ZERO variables and `all()` answered `true` on an empty list. The value
-/// carrying a load-time canonical type parameter then went straight into the arrow.
-///
-/// FIXED AT THIS CALLER RATHER THAN IN THE COLLECTOR, deliberately. `collect_value_type`
-/// is the shared owner of "which variables does this type mention" and feeds
-/// `signature_bound_vars`, the ONE OWNER of a signature's binder set (WI-1083) — widening
-/// it changes which variables a `∀` quantifies, which is a different question with its own
-/// blast radius. The under-collection is real and is NOT this ticket's to fix: its map twin
-/// `map_value_type` misses the arm too, and WI-1078's reader inherits it. Recorded here
-/// because a gate that reads a blind collector is a gate that reads `true`.
+/// **IT READS [`collect_value_type_and_bare_vars`], AND THE REASON IS THIS GATE'S OWN
+/// HISTORY.** The first cut asked `collect_value_type`, which has no `Value::Var` arm, so
+/// a binding `?param := Value::Var(T_canonical)` — the shape `unify_types`' var arm mints
+/// when it binds one variable to another's WALKED value — collected ZERO variables and
+/// `all()` answered `true` on an empty list, admitting exactly the leak the gate exists to
+/// stop. The repair then handled the TOP LEVEL only, which /code-review found in turn: the
+/// same value one carrier deep (`Value::Tuple { … Value::Var(?T) … }`) walks past the
+/// special case and is dropped by the shared collector's own recursion. A GATE IS ONLY AS
+/// EXHAUSTIVE AS THE READER IT ASKS, and asking it at one depth is asking it at one depth.
 fn value_vars_all_walk_local(kb: &KnowledgeBase, v: &Value, watermark: u32) -> bool {
-    if let Value::Var(Var::Global(vid)) = v {
-        if vid.raw() < watermark {
-            return false;
-        }
-    }
     let mut vars: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
-    super::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
+    collect_value_type_and_bare_vars(kb, v, &mut vars, &mut seen);
     vars.iter().all(|vid| vid.raw() >= watermark)
 }
 
@@ -15604,14 +15910,13 @@ fn check_apply_iter(
     // the functional-relation arity + 1 is scoped by. It rides the work-stack frame, not
     // `env`: see [`NodePos`] for why a per-rule env flag separates nothing.
     pos: NodePos,
-    // WI-20260904-50B2K part (c): where this call's solutions are REPORTED, so a frame
-    // that minted a type BEFORE the call ran can read what the call decided (the work
-    // loop's `body_solutions`). `None` from the caller that is not on a written body's
-    // walk — `build_relation_projection` types a SYNTHESIZED projection shape, so nothing
+    // WI-20260904-50B2K part (c): the walk's inference state — where this call's solutions
+    // are REPORTED (so a frame that minted a type BEFORE the call ran can read what the
+    // call decided) and where an abstract dispatch on a lambda binder is DEFERRED.
+    // `None` from the caller that is not on a written body's walk —
+    // `build_relation_projection` types a SYNTHESIZED projection shape, so nothing
     // downstream would read what it solved.
-    mut solved: Option<&mut Substitution>,
-    // The walk's variable watermark; see [`report_call_solutions`].
-    var_watermark: u32,
+    mut solving: Option<&mut WalkSolutions>,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -16170,7 +16475,7 @@ fn check_apply_iter(
                     // post-synthesis elimination pass below; the argument type is still
                     // recorded so a LATER param projecting THIS one can read it.
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
-                        unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -16178,7 +16483,7 @@ fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_call_solutions(kb, solved.as_deref_mut(), &subst, var_watermark);
+                        report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -16226,7 +16531,7 @@ fn check_apply_iter(
                 if let Some((param_sym, param_type)) = &matched {
                     // WI-398: defer a projection param's unify (see the positional loop).
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
-                        unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -16234,7 +16539,7 @@ fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_call_solutions(kb, solved.as_deref_mut(), &subst, var_watermark);
+                        report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -18640,17 +18945,49 @@ fn check_apply_iter(
                             }
                         }
                         if !abstract_params.is_empty() {
-                            classify(
-                                kb,
-                                occ,
-                                CallClass::UnresolvedSpecOp {
-                                    spec_op_sym: fn_sym,
-                                    spec_sort_sym: spec_sort,
-                                    abstract_params,
-                                    span,
-                                    enclosing_sort,
-                                },
-                            );
+                            let class = CallClass::UnresolvedSpecOp {
+                                spec_op_sym: fn_sym,
+                                spec_sort_sym: spec_sort,
+                                abstract_params,
+                                span,
+                                enclosing_sort,
+                            };
+                            // WI-20260904-50B2K part (c) — THE FOURTH LICENCE, and the
+                            // one whose carrier has no declaration site.
+                            //
+                            // The three above (WI-562's op-scoped `requires`, WI-590's
+                            // sort-level one, and the `declared` set) all answer "the
+                            // author DID write the clause". This one answers a different
+                            // question: the carrier is a LAMBDA BINDER — a variable this
+                            // walk minted, not a type parameter of any sort or operation
+                            // — so `requires Additive[T = …]` has NOWHERE TO GO, and the
+                            // refusal names a repair the author cannot perform. The
+                            // evidence that decides it is not a declaration at all; it is
+                            // what the binder's own USES solve, and those come later in
+                            // the walk. So the classification is HELD, not dropped, and
+                            // [`WalkSolutions::discharge`] raises it at the walk's end
+                            // for every binder the uses failed to answer.
+                            //
+                            // MEASURED: 3 of `wi_tests`' 79,414 abstract-dispatch
+                            // classifications have a walk-minted carrier — see
+                            // [`walk_minted_carriers`].
+                            let minted = solving
+                                .as_deref()
+                                .map(|w| {
+                                    walk_minted_carriers(
+                                        kb,
+                                        pos_results,
+                                        named_results,
+                                        w.watermark,
+                                    )
+                                })
+                                .unwrap_or_default();
+                            match (minted.is_empty(), solving.as_deref_mut()) {
+                                (false, Some(w)) => {
+                                    w.defer_abstract_dispatch(occ, minted, spec_sort, class)
+                                }
+                                _ => classify(kb, occ, class),
+                            }
                         }
                     }
                 }
@@ -19219,7 +19556,24 @@ fn check_apply_iter(
                                 // ten call sites share it and fixing two would leave the
                                 // other eight. WI-20260904-60143 owns the census.
                                 ArgValidation::Ok => {
-                                    unify_types(kb, &mut subst, &arg_result.ty, slot_type);
+                                    let unified =
+                                        unify_types(kb, &mut subst, &arg_result.ty, slot_type);
+                                    // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO.
+                                    // The first slice reported at Path 1's two argument
+                                    // loops only, and MEASURED, that is exactly the half
+                                    // that cannot see a binder's USE: `let g = lambda x ->
+                                    // x  g(2)` calls an ENV-BOUND ARROW, which is this
+                                    // path, and the walk learned nothing from it (probe:
+                                    // zero solutions, against one for the same program
+                                    // with the body doing the pinning). Part (c)'s
+                                    // discharge is asked precisely about the use, so
+                                    // without this the licence below could never fire.
+                                    report_walk_solutions(
+                                        kb,
+                                        solving.as_deref_mut(),
+                                        &subst,
+                                        unified,
+                                    );
                                 }
                                 ArgValidation::WrapSome { declared } => {
                                     some_wraps.push((i, declared))
@@ -19337,7 +19691,10 @@ fn check_apply_iter(
                         // and not the other is the asymmetry this file has been bitten by
                         // before.
                         ArgValidation::Ok => {
-                            unify_types(kb, &mut subst, &arg_result.ty, &param_type);
+                            let unified = unify_types(kb, &mut subst, &arg_result.ty, &param_type);
+                            // WI-20260904-50B2K part (c) — the named twin; see the
+                            // positional loop's note.
+                            report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
                         }
                         ArgValidation::WrapSome { declared } => {
                             some_wraps.push((pos_args.len() + i, declared));

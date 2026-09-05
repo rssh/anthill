@@ -332,7 +332,11 @@ are not re-invented. `let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))` i
 BOTH ways: two unpinned operands leave `Additive` no evidence wherever the mint comes
 from, and its single-binder twin `let g = lambda x -> x + x  g(2)` is refused at rung 3's
 already-fixed `?param` for the same reason. That is the (c) residue, not a `?pat` gap, and
-it is pinned as `known_gap_a_binder_with_no_evidence_in_its_body_is_still_ambiguous`.
+it was pinned as `known_gap_a_binder_with_no_evidence_in_its_body_is_still_ambiguous`.
+(SUPERSEDED by part (c)'s second slice below: the single-binder arm now answers 4 and the
+row is `part_c_a_binder_the_body_leaves_free_is_answered_by_its_use`; the tuple arm is kept
+as `known_gap_a_binder_list_lambdas_components_are_not_solved_by_the_slot`, and its reason
+turned out to be WI-20260904-34J8Z's missing link rather than an absence of evidence.)
 `lambda (a, b) -> takes_int(a)` also loads both ways — the callee's declaration pins the
 component through Path 1 whatever the mint is.
 
@@ -1295,3 +1299,175 @@ THE LESSON THAT GENERALIZES: A GATE IS ONLY AS EXHAUSTIVE AS THE READER IT ASKS.
 first cut's failure (enumerating populations) and this one's (asking a collector with a
 `_ => {}` arm) are the same shape — the gate was written against an idea of the input
 rather than against what the reader actually returns for every carrier.
+### Part (c), second slice: a binder's USE answers the constraint its body left owing
+
+DELIVERED. `let g = lambda x -> x + x  g(2)` LOADS AND ANSWERS 4 — the row the first slice
+was instructed to flip, and the "if it can't be inferred it's polytype" half in the one
+shape where the evidence exists inside the walk.
+
+THE REFUSAL THIS REPLACES NAMED A REPAIR THE AUTHOR CANNOT PERFORM. `x + x` dispatches
+`Additive.add` on an abstract carrier, so `check_apply_iter`'s `NoCandidates` arm demanded
+"missing `requires Additive[T = …]` on enclosing sort". There are already three licences
+there — the `declared` set, WI-562's op-scoped `requires`, WI-590's sort-level one — and all
+three answer ONE question: *did the author write the clause?* For a LAMBDA BINDER that
+question has no site. A binder is not a type parameter of any sort or operation, so no
+`requires` can range over it, and the diagnostic pointed at a repair with nowhere to go.
+
+THE FOURTH LICENCE ASKS A DIFFERENT QUESTION: *does the evidence exist yet?* For a binder it
+arrives at the USE, later in the same walk. So the classification is HELD rather than
+dropped, and `WalkSolutions::discharge` raises it at the walk's end for every binder the
+uses failed to answer.
+
+### The population was measured before the licence was written
+
+79,414 abstract-dispatch classifications over the `wi_tests` binary; **3** have a
+walk-minted carrier, and all three are this ticket's own fixtures:
+
+    CLASSIFY minted=2 op=Additive.add in=zz50b2k.patgap.viaop  argtys=[??pat, ??pat]
+    CLASSIFY minted=1 op=Additive.add in=zz50b2k.patgap.viaop  argtys=[??param, ??param]
+    CLASSIFY minted=1 op=Additive.add in=zz50b2k.probe.viaop   argtys=[??param, ??param]
+
+Every stdlib row is `minted=0` — 44 distinct shapes, all `?T` / `?C` / `?_`, i.e. DECLARED
+type parameters, whose variable is minted at the declaration and is therefore older than
+every walk. So "walk-minted" separates a binder from a declared parameter by ALLOCATION
+ORDER, the same index the first slice's watermark reads, and the licence is narrow by
+MEASUREMENT rather than by argument.
+
+THE FIRST COUNT WAS 284 AND WAS AN ARTIFACT. `writeln!` on a `File` is not one syscall, so
+the probe's lines INTERLEAVED across test threads and my `minted=[^0]` grep matched spliced
+garbage. Formatting to a `String` and one `write_all` gave 3, with 0 malformed lines. The
+footgun is already in memory; it cost a wrong population figure anyway.
+
+### Three axes, three back-outs, one row each — over the whole 4133-row binary
+
+  * **The fourth licence** (`walk_minted_carriers` / `defer_abstract_dispatch`) neutralized:
+    `part_c_a_binder_the_body_leaves_free_is_answered_by_its_use` fails. 4132/1.
+  * **The Path 2 report** muted at both env-bound-arrow argument loops: the SAME row fails,
+    and the axes are INDEPENDENT — the licence without the report defers a requirement that
+    nothing can ever answer. 4132/1.
+  * **The discharge's `provides` test** neutralized (license on observation alone):
+    `a_binder_used_at_a_carrier_without_the_instance_is_still_refused` fails. 4132/1.
+
+Forward direction: the change moves EXACTLY ONE row of 4133, the known-gap row it was
+instructed to flip. Nothing else in the binary moved.
+
+### THE REPORT WAS PATH-1-ONLY, AND THAT IS THE HALF THAT CANNOT SEE A USE
+
+The first slice reported a call's solutions at `check_apply_iter`'s two argument loops for a
+NAMED OPERATION. `g(2)` on a let-bound lambda is not one: it is Path 2, "variable with arrow
+type", a separate block with its own `subst` and its own two argument loops. MEASURED, with
+the walk's solutions printed at its exit:
+
+    let g = lambda x -> add1(x)  g(2)    ⟹ 1 solution  (?param := Int64, from the BODY)
+    let g = lambda x -> x        g(2)    ⟹ 0 solutions (the USE was invisible)
+
+So the channel the first slice opened had a reader for what a body solves and none for what
+a use solves — and part (c)'s discharge is asked precisely about the use. Both Path 2 loops
+report now, written at BOTH rather than one, for the reason this file has been bitten by
+before (a rule written twice is an asymmetry waiting).
+
+### The discharge does not read `solved` alone, and the difference is a fail-open
+
+`report_call_solutions` is FIRST-WINS: a variable already bound is left alone, because the
+rest of the walk was typed against the first answer. Discharging against that one binding
+would license `let g = lambda x -> x + x  let a = g(2)  g(bad)` on the strength of `g(2)`.
+So each deferred requirement carries its OWN `observed` list, appended at the same site
+BEFORE the first-wins filter, and the licence requires EVERY observation to provide the
+spec. `a_binder_used_at_a_carrier_without_the_instance_is_still_refused` is the row, and
+back-out axis 3 is what says it measures the difference.
+
+### What is NOT delivered, driven and asserted rather than left to look like coverage
+
+  * **A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED** —
+    `operation viaop() -> Int64 = let g = lambda x -> x + x  1`. The answer it wants is a
+    `PolyType` whose CONTEXT carries `Additive[x]` OUT of the walk, to be discharged wherever
+    the lambda is finally applied. That is part (c)'s remaining half and the row
+    `known_gap_a_binder_no_use_in_the_walk_pins_is_still_refused` holds the program.
+  * **THE TUPLE ARM IS A DIFFERENT GAP WITH AN OWNER.**
+    `let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))` REACHES the licence
+    (`minted=2`) and is refused at the discharge for want of an observation. `apply2` DOES
+    solve the arrow against `Function[A = (a: Int64, b: Int64), B = Int64]`, but that binds
+    the arrow's PARAM, and a binder-list lambda's `?pat` components are separate variables
+    the param does not mention — nothing links `?param` to `named_tuple(a: ?pat_a,
+    b: ?pat_b)`. That link is **WI-20260904-34J8Z**, not this licence.
+  * **A LAMBDA THAT ESCAPES THE WALK** carries an arrow with no constraint on it. Today that
+    is refused (no observation), so the escape is not yet a hole; it becomes one exactly when
+    the `PolyType` context above lands without a discharge at the eventual use. Named here so
+    the next slice does not have to rediscover it.
+
+### The container is now NAMED, which is what makes the next move an owner change
+
+`WalkSolutions` holds the solutions, the watermark and the deferred requirements as ONE
+struct, because they are READ TOGETHER: a deferred requirement is discharged against the
+solutions, and a walk that reports nothing can license nothing. It is still WALK-LIFETIME.
+Solutions travelling WITH the result would scope to the body that produced them and make the
+watermark unnecessary rather than merely correct — `check_apply_iter` already returns
+`env: env.clone()` at fifteen of its return points, so the channel exists and is inert, and
+`LambdaBody` discarding `body_r.env` is the one thing in the way. Naming the state is the
+step that makes that a change of OWNER rather than a re-plumbing.
+
+### /code-review on the second slice: five findings, three of them one root
+
+**THREE FINDINGS, ONE BLIND READER, AND ONE OF THEM IS A FAIL-OPEN.** `collect_value_type`
+has no `Value::Var` arm and a `_ => {}`, and it recurses into an `Entity`/`Tuple`'s children
+WITH ITSELF — so a bare variable one carrier deep is invisible. The first slice knew this and
+special-cased the TOP LEVEL in each of the three functions that ask it. That covered exactly
+depth 0:
+
+  * `value_vars_all_walk_local` — the walk-local gate answers `true` on an empty list, which
+    is leak population (2) admitted.
+  * `value_mentions_var` — the occurs-check answers "no cycle", and the consequence is a
+    STACK OVERFLOW in `resolve_type_deep_value`, not a wrong type.
+  * `walk_minted_carriers` — **and here my own doc argued the wrong way.** It said the list
+    "can only OVER-REFUSE — a superset of the carriers is a stricter licence". True, and
+    irrelevant: an under-collecting reader produces a SUBSET, and a subset is a LOOSER
+    licence — a carrier the list omits is never demanded of the discharge, so the call is
+    licensed on the other binders' evidence alone. That is precisely the half-evidence case
+    `observed` was made per-binder to prevent, re-introduced one level down.
+
+FIXED WITH ONE LOCAL COLLECTOR (`collect_value_type_and_bare_vars`) that walks the same
+carriers plus the missing arm, recursing with ITSELF. Still NOT fixed in
+`collect_value_type`, and that is the same decision as before: it feeds `signature_bound_vars`,
+the ONE OWNER of a signature's binder set, so widening it changes which variables a `∀`
+quantifies; measured green either way, and the shape occurs ZERO times on the corpus, so the
+wider change still has no witness. This one is local to three functions part (c) owns, has no
+other reader, and can only tighten.
+
+DRIVEN BY UNIT TESTS, BECAUSE NOTHING ELSE CAN. The nested shape occurs zero times on the
+corpus, so no loadable program exercises it and a green suite says nothing either way.
+`part_c_bare_var_collection_test` builds the values directly — five rows, one of them two
+carriers deep because a one-level fix and a recursive one agree at depth 1. BACK-OUT (point
+the `Entity`/`Tuple` arm at the shared collector): **3 of 5 fail, and the two TOP-LEVEL rows
+keep passing** — which is exactly the asymmetry that made the first repair look complete.
+
+**AN OBSERVATION RESTING ON A UNIFICATION THAT DID NOT HOLD.** `unify_types` binds as it
+DESCENDS and never rolls back, so `Function[A = Int64, B = String]` against `?p -> ?p` binds
+`?p := Int64` before failing on `B`. For the SOLUTIONS half that is the documented
+no-rollback hazard and its consequence is ordering. For the OBSERVATION half the consequence
+is a LICENCE — `discharge` drops a requirement on the strength of what was observed. The
+observation is now gated on the unify's boolean; the solving half is unchanged, and the
+discarded-boolean idiom itself remains WI-20260904-60143's census (the boolean is READ here,
+for this one consumer, and no existing caller's verdict moves).
+
+**THE OVER-APPLIED MIXED CALL LOSES ITS HINTS — MEASURED, AND KEPT.** Routing
+`apply_arg_hints`' positional hints through `positional_param_indices` means an `OverArity`
+plan hints nothing, while the `named_args.is_empty()` early return still maps
+`i < params.len()`. So the two over-arity spellings disagree:
+
+    f(lambda x -> x + x, 7, n: 2)   2 errors — arity, AND a spurious `missing requires
+                                    Additive[T = …]` from the binder nothing hinted
+    f(lambda x -> x + x, 2, 3)      1 error  — arity alone
+
+KEPT because every repair is worse than the symptom: restoring a leading-argument guess for
+the hint re-creates the hint/check slot disagreement this ticket fixed, and a wrong hint is
+not cosmetic — it checks a lambda body at the wrong type and REFUSES a program. Here the call
+is already refused for arity, so the trade is one extra consequential error on a program that
+cannot load, against re-opening a channel that wrongly refused a VALID one. Recorded at the
+site with the measurement.
+
+FOUR HYPOTHESES THE REVIEW CHASED AND DROPPED ON MEASUREMENT are worth keeping so they are
+not re-raised: the `_N` prefix promotion in `tuple_components_from_view` is order- and
+label-preserving; `TupleLiteral` is exempt from `canonicalize_record_named_args`; the
+walk-end `classify` lands on the REBUILT node because `occ` is shadowed before the dispatch
+section, so deferral does not orphan the stamp; and the new `debug_assert` in
+`types_compatible_view_structural` is unreachable for legitimate mismatches.

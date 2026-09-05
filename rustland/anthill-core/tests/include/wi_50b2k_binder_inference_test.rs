@@ -693,52 +693,110 @@ fn int_through_any_carrier(v: &anthill_core::eval::Value) -> i64 {
     panic!("expected an Int64 answer on some carrier, got {v:?}")
 }
 
-/// **THE RESIDUE, PINNED SO PART (c) HAS ITS POPULATION AND NOT A GUESS.** A binder that
-/// nothing pins ANYWHERE is still refused, and the split does not change that in either
-/// direction — measured both ways.
+/// **THE ROW PART (c) WAS INSTRUCTED TO FLIP, AND THE SINGLE-BINDER ARM IS FLIPPED.**
 ///
-/// `lambda (a, b) -> a + b` has two unpinned operands, so `Additive` has no evidence to
-/// select on wherever the mint comes from. Its single-binder twin
-/// `lambda x -> x + x` behaves identically at rung 3's `?param`, which part (a) already
-/// owns — so this is not a `?pat` gap but the "if it can't be inferred it's polytype"
-/// half. The evidence exists only at the LATER USE (`apply2(g, …)`), a channel neither
-/// (a) nor this row's site reads.
+/// `let g = lambda x -> x + x  g(2)` now LOADS AND ANSWERS 4. Nothing in the lambda's own
+/// body constrains `x`, so `Additive.add`'s dispatch is abstract and the typer used to
+/// demand "`requires Additive[T = …]` on enclosing sort" — a repair with NOWHERE TO GO,
+/// because a lambda binder is not a type parameter of any sort or operation. Part (c)'s
+/// answer is that the constraint stays owing until the evidence arrives, and for a binder
+/// the evidence is at the USE: `g(2)` solves `x` at `Int64`, `Additive` provides `Int64`,
+/// and the call is licensed exactly as WI-562's and WI-590's declared-`requires` licences
+/// leave theirs — as the spec op, for value-directed eval.
 ///
-/// GREEN UNDER BOTH CELLS BY DESIGN, and stated rather than left to look like coverage.
+/// **BACK-OUT, THREE AXES, EACH ITS OWN ROW HERE:**
+///  * Drop the fourth licence (`walk_minted_carriers` / `defer_abstract_dispatch`) and the
+///    `single` arm is refused again. This row.
+///  * Drop the Path 2 report (`report_walk_solutions` at the env-bound-arrow argument
+///    loops) and the `single` arm is refused again, because `g(2)` calls an ARROW VALUE,
+///    not a named operation — the walk sees the use through no other channel. Same row,
+///    and the two are independent: the licence without the report defers a requirement
+///    nothing can ever answer.
+///  * Drop the DISCHARGE's `observed`/`provides` test and `a_binder_used_at_a_carrier_-
+///    without_the_instance_is_still_refused` goes green-when-it-should-fail — that row is
+///    the one that says this is a licence and not a hole.
 ///
-/// **PART (c) MUST FLIP THIS ROW, and this is the instruction to do it.** "If it can't be
-/// inferred it's polytype" is exactly this program: nothing constrains the binder, so it
-/// should GENERALIZE rather than be refused. When `PolyType` gains a context field and
-/// `generalize_eta_arrow` a constraint slot, replace the refusal assertion with the
-/// answer (3 for the tuple arm, 4 for the single) — do not delete the row, since the
-/// program is (c)'s own acceptance.
+/// **THE TUPLE ARM IS STILL REFUSED, AND IT IS A DIFFERENT GAP WITH AN OWNER.** It reaches
+/// the licence — measured, `minted=2` on `argtys=[??pat, ??pat]` — and is refused at the
+/// discharge for want of an observation. `apply2(g, …)` DOES solve the lambda's arrow
+/// against `Function[A = (a: Int64, b: Int64), B = Int64]`, but that binds the arrow's
+/// PARAM, and a binder-list lambda's `?pat` components are separate variables the param
+/// does not mention: nothing links `?param` to `named_tuple(a: ?pat_a, b: ?pat_b)`. That
+/// link is WI-20260904-34J8Z ("a binder-list lambda's arrow param is a variable where its
+/// arity says `named_tuple`"), not this licence — so the arm is kept, DRIVEN, and asserted
+/// at its wrong value rather than deleted.
 #[test]
-fn known_gap_a_binder_with_no_evidence_in_its_body_is_still_ambiguous() {
-    for (tag, decl) in [
-        (
-            "tuple",
-            "let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))",
-        ),
-        ("single", "let g = lambda x -> x + x  g(2)"),
-    ] {
-        let src = format!(
-            "namespace zz50b2k.patgap\n  import anthill.prelude.{{Int64, Function}}\n  \
-             operation apply2(f: Function[A = (a: Int64, b: Int64), B = Int64], \
-             p: (a: Int64, b: Int64)) -> Int64 = f(p)\n  \
-             operation viaop() -> Int64 = {decl}\nend\n"
-        );
-        let errs = crate::common::try_load_kb_with(&src)
-            .err()
-            .unwrap_or_else(|| panic!("{tag}: expected a refusal, but it loaded"));
-        // THE TWO ARMS REPORT DIFFERENTLY and both are the same absence, so the assertion
-        // names what they share rather than one arm's wording: `tuple` reports the
-        // requirement channel ("missing `requires Additive[T = …]` on enclosing sort")
-        // and `single` the dispatch one ("3 instances … selects none").
-        assert!(
-            errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
-            "{tag}: expected an unresolved `Additive`, got: {errs:?}",
-        );
-    }
+fn part_c_a_binder_the_body_leaves_free_is_answered_by_its_use() {
+    let src = "namespace zz50b2k.patgap\n  import anthill.prelude.{Int64}\n  \
+               operation viaop() -> Int64 = let g = lambda x -> x + x  g(2)\nend\n";
+    let mut kb = crate::common::try_load_kb_with(src)
+        .unwrap_or_else(|errs| panic!("must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.patgap.viaop"), 4);
+}
+
+/// The TUPLE arm of the row above, kept because the program is part (c)'s own acceptance
+/// and asserted at the value it actually has. See that row for why the link it needs is
+/// WI-20260904-34J8Z's and not this licence's.
+#[test]
+fn known_gap_a_binder_list_lambdas_components_are_not_solved_by_the_slot() {
+    let src = "namespace zz50b2k.patgap2\n  import anthill.prelude.{Int64, Function}\n  \
+               operation apply2(f: Function[A = (a: Int64, b: Int64), B = Int64], \
+               p: (a: Int64, b: Int64)) -> Int64 = f(p)\n  \
+               operation viaop() -> Int64 = \
+               let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))\nend\n";
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .expect("expected a refusal, but it loaded — WI-20260904-34J8Z may have landed");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+        "expected an unresolved `Additive`, got: {errs:?}",
+    );
+}
+
+/// **THE LICENCE IS A LICENCE, NOT A HOLE** — the negative control, and the row that fails
+/// if the discharge stops asking whether the observed carrier PROVIDES the spec.
+///
+/// `Bool` has no `Additive` instance. The binder is solved — `g(tt())` observes it at
+/// `Bool`, so this row is NOT the "no evidence" case below — and the requirement is
+/// raised at the walk's end exactly as it would have been at the call.
+///
+/// BACK-OUT: make `WalkSolutions::discharge` license on `!observed.is_empty()` alone and
+/// this row loads, which is the whole difference between deferring a question and
+/// dropping it.
+#[test]
+fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
+    let src = "namespace zz50b2k.patgap3\n  import anthill.prelude.{Int64, Bool}\n  \
+               operation tt() -> Bool = true\n  \
+               operation viaop() -> Int64 = let g = lambda x -> x + x  let q = g(tt())  1\nend\n";
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .expect("expected a refusal, but it loaded");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+        "expected an unresolved `Additive`, got: {errs:?}",
+    );
+}
+
+/// **A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED**, and this is the half of part (c)
+/// that is NOT delivered: the answer such a lambda wants is a `PolyType` whose CONTEXT
+/// carries `Additive[x]` out of the walk to be discharged wherever it is finally applied.
+/// Until that exists the conservative verdict is today's refusal, and this row is what
+/// says so out loud rather than leaving the absence to look like coverage.
+///
+/// GREEN BEFORE THIS CHANGE TOO — stated, because a row that passes either way measures
+/// nothing on its own. What it measures is the SCOPE of the licence beside it: the two
+/// programs differ only in whether the walk applies `g`.
+#[test]
+fn known_gap_a_binder_no_use_in_the_walk_pins_is_still_refused() {
+    let src = "namespace zz50b2k.patgap4\n  import anthill.prelude.{Int64}\n  \
+               operation viaop() -> Int64 = let g = lambda x -> x + x  1\nend\n";
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .expect("expected a refusal, but it loaded");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+        "expected an unresolved `Additive`, got: {errs:?}",
+    );
 }
 
 /// **A DIRECT APPLICATION OF A MULTI-BINDER LAMBDA ABORTED THE TYPER**, found by
@@ -1067,3 +1125,5 @@ fn both_halves_of_a_solved_arrow_resolve_together() {
         "the agreeing declaration must still load; got: {errs:?}"
     );
 }
+
+

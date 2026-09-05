@@ -5635,3 +5635,106 @@ mod type_reader_carrier_agreement_test {
         assert!(views_structurally_equal(&kb, &walked_entity, &entity));
     }
 }
+
+/// WI-20260904-50B2K part (c) — **THE GATE'S OWN READER, DRIVEN AT DEPTH.**
+///
+/// Part (c)'s three questions — "is every variable in this value walk-local?", "does this
+/// value mention this variable?", "which walk-minted variables is this argument typed at?"
+/// — all reduce to one walk, and all three fail in the UNSAFE direction when it
+/// under-collects. The shared `collect_value_type` has no `Value::Var` arm, so a bare
+/// variable contributes nothing; the first repair special-cased the TOP level, which meant
+/// the same value one carrier deep was still invisible.
+///
+/// THIS IS THE ONLY THING THAT CAN DRIVE IT. The nested shape occurs ZERO times on the
+/// corpus (measured), so no loadable program exercises it and a green suite says nothing
+/// about it either way. The rows below build the value directly.
+///
+/// BACK-OUT: point `collect_value_type_and_bare_vars`' `Entity`/`Tuple` arm at
+/// `collect_value_type` instead of at itself, or restore the top-level-only `matches!` in
+/// the two predicates, and `a_bare_var_one_carrier_deep_*` fail while the `top_level` rows
+/// keep passing — which is exactly the asymmetry that made the first repair look complete.
+#[cfg(test)]
+mod part_c_bare_var_collection_test {
+    use super::super::*;
+
+    fn tuple_of(children: Vec<Value>) -> Value {
+        Value::Tuple {
+            pos: children.into(),
+            named: Vec::new().into(),
+        }
+    }
+
+    #[test]
+    fn a_bare_var_at_the_top_level_is_seen_by_both_predicates() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("?v");
+        let v = kb.fresh_var(name);
+        let val = Value::Var(Var::Global(v));
+
+        assert!(value_mentions_var(&kb, &val, v), "occurs-check must see it");
+        assert!(
+            !value_vars_all_walk_local(&kb, &val, v.raw() + 1),
+            "a var older than the watermark is not walk-local"
+        );
+        assert!(
+            value_vars_all_walk_local(&kb, &val, v.raw()),
+            "a var at the watermark IS walk-local"
+        );
+    }
+
+    #[test]
+    fn a_bare_var_one_carrier_deep_is_seen_by_the_occurs_check() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("?v");
+        let v = kb.fresh_var(name);
+        let nested = tuple_of(vec![Value::Var(Var::Global(v))]);
+
+        assert!(
+            value_mentions_var(&kb, &nested, v),
+            "`(?v,)` mentions `?v` — a cyclic binding this misses is a stack overflow in \
+             `resolve_type_deep_value`, not a wrong type"
+        );
+    }
+
+    #[test]
+    fn a_bare_var_one_carrier_deep_is_seen_by_the_walk_local_gate() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("?v");
+        let older = kb.fresh_var(name);
+        let watermark = kb.var_watermark();
+        let nested = tuple_of(vec![Value::Var(Var::Global(older))]);
+
+        assert!(
+            !value_vars_all_walk_local(&kb, &nested, watermark),
+            "`(?older,)` is NOT walk-local — answering `true` here publishes a foreign \
+             variable into the lambda's arrow, which is leak population (2)"
+        );
+    }
+
+    #[test]
+    fn the_walk_local_gate_still_admits_a_nested_walk_minted_var() {
+        let mut kb = KnowledgeBase::new();
+        let watermark = kb.var_watermark();
+        let name = kb.intern("?v");
+        let fresh = kb.fresh_var(name);
+        let nested = tuple_of(vec![Value::Var(Var::Global(fresh))]);
+
+        assert!(
+            value_vars_all_walk_local(&kb, &nested, watermark),
+            "the gate must not refuse a value whose only variable IS this walk's"
+        );
+    }
+
+    /// TWO DEEP, because a one-level fix and a recursive one agree at depth 1.
+    #[test]
+    fn the_walk_is_recursive_not_one_level() {
+        let mut kb = KnowledgeBase::new();
+        let name = kb.intern("?v");
+        let older = kb.fresh_var(name);
+        let watermark = kb.var_watermark();
+        let deep = tuple_of(vec![tuple_of(vec![Value::Var(Var::Global(older))])]);
+
+        assert!(value_mentions_var(&kb, &deep, older));
+        assert!(!value_vars_all_walk_local(&kb, &deep, watermark));
+    }
+}
