@@ -25,6 +25,9 @@ its only move.
 
 ## Index
 
+- [pre-state-arguments.md](pre-state-arguments.md) — `old.b` / `arguments.b` as
+  the contract vocabulary for an argument observed at operation ENTRY versus at
+  return, so an `ensures` can relate the two states.
 - [unification-framework.md](unification-framework.md) — unification as a
   framework of per-sort registered algorithms; the substrate for WI-010
   (resolver-as-type-checker).
