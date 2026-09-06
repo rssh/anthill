@@ -1757,3 +1757,151 @@ assembled from foreground pieces: `--lib` 597, `wi_tests` 4137, the other ten an
 binaries 896, cli/stl/todo/version 503, the three codegen crates 312, doc-tests 4 — **6449
 passed, 0 failed**, which is the 6448 of the last whole-suite run plus this pass's new row.
 scaland 539/0, unchanged since the stdlib edit.
+
+### Step 2: the constraint moves INTO the type, and each use discharges its own instance
+
+`let g = lambda x -> x + x  1` LOADS and answers 1. That program — the known-gap row this
+ticket has carried since part (c) began — is step 2's whole observable delta on this corpus,
+and the back-out is one row in a 4142-row binary.
+
+**THE PRODUCER, AND ITS ONE TEST DOES TWO JOBS.** `WalkSolutions::generalize_for_arrow` moves
+a deferred requirement into the lambda arrow's `PolyType` context when every carrier still
+occurs FREE in the arrow. That is simultaneously the UNSOLVED test — the arrow has already
+been resolved through `solved`, so a carrier the walk pinned is no longer a variable in it —
+and the EXPRESSIBILITY test, since quantifying a variable the body does not mention gives an
+obligation no instantiation can ever reach. The binder-list lambda is exactly that shape
+(its `?pat` components are not the arrow's `?param`, WI-20260904-34J8Z), so it stays REFUSED
+rather than acquiring a ∀ that would launder it.
+
+**THE CONSUMERS, AND THE REQUIREMENT IS NOT REMOVED FROM THE WALK.** The occurrence and the
+`CallClass` in `DeferredSpecRequirement` are what produce the diagnostic; a second error
+channel for the same failure would be a second owner of the message. So a generalized
+requirement stays in the list and what changes is WHICH variables the discharge asks about:
+the per-use instantiations, not the binders. An empty instance list is then a LICENCE where
+an empty observation list is a REFUSAL — they look like the same fail-open and are opposites.
+Not generalized means the constraint has nowhere to live but this walk, so no evidence is a
+gap; generalized means it lives in the type, so no use is nothing yet to discharge.
+
+**ORDER IS WHY THE ALREADY-WORKING PROGRAM KEEPS WORKING.** A `let`'s bound expression is
+typed before its body, so at the `LambdaBody` frame no use has run and the binder is unsolved
+in BOTH the used and unused programs. Both generalize, and `let g = lambda x -> x + x  g(2)`
+keeps answering 4 through the ∀ — the instantiation at `g(2)` pins `Int64` and the obligation
+is discharged against it — rather than through the observation licence it used before. The
+mechanism changed under a row whose value did not, which is exactly the risk named when this
+half was planned.
+
+**WHAT STEP 2 DID NOT BUY, MEASURED BEFORE IT WAS CLAIMED.** One lambda applied at `Int64`
+AND at `Float` answers 11 both ways. Path 2's σ is fresh per call and `observed` is appended
+per use before the first-wins filter, so multi-type USE was already licensed by the
+walk-lifetime machinery. It is pinned as a control (`control_a_multi_type_use_was_already_-
+licensed_and_is_unmoved`) precisely because it is the row I nearly shipped as the witness.
+
+**A REFUSAL-SIDE WART, KEPT DELIBERATELY OVER A WRONG ACCEPT.** `let h = g  1` is refused
+though the same program without the unused alias loads: `check_bare_ref` instantiates at
+every reference, so the alias mints a carrier nothing then pins. The obvious repair —
+instantiate only where `expected` is `Some`, which reads as textbook let-polymorphism — was
+built and MEASURED, and it makes `needs_b(g)` against `needs_b(b: Bool)` LOAD, a function
+value accepted into a `Bool` slot, because an argument slot is hinted only when it is
+CALLABLE so that position carries no expectation either. Between a wart and a wrong accept
+this slice takes the wart. Its real fix is let-GENERALIZATION at the `Let` frame, named at
+the site and at `known_gap_an_unused_alias_of_a_generalized_lambda_is_refused`.
+
+### /code-review on step 2: two passes, six findings, six taken — and one was a wrong accept
+
+20. **THE MISSING SIDE CONDITION, AND IT IS THE ONE EVERY LET-GENERALIZATION HAS.**
+    `let g = lambda x -> (x + x, lambda y -> x)  let r = g(true)  1` LOADED. The INNER
+    lambda's arrow is `(?y) -> ?x`, so the OUTER binder was free in it and the generalization
+    quantified it THERE. `g(true)` then pinned `?x := Bool`, but the requirement was already
+    marked generalized with no instantiation of its own, so `Additive[Bool]` was never asked
+    and a program adding two booleans type-checked. FIXED: a carrier free in `outer_env` is
+    not this frame's to quantify. The requirement then survives to the outer frame, where the
+    environment no longer holds it.
+
+21. **A LICENCE MUST NOT BE REACHED BY DISCARDING EVIDENCE.** Switching the discharge to ask
+    about instances made an empty instance list license unconditionally — including a walk
+    that had WATCHED the binder and seen a non-providing carrier, since
+    `observe_deferred_carriers` records `carriers ∪ instances`. FIXED: a generalized
+    requirement contradicted by an observation of its own carrier is refused.
+    THE BACK-OUT IS A 2x2 AND THE ROW CANNOT SEPARATE THE TWO GUARDS — measured, all four
+    cells: either guard alone refuses the program, both off and it loads. Recorded at the row
+    rather than credited to one of them; no fixture separating them was constructible, and
+    that absence is stated instead of a claim that the pair is redundant.
+
+22. **ONE BINDING, TWO SPELLINGS, TWO VERDICTS.** `check_bare_ref` got the ∀-elimination and
+    `visit_type`'s `Expr::Var` arm — the `?g` spelling of the very same let/lambda binding —
+    did not. So `needs_b(g)` was refused and `needs_b(?g)` LOADED, a question mark apart, and
+    the escaped schema reached a user diagnostic as raw internals
+    (`got PolyType[binders = cons[…], context = cons[…]]`). FIXED with ONE OWNER,
+    `eliminate_env_schema`, called by every reader of `env.lookup_var`. The third reader,
+    `varref_arg_env_type`, computes a HINT and has no walk to hand an obligation to, so it
+    answers `None` for a schema — and NO ROW HOLDS THAT, measured, because its only caller is
+    the dot-call receiver path and a lambda has no members to dot into. Recorded as having no
+    witness rather than credited with one.
+
+23. **MY OWN FIXTURE WAS NOT DRIVING THE CAPABILITY, AND THE BACK-OUT IS WHAT SHOWED IT.**
+    The row pinning both spellings was written with the lambda body `x` instead of `x + x`,
+    so there was no `Additive` call, no deferral and no ∀ — it passed on a plain arrow and
+    measured nothing. Backing out the `Expr::Var` reader left it GREEN, which is the only
+    reason I looked. Same lesson as the fixture defects earlier in this ticket: a control's
+    job is to fail, and a control that does not fail is telling you about the fixture.
+
+24. **`eliminate_node_projections` ASKED THE WRONG QUESTION AND ASSERTED THE OTHER ONE.** Its
+    new arm refused a `PolyType` whose CONTEXT was non-empty, with a message saying a
+    projection sits in the context — but what ROUTES a node there is
+    `value_contains_projection`, which the BODY alone satisfies. A projection-free context
+    beside a body projection just eliminated would have been refused, and the author told the
+    projection was somewhere it is not. FIXED: the predicate is now
+    `context.iter().any(value_contains_projection)`. Latent today (step 2's contexts ride
+    inferred lambda arrows and this pass rewrites declared param types).
+
+25. **AN ELIMINATION CREDITED TO A REQUIREMENT IT DID NOT COME FROM.** `note_instantiation`
+    matched on "this binder is one of the requirement's carriers", so two requirements sharing
+    a carrier and generalizing at different frames would let one ∀'s use answer the other's
+    obligation. FIXED: the ∀ must bind the requirement's WHOLE carrier set, which is exactly
+    what `generalize_for_arrow` guarantees for the ∀ it produced. Not constructible on today's
+    single-carrier prelude specs, so it ships as a precision fix with that said out loud.
+
+26. **A CONTEXT THAT FINDS NO OWNER IS NOW LOUD** at both value consumers, where it was a
+    silent drop — matching `check_bare_ref`'s eta arm and `poly_type_body`, which already
+    refuse the same shape. Unreachable while `generalize_for_arrow` is the only producer (it
+    leaves its entry in the list); written for the next one, which the design already names.
+
+STATE: workspace 6454/0 — 597 lib, 4142 `wi_tests`, 896 the other core binaries, 503
+cli/stl/todo/version, 312 codegen, 4 doc — run in foreground pieces for the watchdog reason
+recorded above. scaland 539/0, unchanged (no `.anthill` or Scala source in this slice).
+Formatting matches HEAD's, one pre-existing hunk fewer.
+
+### What step 3 is, and what WI-817 now says
+
+The remaining half of the design is the RUNTIME one: the dictionary riding the closure
+(`lambda_within`, WI-816 option (b)), complementary to the type-level context this slice
+delivers. Nothing here needs it yet, because every generalized lambda's obligation is
+discharged at a use inside the same walk.
+
+WI-817'S OWN CASE NOW WORKS, AND THE ∀ IS NOT WHY — the last review pass turned this over
+twice and the second reading is the one that holds.
+
+FIRST READING, WRITTEN AND WRONG: the escaped-closure row still refused, so I recorded that
+the obligation now travels with the type but is discharged against `X` — a type parameter,
+which provides nothing — and that the remaining blocker is a callee that DECLARES the
+constraint. Then `/code-review` found `resolved_carrier_sort` chasing only a `Value::Var`
+binding while a type variable in this file is INTERNED by construction. The chase was a no-op
+on its own motivating case (`?param := ?T_callee`, `?T_callee := Int64`), and repairing it
+flipped the row:
+
+    ap[X](fn: Function[A = X, B = Int64], a: X) -> Int64 = fn(a)
+    let g = lambda w -> Desc.describe(w)
+      Applier.ap(g, leaf())         1
+      Applier.ap(g, wrap(leaf()))  12
+      both, ONE closure          1012
+      Applier.ap(g, 7)           REFUSED — `Int64` has no `Desc`
+
+So the two-hop chain the call makes — the closure's carrier to `X`, `X` to `Leaf` — was always
+answerable and was never asked. **BACKING OUT `generalize_for_arrow` LEAVES ALL THREE VALUES
+UNCHANGED**, which is what attributes the flip to the chase repair and not to step 2. The ∀
+was the predicted cause and is not the cause; step 2 still owns exactly one row.
+
+CONSEQUENCE FOR WI-816: the lambda leg now computes correctly on the one shape that was
+supposed to produce the predicted operation-vs-lambda asymmetry, with `Closure.requirements`
+snapshotting the creation frame ONCE — the dispatch inside the body is value-directed. That is
+evidence FOR option (a), recorded on WI-817 and WI-816 rather than decided here.

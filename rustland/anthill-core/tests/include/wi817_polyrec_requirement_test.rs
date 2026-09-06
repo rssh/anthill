@@ -1045,45 +1045,86 @@ fn part_c_polymorphic_closure_at_two_conditional_depths() {
     );
 }
 
-/// **THE CASE THAT WOULD DECIDE WI-816 IS STILL NOT WRITABLE, AND THE BLOCKING REASON HAS
-/// MOVED.** This is the finding the re-measure exists to produce.
+/// **THE CASE THIS TICKET WAS CONSTRUCTED TO FIND — A CLOSURE THAT ESCAPES TO A GENERIC
+/// APPLIER — NOW WORKS, AND AT TWO TYPES THROUGH ONE CLOSURE.** This row was a known gap
+/// through three re-measures; it is delivered here.
 ///
-/// A closure that ESCAPES its creation scope to a GENERIC applier is refused at load. Part
-/// (c) licenses an unpinned binder from the CONCRETE carriers the walk observes, and a
-/// generic slot (`ap[X](fn: Function[A = X, B = Int64], …)`) supplies a type PARAMETER, not
-/// a carrier — so there is nothing to discharge against and the deferred requirement is
-/// raised.
+///     ap[X](fn: Function[A = X, B = Int64], a: X) -> Int64 = fn(a)
+///     let g = lambda w -> Desc.describe(w)
 ///
-/// THE TWO CONTROLS ISOLATE IT TO THE GENERIC SLOT, not to the escape and not to the
-/// multiplicity: a MONOMORPHIC applier pins the binder at rung 2 (part (b)'s hint) and
-/// loads; an ANNOTATED binder never asks the question and loads. Both answer 1. And the
-/// generic row is refused with ONE type, so it is not about being invoked at many.
+///     Applier.ap(g, leaf())                          1
+///     Applier.ap(g, wrap(leaf()))                   12      (one conditional level)
+///     both in ONE program, ONE closure             1012
 ///
-/// WHAT THIS MEANS FOR WI-816: its delete-vs-implement still cannot be settled, and the
-/// trigger for the next re-measure is NOT part (c) but part (c)'s REMAINING half — the ∀
-/// and its requirement travelling WITH the type, out of the walk, so an escaped closure
-/// carries its own obligation. The 2026-09-05 feedback named (c) as the trigger; measured,
-/// only that half of it fires.
+/// **WHAT MADE IT WORK IS NOT THE ∀, AND THAT WAS MEASURED RATHER THAN ASSUMED.** It is
+/// `resolved_carrier_sort`'s var-chase, which had never actually chased: it matched only a
+/// `Value::Var` binding, while a type variable in this file is INTERNED by construction, so
+/// the two-hop chain this call makes — the closure's carrier to `X`, `X` to `Leaf` — fell
+/// through to a reader that answers `None` for a variable term. The chase was a no-op on its
+/// own motivating case, and the consequence was this refusal. With the chain followed the
+/// carrier resolves to `Leaf`, `Desc[Leaf]` holds, and the call is licensed.
+///
+/// BACKING OUT `generalize_for_arrow` — part (c) step 2's ∀ — LEAVES ALL THREE VALUES
+/// UNCHANGED. So the credit belongs to the chase repair, and step 2 still owns exactly the
+/// one row it owned before (`part_c_a_binder_no_use_pins_is_generalized_into_a_polytype`).
+/// Recording that split is the point: the ∀ was the predicted cause and it is not the cause.
+///
+/// **THE NEGATIVE IS WHAT SAYS THIS IS A LICENCE AND NOT A HOLE**: the same generic applier
+/// handed an `Int64`, which has no `Desc` instance, is REFUSED with the requirement error.
+/// And the two original controls still answer 1 — a MONOMORPHIC applier (rung 2 pins the
+/// binder, so the question is never asked) and an ANNOTATED binder.
+///
+/// **CONSEQUENCE FOR WI-816, WHICH IS THIS TICKET'S REASON FOR EXISTING.** The lambda leg
+/// now computes correctly where it could not previously be written, and it does so with
+/// `Closure.requirements` snapshotting the creation frame ONCE — the dispatch inside the
+/// body is value-directed. So the predicted operation-vs-lambda asymmetry is still not
+/// observed, now on the one shape that was supposed to produce it. That is evidence FOR
+/// WI-816 option (a), and it is recorded on that ticket rather than decided here.
 #[test]
-fn known_gap_a_part_c_licensed_closure_is_refused_by_a_generic_applier() {
+fn a_part_c_licensed_closure_works_through_a_generic_applier() {
     let generic = "  sort Applier\n    operation ap[X](fn: Function[A = X, B = Int64], a: X) -> Int64 = fn(a)\n  end\n";
-    let ns = "wi817c.escape_generic";
-    let src = with_instances(
-        ns,
+    for (tag, body, want) in [
+        ("Leaf", "Applier.ap(g, leaf())", 1),
+        ("Wrap[Leaf]", "Applier.ap(g, wrap(leaf()))", 12),
+        (
+            "both, one closure",
+            "add(mul(1000, Applier.ap(g, leaf())), Applier.ap(g, wrap(leaf())))",
+            1012,
+        ),
+    ] {
+        let ns = format!("wi817e.n{}", tag.len());
+        let src = with_instances(
+            &ns,
+            &format!(
+                "{generic}  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
+                 let g = lambda w -> Desc.describe(w)\n      {body}\n  end"
+            ),
+        );
+        let got = eval_fresh(&src, &format!("{ns}.Driver.drive"), 0);
+        assert!(
+            matches!(got, Ok(Value::Int(v)) if v == want),
+            "{tag}: expected Ok(Int({want})) through the generic applier; got {got:?}"
+        );
+    }
+
+    // NEGATIVE — the licence is a licence. `Int64` has no `Desc` instance, and the same
+    // generic applier handed one is refused with the requirement error rather than licensed.
+    let neg_ns = "wi817e.neg";
+    let neg = with_instances(
+        neg_ns,
         &format!(
             "{generic}  sort Driver\n    operation drive(n: Int64) -> Int64 =\n      \
-             let g = lambda w -> Desc.describe(w)\n      Applier.ap(g, leaf())\n  end"
+             let g = lambda w -> Desc.describe(w)\n      Applier.ap(g, 7)\n  end"
         ),
     );
-    let errs = load_errs(&src);
+    let errs = load_errs(&neg);
     assert!(
-        errs.iter().any(|e| e.contains(MISSING_REQUIRES)
-            && e.contains(&format!("{ns}.Desc.describe.requires"))),
-        "expected the WI-325 ladder's missing-`requires` at the escaped call; got {errs:?}"
+        errs.iter().any(|e| e.contains(&format!("{neg_ns}.Desc.describe.requires"))),
+        "a carrier with no `Desc` instance must still be refused; got {errs:?}"
     );
 
-    // CONTROL 1 — a MONOMORPHIC applier pins the binder, so (c) is never asked.
-    let mono_ns = "wi817c.escape_mono";
+    // CONTROL 1 — a MONOMORPHIC applier pins the binder at rung 2, so (c) is never asked.
+    let mono_ns = "wi817e.mono";
     let mono = with_instances(
         mono_ns,
         "  sort Applier\n    operation ap(fn: Function[A = Leaf, B = Int64], a: Leaf) -> Int64 = fn(a)\n  end\n  \
@@ -1097,7 +1138,7 @@ fn known_gap_a_part_c_licensed_closure_is_refused_by_a_generic_applier() {
     );
 
     // CONTROL 2 — the SAME generic applier with the binder ANNOTATED.
-    let ann_ns = "wi817c.escape_annotated";
+    let ann_ns = "wi817e.annotated";
     let ann = with_instances(
         ann_ns,
         &format!(

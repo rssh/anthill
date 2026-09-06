@@ -777,12 +777,13 @@ fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
     );
 }
 
-/// **A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED**, and this is the half of part (c)
-/// that is NOT delivered: the answer such a lambda wants is `∀T. Additive[T] => T -> T` —
-/// a ∀ over the binder, plus a requirement that travels out of the walk to be discharged
-/// wherever the lambda is finally applied. Until that exists the conservative verdict is
-/// today's refusal, and this row says so out loud rather than leaving the absence to look
-/// like coverage.
+/// **A BINDER WITH NO USE IN ITS WALK IS GENERALIZED — part (c)'s remaining half, delivered.**
+///
+/// `let g = lambda x -> x + x  1` LOADS and answers 1. Nothing in the walk ever applies `g`,
+/// so the licence beside it has no evidence and used to refuse — naming a `requires` clause
+/// with nowhere to go, because a lambda has no declaration site to write one at. The answer
+/// this row has always named is that the constraint goes INTO THE TYPE: `g` is
+/// `∀a. Additive[a] => (a) -> a`, and an obligation nobody has taken on is owed by nobody.
 ///
 /// **THE CONSTRAINT BELONGS IN THE TYPE, AND A CONTEXT SLOT IS NOT WHAT THE DECLARATION
 /// FORBIDS.** `TypeExtractor.PolyType`'s declaration says "A BINDER CARRIES NO BOUND …
@@ -806,27 +807,167 @@ fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
 /// (`lambda_within` — WI-816 option (b), which the user's 2026-09-05 feedback there says
 /// must NOT be deleted precisely because part (c) is intended).
 ///
-/// AND IT IS BLOCKED, NOT MERELY UNBUILT. WI-817 measured that the operation-side call-site
-/// supply is wrong wherever it is asked to CHANGE instantiation — a sole covering wildcard
-/// entry is forwarded blindly, giving silently wrong answers — and that "the lambda
-/// machinery has not failed once". Its Rule A (gate `build_dep_projection`'s Strategy 1 on
-/// the σ-class check instead of only tie-breaking with it) is upstream of anything this row
-/// wants.
-///
-/// GREEN BEFORE THIS CHANGE TOO — stated, because a row that passes either way measures
-/// nothing on its own. What it measures is the SCOPE of the licence beside it: the two
-/// programs differ only in whether the walk applies `g`.
+/// **BACK-OUT, MEASURED VERBATIM.** Make `WalkSolutions::generalize_for_arrow` answer
+/// `None` and this program is refused again with
+/// `missing \`requires Additive[T = …]\` on enclosing sort`, while every other row in this
+/// file — including the two that must stay REFUSED — is unmoved. That single-row back-out
+/// is what says the generalization is what moved this program and not something beside it.
 #[test]
-fn known_gap_a_binder_no_use_in_the_walk_pins_is_still_refused() {
+fn part_c_a_binder_no_use_pins_is_generalized_into_a_polytype() {
     let src = "namespace zz50b2k.patgap4\n  import anthill.prelude.{Int64}\n  \
                operation viaop() -> Int64 = let g = lambda x -> x + x  1\nend\n";
-    let errs = crate::common::try_load_kb_with(src)
+    let mut kb = crate::common::try_load_kb_with(src)
+        .unwrap_or_else(|errs| panic!("must load; got: {errs:?}"));
+    // DRIVE IT, not merely load it: the operation runs and answers its body.
+    assert_eq!(only_int(&mut kb, "zz50b2k.patgap4.viaop"), 1);
+}
+
+/// **WHAT STEP 2 DID *NOT* BUY, and this row exists because I nearly shipped it as the
+/// witness.** One lambda applied at `Int64` AND at `Float` answers 11 (`g(2)` = 4 plus a
+/// `f2i(g(1.5))` = 7) — and it answered 11 BEFORE the generalization too.
+///
+/// The reason is worth keeping: a use of an env-bound arrow goes through
+/// `check_apply_iter`'s Path 2, whose σ is FRESH per call, so the second use never sees the
+/// first one's binding; and the discharge reads `observed`, which is appended per use
+/// BEFORE `report_call_solutions`' first-wins filter. Multi-type USE was therefore already
+/// licensed by the walk-lifetime machinery, and the ∀ changes the mechanism without
+/// changing the answer.
+///
+/// PASSES EITHER WAY, AND SAYS SO: it is a control against crediting the ∀ for a capability
+/// the licence already had. What the ∀ buys is the row above — a lambda with NO use at all.
+#[test]
+fn control_a_multi_type_use_was_already_licensed_and_is_unmoved() {
+    let src = "namespace zz50b2k.twoty\n  import anthill.prelude.{Int64, Float}\n  \
+               operation f2i(f: Float) -> Int64 = 7\n  \
+               operation viaop() -> Int64 = \
+               let g = lambda x -> x + x  g(2) + f2i(g(1.5))\nend\n";
+    let mut kb = crate::common::try_load_kb_with(src)
+        .unwrap_or_else(|errs| panic!("must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.twoty.viaop"), 11);
+}
+
+/// **AN UNUSED ALIAS OF A GENERALIZED LAMBDA IS REFUSED, AND THE FIX IS A PRODUCER THIS
+/// SLICE DOES NOT ADD.**
+///
+/// `let g = lambda x -> x + x  let h = g  1` is refused, while the same program without the
+/// alias LOADS (the row above) and the same program that USES the alias answers 4 (the
+/// control below). So adding an unused alias breaks a working program, which is a wart and
+/// is stated as one.
+///
+/// CAUSE: `check_bare_ref` instantiates at EVERY reference, so the alias mints a fresh
+/// carrier and an obligation on it — and nothing then pins that carrier, so the discharge
+/// has no evidence. The principled repair is let-GENERALIZATION: re-quantify, at the `let`,
+/// a variable still free in the bound value's type. That is a new producer at the `Let`
+/// frame and it is not in this slice.
+///
+/// THE NARROWER GATE IS NOT THE REPAIR, and this is the part worth recording because it
+/// looks like one. Instantiating only where `expected` is `Some` fixes this row — and makes
+/// `needs_b(g)` against `needs_b(b: Bool)` LOAD, a function value accepted into a `Bool`
+/// slot, because an argument slot is hinted only when it is CALLABLE so that position
+/// carries no expectation either. Both directions measured. `a_function_value_is_still_-
+/// refused_by_a_non_callable_slot` beside this row is what would go green-when-it-should-
+/// fail if anyone re-adds that gate.
+#[test]
+fn known_gap_an_unused_alias_of_a_generalized_lambda_is_refused() {
+    let unused = "namespace zz50b2k.alias1\n  import anthill.prelude.{Int64}\n  \
+                  operation viaop() -> Int64 = let g = lambda x -> x + x  let h = g  1\nend\n";
+    let errs = crate::common::try_load_kb_with(unused)
         .err()
-        .expect("expected a refusal, but it loaded");
+        .expect("KNOWN GAP: expected a refusal — if this loads, let-generalization landed");
     assert!(
         errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
         "expected an unresolved `Additive`, got: {errs:?}",
     );
+    // CONTROL: the SAME alias, USED. The alias is not what refuses — the unpinned instance
+    // is — so a row without this control would read as "aliasing is refused".
+    let used = "namespace zz50b2k.alias2\n  import anthill.prelude.{Int64}\n  \
+                operation viaop() -> Int64 = let g = lambda x -> x + x  let h = g  h(2)\nend\n";
+    let mut kb = crate::common::try_load_kb_with(used)
+        .unwrap_or_else(|errs| panic!("the USED alias must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.alias2.viaop"), 4);
+}
+
+/// **A GENERALIZED LAMBDA IS STILL REFUSED BY A NON-CALLABLE SLOT** — the guard on the
+/// wrong accept the row above names.
+///
+/// `needs_b(g)` where `needs_b(b: Bool)`: the schema must be ELIMINATED at the reference so
+/// the conformance relation sees an arrow and refuses it. The message is
+/// `expected Bool, got ??param -> ?_` — an ARROW, which is the evidence the ∀-elimination
+/// ran, since a conformance relation has no arm for a `PolyType` and lets one through.
+///
+/// **BOTH SPELLINGS OF THE SAME BINDING, because the first cut eliminated at ONE of the
+/// three env readers and `g` and `?g` disagreed.** `/code-review` drove it: `needs_b(g)` was
+/// refused and `needs_b(?g)` LOADED — one program, two verdicts, a question mark apart — and
+/// the escaped schema also reached a user diagnostic as raw internals
+/// (`got PolyType[binders = cons[…], context = cons[…]]`). The elimination now has ONE owner
+/// (`eliminate_env_schema`) and every reader of `env.lookup_var` goes through it.
+///
+/// THE PINNED-BINDER CONTROL is the row that says the `?g` path itself was never broken: the
+/// same spelling with a binder the body pins (`lambda x -> 1`, no ∀ at all) was refused all
+/// along, so what leaked was the SCHEMA and not the reference.
+///
+/// BACK-OUT: gate `check_bare_ref`'s instantiation on `expected.is_some()` and the `g` row
+/// LOADS; drop the `Expr::Var` arm's call to `eliminate_env_schema` and the `?g` row LOADS.
+/// Two axes, two rows — a fixture with only one spelling measured only one of them, which is
+/// how the second survived a review pass.
+#[test]
+fn a_function_value_is_still_refused_by_a_non_callable_slot() {
+    for (tag, arg, body) in [
+        // THE BODY IS `x + x` AND THAT IS THE POINT — it is what makes the binder
+        // unpinnable, defers the `Additive` requirement, and gives the lambda a ∀ to leak.
+        // The first cut wrote `x` here and the row passed on a plain arrow, measuring
+        // nothing; the back-out is what showed it.
+        ("ident", "g", "x + x"),
+        ("varref", "?g", "x + x"),
+        // CONTROL: the same `?g` spelling with a body that PINS the binder, so there is no
+        // ∀ to escape. Refused before step 2 and after — the reference path is not what
+        // moved, the schema is.
+        ("varref, no forall", "?g", "1"),
+    ] {
+        let ns = format!("zz50b2k.slot{}", tag.replace([' ', ','], ""));
+        let src = format!(
+            "namespace {ns}\n  import anthill.prelude.{{Int64, Bool}}\n  \
+             operation needs_b(b: Bool) -> Int64 = 1\n  \
+             operation viaop() -> Int64 = let g = lambda x -> {body}  needs_b({arg})\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| {
+                panic!("{tag}: a function value in a `Bool` slot must be refused, but it loaded")
+            });
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("expected Bool") && e.contains("->")),
+            "{tag}: expected the arrow-vs-Bool mismatch (the ∀ eliminated at the \
+             reference), got: {errs:?}",
+        );
+    }
+}
+
+/// **AN UNUSED ALIAS REFUSES THE SAME WAY IN BOTH SPELLINGS** — the second half of the
+/// one-binding-two-readers defect above, and the row that would go green-when-it-should-fail
+/// if only one reader eliminates again.
+///
+/// `let h = g  1` and `let h = ?g  1` are one program. Before the `Expr::Var` reader got the
+/// elimination the first was REFUSED and the second LOADED. Both are refused now, which is
+/// the known gap `known_gap_an_unused_alias_of_a_generalized_lambda_is_refused` documents —
+/// stated here as an AGREEMENT between spellings rather than as a second copy of that gap.
+#[test]
+fn an_unused_alias_refuses_alike_in_both_spellings() {
+    for (tag, rhs) in [("ident", "g"), ("varref", "?g")] {
+        let ns = format!("zz50b2k.al{}", tag.len());
+        let src = format!(
+            "namespace {ns}\n  import anthill.prelude.{{Int64}}\n  \
+             operation viaop() -> Int64 = let g = lambda x -> x + x  let h = {rhs}  1\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| panic!("{tag}: expected a refusal, but it loaded"));
+        assert!(
+            errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+            "{tag}: expected an unresolved `Additive`, got: {errs:?}",
+        );
+    }
 }
 
 /// **A DIRECT APPLICATION OF A MULTI-BINDER LAMBDA ABORTED THE TYPER**, found by
@@ -1156,4 +1297,71 @@ fn both_halves_of_a_solved_arrow_resolve_together() {
     );
 }
 
+/// **A NESTED LAMBDA MUST NOT QUANTIFY ITS ENCLOSING BINDER** — the side condition every
+/// let-generalization has, which the first cut of step 2 omitted, and `/code-review`
+/// MEASURED the wrong accept it let through.
+///
+/// `let g = lambda x -> (x + x, lambda y -> x)  let r = g(true)  1` LOADED. The INNER
+/// lambda's arrow is `(?y) -> ?x`, so the OUTER binder `?x` is free in it and the
+/// generalization quantified it THERE — at a frame that had no business owning it. `g(true)`
+/// then pinned `?x := Bool`, but the requirement was already marked generalized with no
+/// instantiation of its own, so `Additive[Bool]` was never asked and a program that adds
+/// two booleans type-checked.
+///
+/// THREE ROWS, AND THE MIDDLE ONE IS WHAT ATTRIBUTES IT. The same program with the inner
+/// lambda REMOVED was refused all along, so the accept is the nesting and not the `Bool`;
+/// and the `Int64` spelling must keep LOADING, so the fix is a side condition and not a
+/// blanket refusal of nested lambdas.
+///
+/// **THE BACK-OUT IS A 2x2 AND THE ROW CANNOT SEPARATE THE TWO GUARDS — measured, and said
+/// here rather than credited to one of them.** The repair for this defect was the `env_free`
+/// side condition in `generalize_for_arrow`; the review's other finding added a second
+/// guard, `discharge`'s `contradicted` test, which refuses to license a generalized
+/// requirement whose own carrier was OBSERVED at a non-providing sort. Each alone refuses
+/// this program:
+///
+///     env_free  contradicted   this row
+///        on         on           passes
+///        off        on           passes
+///        on         off          passes
+///        off        off          FAILS — the program loads
+///
+/// So the row measures "at least one of the two is live", and both are kept for different
+/// reasons: `env_free` is the principled rule (a variable the environment still holds is not
+/// this frame's to quantify, whatever anyone later observes), while `contradicted` is the
+/// one that refuses to reach a licence by DISCARDING evidence the walk already collected.
+/// A fixture separating them would need an outer binder pinned at a non-providing carrier by
+/// a route that produces no observation; none was constructible here, and that absence is
+/// the honest state rather than a claim that the pair is redundant.
+#[test]
+fn a_nested_lambda_does_not_quantify_its_enclosing_binder() {
+    let capture_bool = "namespace zz50b2k.cap1\n  import anthill.prelude.{Int64, Bool}\n  \
+        operation viaop() -> Int64 = \
+        let g = lambda x -> (x + x, lambda y -> x)  let r = g(true)  1\nend\n";
+    let errs = crate::common::try_load_kb_with(capture_bool)
+        .err()
+        .expect("a `Bool` carrier with no `Additive` must be refused, but it loaded");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+        "expected an unresolved `Additive`, got: {errs:?}",
+    );
 
+    // CONTROL 1 — the same program with NO inner lambda. Refused before and after, which is
+    // what says the accept above was the NESTING rather than the carrier.
+    let no_inner = "namespace zz50b2k.cap2\n  import anthill.prelude.{Int64, Bool}\n  \
+        operation viaop() -> Int64 = let g = lambda x -> (x + x, x)  let r = g(true)  1\nend\n";
+    assert!(
+        crate::common::try_load_kb_with(no_inner).is_err(),
+        "the inner-lambda-free twin must be refused too",
+    );
+
+    // CONTROL 2 — the same NESTING at a carrier that DOES provide `Additive`. It must still
+    // load: the repair is a side condition on which frame may quantify, not a refusal of
+    // nested lambdas.
+    let capture_int = "namespace zz50b2k.cap3\n  import anthill.prelude.{Int64}\n  \
+        operation viaop() -> Int64 = \
+        let g = lambda x -> (x + x, lambda y -> x)  let r = g(2)  1\nend\n";
+    let mut kb = crate::common::try_load_kb_with(capture_int)
+        .unwrap_or_else(|errs| panic!("the Int64 nesting must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.cap3.viaop"), 1);
+}

@@ -3868,7 +3868,7 @@ mod wi1083_poly_type_tests {
                 _ => panic!("the result is the instantiated variable"),
             }
         };
-        let (ia, ib) = (param_var(&kb, &a.0), param_var(&kb, &b.0));
+        let (ia, ib) = (param_var(&kb, &a.ty), param_var(&kb, &b.ty));
         assert_ne!(ia, ib, "each instantiation mints its own variable");
         // AND THE TIE SURVIVES: `idp`'s parameter and result are ONE variable, so an
         // instantiation that minted a fresh variable per OCCURRENCE instead of per BINDER
@@ -3877,11 +3877,11 @@ mod wi1083_poly_type_tests {
         // instantiations happening to agree.
         assert_eq!(
             ia,
-            result_var(&kb, &a.0),
+            result_var(&kb, &a.ty),
             "one binder, one fresh variable — `∀A. (x: A) -> A` instantiates to `(x: ?A1) -> \
              ?A1`, not to two unrelated variables",
         );
-        assert_eq!(ib, result_var(&kb, &b.0));
+        assert_eq!(ib, result_var(&kb, &b.ty));
         let TypeExtractor::PolyType { binders, .. } = extract_type(&kb, &poly) else {
             unreachable!("asserted a PolyType above");
         };
@@ -3938,7 +3938,7 @@ mod wi1083_poly_type_tests {
         let inst = instantiate_poly_type(&mut kb, &poly).expect("a ∀ instantiates");
         let mut seen_in_inst: Vec<crate::kb::term::VarId> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        crate::kb::node_occurrence::collect_value_type(&kb, &inst.0, &mut seen_in_inst, &mut seen);
+        crate::kb::node_occurrence::collect_value_type(&kb, &inst.ty, &mut seen_in_inst, &mut seen);
         assert!(
             !seen_in_inst.is_empty(),
             "the instantiation carries variables — without this the absence below is vacuous",
@@ -4018,7 +4018,7 @@ mod wi1084_arrow_function_unify_tests {
             .1
             .clone();
         let mut subst = Substitution::new();
-        let verdict = unify_types(kb, &mut subst, &inst.0, &param);
+        let verdict = unify_types(kb, &mut subst, &inst.ty, &param);
         (verdict, subst.bindings.len())
     }
 

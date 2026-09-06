@@ -2479,6 +2479,23 @@ impl TypingEnv {
         self.var_bindings.get(&name).cloned()
     }
 
+    /// WI-20260904-50B2K part (c), step 2 — every TYPE this environment binds a name to.
+    /// The one reader is [`WalkSolutions::generalize_for_arrow`]'s side condition, which
+    /// must not quantify a variable the environment still holds.
+    ///
+    /// **BOTH MAPS.** An environment holds types in two: `var_bindings` for a lexical name
+    /// and `debruijn_types` for a rule body's `?x`. The first cut yielded only the first,
+    /// which made a SOUNDNESS side condition a census of half its subject — and a
+    /// half-census is exactly how the first version of this guard failed (it read the arrow
+    /// and not the environment at all, and quantified an enclosing lambda's binder).
+    /// /code-review found it. No witness: today's rule-body var types are inert
+    /// placeholders, so nothing in the corpus separates one map from two.
+    pub(crate) fn bound_types(&self) -> impl Iterator<Item = &Value> {
+        self.var_bindings
+            .values()
+            .chain(self.debruijn_types.values())
+    }
+
     /// WI-400 increment C: record that `name` aliases the canonical receiver `path`
     /// (`let y = z` ⟹ `name = y`, `path = [z]`). The path's head is de-aliased first, so
     /// the stored path is fully canonical (transitive `let w = y` resolves to `y`'s
@@ -6757,7 +6774,17 @@ fn type_check_node_gated_at(
                 expected,
                 fuel,
                 pos,
-            } => visit_type(kb, occ, env, expected, fuel, pos, &mut work, &mut results),
+            } => visit_type(
+                kb,
+                occ,
+                env,
+                expected,
+                fuel,
+                pos,
+                &mut solving,
+                &mut work,
+                &mut results,
+            ),
             TypeWorkOp::Build(frame) => build_type(
                 kb,
                 frame,
@@ -6788,6 +6815,59 @@ fn type_check_node_gated_at(
 /// constructor, zero-arg operation. Returns `Err(UnresolvedName)`
 /// when none match — the strict equivalent of the pre-WI-264 silent-
 /// None bail.
+/// WI-20260904-50B2K part (c), step 2 — ∀-ELIMINATION AT AN ENVIRONMENT READ, and THE ONE
+/// OWNER, because a schema that escapes ANY reader meets a conformance relation with no arm
+/// for it and is compatible with everything.
+///
+/// **THE FIRST CUT PUT THIS AT ONE READER AND THERE ARE THREE.** `check_bare_ref` had it and
+/// `visit_type`'s `Expr::Var` arm — the `?g` spelling of the very same binding, which the
+/// WI-279/WI-487 comment there says resolves the same let/lambda/match names — did not. So
+/// `needs_b(g)` was refused and `needs_b(?g)` LOADED, one program with two verdicts a
+/// question mark apart; and the escaped schema reached a user diagnostic as raw internals
+/// (`got PolyType[binders = cons[…], context = cons[…]]`). /code-review drove it.
+///
+/// `Err` when the eliminated context finds no deferred requirement to claim it: that means
+/// the constraint would be dropped here, which is the wrong accept this whole slice exists
+/// to prevent.
+fn eliminate_env_schema(
+    kb: &mut KnowledgeBase,
+    solving: &mut WalkSolutions,
+    // The NAME AS WRITTEN, for the diagnostic. `None` where the carrier has none (a
+    // De Bruijn or rigid variable), which reads better than a stand-in: the first cut
+    // interned `?var` there, and a message naming a variable the author never wrote is
+    // worse than one that does not name it at all. /code-review raised both halves.
+    name: Option<Symbol>,
+    span: Option<Span>,
+    ty: Value,
+) -> Result<Value, TypeError> {
+    let Some(inst) = instantiate_poly_type(kb, &ty) else {
+        return Ok(ty);
+    };
+    if !inst.obligations.is_empty() && solving.note_instantiation(&inst.binder_map) == 0 {
+        let named = match name {
+            Some(n) => format!("`{}`", kb.local_name_of(n)),
+            None => "this reference".to_string(),
+        };
+        return Err(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::LetBinding {
+                // A LET-BOUND LOCAL, NOT AN OPERATION, which is what the first cut's context
+                // said. The value whose schema this is was written as a `let`, and the
+                // context a reader sees should be the construct they wrote.
+                var: name.unwrap_or_else(|| kb.intern("?")),
+            },
+            expected: "a quantified type whose constraints this walk can discharge".to_string(),
+            actual: format!(
+                "{named} has a `PolyType` carrying {} constraint(s) no deferred requirement \
+                 claims (WI-20260904-50B2K part (c))",
+                inst.obligations.len()
+            ),
+        });
+    }
+    Ok(inst.ty)
+}
+
 fn check_bare_ref(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -6796,8 +6876,44 @@ fn check_bare_ref(
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
     expected: Option<&Value>,
+    solving: &mut WalkSolutions,
 ) -> Result<TypeResult, TypeError> {
     if let Some(ty) = env.lookup_var(sym) {
+        // WI-20260904-50B2K part (c), step 2 — ∀-ELIMINATION FOR A LET-BOUND POLYMORPHIC
+        // VALUE. Until step 2 nothing could put a ∀ in the value environment, so this path
+        // handed the type back untouched; a generalized lambda arrow
+        // (`∀a. Additive[a] => (a) -> a`) now can be here, and a ∀ handed to a consumer
+        // that expects an ARROW is not merely imprecise — `Applier.ap(g, leaf())` compares
+        // the schema against `Function[A = Leaf, B = Int64]` and refuses a program that
+        // works.
+        //
+        // Per REFERENCE, as at the eta arm below and for its reason (§5.6: instantiating is
+        // the caller's job), and the obligations go to the walk rather than being tested
+        // here — this site does not yet know what the surrounding unification will pin the
+        // fresh carrier to. `Applier.ap(g, leaf())` pins it to `Leaf` in the argument check
+        // that follows and the discharge sees it there; the generic `ap[X](…)` pins it to a
+        // type PARAMETER, which is not a carrier that can provide anything, so that one is
+        // still refused — correctly, since `ap` declares no `requires` to carry the
+        // obligation across its boundary.
+        //
+        // **AT EVERY REFERENCE, AND THE NARROWER GATE I TRIED IS A MEASURED WRONG ACCEPT.**
+        // Instantiating only where `expected` is `Some` reads as let-polymorphism — keep
+        // the schema where nothing asks for an instance — and it does fix a real wart:
+        // `let g = lambda x -> x + x  let h = g  1` is REFUSED while the same program
+        // without the unused alias LOADS, because the alias mints an instance nothing will
+        // ever pin. But `expected` is NOT "a consumer needs a type" here: an argument slot
+        // is hinted only when it is CALLABLE (part (b)), so `needs_b(g)` against
+        // `needs_b(b: Bool)` arrives with no expectation — and with the gate in place that
+        // program LOADED, a function value accepted into a `Bool` slot. Measured, both
+        // ways round. A ∀ that escapes this site meets a conformance relation with no arm
+        // for it, so the schema must not leave here; the wart is a REFUSAL and the gate was
+        // a WRONG ACCEPT, and between those two this slice takes the refusal.
+        //
+        // The wart's real fix is let-GENERALIZATION — re-quantifying at the `let` a
+        // variable still free in the bound value's type — which is a producer this slice
+        // does not add. Pinned as `known_gap_an_unused_alias_of_a_generalized_lambda_is_
+        // refused`.
+        let ty = eliminate_env_schema(kb, solving, Some(sym), span, ty)?;
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     // Proposal 039 / WI-084: a bare reference to a term-level constant is
@@ -6876,7 +6992,7 @@ fn check_bare_ref(
                         // the binders made concrete, which is exactly what makes them
                         // answerable, and discharging them is this reference's job. The
                         // empty case is every ∀ that exists today.
-                        Some((inst, obligations)) if obligations.is_empty() => inst,
+                        Some(inst) if inst.obligations.is_empty() => inst.ty,
                         // WI-20260904-50B2K part (c) — A CONTEXT THAT REACHES ∀-ELIMINATION
                         // WITH NOWHERE TO GO IS A LOUD ERROR, not a `debug_assert`. The
                         // first cut asserted, which is silent in release — and the failure
@@ -6890,7 +7006,7 @@ fn check_bare_ref(
                         // produces a non-empty one yet. The slice that starts producing them
                         // must deliver the discharge FIRST or every such reference is
                         // refused here — which is the ordering this error enforces.
-                        Some((_, obligations)) => {
+                        Some(inst) => {
                             return Err(TypeError::Other {
                                 site: TypeError::here(),
                                 span,
@@ -6903,7 +7019,7 @@ fn check_bare_ref(
                                 actual: format!(
                                     "a `PolyType` carrying {} undischarged constraint(s) \
                                      (WI-20260904-50B2K part (c))",
-                                    obligations.len()
+                                    inst.obligations.len()
                                 ),
                             });
                         }
@@ -8265,7 +8381,7 @@ fn projection_receiver_type(
     env: &TypingEnv,
     receiver: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
-    varref_arg_env_type(env, receiver)
+    varref_arg_env_type(kb, env, receiver)
         .or_else(|| relation_ref_arg_type(kb, receiver))
         .or_else(|| receiver.inferred_type())
 }
@@ -8918,10 +9034,20 @@ fn generalize_eta_arrow(
 /// reproduce those figures. The measurement is kept because it is what justifies this
 /// function's choice of walk, not as a live inventory — `Iterable.map` is the one named
 /// operation whose signature is unchanged.
-fn instantiate_poly_type<V: TermView>(
-    kb: &mut KnowledgeBase,
-    ty: &V,
-) -> Option<(Value, Vec<Value>)> {
+/// WI-20260904-50B2K part (c), step 2 — one ∀-ELIMINATION, with everything its consumers
+/// need to dispose of what the schema was carrying.
+pub(crate) struct PolyInstantiation {
+    /// The body with every binder freshened — the type this occurrence actually has.
+    ty: Value,
+    /// The context, freshened with the body: the constraints this use now OWES.
+    obligations: Vec<Value>,
+    /// `(binder, fresh)` per binder. It is what links an obligation back to the walk that
+    /// generalized it — see [`WalkSolutions::note_instantiation`], which keys on this
+    /// rather than on the obligations because two values' contexts can name one spec.
+    binder_map: SmallVec<[(VarId, VarId); 2]>,
+}
+
+fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<PolyInstantiation> {
     // HEAD FIRST, then the children: `type_head` reads at most the functor symbol, while
     // `extract_type` materializes a fresh child vector with every bound type cloned into it
     // (the cost this file's WI-798 notes exist to keep off hot paths). Every bare-reference
@@ -8938,6 +9064,7 @@ fn instantiate_poly_type<V: TermView>(
         return None;
     };
     let mut fresh = Substitution::new();
+    let mut binder_map: SmallVec<[(VarId, VarId); 2]> = SmallVec::new();
     for b in &binders {
         // A binder that is not a flexible variable term is a malformed ∀ — the one mint
         // ([`generalize_eta_arrow`]) builds nothing else. LOUD in dev rather than silently
@@ -8961,6 +9088,7 @@ fn instantiate_poly_type<V: TermView>(
         let new_vid = kb.fresh_var(vid.name());
         let new_term = kb.alloc(Term::Var(Var::Global(new_vid)));
         fresh.bind(kb, vid, new_term);
+        binder_map.push((vid, new_vid));
     }
     let (instantiated, _) = super::node_occurrence::subst_value_type(kb, &body, &fresh);
     // WI-20260904-50B2K part (c) — THE CONTEXT IS FRESHENED WITH THE BODY AND HANDED BACK,
@@ -8971,7 +9099,11 @@ fn instantiate_poly_type<V: TermView>(
         .iter()
         .map(|c| super::node_occurrence::subst_value_type(kb, c, &fresh).0)
         .collect();
-    Some((instantiated, instantiated_context))
+    Some(PolyInstantiation {
+        ty: instantiated,
+        obligations: instantiated_context,
+        binder_map,
+    })
 }
 
 /// WI-1083 — a ∀'s BODY WITHOUT FRESHENING, for the one reader that must see the
@@ -9475,7 +9607,11 @@ fn hof_arg_hint(
 /// arg `xs` of `findX(xs, lambda …)` (or the dot-call `xs.findX(…)`) is a `VarRef` whose
 /// `List[Int64]` type is already bound in `env`, so a sibling callback param's projection
 /// (`pred: (x: s.T) -> …`) can be eliminated against it at HINT time.
-fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Value> {
+fn varref_arg_env_type(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    arg: &Rc<NodeOccurrence>,
+) -> Option<Value> {
     if let NodeKind::Expr { expr, .. } = &arg.kind {
         let name = match expr {
             Expr::VarRef { name } => *name,
@@ -9491,7 +9627,29 @@ fn varref_arg_env_type(env: &TypingEnv, arg: &Rc<NodeOccurrence>) -> Option<Valu
         // same threading a let-local receiver gets for free through the env. Env first:
         // a still-flexible env binding is the live one; the stamp is only a fallback for
         // a reference the env doesn't carry.
-        return env.lookup_var(name).or_else(|| arg.inferred_type());
+        // WI-20260904-50B2K part (c), step 2 — NO SCHEMA THROUGH THE HINT CHANNEL. This is
+        // the THIRD reader of `env.lookup_var`, and unlike the other two it computes a HINT
+        // rather than a verdict: it has no walk to hand an obligation to and no `Result` to
+        // refuse with. A ∀ pushed down as an `expected` would be a hint no consumer can read
+        // — so it answers `None` here, which is the pre-(c) behaviour for a name the env
+        // does not carry, and the real elimination happens at the reader that types the
+        // reference. /code-review named this site with the two it drove.
+        //
+        // NO ROW HOLDS THIS, MEASURED: backing it out leaves all 27 rows of
+        // `wi_50b2k_binder_inference_test` green, because this helper is only reached for a
+        // DOT-CALL RECEIVER (`projection_receiver_type` is its sole caller) and a lambda has
+        // no members to dot into. It is kept as the third reader of one channel being made
+        // to agree with the other two, and is recorded as having no witness rather than
+        // being credited with one.
+        // THE FALLBACK IS FILTERED TOO, and the first cut filtered only the env hit — which
+        // the fallback then defeated: `set_inferred_type` stamps the lambda's own type onto
+        // its occurrence, so a `VarRef` to a let-bound generalized lambda reaches the SAME
+        // schema through `inferred_type()`. A guard whose bypass is the next line of the
+        // same expression is not a guard. /code-review found it.
+        return env
+            .lookup_var(name)
+            .or_else(|| arg.inferred_type())
+            .filter(|t| !matches!(type_head(kb, t), TypeHead::PolyType));
     }
     None
 }
@@ -11611,6 +11769,12 @@ fn visit_type(
     // `DotApply`); a CHILD visit is data by construction and takes `NodePos::Value` from
     // [`push_visit`] without being told.
     pos: NodePos,
+    // WI-20260904-50B2K part (c), step 2 — the walk's inference state, for the ONE reader
+    // in this function: `check_bare_ref`'s env-var path, which ∀-eliminates a generalized
+    // lambda and must tell the walk it did (`note_instantiation`). It is `&mut` rather
+    // than a return channel because the elimination happens inside a three-way dispatch
+    // whose other arms have nothing to report.
+    solving: &mut WalkSolutions,
     work: &mut Vec<TypeWorkOp>,
     results: &mut Vec<Result<TypeResult, TypeError>>,
 ) {
@@ -11975,6 +12139,7 @@ fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                solving,
             );
             results.push(r);
         }
@@ -11987,6 +12152,7 @@ fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                solving,
             );
             results.push(r);
         }
@@ -12002,6 +12168,7 @@ fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                solving,
             );
             results.push(r);
         }
@@ -12663,6 +12830,25 @@ fn visit_type(
                 // type-var, as a free op-body `?x` does.
                 Var::DeBruijn(idx) => env.lookup_debruijn(*idx),
                 _ => None,
+            };
+            // WI-20260904-50B2K part (c), step 2 — THE SAME ELIMINATION AS
+            // `check_bare_ref`'s, through the one owner. `?g` and `g` name one binding; a ∀
+            // that leaves only one of them gives one program two verdicts.
+            let bound = match bound {
+                Some(t) => {
+                    let name = match var {
+                        Var::Global(vid) => Some(vid.name()),
+                        _ => None,
+                    };
+                    match eliminate_env_schema(kb, solving, name, occ_span, t) {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            results.push(Err(e));
+                            return;
+                        }
+                    }
+                }
+                None => None,
             };
             let ty = bound.unwrap_or_else(|| {
                 // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED
@@ -14487,6 +14673,50 @@ fn build_type(
                 occ.span,
                 occ.owner,
             );
+            // WI-20260904-50B2K part (c), step 2 — GENERALIZE WHAT THE WALK COULD NOT
+            // ANSWER. A requirement this walk deferred because its carrier is a lambda
+            // binder has, until now, had exactly one place to be answered: a later USE, in
+            // this same walk. A binder the walk never applies therefore had no evidence and
+            // was refused — and the refusal named a `requires` clause with nowhere to go,
+            // because a lambda has no declaration site to write one at.
+            //
+            // The answer is the one the known-gap row has always named: the constraint goes
+            // INTO THE TYPE. `lambda x -> x + x` is `∀a. Additive[a] => (a) -> a`, and each
+            // use discharges its own instance — which is also strictly SHARPER than the
+            // walk-lifetime licence beside it, whose first-wins solving answers every use
+            // from the first one.
+            //
+            // ORDER MATTERS AND IS NOT AN ACCIDENT: a `let`'s bound expression is typed
+            // before its body, so at this frame NO use has run yet and the binder is
+            // unsolved in both the used and unused programs. Both therefore generalize, and
+            // `let g = lambda x -> x + x  g(2)` keeps answering 4 through the ∀ path — the
+            // instantiation at `g(2)` pins `Int64` and the obligation is discharged against
+            // it — rather than through the observation licence it used before.
+            let fn_ty = match solving.generalize_for_arrow(
+                kb,
+                &fn_ty,
+                &outer_env.types,
+                occ.span,
+                occ.owner,
+            ) {
+                Some((binders, context)) => {
+                    let binder_terms: Vec<Value> = binders
+                        .iter()
+                        .map(|v| Value::term(type_param_var_term(kb, Var::Global(*v))))
+                        .collect();
+                    let binder_list = super::load::build_value_list(kb, binder_terms);
+                    let context_list = super::load::build_value_list(kb, context);
+                    let body = value_to_type_child(kb, &fn_ty);
+                    Value::Node(kb.make_poly_type_occ(
+                        binder_list,
+                        context_list,
+                        body,
+                        occ.span,
+                        occ.owner,
+                    ))
+                }
+                None => fn_ty,
+            };
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -15625,6 +15855,24 @@ struct DeferredSpecRequirement {
     /// alone. Observations are appended at the same site BEFORE that filter, so a second
     /// use at a second carrier is seen even though it never becomes a solution.
     observed: Vec<(VarId, Symbol)>,
+    /// WI-20260904-50B2K part (c), step 2 — has this requirement MOVED INTO A TYPE?
+    ///
+    /// Set when [`WalkSolutions::generalize_for_arrow`] puts it in a lambda arrow's
+    /// `PolyType` context. It stays in this list rather than being removed, and that is
+    /// deliberate: the OCCURRENCE and the `CallClass` here are what produce the diagnostic,
+    /// and a second error channel for the same failure would be a second owner of the
+    /// message. What changes is WHICH variables the discharge asks about — see
+    /// [`Self::instances`].
+    generalized: bool,
+    /// The per-use ∀-ELIMINATIONS of [`Self::carriers`], one set of fresh variables per
+    /// reference to the generalized value ([`WalkSolutions::note_instantiation`]).
+    ///
+    /// Once generalized, the discharge asks its question of THESE and not of the binders:
+    /// the binders are quantified, so they are answerable by nothing and are not supposed
+    /// to be. An EMPTY list is therefore the licence a polymorphic value earns by being
+    /// polymorphic — nothing used it, so nothing owes anything, and the constraint travels
+    /// in the type to whoever eventually does.
+    instances: SmallVec<[VarId; 2]>,
 }
 
 impl WalkSolutions {
@@ -15650,7 +15898,170 @@ impl WalkSolutions {
             spec_sort,
             class,
             observed: Vec::new(),
+            generalized: false,
+            instances: SmallVec::new(),
         });
+    }
+
+    /// WI-20260904-50B2K part (c), step 2 — MOVE EVERY REQUIREMENT THIS ARROW CAN CARRY
+    /// INTO ITS TYPE, and answer with the binders and the context a `PolyType` needs.
+    ///
+    /// A requirement qualifies when EVERY one of its carriers still occurs FREE in the
+    /// arrow. That one test does two jobs and both are load-bearing:
+    ///
+    ///  * IT IS THE UNSOLVED TEST. The arrow reaching here has already been resolved
+    ///    through `solved`, so a carrier the walk pinned is no longer a variable in it —
+    ///    `?x := Int64` leaves `(Int64) -> Int64`, which mentions no `?x`. A requirement
+    ///    the walk's own evidence answers therefore does NOT generalize, and the licence
+    ///    that answers it is untouched.
+    ///  * IT IS THE EXPRESSIBILITY TEST. Quantifying a variable the body does not mention
+    ///    yields a constraint no instantiation can ever reach: `∀a. C a => t` where `t`
+    ///    lacks `a` is a type whose obligation is undischargeable by construction. The
+    ///    binder-list lambda is exactly this shape — its `?pat` components are not the
+    ///    arrow's `?param` (WI-20260904-34J8Z) — so it stays REFUSED here rather than
+    ///    acquiring a ∀ that would launder it.
+    ///
+    /// The context gets ONE ELEMENT PER CARRIER (`Additive[T = ?a]`, `Additive[T = ?b]`),
+    /// which is the same shape the discharge beside it already demands — every carrier
+    /// answered, separately.
+    fn generalize_for_arrow(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        arrow: &Value,
+        outer_env: &TypingEnv,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Option<(Vec<VarId>, Vec<Value>)> {
+        if self.deferred.iter().all(|d| d.generalized) {
+            return None;
+        }
+        let mut free: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        collect_value_type_and_bare_vars(kb, arrow, &mut free, &mut seen);
+        // **AND NOT FREE IN THE ENCLOSING ENVIRONMENT** — the side condition every
+        // let-generalization has, which the first cut omitted, and /code-review MEASURED
+        // the wrong accept it lets through:
+        //
+        //     let g = lambda x -> (x + x, lambda y -> x)   let r = g(true)   1
+        //
+        // LOADED. The INNER lambda's arrow is `(?y) -> ?x`, so `?x` — the OUTER binder — is
+        // free in it and this function quantified it there. `g(true)` then pinned `?x` to
+        // `Bool`, but the requirement was already marked generalized with no instantiation
+        // of its own, so `Additive[Bool]` was never asked. The same program with the inner
+        // lambda removed was correctly REFUSED, which is what attributes the accept here.
+        //
+        // The environment outside THIS lambda is exactly the set of variables somebody else
+        // may still pin: a variable it holds is not this lambda's to quantify. At the inner
+        // frame `outer_env` binds `x : ?x`, so `?x` is excluded and the requirement survives
+        // to the OUTER frame, where the environment no longer holds it — which is where it
+        // belonged all along.
+        let mut env_free: Vec<VarId> = Vec::new();
+        let mut env_seen = HashSet::new();
+        for t in outer_env.bound_types() {
+            collect_value_type_and_bare_vars(kb, t, &mut env_free, &mut env_seen);
+        }
+        let mut binders: Vec<VarId> = Vec::new();
+        let mut context: Vec<Value> = Vec::new();
+        for i in 0..self.deferred.len() {
+            if self.deferred[i].generalized
+                || !self.deferred[i].carriers.iter().all(|v| free.contains(v))
+                || self.deferred[i]
+                    .carriers
+                    .iter()
+                    .any(|v| env_free.contains(v))
+            {
+                continue;
+            }
+            let spec_sort = self.deferred[i].spec_sort;
+            // The spec's own carrier parameter — `T` of `Additive[T]`. Without it there is
+            // no well-formed application to write, so the requirement stays the walk's:
+            // refusing to generalize is the conservative direction (it keeps today's
+            // refusal) where inventing a parameter name would put a malformed constraint
+            // into a stored type.
+            let Some(param) = spec_carrier_param_or_sole(kb, spec_sort) else {
+                continue;
+            };
+            let base = kb.make_sort_ref(spec_sort);
+            let carriers = self.deferred[i].carriers.clone();
+            for v in &carriers {
+                let carrier_ty = Value::term(type_param_var_term(kb, Var::Global(*v)));
+                context.push(parameterized_value(
+                    kb,
+                    base,
+                    &[(param, carrier_ty)],
+                    span,
+                    owner,
+                ));
+                if !binders.contains(v) {
+                    binders.push(*v);
+                }
+            }
+            self.deferred[i].generalized = true;
+        }
+        if binders.is_empty() {
+            return None;
+        }
+        // MINT ORDER, for the reason `report_call_solutions` sorts: the binder list is
+        // stored in a type and rendered in diagnostics, so an order that varied with a
+        // hash walk would give one program two spellings.
+        binders.sort_by_key(|v| v.raw());
+        Some((binders, context))
+    }
+
+    /// WI-20260904-50B2K part (c), step 2 — record one ∀-ELIMINATION of a generalized
+    /// requirement, so the discharge asks its question of the fresh variables the USE will
+    /// pin rather than of the binders, which are quantified and answerable by nothing.
+    ///
+    /// Keyed on the binder map rather than on the obligations, because the map is what
+    /// says WHICH ∀ this is: a requirement generalized over `?a` is instantiated by
+    /// exactly the elimination that freshened `?a`, and two different values' contexts
+    /// can name the same spec.
+    ///
+    /// ANSWERS HOW MANY REQUIREMENTS CLAIMED A BINDER, so a caller can tell that a context
+    /// it just eliminated found NO owner — which would mean the constraint has been
+    /// dropped. Unreachable while [`Self::generalize_for_arrow`] is the only producer (it
+    /// leaves its entry in this list), and read anyway: the next producer this design plans
+    /// — let-generalization at the `Let` frame — would otherwise lose its constraints here
+    /// in silence.
+    fn note_instantiation(&mut self, binder_map: &[(VarId, VarId)]) -> usize {
+        let mut matched = 0usize;
+        for d in &mut self.deferred {
+            if !d.generalized {
+                continue;
+            }
+            // THIS ∀ MUST BIND THE REQUIREMENT'S WHOLE CARRIER SET, not merely one of its
+            // carriers. `generalize_for_arrow` quantifies a requirement only when EVERY
+            // carrier qualifies at that frame, so the ∀ it produced binds all of them —
+            // and a ∀ binding only some is therefore a DIFFERENT one, whose elimination
+            // would otherwise be credited here as evidence for this requirement. Two
+            // requirements sharing a carrier and generalizing at different frames is the
+            // shape (not constructible on today's single-carrier prelude specs, which is
+            // why this is a precision fix rather than a measured defect — /code-review).
+            if !d
+                .carriers
+                .iter()
+                .all(|c| binder_map.iter().any(|(o, _)| o == c))
+            {
+                continue;
+            }
+            let mut claimed_here = false;
+            for (old, new) in binder_map {
+                if d.carriers.contains(old) {
+                    claimed_here = true;
+                    if !d.instances.contains(new) {
+                        d.instances.push(*new);
+                    }
+                }
+            }
+            // ONE PER REQUIREMENT, which is what the name and the doc say. The first cut
+            // incremented per matching (binder, carrier) PAIR, so a two-carrier requirement
+            // answered 2 — inert while both callers only test `== 0`, and a name/value
+            // disagreement the next reader would take at its word. /code-review found it.
+            if claimed_here {
+                matched += 1;
+            }
+        }
+        matched
     }
 
     /// Record every concrete carrier this call's σ gives a deferred requirement's binders.
@@ -15662,7 +16073,18 @@ impl WalkSolutions {
         subst: &Substitution,
     ) {
         for d in &mut self.deferred {
-            for v in &d.carriers {
+            // THE INSTANCES ARE OBSERVED TOO, and they are what the discharge asks about
+            // once the requirement has moved into a type (step 2). A generalized
+            // requirement's own carriers are quantified — no σ can pin them — so observing
+            // only those would leave every use unanswered and refuse every polymorphic
+            // application.
+            let watched: SmallVec<[VarId; 4]> = d
+                .carriers
+                .iter()
+                .chain(d.instances.iter())
+                .copied()
+                .collect();
+            for v in &watched {
                 // ATTRIBUTABLE TO THIS UNIFY OR NOT OBSERVED. A carrier already resolved in
                 // `before` was decided by an earlier argument, whose own unify may have
                 // FAILED after binding it — `unify_types` never rolls back. See
@@ -15692,19 +16114,47 @@ impl WalkSolutions {
     /// remaining half. Until that exists, the conservative verdict is today's refusal.
     fn discharge(self, kb: &mut KnowledgeBase) {
         for d in self.deferred {
+            // WI-20260904-50B2K part (c), step 2 — ONCE THE REQUIREMENT IS IN A TYPE, THE
+            // QUESTION IS ASKED OF THE USES, NOT OF THE BINDERS. A quantified variable is
+            // answerable by nothing, so asking about it would refuse every generalized
+            // lambda; the instantiations are what a use actually pins.
+            //
+            // AND AN EMPTY INSTANCE LIST IS A LICENCE HERE WHERE AN EMPTY OBSERVATION LIST
+            // IS A REFUSAL, which looks like the same fail-open and is its opposite. Not
+            // generalized means the constraint has NOWHERE to live but this walk, so no
+            // evidence is a gap; generalized means it lives in the arrow's `PolyType`
+            // context, so no use is not missing evidence — there is nothing yet to
+            // discharge, and whoever eventually applies the value will be asked then.
+            let targets: &[VarId] = if d.generalized {
+                &d.instances
+            } else {
+                &d.carriers
+            };
+            // AND AN OBSERVATION OF A BINDER IS STILL EVIDENCE AFTER GENERALIZATION,
+            // WHICH THE FIRST CUT THREW AWAY. Switching `targets` to the instances made an
+            // empty instance list license unconditionally — including a walk that had
+            // WATCHED the binder itself and seen a carrier providing nothing, since
+            // `observe_deferred_carriers` records `carriers ∪ instances`. /code-review
+            // raised it as defence-in-depth beside the capture defect above, and it is
+            // worth having on its own terms: a licence must never be reached by DISCARDING
+            // evidence, whatever route left the instances empty.
+            let contradicted = d.observed.iter().any(|(v, c)| {
+                d.carriers.contains(v) && !carrier_provides_spec(kb, *c, d.spec_sort)
+            });
             // EVERY binder answered, and EVERY answer an instance. Both halves are the
             // licence: a binder with no observation has no evidence, and an observation
             // that provides nothing is the requirement failing rather than deferring.
-            let licensed = d.carriers.iter().all(|v| {
-                let mut answered = false;
-                for (_, c) in d.observed.iter().filter(|(w, _)| w == v) {
-                    answered = true;
-                    if !carrier_provides_spec(kb, *c, d.spec_sort) {
-                        return false;
+            let licensed = !contradicted
+                && targets.iter().all(|v| {
+                    let mut answered = false;
+                    for (_, c) in d.observed.iter().filter(|(w, _)| w == v) {
+                        answered = true;
+                        if !carrier_provides_spec(kb, *c, d.spec_sort) {
+                            return false;
+                        }
                     }
-                }
-                answered
-            });
+                    answered
+                });
             if !licensed {
                 classify(kb, &d.occ, d.class);
             }
@@ -15731,9 +16181,28 @@ fn resolved_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -
         }
         seen.push(cur);
         let val = subst.resolve_as_value(cur)?;
-        match val {
-            Value::Var(Var::Global(next)) => cur = *next,
-            other => return sort_functor_of_view(kb, other),
+        // BOTH CARRIERS, and the first cut read only `Value::Var` — which is the carrier a
+        // type variable is LEAST likely to arrive on here. A variable in type position is
+        // interned by construction, and `bind_resolved` routes a `Value::Term` binding to
+        // `bind_term`, so the very chain this loop's doc names (`?param := ?T_callee`,
+        // `?T_callee := Int64`) is stored as `Value::Term(Term::Var(…))` and fell straight
+        // to the `other` arm, where `sort_functor_of_view` answers `None` for a variable
+        // term. The chase was therefore a no-op on its own motivating case, and the
+        // consequence is the refusal it was written to prevent — the walk declining a call
+        // whose evidence it holds. `resolved_var` is the file's owner of "read a VarId off
+        // either carrier"; asking it is what makes the two spellings one question.
+        // /code-review found it.
+        //
+        // AND THE REPAIR IS WHAT MAKES AN ESCAPED CLOSURE WORK — WI-817's original question,
+        // answered here rather than by the ∀ beside it. `Applier.ap(g, leaf())` with
+        // `ap[X](fn: Function[A = X, B = Int64], a: X)` binds the closure's carrier to `X`
+        // and `X` to `Leaf`, a two-hop chain this loop could not follow. It now answers
+        // `Leaf`, `Desc[Leaf]` holds, and the call is licensed: 1 at `Leaf`, 12 at
+        // `Wrap[Leaf]`, 1012 for both through ONE closure. MEASURED WITH THE
+        // GENERALIZATION BACKED OUT, which is what attributes it here and not to step 2.
+        match resolved_var(kb, val) {
+            Some(next) => cur = next,
+            None => return sort_functor_of_view(kb, val),
         }
     }
 }
@@ -19563,19 +20032,49 @@ fn check_apply_iter(
     // both flow through `extract_function_type_parts`, the occurrence never
     // re-grounded.
     if let Some(fn_type) = env.lookup_var(fn_sym) {
-        // WI-1083 — NO ∀-ELIMINATION HERE, and the absence is a decision. A function
-        // VALUE has only a type, so this looks like the site that should eliminate;
-        // measured, no ∀ can arrive. The only route into `env` for an operation's type is
-        // a `let`: an UNANNOTATED one is already refused ("expected known operation or
-        // arrow-typed variable" — for a MONOMORPHIC operation too, so this is not a gap
-        // this ticket opened), and an ANNOTATED one supplies a monotype, against which
-        // `check_bare_ref` has already instantiated. Adding an eliminator here would be a
-        // second answer to a question `check_bare_ref` owns — and per-relation
-        // instantiation is measurably the WRONG shape (see that site).
+        // WI-20260904-50B2K part (c), step 2 — ∀-ELIMINATION HERE, WHERE THE COMMENT THIS
+        // REPLACES SAID NONE COULD ARRIVE. That reading was correct and is now out of date,
+        // and the sentence it turned on is the one worth keeping: "what would make it
+        // reachable is let-polymorphism … that is the capability the PolyType makes
+        // expressible and this ticket does not deliver." It delivers it now, from the other
+        // end — not by eta-lifting an operation into a `let`, but by GENERALIZING A LAMBDA
+        // whose binder the walk could not pin, so `let g = lambda x -> x + x` binds a ∀ and
+        // `g(2)` is this path.
         //
-        // What would make it reachable is let-polymorphism: a bare reference eta-lifting
-        // with NO expectation, so `let f = idp` binds the ∀ itself. That is the capability
-        // the PolyType makes expressible and this ticket does not deliver.
+        // The instantiation is per REFERENCE, exactly as `check_bare_ref`'s is, so two uses
+        // of one `g` share no variable and each is checked at its own carrier. Its
+        // obligations are handed to the walk ([`WalkSolutions::note_instantiation`]) rather
+        // than tested here: the arguments have not been unified yet, so the fresh carrier
+        // is not pinned until the loop below runs — and the machinery that answers "was
+        // this variable seen at a providing carrier" already exists, with one owner.
+        let fn_type = match instantiate_poly_type(kb, &fn_type) {
+            Some(inst) => {
+                // THE SAME LOUD READING AS `check_bare_ref`'s: a context nothing claims is
+                // a constraint dropped. With no `solving` there is no walk to claim it at
+                // all, which is the same absence and is reported the same way.
+                let claimed = solving
+                    .as_deref_mut()
+                    .map(|w| w.note_instantiation(&inst.binder_map))
+                    .unwrap_or(0);
+                if !inst.obligations.is_empty() && claimed == 0 {
+                    return Err(TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: TypeErrorContext::OperationAsFunctionValue { op_name: fn_sym },
+                        expected: "a quantified function value whose constraints this walk \
+                                   can discharge"
+                            .to_string(),
+                        actual: format!(
+                            "a `PolyType` carrying {} constraint(s) no deferred requirement \
+                             claims (WI-20260904-50B2K part (c))",
+                            inst.obligations.len()
+                        ),
+                    });
+                }
+                inst.ty
+            }
+            None => fn_type,
+        };
         // WI-798: the callee is classified ONCE for the whole path — the
         // result/effects read here, the WI-792 positional argument check, and the
         // WI-783 named-label resolution below all read THIS extraction. They used
@@ -48185,7 +48684,19 @@ fn eliminate_node_projections(
                 // silent-in-release shape `check_bare_ref` was corrected for two passes ago.
                 // Loud, through the same helper the malformed-`ExprCarried` arm above uses.
                 // /code-review found it.
-                if !value_list_elements(kb, context).is_empty() {
+                // THE QUESTION IS WHETHER THE *CONTEXT* HOLDS A PROJECTION, not whether it
+                // is non-empty — the first cut asked the second and asserted the first in
+                // its own message. What ROUTES a node here is `value_contains_projection`,
+                // which the BODY alone satisfies (an eta'd member's ∀ body carrying
+                // `(x: xs.T)` is the shape its doc names), so a projection-free context
+                // beside a body projection the line above just eliminated would be refused,
+                // and told the author the projection was somewhere it is not. A
+                // projection-free context passes through unchanged and correctly.
+                // /code-review found it.
+                if value_list_elements(kb, context)
+                    .iter()
+                    .any(|c| value_contains_projection(kb, c))
+                {
                     return Err(projection_type_error(
                         ctx,
                         span,
