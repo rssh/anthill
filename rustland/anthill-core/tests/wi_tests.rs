@@ -1611,3 +1611,5 @@ mod wi_qqpq2_tuple_carrier_test;
 
 #[path = "include/wi_n20ez_answer_links_transient_test.rs"]
 mod wi_n20ez_answer_links_transient_test;
+#[path = "include/wi_60143_total_unify_descent_test.rs"]
+mod wi_60143_total_unify_descent_test;

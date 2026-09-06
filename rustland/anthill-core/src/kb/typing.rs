@@ -15299,9 +15299,16 @@ fn concrete_override_threaded(
     let op_short_sym = kb.intern(short_name_of(&op_qn));
     let impl_op = concrete_self_receiver_override(kb, carrier_sym, fn_sym, op_short_sym)?;
     // Thread the impl's OWN return + effects through the receiver. The receiver is
-    // the ground truth for the impl's element/effect params; a failed unify (shape
-    // mismatch) leaves them free, and the deep resolve then returns a
-    // no-more-specific type.
+    // the ground truth for the impl's element/effect params, and the deep resolve below
+    // reads THIS σ — so what a failed unify leaves in it is this site's business.
+    // WI-20260904-60143: "a failed unify leaves them free" is what this said, and it was
+    // never true. `unify_types` does not roll back; it binds every component that AGREED
+    // and answers `false` for the rest (see its "what survives a `false`" note). So a shape
+    // mismatch leaves the params PARTIALLY pinned and the resolve returns a type built from
+    // the agreeing half — which is the intended reading here, the receiver being ground
+    // truth for exactly as much as it determines, but it is a different statement from
+    // "free". What that ticket changed is that the surviving half no longer depends on the
+    // order the receiver's type-args happened to be written in.
     let impl_info = lookup_operation_info_full(kb, impl_op)?;
     let impl_idx = self_receiver_param_index(kb, &impl_info.params, carrier_sym)?;
     let self_param_ty = impl_info.params[impl_idx].1.clone();
@@ -16388,8 +16395,16 @@ fn walk_minted_carriers(
 /// solutions half gated and ungated — so this is a class removed rather than a defect fixed,
 /// and it is recorded as such. What would drive it is a call whose argument unify fails
 /// PARTWAY, binds a walk-minted binder on the way down, and whose enclosing call still types;
-/// the discarded boolean is what makes that shape constructible at all, and closing that
-/// census (WI-20260904-60143) is what would make it reachable on purpose.
+/// the discarded boolean is what makes that shape constructible at all.
+///
+/// WI-20260904-60143 CLOSED THAT CENSUS AND WIDENED THE SHAPE RATHER THAN REMOVING IT. The
+/// relation still does not roll back — deliberately; see [`unify_types`]' "what survives a
+/// `false`" note — and an author-ordered slot list now contributes EVERY agreeing slot
+/// instead of the prefix before the first disagreement. Strictly more can reach `w.solved`
+/// from a `false`, which is an argument for this gate and not against it. Whether the widened
+/// shape gives the two gatings a SEPARATING program was not re-measured there — the gate was
+/// left in place, so nothing depended on the answer, and it is recorded as unmeasured rather
+/// than assumed unchanged.
 ///
 /// **AND THE GATE IS PER-BINDING, NOT PER-CALL, WHICH TOOK THREE CUTS TO GET RIGHT.** `subst`
 /// is ACCUMULATED across a call's whole argument loop, so the boolean alone gates only the
@@ -17912,14 +17927,25 @@ fn check_apply_iter(
         // it AFTER argument inference (it used to run before) makes it fill only
         // STILL-FREE type params: a param an argument already pinned resists the
         // override — the `unify_types` against the pinned slot fails for a
-        // differing claim and its boolean is discarded, binding nothing — so a
-        // wrong declared return no longer masks a contradicting argument
+        // differing claim and its boolean is discarded — so a wrong declared
+        // return no longer masks a contradicting argument
         // (WI-379 soundness gap (a)). A genuinely free param
         // (`empty() -> List[Elem]`, `term_as_entity[E] -> Option[E]`) is still
         // filled from `expected` (WI-270's legitimate case). The synthesized
         // `resolved_ret` is then checked against `expected` at the use site
         // (`check_operation_bodies` return check / let conformance), which is
         // what actually rejects the wrong declared return.
+        //
+        // WI-20260904-60143 — "BINDING NOTHING" IS WHAT THIS USED TO SAY, AND IT WAS NEVER
+        // TRUE OF A COMPOUND `expected`. What resists the override is the PINNED SLOT, and
+        // only it: `unify_types` walks it to its value and compares, so no rebind happens
+        // there. Its SIBLINGS are a separate question — a still-free param in the same type
+        // IS filled from an `expected` the pinned slot has already contradicted, and it stays
+        // filled, because the relation does not roll back (see its "what survives a `false`"
+        // note). The paragraph's conclusion is unaffected: what rejects a wrong declared
+        // return is the use-site check on `resolved_ret`, not this unify's discarded boolean,
+        // and that check still sees the contradicting slot. What changed is that the sibling
+        // fills are now the SAME set however the `expected` type's slots were spelled.
         if let Some(exp) = expected {
             unify_types(kb, &mut subst, &proj_return_type, &exp);
         }
@@ -20328,15 +20354,17 @@ fn check_apply_iter(
                                 // it, so a `ret_ty` mentioning it would come back
                                 // `??param` instead of `Int64`. Found by `/code-review`.
                                 //
-                                // WHAT A FAILED UNIFY LEAVES BEHIND IS NOT SETTLED HERE.
-                                // `unify_types` binds as it descends and does not roll
-                                // back, so a pair that conforms by SUBTYPING but not by
-                                // EQUALITY keeps whatever it bound before the mismatch —
-                                // and since this ticket, that σ is READ (`ret_ty` below).
-                                // Raised by `/code-review`; NOT repaired here, because the
-                                // discarded-boolean idiom is this file's, not this site's:
-                                // ten call sites share it and fixing two would leave the
-                                // other eight. WI-20260904-60143 owns the census.
+                                // WHAT A FAILED UNIFY LEAVES BEHIND IS SETTLED AT THE
+                                // RELATION, not here — WI-20260904-60143, see
+                                // [`unify_types`]' "what survives a `false`" note.
+                                // `unify_types` still does not roll back (four refusals are
+                                // reached BY the partial binding, measured), so a pair that
+                                // conforms by SUBTYPING but not by EQUALITY keeps what it
+                                // bound. What that ticket removed is the part of it that was
+                                // ARBITRARY: an author-ordered slot list now contributes
+                                // every slot that agreed rather than the prefix before the
+                                // first that did not, so the `ret_ty` read below no longer
+                                // depends on how the argument's type was spelled.
                                 ArgValidation::Ok => {
                                     let before = subst.clone();
                                     let unified =
@@ -51084,6 +51112,69 @@ fn expr_carried_zeta<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B)
     Some(false)
 }
 
+/// **WHAT SURVIVES A `false` — the rule ~16 discarding callers depend on** (WI-20260904-60143).
+///
+/// This relation does NOT roll back. Everything it bound on the way down stays in `subst`
+/// whatever it answers, and that is DELIBERATE: the argument-unification sites discard the
+/// boolean by design (unify is EQUALITY, argument passing is SUBTYPING plus conversions, so a
+/// unify-`false` must not by itself reject), and what they take from the call is the
+/// SUBSTITUTION. [`unify_arrow_function_view`]'s doc states it for its own arm — "its job is
+/// to BIND" — and it is the whole relation's contract. A rollback was BUILT AND MEASURED on
+/// this tree and costs four rows, each a groundness-gated refusal reached *by* the partial
+/// binding: `wi1084_arrow_function_unify_tests::the_two_spellings_of_one_slot_answer_alike`,
+/// `wi1078_unbound_return_var_test::the_tie_survives_the_opening`,
+/// `wi1082_self_return_tie_test::a_bodyless_member_cannot_launder_either`, and
+/// `wi1083_polytype_test::a_result_type_disagreement_is_refused`. The variable pinned by an
+/// AGREEING component is what makes the disagreeing one read ground and therefore comparable.
+///
+/// **SO NO AUTHORIAL ORDER MAY DECIDE WHICH OF THEM SURVIVE.** That is the whole of the fix,
+/// and it is narrower than "descend totally". A list whose slot order is the AUTHOR'S — a
+/// parameterized type's bindings (`Pair[A = …, B = …]` or `Pair[B = …, A = …]`), a tuple's
+/// fields, an arrow's parameter LIST (in the `arrow` spelling; the `Function[A, B, E]` one
+/// does not unify a multi-parameter list at all — see [`unify_arrow_function_view`]) —
+/// unifies EVERY slot and returns their CONJUNCTION, so
+/// what a `false` leaves behind is "every slot that agreed" and not "the slots written before
+/// the one that did not" ([`unify_parameterized_view`], [`unify_named_tuple_as`];
+/// `wi_60143_total_unify_descent_test` drives one back-out per loop). A later slot cannot
+/// un-say an earlier one's disagreement, so the early exit only ever decided which half of σ
+/// a discarding caller got to read.
+///
+/// An arrow's `param` / `result` / `effects` are NOT such a list — their order is fixed by the
+/// FORM, so stopping at the first disagreeing part is already a function of the two types
+/// alone. Those keep the short-circuit, and [`unify_arrow_view`] carries the measurement that
+/// says they must: continuing past a disagreeing `param` fills unwritten carrier params from
+/// a unify that failed, and turns a refusal into a clean load. A HEAD mismatch — differing
+/// functors, differing arity, a missing component — exits hard for the same reason: those are
+/// unrelatable shapes, not disagreeing slots.
+///
+/// **WHAT A CALLER MAY THEREFORE ASSUME — AND THE BINDINGS ARE NOT ALL OF IT.** On `false`,
+/// σ holds what agreed: evidence about the argument, not an instantiation of the call, and now
+/// the same evidence however the disagreeing type was spelled. On `true`, σ is a unifier
+/// EXCEPT through [`unify_parameterized_with_sort_ref`], which binds the sort's canonical
+/// param vars with an UNWALKED `Substitution::bind` and then answers `true` unconditionally —
+/// so a conflicting re-bind there leaves `true` beside a recorded conflict.
+///
+/// That is the second channel this relation writes and neither verdict resets: the sticky
+/// `contradiction` flag and `contradiction_details`, set by `Substitution::bind` /
+/// `bind_value` on a conflicting re-bind. It is NOT inert — [`enforce_member_tie`] reads
+/// `contradiction_details` and renders an `OperationTypeParams` refusal from it. Unifying
+/// every slot of an author-ordered list (above) strictly widens the set of slots that can
+/// reach that arm, since slots after the first disagreeing one now descend. NOT DRIVEN:
+/// /code-review built two programs for it (a `Box[T]` member given a `Pair[A, B]`, with a
+/// plain disagreement and with a `provides`-based subtype in slot A) and the per-argument
+/// conformance check refused first in both, so [`enforce_member_tie`] was never reached and
+/// no row of `wi_60143_total_unify_descent_test` covers this channel. Recorded as an
+/// unmeasured widening rather than a proven one — but a caller reasoning from the paragraph
+/// above must know σ carries more than bindings.
+///
+/// A caller that reads σ as an ANSWER
+/// and must not absorb a failed unify's evidence takes the probe-commit instead: `let mut
+/// probe = subst.clone(); if unify_types(kb, &mut probe, ..) { *subst = probe; }`
+/// (`Substitution::clone` is O(1) — `imbl`, WI-569). SIX sites do exactly that today and say
+/// why at each: [`hint_instantiation_subst`], the `lacks`-conflict probe, the
+/// contradiction-replay scratch, the operation-return check, and the two row-matching loops
+/// (`pair_present_labels` / `cover_present_labels`), whose restore is a BACKTRACK between
+/// candidate labels rather than a rollback of the verdict.
 pub fn unify_types<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -51449,14 +51540,23 @@ fn unify_parameterized_view<A: TermView, B: TermView>(
     // skipped, `unify_types` returned true without binding it, and the op type param
     // surfaced later as `UnconstrainedTypeParam` far from the cause.
     let key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
+    // WI-20260904-60143 — EVERY SLOT, THEN THE VERDICT (`&=`, not `return false`). See
+    // [`unify_types`]' "what survives a `false`" note: the discarding callers read this σ,
+    // and THIS LIST'S ORDER IS THE AUTHOR'S, so stopping at the first disagreeing slot made
+    // WHICH bindings they read a function of how the slots were spelled. Measured,
+    // `take[X](p: Pair[A = Int64, B = X])` given `Pair[A = String, B = Int64]` refused with
+    // `expected Pair[A = Int64, B = ?X]` — a raw inference variable in a user-facing message
+    // — while the same disagreement written `Pair[A = X, B = Int64]` refused with the pinned
+    // `Pair[A = Int64, B = Int64]`. One program, two slot orders, two messages. A LATER slot
+    // cannot un-say an earlier one's disagreement (the verdict is a conjunction either way),
+    // so the only thing the early exit bought was the arbitrariness.
+    let mut ok = true;
     for (param, av) in &a_bindings {
         if let Some(bv) = binding_for_param(kb, &b_bindings, *param, key_match) {
-            if !unify_types(kb, subst, av, bv) {
-                return false;
-            }
+            ok &= unify_types(kb, subst, av, bv);
         }
     }
-    true
+    ok
 }
 
 /// WI-342: the sole `arrow` unification, carrier-agnostic over [`TermView`]
@@ -51544,6 +51644,21 @@ fn unify_arrow_function_view<AR: TermView, FN: TermView>(
     // threw away legitimate inference to dodge a problem that is not about variables at all.
     let a_arity = kb.intern("arity");
     let spread_shaped = arrow_arity(kb, arrow, a_arity) != Some(1);
+    // WI-20260904-60143 — THE SHORT-CIRCUIT STAYS, in step with [`unify_arrow_view`]'s (see
+    // its note for the measured reason): both arms stop at the first disagreeing PART, so
+    // neither spelling of one type answers differently about what a failed unify leaves
+    // behind — the parity WI-1084 closed here.
+    //
+    // THAT PARITY IS ABOUT THE SHORT-CIRCUIT AND NOTHING ELSE, and the `spread_shaped` guard
+    // below is where the two spellings genuinely diverge: at any arity but 1 this arm does
+    // not unify the param AT ALL (WI-787 — a `Function`'s `A` is one argument's data type,
+    // an arrow's `param` at that arity is a parameter LIST, and the two are related by a
+    // calling convention rather than an identity), while [`unify_arrow_view`] sends its
+    // parameter list through [`unify_named_tuple_as`] and therefore through this ticket's
+    // every-slot loop. So a multi-parameter arrow's parameter list is author-ordered and
+    // total in the arrow spelling and SKIPPED WHOLESALE in this one. Pre-existing and
+    // deliberate; named here because the paragraph above would otherwise read as claiming a
+    // parity on that axis too. Found by `/code-review`.
     if let (Some(x), Some(y)) = (&a_param, &f_param) {
         if !spread_shaped && !unify_types(kb, subst, x, y) {
             return false;
@@ -51580,6 +51695,24 @@ fn unify_arrow_view<A: TermView, B: TermView>(
         return false;
     };
 
+    // WI-20260904-60143 — AN ARROW'S PARTS KEEP THE SHORT-CIRCUIT, and that is the line the
+    // ticket drew rather than an omission. What had to become total is a list whose order is
+    // AUTHORIAL — a parameterized type's bindings, a tuple's fields, and this arrow's own
+    // parameter LIST, which reaches [`unify_named_tuple_as`] through [`unify_arrow_params`]
+    // — because there "which bindings survive a `false`" was a function of how the author
+    // happened to write the slots. (The `Function[A, B, E]` spelling does NOT reach it for a
+    // multi-parameter list; [`unify_arrow_function_view`]'s `spread_shaped` guard says why.) `param` / `result` / `effects`
+    // are fixed by the FORM, so stopping at the first disagreeing part is already determined
+    // by the two types and not by anyone's spelling.
+    //
+    // AND CONTINUING HERE IS UNSOUND, MEASURED. A disagreeing `param` means the two arrows
+    // are not the same function, so a `result` binding taken across it is drawn from two
+    // unrelated types. Made total, it FILLS UNWRITTEN CARRIER PARAMS from a unify that
+    // failed and `wi_mdwew_bare_spec_arg_provision_test::ambient_requires_compound_clause_-
+    // value_is_not_bound_verbatim` goes from REFUSED to a clean load — "grant a licence and
+    // bind a wrong rigid together", which is the exact shape that test exists to forbid.
+    // (Three more rows moved with it: that file's `foreign_provision_binding_is_refused_-
+    // like_its_concrete_twin` and two in `wi599_carrier_arg_provision_test`.)
     match (
         named_child_value(kb, a, param_sym),
         named_child_value(kb, b, param_sym),
@@ -55944,8 +56077,17 @@ fn unify_named_tuple_as<A: TermView, B: TermView>(
     let a_fields = named_tuple_fields(kb, a);
     let b_fields = named_tuple_fields(kb, b);
     match align_named_tuple_slots(kb, &a_fields, &b_fields, mode) {
-        Some(slots) => aligned_pairs(&slots, &a_fields, &b_fields)
-            .all(|(a_type, b_type)| unify_types(kb, subst, a_type, b_type)),
+        // WI-20260904-60143 — a `for`, not `all`: every slot is unified and the verdict is
+        // their conjunction, so which components a discarding caller reads back out of σ
+        // does not depend on which slot disagreed first. See [`unify_parameterized_view`].
+        // (`all` short-circuits; a `for` does not.)
+        Some(slots) => {
+            let mut ok = true;
+            for (a_type, b_type) in aligned_pairs(&slots, &a_fields, &b_fields) {
+                ok &= unify_types(kb, subst, a_type, b_type);
+            }
+            ok
+        }
         None => false,
     }
 }
@@ -67166,12 +67308,14 @@ fn check_operation_bodies(
                 //
                 // The unify's boolean is DISCARDED: `types_compatible` below is still the
                 // verdict, since unify is EQUALITY while conformance is SUBTYPING plus the
-                // refinement retry. WHAT A FAILED UNIFY LEAVES IN σ is a separate question
-                // and an open one — it binds as it descends and does not roll back, so a
-                // subtyping-conformant pair keeps whatever it bound before the mismatch,
-                // and the `walk_type_deep_value` below now READS that σ. Raised by
-                // `/code-review`; the census of the ~10 sites sharing this idiom is
-                // WI-20260904-60143, and it is a file-wide rule rather than this site's.
+                // refinement retry. WHAT A FAILED UNIFY LEAVES IN σ is settled at the
+                // relation — WI-20260904-60143, see [`unify_types`]' "what survives a
+                // `false`" note: it does not roll back (deliberately — four refusals are
+                // reached BY the partial binding), and an author-ordered slot list now
+                // contributes every slot that agreed rather than an arbitrary prefix. This
+                // site still takes the probe, because that settles WHICH bindings a failed
+                // unify leaves and not WHETHER this σ should absorb them, and this one is
+                // read two lines down into a user-visible message.
                 // PROBE ON A CLONE, COMMIT ONLY ON SUCCESS — the file's own pattern
                 // (`hint_instantiation_subst`), applied here because this σ is READ two
                 // lines down and its reading is USER-VISIBLE. `unify_types` binds as it
