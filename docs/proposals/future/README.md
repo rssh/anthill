@@ -25,6 +25,9 @@ its only move.
 
 ## Index
 
+- [extent-sources.md](extent-sources.md) — the full EDB/IDB split vision:
+  virtualizing where a functor's facts live (resident / external / oracle).
+  Direction, not spec; its implementable slice is the numbered proposal 057.
 - [pre-state-arguments.md](pre-state-arguments.md) — `old.b` / `arguments.b` as
   the contract vocabulary for an argument observed at operation ENTRY versus at
   return, so an `ensures` can relate the two states.
