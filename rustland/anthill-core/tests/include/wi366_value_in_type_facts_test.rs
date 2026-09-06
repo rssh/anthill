@@ -522,20 +522,21 @@ fn query_pattern_written_empty_effect_row_lowers() {
         }
     }
     let term = term.expect("query pattern has a fact term");
-    let Term::Fn { named_args, .. } = kb.get_term(term) else {
-        panic!("query pattern term must be a Fn");
-    };
-    let e = named_args
-        .iter()
-        .find(|(s, _)| kb.local_name_of(*s) == "E")
-        .map(|(_, t)| *t)
+    // WI-20260904-J0RM4: the pattern rides the transient occurrence carrier, so it is
+    // read through `TermView` — which is the same head/child reading its hash-consed
+    // twin gave, and that agreement is the carrier change's whole contract.
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let e_sym = TermView::named_keys(&term, &kb)
+        .into_iter()
+        .find(|s| kb.local_name_of(*s) == "E")
         .expect("E binding present (not dropped) in query pattern term");
+    let e = TermView::named_arg(&term, &kb, e_sym).expect("E child readable");
     assert!(
-        matches!(kb.get_term(e), Term::Fn { functor, .. }
-            if kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.EffectsRows"),
+        matches!(TermView::head(&e, &kb), ViewHead::Functor { functor: Some(f), .. }
+            if kb.qualified_name_of(f) == "anthill.prelude.TypeExtractor.EffectsRows"),
         "query `Stream[E = {{}}]` must lower E to an `effects_rows` Type (not drop it \
          or panic); got: {:?}",
-        kb.get_term(e),
+        TermView::head(&e, &kb),
     );
 }
 

@@ -139,35 +139,19 @@ fn a_loaded_implicit_target_is_now_introduced_not_referenced() {
     );
 }
 
-/// WHY THE DEFECT WAS INVISIBLE, pinned as the invariant it is — see
-/// `load::implicit_target_orphans` for what an orphan costs. It is also the measurement
-/// behind "the fix changes nothing in a stdlib-full KB": the static and the loaded
-/// reading of the tier differ on exactly the absent targets, and there are none.
+/// THE ORPHAN-AGREEMENT ROW WAS HERE, AND WENT WITH THE TABLE (WI-909).
 ///
-/// COVERS THE PRELUDE ALONE since WI-20260825-5W3RJ, and the other half did not weaken
-/// — it stopped existing. The kernel desugaring vocab used to be 28 more addresses in
-/// this same table; the converter now names each target outright
-/// (`parse::desugar_target`), so there is no second list to fall out of agreement with
-/// the declarations. `wi040_reserved_vocab_test` is where that half is measured now.
+/// It asserted `load::implicit_target_orphans(&kb).is_empty()` — that no implicit-tier
+/// entry pointed at a declaration the standard load does not make. That was a real
+/// invariant with a real failure mode (an orphaned entry does not fail loudly; the name
+/// silently stops resolving, and a rule head spelled that way starts INTRODUCING it), and
+/// it is gone because its SUBJECT is: `PRELUDE_QUALIFIED` reached zero rows and was
+/// deleted with its accessors.
 ///
-/// AND SINCE WI-909's THIRD PASS THIS ROW IS VACUOUS, said plainly rather than left for
-/// a reader to discover: `PRELUDE_QUALIFIED` is EMPTY, so `implicit_target_orphans`
-/// walks nothing and cannot report. It is kept, and kept green, because the invariant it
-/// states is a property of the TABLE rather than of any entry — a future row added
-/// without a declaration is exactly what it would catch. If the table and its accessors
-/// are deleted outright (the dead-code follow-on WI-909 leaves open), this row goes with
-/// them; it should not be repaired into asserting something else.
-#[test]
-fn every_implicit_target_is_declared_by_the_standard_load() {
-    let kb = crate::common::load_kb_with("namespace wi900.empty\n  fact anchor900(1)\nend\n");
-    let orphans = anthill_core::kb::load::implicit_target_orphans(&kb);
-    assert!(
-        orphans.is_empty(),
-        "these implicit targets resolve to nothing — a bare reference to each falls to \
-         the WI-476 bare intern, and a rule head spelled that way now INTRODUCES the \
-         name instead of referencing it: {orphans:?}",
-    );
-}
+/// Deleted rather than kept green, which the row's own last revision asked for: with an
+/// empty table it walked nothing and could not report, and this file's whole business is
+/// controls that stop measuring. The rows that remain in it are about what a rule head
+/// spelled like a former tier name does NOW, which is a live question.
 
 /// THE AMBIGUOUS RUNG, pinned because the conflict must never be buried under a
 /// scope-local that outranks the candidates.

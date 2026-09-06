@@ -1677,7 +1677,7 @@ pub(super) fn open_equation(
             "an arity-0 equation carries typed-pattern bounds, which would index this \
              frame by SLOT — but it is a term-walk-ordered SET (WI-20260903-2M5XR)"
         );
-        (head, kb.collect_vars(head))
+        (head, kb.collect_vars(&head))
     };
     match kb.get_term(opened) {
         Term::Fn { pos_args, .. } if pos_args.len() == 2 => Some((pos_args[0], pos_args[1], fresh)),

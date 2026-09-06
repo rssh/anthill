@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
+use super::entity_slots::{self, expr_node};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
@@ -5160,228 +5161,37 @@ pub fn scan_definitions_with_sources(
     errors
 }
 
-/// WI-521: the implicit PRELUDE — user-facing names auto-available in every
-/// namespace without an `import` line. As first written that was the fundamental
-/// constructors, the arithmetic / comparison operator targets (`+` → `add`, `=` → `eq`,
-/// …, via `parse/pratt.rs`) and the logic operators (`not` / `or`); every group but the
-/// constructors has since left, and the paragraph is kept because the MECHANISM it
-/// describes is unchanged. Like the kernel
-/// vocab (WI-040), these resolve via a LOWEST-PRECEDENCE fallback rather than a
-/// `<global>` import: a user's local definition or explicit import always wins
-/// (the fallback fires only when scope resolution fails) and the import can never
-/// go AMBIGUOUS against a user name — the failure mode the old flat
-/// `add_import(<global>, …)` had, which forced the WI-476 collision blocklist.
+/// WI-909 — THE IMPLICIT TIER WAS HERE, AND IS GONE. `PRELUDE_QUALIFIED` (a short-name →
+/// qualified-target table), its two readers `prelude_qualified` / `implicit_qualified`,
+/// the `resolve_implicit` rung that consulted them, and the `implicit_target_orphans` /
+/// `implicit_tier_short_names` accessors were all deleted once the table reached zero
+/// rows. Nothing replaced them: the name ladder now ends at the dotted readings.
 ///
-/// `not` LEFT THIS LIST in WI-20260826-XED22 and the paragraph is kept for the history
-/// it carries about the NAMESPACE move, not as a description of the table. It used to sit
-/// directly above `kernel.or` / `.push_choice`; `or` left with it. What follows described
-/// the WI-20260820-MH90F move that put it in `anthill.kernel` at all:
-/// `not` → `anthill.kernel.not` since WI-20260820-MH90F, which moved it out of
-/// `anthill.reflect`: it was the one resolver primitive filed outside the
-/// resolver-primitive namespace, once sitting in this very list directly above
-/// `kernel.or` / `.push_choice` / `.unify` / `.cut` while having `push_choice`'s
-/// exact shape. NO ALIAS was left behind, and nothing needed one: no source in the
-/// tree CALLS the qualified name — every NAF site writes the bare `not` this
-/// fallback answers, and the `import anthill.reflect.{not}` lines that
-/// existed were retargeted with the move. An alias would also have had to live in
-/// `anthill.reflect`, i.e. a SECOND symbol named `not` reachable from reflect's
-/// own rule bodies, which is precisely the ambiguity WI-212 hit.
+/// WHAT IT WAS FOR, so the next person to want one knows what they would be rebuilding.
+/// WI-521 made a set of prelude names resolve from any namespace with no `import`, as a
+/// LOWEST-PRECEDENCE fallback rather than a `<global>` import — the distinction mattered,
+/// because a flat injection made every such name a candidate for AMBIGUITY against a
+/// user's own (the footgun WI-476's collision blocklist worked around), while a fallback
+/// below scope could only ever answer a name nothing else claimed.
 ///
-/// The boolean-`!` / negation-as-failure split the ticket's other half asked
-/// about is NOT a conflation to be resolved away: they are two different
-/// functions (a two-valued op on a Bool VALUE vs a three-valued primitive on a
-/// reified GOAL), so they keep two symbols and are selected BY POSITION —
-/// `redirect_op_body_boolean` one way, `route_body_goal_boolean` the other. The
-/// argument, and why proposal 052's uniform `eq(op(args), true)` goal routing
-/// cannot serve `not`, is written up in 052 §Open questions 7.
+/// WHY IT WENT, in three passes and on three different rules. A CONVERTER MINT can carry
+/// its target outright, so `<=>` / `===` / `!` / `requires(X)` took `..`-marked addresses
+/// (`parse::pratt`, `parse::desugar_target`) and stopped needing a rung at all. A name
+/// written bare only in a CLI QUERY has the `-i` flag for exactly that, which retired
+/// `push_choice`, the `BigInt` conversions and the eight reflect result sorts — and that
+/// group's own justification had already been false, since `MemberInfo` and
+/// `DescriptionInfo` were the same vocabulary and never on the table. What was left were
+/// the four constructors, written bare in SOURCE, where a rung is justifiable; they went
+/// because keeping four rows cost a whole resolution rung, five accessors and this body
+/// of doc to save an `import` line in eleven files.
 ///
-/// AN ENTRY THAT NAMES NOTHING IS NOT NECESSARILY SILENT, measured while moving `not`:
-/// point this one back at the retired `anthill.reflect.not` and the STDLIB STOPS
-/// LOADING with `UndefinedRuleBodyGoal { functor: "not" }` at `anthill.reflect.typing`.
-/// (That measurement was taken while `not` was still an entry; it left in
-/// WI-20260826-XED22.) The guard is WI-1034's rule-body-goal check, so what it covers is
-/// an entry the stdlib itself names in a GOAL position. SINCE WI-909 NO ENTRY DOES:
-/// the four that remain are constructors, written in TERM position, which WI-1058's
-/// rule-body-term check covers instead — a different check with its own exemptions.
-/// Check by spelling, not by assuming this list is guarded as a whole.
-///
-/// THE TABLE IS THE FOUR CONSTRUCTORS AND NOTHING ELSE (WI-909, second pass), which is
-/// the first time its contents and its name have agreed. `push_choice` and the eight
-/// `anthill.reflect` result sorts left with the `BigInt` conversions: a corpus census
-/// found NO `.anthill` file writing any of them bare, so they answered only at
-/// `resolve_name_in_kb` — the CLI query pattern / host-name rung at `<global>` — and
-/// removing them migrated no source at all.
-///
-/// THE REFLECTION HALF'S JUSTIFICATION HAD BEEN FALSE FOR AS LONG AS IT STOOD, and that
-/// is why its removal is not a judgement call. The text here used to say the `*Info`
-/// sorts were "a reflection vocabulary queried bare by reflection infrastructure".
-/// `MemberInfo` and `DescriptionInfo` belong to that same vocabulary — same
-/// `register_stdlib_scopes` block, same loader emission — and were never on the table,
-/// so a bare `anthill query 'MemberInfo(…)'` has always errored with the `-i` remedy in
-/// its own message. The rung covered eight of ten members of one vocabulary. The eight
-/// now answer as the two always did.
-const PRELUDE_QUALIFIED: &[&str] = &[
-    // WI-20260825-KD9SW REMOVED THE TWELVE SPEC OPERATIONS FROM THIS TABLE —
-    // `add sub neg mul div mod eq neq lt lte gt gte`. They were here so that a minted
-    // operator's SHORT functor had somewhere to resolve, which made this table the
-    // second encoding of a fact `parse::pratt` already stated, and put the resolution
-    // BELOW scope: a same-spelled name in scope captured the operator (driven — with
-    // `import Weird.{add}` in scope, `1 + 2` answered `99`).
-    //
-    // A minted operator now names its target outright
-    // (`crate::parse::pratt::SPEC_OP_FUNCTORS`), so there is no short name here to
-    // resolve and no capture to refuse. `check_rival_spec_operations`, whose whole
-    // subject was that capture, went with them.
-    //
-    // WHAT THIS COSTS, and it is the ticket's migration rather than a side effect: a
-    // WRITTEN bare `gt(a, b)` / `eq(a, 0)` no longer resolves through the tier either,
-    // because the tier entry is what carried it. Those sites name the operation by
-    // import now — which is what §8.6 has always said brings a sort's members into
-    // scope. The operator itself needs nothing.
-    // WI-20260826-XED22: `not` / `or` / `and` are NO LONGER HERE. The comment that stood
-    // at this spot was false in every clause by the time it was deleted — it said `&` is
-    // "value-only (no goal connective — conjunction is the comma, there is no
-    // kernel.and)", which WI-20260822-J38JE had already retired. All three names left the
-    // tier once WI-20260825-P9Y67 gave their OPERATORS addresses: a written `or(...)` /
-    // `and(...)` takes an import, and a written `not(...)` takes nothing because it is a
-    // PREFIX OPERATOR that never runs this ladder. Kept as a marker so the next reader
-    // does not re-add them on the strength of a neighbouring paragraph.
-    // (Historic, for the entries that remain; position-direction is
-    // §6.6's rule — resolver primitives by default; Bool.not/Bool.or only inside an operation body,
-    // handled in remap_name_str via in_op_body_value).
-    // WI-909 REMOVED ELEVEN ROWS HERE, and the shape of what is left is the argument
-    // for it: every remaining entry is a CONSTRUCTOR, which is the one population the
-    // rung's own name describes. The eleven were `BigInt.to_bigint` / `.to_int`,
-    // `kernel.push_choice`, and the eight `anthill.reflect` result sorts.
-    //
-    // WHAT MADE THEM SEPARABLE, measured rather than argued: a census over the whole
-    // corpus (stdlib, examples, `anthill-stl`, `anthill-todo`) found that NO `.anthill`
-    // file writes any of the eleven bare. They answered at ONE site — `resolve_name_in_kb`,
-    // the query-pattern / host-name rung at `<global>` — and nowhere else. So removing
-    // them cost no source migration at all, unlike the four that remain.
-    //
-    // AND THE REFLECTION HALF'S OWN JUSTIFICATION WAS ALREADY FALSE. The comment deleted
-    // from this spot called the eight "a reflection VOCABULARY queried bare … globally
-    // resolvable like the rest". `MemberInfo` and `DescriptionInfo` are the same
-    // population — reflect result sorts, defined by the same `register_stdlib_scopes`
-    // block, emitted by the same loader — and were never on this table: a bare
-    // `anthill query 'MemberInfo(name: ?n)'` has always errored, telling the author to
-    // write `-i anthill.reflect.*`. So the rung covered eight of ten members of one
-    // vocabulary, and nobody had noticed the two it missed. The eight now answer as the
-    // two always did.
-    //
-    // `push_choice` WAS NOT MINTED and is not a converter case (the WI-909 rows above
-    // are); it is pre-declared by `register_stdlib_scopes` and was written bare only in
-    // CLI QUERY PATTERNS (wi917 / wi863 / wi1047), which run at `<global>` with no scope
-    // and no import line. Those patterns name it qualified now. The stdlib's own
-    // `rule or(?a, ?b) :- push_choice(?a, ?b)` never needed the rung: it is written
-    // INSIDE `anthill.kernel`, where scope resolution answers.
-];
-
-/// WI-521: short name → qualified target for the implicit prelude, or `None`.
-/// Resolved as a lowest-precedence fallback (no `<global>` import); a user name
-/// in scope always shadows it.
-fn prelude_qualified(name: &str) -> Option<&'static str> {
-    PRELUDE_QUALIFIED
-        .iter()
-        .copied()
-        .find(|qn| qn.rsplit('.').next() == Some(name))
-}
-
-/// WI-521: short name → qualified target for the implicitly-available names, or `None`.
-/// Private: a NAME here is a candidate, and turning a candidate into an answer is
-/// [`resolve_implicit`]'s job, which is what every consumer must call.
-///
-/// ONE POPULATION SINCE WI-20260825-5W3RJ. It used to be two — this, and a
-/// `KERNEL_VOCAB_QUALIFIED` table of 28 reflect addresses for the forms the CONVERTER
-/// synthesizes (`match_expr`, `field_access`, `ListLiteral`, …). That half is gone, not
-/// re-sourced: the converter names its target outright
-/// ([`crate::parse::desugar_target`]), so a synthesized node resolves through the
-/// ordinary ABSOLUTE rung and needs no fallback, no table and nothing to keep in step
-/// with the mint sites. What remains here is the USER-facing prelude, which is a
-/// genuinely different question — names a person writes bare on purpose.
-///
-/// AND SINCE WI-909 THAT DESCRIPTION IS EXACT rather than approximate. Two rows survived
-/// 5W3RJ that were converter mints all along — `unify` / `struct_eq`, the `<=>` and
-/// `===` targets, which the desugar synthesizes exactly as it synthesizes `match_expr`.
-/// They carried a hand-written override (`minted_connective_symbol`) to re-rank them
-/// above scope, which is the shape of a table that is doing two jobs. Both now name
-/// `..anthill.kernel.…` outright and the override is deleted, so every remaining row IS
-/// a name a person writes bare, and any future row that is not should be migrated rather
-/// than added.
-///
-/// A SECOND CUT NARROWED IT AGAIN, on a different axis: "a person writes it bare" was
-/// true of the eleven `resolve_name_in_kb`-only names too, but the only person doing so
-/// was typing a CLI QUERY, which has an `-i` flag for exactly that. What is left is the
-/// names written bare in SOURCE — four constructors — and that is the population this
-/// rung can justify, because a source file has no `-i`.
-fn implicit_qualified(name: &str) -> Option<&'static str> {
-    prelude_qualified(name)
-}
-
-/// THE IMPLICIT TIER of the name ladder: the symbol a bare `name` denotes through the
-/// implicit prelude, or `None`. The LOWEST-PRECEDENCE rung — consulted only after scope
-/// resolution fails, so a user name in scope always wins.
-///
-/// THE `by_qualified_name` GATE IS PART OF THE RUNG, not a caller's option: a target
-/// that is not loaded denotes nothing, and the name must go on falling through to the
-/// next rung. WI-900 is what happens when one consumer reads the const without it — the
-/// rule-head mint guard skipped names the resolvers could not resolve, so those names
-/// were neither captured nor bound and collapsed onto one bare global. The gate lived
-/// as four hand-written copies and a comment saying they agreed; it is one function so
-/// that they cannot not agree.
-fn resolve_implicit(kb: &KnowledgeBase, name: &str) -> Option<Symbol> {
-    implicit_qualified(name).and_then(|qn| kb.symbols.by_qualified_name.get(qn).copied())
-}
-
-/// WI-900: the implicit TARGETS that resolve to nothing in `kb` — empty in any KB that
-/// loads the stdlib, and that is an invariant worth pinning rather than a coincidence.
-/// The tier resolves a bare name only when its target is loaded, so an orphaned entry (a
-/// stdlib rename, a moved operation) does not fail loudly: the name silently stops
-/// resolving, and a rule head spelled that way starts INTRODUCING it instead of
-/// referencing it. Lives beside the table so a future edit to it sees the invariant;
-/// asserted by
-/// `wi900_implicit_tier_agreement_test::every_implicit_target_is_declared_by_the_standard_load`.
-///
-/// COVERS THE PRELUDE ALONE since WI-20260825-5W3RJ, because that is all the tier is
-/// now. The kernel desugaring vocab is no longer a set of names to be kept in agreement
-/// with a set of declarations — the converter names each target outright, so a missing
-/// one fails where it is USED rather than falling quietly to a bare intern.
-pub fn implicit_target_orphans(kb: &KnowledgeBase) -> Vec<&'static str> {
-    PRELUDE_QUALIFIED
-        .iter()
-        .copied()
-        .filter(|qn| !kb.symbols.by_qualified_name.contains_key(*qn))
-        .collect()
-}
-
-/// WI-20260824-BFB9A: the SHORT NAMES the implicit tier answers — every name a program
-/// can write bare, with no import, and have resolve. Read off the table, beside it, for
-/// the reason [`implicit_target_orphans`] states: a test that needs this population must
-/// not go and get it somewhere else.
-///
-/// THE PRELUDE ALONE since WI-20260825-5W3RJ (see [`implicit_qualified`]), which SHRANK
-/// this population from 62 to 34; later passes took it to FOUR — WI-20260826-XED22's
-/// `not` / `or` / `and`, then WI-909 in three steps (`cut` / `find_dictionary`, then
-/// `unify` / `struct_eq`, then the eleven names reachable only at `resolve_name_in_kb`).
-/// Nothing that read it wanted the desugaring vocab: its one reader asks which tier
-/// names denote a spec operation, and no synthesized form ever did.
-///
-/// `wi_kd9sw_minted_operator_address_test` (WI-20260825-KD9SW retired the refusal this
-/// named: a minted operator carries its address, so there is no tier name to capture)
-/// is the reader, and its previous version SCRAPED THIS FILE'S SOURCE for the table
-/// literals — `read_to_string("src/kb/load.rs")` and `split('"').step_by(2)`, which one
-/// `"` inside a table comment silently unbalances, dropping names while every assertion
-/// still passed. Found by `/code-review`.
-pub fn implicit_tier_short_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = PRELUDE_QUALIFIED
-        .iter()
-        .filter_map(|qn| qn.rsplit('.').next())
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    names
-}
+/// THE COST OF REMOVING ONE IS NOT IN THE TABLE, and that is the part worth carrying
+/// forward: a constructor in a rule- or fact-HEAD ARGUMENT is checked by nothing
+/// (WI-1034 covers a body goal, WI-1058 a body term), so a name that stops resolving
+/// there loads clean and silently stops matching. Measured on the stdlib's own
+/// `list_contains`, and on `anthill-todo`'s stored documents, which turned out to depend
+/// on this rung for the `some(value: …)` their printer emits. `WI-20260904-B8ESG` owns
+/// that hole.
 
 /// §6.3 (WI-926) — a sort's constructor that carries THE SORT'S OWN NAME *is*
 /// the sort. `sort Project { entity Project(…) }` writes one name, so it defines
@@ -5986,10 +5796,11 @@ fn parse_connective_head<'a>(
 /// `..anthill.kernel.unify` / `..anthill.kernel.struct_eq` /
 /// `..anthill.prelude.PartialEq.eq` — and `..` is unspellable by any identifier, so a
 /// head can never introduce one whatever this answers. It used to rest on all three
-/// being [`PRELUDE_QUALIFIED`] entries with [`rule_head_ladder_answer`] refusing them
-/// (WI-530, measured identical with the `is_minted` guard and without it); none of the
-/// three is a tier entry any more, so that argument no longer holds and this one
-/// replaces it rather than joining it.
+/// being `PRELUDE_QUALIFIED` entries — the implicit tier's table, deleted with the rest
+/// of that mechanism, which is why this is no longer an intra-doc link — with
+/// [`rule_head_ladder_answer`] refusing them (WI-530, measured identical with the
+/// `is_minted` guard and without it). No tier entry exists to rest on, so that argument
+/// no longer holds and this one replaces it rather than joining it.
 ///
 /// THE WRITTEN SPELLING IS A DIFFERENT NAME and its behaviour DID change: with `unify`
 /// off the tier, a source `rule unify(?a, ?b) :- …` outside `anthill.kernel` no longer
@@ -12349,7 +12160,7 @@ fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
                     // nothing in the program saying so.
                     let undefined: Vec<Symbol> = match &conjunct {
                         crate::eval::Value::Term { id, .. } => {
-                            kb.undefined_query_goal_functors(*id).into_iter().collect()
+                            kb.undefined_query_goal_functors(id).into_iter().collect()
                         }
                         other => kb
                             .undefined_functor(other)
@@ -16931,143 +16742,60 @@ fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Op
 // Public: convert a parse-time term into a KB term with scope-aware resolution
 // ══════════════════════════════════════════════════════════════════
 
-/// Expand a partially-applied entity term's named args to the FULL declared field list,
-/// so every fact/pattern of a functor presents the same named slots (the discrim tree
-/// matches structurally). Positional args also count as "provided" — `ToolPasses("x")`
-/// covers `tool` via `pos_args[0]`, so it isn't re-stuffed with a fresh var that would
-/// shadow the positional. A non-entity functor is left alone.
+/// **A CONVERTED QUERY PATTERN** — the goal `anthill query` searches with, on the
+/// transient carrier [`convert_query_term`] builds it on (WI-20260904-J0RM4).
 ///
-/// WI-716: the FILLER depends on VALUE vs PATTERN position. In a value position (a fact
-/// head or an entity-deriving rule head) an absent OPTIONAL field means `none()`, not a
-/// var: a var makes the produced entity `forall v. E(field: v)`, which unsoundly unifies a
-/// `some(?)` query. In a query/rule-body PATTERN (and for an absent REQUIRED field) the
-/// var-fill stays — "matches anything". A `none()` value still unifies a pattern's var (so
-/// `E(id: ?)` finds it) but correctly fails `field: some(?)`.
-///
-/// WI-20260902-CZJ2N lifted this out of [`Loader::convert_term_inner`] and made it a FREE
-/// function, so that the three sites which expand a bare entity name share ONE filler: the
-/// converter's own `Fn` arm, [`Loader::expand_bare_entity_subject`], and
-/// [`expand_bare_entity_pattern`] — the last of which has no `Loader` to be a method on.
-/// Two spellings of §8.3's all-fields-fresh pattern must not have two fillers.
-fn fill_entity_named_args(
-    kb: &mut KnowledgeBase,
-    functor: Symbol,
-    pos_len: usize,
-    value_position: bool,
-    named: &mut SmallVec<[(Symbol, TermId); 2]>,
-) {
-    let Some(all_fields) = kb.entity_field_names(functor) else {
-        return;
-    };
-    let all_fields = all_fields.to_vec(); // borrow-safe copy
+/// A NAME for the role, not a new type: it IS an `Rc<NodeOccurrence>`, and every
+/// `TermView` consumer — `resolve_with_stats`, `browse_program_clauses_matching`,
+/// `undefined_functor`, the three query walks — takes it as one. The alias exists so a
+/// signature says WHICH occurrence it wants, and so the carrier is named in one place if
+/// it ever moves again.
+pub type QueryPattern = Rc<NodeOccurrence>;
 
-    // Field symbols whose declared type is `Option[..]` — computed only in a value
-    // position; patterns keep the uniform var-fill.
-    let optional_fields: HashSet<Symbol> = if value_position {
-        let fts: Vec<(Symbol, crate::eval::value::Value)> = kb
-            .entity_field_types(functor)
-            .map(|s| s.to_vec())
-            .unwrap_or_default();
-        fts.iter()
-            .filter(|(_, ty)| crate::kb::typing::is_option_type(&*kb, ty))
-            .map(|(s, _)| *s)
-            .collect()
-    } else {
-        HashSet::new()
-    };
-    if named.len() + pos_len < all_fields.len() {
-        let mut provided: HashSet<Symbol> = named.iter().map(|(s, _)| *s).collect();
-        for (i, &field_sym) in all_fields.iter().enumerate() {
-            if i < pos_len {
-                provided.insert(field_sym);
-            }
-        }
-        for &field_sym in &all_fields {
-            if !provided.contains(&field_sym) {
-                let fill = if optional_fields.contains(&field_sym) {
-                    // WI-716: absent optional in a value position -> none()
-                    let none_sym = kb.resolve_symbol("anthill.prelude.Option.none");
-                    kb.alloc(Term::Fn {
-                        functor: none_sym,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::new(),
-                    })
-                } else {
-                    let fresh = kb.fresh_var(field_sym);
-                    kb.alloc(Term::Var(Var::Global(fresh)))
-                };
-                named.push((field_sym, fill));
-            }
-        }
-    }
-    let order: HashMap<Symbol, usize> = all_fields
-        .iter()
-        .enumerate()
-        .map(|(i, &s)| (s, i))
-        .collect();
-    named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
-}
-
-/// WI-20260902-CZJ2N — §8.3'S EXPANSION OF A BARE ENTITY NAME IN A LOGICAL POSITION:
-/// `fact account` IS `fact account()`, the all-fields-fresh pattern.
-///
-/// §8.3 already says the expansion applies "whenever the functor is a registered entity",
-/// and one level up the spec already reads a bare SPEC name that way — `fact Monoid` IS
-/// `fact Monoid[?]` (`unwrap_spec_view` takes a bare `Ref` as no-bindings). F2 makes the
-/// VALUE level match. Before this, `fact account` asserted a phantom `account/0` atom that
-/// `:- account()` could not see and no other spelling reached either.
-///
-/// AT THE LOGICAL-POSITION ENTRY POINTS, NOT IN `convert_term_inner`. That arm serves DATA
-/// slots too, where `Ref(WorkItem)` must stay the sort-as-value (`facts_of(kb(),
-/// WorkItem)`, `typing::check_bare_ref`'s free-standing-entity arm), and `expected: None`
-/// cannot tell a goal from a data slot of unknown type. [`Loader::convert_subject_term`]
-/// is the funnel for four of the five positions (rule head, fact head, sort-body pre-scan,
-/// proof step); [`convert_query_term`] and the rule-body GOAL arm of
-/// `build_body_atom_occurrence_inner` are the other two, and each reaches this.
-///
-/// WI-20260902-VNWAW: that GOAL arm reaches it down TWO paths, because a dotted
-/// paren-less citation is collapsed to its symbol in a branch of its own (719FJ) and so
-/// never touches the one-segment `Term::Ref` / `Term::Ident` arms. It called this on the
-/// one-segment path only, so `:- ns.account` answered nothing where `:- account`
-/// answered — and `not` of it succeeded. The other four positions were never split this
-/// way: their dotted branch already funnels back through the same call.
-///
-/// A FREE FUNCTION because two of those callers have no `Loader` — the query converter is
-/// one — and because `value_position` is then a PARAMETER rather than a field, which is
-/// what lets the query pattern say "no" explicitly: a query asks "any account", and
-/// filling an absent OPTIONAL with `none()` there would find only the facts whose optional
-/// is absent. That asymmetry is WI-716's, and it is stated at
-/// [`fill_entity_named_args`].
-///
-/// BEFORE INDEXING, necessarily: `Ref(account)` and `account(?, ?)` key differently in the
-/// discrimination tree, so a unification-time expansion could not do it.
-///
-/// IDEMPOTENT, which is what lets it sit at a funnel rather than at a branch: a 0-field
-/// sort-nested constructor re-canonicalizes to the same `Ref` it arrived as, and an
-/// already-applied term is not a `Term::Ref` and is returned untouched.
-fn expand_bare_entity_pattern(kb: &mut KnowledgeBase, tid: TermId, value_position: bool) -> TermId {
-    let Term::Ref(e) = *kb.get_term(tid) else {
-        return tid;
-    };
-    if kb.entity_field_names(e).is_none() {
-        return tid;
-    }
-    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    fill_entity_named_args(kb, e, 0, value_position, &mut named);
-    kb.make_entity_term(e, SmallVec::new(), named)
-}
-
-// ══════════════════════════════════════════════════════════════════
-// Public: convert a parse-time term into a KB term with scope-aware resolution
-// ══════════════════════════════════════════════════════════════════
-
-/// Convert a parse-time term (from `SimpleTermStore`) into the KB's
-/// hash-consed `TermStore`, resolving symbols through the KB's scope chain.
+/// Convert a parse-time term (from `SimpleTermStore`) into a KB-resolved QUERY PATTERN,
+/// resolving symbols through the KB's scope chain.
 ///
 /// `scope` is the scope in which to resolve names (typically `<global>`).
 /// `var_map` preserves variable identity: two `?x` in a query share the same
 /// `VarId`. Pass an empty map on the first call; reuse the same map across
 /// multiple terms that should share variables.
+///
+/// **WI-20260904-J0RM4 — THE PATTERN IS TRANSIENT, SO IT IS NOT INTERNED.** It rides as
+/// an `Rc<NodeOccurrence>` expression tree, which the discrimination tree and the
+/// resolver read through `TermView` exactly as they read the hash-consed twin: the tree
+/// keys on structural `DiscrimKey`s and never on `TermId` identity, and
+/// `resolve_with_stats` / `browse_program_clauses_matching` have been `TermView`-generic
+/// since WI-349. Nothing built here enters the `TermStore`.
+///
+/// WHAT THAT FIXES, MEASURED on `j0rm4_query_pattern_carrier_test`: every conversion of
+/// `Top(a: 1)` used to add three permanent slots to the hash-consed store — one per
+/// omitted field's fresh var, plus the enclosing `Fn`, whose identity depends on them —
+/// and hash-consing could not dedup them because a fresh `VarId` makes each one a new
+/// term. The store is MONOTONE UNDER A SCOPED-KB LAYER by design (WI-SPGBP: freeing is
+/// suspended for the layer's whole lifetime, because an id that re-enters would resurrect
+/// a retracted fact's slot), so releasing the pattern afterwards is not available where
+/// it would matter most — the reflect `kb` layer is one of the long-running cases. The
+/// CLI exits after one query, which is why this stayed invisible.
+///
+/// THE VARIABLES STILL COME FROM `KnowledgeBase::fresh_var`, and must: a var id is the
+/// KB's global numbering, and a pattern whose vars could collide with the ones the
+/// resolver opens per clause would bind two unrelated positions together. That is a u32
+/// counter, not a store slot, and resolution bumps it further for every clause it opens
+/// — so "unchanged across N queries", which this ticket's acceptance asked for, was
+/// never available for the counter. What this removes is the STORE growth.
+///
+/// ONE SITE REMAINS, AND IT IS NOT THIS ONE. `with_fresh_vars`' De Bruijn opening still
+/// interns one `Term::Var(Global(fresh))` per clause opened, so a query answered by a
+/// RULE grows the store by 1 where a query answered by FACTS now grows it by 0
+/// (measured, both, in `wi_j0rm4_query_pattern_carrier_test`). That is the substitution
+/// layer, which is `TermId`-keyed throughout, and is its own change.
+///
+/// THE CARRIER IS THE OCCURRENCE ONE and not `Value`, for two reasons. `Term::Ident` —
+/// the WI-476 bare intern a name that resolves to no single symbol lands on — has an
+/// `Expr::Ident` twin and deliberately NO `Value` variant ("minting an unresolved
+/// identifier as a runtime value would be a bug"). And a query pattern IS a rule body's
+/// goal with no rule above it: WI-246 made that body `Vec<Rc<NodeOccurrence>>`, so this
+/// is the shape every neighbouring goal already has.
 ///
 /// WI-1096 — THE FOURTH TERM POSITION (`wi366_value_in_type_facts_test` names it that),
 /// and it must build the SAME shape the loader stores or a query cannot match a fact.
@@ -17075,7 +16803,8 @@ fn expand_bare_entity_pattern(kb: &mut KnowledgeBase, tid: TermId, value_positio
 /// through the same [`list_literal_lowering`]. The hint comes from the enclosing
 /// constructor's declared field type, read here from `entity_field_types` exactly as
 /// the loader reads it — the registry is populated by then, since a query runs against
-/// a fully loaded KB.
+/// a fully loaded KB. The hint is a TYPE, which is persistent KB content, so it stays a
+/// `TermId` on both sides of the carrier change.
 pub fn convert_query_term(
     kb: &mut KnowledgeBase,
     parse_terms: &SimpleTermStore,
@@ -17083,7 +16812,7 @@ pub fn convert_query_term(
     parse_id: TermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
-) -> TermId {
+) -> QueryPattern {
     // WI-20260901-719FJ — THE PATTERN IS A LOGICAL SUBJECT, so a dotted paren-less name
     // written here is the NAME, the same reading the rule head, the fact head and the
     // rule-body goal take (`Loader::convert_subject_term`). MEASURED before it, on a
@@ -17102,15 +16831,14 @@ pub fn convert_query_term(
         // unresolved bare intern heads no clause, so the pattern matches nothing and the
         // CLI's `report_unknown_functor_name` gets a name to diagnose instead of
         // `field_access`.
-        let term = if kb.symbols.is_resolved(sym) {
-            Term::Ref(sym)
+        let expr = if kb.symbols.is_resolved(sym) {
+            Expr::Ref(sym)
         } else {
-            Term::Ident(sym)
+            Expr::Ident(sym)
         };
-        let tid = kb.alloc(term);
-        return expand_bare_entity_pattern(kb, tid, false);
+        return expand_bare_entity_query_name(kb, expr_node(expr));
     }
-    let tid = convert_query_term_expecting(
+    let occ = convert_query_term_expecting(
         kb,
         parse_terms,
         parse_symbols,
@@ -17126,7 +16854,42 @@ pub fn convert_query_term(
     // reason the 719FJ collapse above is: an ARGUMENT of a pattern is a data slot whose
     // spelling is its identity, and the fact this searches for was built by the loader's
     // own data-slot walk, which is untouched.
-    expand_bare_entity_pattern(kb, tid, false)
+    expand_bare_entity_query_name(kb, occ)
+}
+
+/// [`entity_slots::bare_entity_slots`] at the query pattern — the transient-carrier twin
+/// of `Loader::expand_bare_entity_subject`, and the fifth of the five logical positions
+/// listed there.
+///
+/// IDEMPOTENT for the reason the interned form is: a name that is not a registered
+/// entity comes back untouched, and an already-applied occurrence is not an `Expr::Ref`
+/// so it is never a candidate. A 0-field constructor keeps its `Expr::Ref` too, which is
+/// the same term its interned twin canonicalizes to (`KnowledgeBase::nullary_canon`) and
+/// the same `ViewHead::nullary` head.
+///
+/// `value_position: false`, always: a query asks "any account", and WI-716's `none()`
+/// fill for an absent optional would find only the facts whose optional is absent.
+fn expand_bare_entity_query_name(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    let Some(&Expr::Ref(e)) = occ.as_expr() else {
+        return occ;
+    };
+    let Some(named) = entity_slots::bare_entity_slots::<entity_slots::Occurrence>(kb, e, false)
+    else {
+        return occ;
+    };
+    if named.is_empty() {
+        return occ;
+    }
+    expr_node(Expr::Apply {
+        recv_type: None,
+        functor: e,
+        pos_args: Vec::new(),
+        named_args: named.into_vec(),
+        type_args: Vec::new(),
+    })
 }
 
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
@@ -17140,10 +16903,10 @@ fn convert_query_term_expecting(
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
     expected: Option<TermId>,
-) -> TermId {
+) -> Rc<NodeOccurrence> {
     let parse_term = parse_terms.get(parse_id).clone();
-    match parse_term {
-        Term::Const(lit) => kb.alloc(Term::Const(lit)),
+    let expr = match parse_term {
+        Term::Const(lit) => Expr::Const(lit),
         Term::Var(Var::Global(vid)) => {
             let kb_vid = if let Some(&mapped) = var_map.get(&vid.raw()) {
                 mapped
@@ -17154,9 +16917,9 @@ fn convert_query_term_expecting(
                 var_map.insert(vid.raw(), new_vid);
                 new_vid
             };
-            kb.alloc(Term::Var(Var::Global(kb_vid)))
+            Expr::Var(Var::Global(kb_vid))
         }
-        Term::Var(Var::DeBruijn(n)) => kb.alloc(Term::Var(Var::DeBruijn(n))),
+        Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
         Term::Var(Var::Rigid(_)) => {
             // Rigid vars are introduced only post-open by the resolver,
             // never present in stored terms — should not appear here.
@@ -17188,7 +16951,7 @@ fn convert_query_term_expecting(
                 parse_terms.is_collection_literal(parse_id),
                 expected,
             ) {
-                let items: Vec<TermId> = pos_args
+                let items: Vec<Rc<NodeOccurrence>> = pos_args
                     .iter()
                     .map(|&id| {
                         convert_query_term_expecting(
@@ -17202,7 +16965,7 @@ fn convert_query_term_expecting(
                         )
                     })
                     .collect();
-                return kb.build_list(&items);
+                return build_query_list(kb, &items);
             }
 
             // The declared field type of the i-th POSITIONAL argument — the same rank
@@ -17233,7 +16996,7 @@ fn convert_query_term_expecting(
                     })
                     .and_then(|f| declared_field_type(kb, kb_functor, f))
             };
-            let mut new_pos: SmallVec<[TermId; 4]> = pos_args
+            let mut new_pos: Vec<Rc<NodeOccurrence>> = pos_args
                 .iter()
                 .enumerate()
                 .map(|(i, &id)| {
@@ -17249,7 +17012,7 @@ fn convert_query_term_expecting(
                     )
                 })
                 .collect();
-            let mut new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+            let mut new_named: SmallVec<[(Symbol, Rc<NodeOccurrence>); 2]> = named_args
                 .iter()
                 .map(|&(sym, id)| {
                     let n = parse_symbols.local_name(sym);
@@ -17290,61 +17053,36 @@ fn convert_query_term_expecting(
                 }
             }
 
-            // Expand partial named args: fill missing entity fields with fresh vars
-            // Always sort named args to match entity field order (required for
-            // discrimination tree matching — both facts and patterns must have
-            // named args in the same order). Positional args also count as
-            // "provided" — `ToolPasses("cargo-test")` covers `tool` via
-            // pos_args[0], so the field shouldn't be re-stuffed with a fresh
-            // var in named (which would shadow the positional value at
-            // materialization time).
-            if let Some(all_fields) = kb.entity_field_names(kb_functor) {
-                let all_fields = all_fields.to_vec();
-                if new_named.len() + new_pos.len() < all_fields.len() {
-                    let mut provided: HashSet<Symbol> = new_named.iter().map(|(s, _)| *s).collect();
-                    for (i, &field_sym) in all_fields.iter().enumerate() {
-                        if i < new_pos.len() {
-                            provided.insert(field_sym);
-                        }
-                    }
-                    for &field_sym in &all_fields {
-                        if !provided.contains(&field_sym) {
-                            let fresh = kb.fresh_var(field_sym);
-                            let var_term = kb.alloc(Term::Var(Var::Global(fresh)));
-                            new_named.push((field_sym, var_term));
-                        }
-                    }
-                }
-                let order: HashMap<Symbol, usize> = all_fields
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &s)| (s, i))
-                    .collect();
-                new_named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
-            }
+            // WI-20260904-J0RM4 — THE SHARED FILLER, on the transient carrier. This was
+            // a fourth hand-rolled copy of the fill-and-sort loop, sitting three
+            // screens below the free function WI-20260902-CZJ2N had just unified the
+            // other three onto; making the filler carrier-parametric is what let it
+            // join them. Every fact/pattern of a functor must present the same named
+            // slots in the same order or the discrimination tree cannot match them.
+            entity_slots::complete_named_slots::<entity_slots::Occurrence>(
+                kb,
+                kb_functor,
+                new_pos.len(),
+                false,
+                &mut new_named,
+            );
 
-            kb.alloc(Term::Fn {
-                functor: kb_functor,
-                pos_args: new_pos,
-                named_args: new_named,
-            })
+            nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec())
         }
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => kb.alloc(Term::Ref(resolved)),
+                ResolveResult::Found(resolved) => Expr::Ref(resolved),
                 ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
-                    let kb_sym = kb.intern(name);
-                    kb.alloc(Term::Ident(kb_sym))
+                    Expr::Ident(kb.intern(name))
                 }
             }
         }
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
-            let kb_sym = resolve_query_name(kb, name, scope);
-            kb.alloc(Term::Ref(kb_sym))
+            Expr::Ref(resolve_query_name(kb, name, scope))
         }
-        Term::Bottom => kb.alloc(Term::Bottom),
+        Term::Bottom => Expr::Bottom,
         Term::ParseAux(aux) => {
             // WI-366 B1: a written effect-row binding value in a query pattern
             // (`anthill query --pattern 'Spec[E = {}]'`). A parse `Term` can't
@@ -17359,12 +17097,19 @@ fn convert_query_term_expecting(
             // error; a written `{}` query is the realistic pattern).
             match aux.as_ref() {
                 ParseAux::TypeExpr(TypeExpr::EffectRow(effects)) if effects.is_empty() => {
-                    kb.build_canonical_effects_rows(&[])
+                    // THE ONE INTERNED NODE IN A QUERY PATTERN, and it is not a leak:
+                    // the canonical empty row is a SHARED, KB-lifetime term the loader
+                    // emits for every pure signature, so `build_canonical_effects_rows`
+                    // hash-cons-HITS after the first program that has one. It rides
+                    // into the occurrence tree as `Expr::Spliced`, which `occ_head` /
+                    // `occ_view_pos_arg` delegate through to the carried value — so it
+                    // views as its own term twin, which is the point (WI-714).
+                    let row = kb.build_canonical_effects_rows(&[]);
+                    Expr::Spliced(Value::term(row))
                 }
                 ParseAux::TypeExpr(TypeExpr::EffectRow(_)) => {
                     let n = kb.intern("_E");
-                    let v = kb.fresh_var(n);
-                    kb.alloc(Term::Var(Var::Global(v)))
+                    Expr::Var(Var::Global(kb.fresh_var(n)))
                 }
                 other => unreachable!(
                     "parse-only Term::ParseAux({other:?}) reached convert_query_term — \
@@ -17372,7 +17117,76 @@ fn convert_query_term_expecting(
                 ),
             }
         }
+    };
+    expr_node(expr)
+}
+
+/// [`KnowledgeBase::nullary_canon`] on the TRANSIENT carrier: an application of a name
+/// with no TYPE reading and no arguments IS the bare name.
+///
+/// WI-20260904-J0RM4 — the interned path got this for free, because `kb.alloc` applies
+/// the canon at the single funnel, and the query converter used to go through it. On the
+/// occurrence side `Expr::Apply { f, [], [] }` and `Expr::Ref(f)` are two NODES with one
+/// `ViewHead::nullary(f)` head, so matching would agree either way — but `reduce_op_value`
+/// opens an `Expr::Apply` and hands anything else back un-reduced, so building the `Apply`
+/// would silently give a query `f()` on a nullary OPERATION the call reading that
+/// WI-20260902-CZJ2N scoped to RULE BODIES ("SCOPE — RULE BODIES, ops only"). Applying
+/// the canon here keeps the query pattern's shape exactly what it was.
+///
+/// The TEST is `KnowledgeBase::nullary_name_canons_to_ref`, shared with the interned
+/// canon rather than re-spelled — two carriers deciding this two ways is how one
+/// spelling stops matching the other.
+fn nullary_query_canon(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: Vec<Rc<NodeOccurrence>>,
+    named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+) -> Expr {
+    if pos_args.is_empty() && named_args.is_empty() && kb.nullary_name_canons_to_ref(functor) {
+        return Expr::Ref(functor);
     }
+    Expr::Apply {
+        recv_type: None,
+        functor,
+        pos_args,
+        named_args,
+        type_args: Vec::new(),
+    }
+}
+
+/// `KnowledgeBase::build_list`'s cons/nil spine on the TRANSIENT carrier — the WI-1096
+/// list-literal lowering at the query pattern.
+///
+/// THE SHAPE IS COPIED FROM `build_list_with`, NOT RE-DECIDED: `cons(head: …, tail: …)`
+/// named args, ending in a bare `nil`. The `nil` end is `Expr::Ref` because
+/// `KnowledgeBase::nullary_canon` folds the interned `Fn{nil,[],[]}` to `Ref(nil)` — and
+/// `ViewHead::nullary` makes the two one head in any case.
+///
+/// THE NAMED ORDER GOES THROUGH `canonicalize_record_named_args`, the same owner
+/// `make_entity_term` routes the interned spine through, rather than being written out
+/// in the order the loop happens to push. It is `(head, tail)` today (`build_list`
+/// asserts exactly that in debug), so the call changes nothing — but a query pattern
+/// whose named order differs from the fact's keys differently in the discrimination tree
+/// and simply stops matching, silently, which is too quiet a failure to leave resting on
+/// a coincidence.
+fn build_query_list(kb: &mut KnowledgeBase, items: &[Rc<NodeOccurrence>]) -> Rc<NodeOccurrence> {
+    let nil_sym = kb.resolve_symbol("anthill.prelude.List.nil");
+    let cons_sym = kb.resolve_symbol("anthill.prelude.List.cons");
+    let head_sym = kb.intern("head");
+    let tail_sym = kb.intern("tail");
+    let mut list = expr_node(Expr::Ref(nil_sym));
+    for item in items.iter().rev() {
+        let mut named = vec![(head_sym, Rc::clone(item)), (tail_sym, list)];
+        kb.canonicalize_record_named_args(cons_sym, &mut named);
+        list = expr_node(Expr::Apply {
+            recv_type: None,
+            functor: cons_sym,
+            pos_args: Vec::new(),
+            named_args: named,
+            type_args: Vec::new(),
+        });
+    }
+    list
 }
 
 /// The QUERY-PATTERN position's symbol for `name`: [`resolve_name_in_kb`], with the
@@ -17424,21 +17238,12 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         // because `NotFound` is what sends every caller to its ABSENCE handling: the
         // false "no rule, fact, or declaration is in scope for it".
         .or_else(|| resolve_dotted_in_kb(kb, name, scope, DottedVisibility::VisibleOnly))
-        // WI-521: the implicit PRELUDE resolves directly to its qualified home in query
-        // patterns too — parity with `remap_name_str`, so a bare `eq` / `cons` still
-        // matches after the `<global>` imports were removed. Fallback only: scope
-        // resolution already failed, so a user-defined same-spelling name has won.
-        //
-        // WI-20260825-5W3RJ — NO LONGER THE DESUGARING VOCAB. `field_access` /
-        // `ListLiteral` and the rest left this rung entirely: the converter marks its
-        // target absolute (`crate::parse::desugar_target`), so a synthesized node never
-        // reaches a fallback, and a reflection query naming one BARE is now an ordinary
-        // unimported name. (Distinct from WI-476's deliberate
-        // no-rescue for arbitrary user short-names — these are RESERVED / PRELUDE names
-        // that always denote their target.)
-        .or_else(|| {
-            resolve_implicit(kb, name).map_or(ResolveResult::NotFound, ResolveResult::Found)
-        })
+        // WI-909 — THERE IS NO RUNG BELOW THIS ONE. A `.or_else` here used to consult
+        // the implicit prelude (`resolve_implicit`), which is why a bare `cons` or
+        // `SortInfo` once answered in a query pattern with no import. That table was
+        // emptied and then deleted, so the dotted ladder above is the last rung: a short
+        // name that no scope defines and no `-i` supplied denotes NOTHING here, and the
+        // caller's WI-476 bare intern is the answer.
 }
 
 /// WI-20260821-D0EXD — the equation subject's half of the head ladder: what this
@@ -18270,8 +18075,8 @@ struct Loader<'a> {
     /// WI-20260902-2SZ88 — per ENTITY-headed parse node, the `(field, parse child)`
     /// pairs its lowering ASSIGNED, in no particular order (the reader looks up by
     /// symbol). A declared field missing from the list was INVENTED by
-    /// `fill_entity_named_args` — the WI-716 `none()` or the var fill — and has no parse
-    /// node to ask anything of.
+    /// `entity_slots::complete_named_slots` — the WI-716 `none()` or the var fill — and
+    /// has no parse node to ask anything of.
     ///
     /// THE KEY IS THE PARSE ID, NOT THE KB ID, and that is the whole point of the
     /// ticket: a KB `TermId` denotes a STRUCTURE (hash-consed, so a minted `ns.rel` and a
@@ -19301,24 +19106,12 @@ impl<'a> Loader<'a> {
                 if let Some(q_sym) = self.resolve_dotted_reported(name, span) {
                     return q_sym;
                 }
-                // WI-521: the implicit PRELUDE (`cons` / `some` / `not` / … —
-                // NOT `eq` / `add` and the other ten spec operations, which
-                // WI-20260825-KD9SW removed from the tier because a minted operator
-                // names its target outright) resolves directly to its qualified home,
-                // replacing the
-                // old `<global>` imports. This is a FALLBACK (we are already past
-                // scope resolution), so a user-written same-spelling name has won
-                // already; these names only catch a reference no scope defines.
-                //
-                // WI-20260825-5W3RJ — THE DESUGARING VOCAB IS NOT HERE ANY MORE, and
-                // this is the site a reader consults to learn what the rung covers.
-                // `match_expr` / `field_access` / `ListLiteral` and the rest are minted
-                // with their ABSOLUTE address by `crate::parse::desugar_target`, so a
-                // synthesized node is resolved by the dotted ladder above and never
-                // falls this far.
-                if let Some(sym) = resolve_implicit(self.kb, name) {
-                    return sym;
-                }
+                // WI-909 — NO IMPLICIT-PRELUDE RUNG. This position used to fall to
+                // `resolve_implicit` after the dotted ladder failed, which is what made
+                // `cons` / `nil` / `some` / `none` resolve in any namespace with no
+                // import. The table is gone: importing a SORT does not bring its members
+                // into scope (§8.6), so a program that names a constructor imports it,
+                // and one that does not reaches the bare intern below.
                 // WI-369: distinguish a forbidden cross-scope reference to an
                 // `internal` name from a genuinely-unknown one before falling back.
                 if let Some(sym) = self.forbid_if_internal(name, span) {
@@ -19677,20 +19470,27 @@ impl<'a> Loader<'a> {
         build_some(self.kb, term)
     }
 
-    /// [`fill_entity_named_args`] at this loader's own value/pattern position.
+    /// [`entity_slots::complete_named_slots`] at this loader's own value/pattern
+    /// position, on the INTERNED carrier — the loader's content is persistent.
     fn fill_entity_named_args(
         &mut self,
         functor: Symbol,
         pos_len: usize,
         named: &mut SmallVec<[(Symbol, TermId); 2]>,
     ) {
-        fill_entity_named_args(self.kb, functor, pos_len, self.in_value_position, named)
+        entity_slots::complete_named_slots::<entity_slots::Interned>(
+            self.kb,
+            functor,
+            pos_len,
+            self.in_value_position,
+            named,
+        )
     }
 
-    /// [`expand_bare_entity_pattern`] at this loader's own value/pattern position — see
-    /// there for the rule, the five positions and why it is a free function.
+    /// [`entity_slots::expand_bare_entity_term`] at this loader's own value/pattern
+    /// position — see there for the rule and the five positions.
     fn expand_bare_entity_subject(&mut self, tid: TermId) -> TermId {
-        expand_bare_entity_pattern(self.kb, tid, self.in_value_position)
+        entity_slots::expand_bare_entity_term(self.kb, tid, self.in_value_position)
     }
 
     /// WI-20260901-719FJ — THE SUBJECT OF A LOGICAL FORM, converted.
@@ -20202,10 +20002,10 @@ impl<'a> Loader<'a> {
                 // `some(x)` coercion below, and WI-433's positional plan — and never
                 // re-derived, because re-deriving it would make this arm's rules have two
                 // producers (WI-869's four-desynced-of-seven). A field ABSENT from the
-                // list was invented by `fill_entity_named_args` and has no surface at
-                // all, which is exactly what the reader needs to know; the sort that
-                // function applies afterwards is not mirrored here, because the reader
-                // looks each field up BY SYMBOL.
+                // list was invented by `entity_slots::complete_named_slots` and has no
+                // surface at all, which is exactly what the reader needs to know; the
+                // sort that function applies afterwards is not mirrored here, because
+                // the reader looks each field up BY SYMBOL.
                 let mut slot_origin: Vec<(Symbol, TermId)> = visible_named
                     .iter()
                     .map(|&(sym, pid)| (self.reintern(sym), pid))
@@ -23516,9 +23316,9 @@ impl<'a> Loader<'a> {
     ///
     /// `convert_term` does not just resolve names, it LOWERS: WI-433 assigns positional
     /// arguments to declared fields, `some(x)` is coerced to `some(value: x)`, and
-    /// `fill_entity_named_args` fills every omitted field with a fresh var (pattern) or
-    /// `none()` (WI-716, value position). THE FILLS HAVE NO PARSE NODE, and they must not
-    /// be re-minted — the memoized `convert_term` returns the SAME expanded term the
+    /// `entity_slots::complete_named_slots` fills every omitted field with a fresh var
+    /// (pattern) or `none()` (WI-716, value position). THE FILLS HAVE NO PARSE NODE, and
+    /// they must not be re-minted — the memoized `convert_term` returns the SAME term the
     /// rule's body carries, so a native rebuild that minted its own vars would give the
     /// occurrence and the term different variables for one field. That is why this reads
     /// the LOWERED term's slot list and asks, per slot, which parse child produced it:
@@ -23614,8 +23414,8 @@ impl<'a> Loader<'a> {
         parse_pos: smallvec::SmallVec<[TermId; 4]>,
     ) -> Option<Expr> {
         // NAMED SLOTS ARE LOOKED UP BY FIELD SYMBOL — the lowered list is in declared
-        // field order (`fill_entity_named_args` sorts it), which is not the order the
-        // author wrote, so index correspondence would be wrong here.
+        // field order (`entity_slots::complete_named_slots` sorts it), which is not the
+        // order the author wrote, so index correspondence would be wrong here.
         let origins = match self.entity_slot_origin.get(&parse_id.raw()) {
             Some(o) => o.clone(),
             // The conversion of THIS node did not run the `Fn` arm that writes the
@@ -23653,9 +23453,10 @@ impl<'a> Loader<'a> {
         for &(field, kb_child) in kb_named.iter() {
             let occ = match origins.iter().find(|(s, _)| *s == field) {
                 Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
-                // AN INVENTED SLOT — `fill_entity_named_args`'s fresh var or WI-716's
-                // `none()`. No parse node exists, so there is nothing a table could say
-                // about it, and materializing the term is the whole of its content.
+                // AN INVENTED SLOT — `entity_slots::complete_named_slots`'s fresh var
+                // or WI-716's `none()`. No parse node exists, so there is nothing a
+                // table could say about it, and materializing the term is the whole of
+                // its content.
                 // BOTH FILLS ARE LEAVES by construction (`Term::Var`, or the nullary
                 // `none()`), so this cannot hide a subtree that WOULD have wanted spans —
                 // which is the failure the wrapped case above was measured to have.

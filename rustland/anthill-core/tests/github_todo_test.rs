@@ -115,7 +115,7 @@ fn binding_term(
     sol: &anthill_core::kb::resolve::Solution,
     var_name: &str,
 ) -> TermId {
-    let query_vars = kb.collect_vars(query);
+    let query_vars = kb.collect_vars(&query);
     let var = query_vars
         .iter()
         .find(|v| kb.local_name_of(v.name()) == var_name)

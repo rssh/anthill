@@ -305,12 +305,11 @@ fn each_arithmetic_short_name_is_declared_exactly_once() {
 /// WI-20260825-KD9SW; see `wi_kd9sw_minted_operator_address_test`). The move was between two
 /// PARAMETRIC carriers, so nothing there had to change, and this row is what says so.
 #[test]
-fn the_implicit_tier_points_at_the_syntax_categories() {
+fn the_arithmetic_operators_point_at_the_syntax_categories() {
+    // WI-909 DELETED THE ORPHAN ASSERTION THAT STOOD HERE -- see the twin note in
+    // `wi_vt8cf_division_tower_test`. The tier's table is gone; what this row is for is
+    // the spec-operation membership below.
     let kb = load_stdlib_kb();
-    assert!(
-        anthill_core::kb::load::implicit_target_orphans(&kb).is_empty(),
-        "no tier target may be an orphan — an orphaned entry stops resolving SILENTLY"
-    );
     let spec_names = anthill_core::kb::load::spec_operation_short_names(&kb);
     for name in ["add", "sub", "mul", "neg"] {
         assert!(

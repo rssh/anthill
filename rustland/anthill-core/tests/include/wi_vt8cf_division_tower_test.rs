@@ -611,12 +611,13 @@ end
 /// file's rows passing for the wrong reason. Guards the mechanism the whole ticket rests
 /// on.
 #[test]
-fn the_implicit_tier_points_at_the_spec_operations() {
+fn div_and_mod_are_spec_operations_of_the_division_tower() {
+    // WI-909 DELETED THE ORPHAN ASSERTION THAT STOOD HERE. It read
+    // `implicit_target_orphans(&kb).is_empty()`, an invariant over the implicit tier's
+    // table -- which reached zero rows and was then removed along with the accessor. The
+    // row that follows is the one that always carried this test's subject: `div` / `mod`
+    // are SPEC OPERATIONS, which is what WI-20260824-VT8CF moved them to be.
     let kb = load_stdlib_kb();
-    assert!(
-        anthill_core::kb::load::implicit_target_orphans(&kb).is_empty(),
-        "every implicit target must be declared by the standard load"
-    );
     let spec_names = anthill_core::kb::load::spec_operation_short_names(&kb);
     for name in ["div", "mod"] {
         assert!(
