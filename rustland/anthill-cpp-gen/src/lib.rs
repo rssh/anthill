@@ -5552,10 +5552,19 @@ fn option_value(kb: &mut KnowledgeBase, v: Option<&str>) -> Value {
 /// with the constructor name, which is what the caller matches on. Only the
 /// `Value` → `TermId` unwrap is local; the naming rule stays in one place.
 fn receiver_short_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
-    let Value::Term { id, .. } = v else {
-        return None;
-    };
-    functor_or_ref_short(kb, *id)
+    match v {
+        Value::Term { id, .. } => functor_or_ref_short(kb, *id),
+        // A receiver that arrived as an `Entity` spine — a query var matched against
+        // a compound rule-head subterm rides that carrier since WI-20260905-N20EZ —
+        // names its functor through the view exactly as its hash-consed twin does,
+        // instead of dropping the row as nameless.
+        other => match other.head(kb) {
+            anthill_core::kb::term_view::ViewHead::Functor {
+                functor: Some(f), ..
+            } => Some(short_name_of(kb.qualified_name_of(f)).to_string()),
+            _ => None,
+        },
+    }
 }
 
 /// WI-089(b): the cpp `ReceiverForm` short name realizing `effect` under the
@@ -5610,32 +5619,35 @@ fn resolve_realization_rows(
 /// `walk_list`) unchanged. `Ok(None)` when the field is ABSENT (a legitimate skip
 /// — e.g. an entity-constructor row that lacks it).
 ///
-/// A field READ BACK through this function is always a `Value::Term` (WI-848,
+/// A DETERMINED field read back through this function is a `Value::Term` (WI-848,
 /// measured across `IncludeMapping` / `TypeMapping` / `NamingConvention`, fact and
-/// bodied rule). Readers read back the FREE (non-selected) columns — a selected
-/// column is grounded to its selection scalar and never re-read here — and the
+/// bodied rule): readers read back the FREE (non-selected) columns — a selected
+/// column is grounded to its selection scalar and never re-read here — the
 /// realization functors are plain entity sorts, so their facts/rules are
-/// TERM-headed. Each free column is a goal var that unifies with the stored head's
-/// term child, and `read_facts_resolved` reifies the row via `KnowledgeBase::reify`,
-/// which surfaces a term-level variable — the loader's var-fill of an OMITTED
-/// REQUIRED field, or an UNCONSTRAINED rule-head var — as `Value::Term` wrapping a
-/// `Term::Var`, NOT as a value-level `Value::Var`. So an under-determined field
-/// arrives via the `Value::Term` arm below (returned `Ok(Some(id))`); `as_string`
-/// then matches only `Term::Const(String)` and reads a var-term as absent, so the
-/// row contributes no mapping — the correct reading of a realization entry missing
-/// a required field (it maps nothing). That is WHY an omitted required field emits
-/// cleanly instead of erroring; it is a correct program, not a malformed one.
-/// (An omitted `Option` field is `none`-filled by the loader, so it is a real
-/// `Term` — `some`/`none` — that `extract_optional_string` reads directly.)
+/// TERM-headed, and each free column is a goal var that unifies with the stored
+/// head's term child.
 ///
-/// The non-`Term` arm is therefore DEFENSIVE, not a described user-facing behavior:
-/// a value-level `Value::Var` cannot arise (per above — so the prior "field is
-/// unbound / missing required field" story on it was measurably false and
-/// UNREACHABLE), and no realization source produces any other non-`Term` carrier
-/// today. It guards a future value-headed producer (a mounted store handing back a
-/// raw `Value`, a builtin-computed field) the Term-assuming realization readers
-/// could not consume — kept loud per the CLAUDE.md "loud error over silent skip"
-/// principle, never a silent drop.
+/// An UNDER-DETERMINED field — the loader's var-fill of an OMITTED REQUIRED field,
+/// or an UNCONSTRAINED rule-head var — is a VARIABLE, and it maps nothing: the
+/// correct reading of a realization entry missing a required field, and WHY such an
+/// entry emits cleanly instead of erroring (a correct program, not a malformed one).
+/// It arrives as a `Term::Var` because `read_facts_resolved` LOWERS it to one at
+/// that seam (WI-20260905-N20EZ): the resolver now freshens a stored head var per
+/// match OFF the hash-consed store as a `Value::Var`, and links a compound head
+/// subterm as a `Value::Entity` spine, so a resolved row's field would otherwise
+/// arrive on those carriers — MEASURED: a bodied `TypeMapping(lang: some(?l), …)
+/// :- Lang(name: ?l)` rule hit the loud arm below on a correct program. The seam
+/// restores the contract this reader was written against: `as_string` matches
+/// only `Term::Const(String)` and reads the var-term as absent. (An omitted
+/// `Option` field is `none`-filled by
+/// the loader, so it is a real `Term` — `some`/`none` — that
+/// `extract_optional_string` reads directly.)
+///
+/// The remaining non-`Term` arm is DEFENSIVE: no realization source produces a
+/// non-`Term`, non-variable carrier today. It guards a future value-headed producer
+/// (a mounted store handing back a raw `Value`, a builtin-computed field) the
+/// Term-assuming realization readers could not consume — kept loud per the
+/// CLAUDE.md "loud error over silent skip" principle, never a silent drop.
 fn row_named_term(
     kb: &KnowledgeBase,
     row: &Value,
@@ -5646,7 +5658,7 @@ fn row_named_term(
     };
     match row.named_arg(kb, sym).map(|v| v.to_value()) {
         None => Ok(None),
-        // The universal case (WI-848): a resolved row's field is always a term. An
+        // The universal case (WI-848): a resolved row's field is a term. An
         // under-determined field is a `Term::Var` here — the string readers skip a
         // non-literal, so a realization entry missing a required field maps nothing.
         Some(Value::Term { id, .. }) => Ok(Some(id)),

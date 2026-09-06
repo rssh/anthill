@@ -19,9 +19,11 @@
 //!  * [`a_repeated_fact_matching_query_run_is_flat`] — the same over the FULL
 //!    `anthill query` shape, conversion AND resolution, for the query kind whose
 //!    resolution opens no clause. FAILS on the baseline (+3 per query).
-//!  * [`resolution_of_a_rule_goal_still_grows_the_store_by_one`] — the SEPARATE SITE
-//!    this ticket does not close, measured rather than left to be discovered. See the
-//!    section below.
+//!  * A row `resolution_of_a_rule_goal_still_grows_the_store_by_one` asserted the
+//!    SEPARATE SITE this ticket did not close — the resolver's own leak, +1 per rule
+//!    goal — on purpose, so that closing it would trip the row. WI-20260905-N20EZ
+//!    closed it, the row tripped, and it is deleted as designed; the six flatness
+//!    rows of `wi_n20ez_answer_links_transient_test` hold that ground now.
 //!  * [`distinct_patterns_of_one_functor_do_not_share_fill_variables`] — the SOUNDNESS
 //!    control on the cheaper repair this rejects. A fill var reused per (functor, field)
 //!    would make the store constant too, and would silently force two independent
@@ -48,14 +50,18 @@
 //! not the leak. [`the_var_counter_still_moves_and_that_is_correct`] records the
 //! measurement instead of asserting a property the system cannot have.
 //!
-//! **THE RESOLVER HAS ITS OWN, SMALLER LEAK**, and it is a different site with a
-//! different mechanism. MEASURED: converting AND resolving `two(?x)` (a rule goal) grows
-//! the store by exactly 1 per query, all of it after the conversion; `Top(a: ?x)` (facts
-//! only, no clause opened) grows it by 0. The one slot is `with_fresh_vars`' De Bruijn
-//! opening — `term_from_debruijn` allocates a `Term::Var(Global(fresh))` for the head
-//! slot a query var linked to, and `Substitution` is `TermId`-keyed throughout, so it
-//! cannot take a transient carrier without moving the substitution layer with it. That
-//! is a bigger change than this whole ticket and belongs to its own.
+//! **THE RESOLVER HAD ITS OWN, SMALLER LEAK**, at a different site with a different
+//! mechanism. MEASURED then: converting AND resolving `two(?x)` (a rule goal) grew the
+//! store by exactly 1 per query, all of it after the conversion; `Top(a: ?x)` (facts
+//! only, no clause opened) grew it by 0. The one slot was `with_fresh_vars`' De Bruijn
+//! opening — `term_from_debruijn` allocated a `Term::Var(Global(fresh))` for the head
+//! slot a query var linked to. This ticket's delivery note claimed the substitution
+//! layer would have to move with it; THAT WAS WRONG — `Substitution.bindings` was
+//! already `ImHashMap<VarId, Value>`, and `Value::Var` / `Value::Entity` were exactly
+//! the carriers wanted. The real obstacle was `KnowledgeBase::walk`, which chased var
+//! chains in `TermId` space and so could not end at a var it had no term for.
+//! WI-20260905-N20EZ retired `walk` for the carrier-neutral `chase_var` and closed the
+//! leak; see `wi_n20ez_answer_links_transient_test`.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term_view::{TermView, ViewHead};
@@ -132,41 +138,6 @@ fn a_repeated_fact_matching_query_run_is_flat() {
             kb.term_store_len(),
             after_first,
             "query #{i} grew the hash-consed store",
-        );
-    }
-}
-
-/// THE SEPARATE SITE, MEASURED rather than left to be found later — see this file's
-/// header for what it is and why it is not this ticket's.
-///
-/// The row asserts BOTH halves so it stays honest in both directions: the conversion
-/// contributes exactly 0 (this ticket), and the resolution contributes exactly 1 per
-/// rule-goal query (the site that remains). If the remaining leak is ever closed this
-/// row goes red, which is the intended signal to delete it — an unasserted "known leak"
-/// is how one survives its own fix.
-#[test]
-fn resolution_of_a_rule_goal_still_grows_the_store_by_one() {
-    let mut kb = load_kb_bare(&[SRC]);
-    let cfg = ResolveConfig::default();
-    // Warm up: the first run interns whatever shared vocabulary the query names.
-    let warm = query_pattern_term(&mut kb, "j0rm4.two(?x)");
-    assert_eq!(kb.resolve(&[warm], &cfg).len(), 2);
-
-    for i in 0..4 {
-        let before = kb.term_store_len();
-        let goal = query_pattern_term(&mut kb, "j0rm4.two(?x)");
-        assert_eq!(
-            kb.term_store_len(),
-            before,
-            "round #{i}: the CONVERSION must contribute nothing — that is this ticket",
-        );
-        assert_eq!(kb.resolve(&[goal], &cfg).len(), 2);
-        assert_eq!(
-            kb.term_store_len(),
-            before + 1,
-            "round #{i}: `with_fresh_vars`' De Bruijn opening still interns one var \
-             term per clause opened. If this is now 0, the remaining site has been \
-             closed and this row should be deleted rather than relaxed",
         );
     }
 }

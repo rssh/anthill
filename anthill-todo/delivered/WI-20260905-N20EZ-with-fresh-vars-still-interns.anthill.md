@@ -3,9 +3,9 @@
 - id: WI-20260905-N20EZ-with-fresh-vars-still-interns
 - created: 2026-09-05T09:36:50Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-05T09:36:50Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-05T16:09:59Z
 
 - acceptance: cargo-test
 

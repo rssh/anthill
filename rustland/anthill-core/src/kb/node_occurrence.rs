@@ -3418,12 +3418,36 @@ fn tuple_type_denoted(
 /// type-annotation Expr child is detected — symmetric with
 /// `node_to_debruijn` / `open_debruijn_node`, which both walk Pattern
 /// children uniformly.
-pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
+///
+/// TAKES σ AND THE KB FOR ONE CARRIER: `Expr::Spliced`. `for_each_child` yields
+/// `Rc<NodeOccurrence>` children and a spliced node's payload is a `Value`, so the
+/// walk structurally CANNOT descend it — `Spliced` sits in `for_each_child`'s
+/// no-children arm. That was invisible while a spliced payload was rare, but since
+/// WI-20260905-N20EZ `subst_var_leaf` splices EVERY compound answer link
+/// (`Value::Entity` over `Value::Var` leaves), so the common case moved onto the
+/// blind carrier: a `not(chk(?p))` whose `?p` links to `Box(v: ?f)` with `?f`
+/// unbound read as GROUND and NAF ran over a non-ground goal instead of
+/// delaying-and-rotating (found by /code-review). Before N20EZ the same link was a
+/// rebuilt `Value::Term`, `subst_var_leaf` took the `Term` path, and
+/// `materialize_from_handle` produced real `Expr::Var` leaves this walk did see.
+/// So the spliced payload is asked as a VALUE, via the σ-aware owner
+/// [`KnowledgeBase::value_is_ground`], which reads every carrier.
+pub fn occurrence_has_unbound_var(
+    kb: &KnowledgeBase,
+    subst: &crate::kb::subst::Substitution,
+    root: &Rc<NodeOccurrence>,
+) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
     while let Some(occ) = stack.pop() {
         match &occ.kind {
             NodeKind::Expr { expr, .. } => match expr {
                 Expr::Var(Var::Global(_)) => return true,
+                // The one carrier `for_each_child` cannot descend — ask the value.
+                Expr::Spliced(v) => {
+                    if !kb.value_is_ground(v, subst) {
+                        return true;
+                    }
+                }
                 _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
             },
             NodeKind::Pattern { .. } => {
@@ -3472,12 +3496,27 @@ pub fn occurrence_has_unbound_var(root: &Rc<NodeOccurrence>) -> bool {
 /// heads as `var_ref`, so `eq`'s dispatch index would miss the carrier entirely
 /// and a custom-`eq` carrier would be decided STRUCTURALLY — trading a
 /// conservative non-answer for a wrong one.
-pub fn occurrence_has_var_ref(root: &Rc<NodeOccurrence>) -> bool {
+///
+/// Takes σ and the KB for `Expr::Spliced` alone, for the reason spelled out on
+/// [`occurrence_has_unbound_var`]: the payload is a `Value`, so `for_each_child`
+/// cannot reach it, and a `var_ref` buried in a spliced compound would let the
+/// NAF / builtin gate read the goal as closed and succeed where it must FLOUNDER.
+pub fn occurrence_has_var_ref(
+    kb: &KnowledgeBase,
+    subst: &crate::kb::subst::Substitution,
+    var_ref: crate::intern::Symbol,
+    root: &Rc<NodeOccurrence>,
+) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
     while let Some(occ) = stack.pop() {
         match &occ.kind {
             NodeKind::Expr { expr, .. } => match expr {
                 Expr::VarRef { .. } => return true,
+                Expr::Spliced(v) => {
+                    if kb.value_has_open_world_ref_inner(v, var_ref, subst) {
+                        return true;
+                    }
+                }
                 _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
             },
             NodeKind::Pattern { .. } => {
@@ -4078,6 +4117,17 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             return occ_build_fn(kb, functor, &[], &all);
         }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
+        // A spliced value — the goal walk's carrier for an answer link's `Entity`
+        // spine under another compound (`take(pair(?p, 1))` with `?p` linked to
+        // `Box(v: ?f)`, WI-20260905-N20EZ) — lowers through the one value→term
+        // boundary; a carrier with no term form is a non-goal `None` exactly as a
+        // child-bearing form is. Without this arm the WI-636 normalization in
+        // `with_fresh_vars` hit the `occurrence_to_term` debug-assert on a legal
+        // program (found by /code-review).
+        Some(Expr::Spliced(v)) => {
+            let v = v.clone();
+            return value_to_term(kb, &v).ok();
+        }
         // Child-bearing / non-goal form: no goal-term shape.
         _ => return None,
     })
@@ -5702,10 +5752,39 @@ fn subst_var_leaf(
     subst: &Substitution,
     occ: &Rc<NodeOccurrence>,
 ) -> Rc<NodeOccurrence> {
+    // WI-20260905-N20EZ: a `Value::Var(w)` binding is an ALIAS — the answer link a
+    // clause opening writes for each caller var — and applying σ means substituting
+    // whatever `w` ENDS at. Spelled as `Expr::Var(w)` after one hop (what
+    // `scalar_value_expr` does for that carrier), the goal walk stayed blind to `w`'s
+    // own binding; the discrimination tree then matched `w` as a wildcard and the
+    // fact fast-path's `bind_compressed` overwrote the proved binding — MEASURED by
+    // /code-review: `rule h3(?p) :- wrapped(?p), q3(?p)` answered a `Box` that does
+    // not exist, and a NAF conjunct read the wrong way round. So chase the alias
+    // chain first (a self-link is an unbound end), and every arm below reads the END
+    // var `cur`. Only `Value::Var` links are chased here: a `Term` chain is chased by
+    // `reify` below, a `Node` chain by the recursive Node arm with its occurs guard.
+    let mut cur = vid;
+    while let Some(Value::Var(Var::Global(w))) = subst.resolve_as_value(cur) {
+        if *w == cur {
+            break;
+        }
+        cur = *w;
+    }
+    // An unbound end keeps the leaf a variable: this occurrence for `vid` itself, a
+    // fresh leaf naming the end var for an alias.
+    let unbound_leaf = |occ: &Rc<NodeOccurrence>| {
+        if cur == vid {
+            Rc::clone(occ)
+        } else {
+            NodeOccurrence::new_expr(Expr::Var(Var::Global(cur)), occ.span, occ.owner)
+        }
+    };
     // `TermId` is `Copy`, so binding `*t` ends the immutable borrow of `subst`
     // at the match, freeing the `&mut kb` call below.
-    let t = match subst.resolve_as_value(vid) {
-        None => return Rc::clone(occ), // unbound: keep the variable leaf
+    let t = match subst.resolve_as_value(cur) {
+        None => return unbound_leaf(occ),
+        // The self-link the chase stopped on.
+        Some(Value::Var(Var::Global(_))) => return unbound_leaf(occ),
         // A matched child is spliced in — but SUBSTITUTED INTO FIRST, not spliced
         // raw (WI-20260827-2YHZ3). This arm used to `return Rc::clone(o)`, which
         // made σ-application stop after ONE Node→Node hop: for `?x <=> ?y, ?y <=>
@@ -5738,16 +5817,32 @@ fn subst_var_leaf(
         // `Rc::ptr_eq`).
         Some(Value::Node(o)) => {
             let bound = Rc::clone(o);
-            if kb.occurs_in_value(vid, &Value::Node(Rc::clone(&bound)), subst) {
+            if kb.occurs_in_value(cur, &Value::Node(Rc::clone(&bound)), subst) {
                 return bound;
             }
             return substitute_occurrence(kb, &bound, subst);
         }
         Some(Value::Term { id: t, .. }) => *t,
+        // N20EZ: an answer link matched against a compound head subterm is a
+        // `Value::Entity` spine over `Value::Var` leaves the body has since bound,
+        // and `for_each_child` does not descend a `Spliced` value — so σ-APPLY the
+        // spine's own leaves before splicing, or they ride into the match as
+        // wildcards (the alias hole above, one level down). Guarded like the Node
+        // arm: a spine that still mentions `cur` is spliced raw rather than recursed.
+        Some(other @ (Value::Entity { .. } | Value::Tuple { .. })) => {
+            let applied = if kb.occurs_in_value(cur, other, subst) {
+                other.clone()
+            } else {
+                let other = other.clone();
+                kb.reify_value(&other, subst)
+            };
+            return NodeOccurrence::new_expr(Expr::Spliced(applied), occ.span, occ.owner);
+        }
         Some(other) => match scalar_value_expr(other) {
             Some(expr) => return NodeOccurrence::new_expr(expr, occ.span, occ.owner),
-            // WI-1040 — a STRUCTURED non-`Term` value (`Value::Entity` / `Tuple`,
-            // and now a requirement dictionary) rides into the occurrence tree as
+            // WI-1040 — a STRUCTURED non-`Term` value with no scalar form (a
+            // requirement dictionary; an `Entity` / `Tuple` takes the σ-applying arm
+            // above since N20EZ) rides into the occurrence tree as
             // `Expr::Spliced`, the carrier that exists for exactly this (WI-714: "a
             // `Spliced` occurrence carries a structured `Value`"). Every view arm
             // delegates through `spliced_value`, so the spliced node reads —
@@ -5765,11 +5860,25 @@ fn subst_var_leaf(
             }
         },
     };
-    // Bound to a (possibly compound) term: deep-apply σ in term-land (keeps
-    // nested unbound vars as `Term::Var`), then materialize to an occurrence
-    // (keeps them as `Expr::Var`).
-    let applied = kb.apply_subst(t, subst);
-    materialize_from_handle(kb, applied)
+    // Bound to a (possibly compound) term: deep-apply σ CARRIER-NEUTRALLY (N20EZ —
+    // the term-world `apply_subst` keeps a nested var whose binding is a
+    // `Value::Var` alias or an `Entity` link, leaving it in the goal as a wildcard)
+    // through `reify`, whose `fn_value` lowers an all-leaf result back to a
+    // hash-consed term — so the goal keeps the `Term` carrier every reader folds
+    // (a non-interning twin turned such goals into `Entity`s and the constraint
+    // guard, the Bool hook and simp reassembly went blind; found by the full
+    // suite). Then materialize: a term (nested unbound vars kept as `Expr::Var`),
+    // a value-level var leaf, a scalar, or — when a nested binding is a spine — the
+    // spliced value.
+    let applied = kb.reify(t, subst);
+    match applied {
+        Value::Term { id, .. } => materialize_from_handle(kb, id),
+        Value::Node(o) => o,
+        other => match scalar_value_expr(&other) {
+            Some(expr) => NodeOccurrence::new_expr(expr, occ.span, occ.owner),
+            None => NodeOccurrence::new_expr(Expr::Spliced(other), occ.span, occ.owner),
+        },
+    }
 }
 
 /// Map a *scalar* `Value` to its `Expr::Const` leaf — shared with

@@ -11,8 +11,8 @@
 /// See: docs/stage0/rust-term-store-design.md §3.4, docs/proposals/026.1
 use imbl::HashMap as ImHashMap;
 
-use super::term::{Term, TermId, TermStore, Var, VarId};
-use super::term_view::{views_structurally_equal, TermView};
+use super::term::{TermId, VarId};
+use super::term_view::views_structurally_equal;
 use super::KnowledgeBase;
 use crate::eval::value::Value;
 
@@ -54,8 +54,9 @@ pub struct Substitution {
     /// O(depth × bindings) over a derivation). Same lookup/insert semantics as
     /// `std`, but the iteration ORDER differs (HAMT vs `RandomState`) and
     /// `iter_mut` is unavailable — see `bind_compressed`. Resolution does not
-    /// depend on binding order: reads chase var-chains via `KnowledgeBase::walk`
-    /// / `reify`, so a less-flattened chain still resolves identically.
+    /// depend on binding order: reads chase var-chains via
+    /// `KnowledgeBase::chase_var` / `reify`, so a less-flattened chain still
+    /// resolves identically.
     pub bindings: ImHashMap<VarId, Value>,
     pub parent: Option<Box<Substitution>>,
     /// Set to true when a variable is bound to two different concrete terms.
@@ -112,27 +113,6 @@ fn push_constraint_deduped(entry: &mut Vec<Constraint>, c: Constraint) {
         }
     }
     entry.push(c);
-}
-
-/// WI-502 Step 2 — if `val` denotes a logic VARIABLE of kind `Global`, return
-/// its `VarId`. Used by merge-on-alias: binding `?x := ?y` aliases the two, so
-/// `?x`'s constraints must follow onto `?y`.
-///
-/// Delegates to the canonical carrier-agnostic var extractor
-/// (`TermView::index_var`) so EVERY variable carrier is recognized — not only
-/// `Value::Var(Global)` and `Value::Term(Var::Global)` but also a var riding as
-/// `Value::Node(Expr::Var(Global))`, which fact-match `tree_subst` non-`Term`
-/// bindings actually carry; a bespoke `Var`/`Term`-only match would silently
-/// mis-read that as concrete and drop the wakeup (the "loud over silent"
-/// failure mode). A non-variable value (a constructed term, a scalar) and a
-/// Rigid/DeBruijn var both return `None`: a rigid/DeBruijn var is not an alias
-/// target here, its constraints are enforced at its own instantiation site
-/// (the same conservatism as the typer's row machinery).
-fn value_as_global_var(kb: &KnowledgeBase, val: &Value) -> Option<VarId> {
-    match val.index_var(kb) {
-        Some(Var::Global(vid)) => Some(vid),
-        _ => None,
-    }
 }
 
 impl Substitution {
@@ -329,18 +309,22 @@ impl Substitution {
         self.bindings.is_empty() && self.parent.as_ref().is_none_or(|p| p.is_empty())
     }
 
-    /// Add bindings with path compression in one operation. Operates over
-    /// the `Value::Term` subset — non-`Term` entries are never
-    /// path-compression sources or targets. Mixed bindings are left
-    /// untouched (their walker, if ever needed, handles them structurally).
+    /// Add bindings with path compression in one operation, on every carrier
+    /// (WI-20260905-N20EZ — formerly `(VarId, TermId)` over the `Value::Term`
+    /// subset; an answer link now rides `Value::Var` / `Value::Entity`, and the
+    /// old form would have dropped every such link).
     ///
-    /// For each `(vid, term)` in `new_bindings`:
-    /// 1. Scan existing `Value::Term` entries: any `?w → Var(vid)` becomes
-    ///    `?w → term`.
-    /// 2. Insert `vid → term`.
-    pub fn bind_compressed<I>(&mut self, new_bindings: I, terms: &TermStore)
+    /// For each `(vid, val)` in `new_bindings`:
+    /// 1. Scan the existing entries: any `?w` whose binding NAMES `vid` — on
+    ///    whichever carrier, [`KnowledgeBase::value_global_var`], the same
+    ///    predicate the resolver's caller-var filter asks — becomes `?w → val`.
+    /// 2. Insert `vid → val`.
+    ///
+    /// An entry that names no var (a scalar, a compound) is never a compression
+    /// source and is left untouched.
+    pub fn bind_compressed<I>(&mut self, new_bindings: I, kb: &KnowledgeBase)
     where
-        I: IntoIterator<Item = (VarId, TermId)>,
+        I: IntoIterator<Item = (VarId, Value)>,
     {
         // WI-502 Step 2 — loud-on-bypass. `bind_compressed` is the synthetic
         // path-compression path (resolver-only: fresh DeBruijn / answer-link
@@ -350,34 +334,28 @@ impl Substitution {
         // fail LOUDLY rather than silently drop the wakeup. Gated on a non-empty
         // store so the universal (empty) case pays only one O(1) check.
         let guard = !self.constraints.is_empty();
-        for (vid, term) in new_bindings {
+        for (vid, val) in new_bindings {
             // Path compression. `imbl` is immutable (no `iter_mut`), so collect
-            // the existing `?w → Var(vid)` entries, then functionally re-point
-            // each to `term`. The fold of `insert`s shares structure, keeping
-            // `clone` O(1); the per-new-binding scan is the same O(n) as before.
+            // the existing `?w → vid` entries, then functionally re-point each
+            // to `val`. The fold of `insert`s shares structure, keeping `clone`
+            // O(1); the per-new-binding scan is the same O(n) as before.
             let to_repoint: Vec<VarId> = self
                 .bindings
                 .iter()
-                .filter_map(|(w, existing)| match existing {
-                    Value::Term {
-                        id: existing_tid, ..
-                    } => match terms.get(*existing_tid) {
-                        Term::Var(Var::Global(ev)) if *ev == vid => Some(*w),
-                        _ => None,
-                    },
-                    _ => None,
+                .filter_map(|(w, existing)| {
+                    (kb.value_global_var(existing) == Some(vid)).then_some(*w)
                 })
                 .collect();
             for w in to_repoint {
                 if guard {
                     self.assert_no_constraints(w, "bind_compressed path-compression repoint");
                 }
-                self.bindings.insert(w, Value::term(term));
+                self.bindings.insert(w, val.clone());
             }
             if guard {
                 self.assert_no_constraints(vid, "bind_compressed direct bind");
             }
-            self.bindings.insert(vid, Value::term(term));
+            self.bindings.insert(vid, val);
         }
     }
 
@@ -572,7 +550,13 @@ impl Substitution {
         if !self.constraints.contains_key(&var) {
             return;
         }
-        match value_as_global_var(kb, val) {
+        // WI-502 Step 2 — merge-on-alias: binding `?x := ?y` aliases the two, so
+        // `?x`'s constraints must follow onto `?y`. "Does `val` name a var" is
+        // the ONE carrier-agnostic predicate (`value_global_var`, N20EZ): a var
+        // riding as `Value::Node(Expr::Var(Global))` — what a fact-match
+        // `tree_subst` non-`Term` binding actually carries — must be recognized,
+        // or the wakeup is silently dropped.
+        match kb.value_global_var(val) {
             // Merge-on-alias: `var := ?y` with `?y` an UNBOUND variable moves
             // var's constraints onto `?y` so they ride the union chain (the next
             // hop wakes when `?y` itself binds). Guard on `?y` unbound: moving
@@ -642,7 +626,7 @@ impl Default for Substitution {
 mod tests {
     use super::*;
     use crate::intern::Symbol;
-    use crate::kb::term::Literal;
+    use crate::kb::term::{Literal, Term, Var};
 
     fn vid(id: u32) -> VarId {
         VarId::new(id, Symbol::from_raw(0))
@@ -1117,38 +1101,38 @@ mod tests {
     #[test]
     #[should_panic(expected = "constraint-carrying var")]
     fn bind_compressed_panics_on_constrained_var() {
-        let store = TermStore::new();
+        let kb = KnowledgeBase::new();
         let x = vid(1);
         let mut s = Substitution::new();
         s.add_type_constraint(x, Value::Int(7));
-        s.bind_compressed(std::iter::once((x, TermId::from_raw(999))), &store);
+        s.bind_compressed(std::iter::once((x, Value::Int(9))), &kb);
     }
 
     /// The loud guard is per-var: `bind_compressed` of an UNCONSTRAINED var is
     /// fine even when the store is non-empty (a different var carries a constraint).
     #[test]
     fn bind_compressed_ok_when_other_var_constrained() {
-        let store = TermStore::new();
+        let mut kb = KnowledgeBase::new();
         let (x, other) = (vid(1), vid(2));
-        let target = TermId::from_raw(999);
+        let target = kb.alloc(Term::Const(Literal::Int(99)));
         let mut s = Substitution::new();
         s.add_type_constraint(other, Value::Int(7));
-        s.bind_compressed(std::iter::once((x, target)), &store);
+        s.bind_compressed(std::iter::once((x, Value::term(target))), &kb);
         assert_eq!(s.resolve_as_value(x).map(|v| v.expect_term()), Some(target));
     }
 
     #[test]
     fn bind_compressed_leaves_non_term_entries_untouched() {
-        let mut store = TermStore::new();
+        let mut kb = KnowledgeBase::new();
         let v1 = vid(1);
         let v2 = vid(2);
-        let var_v1 = store.alloc(Term::Var(Var::Global(v1)));
-        let target = TermId::from_raw(999);
+        let var_v1 = kb.alloc(Term::Var(Var::Global(v1)));
+        let target = kb.alloc(Term::Const(Literal::Int(99)));
 
         let mut s = Substitution::new();
         s.bindings.insert(v2, Value::term(var_v1)); // v2 → Var(v1)
         s.bindings.insert(vid(3), Value::Int(77)); // non-Term: untouched
-        s.bind_compressed(std::iter::once((v1, target)), &store);
+        s.bind_compressed(std::iter::once((v1, Value::term(target))), &kb);
 
         // v2's binding now points through to `target`.
         assert_eq!(
@@ -1157,5 +1141,26 @@ mod tests {
         );
         // v3's non-Term binding is preserved as-is.
         assert!(matches!(s.resolve_as_value(vid(3)), Some(Value::Int(77))));
+    }
+
+    /// WI-20260905-N20EZ: an alias riding `Value::Var` — what an answer link is
+    /// now — is a compression source exactly like a `Value::Term(Var)` one.
+    /// FAILS when the repoint predicate is narrowed back to `Value::Term`: v2 is
+    /// left pointing at the var and reads back as unbound-through-alias.
+    #[test]
+    fn bind_compressed_repoints_a_value_var_alias() {
+        let mut kb = KnowledgeBase::new();
+        let (v1, v2) = (vid(1), vid(2));
+        let target = kb.alloc(Term::Const(Literal::Int(99)));
+
+        let mut s = Substitution::new();
+        s.bindings.insert(v2, Value::Var(Var::Global(v1))); // v2 → ?v1, value-level
+        s.bind_compressed(std::iter::once((v1, Value::term(target))), &kb);
+
+        assert_eq!(
+            s.resolve_as_value(v2).map(|v| v.expect_term()),
+            Some(target),
+            "the value-level alias must be re-pointed at the binding",
+        );
     }
 }

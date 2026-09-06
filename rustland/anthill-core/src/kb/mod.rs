@@ -6764,6 +6764,13 @@ impl KnowledgeBase {
     /// carrier; `node_occurrence::subst_type_term` is the site that moved. It does NOT reuse
     /// [`Self::reify`], the KB's general carrier-neutral σ, and its doc carries the two
     /// measurements for why a type position needs a narrower answer than a goal does.
+    ///
+    /// NOT σ-application over the resolver's answer links (WI-20260905-N20EZ): a var
+    /// whose binding is a `Value::Var` alias or an `Entity` link is KEPT here, and a
+    /// kept var in a GOAL is a wildcard at the match. The resolver's goal walk
+    /// (`step_init`, `subst_var_leaf`) and the reflect bridge's `apply` / `compose`
+    /// read through [`Self::reify`] instead; the callers left here apply a MATCH
+    /// substitution whose bindings are terms.
     pub fn apply_subst(&mut self, term: TermId, subst: &subst::Substitution) -> TermId {
         match self.terms.get(term).clone() {
             // Term-world substitution: a non-`Term` carrier (a `Value::Node`)
@@ -6780,61 +6787,65 @@ impl KnowledgeBase {
 
     // ── Walk / reify ──────────────────────────────────────────────
 
-    /// Chase Var→binding→Var chains through a substitution, **term-world**:
-    /// returns the final non-variable `TermId`, or the last unbound Var — and a
-    /// var bound to a non-`Term` carrier (a `Value::Node`, a scalar) STOPS the
-    /// chase at that var (the Node is not represented in the `TermId` result).
-    /// Use this only where a `TermId` is genuinely the right shape — building a
-    /// term (`apply_subst`), inspecting a synthetic term marker
-    /// (`forall_impl` / `push_choice` goal-classification), or recursing over
-    /// term structure (`is_ground`, `collect_unbound_vars`). The carrier-faithful
-    /// chase that SURFACES a `Value::Node` is [`Self::walk_view`], which the
-    /// carrier-neutral builtins read their args through. WI-348.
-    pub fn walk(&self, term: TermId, subst: &subst::Substitution) -> TermId {
-        use crate::eval::value::Value;
-        let mut current = term;
+    /// The end of `vid`'s binding chain under σ, read across every carrier
+    /// (WI-20260905-N20EZ). `None` when `vid` is unbound. Otherwise the LAST value
+    /// on the chain: a concrete value (a `Term::Fn`, a leaf, a scalar, a `Node`, an
+    /// `Entity`), or — when the chain ends at an unbound variable — that variable
+    /// in whichever carrier its link arrived on (`Value::Term(Var)` from a term
+    /// link, `Value::Var` from an answer link). A self-referential link stops the
+    /// chase as the unbound end it is.
+    ///
+    /// This is what the retired `walk` could not be. `walk` chased in `TermId`
+    /// space and RETURNED a `TermId`, so it could not say "this chain ended at var
+    /// `w`" without a term for `w` — which is precisely why an answer link's fresh
+    /// var used to be interned (one new, undedupable term per clause opened, for
+    /// ever). It also STOPPED at any non-`Term` link, so every reader built on it
+    /// saw the query var where the chain went on to the fresh one.
+    /// [`Self::walk_view`], the resolver's `chase_value` / `vid_resolves_to_var` /
+    /// `walk_arg`, and [`Self::reify`] all sit on this one loop. A hop follows any
+    /// carrier that NAMES a global var ([`Self::value_global_var`]: a `Term::Var`,
+    /// a `Value::Var`, an `Expr::Var` occurrence); a `Rigid`/`DeBruijn` var is a
+    /// constant and ends the chase.
+    ///
+    /// No cycle guard beyond the self-link: σ is kept acyclic by the occurs checks
+    /// at every bind site, exactly as `walk` relied on.
+    pub fn chase_var<'s>(
+        &self,
+        vid: VarId,
+        subst: &'s subst::Substitution,
+    ) -> Option<&'s crate::eval::value::Value> {
+        let mut cur = vid;
+        let mut last = subst.resolve_as_value(cur)?;
         loop {
-            match self.terms.get(current) {
-                Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                    Some(Value::Term { id: bound, .. }) => {
-                        if *bound == current {
-                            return current; // self-referential, stop
-                        }
-                        current = *bound;
+            match self.value_global_var(last) {
+                Some(w) if w != cur => match subst.resolve_as_value(w) {
+                    Some(next) => {
+                        cur = w;
+                        last = next;
                     }
-                    // Non-`Term` carrier (a `Value::Node`/scalar) or unbound:
-                    // stop at the var. This is the term-world chase; the
-                    // carrier-faithful one is `walk_view`.
-                    _ => return current,
+                    None => return Some(last),
                 },
-                _ => return current,
+                _ => return Some(last),
             }
         }
     }
 
-    /// `TermView`-aware [`Self::walk`] (WI-277): chase Var→binding chains through
-    /// the substitution following **both** term and non-term `Value`
-    /// bindings, returning the resolved `Value`. `Value::Term(t)` for a
-    /// term-shaped result (a `Fn`, a leaf, or an unbound var — to recurse
-    /// into / inspect), or a non-term `Value` (`Value::Node`, a literal, …)
-    /// when a variable is bound to one. The view-level counterpart of
-    /// `walk`, used by the typer-phase rewriter's occurrence build side.
+    /// Chase a term's var chain through σ carrier-faithfully (WI-277): the term
+    /// itself when it is not a bound global var (a `Fn`, a leaf, an unbound var —
+    /// to recurse into / inspect), else the chain's end from [`Self::chase_var`] —
+    /// a `Value::Term` for a term-shaped result, or a non-term `Value`
+    /// (`Value::Node`, `Value::Var`, a literal, …) when a link carries one.
     pub fn walk_view(
         &self,
         term: TermId,
         subst: &subst::Substitution,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        let mut current = term;
-        loop {
-            match self.terms.get(current) {
-                Term::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-                    Some(Value::Term { id: next, .. }) if *next != current => current = *next,
-                    Some(Value::Term { .. }) | None => return Value::term(current),
-                    Some(other) => return other.clone(),
-                },
-                _ => return Value::term(current),
-            }
+        match self.terms.get(term) {
+            Term::Var(Var::Global(vid)) => self
+                .chase_var(*vid, subst)
+                .map_or_else(|| Value::term(term), Clone::clone),
+            _ => Value::term(term),
         }
     }
 
@@ -6866,7 +6877,8 @@ impl KnowledgeBase {
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
-        // non-`Term` binding the `TermId`-only `walk` cannot see.
+        // non-`Term` binding (an answer link's `Value::Var` / `Value::Entity`
+        // included, N20EZ).
         match self.walk_view(term, subst) {
             Value::Term { id: t, .. } => match self.terms.get(t).clone() {
                 Term::Fn {
@@ -6874,13 +6886,27 @@ impl KnowledgeBase {
                     pos_args,
                     named_args,
                 } => {
-                    let pos: Vec<Value> =
-                        pos_args.iter().map(|&id| self.reify(id, subst)).collect();
-                    let named: Vec<(Symbol, Value)> = named_args
+                    // Nothing beneath changed ⇒ the term IS its own reification:
+                    // share it rather than re-lower through `fn_value` (which would
+                    // re-hash an identical node). `substitute_vars_transient`'s idiom.
+                    let mut changed = false;
+                    let mut sub = |kb: &mut Self, a: TermId| {
+                        let v = kb.reify(a, subst);
+                        if !matches!(v, Value::Term { id } if id == a) {
+                            changed = true;
+                        }
+                        v
+                    };
+                    let pos: SmallVec<[Value; 4]> =
+                        pos_args.iter().map(|&id| sub(self, id)).collect();
+                    let named: SmallVec<[(Symbol, Value); 2]> = named_args
                         .iter()
-                        .map(|&(sym, id)| (sym, self.reify(id, subst)))
+                        .map(|&(sym, id)| (sym, sub(self, id)))
                         .collect();
-                    self.fn_value(functor, pos, named)
+                    if !changed {
+                        return Value::term(t);
+                    }
+                    self.fn_value(functor, pos.into_vec(), named.into_vec())
                 }
                 // Leaf (Const/Ref/Ident/…) or an unbound `Var` — already final.
                 _ => Value::term(t),
@@ -7016,10 +7042,11 @@ impl KnowledgeBase {
             // rely on a free value-level var staying free), as does a
             // Rigid/DeBruijn var (not a σ-bound logical var). The term-internal
             // case is already handled by `reify` above. Uses `resolve_as_value`
-            // (parent-chain aware, like `reify`/`walk_view`), and guards the
+            // (parent-chain aware, like `reify`/`chase_var`), and guards the
             // degenerate self-binding `vid ↦ vid` — which `compose` can synthesize
-            // (`{z↦w} ∘ {w↦z}`) — against unbounded recursion, mirroring the
-            // self-binding short-circuit in `walk_view`/`reify`/`occurs_in_value`.
+            // (`{z↦w} ∘ {w↦z}`) — against unbounded recursion, the same self-link
+            // stop `chase_var` / `occurs_in_value` make (and the only cycle guard
+            // any of them has: σ is otherwise acyclic by the bind-site occurs checks).
             Value::Var(var) => match var.as_global() {
                 Some(vid) => match subst.resolve_as_value(vid) {
                     None => v.clone(),
@@ -7648,6 +7675,12 @@ impl KnowledgeBase {
 
     /// Open a de Bruijn term: replace `DeBruijn(i)` with `Global(fresh_vars[i])`.
     /// `fresh_vars`: array of fresh VarIds, indexed by de Bruijn index.
+    ///
+    /// INTERNS, and a fresh `VarId` makes every var term it mints NEW — so this is
+    /// for a term that must be a `TermId` (the occurrence opener's remaining
+    /// `TermId`-typed type fields, `open_debruijn_node`). It is NOT on the
+    /// answer-link path any more: a link rides [`Self::substitute_vars_transient`]
+    /// (WI-20260905-N20EZ), which is the same substitution off the store.
     pub fn term_from_debruijn(&mut self, term: TermId, fresh_vars: &[VarId]) -> TermId {
         match self.terms.get(term).clone() {
             Term::Var(Var::DeBruijn(idx)) => {
@@ -7663,6 +7696,79 @@ impl KnowledgeBase {
             }
             _ => term,
         }
+    }
+
+    /// A NON-INTERNING term substitution (WI-20260905-N20EZ): replace the
+    /// variable leaves `leaf` answers for, share everything it leaves alone, and
+    /// touch the hash-consed store not at all. A substituted leaf is whatever
+    /// `Value` `leaf` returned; a `Fn` with a substituted leaf beneath it is
+    /// rebuilt as the `Value::Entity` spine a value fact uses; a `Fn` — or any
+    /// leaf — with NO substitution beneath it is returned as the SHARED
+    /// `Value::Term` it already is. That last rule is what keeps `Value`'s missing
+    /// `Ident` carrier out of the picture: only `Term::Fn` spine nodes are ever
+    /// converted, and `Ident` / `Bottom` / `Const` / `Ref` ride through unchanged.
+    ///
+    /// Why not [`Self::term_from_debruijn`] / [`Self::apply_subst`]: those intern
+    /// the result, and a fresh `VarId` makes each var term new, so hash-consing
+    /// could never dedup an opened link and the store grew once per link per
+    /// clause opened, for ever (MEASURED +1/+2/+2/+2/+3 over the ticket's shapes;
+    /// the store is monotone under a scoped-KB layer by design, WI-SPGBP). The
+    /// `named` order is the source term's, which is already the canonical order
+    /// `Value::Entity` requires.
+    pub(crate) fn substitute_vars_transient(
+        &mut self,
+        term: TermId,
+        leaf: &mut dyn FnMut(&mut Self, &Var) -> Option<crate::eval::value::Value>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        match self.terms.get(term).clone() {
+            Term::Var(v) => leaf(self, &v).unwrap_or(Value::term(term)),
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                // `map_fn_children`'s idiom: stack buffers and a `changed` flag set
+                // in the map, so an untouched node costs no heap allocation and a
+                // rebuilt one costs the two `Rc` payloads only.
+                let mut changed = false;
+                let mut sub = |kb: &mut Self, a: TermId| {
+                    let v = kb.substitute_vars_transient(a, leaf);
+                    if !matches!(v, Value::Term { id } if id == a) {
+                        changed = true;
+                    }
+                    v
+                };
+                let pos: SmallVec<[Value; 4]> = pos_args.iter().map(|&a| sub(self, a)).collect();
+                let named: SmallVec<[(Symbol, Value); 2]> = named_args
+                    .iter()
+                    .map(|&(s, a)| (s, sub(self, a)))
+                    .collect();
+                if changed {
+                    Value::Entity {
+                        functor,
+                        pos: Rc::from(&pos[..]),
+                        named: Rc::from(&named[..]),
+                    }
+                } else {
+                    Value::term(term)
+                }
+            }
+            _ => Value::term(term),
+        }
+    }
+
+    /// `vid`'s chain end when it is CONCRETE — `None` for an unbound var and for a
+    /// chain ending at one. The shape every σ-reading gate wants for a value-level
+    /// var inside a compound carrier (`value_is_ground`, the open-world-ref reader,
+    /// `collect_unbound_vars_value`): recurse into `Some`, treat `None` as "a var".
+    pub(crate) fn chase_to_concrete<'s>(
+        &self,
+        vid: VarId,
+        subst: &'s subst::Substitution,
+    ) -> Option<&'s crate::eval::value::Value> {
+        let end = self.chase_var(vid, subst)?;
+        (self.value_global_var(end).is_none()).then_some(end)
     }
 
     /// Get the arity (number of de Bruijn variables) of a rule.
@@ -7859,6 +7965,20 @@ impl KnowledgeBase {
     /// occurrence body (pushed by the resolver as `Value::Node` goals) and
     /// `answer_links` mapping query variables to their fresh counterparts (or
     /// concrete values).
+    ///
+    /// AN ANSWER LINK IS TRANSIENT (WI-20260905-N20EZ): it is built off the
+    /// hash-consed store by [`Self::substitute_vars_transient`] — `Value::Var` for a
+    /// fresh leaf, `Value::Entity` for a spine rebuilt above one, the SHARED
+    /// `Value::Term` for anything untouched — so no `kb.alloc` happens on this
+    /// path. Every reader chases it through [`Self::chase_var`], which follows all
+    /// three carriers. The resolver's goal walk σ-applies a link through
+    /// [`Self::reify`], which lowers an all-leaf result back to a hash-consed term
+    /// — so a goal keeps its `Term` carrier for the readers that fold `Term` /
+    /// `Node` only — at the ONE cost of interning a linked leaf that is still
+    /// UNBOUND when a later `Value::Term` conjunct walks over it (measured +2 per
+    /// resolve of `[loose(?x, ?y), simple(?y)]` as `Value::Term` goals; a rule body
+    /// walks its own vars as occurrences and pays nothing). Pinned red in
+    /// `wi_n20ez_answer_links_transient_test`.
     pub fn with_fresh_vars(
         &mut self,
         id: RuleId,
@@ -7969,9 +8089,8 @@ impl KnowledgeBase {
             //    Open any DeBruijn vars in the value to their fresh globals.
             let mut answer_links = subst::Substitution::new();
             let mut body_rename = subst::Substitution::new();
-            // Walk only Value::Term bindings — this code path uses TermIds
-            // for DeBruijn rename + caller-var linkage. Non-Term bindings
-            // from external streams flow through a different path.
+            // `iter_terms` is total here: the WI-636 normalization above reified
+            // every non-`Term` entry (or dropped the candidate).
             //
             // Two passes (WI-624): `body_rename` must be COMPLETE before any
             // query-var link is opened. A nonlinear head (`unbox(box(v: ?v), ?v)`)
@@ -7993,37 +8112,69 @@ impl KnowledgeBase {
                     }
                 }
             }
+            // The link is built OFF the store (N20EZ, see the method doc). The
+            // head-match rename is folded into the leaf: a slot the match bound
+            // concretely takes that value directly — what a second
+            // `apply_subst(opened, &body_rename)` pass used to do — and any other
+            // slot becomes its fresh var as a `Value::Var`.
+            let mut rename_or_fresh = |_: &mut Self, v: &Var| match v {
+                Var::DeBruijn(i) => {
+                    // A slot outside the rule's arity is a LOADER bug (the recorded
+                    // arity is smaller than the head's highest index). Loud: the old
+                    // `term_from_debruijn` kept it as a De Bruijn term, which then
+                    // matched as a constant, silently.
+                    //
+                    // DELIBERATELY NOT the `contradiction` drop the WI-636
+                    // normalization above uses, and the difference is REACHABILITY,
+                    // not taste. That drop exists because an un-reifiable carrier
+                    // arrives from real user input (the WI-625 eq-bridge feeds raw
+                    // ground operands into a rule-backed `eq`), so aborting there
+                    // would crash on a correct program. THIS condition is an
+                    // invariant violation inside our own loader — no anthill source
+                    // can produce a head whose index exceeds the arity recorded for
+                    // it — so there is no legitimate program to protect. Dropping
+                    // the candidate would convert a loader bug into a silently
+                    // missing answer, which is the failure mode the panic exists to
+                    // prevent.
+                    let f = *fresh_vars.get(*i as usize).unwrap_or_else(|| {
+                        panic!(
+                            "with_fresh_vars: De Bruijn slot #{i} is outside the rule's \
+                             arity {arity} — the loader recorded a smaller arity than \
+                             the head uses"
+                        )
+                    });
+                    Some(
+                        body_rename
+                            .resolve_as_value(f)
+                            .cloned()
+                            .unwrap_or(crate::eval::value::Value::Var(Var::Global(f))),
+                    )
+                }
+                _ => None,
+            };
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
                 if Var::synthetic_debruijn_index(ts_vid, arity).is_some() {
                     continue;
                 }
-                let opened = self.term_from_debruijn(bound_term, &fresh_vars);
-                let linked = if body_rename.is_empty() {
-                    opened
-                } else {
-                    let linked = self.apply_subst(opened, &body_rename);
-                    // Occurs check: the rename can route the query var's own
-                    // term back into its link (`p(box(v: g(?q)), ?q)` links
-                    // ?q → g(?q)); the SLD bind path is not occurs-checked and
-                    // a cyclic σ overflows reify/fingerprint. Correct
-                    // semantics is occurs-FAILURE — flag the whole match as
-                    // contradictory (the resolver drops the candidate, same as
-                    // a tree_subst contradiction). Resolving through the links
-                    // built so far also catches mutual cycles
-                    // (?a → f(?b), ?b → g(?a)). Pure opened links can't cycle
-                    // (a rule head has no query vars), so the check rides the
-                    // rename branch only.
-                    if self.occurs_in_value(
-                        ts_vid,
-                        &crate::eval::value::Value::term(linked),
-                        &answer_links,
-                    ) {
-                        answer_links.contradiction = true;
-                        break;
-                    }
-                    linked
-                };
-                answer_links.bind(self, ts_vid, linked);
+                let linked = self.substitute_vars_transient(bound_term, &mut rename_or_fresh);
+                // Occurs check: the rename can route the query var's own
+                // term back into its link (`p(box(v: g(?q)), ?q)` links
+                // ?q → g(?q)); the SLD bind path is not occurs-checked and
+                // a cyclic σ overflows reify/fingerprint. Correct
+                // semantics is occurs-FAILURE — flag the whole match as
+                // contradictory (the resolver drops the candidate, same as
+                // a tree_subst contradiction). Resolving through the links
+                // built so far also catches mutual cycles
+                // (?a → f(?b), ?b → g(?a)). Pure opened links can't cycle
+                // (a rule head has no query vars), so the check rides the
+                // rename branch only.
+                if !body_rename.is_empty()
+                    && self.occurs_in_value(ts_vid, &linked, &answer_links)
+                {
+                    answer_links.contradiction = true;
+                    break;
+                }
+                answer_links.bind_value(self, ts_vid, linked);
             }
 
             // Occurrence body: De Bruijn-open with the same fresh vars, then
@@ -8090,9 +8241,16 @@ impl KnowledgeBase {
                         continue;
                     }
                 }
+                // A transient `Value::Var`, not an interned var term (N20EZ) —
+                // this path freshens every omitted-field Global of a fact PER
+                // MATCH, and each interned twin was new for ever (MEASURED +2 per
+                // `Top(a: ?x)` query against `fact Top(a: 1)`).
                 let fresh = self.fresh_var(vid.name());
-                let fresh_term = self.alloc(Term::Var(Var::Global(fresh)));
-                rename.bind(self, *vid, fresh_term);
+                rename.bind_value(
+                    self,
+                    *vid,
+                    crate::eval::value::Value::Var(Var::Global(fresh)),
+                );
             }
 
             // Occurrence body: legacy bodies already use Global vars, so just
@@ -8102,25 +8260,33 @@ impl KnowledgeBase {
                 final_nodes.push(node_occurrence::substitute_occurrence(self, n, &rename));
             }
 
+            // Answer links ride the same transient carriers as the De Bruijn
+            // path (N20EZ): a head Global's rename — the concrete match or its
+            // fresh `Value::Var` — substitutes into the matched head subterm off
+            // the store. (Formerly two arms: a bare head var bound only a
+            // `Value::Term` rename and silently made NO link for any other, and a
+            // compound went through the interning `apply_subst`. Every head var
+            // has a rename here, so one substitution covers both.)
+            let mut renamed = |_: &mut Self, v: &Var| match v {
+                Var::Global(g) => rename.resolve_as_value(*g).cloned(),
+                _ => None,
+            };
             let mut answer_links = subst::Substitution::new();
             for (ts_vid, bound_term) in tree_subst.iter_terms() {
                 if all_vars.contains(&ts_vid) {
                     continue;
                 }
-                match self.terms.get(bound_term) {
-                    Term::Var(Var::Global(rule_vid)) => {
-                        let rule_vid = *rule_vid;
-                        if let Some(crate::eval::value::Value::Term { id: renamed, .. }) =
-                            rename.resolve_as_value(rule_vid)
-                        {
-                            answer_links.bind(self, ts_vid, *renamed);
-                        }
-                    }
-                    _ => {
-                        let renamed_term = self.apply_subst(bound_term, &rename);
-                        answer_links.bind(self, ts_vid, renamed_term);
-                    }
+                let linked = self.substitute_vars_transient(bound_term, &mut renamed);
+                // The occurs check the De Bruijn path has: a nonlinear Global-var
+                // head (`fact p(box(v: ?v), ?v)` queried `p(box(v: g(?q)), ?q)`)
+                // renames `?v ↦ g(?q)` and would link `?q ↦ g(?q)` — a cyclic σ
+                // that overflowed `reify` (found by /code-review). Occurs-FAILURE:
+                // the candidate is dropped.
+                if self.occurs_in_value(ts_vid, &linked, &answer_links) {
+                    answer_links.contradiction = true;
+                    break;
                 }
+                answer_links.bind_value(self, ts_vid, linked);
             }
 
             (final_nodes, answer_links)
@@ -11961,6 +12127,82 @@ mod tests {
             0,
             "vf(g(\"missing\")) should fail"
         );
+    }
+
+    /// WI-20260905-N20EZ: `walk_view` follows a `Value::Var` link — what an answer
+    /// link is now — to the chain's end. FAILS when `walk_view` is put back on a
+    /// `Value::Term`-only chase: it then returns the alias `Value::Var(f)` where the
+    /// end is `7`.
+    #[test]
+    fn walk_view_chases_a_value_var_link_to_its_end() {
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let n = kb.intern("n");
+        let (q, f) = (kb.fresh_var(n), kb.fresh_var(n));
+        let q_term = kb.alloc(Term::Var(Var::Global(q)));
+        let seven = kb.alloc(Term::Const(Literal::Int(7)));
+        let mut s = subst::Substitution::new();
+        s.bind_value(&kb, q, Value::Var(Var::Global(f))); // the answer link
+        // Unbound end: the var comes back on the link's own carrier.
+        assert!(matches!(kb.walk_view(q_term, &s), Value::Var(Var::Global(w)) if w == f));
+        assert!(kb.chase_var(f, &s).is_none());
+        s.bind_value(&kb, f, Value::term(seven)); // the body binds the fresh var
+        assert_eq!(kb.walk_view(q_term, &s).expect_term(), seven);
+        assert_eq!(kb.chase_var(q, &s).map(|v| v.expect_term()), Some(seven));
+    }
+
+    /// WI-20260905-N20EZ: the link builder shares every untouched subterm and
+    /// interns nothing. FAILS if it is routed back through `term_from_debruijn` /
+    /// `apply_subst`: the store grows, and the untouched child is a rebuilt id.
+    #[test]
+    fn substitute_vars_transient_shares_untouched_subterms_and_interns_nothing() {
+        use crate::eval::value::Value;
+        let mut kb = KnowledgeBase::new();
+        let (f, g, b) = (kb.intern("f"), kb.intern("g"), kb.intern("b"));
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let db0 = kb.alloc(Term::Var(Var::DeBruijn(0)));
+        let g1 = kb.alloc(Term::Fn {
+            functor: g,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        // f(g(1), b: #0)
+        let head = kb.alloc(Term::Fn {
+            functor: f,
+            pos_args: SmallVec::from_elem(g1, 1),
+            named_args: SmallVec::from_slice(&[(b, db0)]),
+        });
+        let fresh = kb.fresh_var(f);
+        let before = kb.term_store_len();
+        let mut leaf = |_: &mut KnowledgeBase, v: &Var| match v {
+            Var::DeBruijn(0) => Some(Value::Var(Var::Global(fresh))),
+            _ => None,
+        };
+        let out = kb.substitute_vars_transient(head, &mut leaf);
+        assert_eq!(kb.term_store_len(), before, "nothing interned");
+        match out {
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => {
+                assert_eq!(functor, f);
+                assert!(
+                    matches!(pos[0], Value::Term { id } if id == g1),
+                    "an untouched child is the SHARED term, not a rebuilt one"
+                );
+                assert!(matches!(
+                    named[0],
+                    (s, Value::Var(Var::Global(w))) if s == b && w == fresh
+                ));
+            }
+            other => panic!("expected an Entity spine, got {other:?}"),
+        }
+        // A subterm with nothing beneath it to substitute is the shared term itself.
+        assert!(matches!(
+            kb.substitute_vars_transient(g1, &mut leaf),
+            Value::Term { id } if id == g1
+        ));
     }
 
     #[test]

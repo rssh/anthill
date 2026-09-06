@@ -585,16 +585,20 @@ fn children_of(kb: &KnowledgeBase, node: &Value) -> Vec<Value> {
             }
             _ => Vec::new(),
         },
-        // Any other carrier — a genuine scalar (Int/Bool/…) or a COMPOUND
-        // `Value::Entity`/`Value::Tuple` (which does carry sub-`Value`s) — is a
-        // fire-only leaf: the driver descends ONLY the two structural simp
-        // carriers (a `Term::Fn` and a functor-headed occurrence), so a redex
-        // nested inside an Entity/Tuple is not reached. This is not a silent drop
-        // but a deliberate scope match: the retired recursive term walk likewise
-        // descended only `Term::Fn`, and no `[simp]` rule matches inside an
-        // entity/tuple carrier today. `build_node` still attempts a fire at the
-        // leaf (a functor-less `[simp] unify(1, 2)` rewrites a `Const` redex);
-        // descending Entity/Tuple would be a new behavior, out of WI-643's scope.
+        // A COMPOUND value carrier descends like the two structural carriers above:
+        // since WI-20260905-N20EZ a `Value::Term` goal whose var is linked to a
+        // compound head subterm walks into a `Value::Entity`, so a redex nested
+        // inside one is as reachable as one inside a `Term::Fn` — and the driver
+        // went blind there (`[w(?x), q(twice(?x))]` HEAD 1 → 0, found by
+        // /code-review). Children are the carrier's own `Value`s, positional then
+        // named, the order the `Term::Fn` arm uses.
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+            let mut children = Vec::with_capacity(pos.len() + named.len());
+            children.extend(pos.iter().cloned());
+            children.extend(named.iter().map(|(_, c)| c.clone()));
+            children
+        }
+        // A genuine scalar (Int/Bool/…) or an opaque handle is a fire-only leaf.
         _ => Vec::new(),
     }
 }
@@ -664,8 +668,46 @@ fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]
             }
             _ => node.clone(),
         },
+        // The COMPOUND value carriers, matching `children_of`'s descent arm. Without
+        // this the descent added there was pure cost: `build_node` popped the
+        // rewritten children and this fell to `_ => node.clone()`, so a redex nested
+        // inside an `Entity`/`Tuple` was visited, matched, FIRED — and its result
+        // silently discarded (found by /code-review). Only a fire AT the compound
+        // node itself survived, which is what already worked before the descent.
+        //
+        // NO unchanged-check, unlike the two arms above. Theirs exist because their
+        // rebuild is expensive — `kb.alloc`'s hash-cons lookup for a term, the
+        // occurrence's span/owner/provenance identity for a Node (which tests pin
+        // with `Rc::ptr_eq`). Rebuilding a spine is two `Rc::from`s over children that
+        // are themselves `Rc` bumps or scalars, and `Value` has no `PartialEq` by
+        // design (WI-486: no carrier-blind comparator), so the check would cost a
+        // bespoke per-carrier identity predicate to save less than it costs.
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => Value::Entity {
+            functor: *functor,
+            pos: Rc::from(&new_children[..pos.len()]),
+            named: rebuild_named(named, &new_children[pos.len()..]),
+        },
+        Value::Tuple { pos, named } => Value::Tuple {
+            pos: Rc::from(&new_children[..pos.len()]),
+            named: rebuild_named(named, &new_children[pos.len()..]),
+        },
         _ => node.clone(),
     }
+}
+
+/// Re-key the rewritten named children with the ORIGINAL field symbols, keeping
+/// the canonical order `Value::Entity` / `Value::Tuple` require (`children_of`
+/// yields them in that order, positional first, so index `i` here is field `i`).
+fn rebuild_named(named: &[(Symbol, Value)], new_named: &[Value]) -> Rc<[(Symbol, Value)]> {
+    named
+        .iter()
+        .enumerate()
+        .map(|(i, (sym, _))| (*sym, new_named[i].clone()))
+        .collect()
 }
 
 /// Try to fire a `[simp]` equation at this node. Returns the rewritten

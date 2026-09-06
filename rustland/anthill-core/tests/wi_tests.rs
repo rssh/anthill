@@ -1605,5 +1605,9 @@ mod wi_h054k_type_position_subst_test;
 
 #[path = "include/wi_j0rm4_query_pattern_carrier_test.rs"]
 mod wi_j0rm4_query_pattern_carrier_test;
+
 #[path = "include/wi_qqpq2_tuple_carrier_test.rs"]
 mod wi_qqpq2_tuple_carrier_test;
+
+#[path = "include/wi_n20ez_answer_links_transient_test.rs"]
+mod wi_n20ez_answer_links_transient_test;

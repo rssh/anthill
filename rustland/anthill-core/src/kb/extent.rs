@@ -1843,10 +1843,50 @@ impl KnowledgeBase {
                 functor: self.local_name_of(functor).to_string(),
             });
         }
-        Ok(solutions
+        let rows: Vec<Value> = solutions
             .into_iter()
             .filter(|s| s.residual.is_empty())
             .map(|s| self.reify_value(&goal, &s.subst))
+            .collect();
+        // THE SEAM'S CONTRACT: a resolved row's field is a TERM where it has a term
+        // form — a determined field the hash-consed term it matched, an
+        // under-determined one a `Term::Var`. The readers behind this function
+        // (cpp-gen's realization-row readers, `anthill run`'s entry discovery, the
+        // work-item store) are `TermId`-based by design, and the row is read a
+        // bounded number of times per invocation, so lowering here IS the KB
+        // boundary where interning is the point. Since WI-20260905-N20EZ the
+        // resolver freshens a stored head var per match OFF the store (`Value::Var`)
+        // and links a compound head subterm as a `Value::Entity` spine, so a field
+        // arrives on those carriers and is lowered back; a field with no term form
+        // (an opaque handle from a mounted row) stays as it is, for the reader's
+        // own loud arm. A scalar stays a scalar: external rows always carried them.
+        Ok(rows
+            .into_iter()
+            .map(|row| match row {
+                Value::Entity {
+                    functor,
+                    pos,
+                    named,
+                } => {
+                    let lower = |kb: &mut Self, c: &Value| match c {
+                        Value::Var(_) | Value::Entity { .. } | Value::Tuple { .. } => {
+                            crate::kb::node_occurrence::value_to_term(kb, c)
+                                .map(Value::term)
+                                .unwrap_or_else(|_| c.clone())
+                        }
+                        other => other.clone(),
+                    };
+                    let pos: Vec<Value> = pos.iter().map(|c| lower(self, c)).collect();
+                    let named: Vec<(Symbol, Value)> =
+                        named.iter().map(|(s, c)| (*s, lower(self, c))).collect();
+                    Value::Entity {
+                        functor,
+                        pos: std::rc::Rc::from(pos),
+                        named: std::rc::Rc::from(named),
+                    }
+                }
+                other => other,
+            })
             .collect())
     }
 
@@ -3374,16 +3414,17 @@ mod tests {
     }
 
     #[test]
-    fn read_facts_resolved_surfaces_an_underdetermined_field_as_a_term_var() {
+    fn read_facts_resolved_surfaces_an_underdetermined_field_as_a_var() {
         // WI-848: when a fact OMITS a required field, the loader var-fills it with a
         // fresh Global var (load.rs "Expand partial named args"). Resolving such a
-        // fact reifies that field carrier-faithfully via `reify`, whose "leaf or
-        // unbound Var" branch surfaces a term-level variable as `Value::Term`
-        // wrapping `Term::Var` — NOT a value-level `Value::Var`. This pins the
-        // reachability verdict cpp-gen's `row_named_term` depends on: an
-        // under-determined field of a resolved (term-headed) row is always a TERM
-        // carrier, so its term readers handle it (and skip a non-literal var-term),
-        // and the `Value::Var` value-carrier the arm once claimed cannot arise.
+        // fact reifies that field, and the variable comes back AS A VARIABLE
+        // through the view (`ViewHead::Var`). Since WI-20260905-N20EZ the resolver
+        // freshens a stored head var per match OFF the store (`Value::Var`), and
+        // `read_facts_resolved` lowers it back to a `Term::Var` at this seam — the
+        // `TermId`-based readers behind it (cpp-gen's `row_named_term`, `anthill
+        // run`) read that as "maps nothing" / skip, as they always did. This row
+        // reads carrier-neutrally on purpose: what is pinned is that the field is
+        // a variable, neither dropped nor grounded to a stand-in.
         let mut kb = KnowledgeBase::new();
         let f = kb.intern("wi");
         let id_field = kb.intern("id");
@@ -3409,16 +3450,14 @@ mod tests {
             1,
             "the var-filled fact still enumerates one row"
         );
-        match rows[0].named_arg(&kb, tag_field).map(|a| a.to_value()) {
-            Some(Value::Term { id, .. }) => assert!(
-                matches!(kb.get_term(id), Term::Var(_)),
-                "an under-determined field reifies as Value::Term(Term::Var), \
-                 so the term readers — never a Value::Var arm — receive it"
-            ),
-            other => panic!(
-                "expected the under-determined `tag` to reify as \
-                 Value::Term(Term::Var), got {other:?}"
-            ),
-        }
+        let tag = rows[0]
+            .named_arg(&kb, tag_field)
+            .map(|a| a.to_value())
+            .expect("the under-determined `tag` is present, not dropped");
+        assert!(
+            kb.value_is_unbound_var(&tag),
+            "an under-determined field surfaces as a VARIABLE through the view, \
+             on whichever carrier the resolver freshened it; got {tag:?}"
+        );
     }
 }

@@ -181,9 +181,8 @@ impl ViewItem<'_> {
     /// A raw clone here was invisible while `to_value` fed only local reads, and
     /// became a silent wrong answer once `project_field` started BINDING the
     /// result into σ: a field whose child is `Expr::Spliced(Value::Var(x))` bound
-    /// `?r` to a doubly-wrapped UNBOUND var, and neither `value_is_unbound_var`
-    /// nor `value_global_var` looks through `Spliced`, so every later gate read
-    /// it as bound.
+    /// `?r` to a doubly-wrapped UNBOUND var, and `value_is_unbound_var` does not
+    /// look through `Spliced`, so every later gate read it as bound.
     pub fn to_value(&self) -> Value {
         match self {
             ViewItem::Term(t) => Value::term(*t),

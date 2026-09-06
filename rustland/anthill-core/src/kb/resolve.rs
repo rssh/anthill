@@ -7,8 +7,10 @@
 /// Ground facts (head not `eq(...)`, body empty) are matched directly during
 /// resolution as base cases.
 ///
-/// Goals are always maximally concrete (no unresolved var chains). The answer
-/// substitution is always flat (path-compressed on merge) — no `walk` needed.
+/// Goals are walked lazily at selection time. The answer substitution is
+/// path-compressed on the fact / rule merge but NOT flat — a builtin's
+/// `bind_waking` merge leaves both links standing — so every read chases through
+/// `KnowledgeBase::chase_var`, on every carrier.
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -1034,7 +1036,14 @@ impl SearchStream {
         self.stats.lazy_walk_calls += 1;
         // Walk goals[0] under σ to a `Value` goal (memoized back). A `Value::Node`
         // occurrence goal walks via `substitute_occurrence` (occurrence-native,
-        // no lowering); a `Value::Term` goal via `apply_subst`. The goal rides
+        // no lowering); a `Value::Term` goal via the carrier-neutral `reify` —
+        // N20EZ: a var whose binding is a `Value::Var` alias or an `Entity` link
+        // must be substituted (the term-world `apply_subst` kept it as a WILDCARD
+        // at the match), and `reify` lowers an all-leaf result back to a
+        // hash-consed term, so the goal keeps the `Term` carrier the constraint
+        // guard / Bool hook / simp readers fold (a non-interning twin made every
+        // such goal an `Entity` and they went blind). Its one cost: an unbound
+        // linked leaf is interned at the walk (pinned in the N20EZ suite). The goal rides
         // carrier-neutrally from here — the builtin handlers read it through
         // `TermView`, reifying to a `TermId` only at genuine term boundaries.
         let goal_val: Value = {
@@ -1045,7 +1054,7 @@ impl SearchStream {
                 let subst = f.subst.clone();
                 let g0 = f.goals[0].clone();
                 let walked = match g0 {
-                    Value::Term { id: t, .. } => Value::term(kb.apply_subst(t, &subst)),
+                    Value::Term { id: t, .. } => kb.reify(t, &subst),
                     Value::Node(occ) => {
                         Value::Node(node_occurrence::substitute_occurrence(kb, &occ, &subst))
                     }
@@ -2472,8 +2481,8 @@ impl SearchStream {
         //
         // Through [`Self::walk_value_chain`], the chain walk this file already
         // owned. A hand-rolled loop here got two things wrong that it has right:
-        // it chased with `value_global_var`, which does NOT read a var off any
-        // carrier (no `Value::Var` arm — see `unify_flex_var`'s note), so a
+        // it chased with the then-`Term`/`Node`-only `value_global_var` (no
+        // `Value::Var` arm until N20EZ folded the unify-side reader in), so a
         // `Value::Var` predicate stopped at hop 0; and its self-binding guard
         // caught only a 1-cycle, where `walk_view`'s identical guard had been
         // safe ONLY because it stopped dead at the first non-`Term` link. A
@@ -3221,8 +3230,8 @@ impl SearchStream {
             // `step_init`.
             let remaining = frame.goals[1..].to_vec();
             let mut merged = frame.subst.clone();
-            // bind_compressed wants (VarId, TermId) pairs; filter to the
-            // Value::Term subset — path compression is TermId-only.
+            // The `Value::Term` subset takes path compression; a non-Term entry
+            // (an external row) takes the occurs-checked loop below.
             // WI-502 Step 2/5: this is the `Value::Term` fact-bind path; it goes
             // through `bind_compressed` (loud-asserts on a constrained var), NOT
             // `bind_waking`. Harmless today (no resolver-side constraint producer
@@ -3232,8 +3241,10 @@ impl SearchStream {
             // (or add the per-kind check) so it wakes/suspends instead of panics.
             // Same applies to the rule branch's `answer_links` bind_compressed
             // below (post-WI-624 that branch also serves bodyless rules).
-            let term_pairs: Vec<(VarId, TermId)> = tree_subst.iter_terms().collect();
-            merged.bind_compressed(term_pairs.into_iter(), &kb.terms);
+            merged.bind_compressed(
+                tree_subst.iter_terms().map(|(v, t)| (v, Value::term(t))),
+                kb,
+            );
             // Non-Term bindings (`Value::Entity` from external rows, etc.)
             // bypass path compression and bind directly. This is the
             // proposal 026.1 §"Lineage-preserving bindings" guarantee:
@@ -3265,7 +3276,7 @@ impl SearchStream {
                     // (a false match, not a solution). σ stays acyclic inductively,
                     // so neither `chase_value` nor `occurs_in_value` diverges.
                     let head = kb.chase_value(val.clone(), &merged);
-                    if kb.unify_flex_var(&head) == Some(*vid) {
+                    if kb.value_global_var(&head) == Some(*vid) {
                         continue;
                     }
                     if kb.occurs_in_value(*vid, &head, &merged) {
@@ -3317,36 +3328,43 @@ impl SearchStream {
             let caller_fresh_vars: Vec<VarId> = if fresh_nodes.is_empty() {
                 Vec::new()
             } else {
+                // "Does this link name a var" — the same predicate
+                // `bind_compressed`'s repoint asks, so a link on any carrier
+                // (`Value::Var` since N20EZ) is a caller var here iff it is a
+                // compression source there.
                 answer_links
-                    .iter_terms()
-                    .filter_map(|(_, tid)| match kb.terms.get(tid) {
-                        Term::Var(Var::Global(vid)) => Some(*vid),
-                        _ => None,
-                    })
+                    .iter()
+                    .filter_map(|(_, v)| kb.value_global_var(v))
                     .collect()
             };
 
             let mut merged = frame.subst.clone();
-            // Path compression over the answer links. `answer_links` is Term-only
-            // *by construction* — with_fresh_vars writes every entry via `.bind`
-            // (→ `Value::Term`), never `bind_value`/`bind_waking` — so `iter_terms`
-            // captures all of it. (Contrast the fact fast-path above, whose
-            // external-row `tree_subst` carries raw non-Term values and so needs a
-            // `bind_waking` loop. WI-636's completeness fix — reify a non-Term
-            // head-match carrier into the links, or drop the whole candidate when
-            // un-reifiable — lives at the source in `with_fresh_vars`, not here.)
-            // Assert the construction invariant so a future edit that writes a
-            // non-Term into this row (which `iter_terms` would then silently drop)
-            // trips loudly in test/dev.
+            // Path compression over the answer links, on every carrier. An answer
+            // link is TRANSIENT (WI-20260905-N20EZ): `with_fresh_vars` builds it
+            // off the store as one of exactly three carriers — the shared
+            // `Value::Term` of an untouched head subterm, a fresh
+            // `Value::Var(Global)`, or a `Value::Entity` spine over those — and
+            // `bind_compressed` takes all three. (The fact fast-path above still
+            // narrows to `iter_terms`, because ITS non-`Term` entries are
+            // external-row carriers that need the occurs-checked `bind_waking`
+            // loop; WI-636's completeness fix for a non-`Term` HEAD-MATCH carrier
+            // lives at the source in `with_fresh_vars`.)
+            // Assert the construction SET, so a future edit that writes any other
+            // carrier into a link — a `Node` would have bypassed the WI-636
+            // normalization, a scalar the `Term` form of a head subterm — trips
+            // loudly in test/dev instead of riding into σ. (An UNOPENED De Bruijn
+            // slot cannot reach here: `with_fresh_vars`' leaf panics on an index
+            // outside the rule's arity.)
             debug_assert!(
-                answer_links
-                    .iter()
-                    .all(|(_, v)| matches!(v, Value::Term { .. })),
-                "answer_links must be Term-only by construction; a non-Term entry \
-                 would be silently dropped by iter_terms (WI-636)",
+                answer_links.iter().all(|(_, v)| matches!(
+                    v,
+                    Value::Term { .. } | Value::Var(Var::Global(_)) | Value::Entity { .. }
+                )),
+                "an answer link must be a shared Term, a fresh Global var, or an Entity \
+                 spine over those — the carriers `substitute_vars_transient` mints \
+                 (WI-20260905-N20EZ)",
             );
-            let link_pairs: Vec<(VarId, TermId)> = answer_links.iter_terms().collect();
-            merged.bind_compressed(link_pairs.into_iter(), &kb.terms);
+            merged.bind_compressed(answer_links.bindings.into_iter(), kb);
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
@@ -4083,13 +4101,17 @@ impl KnowledgeBase {
             }
             // Build the RHS in the redex's carrier: a `Value::Node` redex keeps
             // occurrence identity (`instantiate_rhs_verbatim` — the shared RHS builder,
-            // with NO macro expansion: macros are the typer's, 043.1 §5); a term redex
-            // rebuilds its hash-consed term.
+            // with NO macro expansion: macros are the typer's, 043.1 §5); a term (or
+            // `Entity`) redex rebuilds through `reify`, carrier-neutrally — the
+            // term-world `apply_subst` kept an LHS var whose match binding was an
+            // `Entity` (a redex reached through an answer link, N20EZ) as an unbound
+            // wildcard in the RHS (found by /code-review). `reify` interns exactly
+            // as `apply_subst` did, one fire at a time.
             let rewritten = match redex {
                 Value::Node(occ) => Value::Node(super::simp_rewrite::instantiate_rhs_verbatim(
                     self, rid, rhs, &fresh, &msubst, occ,
                 )),
-                _ => Value::term(self.apply_subst(rhs, &msubst)),
+                _ => self.reify(rhs, &msubst),
             };
             return Some((rid, rewritten));
         }
@@ -4344,10 +4366,9 @@ impl KnowledgeBase {
             ViewItem::Value(v) => v.clone(),
             ViewItem::Owned(v) => v,
             ViewItem::Node(occ) => match occ.as_expr() {
-                Some(Expr::Var(Var::Global(vid))) => subst
-                    .resolve_as_value(*vid)
-                    .cloned()
-                    .unwrap_or(Value::Node(occ)),
+                Some(Expr::Var(Var::Global(vid))) => self
+                    .chase_var(*vid, subst)
+                    .map_or_else(|| Value::Node(occ), Clone::clone),
                 _ => Value::Node(occ),
             },
         })
@@ -4423,7 +4444,7 @@ impl KnowledgeBase {
     pub fn value_is_ground(&self, v: &Value, subst: &Substitution) -> bool {
         match v {
             Value::Term { id: t, .. } => matches!(self.is_ground(*t, subst), GroundCheck::Ground),
-            Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(occ),
+            Value::Node(occ) => !node_occurrence::occurrence_has_unbound_var(self, subst, occ),
             // WI-629: a COMPOUND value carrier — a `Value::Entity` (the `not`/`or`
             // wrapper `make_goal_value` synthesizes; a `not(not(P))` inner lands
             // here) or a `Value::Tuple` (only ever a nested child value) — is ground
@@ -4438,6 +4459,15 @@ impl KnowledgeBase {
                 pos.iter().all(|c| self.value_is_ground(c, subst))
                     && named.iter().all(|(_, c)| self.value_is_ground(c, subst))
             }
+            // A value-level var INSIDE a compound carrier is not σ-walked: an
+            // answer link is an `Entity` over `Value::Var` leaves the body has since
+            // bound, and `bind_compressed` re-points only top-level aliases (N20EZ).
+            // Chase it here — bound ⇒ its binding's groundness, unbound ⇒ not
+            // ground — so this owner agrees with `fold_gate` / `value_deep_ground`.
+            Value::Var(Var::Global(vid)) => match self.chase_to_concrete(*vid, subst) {
+                Some(end) => self.value_is_ground(end, subst),
+                None => false,
+            },
             Value::Var(_) => false,
             _ => true,
         }
@@ -4492,7 +4522,7 @@ impl KnowledgeBase {
         }
     }
 
-    fn value_has_open_world_ref_inner(
+    pub(crate) fn value_has_open_world_ref_inner(
         &self,
         v: &Value,
         var_ref: crate::intern::Symbol,
@@ -4500,7 +4530,7 @@ impl KnowledgeBase {
     ) -> bool {
         match v {
             Value::Term { id: t, .. } => self.term_has_var_ref(*t, var_ref, subst),
-            Value::Node(occ) => node_occurrence::occurrence_has_var_ref(occ),
+            Value::Node(occ) => node_occurrence::occurrence_has_var_ref(self, subst, var_ref, occ),
             // WI-629: recurse BOTH compound carriers. A `var_ref` buried in a
             // `Value::Tuple` child of a `not(…)` goal (a tuple nested inside the
             // `make_goal_value` Entity wrapper) would otherwise be missed here → the
@@ -4514,6 +4544,13 @@ impl KnowledgeBase {
                         .iter()
                         .any(|(_, a)| self.value_has_open_world_ref_inner(a, var_ref, subst))
             }
+            // The same chase as `value_is_ground` (N20EZ): a bound leaf reads as its
+            // binding, so a `var_ref` reached through an answer link is not read as
+            // closed — under Γ that would let NAF run over a symbolic binder.
+            Value::Var(Var::Global(vid)) => match self.chase_to_concrete(*vid, subst) {
+                Some(end) => self.value_has_open_world_ref_inner(end, var_ref, subst),
+                None => false,
+            },
             _ => false,
         }
     }
@@ -4527,7 +4564,13 @@ impl KnowledgeBase {
         var_ref: crate::intern::Symbol,
         subst: &Substitution,
     ) -> bool {
-        let walked = self.walk(term, subst);
+        let walked = match self.walk_view(term, subst) {
+            Value::Term { id, .. } => id,
+            // The chain ended off the store (N20EZ: an answer link's `Value::Var`
+            // / `Value::Entity`; a `Node`): read it by the value reader, whose
+            // `Term` arm is this fn.
+            other => return self.value_has_open_world_ref_inner(&other, var_ref, subst),
+        };
         match self.terms.get(walked) {
             Term::Fn {
                 functor,
@@ -4552,7 +4595,20 @@ impl KnowledgeBase {
 
     /// Recursive groundness check: walk the term, then check all subterms.
     fn is_ground(&self, term: TermId, subst: &Substitution) -> GroundCheck {
-        let walked = self.walk(term, subst);
+        let walked = match self.walk_view(term, subst) {
+            Value::Term { id, .. } => id,
+            // The chain ended off the store (N20EZ: an answer link's `Value::Var`
+            // — unbound, so `HasVar` — or `Value::Entity`; a scalar; a `Node`).
+            // `value_is_ground` is the one owner of groundness across carriers;
+            // its `Term` arm is this fn.
+            other => {
+                return if self.value_is_ground(&other, subst) {
+                    GroundCheck::Ground
+                } else {
+                    GroundCheck::HasVar
+                }
+            }
+        };
         match self.terms.get(walked) {
             Term::Var(_) => GroundCheck::HasVar,
             Term::Const(_) | Term::Ref(_) | Term::Bottom | Term::Ident(_) => GroundCheck::Ground,
@@ -4956,30 +5012,32 @@ impl KnowledgeBase {
     ) -> Result<OccPattern, BuiltinResult> {
         // Extract an owned pattern source so the immutable borrow from `pos_arg`
         // ends before the `&mut self` σ-apply below.
-        let mut pat_term: Option<TermId> = None;
-        let mut pat_node = None;
-        match goal.pos_arg(self, 1) {
-            Some(ViewItem::Term(t)) => pat_term = Some(t),
-            Some(ViewItem::Value(Value::Term { id: t, .. })) => pat_term = Some(*t),
-            Some(ViewItem::Owned(Value::Term { id: t, .. })) => pat_term = Some(t),
-            Some(ViewItem::Node(o)) => pat_node = Some(o),
-            // A computed child is never a pattern source here for the same reason
-            // a borrowed non-`Term` `Value` is not: an occurrence pattern needs a
-            // term or an occurrence, and this refuses anything else.
-            Some(ViewItem::Value(_) | ViewItem::Owned(_)) | None => {
-                return Err(BuiltinResult::Failure)
-            }
-        }
-        match (pat_term, pat_node) {
-            (Some(t), _) => Ok(OccPattern::Term(self.apply_subst(t, subst))),
-            (None, Some(o)) => {
-                let v = self.reify_value(&Value::Node(o), subst);
+        // Take the pattern source OWNED so the borrow from `pos_arg` ends before
+        // the `&mut self` σ-apply below. Any structural carrier is a source — a
+        // term, an occurrence, or a `Value::Entity` / `Tuple`: since N20EZ a
+        // `Value::Term` goal whose var is linked to a compound head subterm walks
+        // into an `Entity` goal, so a borrowed `Value` here is the common case, not
+        // a computed oddity (refusing it answered 0 where HEAD answered 1 — found
+        // by /code-review). σ is applied carrier-neutrally through `reify_value`,
+        // as the `Node` arm always did.
+        let src: Value = match goal.pos_arg(self, 1) {
+            Some(ViewItem::Term(t)) => Value::term(t),
+            Some(ViewItem::Node(o)) => Value::Node(o),
+            Some(ViewItem::Value(v)) => v.clone(),
+            Some(ViewItem::Owned(v)) => v,
+            None => return Err(BuiltinResult::Failure),
+        };
+        let v = self.reify_value(&src, subst);
+        match v {
+            Value::Term { id, .. } => Ok(OccPattern::Term(id)),
+            v @ (Value::Node(_) | Value::Entity { .. } | Value::Tuple { .. }) => {
                 if !super::discrim::view_is_indexable(self, &v) {
                     return Err(BuiltinResult::Failure);
                 }
                 Ok(OccPattern::Node(v))
             }
-            (None, None) => Err(BuiltinResult::Failure),
+            // A scalar / opaque carrier (or a bare var end) is not a pattern.
+            _ => Err(BuiltinResult::Failure),
         }
     }
 
@@ -5794,9 +5852,9 @@ impl KnowledgeBase {
     /// view, so a new value carrier rides it with no per-gate arm to add.
     ///
     /// Per-carrier σ-read distinction (the WI-685 invariant this preserves): a
-    /// `Term` carrier path-compresses through σ via [`Self::walk`] (term→term
-    /// chase) BEFORE its head is read — matching the former `term_*` twins that led
-    /// with `walk`; a value / occurrence carrier reads its head directly and chases
+    /// `Term` carrier chases through σ via [`KnowledgeBase::walk_view`] BEFORE its
+    /// head is read — matching the former `term_*` twins that led with a term
+    /// walk; a value / occurrence carrier reads its head directly and chases
     /// a `Var(Global)` head through `resolve_as_value` below. Only the σ-chasing
     /// gates walk/chase; the structural gates read already-reduced values verbatim.
     /// `depth` increments on each child and each σ-chase (never on the term-walk),
@@ -5813,15 +5871,15 @@ impl KnowledgeBase {
                 return at_cap;
             }
         }
-        // A Term carrier leads with `walk` (term→term path compression) when a σ is
-        // present; the structural gates pass `subst: None` — no bindings to follow —
+        // A Term carrier leads with `walk_view` when a σ is present; the
+        // structural gates pass `subst: None` — no bindings to follow —
         // and read the head as-is (an inert empty σ, without minting one per call).
         // Other carriers read the head directly too (a `Var(Global)` head is chased
         // below).
         let walked;
         let v = match (v, subst) {
             (Value::Term { id, .. }, Some(s)) if spec.chase_sigma => {
-                walked = Value::term(self.walk(*id, s));
+                walked = self.walk_view(*id, s);
                 &walked
             }
             _ => v,
@@ -6255,10 +6313,10 @@ impl KnowledgeBase {
             return UnifyOutcome::Delay;
         }
         // Step 3: a flex var on either side ⇒ occurs-checked bind-and-stop.
-        if let Some(vid) = self.unify_flex_var(&a) {
+        if let Some(vid) = self.value_global_var(&a) {
             return self.unify_bind(vid, b, work);
         }
-        if let Some(vid) = self.unify_flex_var(&b) {
+        if let Some(vid) = self.value_global_var(&b) {
             return self.unify_bind(vid, a, work);
         }
         // Steps 4–6: both heads concrete — structural compare + recurse.
@@ -6269,7 +6327,7 @@ impl KnowledgeBase {
     /// `?v <=> f(?v)` fails (no cyclic term — "know errors early"); `?v <=> ?v`
     /// binds nothing. The bound value's interior stays unreduced.
     fn unify_bind(&mut self, vid: VarId, other: Value, work: &mut Substitution) -> UnifyOutcome {
-        if self.unify_flex_var(&other) == Some(vid) {
+        if self.value_global_var(&other) == Some(vid) {
             return UnifyOutcome::Ok; // ?v <=> ?v
         }
         if self.occurs_in_value(vid, &other, work) {
@@ -6357,18 +6415,6 @@ impl KnowledgeBase {
         }
     }
 
-    /// The flex (`Global`) var id at a σ-walked value head across all carriers —
-    /// `Value::Term(Var::Global)`, `Value::Node(Expr::Var(Global))`, and the
-    /// value-level `Value::Var(Global)` (WI-109). The unify-side companion of
-    /// [`Self::value_global_var`], which omits the `Value::Var` arm (eq/neq
-    /// never meet one); unify must, since a bound child can ride as `Value::Var`.
-    fn unify_flex_var(&self, v: &Value) -> Option<VarId> {
-        match v {
-            Value::Var(Var::Global(vid)) => Some(*vid),
-            _ => self.value_global_var(v),
-        }
-    }
-
     /// WI-633 — the STRUCTURAL unifier behind the discrimination-tree match
     /// ([`Substitution::bind_value_unifying`], the `resolve_leaf` re-bind
     /// path). Rule-head matching is unification: a repeated head var imposes
@@ -6398,7 +6444,7 @@ impl KnowledgeBase {
         let a = self.chase_value(a.clone(), work);
         let b = self.chase_value(b.clone(), work);
         // Flex `Global` on either side: occurs-checked bind-and-stop.
-        let (fa, fb) = (self.unify_flex_var(&a), self.unify_flex_var(&b));
+        let (fa, fb) = (self.value_global_var(&a), self.value_global_var(&b));
         if let (Some(x), Some(y)) = (fa, fb) {
             if x == y {
                 return true; // ?v against ?v — nothing to bind
@@ -6475,26 +6521,14 @@ impl KnowledgeBase {
         }
     }
 
-    /// Resolve a value's head var through σ (no structural descent) — the
-    /// value-level analogue of [`Self::walk`]. A flex var bound in `work` is
-    /// replaced by its binding, chased transitively; a self-referential binding
-    /// or an unbound var stops the chase. Everything else is returned unchanged.
+    /// Resolve a value's head var through σ (no structural descent): a flex var
+    /// bound in `work` is replaced by its chain's end
+    /// ([`KnowledgeBase::chase_var`]); an unbound var, and everything else, is
+    /// returned unchanged.
     fn chase_value(&self, v: Value, work: &Substitution) -> Value {
-        let mut cur = v;
-        loop {
-            let Some(vid) = self.unify_flex_var(&cur) else {
-                return cur;
-            };
-            match work.resolve_as_value(vid) {
-                Some(bound) => {
-                    let bound = bound.clone();
-                    if self.unify_flex_var(&bound) == Some(vid) {
-                        return bound; // ?v ↦ ?v
-                    }
-                    cur = bound;
-                }
-                None => return cur, // unbound flex var
-            }
+        match self.value_global_var(&v) {
+            Some(vid) => self.chase_var(vid, work).map_or(v, Clone::clone),
+            None => v,
         }
     }
 
@@ -6507,7 +6541,7 @@ impl KnowledgeBase {
     pub(crate) fn occurs_in_value(&self, vid: VarId, value: &Value, work: &Substitution) -> bool {
         // A var head: identity hit, or chase its binding (so `?w ↦ f(?v)` is
         // caught through `?v <=> ?w`).
-        if let Some(w) = self.unify_flex_var(value) {
+        if let Some(w) = self.value_global_var(value) {
             if w == vid {
                 return true;
             }
@@ -6515,7 +6549,7 @@ impl KnowledgeBase {
                 Some(bound) => {
                     let bound = bound.clone();
                     // Self-referential binding — no further structure to chase.
-                    if self.unify_flex_var(&bound) == Some(w) {
+                    if self.value_global_var(&bound) == Some(w) {
                         false
                     } else {
                         self.occurs_in_value(vid, &bound, work)
@@ -6643,19 +6677,23 @@ impl KnowledgeBase {
         }
     }
 
-    /// The `Var::Global` id of a σ-walked `Value`, if it is one — `Term::Var`
-    /// or `Expr::Var` occurrence leaf. Used to decide whether a result arg is
-    /// an unbound var to bind.
-    fn value_global_var(&self, v: &Value) -> Option<VarId> {
-        match v {
-            Value::Term { id: t, .. } => match self.terms.get(*t) {
-                Term::Var(Var::Global(vid)) => Some(*vid),
-                _ => None,
-            },
-            Value::Node(occ) => match occ.as_expr() {
-                Some(Expr::Var(Var::Global(vid))) => Some(*vid),
-                _ => None,
-            },
+    /// The flex (`Global`) var a σ-walked `Value` NAMES, on every carrier —
+    /// `Value::Term(Term::Var)`, the value-level `Value::Var` (WI-109), and an
+    /// `Expr::Var` occurrence leaf — or `None` for anything concrete and for a
+    /// `Rigid` / `DeBruijn` var (a constant here). THE ONE OWNER of "which
+    /// variable is this?" (WI-20260905-N20EZ): it folded in the unify-side
+    /// `unify_flex_var` — eq/neq now DO meet a `Value::Var`, since an answer link
+    /// rides that carrier — and `subst.rs`'s merge-on-alias copy, and it is what
+    /// [`KnowledgeBase::chase_var`], `bind_compressed`'s path-compression repoint,
+    /// and the resolver's caller-var filter all ask, so "does this binding name
+    /// var `v`" has one spelling. Reads through `TermView::index_var`, the
+    /// carrier-agnostic var extractor, which also recognizes a var riding as a
+    /// `Value::Node(Expr::Var)` — what a fact-match `tree_subst` non-`Term`
+    /// binding carries, and what a `Term`/`Var`-only match would silently read
+    /// as concrete (dropping a WI-502 wakeup).
+    pub(crate) fn value_global_var(&self, v: &Value) -> Option<VarId> {
+        match v.index_var(self) {
+            Some(Var::Global(vid)) => Some(vid),
             _ => None,
         }
     }
@@ -9464,7 +9502,12 @@ impl KnowledgeBase {
 
     /// Collect all unbound VarIds in a term, walking through the substitution.
     fn collect_unbound_vars(&self, term: TermId, subst: &Substitution, out: &mut Vec<VarId>) {
-        let walked = self.walk(term, subst);
+        let walked = match self.walk_view(term, subst) {
+            Value::Term { id, .. } => id,
+            // The chain ended off the store (N20EZ: an answer link's `Value::Var`
+            // / `Value::Entity`; a scalar; a `Node`): the value twin reads it.
+            other => return self.collect_unbound_vars_value(&other, subst, out),
+        };
         match self.terms.get(walked) {
             Term::Var(Var::Global(vid)) => {
                 if !out.contains(vid) {
@@ -9484,6 +9527,45 @@ impl KnowledgeBase {
                 }
                 for &(_, arg) in named_args.iter() {
                     self.collect_unbound_vars(arg, subst, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The `Value` twin of [`Self::collect_unbound_vars`]: the unbound `Global`
+    /// vars reachable from `v` under σ, on every carrier. An answer link is a
+    /// `Value::Entity` spine over `Value::Var` leaves (N20EZ), and its leaves
+    /// count exactly as the rebuilt term's did; a `Node` descends through the
+    /// occurrence walker; a scalar carries none.
+    fn collect_unbound_vars_value(
+        &self,
+        v: &Value,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        let push = |out: &mut Vec<VarId>, w: VarId| {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        };
+        match v {
+            Value::Term { id: t, .. } => self.collect_unbound_vars(*t, subst, out),
+            Value::Var(Var::Global(vid)) => match self.chase_var(*vid, subst) {
+                None => push(out, *vid),
+                // `chase_var` stops at a var only when it is unbound.
+                Some(end) => match self.value_global_var(end) {
+                    Some(w) => push(out, w),
+                    None => self.collect_unbound_vars_value(end, subst, out),
+                },
+            },
+            Value::Node(occ) => self.collect_unbound_vars_node(occ, subst, out),
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
+                for c in pos.iter() {
+                    self.collect_unbound_vars_value(c, subst, out);
+                }
+                for (_, c) in named.iter() {
+                    self.collect_unbound_vars_value(c, subst, out);
                 }
             }
             _ => {}
@@ -9731,30 +9813,15 @@ impl KnowledgeBase {
         false
     }
 
-    /// Mirror of `walk`'s var-detection without needing a `TermId`: chase a
-    /// `Global` var through `Value::Term` bindings and report whether the chain
-    /// ends at a variable (unbound, rigid, or DeBruijn) rather than a concrete
-    /// term. Self-referential bindings terminate the chase.
+    /// Does `vid`'s chain under σ end at a variable (unbound, rigid, or DeBruijn)
+    /// rather than a concrete value? On every carrier
+    /// ([`KnowledgeBase::chase_var`]): an answer link's `Value::Var` alias is
+    /// followed to ITS end (N20EZ) — the former `Value::Term`-only chase read that
+    /// alias as concrete, and the delay pre-check under-delayed on it.
     fn vid_resolves_to_var(&self, vid: VarId, subst: &Substitution) -> bool {
-        let mut cur = vid;
-        loop {
-            match subst.resolve_as_value(cur) {
-                None => return true,
-                Some(Value::Term { id: t, .. }) => match self.terms.get(*t) {
-                    Term::Var(Var::Global(w)) => {
-                        if *w == cur {
-                            return true; // self-referential var binding
-                        }
-                        cur = *w;
-                    }
-                    Term::Var(_) => return true,
-                    _ => return false,
-                },
-                // Bound to a concrete non-`Term` carrier (a `Value::Node`
-                // occurrence, a scalar) — the chain ends at something concrete,
-                // NOT a variable.
-                Some(_) => return false,
-            }
+        match self.chase_var(vid, subst) {
+            None => true,
+            Some(end) => self.value_is_unbound_var(end),
         }
     }
 
@@ -9790,16 +9857,30 @@ impl KnowledgeBase {
         }
         match arg.as_expr() {
             Some(Expr::Var(Var::Global(vid))) => match subst.resolve_as_value(*vid) {
-                Some(Value::Term { id: t, .. }) => self.collect_unbound_vars(*t, subst, out),
-                // Bound to a concrete non-`Term` carrier (a `Value::Node`) —
-                // the var IS bound, so it is not collected as unbound.
-                Some(_) => {}
+                // Bound: its binding's own unbound leaves count, on any carrier —
+                // an answer link is a `Value::Entity` spine over `Value::Var`
+                // leaves (N20EZ), and those leaves counted when the link was a
+                // rebuilt term. (A `Node`-bound var formerly contributed nothing
+                // while a `Term`-bound one descended; the two now read alike.)
+                Some(bound) => {
+                    let bound = bound.clone();
+                    self.collect_unbound_vars_value(&bound, subst, out)
+                }
                 None => {
                     if !out.contains(vid) {
                         out.push(*vid);
                     }
                 }
             },
+            // The carrier `for_each_child` cannot descend: a spliced payload is a
+            // `Value`, not occurrence children, and since N20EZ every compound
+            // answer link is spliced. Hand it to the value twin so its unbound
+            // leaves are counted — under-counting here UNDER-DELAYS the caller-var
+            // pre-check, the exact failure class WI-322 closed for type-args.
+            Some(Expr::Spliced(v)) => {
+                let v = v.clone();
+                self.collect_unbound_vars_value(&v, subst, out);
+            }
             Some(expr) => {
                 node_occurrence::for_each_child(expr, |c| {
                     self.collect_unbound_vars_node(c, subst, out)
@@ -9869,10 +9950,10 @@ impl KnowledgeBase {
     /// over the type spine (the WI-378 invariant):
     /// - `Value::Term` is chased through the existing [`Self::collect_unbound_vars`]
     ///   term walker (the WI's stated mechanism), which follows var→var alias
-    ///   chains so a type-arg aliased to a caller var is found. (A var bound to a
-    ///   non-`Term` carrier is conservatively reported here — `walk` stops at it —
-    ///   matching the term walker used by the value-arg path; at worst an
-    ///   over-delay, never a missed one.)
+    ///   chains so a type-arg aliased to a caller var is found — on every
+    ///   carrier since N20EZ: a var bound off the store descends its binding's
+    ///   own unbound leaves (`collect_unbound_vars_value`), as the value-arg
+    ///   path does.
     /// - `Value::Node` (a denoted / value-in-type spine) descends via the
     ///   occurrence walker [`Self::collect_unbound_vars_node`] — the loader twin
     ///   likewise descends `Value::Node` (via `collect_type_or_expr_node_vars`);
@@ -10192,16 +10273,16 @@ mod tests {
         let mut s = Substitution::new();
 
         // x → y
-        s.bind_compressed([(vx, var_y)], &kb.terms);
+        s.bind_compressed([(vx, Value::term(var_y))], &kb);
         assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(var_y));
 
         // y → z: should also compress x → z
-        s.bind_compressed([(vy, var_z)], &kb.terms);
+        s.bind_compressed([(vy, Value::term(var_z))], &kb);
         assert_eq!(s.resolve_as_value(vy).map(|v| v.expect_term()), Some(var_z));
         assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(var_z));
 
         // z → 99: should compress x → 99 and y → 99
-        s.bind_compressed([(vz, val)], &kb.terms);
+        s.bind_compressed([(vz, Value::term(val))], &kb);
         assert_eq!(s.resolve_as_value(vz).map(|v| v.expect_term()), Some(val));
         assert_eq!(s.resolve_as_value(vy).map(|v| v.expect_term()), Some(val));
         assert_eq!(s.resolve_as_value(vx).map(|v| v.expect_term()), Some(val));
@@ -13151,14 +13232,22 @@ mod tests {
     /// what a compile-time macro expansion (WI-722) binds a param to — names the
     /// same symbol a hash-consed `Term::Const(String)` does.
     ///
-    /// CONTROL, MEASURED by reverting `builtin_lookup_symbol` to its
-    /// `carrier_term` + `Term::Const(String)` read: this test PANICS there rather
-    /// than failing an assert. `try_occurrence_to_term` has no `Expr::Spliced`
-    /// arm, so reify hits its `debug_assert!(false)` — and in a release build
-    /// falls through to `Term::Bottom`, i.e. 0 solutions, indistinguishable from
-    /// `builtin_lookup_symbol_fails_for_unknown` above. That is why this test
-    /// names a symbol that DOES exist: a green "no solutions" is the exact shape
-    /// the defect wore.
+    /// CONTROL — RE-MEASURED, and it CHANGED. It used to read: reverting
+    /// `builtin_lookup_symbol` to its `carrier_term` + `Term::Const(String)` read
+    /// made this test PANIC, because `try_occurrence_to_term` had no
+    /// `Expr::Spliced` arm and reify hit its `debug_assert!(false)` (⊥ →
+    /// `Term::Bottom` → 0 solutions in release, indistinguishable from
+    /// `builtin_lookup_symbol_fails_for_unknown` above). WI-20260905-N20EZ GAVE
+    /// `try_occurrence_to_term` THAT ARM (a spliced answer-link spine has to lower
+    /// through the one value→term boundary), so the reverted reader now lowers
+    /// `Spliced(Value::Str)` to a real `Term::Const(String)` and finds the symbol:
+    /// the old control no longer fires, and this row would pass either way.
+    ///
+    /// So it is kept as a PIN, not as a discriminator: it still catches a
+    /// regression that breaks BOTH the content read and the lowering, and it still
+    /// names a symbol that DOES exist so a "no solutions" green cannot hide one.
+    /// A test that discriminates the content read alone needs a payload with NO
+    /// term form — that is the shape to add if this reader is ever reworked.
     ///
     /// The bare `Value::Str` carrier is NOT tested here, deliberately: probing it
     /// showed a value-carried goal never reaches builtin dispatch at all, so a
@@ -14233,6 +14322,10 @@ mod tests {
     ///
     /// Peano naturals: nat(zero()), nat(succ(?n)) :- nat(?n)
     /// Query: nat(?x) should yield zero(), succ(zero()), succ(succ(zero())), ...
+    ///
+    /// Reads its answers through `views_structurally_equal` since
+    /// WI-20260905-N20EZ, so it PASSES EITHER WAY on the link carrier (a rebuilt
+    /// term before, an `Entity` spine now) — what it measures is the renaming.
     #[test]
     fn search_stream_infinite_rule() {
         let mut kb = KnowledgeBase::new();
@@ -14298,44 +14391,38 @@ mod tests {
 
         assert_eq!(solutions.len(), 4, "should get 4 solutions");
 
+        // Answers read carrier-neutrally: a query var matched against a compound
+        // head subterm (`succ(?n)`) links as a `Value::Entity` spine since
+        // WI-20260905-N20EZ (a rebuilt term before), and `views_structurally_equal`
+        // compares the two carriers as the one structure they are.
+        let expect = |kb: &mut KnowledgeBase, sol: &Solution, want: TermId, what: &str| {
+            let got = kb.answer_binding(vx, &sol.subst).expect("?x binds");
+            assert!(
+                crate::kb::term_view::views_structurally_equal(kb, &got, &Value::term(want)),
+                "{what}; got {got:?}"
+            );
+        };
         // Solution 0: nat(zero()) → ?x = zero()
-        let r0 = kb.reify(var_x, &solutions[0].subst).expect_term();
-        assert_eq!(r0, zero_term, "first solution should be zero()");
-
+        expect(&mut kb, &solutions[0], zero_term, "first solution should be zero()");
         // Solution 1: nat(succ(zero())) → ?x = succ(zero())
-        let r1 = kb.reify(var_x, &solutions[1].subst).expect_term();
-        match kb.get_term(r1) {
-            Term::Fn {
-                functor, pos_args, ..
-            } => {
-                assert_eq!(*functor, succ_sym);
-                assert_eq!(pos_args.len(), 1);
-                assert_eq!(pos_args[0], zero_term, "succ arg should be zero()");
-            }
-            other => panic!("expected succ(zero()), got {:?}", other),
-        }
-
+        let succ_zero = kb.alloc(Term::Fn {
+            functor: succ_sym,
+            pos_args: SmallVec::from_elem(zero_term, 1),
+            named_args: SmallVec::new(),
+        });
+        expect(&mut kb, &solutions[1], succ_zero, "second solution should be succ(zero())");
         // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
-        let r2 = kb.reify(var_x, &solutions[2].subst).expect_term();
-        match kb.get_term(r2) {
-            Term::Fn {
-                functor, pos_args, ..
-            } => {
-                assert_eq!(*functor, succ_sym);
-                match kb.get_term(pos_args[0]) {
-                    Term::Fn {
-                        functor: f2,
-                        pos_args: p2,
-                        ..
-                    } => {
-                        assert_eq!(*f2, succ_sym);
-                        assert_eq!(p2[0], zero_term, "inner succ arg should be zero()");
-                    }
-                    other => panic!("expected succ(zero()), got {:?}", other),
-                }
-            }
-            other => panic!("expected succ(succ(zero())), got {:?}", other),
-        }
+        let succ_succ_zero = kb.alloc(Term::Fn {
+            functor: succ_sym,
+            pos_args: SmallVec::from_elem(succ_zero, 1),
+            named_args: SmallVec::new(),
+        });
+        expect(
+            &mut kb,
+            &solutions[2],
+            succ_succ_zero,
+            "third solution should be succ(succ(zero()))",
+        );
     }
 
     /// Regression: de Bruijn body substitution with multi-occurrence variable.

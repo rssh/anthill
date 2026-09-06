@@ -12,6 +12,7 @@
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
@@ -173,33 +174,27 @@ fn reflect_term_field_keeps_var_for_omitted_optional() {
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert_eq!(sols.len(), 1, "get_pat must find the one Holder");
 
-    // Chase ?p's binding to the stored quoted pattern term (skip var→var links).
-    let mut cur = p_vid;
-    let pat = loop {
-        let bound = sols[0]
-            .subst
-            .iter_terms()
-            .find(|(v, _)| *v == cur)
-            .map(|(_, t)| t)
-            .expect("?p (or its chain) must be bound to the stored pattern");
-        match kb.get_term(bound) {
-            Term::Var(Var::Global(v)) => cur = *v,
-            _ => break bound,
-        }
-    };
+    // ?p's answer, σ fully applied. Read through `TermView`: the stored fact's
+    // `note` fill is a head Global the resolver freshens per match, so the answer
+    // arrives as a `Value::Entity` spine over a `Value::Var` leaf since
+    // WI-20260905-N20EZ (a rebuilt term before) — the same pattern on either
+    // carrier, and a carrier-specific read would measure the carrier, not the fill.
+    let pat = kb
+        .answer_binding(p_vid, &sols[0].subst)
+        .expect("?p must be bound to the stored pattern");
     // The bound pattern is `Thing(id: "z", note: <fill>)`; the omitted `note`
     // must be a var (pattern), not `Ref(none)` (value).
-    match kb.get_term(pat) {
-        Term::Fn { named_args, .. } => {
-            let named_args = named_args.clone();
-            assert!(
-                named_args
-                    .iter()
-                    .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(_))),
-                "the quoted pattern's omitted optional must stay a var, not none(); \
-                 got named args {named_args:?}"
-            );
-        }
-        other => panic!("expected the quoted `Thing(...)` Fn, got {other:?}"),
-    }
+    let keys = pat.named_keys(&kb);
+    assert!(
+        !keys.is_empty(),
+        "expected the quoted `Thing(...)` application, got {pat:?}"
+    );
+    assert!(
+        keys.iter().any(|k| {
+            pat.named_arg(&kb, *k)
+                .is_some_and(|a| kb.value_is_unbound_var(&a.to_value()))
+        }),
+        "the quoted pattern's omitted optional must stay a var, not none(); \
+         got {pat:?}"
+    );
 }

@@ -2194,6 +2194,13 @@ fn render_value(
             printer.write_symbol_ref(*sym, &mut buf);
             buf
         }
+        // Same owner for the other leaf: an unbound answer is a `Value::Var` since
+        // WI-20260905-N20EZ, and must print `?_` exactly as its `Term::Var` twin.
+        Value::Var(var) => {
+            let mut buf = String::new();
+            printer.write_var(*var, &mut buf);
+            buf
+        }
         other => format!("{other:?}"),
     }
 }

@@ -1152,8 +1152,16 @@ fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     // (via the cloned Rc) while mutably borrowing the KB.
     let arena = interp.subst_arena();
     let kb = interp.kb_mut();
-    let applied = arena.with_subst(&handle, |s| kb.apply_subst(tid, s));
-    Ok(Value::term(applied))
+    // Carrier-neutral σ-application (WI-20260905-N20EZ): an answer link is a
+    // `Value::Var` alias or an `Entity` spine, which the term-world `apply_subst`
+    // KEPT — handing back the query var untouched as if σ bound nothing. The op's
+    // result is typed `Term`, so the reified value lowers to one here: this is a
+    // genuine KB boundary, where interning is the point. A carrier with no term
+    // form is a loud error, not a silently kept variable.
+    let applied = arena.with_subst(&handle, |s| kb.reify(tid, s));
+    let lowered = anthill_core::kb::node_occurrence::value_to_term(kb, &applied)
+        .map_err(|e| EvalError::Internal(format!("Substitution.apply: the result has no term form: {e:?}")))?;
+    Ok(Value::term(lowered))
 }
 
 /// `Substitution.compose(s1: Substitution, s2: Substitution, kb: KB) -> Substitution`.
@@ -1188,13 +1196,13 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
             let mut result = anthill_core::kb::subst::Substitution::new();
             // (WI-569: `bindings` is an `imbl::HashMap` — persistent, no `reserve`.)
             for (var, val) in s1.bindings.iter() {
-                let new_val = match val {
-                    Value::Term { id: tid, .. } => Value::term(kb.apply_subst(*tid, s2)),
-                    // WI-547: a bare value-level var binding chases through s2
-                    // (reify_value resolves a bound var, recursively).
-                    Value::Var(_) => kb.reify_value(val, s2),
-                    other => other.clone(),
-                };
+                // s2 applied on EVERY carrier (N20EZ): a `Term` binding through the
+                // carrier-neutral `reify` (the term-world `apply_subst` kept a
+                // nested var whose s2-binding is a `Value::Var` alias or an `Entity`
+                // link), a bare `Value::Var` chased (WI-547), an `Entity` / `Tuple`
+                // link through its children, a `Node` in place — `reify_value` is
+                // the one owner of all four, so the former arms collapse onto it.
+                let new_val = kb.reify_value(val, s2);
                 result.bindings.insert(*var, new_val);
             }
             for (var, val) in s2.bindings.iter() {
@@ -1242,17 +1250,24 @@ fn subst_bindings(
             .collect::<Vec<_>>()
     });
     let kb = interp.kb_mut();
-    let pairs: Vec<Value> = entries
-        .into_iter()
-        .map(|(vid, val)| {
-            let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
-            make_entity(
-                kb,
-                syms.pair,
-                vec![(syms.f_fst, Value::term(var_tid)), (syms.f_snd, val)],
-            )
-        })
-        .collect();
+    let mut pairs: Vec<Value> = Vec::with_capacity(entries.len());
+    for (vid, val) in entries {
+        let var_tid = kb.alloc(CoreTerm::Var(Var::Global(vid)));
+        // The pair's `snd` is typed `Term`: lower the binding to one at this
+        // boundary (N20EZ — an unbound answer rides `Value::Var`, a compound link an
+        // `Entity` spine; both have a term form). A carrier with none is a loud
+        // error here rather than a `TypeMismatch` at the first `Term` op downstream.
+        let snd = anthill_core::kb::node_occurrence::value_to_term(kb, &val).map_err(|e| {
+            EvalError::Internal(format!(
+                "Substitution.bindings: a binding has no term form: {e:?}"
+            ))
+        })?;
+        pairs.push(make_entity(
+            kb,
+            syms.pair,
+            vec![(syms.f_fst, Value::term(var_tid)), (syms.f_snd, Value::term(snd))],
+        ));
+    }
     Ok(build_list_value(syms, pairs))
 }
 

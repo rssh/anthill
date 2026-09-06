@@ -470,15 +470,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             return;
         };
         match expr {
-            Expr::Var(Var::Global(vid)) => {
-                buf.push('?');
-                buf.push_str(self.view.sym_name(vid.name()));
-            }
-            Expr::Var(Var::DeBruijn(n)) => buf.push_str(&format!("?#{n}")),
-            Expr::Var(Var::Rigid(vid)) => {
-                buf.push('!');
-                buf.push_str(self.view.sym_name(vid.name()));
-            }
+            Expr::Var(var) => self.write_var(*var, buf),
             Expr::Const(lit) => self.write_literal(lit, buf),
             // WI-714: a macro-spliced pre-built value generally has no surface syntax —
             // it appears in a post-expansion op body, never in round-tripped source —
@@ -1032,17 +1024,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
     fn write_term(&self, id: TermId, buf: &mut String) {
         match self.view.term(id) {
             Term::Const(lit) => self.write_literal(lit, buf),
-            Term::Var(Var::Global(vid)) => {
-                buf.push('?');
-                buf.push_str(self.view.sym_name(vid.name()));
-            }
-            Term::Var(Var::DeBruijn(n)) => {
-                buf.push_str(&format!("?#{n}"));
-            }
-            Term::Var(Var::Rigid(vid)) => {
-                buf.push('!');
-                buf.push_str(self.view.sym_name(vid.name()));
-            }
+            Term::Var(var) => self.write_var(*var, buf),
             Term::Fn {
                 functor,
                 pos_args,
@@ -1248,6 +1230,27 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             .iter()
             .find(|(s, _)| self.view.sym_name(*s) == key)
             .map(|(_, t)| *t)
+    }
+
+    /// The one spelling of a logic variable — `?x` (flex global), `?#n` (De
+    /// Bruijn), `!x` (rigid) — shared by `write_term`'s `Term::Var` arm and the
+    /// CLI's answer renderer for a value-level `Value::Var`. WI-20260905-N20EZ: an
+    /// unbound answer rides that carrier now (the resolver's fresh var is no longer
+    /// an interned term), and the renderer's `Debug` fallback printed
+    /// `Var(Global(VarId { .. }))` where `?_` was the answer — the same cross-carrier
+    /// divergence `write_symbol_ref` exists to prevent, one leaf over.
+    pub fn write_var(&self, var: Var, buf: &mut String) {
+        match var {
+            Var::Global(vid) => {
+                buf.push('?');
+                buf.push_str(self.view.sym_name(vid.name()));
+            }
+            Var::DeBruijn(n) => buf.push_str(&format!("?#{n}")),
+            Var::Rigid(vid) => {
+                buf.push('!');
+                buf.push_str(self.view.sym_name(vid.name()));
+            }
+        }
     }
 
     /// Render a bare symbol reference — the `Term::Ref` arm of [`Self::write_term`]

@@ -69,20 +69,20 @@
 //! `Expr::ApplyWithin` heads `Opaque` and a goal-position reader for it does not
 //! exist. Both halves are pinned by tests above.
 //!
-//! ## THREE BOUNDARIES, MEASURED AND PINNED BELOW — not delivered, not silent
+//! ## TWO BOUNDARIES, MEASURED AND PINNED BELOW — not delivered, not silent
 //!
 //! Each has a test that asserts what the code ACTUALLY does, so closing it has to
 //! come here and change the assertion:
 //!
-//!  * **`a_clause_dictionary_does_not_cross_a_rule_boundary`** — the CHECK mode
-//!    (acceptance (c)) is unreachable from any surface spelling. `unify` performs
-//!    bind and check as one operation, so the arm is not dead code; but nothing can
-//!    pre-bind `out`. A second `require` on one spec base is refused by the guard
-//!    tier (needs the un-stripped spec, channel doc §10 item 1), and a dictionary
-//!    passed through a rule head does NOT reach the callee's own goal — MEASURED:
-//!    the callee's variable is a fresh unbound `Global`, the caller's binding riding
-//!    in `answer_links`. Reaching it is the automatic call-site synthesis (channel
-//!    doc §5) plus §10 item 3.
+//!  * **Acceptance (c) is DELIVERED, by WI-20260905-N20EZ** —
+//!    `a_clause_dictionary_crosses_a_rule_boundary_and_is_checked`. It used to be a
+//!    pinned boundary ("a dictionary passed through a rule head does NOT reach the
+//!    callee's own goal"), which was not a boundary of the design but a hole in the
+//!    resolver's goal walk: the caller's `?d`, bound to a non-`Term` dictionary, was
+//!    walked as an unbound var and the callee's head match overwrote it. With every
+//!    carrier σ-applied on the walk, the supplied dictionary reaches the callee's
+//!    `?d = require[…]`, and the CHECK mode fires (WI-860). Its control,
+//!    `…_agrees_with_its_own_carrier`, answers through the supplied dictionary.
 //!  * **`an_unbound_carrier_delays_rather_than_reaching_a_definite_answer`** — acceptance (d).
 //!    The `find_dictionary` goal itself delays correctly, and a woven call whose
 //!    dictionary is unbound now routes to `unify` (which delays on an unevaluated
@@ -417,22 +417,25 @@ fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String,
 
 // ── (c) a supplied dictionary is CHECKED, per WI-860 ───────────────────────
 
-/// BOUNDARY, PINNED — acceptance (c) is NOT delivered, and this test measures why
-/// rather than asserting a capability that is absent.
+/// Acceptance (c) — a SUPPLIED dictionary is CHECKED, per WI-860.
 ///
 /// `read_dictionary_into` performs bind and check as ONE `unify_values` call, so the
-/// check mode is not dead code — it is the same line, taken when `out` is bound. But
-/// nothing in the surface can bind it: a second `require` on one spec base is refused
-/// by the guard tier (it needs the un-stripped spec, channel doc §10 item 1), and a
-/// dictionary handed through a rule head does not reach the callee's own goal.
+/// check mode is the same line, taken when `out` is bound. A second `require` on one
+/// spec base cannot bind it (refused by the guard tier, channel doc §10 item 1); a
+/// dictionary handed through a rule HEAD does.
 ///
-/// MEASURED, and this is the fact the assertion pins: `use` re-derives at ITS OWN
-/// carrier and answers `7`, ignoring the `Other` dictionary the caller passed. The
-/// callee's `?d` is a fresh unbound `Global` at goal time — the caller's binding
-/// rides in `answer_links`, not in the callee's substitution (rustland/CLAUDE.md,
-/// De Bruijn step 4). Were the check reachable here, this would be `[]`.
+/// This row used to PIN the opposite — `use` re-deriving at its own carrier and
+/// answering `7`, "because the callee's `?d` is a fresh unbound Global at goal time".
+/// That was not a boundary of the design but a hole in the resolver's goal walk:
+/// `get` bound the caller's `?d` to the `Other` dictionary — a non-`Term` carrier —
+/// and the term-world walk of the next goal KEPT the var, so `use` matched it as a
+/// wildcard and its head match overwrote the binding (the same drop
+/// WI-20260905-N20EZ's review measured on an `Entity` answer link). With the walk
+/// σ-applying every carrier, the supplied `Other` dictionary reaches `use`'s
+/// `?d = require[Desc[T]]`, DISAGREES with the local `Leaf` row, and the clause
+/// fails — the answer the old doc reserved for exactly this day.
 #[test]
-fn a_clause_dictionary_does_not_cross_a_rule_boundary() {
+fn a_clause_dictionary_crosses_a_rule_boundary_and_is_checked() {
     let ns = "test.wi1040.cross";
     let src = two_carriers(
         ns,
@@ -440,14 +443,34 @@ fn a_clause_dictionary_does_not_cross_a_rule_boundary() {
            rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n  \
            rule answer(?r) :- get(other(), ?d), use(leaf(), ?d, ?r)\n",
     );
+    let got = answers(ns, &src);
+    assert!(
+        got.is_empty(),
+        "the supplied `Other` dictionary must reach `use` and DISAGREE with its local \
+         `Leaf` row (WI-860): no answer. `7` means the caller's binding was dropped at \
+         the rule boundary and `use` re-derived at its own carrier; got {got:?}",
+    );
+}
+
+/// THE CONTROL for the row above, without which `[]` proves nothing: a candidate
+/// DROPPED on the way — a dictionary the WI-636 normalization could not lower, a
+/// spliced link with no term form — also answers `[]`. The same dictionary supplied
+/// from the SAME carrier must agree and answer, so the row above's `[]` is
+/// "checked and disagreed", not "never arrived".
+#[test]
+fn a_clause_dictionary_crossing_a_rule_boundary_agrees_with_its_own_carrier() {
+    let ns = "test.wi1040.cross_agree";
+    let src = two_carriers(
+        ns,
+        "  rule get(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?i)\n  \
+           rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n  \
+           rule answer(?r) :- get(leaf(), ?d), use(leaf(), ?d, ?r)\n",
+    );
     assert_eq!(
         answer(ns, &src),
         7,
-        "PINS a boundary, not a capability: a dictionary passed through a rule head \
-         does not reach the callee's `find_dictionary`, so the callee re-derives at \
-         its own carrier. Closing this (call-site synthesis + channel doc \u{00a7}10 item 3) \
-         must change this assertion to `[]`, because the supplied `Other` dictionary \
-         would then DISAGREE with the local `Leaf` row and fail (WI-860)",
+        "the `Leaf` dictionary supplied to `use` agrees with `use`'s own `Leaf` row, \
+         so the check passes and `describe` dispatches through it",
     );
 }
 

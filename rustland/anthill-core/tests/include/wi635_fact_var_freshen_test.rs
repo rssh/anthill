@@ -108,9 +108,11 @@ fn single_match_omitted_field_still_answers_unbound() {
     let sols = kb.resolve(&[g], &ResolveConfig::default());
     assert_eq!(sols.len(), 1, "item(id:42, note:?n) matches the one fact");
     let bound = kb.reify(n, &sols[0].subst);
+    // Carrier-neutral read: the freshened fill is a `Value::Var` since
+    // WI-20260905-N20EZ (a `Value::Term(Term::Var)` before); either is "an unbound
+    // variable", which is what this row pins.
     assert!(
-        matches!(bound, anthill_core::eval::Value::Term { id, .. }
-            if matches!(kb.get_term(id), Term::Var(_))),
+        kb.value_is_unbound_var(&bound),
         "omitted field stays an unbound variable, got {bound:?}"
     );
 }
