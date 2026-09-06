@@ -1,5 +1,5 @@
--- Field: division algebra. Extends Numeric with multiplicative inverse —
--- for every non-zero element `b`, there exists `div(a, b)` satisfying the
+-- Field: division algebra. A commutative ring in which every non-zero element has a
+-- multiplicative inverse — for every non-zero `b` there is a `div(a, b)` satisfying the
 -- inverse law `mul(div(a, b), b) = a`.
 --
 -- `Int64` does NOT satisfy Field: truncated integer division discards
@@ -7,6 +7,127 @@
 -- works over an `EuclideanDomain` instance (`division.anthill`), which is where
 -- `Int64`'s `div` lives; code that wants proper division works over a `Field`
 -- instance (Float approximately, Rational exactly).
+--
+-- IT REQUIRED `Numeric` AND THAT WAS A MATHEMATICAL ERROR, not a tidiness one. `Numeric`
+-- is `Additive` + `Multiplicative` + `requires PartialOrd[T]`, so through it every field
+-- owed an ORDER — and a field has none in general. The two standard counter-examples are
+-- not exotic: the complex numbers admit no order compatible with their arithmetic, and a
+-- finite field `F_p` admits none either. `algebra.anthill` states this rule for the layer
+-- above ("Ring is intentionally Ord-free so non-ordered fields (complex numbers, finite
+-- fields) can satisfy it later if needed") and this sort was the one place breaking it.
+--
+-- MEASURED, and the measurement is a LOAD ERROR rather than an argument. `F_5`, the
+-- integers mod 5, backing `add`/`neg`/`zero`/`mul`/`one`/`eq`/`recip`/`div` and providing
+-- no order at all, was refused:
+--
+--   'test.f5.F5' provides 'anthill.prelude.Field', which requires
+--   'anthill.prelude.Numeric', but 'test.f5.F5' does not provide 'anthill.prelude.Numeric'
+--
+-- The carrier is a field by every law this sort states; what it lacked was the comparison
+-- surface `Numeric` carries for its CONSUMERS' benefit.
+-- `algebra_spec_test::a_field_needs_no_order` is that carrier, and it and
+-- `a_field_extension_is_a_vector_space_over_the_base_field` are the two rows that fail
+-- when the two `requires` lines below are backed out to `requires Numeric[T]`.
+--
+-- SO THE REQUIREMENT IS `Ring`, WHICH IS THE STANDARD DEFINITION: a field is a
+-- commutative ring with 1 in which every non-zero element has a multiplicative inverse.
+-- `Ring` is exactly that base — `provides Additive[T]` and `provides Multiplicative[T]`
+-- for the two operations, plus the two laws no single category can state (`mul_comm`,
+-- and `distrib`, which reads both operations) — and it is Ord-free by construction,
+-- which is the property `Numeric` did not have. `PartialEq` is written out beside it
+-- because the guards below spell `eq` and `neq` (`:- eq(a, 0)`, `:- neq(?b, 0)`), and it
+-- is the ONE thing the `Numeric` chain was legitimately supplying, via `PartialOrd
+-- requires PartialEq[T]`. Dropping `Numeric` without writing it out would have left every
+-- guard in this file reading an `eq` no carrier owed.
+--
+-- THE ASYMMETRY WITH `EuclideanDomain` IS NOW MEANINGFUL rather than accidental. That
+-- sibling keeps `requires Numeric[T]` and should: its `constraint mod_nonneg` reads `gt`,
+-- so it genuinely consumes the order. The branch that reads an order requires the bundle
+-- that carries one; the branch that reads none does not.
+--
+-- WHAT REQUIRING `Ring` BUYS, and the reason it is worth a cross-namespace `requires`:
+-- A FIELD IS NOW A RING, so a field can be the SCALAR of a vector space without saying so
+-- twice. `algebra.VectorSpace` declares `requires Ring[F]`, and a FIELD EXTENSION L/K is
+-- exactly the statement that L is a K-vector space — so an extension is the first thing
+-- that wants a field and a ring to be the same claim. Stated precisely, because the two
+-- halves have different weights and only one of them was a hard block:
+--
+--   * THE HARD BLOCK, measured, was the ORDER — the refusal quoted above, raised for the
+--     extension `L` as well as for its base. An extension over a non-ordered base was
+--     therefore unwritable at all. Over an ORDERED base it was writable before this
+--     change, and that is stated rather than glossed: the defect was never "no extension
+--     loads".
+--   * THE SECOND HALF is redundancy rather than refusal. `Field` did not imply `Ring`, so
+--     every carrier in an extension had to write `provides Ring[…]` by hand beside its
+--     `Field` row to reach `VectorSpace` — two rows for one mathematical fact, and the
+--     pair can be written inconsistently. That is the same argument `arithmetic.anthill`
+--     makes for `provides` over `requires`.
+--
+-- THE COST OF THE CROSS-NAMESPACE `requires`, MEASURED, because it is a real one and it
+-- is not zero. A `requires` reaches the target's SIBLINGS by design — WI-1089's rule,
+-- restated by `wi_n2865_provision_edge_scope_test::a_requires_still_reaches_the_targets_siblings`
+-- — and N2865 stopped the enclosing chain on a `provides` edge only, recording the
+-- `requires` residual as deliberate rather than fixing it. So this line puts
+-- `anthill.prelude.algebra`'s names in reach of every consumer that `requires Field`, and
+-- a consumer with its own top-level `Ring` now gets
+-- `ambiguous symbol 'Ring' ... candidates ["anthill.prelude.algebra.Ring", "Ring"]`.
+--
+-- IT IS A WIDENING OF AN EXISTING HAZARD, NOT A NEW ONE, and the SIZE of the widening is
+-- what decided it. `Field` already sits in `anthill.prelude`, so `requires Field` already
+-- reaches every name in that namespace. COUNTED, by declaring a top-level sort of each
+-- one-segment prelude name beside a `requires Field[T]` and reading the load:
+--
+--   69 of 75  `anthill.prelude` names ALREADY shadowed a consumer's own sort of that name
+--    3 of 75  did not (`Bool`, `String`, and `Field` itself, which the consumer IMPORTS —
+--             a local alias wins before the parent walk ever runs, §8.6 step 2)
+--    3 of 75  fail for an unrelated reason (`Int64`, `Float`, `BigInt` are host-bound)
+--    2 of  2  `anthill.prelude.algebra` names shadow, and BOTH are this line's doing
+--
+-- So the reachable set went from 69 names to 71. That is the whole cost, and it is a
+-- rounding error on a hazard that was already 69 names wide — which is the argument for
+-- spending it, not an argument that it does not exist. The measurement is kept as a
+-- characterization row so it stays visible rather than being rediscovered:
+-- `algebra_spec_test::requiring_ring_across_namespaces_widens_the_sibling_reach`.
+--
+-- THE REPAIR FOR A CONSUMER WHO HITS IT IS ONE LINE, and the census above is what found
+-- it: `Field` itself was among the three names that did NOT collide, because the consumer
+-- IMPORTS `Field`. §8.6 resolves a local import at step 2, before the parent walk runs at
+-- all, so an explicit `import` of the name you meant wins over everything the `requires`
+-- edge dragged in. A consumer with its own `Ring` writes `import my.ns.{Ring}` and the
+-- ambiguity is gone. Qualifying the USE SITE does not help — the collision is on the
+-- unqualified name — so the import is the repair to reach for, not a rename.
+--
+-- THE REAL FIX IS NOT HERE AND IS NOT SMALL. The chain is followed because a `requires`
+-- edge is filed `ImportOrigin::Declaration`, and `parent_edge_stops_enclosing` fires only
+-- when EVERY writer of an edge is a wildcard import, an invocation flag or a `provides`
+-- conversion. Stopping it below a `requires` too was driven and fails exactly ONE row out
+-- of 5,724 — `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`,
+-- which pins that `requires lib.Spec` must reach `lib`'s unrelated sibling `Sib` with no
+-- import. Whether that rule is worth 69 shadowed prelude names is WI-20260906-6BX85's
+-- question, not this file's; the count above is the evidence it was opened with.
+--
+-- WHAT IS STILL MISSING FOR AN EXTENSION, stated so this is not read as closing the case.
+-- `VectorSpace[V = L, F = K]` says L is a K-module; it does NOT say K is a SUBFIELD of L.
+-- The embedding K -> L, and the coherence `vec_scale(c, x) = mul(inject(c), x)` that makes
+-- the scalar action agree with L's own multiplication, cannot be stated — this tower has no
+-- notion of a HOMOMORPHISM, and `provides`/`requires` relate a carrier to a SPEC, never a
+-- carrier to another carrier. A field extension needs that second relation.
+-- WI-20260906-CCT6B owns it.
+--
+-- ONE MORE THING THE STANDARD DEFINITION SAYS AND THIS ONE CANNOT. The multiplicative
+-- group of a field is over `F \ {0}`, not over `F`: that is where `recip` is TOTAL and
+-- the inverse law is unconditional. There is no way to name that subset as a carrier, so
+-- the statement is made instead by a PARTIAL `recip` carrying a guarded
+-- `Error[DivisionByZero]` and by laws guarded on `neq(?b, 0)`. That is a faithful
+-- encoding of the same content and is not a defect to repair here; it is the reason this
+-- sort requires the multiplicative MONOID (through `Ring`) rather than a group.
+--
+-- THE LITERALS `0` AND `1` IN THE GUARDS AND LAWS BELOW ARE `Int64`, not `Additive.zero`
+-- and `Multiplicative.one`, and with `Ring` now required the honest spellings are in
+-- scope. They are left alone here because `Divisible.div` and `EuclideanDomain` write the
+-- same `0` and because WI-479's discharge — which drops the `Error[DivisionByZero]` at any
+-- call whose divisor is a literal non-zero — reads that literal. Changing it is a change to
+-- the whole tower's guard vocabulary, not to this file.
 --
 -- WI-20260824-VT8CF — `div` IS NOT DECLARED HERE ANY MORE. It is
 -- `Divisible.div`, and this sort reaches it by `provides` rather than by a second
@@ -23,7 +144,8 @@
 -- carrier here computes, and asserting it would owe every field a `mod` answering 0
 -- where `Float.fmod` answers the IEEE remainder.
 sort anthill.prelude.Field
-  import anthill.prelude.{Numeric, Divisible}
+  import anthill.prelude.{PartialEq, Divisible}
+  import anthill.prelude.algebra.{Ring}
   -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{eq, neq}
@@ -31,7 +153,8 @@ sort anthill.prelude.Field
   import anthill.prelude.Multiplicative.{mul}
 
   sort T = ?
-  requires Numeric[T]
+  requires Ring[T]
+  requires PartialEq[T]
   provides Divisible[T = T]
 
   operation {
