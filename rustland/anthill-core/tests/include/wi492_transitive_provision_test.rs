@@ -30,10 +30,18 @@
 //! `FiniteCollection` therefore does not apply.
 
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const SRC: &str = r#"
@@ -106,7 +114,7 @@ fn filtered_stream_iterator_resolves_transitively() {
     let got = interp
         .call("wi492.transitive.filter_then_map_sum", &[xs])
         .unwrap_or_else(|e| panic!("call filter_then_map_sum: {e:?}"));
-    assert_eq!(expect_int(got), 9);
+    assert_eq!(expect_int(got, interp.kb()), 9);
 }
 
 #[test]
@@ -118,7 +126,7 @@ fn mapped_stream_iterator_resolves_transitively() {
     let got = interp
         .call("wi492.transitive.map_then_size", &[xs])
         .unwrap_or_else(|e| panic!("call map_then_size: {e:?}"));
-    assert_eq!(expect_int(got), 4);
+    assert_eq!(expect_int(got, interp.kb()), 4);
 }
 
 #[test]
@@ -130,7 +138,7 @@ fn iterable_find_on_mapped_stream_resolves_transitively() {
     let got = interp
         .call("wi492.transitive.map_then_find", &[xs])
         .unwrap_or_else(|e| panic!("call map_then_find: {e:?}"));
-    assert_eq!(expect_int(got), 3);
+    assert_eq!(expect_int(got, interp.kb()), 3);
 }
 
 #[test]
@@ -143,7 +151,7 @@ fn iterable_is_empty_on_filtered_stream_resolves_transitively() {
         .call("wi492.transitive.filter_then_is_empty", &[xs])
         .unwrap_or_else(|e| panic!("call filter_then_is_empty: {e:?}"));
     assert_eq!(
-        got.as_bool(),
+        got.literal_bool(interp.kb()),
         Some(true),
         "filtered-out stream is empty; got {got:?}"
     );
@@ -165,5 +173,9 @@ fn iterable_iterator_on_lazy_mapped_stream_resolves_transitively() {
     let got = interp
         .call("wi492.transitive.lazy_map_iterator_count", &[xs])
         .unwrap_or_else(|e| panic!("call lazy_map_iterator_count: {e:?}"));
-    assert_eq!(expect_int(got), 4, "a mapped 4-element list counts to 4");
+    assert_eq!(
+        expect_int(got, interp.kb()),
+        4,
+        "a mapped 4-element list counts to 4"
+    );
 }

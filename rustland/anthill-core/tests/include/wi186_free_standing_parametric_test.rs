@@ -20,6 +20,7 @@
 
 use crate::common::interp_for;
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
 #[test]
 fn id_polymorphic_free_standing_int() {
@@ -35,7 +36,7 @@ end
     let r = interp
         .call("test.wi186_id_int.main", &[])
         .expect("call main");
-    assert_eq!(r.as_int(), Some(42));
+    assert_eq!(r.literal_int64(interp.kb()), Some(42));
 }
 
 #[test]
@@ -78,7 +79,7 @@ end
     let n = interp
         .call("test.wi186_id_two.as_int", &[])
         .expect("as_int");
-    assert_eq!(n.as_int(), Some(7));
+    assert_eq!(n.literal_int64(interp.kb()), Some(7));
     let s = interp
         .call("test.wi186_id_two.as_str", &[])
         .expect("as_str");
@@ -132,7 +133,9 @@ end
             let saw_str = values
                 .iter()
                 .any(|v| matches!(v, Value::Str(s) if s == "wi"));
-            let saw_int = values.iter().any(|v| v.as_int() == Some(186));
+            let saw_int = values
+                .iter()
+                .any(|v| v.literal_int64(interp.kb()) == Some(186));
             assert!(
                 saw_str,
                 "expected to see 'wi' string in pair, got {:?}",

@@ -23,6 +23,7 @@ use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 
 use crate::common::load_kb_with;
+use anthill_core::kb::term_view::TermView;
 
 fn make_nil(kb: &mut KnowledgeBase) -> TermId {
     let nil_sym = kb
@@ -103,7 +104,7 @@ end
         .run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within should reduce");
     assert_eq!(
-        value.as_int(),
+        value.literal_int64(interp.kb()),
         Some(42),
         "produce body should run and return 42"
     );
@@ -169,7 +170,7 @@ end
         .run_with_requirements(aw_term, SmallVec::new())
         .expect("apply_within with dispatching dict should reduce");
     assert_eq!(
-        value.as_int(),
+        value.literal_int64(interp.kb()),
         Some(100),
         "IntFooImpl.foo should run when the dispatching dict's functor is IntFooImpl"
     );

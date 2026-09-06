@@ -36,9 +36,16 @@ fn expect_bool(v: Value) -> bool {
     }
 }
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const EVAL_SRC: &str = r#"
@@ -109,12 +116,12 @@ fn neg_evals_via_numeric_neg() {
     let neg = interp
         .call("test.wi529.eval.t_neg", &[])
         .expect("call t_neg");
-    assert_eq!(expect_int(neg), -7, "neg(7) = -7");
+    assert_eq!(expect_int(neg, interp.kb()), -7, "neg(7) = -7");
 
     let negvar = interp
         .call("test.wi529.eval.t_negvar", &[Value::Int(7)])
         .expect("call t_negvar");
-    assert_eq!(expect_int(negvar), -7, "neg(x) with x=7 is -7");
+    assert_eq!(expect_int(negvar, interp.kb()), -7, "neg(x) with x=7 is -7");
 }
 
 /// Regression (review finding): a namespace may BOTH `import anthill.kernel.{not}`

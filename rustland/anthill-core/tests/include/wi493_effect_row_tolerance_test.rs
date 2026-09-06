@@ -18,9 +18,16 @@
 
 use anthill_core::eval::Value;
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const SRC: &str = r#"
@@ -53,5 +60,5 @@ fn map_then_filter_chain_type_checks_and_evaluates() {
     let got = interp
         .call("wi493.chain.map_then_filter_sum", &[xs])
         .unwrap_or_else(|e| panic!("call map_then_filter_sum: {e:?}"));
-    assert_eq!(expect_int(got), 12);
+    assert_eq!(expect_int(got, interp.kb()), 12);
 }

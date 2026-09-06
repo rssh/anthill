@@ -8,6 +8,7 @@
 //! a `Modify` arena for stateful cells, etc. Replacing a handler replaces
 //! the resource; the interpreter itself holds no effect-specific state.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -92,6 +93,41 @@ fn op_appends_newline(op_name: &str) -> bool {
     op_name == "println" || op_name == "eprintln"
 }
 
+/// The text a Console write handler was handed, read on WHATEVER CARRIER it
+/// arrived on.
+///
+/// WI-20260827-14EV6. This used to be `args.get(1).and_then(Value::as_str)`,
+/// which saw the native `Value::Str` alone — so `println(c, s)` raised
+/// `TypeMismatch { expected: "String", got: "missing or non-String argument" }`
+/// for a string that WAS a string, whenever it reached the handler hash-consed
+/// or as an occurrence. The message was wrong twice: it blamed the argument for
+/// the reader's blindness, and it named "non-String" for a String.
+///
+/// It is reachable from the language, not only from a host `interp.call`:
+/// WI-20260827-3ZNBC stopped normalizing relation columns, so
+/// `println(c, person_name.head.n)` hands this a `Value::Term`. See
+/// `wi14ev6_carrier_neutral_scalar_read_test`.
+///
+/// The two "cannot read it" cases stay APART, because they are different bugs
+/// in the caller: an argument that is absent (a handler bound to an operation
+/// of the wrong arity) and one that denotes something other than a string.
+/// That is the whole reason this is not simply `builtins::str_operand` — the
+/// READ is shared with it (`str_operand_opt`), only the refusals differ.
+///
+/// `Cow`, not `String`: a native `Value::Str` still BORROWS, so `print` in a
+/// loop allocates nothing it did not allocate before. Only a handle carrier
+/// pays a clone, and that carrier could not be printed at all previously.
+fn console_text<'a>(interp: &Interpreter, args: &'a [Value]) -> Result<Cow<'a, str>, EvalError> {
+    let arg = args.get(1).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "String",
+        got: format!("no argument at index 1 (got {} argument(s))", args.len()),
+    })?;
+    super::builtins::str_operand_opt(interp.kb(), arg).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "String",
+        got: format!("a {} that denotes no string", arg.type_name()),
+    })
+}
+
 /// Default `ConsoleOutput` handler — writes to `io::stdout()`. `print` and
 /// `println` differ only in the trailing newline.
 pub fn stdio_console_output_handler() -> EffectHandler {
@@ -106,13 +142,7 @@ pub fn stdio_console_error_handler() -> EffectHandler {
 fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
     let sink = Rc::new(RefCell::new(sink));
     Box::new(move |interp, op_sym, args| {
-        let s = args
-            .get(1)
-            .and_then(Value::as_str)
-            .ok_or_else(|| EvalError::TypeMismatch {
-                expected: "String",
-                got: "missing or non-String argument".into(),
-            })?;
+        let s = console_text(interp, args)?;
         let mut out = sink.borrow_mut();
         out.write_all(s.as_bytes())
             .map_err(|e| EvalError::Internal(e.to_string()))?;
@@ -157,14 +187,8 @@ pub type SharedBuffer = Rc<RefCell<String>>;
 /// corresponding effect-sort qualified name.
 pub fn buffered_console_handler(buf: SharedBuffer) -> EffectHandler {
     Box::new(move |interp, op_sym, args| {
-        let s = args
-            .get(1)
-            .and_then(Value::as_str)
-            .ok_or_else(|| EvalError::TypeMismatch {
-                expected: "String",
-                got: "missing or non-String argument".into(),
-            })?;
-        buf.borrow_mut().push_str(s);
+        let s = console_text(interp, args)?;
+        buf.borrow_mut().push_str(&s);
         if op_appends_newline(interp.kb().local_name_of(op_sym)) {
             buf.borrow_mut().push('\n');
         }

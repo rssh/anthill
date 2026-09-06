@@ -971,23 +971,22 @@ pub fn entity_field(
 
 /// A SCALAR read through the carrier-neutral view: `ViewHead::Const`.
 ///
-/// SAME REASON AS [`entity_field`], one level down. `Value::as_str` / `as_bool` answer
-/// only the `Value::Str` / `Value::Bool` carrier, so a test built on them lets the
-/// carrier decide whether a string is a string — and the same literal also arrives as a
-/// hash-consed `Value::Term` over `Term::Const(Literal::String)` and as a `Value::Node`
-/// over `Expr::Const`. `TermView::head` maps all three onto one `ViewHead::Const`, which
-/// is what the resolver's own comparisons read.
+/// SAME REASON AS [`entity_field`], one level down. The inherent `Value::as_str` /
+/// `as_bool` answered only the `Value::Str` / `Value::Bool` carrier, so a test built on
+/// them let the carrier decide whether a string is a string — and the same literal also
+/// arrives as a hash-consed `Value::Term` over `Term::Const(Literal::String)` and as a
+/// `Value::Node` over `Expr::Const`. `TermView::head` maps all three onto one
+/// `ViewHead::Const`, which is what the resolver's own comparisons read.
+/// WI-20260827-14EV6 DELETED the three inherent accessors, so this family is no longer
+/// a better choice than a narrow one — it is the only one, and these three functions
+/// are now one-line delegations to the `TermView::literal_*` they always duplicated.
 ///
 /// `None` for a non-literal head and for a literal of the wrong TYPE — the caller
 /// asserts, so a wrong-typed value must not read as absent-but-fine.
 #[allow(dead_code)]
 pub fn scalar_str(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
-    use anthill_core::kb::term::Literal;
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    match v.head(kb) {
-        ViewHead::Const(Literal::String(s)) => Some(s),
-        _ => None,
-    }
+    use anthill_core::kb::term_view::TermView;
+    v.literal_string(kb)
 }
 
 /// The `Int64` a value DENOTES, read through the carrier-neutral view — the integer
@@ -996,24 +995,16 @@ pub fn scalar_str(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
 /// so `matches!(col, Value::Int(_))` asks which VARIANT rather than which VALUE.
 #[allow(dead_code)]
 pub fn scalar_int(kb: &KnowledgeBase, v: &eval::Value) -> Option<i64> {
-    use anthill_core::kb::term::Literal;
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    match v.head(kb) {
-        ViewHead::Const(Literal::Int(n)) => Some(n),
-        _ => None,
-    }
+    use anthill_core::kb::term_view::TermView;
+    v.literal_int64(kb)
 }
 
 /// The `Bool` a value DENOTES, read through the carrier-neutral view — the peer of
 /// [`scalar_str`] / [`scalar_int`], for the same reason (WI-20260827-3ZNBC).
 #[allow(dead_code)]
 pub fn scalar_bool(kb: &KnowledgeBase, v: &eval::Value) -> Option<bool> {
-    use anthill_core::kb::term::Literal;
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    match v.head(kb) {
-        ViewHead::Const(Literal::Bool(b)) => Some(b),
-        _ => None,
-    }
+    use anthill_core::kb::term_view::TermView;
+    v.literal_bool(kb)
 }
 
 /// ANY scalar a value denotes, rendered — for the suites that join a row's columns into

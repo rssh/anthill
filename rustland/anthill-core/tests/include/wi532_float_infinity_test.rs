@@ -11,6 +11,7 @@
 //! force_const → registered builtin → `Value::Float`.
 
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
 fn interp(src: &str) -> anthill_core::eval::Interpreter {
     crate::common::interp_for(src)
@@ -76,21 +77,21 @@ end
     assert_eq!(
         i.call("test.wi532.classify.inf_is_infinite", &[])
             .expect("call")
-            .as_bool(),
+            .literal_bool(i.kb()),
         Some(true),
         "isInfinite(infinity) must be true",
     );
     assert_eq!(
         i.call("test.wi532.classify.inf_is_not_finite", &[])
             .expect("call")
-            .as_bool(),
+            .literal_bool(i.kb()),
         Some(false),
         "isFinite(infinity) must be false",
     );
     assert_eq!(
         i.call("test.wi532.classify.nan_is_nan", &[])
             .expect("call")
-            .as_bool(),
+            .literal_bool(i.kb()),
         Some(true),
         "isNaN(nan) must be true",
     );

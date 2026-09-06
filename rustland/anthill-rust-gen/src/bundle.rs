@@ -256,6 +256,7 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
          use anthill_core::eval::{{self, Interpreter, Value}};\n\
          use anthill_core::kb::KnowledgeBase;\n\
          use anthill_core::kb::load::{{self, NullResolver}};\n\
+         use anthill_core::kb::term_view::TermView;\n\
          use anthill_core::parse;\n\n",
         entry = opts.entry_qname,
     ));
@@ -308,7 +309,11 @@ fn run(argv: Vec<String>) -> Result<i64, String> {{
     let args_value = build_string_list(&mut interp, argv);
     let result = interp.call("{entry}", &[args_value])
         .map_err(|e| format!("dispatch {entry}: {{e:?}}"))?;
-    result.as_int().ok_or_else(|| format!("entry returned non-Int: {{}}", result.type_name()))
+    // WI-20260827-14EV6: the entry's answer is read on WHATEVER CARRIER it arrived on.
+    // `Value::as_int` (deleted) saw the native variant alone, so a `main` whose result
+    // came back hash-consed reported "entry returned non-Int" about an Int64.
+    result.literal_int64(interp.kb())
+        .ok_or_else(|| format!("entry returned non-Int: {{}}", result.type_name()))
 }}
 
 // Build a Value::Entity cons-list of strings: cons(s0, cons(s1, ..., nil)).

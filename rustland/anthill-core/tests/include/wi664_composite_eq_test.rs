@@ -11,6 +11,7 @@ use anthill_core::eval::Interpreter;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 
@@ -21,7 +22,7 @@ fn interp(src: &str) -> Interpreter {
 fn call_bool(i: &mut Interpreter, op: &str) -> bool {
     i.call(op, &[])
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_bool()
+        .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
 }
 

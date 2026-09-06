@@ -26,9 +26,16 @@ fn load_errors(source: &str) -> Vec<String> {
     }
 }
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // ── Type-checking ──────────────────────────────────────────────────
@@ -138,7 +145,11 @@ end
     let r = interp
         .call("test.wi426.eval1.main", &[])
         .expect("call main");
-    assert_eq!(expect_int(r), 200, "named arg a: 200 must bind to param a");
+    assert_eq!(
+        expect_int(r, interp.kb()),
+        200,
+        "named arg a: 200 must bind to param a"
+    );
 }
 
 /// A POSITIONAL prefix plus a reordered named tail binds correctly:
@@ -157,7 +168,11 @@ end
     let r = interp
         .call("test.wi426.eval2.main", &[])
         .expect("call main");
-    assert_eq!(expect_int(r), 2, "named arg b: 2 must bind to param b");
+    assert_eq!(
+        expect_int(r, interp.kb()),
+        2,
+        "named arg b: 2 must bind to param b"
+    );
 }
 
 const SIBLING_SRC: &str = r#"
@@ -205,12 +220,16 @@ fn carrier_param_spec_op_by_name_typechecks_and_evaluates() {
     let n = interp
         .call("test.wi426.sib.bag_size_byname", &[b.clone()])
         .expect("size(c: b)");
-    assert_eq!(expect_int(n), 3, "size(c: b) over a 3-element bag");
+    assert_eq!(
+        expect_int(n, interp.kb()),
+        3,
+        "size(c: b) over a 3-element bag"
+    );
     let f = interp
         .call("test.wi426.sib.bag_find_byname", &[b])
         .expect("find(c: b, pred: big)");
     assert_eq!(
-        expect_int(f),
+        expect_int(f, interp.kb()),
         2,
         "find(c: b, pred: big) → first element > 1"
     );
@@ -267,13 +286,13 @@ end
     let mut interp = interp_for(src);
     let a = interp.call("test.wi426.dup.caller", &[]).expect("caller");
     assert_eq!(
-        expect_int(a),
+        expect_int(a, interp.kb()),
         1,
         "`two(7, a: 1)` gives parameter `a` the LABELLED 1"
     );
     let b = interp.call("test.wi426.dup.callerb", &[]).expect("callerb");
     assert_eq!(
-        expect_int(b),
+        expect_int(b, interp.kb()),
         7,
         "and parameter `b` the POSITIONAL 7 — the same call read from the other end, \
          which is what says the arguments were BOUND and not merely accepted"

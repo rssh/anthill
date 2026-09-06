@@ -30,6 +30,7 @@ use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::term::{Term, TermId};
 
 use crate::common;
+use anthill_core::kb::term_view::TermView;
 
 /// Snapshot of the frame's `type_args` channel rendered as
 /// `(declared-name, type-term)` pairs. Names are resolved through the
@@ -100,7 +101,11 @@ fn explicit_int_binding_installs_t_on_frame() {
     let result = interp
         .call("test.wi272.frame.Driver.driver_int", &[])
         .expect("driver_int / foo[Int64](42) should run");
-    assert_eq!(result.as_int(), Some(42), "body returns x = 42");
+    assert_eq!(
+        result.literal_int64(interp.kb()),
+        Some(42),
+        "body returns x = 42"
+    );
 
     let snap = captured
         .lock()

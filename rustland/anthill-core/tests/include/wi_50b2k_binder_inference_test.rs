@@ -66,6 +66,7 @@
 //! corpus is those two programs and nothing else — the narrowness is measured rather than
 //! argued from the gates.
 
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 
 /// A higher-order operation to hand a lambda to, so a row that claims a binder was
@@ -92,7 +93,7 @@ fn only_int(kb: &mut KnowledgeBase, qn: &str) -> i64 {
     let mut vs = crate::common::definite_unary(kb, qn);
     assert_eq!(vs.len(), 1, "{qn}: expected exactly one answer, got {vs:?}");
     let v = vs.pop().unwrap();
-    v.as_int()
+    v.literal_int64(kb)
         .unwrap_or_else(|| panic!("{qn}: expected an Int64 answer, got {v:?}"))
 }
 
@@ -671,26 +672,19 @@ fn control_an_undeclared_constructors_field_stays_unnameable() {
     // row measuring the mint, and it will keep passing when EMVCB lands.
     let mut vs = crate::common::definite_unary(&mut kb, "zz50b2k.setlit.value");
     assert_eq!(vs.len(), 1, "expected exactly one answer, got {vs:?}");
-    assert_eq!(int_through_any_carrier(&vs.pop().unwrap()), 10);
+    assert_eq!(int_through_any_carrier(&vs.pop().unwrap(), &kb), 10);
 }
 
-/// The `Int64` a value carries, on either carrier — see the EMVCB note at the one caller.
-fn int_through_any_carrier(v: &anthill_core::eval::Value) -> i64 {
-    use anthill_core::kb::node_occurrence::NodeKind;
-    if let Some(i) = v.as_int() {
-        return i;
-    }
-    if let anthill_core::eval::Value::Node(occ) = v {
-        if let NodeKind::Expr { expr, .. } = &occ.kind {
-            if let anthill_core::kb::node_occurrence::Expr::Const(
-                anthill_core::kb::term::Literal::Int(i),
-            ) = expr
-            {
-                return *i;
-            }
-        }
-    }
-    panic!("expected an Int64 answer on some carrier, got {v:?}")
+/// The `Int64` a value carries, on ANY carrier — see the EMVCB note at the one caller.
+///
+/// WI-20260827-14EV6: this used to be TWO reads, `Value::as_int` plus a hand-rolled
+/// `Value::Node` / `NodeKind::Expr` / `Expr::Const(Literal::Int)` descent for the
+/// carrier the first one could not see. `literal_int64` answers both — `occ_head`'s
+/// `Expr::Const` arm IS that descent, reached through the same `as_expr` the hand-rolled
+/// one matched by hand — so the second branch became unreachable and is gone.
+fn int_through_any_carrier(v: &anthill_core::eval::Value, kb: &KnowledgeBase) -> i64 {
+    v.literal_int64(kb)
+        .unwrap_or_else(|| panic!("expected an Int64 answer on some carrier, got {v:?}"))
 }
 
 /// **THE ROW PART (c) WAS INSTRUCTED TO FLIP, AND THE SINGLE-BINDER ARM IS FLIPPED.**

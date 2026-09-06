@@ -455,14 +455,6 @@ impl Value {
         }
     }
 
-    pub fn as_int(&self) -> Option<i64> {
-        if let Value::Int(n) = self {
-            Some(*n)
-        } else {
-            None
-        }
-    }
-
     /// Unwrap the hash-consed `Value::Term` variant, panicking LOUDLY on any
     /// other carrier. WI-477: this replaces the old silent `as_term() ->
     /// Option<TermId>`, whose `None` on a `Value::Node`/`Entity`/scalar was read
@@ -480,22 +472,6 @@ impl Value {
                 "expect_term: expected a hash-consed Value::Term, got Value::{}",
                 other.type_name(),
             ),
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self {
-            Some(*b)
-        } else {
-            None
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        if let Value::Str(s) = self {
-            Some(s.as_str())
-        } else {
-            None
         }
     }
 
@@ -955,11 +931,13 @@ impl<'a> TupleComponents<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kb::term_view::TermView;
 
     #[test]
     fn scalars_unboxed() {
-        assert_eq!(Value::Int(42).as_int(), Some(42));
-        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        let kb = crate::kb::KnowledgeBase::new();
+        assert_eq!(Value::Int(42).literal_int64(&kb), Some(42));
+        assert_eq!(Value::Bool(true).literal_bool(&kb), Some(true));
         assert_eq!(Value::Int(1).type_name(), "Int64");
     }
 

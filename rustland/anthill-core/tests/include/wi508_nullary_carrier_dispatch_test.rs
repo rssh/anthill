@@ -15,6 +15,7 @@
 //! MutableCollection`) keeps taking the existing Deferred / dict-threaded path.
 
 use crate::common::{interp_for, register_modify_handler};
+use anthill_core::kb::term_view::TermView;
 
 // ── Acceptance: the stdlib MutableCollection.new() pinned by the return type ──
 
@@ -36,7 +37,10 @@ fn wi508_abstract_new_from_return_type() {
     register_modify_handler(&mut interp);
     let s = interp.call("test.wi508.freshBare", &[]).expect("freshBare");
     assert_eq!(
-        interp.call("test.wi508.depth", &[s]).unwrap().as_int(),
+        interp
+            .call("test.wi508.depth", &[s])
+            .unwrap()
+            .literal_int64(interp.kb()),
         Some(0),
         "abstract new() from the return type yields a fresh empty stack",
     );
@@ -161,7 +165,11 @@ fn wi508_concrete_new_element_inferred_from_use() {
     let mut interp = interp_for(SRC_CONCRETE);
     register_modify_handler(&mut interp);
     let r = interp.call("test.wi508g.useNew", &[]).expect("useNew");
-    assert_eq!(r.as_int(), Some(1), "push(x, 10) pins T = Int64; size is 1");
+    assert_eq!(
+        r.literal_int64(interp.kb()),
+        Some(1),
+        "push(x, 10) pins T = Int64; size is 1"
+    );
 }
 
 #[test]

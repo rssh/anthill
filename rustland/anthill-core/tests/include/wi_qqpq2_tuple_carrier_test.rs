@@ -55,6 +55,7 @@
 //!    its own pattern labels are synthetic too and gate the by-label arm off from the
 //!    other side.
 
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 
 const PREAMBLE: &str = r#"  import anthill.prelude.{Int64, Function}
@@ -97,7 +98,7 @@ fn only_int(kb: &mut KnowledgeBase, qn: &str) -> i64 {
     let mut vs = crate::common::definite_unary(kb, qn);
     assert_eq!(vs.len(), 1, "{qn}: expected exactly one answer, got {vs:?}");
     let v = vs.pop().unwrap();
-    v.as_int()
+    v.literal_int64(kb)
         .unwrap_or_else(|| panic!("{qn}: expected an Int64 answer, got {v:?}"))
 }
 

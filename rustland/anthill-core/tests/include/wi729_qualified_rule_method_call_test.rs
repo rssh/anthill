@@ -20,6 +20,7 @@
 use anthill_core::eval::Value;
 
 use crate::common::{interp_for, try_load_kb_with, try_load_kb_with_files};
+use anthill_core::kb::term_view::TermView;
 
 /// A `Sort.rule` receiver — the proposal's canonical `Queen.find`. The inline
 /// `Queen.find.where(λ)` must LOAD, TYPE and EVALUATE identically to the let-bound
@@ -288,7 +289,7 @@ end
         .call("test.wi729applied.rowTwoPresent", &[])
         .expect("the applied `Sort.rule(arg)` form runs");
     assert_eq!(
-        present.as_bool(),
+        present.literal_bool(interp.kb()),
         Some(false),
         "`Queen.find(2)` still APPLIES the rule — binding row=2, which is a fact"
     );
@@ -296,7 +297,7 @@ end
         .call("test.wi729applied.rowNinePresent", &[])
         .expect("the applied form runs for an absent row");
     assert_eq!(
-        absent.as_bool(),
+        absent.literal_bool(interp.kb()),
         Some(true),
         "`Queen.find(9)` binds row=9, which no fact matches → empty"
     );

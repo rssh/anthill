@@ -15,6 +15,7 @@
 
 use crate::common::load_kb_with;
 use anthill_core::eval::{Interpreter, Value};
+use anthill_core::kb::term_view::TermView;
 
 #[test]
 fn named_tuple_value_preserves_source_field_order() {
@@ -45,7 +46,7 @@ end
                 .map(|(s, val)| {
                     (
                         interp.kb().local_name_of(*s),
-                        val.as_int().expect("int field"),
+                        val.literal_int64(interp.kb()).expect("int field"),
                     )
                 })
                 .collect();

@@ -11,6 +11,8 @@
 //! ERROR. Swallowing it would let the satisfaction assertion pass over a KB
 //! that never finished loading.
 
+use anthill_core::kb::term_view::TermView;
+
 #[test]
 fn ring_spec_loads_and_resolves() {
     let kb = crate::common::load_kb_with(
@@ -250,11 +252,19 @@ fn a_field_needs_no_order() {
     let r = interp
         .call("test.f5.F5.probe_recip", &[])
         .expect("call probe_recip");
-    assert_eq!(r.as_int(), Some(3), "recip(2) must be 3 in F_5, got {r:?}");
+    assert_eq!(
+        r.literal_int64(interp.kb()),
+        Some(3),
+        "recip(2) must be 3 in F_5, got {r:?}"
+    );
     let d = interp
         .call("test.f5.F5.probe_div", &[])
         .expect("call probe_div");
-    assert_eq!(d.as_int(), Some(3), "div(4, 3) must be 3 in F_5, got {d:?}");
+    assert_eq!(
+        d.literal_int64(interp.kb()),
+        Some(3),
+        "div(4, 3) must be 3 in F_5, got {d:?}"
+    );
 }
 
 /// `L = F_5[t]/(t^2 - 2)`, a degree-2 extension of `F_5`. An extension L/K is exactly the
@@ -349,7 +359,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         .call("test.f5.L.probe_t_squared", &[])
         .expect("call probe_t_squared");
     assert_eq!(
-        t2.as_int(),
+        t2.literal_int64(interp.kb()),
         Some(2),
         "t^2 must be 2, the defining relation of L = F_5[t]/(t^2 - 2); got {t2:?}"
     );
@@ -357,7 +367,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         .call("test.f5.L.probe_scale", &[])
         .expect("call probe_scale");
     assert_eq!(
-        s.as_int(),
+        s.literal_int64(interp.kb()),
         Some(3),
         "the scalar action must send (3, t) to 3t; got {s:?}"
     );
@@ -369,7 +379,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         .call("test.f5.L.probe_recip_b", &[])
         .expect("call probe_recip_b");
     assert_eq!(
-        r.as_int(),
+        r.literal_int64(interp.kb()),
         Some(3),
         "recip(t) must be 3t, since t * 3t = 3t^2 = 6 = 1; got {r:?}"
     );
@@ -380,7 +390,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         .call("test.f5.L.probe_inv_law_b", &[])
         .expect("call probe_inv_law_b");
     assert_eq!(
-        (la.as_int(), lb.as_int()),
+        (la.literal_int64(interp.kb()), lb.literal_int64(interp.kb())),
         (Some(1), Some(0)),
         "mul(recip(t), t) must be `one` = 1 + 0t; got {la:?} + {lb:?}t"
     );
@@ -388,7 +398,7 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
         .call("test.f5.L.probe_t_not_2t", &[])
         .expect("call probe_t_not_2t");
     assert_eq!(
-        neq.as_bool(),
+        neq.literal_bool(interp.kb()),
         Some(false),
         "`eq` must separate t from 2t; reading only the `a` component made them equal"
     );

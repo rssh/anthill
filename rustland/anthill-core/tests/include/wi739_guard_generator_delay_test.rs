@@ -45,6 +45,7 @@ use anthill_core::eval::value::Value;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
@@ -453,7 +454,7 @@ fn wi739_fix_supplied_binding_drains() {
         .call("wi739.fixcase.fixedCount", &[])
         .expect("distinct_pair.fix(x: 1) must drain, not raise RelationFloundered");
     assert_eq!(
-        n.as_int(),
+        n.literal_int64(interp.kb()),
         Some(2),
         "fix(x: 1) restricts the first column to 1, leaving (1,2) and (1,3)",
     );

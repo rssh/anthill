@@ -19,9 +19,16 @@
 
 use anthill_core::eval::Value;
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 const EVAL_SRC: &str = r#"
@@ -78,7 +85,7 @@ fn non_stream_iterable_size_evaluates() {
     let got = interp
         .call("wi495.nonstream.bag_size", &[b])
         .unwrap_or_else(|e| panic!("call bag_size: {e:?}"));
-    assert_eq!(expect_int(got), 3);
+    assert_eq!(expect_int(got, interp.kb()), 3);
 }
 
 #[test]
@@ -94,8 +101,12 @@ fn non_stream_iterable_is_empty_evaluates() {
     let got_empty = interp
         .call("wi495.nonstream.bag_is_empty", &[empty])
         .unwrap_or_else(|e| panic!("call bag_is_empty(empty): {e:?}"));
-    assert_eq!(got_full.as_bool(), Some(false), "non-empty bag");
-    assert_eq!(got_empty.as_bool(), Some(true), "empty bag");
+    assert_eq!(
+        got_full.literal_bool(interp.kb()),
+        Some(false),
+        "non-empty bag"
+    );
+    assert_eq!(got_empty.literal_bool(interp.kb()), Some(true), "empty bag");
 }
 
 #[test]
@@ -105,12 +116,13 @@ fn non_stream_iterable_find_evaluates() {
     let got = interp
         .call("wi495.nonstream.bag_find_big", &[b])
         .unwrap_or_else(|e| panic!("call bag_find_big: {e:?}"));
-    assert_eq!(expect_int(got), 2, "first element > 1 is 2");
+    assert_eq!(expect_int(got, interp.kb()), 2, "first element > 1 is 2");
 }
 
 // ── Map: the stdlib non-Stream Iterable, pinned at the type level ────────
 
 use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 

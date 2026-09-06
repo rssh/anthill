@@ -52,6 +52,7 @@
 //! `Pairer` pair, one hop out.
 
 use anthill_core::eval::{Interpreter, Value};
+use anthill_core::kb::term_view::TermView;
 
 /// Two carriers whose `provides` head does NOT name the parameter their `requires`
 /// constrains (`Pairer`), and one whose head DOES (`Elemental`) — the axis, held
@@ -146,7 +147,7 @@ fn int_of(interp: &mut Interpreter, op: &str, args: &[Value]) -> i64 {
     interp
         .call(op, args)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_int()
+        .literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("call {op}: expected Int64"))
 }
 
@@ -272,7 +273,6 @@ end
     );
 }
 
-
 // ── TWO HOPS: the same rule across a provider chain ────────────────────────────────
 
 /// The chain fixture. `Mid` is the `LogicalStream` position — CONSTRUCTOR-LESS (a data
@@ -335,7 +335,9 @@ fn chain_program(ns: &str, carrier: &str, body: &str) -> String {
 }
 
 fn chain_errors(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with(src).err().unwrap_or_default()
+    crate::common::try_load_kb_with(src)
+        .err()
+        .unwrap_or_default()
 }
 
 /// THE CAPABILITY AT ONE HOP OUT. `Mid`'s `requires Tagger[T = Src]` is discharged at
@@ -487,7 +489,6 @@ fn a_receiver_projection_across_a_hop_is_a_separate_open_gap() {
     );
 }
 
-
 /// TWO ROUTES TO ONE PROVIDER SORT, and the walk must take the carrier's OWN.
 ///
 /// `Two` reaches `Mid` twice — directly (`provides Mid[Src = Heavy]`, which resolves) and
@@ -570,7 +571,9 @@ end
 "#;
     let errs = chain_errors(src);
     assert!(
-        !errs.iter().any(|e| e.contains("Stream.splitFirst.dispatch")),
+        !errs
+            .iter()
+            .any(|e| e.contains("Stream.splitFirst.dispatch")),
         "the dispatch must discharge `Mid`'s requirement at the DIRECT provision's \
          `Src = Heavy`, not at the detour's `Src = Odd`; got: {errs:?}"
     );

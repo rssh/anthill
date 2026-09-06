@@ -25,6 +25,7 @@
 use anthill_core::eval::Value;
 
 use crate::common::{interp_for, try_load_kb_with, try_load_kb_with_files};
+use anthill_core::kb::term_view::TermView;
 
 /// Both inline spellings — bare-UNQUALIFIED (`person_row`) and bare-QUALIFIED
 /// (`Person.rows`) — each against ITS OWN let-bound reference. The two relations are
@@ -67,7 +68,7 @@ fn call_bool(interp: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
     interp
         .call(&format!("test.wi749.{op}"), &[])
         .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
-        .as_bool()
+        .literal_bool(interp.kb())
         .unwrap_or_else(|| panic!("`{op}` must answer a Bool"))
 }
 
@@ -202,7 +203,7 @@ end
         interp
             .call(&format!("test.wi749ns.use.{op}"), &[])
             .unwrap_or_else(|e| panic!("`{op}` must run; got {e:?}"))
-            .as_bool()
+            .literal_bool(interp.kb())
             .unwrap_or_else(|| panic!("`{op}` must answer a Bool"))
     };
     let inline = call(&mut interp, "inlineCrossFile");

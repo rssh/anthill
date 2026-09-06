@@ -75,6 +75,7 @@
 //!     `TYPE_CTORS`, stated at its site.
 
 use crate::common::{interp_for, try_load_kb_with};
+use anthill_core::kb::term_view::TermView;
 
 /// A relation with ONE free column (`person_name : Relation[String]`) is not a membership
 /// relation, so negating it would flounder. That is now refused at LOAD.
@@ -184,7 +185,7 @@ end
         .call("test.wi728ok.negateEmptyIsEmpty", &[])
         .expect("negate(has_zed).isEmpty");
     assert_eq!(
-        empty_operand.as_bool(),
+        empty_operand.literal_bool(interp.kb()),
         Some(false),
         "negate of an UNPROVABLE membership relation is non-empty (NAF succeeds)"
     );
@@ -192,7 +193,7 @@ end
         .call("test.wi728ok.negateProvableIsEmpty", &[])
         .expect("negate(has_alice).isEmpty");
     assert_eq!(
-        provable_operand.as_bool(),
+        provable_operand.literal_bool(interp.kb()),
         Some(true),
         "negate of a PROVABLE membership relation is empty (NAF fails)"
     );
@@ -292,7 +293,7 @@ end
         .call("test.wi728bare.useIt", &[])
         .expect("a bare-parameter wrapper must load AND run");
     assert_eq!(
-        v.as_bool(),
+        v.literal_bool(interp.kb()),
         Some(false),
         "negate of an unprovable membership relation is non-empty, through a bare wrapper"
     );
@@ -389,7 +390,7 @@ end
         .call("test.wi728abs.closedThroughWrapper", &[])
         .expect("wrapNegate(has_zed).isEmpty");
     assert_eq!(
-        closed.as_bool(),
+        closed.literal_bool(interp.kb()),
         Some(false),
         "negate of an unprovable membership relation is non-empty, wrapper or not"
     );
@@ -451,7 +452,7 @@ end
         .call("test.wi728defer.useIt", &[])
         .expect("a propagating wrapper over a membership relation still runs");
     assert_eq!(
-        closed.as_bool(),
+        closed.literal_bool(interp.kb()),
         Some(false),
         "negate of an unprovable membership relation is non-empty, through a propagating wrapper"
     );
@@ -521,7 +522,10 @@ end
     // can only do if it saw the reduced operand rather than a residual.
     let refused = accepted
         .replace("test.wi728orderok", "test.wi728orderbad")
-        .replace(r#"Slot.closeAll(s, a: 1, b: "x")"#, "Slot.closeAll(s, a: 1)");
+        .replace(
+            r#"Slot.closeAll(s, a: 1, b: "x")"#,
+            "Slot.closeAll(s, a: 1)",
+        );
     let errs = try_load_kb_with(&refused).err().unwrap_or_else(|| {
         panic!("a residual with a column left must be REFUSED by the predicate, not accepted")
     });

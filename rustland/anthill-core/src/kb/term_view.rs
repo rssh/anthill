@@ -1788,15 +1788,6 @@ pub trait TermView {
     /// itself matches a tree-var) and at sub-arg var-edge captures.
     fn as_bind_value(&self) -> BindValue;
 
-    /// The logic variable at this view's head, returning the full `Var` of
-    /// *any* kind (Global / Rigid / DeBruijn) — so the discrimination-tree
-    /// insert can route a flex `Global` / bound `DeBruijn` to a wildcard
-    /// var-edge and a `Rigid` skolem to its `RigidVar` constant key, and the
-    /// unifier / structural-equality test can compare two var heads by full
-    /// `Var` identity. `None` for non-variable heads — the walk then keys on
-    /// [`Self::head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
-    /// the default suffices; the `TermId` / `Value` carriers keep a direct
-    /// override that reads the carrier without a `head` round-trip.)
     /// The LITERAL this view denotes, on whatever carrier it rides — `None` if it
     /// denotes something else.
     ///
@@ -1812,16 +1803,28 @@ pub trait TermView {
     ///
     /// Clones the literal (`String`/`BigInt` are owned) — these are operand reads,
     /// not hot structural walks; the structural walkers key off [`Self::head`]
-    /// directly. A borrowing variant is wanted before this reaches a hot filter
-    /// (`startsWith`/`endsWith` over a long stream) — noted on WI-20260827-3ZNBC.
+    /// directly. THE BORROWING VARIANT THIS USED TO ASK FOR NOW EXISTS and is
+    /// `eval::builtins::str_operand_opt`: a native `Value::Str` borrows, only a handle
+    /// carrier clones. Every String consumer on a path that can be hot — the `String`
+    /// builtins (WI-20260827-3ZNBC) and the Console write handlers
+    /// (WI-20260827-14EV6) — reads through it rather than through `literal_string`.
     ///
-    /// NAMED `literal_*`, NOT `as_*`, ON PURPOSE. `Value` carries inherent
-    /// `as_bool` / `as_int` / `as_str` accessors that read the NATIVE variant only,
-    /// and an inherent method wins over a trait method — so a `literal_bool` spelled
-    /// `as_bool` would silently resolve to the carrier-blind one at every `Value`
-    /// call site, which is precisely the failure this pair exists to remove. Two
-    /// spellings of one question are tolerable; two spellings that answer
-    /// DIFFERENTLY under the same name are not.
+    /// NAMED `literal_*`, NOT `as_*`, AND THE REASON HAS CHANGED — kept because the
+    /// hazard it names recurs. WI-20260827-2YHZ3 chose the stem to dodge a collision:
+    /// `Value` carried inherent `as_bool` / `as_int` / `as_str` reading the NATIVE
+    /// variant only, and an inherent method WINS over a trait method, so a
+    /// `literal_bool` spelled `as_bool` would have resolved silently to the
+    /// carrier-blind one at every `Value` call site.
+    ///
+    /// WI-20260827-14EV6 DELETED those three, so nothing shadows this pair any more
+    /// and the stem is now free. It stays anyway, because renaming it back to `as_*`
+    /// would re-open the trap for the next inherent accessor someone adds — and
+    /// because the name says which question is asked: which VALUE this denotes, on
+    /// whatever carrier, not which `Value` variant carries it. A caller that really
+    /// wants the variant narrows explicitly (`if let Value::Str(s) = …`), which reads
+    /// as the deliberate act it is. Two spellings of one question were tolerable;
+    /// two spellings that answered DIFFERENTLY under the same name were not, and
+    /// there is now only one.
     fn as_literal(&self, kb: &KnowledgeBase) -> Option<Literal> {
         match self.head(kb) {
             ViewHead::Const(lit) => Some(lit),
@@ -1869,6 +1872,15 @@ pub trait TermView {
         }
     }
 
+    /// The logic variable at this view's head, returning the full `Var` of
+    /// *any* kind (Global / Rigid / DeBruijn) — so the discrimination-tree
+    /// insert can route a flex `Global` / bound `DeBruijn` to a wildcard
+    /// var-edge and a `Rigid` skolem to its `RigidVar` constant key, and the
+    /// unifier / structural-equality test can compare two var heads by full
+    /// `Var` identity. `None` for non-variable heads — the walk then keys on
+    /// [`Self::head`]. (`head` now also surfaces every var kind as `ViewHead::Var`, so
+    /// the default suffices; the `TermId` / `Value` carriers keep a direct
+    /// override that reads the carrier without a `head` round-trip.)
     fn index_var(&self, kb: &KnowledgeBase) -> Option<Var> {
         match self.head(kb) {
             ViewHead::Var(var) => Some(var),

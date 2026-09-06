@@ -1323,6 +1323,7 @@ mod tests {
 
     use anthill_core::eval::{self, Interpreter, Value};
     use anthill_core::kb::load::{self, NullResolver};
+    use anthill_core::kb::term_view::TermView;
     use anthill_core::kb::KnowledgeBase;
     use anthill_core::parse;
     use anthill_core::parse::desugar_target as dt;
@@ -1547,12 +1548,12 @@ end
                     let content = dn
                         .iter()
                         .find(|(s, _)| interp.kb().local_name_of(*s) == "content")
-                        .and_then(|(_, v)| v.as_str().map(str::to_string))
+                        .and_then(|(_, v)| v.literal_string(interp.kb()))
                         .expect("content field");
                     let index = dn
                         .iter()
                         .find(|(s, _)| interp.kb().local_name_of(*s) == "index")
-                        .and_then(|(_, v)| v.as_int())
+                        .and_then(|(_, v)| v.literal_int64(interp.kb()))
                         .expect("index field");
                     pairs.push((content, index));
                 }

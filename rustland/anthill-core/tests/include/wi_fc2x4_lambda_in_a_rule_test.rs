@@ -133,6 +133,7 @@ use anthill_core::kb::node_occurrence::{
     for_each_child, for_each_pattern_child, Expr, NodeKind, NodeOccurrence, Pattern,
 };
 use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use std::rc::Rc;
 
@@ -186,11 +187,11 @@ fn only_value(kb: &mut KnowledgeBase, qn: &str) -> Option<Value> {
 /// CARRIER-NEUTRAL, and measured rather than assumed: the same arithmetic comes back as a
 /// native `Value::Int` down one path and as a `Value::Node(Const(Int))` down another (the
 /// dot-dispatch row), because a reduction that ends inside an occurrence keeps the carrier
-/// it was proved on. `Value::as_int` reads the variant alone, so a row using it would have
-/// failed on a right answer.
+/// it was proved on. The deleted `Value::as_int` read the variant alone, so a row using it
+/// would have failed on a right answer (WI-20260827-14EV6 removed it).
 fn only_int(kb: &mut KnowledgeBase, qn: &str) -> i64 {
     let v = only_value(kb, qn).unwrap_or_else(|| panic!("{qn}: no definite answer"));
-    if let Some(i) = v.as_int() {
+    if let Some(i) = v.literal_int64(kb) {
         return i;
     }
     if let Value::Node(occ) = &v {

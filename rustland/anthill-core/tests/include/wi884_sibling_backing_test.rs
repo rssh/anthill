@@ -37,6 +37,7 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term_view::TermView;
 use smallvec::SmallVec;
 
 /// One driver sort per carrier, one entry per operation under test. Everything is
@@ -139,19 +140,18 @@ fn call_s(interp: &mut Interp, entry: &str, args: &[&str]) -> Value {
 }
 fn call_bool(interp: &mut Interp, entry: &str, args: &[&str]) -> bool {
     let v = call_s(interp, entry, args);
-    v.as_bool()
+    v.literal_bool(interp.kb())
         .unwrap_or_else(|| panic!("{entry}{args:?}: expected a Bool, got {v:?}"))
 }
 fn call_int(interp: &mut Interp, entry: &str, args: &[&str]) -> i64 {
     let v = call_s(interp, entry, args);
-    v.as_int()
+    v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("{entry}{args:?}: expected an Int64, got {v:?}"))
 }
 fn call_str(interp: &mut Interp, entry: &str, args: &[&str]) -> String {
     let v = call_s(interp, entry, args);
-    v.as_str()
+    crate::common::scalar_str(interp.kb(), &v)
         .unwrap_or_else(|| panic!("{entry}{args:?}: expected a String, got {v:?}"))
-        .to_string()
 }
 
 /// The headline: the five host-backed `String` operations run. Each answered
@@ -260,7 +260,7 @@ fn split_keeps_its_empty_pieces_so_it_round_trips() {
         let got = call_s(&mut interp, "dSplit", &[s, sep]);
         let pieces: Vec<String> = crate::common::list_heads(&got)
             .into_iter()
-            .map(|v| v.as_str().expect("a split piece is a String").to_string())
+            .map(|v| crate::common::scalar_str(interp.kb(), &v).expect("a split piece is a String"))
             .collect();
         assert_eq!(pieces, want, "split({s:?}, {sep:?})");
         assert_eq!(pieces.join(sep), s, "split({s:?}, {sep:?}) must round-trip");
@@ -515,10 +515,8 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
     // The ADMITTED spelling, on both settings of the tag. One source, one interpreter:
     // the firing row runs first and the trapping row second, since a trap poisons only
     // LATER calls.
-    const ADMITTED: [(&str, &str, Option<i64>); 2] = [
-        ("unifySimp", " [simp]", Some(10)),
-        ("unifyBare", "", None),
-    ];
+    const ADMITTED: [(&str, &str, Option<i64>); 2] =
+        [("unifySimp", " [simp]", Some(10)), ("unifyBare", "", None)];
     let src: String = ADMITTED
         .iter()
         .map(|(ns, attribute, _)| row_source(ns, "<=>", attribute))
@@ -526,7 +524,14 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
     let mut interp = crate::common::interp_for(&src);
     for (ns, attribute, expected) in ADMITTED.iter() {
         let got = interp.call(&format!("wi884.{ns}.C.drive"), &[Value::Int(0)]);
-        let label = format!("`<=>`{}", if attribute.is_empty() { " bare" } else { " [simp]" });
+        let label = format!(
+            "`<=>`{}",
+            if attribute.is_empty() {
+                " bare"
+            } else {
+                " [simp]"
+            }
+        );
         match (expected, got) {
             (Some(want), Ok(Value::Int(n))) => assert_eq!(n, *want, "{label}"),
             (None, Err(anthill_core::eval::EvalError::OperationBodyMissing { name, .. })) => {

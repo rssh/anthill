@@ -23,6 +23,8 @@
 //! Float operand pair (eval `float_ieee_eq`, resolver `value_f64`). `struct_eq`
 //! (`===`) stays on `OrderedFloat` — the first test below.
 
+use anthill_core::kb::term_view::TermView;
+
 fn interp(src: &str) -> anthill_core::eval::Interpreter {
     crate::common::interp_for(src)
 }
@@ -30,7 +32,7 @@ fn interp(src: &str) -> anthill_core::eval::Interpreter {
 fn call_bool(i: &mut anthill_core::eval::Interpreter, op: &str) -> bool {
     i.call(op, &[])
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_bool()
+        .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
 }
 

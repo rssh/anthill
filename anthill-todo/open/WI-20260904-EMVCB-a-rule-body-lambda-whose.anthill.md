@@ -79,3 +79,44 @@ I.e. I think that <=> return sourcr of 2 - is ok
 
 Also note, that this is const-folding 
 
+### 2026-09-06T17:53:26Z — feedback — user
+
+MEASURED 2026-09-06 while delivering WI-20260827-14EV6, which DELETED `Value::as_int` /
+`as_bool` / `as_str`. This ticket's three rows were re-run against the fixture its own
+description spells out (`apply1(f: Function[A = Int64, B = Int64], n: Int64) -> Int64 =
+f(n)` plus `takes_int(n: Int64) -> Int64 = n`), read through the carrier-neutral
+`TermView::literal_int64`:
+
+  rule value(?r) :- ?r <=> apply1(lambda x -> x, 2)             Node(Const(Int(2))) -> Some(2)
+  rule value(?r) :- ?r <=> apply1(lambda x -> takes_int(x), 2)  Node(Const(Int(2))) -> Some(2)
+  rule value(?r) :- ?r <=> apply1(lambda x -> x + x, 2)         Int(4)              -> Some(4)   [control, unmoved]
+
+SO THE TWO HALVES SEPARATE, and only one of them moved.
+
+WHAT IS FIXED — the half this ticket's own user feedback named. "It's Value::as_int
+incorrectly does not extract 2 from Node - is Node have TermView? How Const Node seen in
+TermView?" and "I think that <=> return source of 2 - is ok". `occ_head` maps
+`Expr::Const(lit)` onto the same `ViewHead::Const` a native scalar and a hash-consed
+`Term::Const` answer, so `literal_int64` reads the Node as 2. The description's stated
+consequence -- "every reader spelled that way sees `None` -- a value that exists and
+cannot be read" -- no longer has a reader it applies to: the narrow spelling is gone from
+the language, and the two helpers this ticket cites as evidence
+(`wi_qqpq2_tuple_carrier_test::only_int`, `wi_50b2k_binder_inference_test::only_int`) both
+read neutrally now. `wi_50b2k`'s `int_through_any_carrier` -- the hand-rolled Node descent
+written to work around exactly this -- became UNREACHABLE and was deleted; its row still
+passes.
+
+WHAT IS UNTOUCHED — the carrier asymmetry itself. `?r <=> apply1(lambda x -> x, 2)` still
+answers a `Value::Node` where the operation-body twin answers `Value::Int`, for the reason
+the description gives: when the closure's body evaluates to the binder, the operand's node
+is returned unchanged and nothing normalizes it on the way out. Nothing in WI-14EV6 went
+near `bridge_op_to_eval`.
+
+SO THE STATUS IS A DECISION, NOT A MEASUREMENT, and it is the user's. If "`<=>` returns
+the source of 2 is ok" stands, this ticket is DONE and its remaining content is a note on
+`const-folding` (the third feedback entry) rather than a defect. If the asymmetry itself is
+still to be closed, the ACCEPTANCE needs re-spelling: it currently reads "answers
+`Value::Int(2)` -- the value, read through `as_int`", and `as_int` no longer exists, so as
+written it can neither pass nor fail. Its two CONTROLS are unaffected and still hold (the
+operation-body twin answers 2; the `x + x` row answers 4).
+

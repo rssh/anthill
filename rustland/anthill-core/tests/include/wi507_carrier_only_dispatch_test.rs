@@ -23,6 +23,7 @@
 
 use crate::common::{interp_for, register_modify_handler};
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
 const SRC: &str = r#"
 namespace test.wi507
@@ -85,7 +86,10 @@ fn wi507_concrete_bare_clear_empties() {
         .call("test.wi507.wipeBare", &[s.clone()])
         .expect("bare clear (concrete)");
     assert_eq!(
-        interp.call("test.wi507.depth", &[s]).unwrap().as_int(),
+        interp
+            .call("test.wi507.depth", &[s])
+            .unwrap()
+            .literal_int64(interp.kb()),
         Some(0),
         "concrete bare clear empties the same handle",
     );
@@ -98,7 +102,7 @@ fn wi507_abstract_carrier_only_clear_empties() {
     register_modify_handler(&mut interp);
     let r = interp.call("test.wi507.driveBare", &[]).expect("driveBare");
     assert_eq!(
-        r.as_int(),
+        r.literal_int64(interp.kb()),
         Some(0),
         "abstract carrier-only bare clear empties"
     );
@@ -113,5 +117,9 @@ fn wi507_abstract_insert_still_works() {
     let r = interp
         .call("test.wi507.driveInsert", &[])
         .expect("driveInsert");
-    assert_eq!(r.as_int(), Some(2), "abstract insert adds two");
+    assert_eq!(
+        r.literal_int64(interp.kb()),
+        Some(2),
+        "abstract insert adds two"
+    );
 }

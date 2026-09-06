@@ -36,6 +36,7 @@
 
 use anthill_core::eval::Interpreter;
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
@@ -109,7 +110,7 @@ fn load_phase_two(kb: &mut KnowledgeBase, src: &str) -> Result<(), Vec<String>> 
 fn call_bool(i: &mut Interpreter, op: &str) -> bool {
     i.call(op, &[])
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_bool()
+        .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
 }
 

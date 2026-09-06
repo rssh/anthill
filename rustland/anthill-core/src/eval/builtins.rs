@@ -35,8 +35,8 @@ use std::rc::Rc;
 
 use super::value::Dictionary;
 use super::{EvalError, Interpreter, Value};
-// WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`as_int64`, `as_bool`, …)
-// every scalar builtin below reads its arguments through.
+// WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`literal_int64`,
+// `literal_bool`, …) every scalar builtin below reads its arguments through.
 use crate::kb::term_view::TermView;
 use crate::parse::desugar_target as dt;
 
@@ -2234,13 +2234,29 @@ fn str_operand<'a>(
     kb: &crate::kb::KnowledgeBase,
     v: &'a Value,
 ) -> Result<std::borrow::Cow<'a, str>, EvalError> {
+    str_operand_opt(kb, v).ok_or_else(|| type_mismatch("String", v, None))
+}
+
+/// [`str_operand`] without the refusal — THE read, for a consumer that owes its caller
+/// a different message.
+///
+/// WI-20260827-14EV6 split it out for `effects::console_text`, whose two failures are
+/// not one: an argument that is ABSENT (a handler bound to an operation of the wrong
+/// arity) and one that denotes no string. `type_mismatch` cannot say the first. The
+/// split keeps the two diagnostics apart WITHOUT a second copy of the read — which is
+/// the shape that matters, because a copy is how a widening goes half-done (the
+/// half-widened operand set /code-review named on WI-20260827-2YHZ3, and again one
+/// layer out on WI-20260827-3ZNBC). A carrier that gains a literal head is read by
+/// every consumer of this function at once, or by none.
+pub(crate) fn str_operand_opt<'a>(
+    kb: &crate::kb::KnowledgeBase,
+    v: &'a Value,
+) -> Option<std::borrow::Cow<'a, str>> {
     use crate::kb::term_view::TermView;
     if let Value::Str(s) = v {
-        return Ok(std::borrow::Cow::Borrowed(s.as_str()));
+        return Some(std::borrow::Cow::Borrowed(s.as_str()));
     }
-    v.literal_string(kb)
-        .map(std::borrow::Cow::Owned)
-        .ok_or_else(|| type_mismatch("String", v, None))
+    v.literal_string(kb).map(std::borrow::Cow::Owned)
 }
 
 /// An `Int64` operand, on any carrier — [`str_operand`]'s integer peer, and the
@@ -2249,11 +2265,12 @@ fn str_operand<'a>(
 /// WI-20260827-3ZNBC. There was no such reader, so the sites that consume an int
 /// beside a string — `String.substring`'s bounds, `repeat`'s count, `slug`'s cap,
 /// `digestBase32`'s width, `Dictionary.sub`'s index — read the string through
-/// `str_operand` and the integer through the INHERENT `Value::as_int`, which sees
+/// `str_operand` and the integer through the then-INHERENT `Value::as_int`, which saw
 /// the native variant alone. So one operand of one call decided carrier-neutrally
 /// and the next refused, which is the half-widened set /code-review named on
-/// WI-20260827-2YHZ3 reappearing one layer out. No clone to weigh here (`i64` is
-/// `Copy`), so unlike `str_operand` there is no native fast path to keep.
+/// WI-20260827-2YHZ3 reappearing one layer out. (WI-20260827-14EV6 deleted that
+/// accessor, so the narrow read is no longer writable.) No clone to weigh here (`i64`
+/// is `Copy`), so unlike `str_operand` there is no native fast path to keep.
 fn int_operand(kb: &crate::kb::KnowledgeBase, v: &Value) -> Result<i64, EvalError> {
     use crate::kb::term_view::TermView;
     v.literal_int64(kb)
@@ -6756,15 +6773,20 @@ mod tests {
             registered(&mut interp, &args).expect("the registered closure must be invocable");
 
         assert_eq!(
-            direct.as_int(),
-            through_map.as_int(),
+            direct.literal_int64(interp.kb()),
+            through_map.literal_int64(interp.kb()),
             "both paths must return the same value"
         );
         let calls = seen.borrow();
         assert_eq!(calls.len(), 2, "the closure must have run once per path");
-        // Compared through `as_int` rather than `==`: WI-486 removed the carrier-blind
-        // `Value` comparator deliberately, so `Value` has no `PartialEq` to lean on.
-        let ints = |vs: &[Value]| vs.iter().map(|v| v.as_int()).collect::<Vec<_>>();
+        // Compared through the value each side DENOTES rather than `==`: WI-486 removed
+        // the carrier-blind `Value` comparator deliberately, so `Value` has no
+        // `PartialEq` to lean on.
+        let ints = |vs: &[Value]| {
+            vs.iter()
+                .map(|v| v.literal_int64(interp.kb()))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             ints(&calls[0]),
             ints(&args),
@@ -6779,8 +6801,9 @@ mod tests {
 
     #[test]
     fn numeric_add_int() {
+        let kb = crate::kb::KnowledgeBase::new();
         let r = numeric_add("Int64.add", &Value::Int(2), &Value::Int(3)).unwrap();
-        assert_eq!(r.as_int(), Some(5));
+        assert_eq!(r.literal_int64(&kb), Some(5));
     }
 
     #[test]
@@ -6842,16 +6865,18 @@ mod tests {
 
     #[test]
     fn compare_returns_neg1_0_1() {
+        let kb = crate::kb::KnowledgeBase::new();
         let lt = ordered_compare(&mut dummy(), &[Value::Int(1), Value::Int(2)]).unwrap();
         let eq = ordered_compare(&mut dummy(), &[Value::Int(2), Value::Int(2)]).unwrap();
         let gt = ordered_compare(&mut dummy(), &[Value::Int(3), Value::Int(2)]).unwrap();
-        assert_eq!(lt.as_int(), Some(-1));
-        assert_eq!(eq.as_int(), Some(0));
-        assert_eq!(gt.as_int(), Some(1));
+        assert_eq!(lt.literal_int64(&kb), Some(-1));
+        assert_eq!(eq.literal_int64(&kb), Some(0));
+        assert_eq!(gt.literal_int64(&kb), Some(1));
     }
 
     #[test]
     fn eq_on_equal_tuples_is_true() {
+        let kb = crate::kb::KnowledgeBase::new();
         let a = Value::Tuple {
             pos: vec![Value::Int(1)].into(),
             named: Vec::new().into(),
@@ -6861,11 +6886,12 @@ mod tests {
             named: Vec::new().into(),
         };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
-        assert_eq!(r.as_bool(), Some(true));
+        assert_eq!(r.literal_bool(&kb), Some(true));
     }
 
     #[test]
     fn eq_on_different_tuples_is_false() {
+        let kb = crate::kb::KnowledgeBase::new();
         let a = Value::Tuple {
             pos: vec![Value::Int(1)].into(),
             named: Vec::new().into(),
@@ -6875,22 +6901,24 @@ mod tests {
             named: Vec::new().into(),
         };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
-        assert_eq!(r.as_bool(), Some(false));
+        assert_eq!(r.literal_bool(&kb), Some(false));
     }
 
     #[test]
     fn eq_on_equal_entities_is_true() {
+        let kb = crate::kb::KnowledgeBase::new();
         let mk = || Value::Entity {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(10), Value::Str("x".into())].into(),
             named: vec![(Symbol::from_raw(8), Value::Bool(true))].into(),
         };
         let r = builtin_eq(&mut dummy(), &[mk(), mk()]).unwrap();
-        assert_eq!(r.as_bool(), Some(true));
+        assert_eq!(r.literal_bool(&kb), Some(true));
     }
 
     #[test]
     fn eq_on_entities_differing_functor_is_false() {
+        let kb = crate::kb::KnowledgeBase::new();
         let a = Value::Entity {
             functor: Symbol::from_raw(7),
             pos: vec![Value::Int(1)].into(),
@@ -6902,17 +6930,18 @@ mod tests {
             named: vec![].into(),
         };
         let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
-        assert_eq!(r.as_bool(), Some(false));
+        assert_eq!(r.literal_bool(&kb), Some(false));
     }
 
     #[test]
     fn string_concat_basic() {
+        let kb = crate::kb::KnowledgeBase::new();
         let r = string_concat(
             &mut dummy(),
             &[Value::Str("hi ".into()), Value::Str("there".into())],
         )
         .unwrap();
-        assert_eq!(r.as_str(), Some("hi there"));
+        assert_eq!(r.literal_string(&kb).as_deref(), Some("hi there"));
     }
 
     /// WI-880 moved the subject from `numeric_add` to `int_add`: the shared arithmetic

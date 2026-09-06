@@ -20,6 +20,7 @@ use crate::common;
 use anthill_core::eval::{EvalConfig, EvalError, Interpreter, Value};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
@@ -861,7 +862,7 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     let eq = i
         .call("test.wi625.typedeq.setsEqual", &[a, b])
         .expect("setsEqual({1,2},{2,1})")
-        .as_bool();
+        .literal_bool(i.kb());
     assert_eq!(
         eq,
         Some(true),
@@ -873,7 +874,7 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     let neq = i
         .call("test.wi625.typedeq.setsEqual", &[c, d])
         .expect("setsEqual({1,2},{1,3})")
-        .as_bool();
+        .literal_bool(i.kb());
     assert_eq!(
         neq,
         Some(false),

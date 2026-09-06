@@ -19,9 +19,16 @@
 
 use anthill_core::eval::Interpreter;
 
-fn expect_int(v: anthill_core::eval::Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: anthill_core::eval::Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // A lazy identity carrier (`map` without the transform): wraps a source Stream and
@@ -85,6 +92,7 @@ end
             interp
                 .call(op, &[])
                 .unwrap_or_else(|e| panic!("call {op}: {e:?}")),
+            interp.kb(),
         )
     };
     // The acceptance: the unqualified source peel value-dispatches on the List

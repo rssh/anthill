@@ -36,6 +36,7 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 
@@ -187,7 +188,7 @@ fn witness_eq_dispatches_at_the_interpreter() {
     let got = i
         .call("anthill.prelude.PartialEq.eq", &[a, b])
         .expect("PartialEq.eq")
-        .as_bool()
+        .literal_bool(i.kb())
         .expect("PartialEq.eq returns a Bool");
     assert!(
         got,

@@ -209,6 +209,7 @@ impl std::hash::Hash for CellHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kb::term_view::TermView;
 
     #[test]
     fn alloc_and_drop_reclaims() {
@@ -242,11 +243,12 @@ mod tests {
 
     #[test]
     fn write_replaces_value() {
+        let kb = crate::kb::KnowledgeBase::new();
         let arena = CellArenaRef::new();
         let h = arena.alloc(Value::Int(1));
         let prev = arena.write(&h, Value::Int(42));
-        assert_eq!(prev.as_int(), Some(1));
-        assert_eq!(arena.read(&h).as_int(), Some(42));
+        assert_eq!(prev.literal_int64(&kb), Some(1));
+        assert_eq!(arena.read(&h).literal_int64(&kb), Some(42));
     }
 
     #[test]

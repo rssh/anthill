@@ -45,7 +45,7 @@ end
         .call("test.wi218.Driver.main_test", &[Value::Int(42)])
         .expect("main_test should run");
     assert_eq!(
-        result.as_str(),
+        crate::common::scalar_str(interp.kb(), &result).as_deref(),
         Some("an int"),
         "expected impl body to run; got {result:?}"
     );

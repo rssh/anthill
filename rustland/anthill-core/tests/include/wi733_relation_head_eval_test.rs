@@ -251,7 +251,9 @@ fn wi733_relation_head_and_tail_decompose_the_stream() {
     let mut i3 = interp_for(SRC);
     let n = i3.call("test.wi733.tailLength", &[]);
     assert_eq!(
-        n.as_ref().ok().and_then(Value::as_int),
+        n.as_ref()
+            .ok()
+            .and_then(|v| crate::common::scalar_int(i3.kb(), v)),
         Some(2),
         "tail's length agrees with its drain; got {n:?}"
     );
@@ -313,7 +315,9 @@ end
     let mut i2 = interp_for(src);
     let n = i2.call("test.wi733lazy.threeRows", &[]);
     assert_eq!(
-        n.as_ref().ok().and_then(Value::as_int),
+        n.as_ref()
+            .ok()
+            .and_then(|v| crate::common::scalar_int(i2.kb(), v)),
         Some(3),
         "the relation keeps generating past its two vertices — so the read above \
          was against a stream with no end; got {n:?}"
@@ -375,8 +379,10 @@ end
 "#;
     expect_load_errors(
         try_load_kb_with(src),
-        &["type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
-           got undeclared effect: Error[T = EmptyStream]"],
+        &[
+            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
+           got undeclared effect: Error[T = EmptyStream]",
+        ],
     );
 }
 
@@ -422,8 +428,10 @@ end
 "#;
     expect_load_errors(
         try_load_kb_with(src),
-        &["type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
-           got undeclared effect: Error[T = EmptyStream]"],
+        &[
+            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
+           got undeclared effect: Error[T = EmptyStream]",
+        ],
     );
 }
 
@@ -485,7 +493,11 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
     };
     loop {
         let (functor, pos, named) = match &cur {
-            Value::Entity { functor, pos, named } => (*functor, pos.clone(), named.clone()),
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => (*functor, pos.clone(), named.clone()),
             other => panic!("expected a cons/nil entity, got {other:?}"),
         };
         let qn = interp.kb().qualified_name_of(functor).to_string();
@@ -507,8 +519,9 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
             Value::Tuple { .. } => {
                 let col = crate::common::sole_column(&head);
                 out.push(
-                    crate::common::scalar_str(interp.kb(), &col)
-                        .unwrap_or_else(|| panic!("expected a String column in the row, got {col:?}")),
+                    crate::common::scalar_str(interp.kb(), &col).unwrap_or_else(|| {
+                        panic!("expected a String column in the row, got {col:?}")
+                    }),
                 );
             }
             other => panic!("expected a one-column relation row, got {other:?}"),

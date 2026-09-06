@@ -34,6 +34,7 @@
 
 use crate::common::interp_for;
 use anthill_core::eval::{EvalError, Value};
+use anthill_core::kb::term_view::TermView;
 
 const SRC: &str = r#"
 namespace test.wi737
@@ -235,7 +236,7 @@ fn wi737_definite_relation_still_drains() {
         .call("test.wi737.pairAnyCount", &[])
         .expect("a DEFINITE relation drains unchanged — the gate is on the residual");
     assert_eq!(
-        n.as_int(),
+        n.literal_int64(interp.kb()),
         Some(9),
         "3 nums x 3 nums, no guard to flounder on"
     );
@@ -258,7 +259,7 @@ fn wi737_same_guard_drains_when_its_vars_are_bound_by_the_body() {
         .call("test.wi737.distinctLocalCount", &[])
         .expect("a decidable `neq` must NOT raise — the guard is not the trigger");
     assert_eq!(
-        n.as_int(),
+        n.literal_int64(interp.kb()),
         Some(6),
         "the 6 ordered pairs of distinct nums, each proving the membership once"
     );
@@ -272,7 +273,11 @@ fn wi737_definite_membership_still_yields_unit() {
     let n = interp
         .call("test.wi737.hasOneCount", &[])
         .expect("a definite membership relation still drains");
-    assert_eq!(n.as_int(), Some(1), "num(v: 1) is provable exactly once");
+    assert_eq!(
+        n.literal_int64(interp.kb()),
+        Some(1),
+        "num(v: 1) is provable exactly once"
+    );
 }
 
 /// The gate is PER-SOLUTION and lazy, not per-relation: a relation whose definite
@@ -287,7 +292,11 @@ fn wi737_definite_prefix_drains_and_the_raise_is_lazy() {
     let bounded = interp
         .call("test.wi737.mixedBounded", &[])
         .expect("the 3 definite rows drain — the drain never reaches the floundered clause");
-    assert_eq!(bounded.as_int(), Some(3), "clause 1's three definite rows");
+    assert_eq!(
+        bounded.literal_int64(interp.kb()),
+        Some(3),
+        "clause 1's three definite rows"
+    );
 
     let err = interp
         .call("test.wi737.mixedFull", &[])

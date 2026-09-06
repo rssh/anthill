@@ -18,6 +18,7 @@
 use anthill_core::eval::{Interpreter, Value};
 
 use crate::common::interp_for;
+use anthill_core::kb::term_view::TermView;
 
 fn empty_map(interp: &mut Interpreter) -> Value {
     interp
@@ -97,7 +98,7 @@ end
         )
         .expect("get");
     let inner = unwrap_some(&interp, v);
-    assert_eq!(inner.as_int(), Some(1));
+    assert_eq!(inner.literal_int64(interp.kb()), Some(1));
 
     // Missing key → none.
     let v = interp
@@ -123,7 +124,7 @@ end
         interp
             .call("anthill.prelude.Map.size", &[m.clone()])
             .unwrap()
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(0),
     );
     let m = interp
@@ -136,7 +137,7 @@ end
         interp
             .call("anthill.prelude.Map.size", &[m.clone()])
             .unwrap()
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(1),
     );
     assert_eq!(
@@ -146,7 +147,7 @@ end
                 &[m.clone(), Value::Str("k".into()),]
             )
             .unwrap()
-            .as_bool(),
+            .literal_bool(interp.kb()),
         Some(true),
     );
     let m = interp
@@ -156,7 +157,7 @@ end
         interp
             .call("anthill.prelude.Map.size", &[m])
             .unwrap()
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(0),
     );
 }
@@ -177,7 +178,7 @@ end
     let result = interp
         .call("test.map_form2.build", &[])
         .expect("call build");
-    assert_eq!(result.as_int(), Some(1));
+    assert_eq!(result.literal_int64(interp.kb()), Some(1));
 }
 
 #[test]
@@ -198,7 +199,7 @@ end
     let result = interp
         .call("test.map_dotted.build", &[])
         .expect("call build");
-    assert_eq!(result.as_int(), Some(1));
+    assert_eq!(result.literal_int64(interp.kb()), Some(1));
 }
 
 #[test]
@@ -220,7 +221,7 @@ end
     let result = interp
         .call("test.map_form3.build", &[])
         .expect("call build");
-    assert_eq!(result.as_int(), Some(1));
+    assert_eq!(result.literal_int64(interp.kb()), Some(1));
 }
 
 #[test]
@@ -248,7 +249,7 @@ end
     let result = interp
         .call("test.map_form1.build", &[])
         .expect("call build");
-    assert_eq!(result.as_int(), Some(1));
+    assert_eq!(result.literal_int64(interp.kb()), Some(1));
 }
 
 #[test]
@@ -266,7 +267,7 @@ end
     let result = interp
         .call("test.let_anno_int.main", &[])
         .expect("call main");
-    assert_eq!(result.as_int(), Some(7));
+    assert_eq!(result.literal_int64(interp.kb()), Some(7));
 }
 
 #[test]
@@ -292,7 +293,7 @@ end
         .call("test.map_acceptance.lookup", &[])
         .expect("lookup");
     let inner = unwrap_some(&interp, result);
-    assert_eq!(inner.as_int(), Some(1));
+    assert_eq!(inner.literal_int64(interp.kb()), Some(1));
 }
 
 #[test]

@@ -68,6 +68,8 @@
 //! `*_ctl` rejects in the (2) group are refused under both, so their assertion is on the
 //! MESSAGE, not the verdict — that is what makes them measure anything.
 
+use anthill_core::kb::term_view::TermView;
+
 /// The shared DECLARATIONS: the effectful bodies and the two handlers. No call is made
 /// here, so no discharge happens in this file — it stays loadable under either back-out
 /// and cannot take the per-case fixtures down with it.
@@ -568,7 +570,7 @@ fn a_program_whose_row_was_discharged_evaluates() {
         .call("wi329.c_eval.run_handled", &[])
         .unwrap_or_else(|e| panic!("call run_handled: {e:?}"));
     assert_eq!(
-        got.as_int(),
+        got.literal_int64(interp.kb()),
         Some(0),
         "handle_Error's stand-in body returns 0"
     );

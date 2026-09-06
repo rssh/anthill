@@ -21,9 +21,16 @@
 use crate::common::{load_kb_with, try_load_kb_with};
 use anthill_core::eval::{Interpreter, Value};
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 fn call_ints(src: &str, calls: &[(&str, i64)]) {
@@ -33,7 +40,7 @@ fn call_ints(src: &str, calls: &[(&str, i64)]) {
         let result = interp
             .call(op, &[])
             .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
-        assert_eq!(expect_int(result), *expected, "{op}");
+        assert_eq!(expect_int(result, interp.kb()), *expected, "{op}");
     }
 }
 

@@ -1613,3 +1613,6 @@ mod wi_qqpq2_tuple_carrier_test;
 mod wi_n20ez_answer_links_transient_test;
 #[path = "include/wi_60143_total_unify_descent_test.rs"]
 mod wi_60143_total_unify_descent_test;
+
+#[path = "include/wi14ev6_carrier_neutral_scalar_read_test.rs"]
+mod wi14ev6_carrier_neutral_scalar_read_test;

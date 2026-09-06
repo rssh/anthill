@@ -57,9 +57,16 @@ fn fmt(errs: &[LoadError]) -> String {
         .join("\n")
 }
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int()
-        .unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 // ── (1)+(2) Type-check: the headline chain dispatches and infers ────────
@@ -197,7 +204,7 @@ fn dot_chain_evaluates_on_literal_receiver() {
     let got = interp
         .call("wi278.eval.chain_literal", &[])
         .unwrap_or_else(|e| panic!("call chain_literal: {e:?}"));
-    assert_eq!(expect_int(got), 345);
+    assert_eq!(expect_int(got, interp.kb()), 345);
 }
 
 #[test]
@@ -212,7 +219,7 @@ fn dot_chain_evaluates_on_param_receiver() {
     let got = interp
         .call("wi278.eval.chain_param_sum", &[arg])
         .unwrap_or_else(|e| panic!("call chain_param_sum: {e:?}"));
-    assert_eq!(expect_int(got), 12);
+    assert_eq!(expect_int(got, interp.kb()), 12);
 }
 
 #[test]
@@ -221,7 +228,7 @@ fn dot_chain_evaluates_on_let_receiver() {
     let got = interp
         .call("wi278.eval.chain_let", &[])
         .unwrap_or_else(|e| panic!("call chain_let: {e:?}"));
-    assert_eq!(expect_int(got), 345);
+    assert_eq!(expect_int(got, interp.kb()), 345);
 }
 
 #[test]
@@ -230,5 +237,5 @@ fn dot_chain_evaluates_to_empty_when_all_filtered() {
     let got = interp
         .call("wi278.eval.chain_empty", &[])
         .unwrap_or_else(|e| panic!("call chain_empty: {e:?}"));
-    assert_eq!(expect_int(got), 0);
+    assert_eq!(expect_int(got, interp.kb()), 0);
 }

@@ -212,6 +212,16 @@ fn description_omitted_when_none() {
 /// `anthill-core` API. Slow (~minutes on cold cache), so it lives behind
 /// the `--ignored` flag — invoke explicitly with
 /// `cargo test -p anthill-rust-gen -- --ignored`.
+///
+/// RUN IT WHENEVER `anthill-core`'s PUBLIC API MOVES, and treat that as a rule rather
+/// than a courtesy. The bundle's `main.rs` lives inside a `format!` string literal, so
+/// `cargo check --workspace --all-targets` cannot see it and neither can a
+/// compiler-driven census of a removed method's call sites: the template is the one
+/// consumer of the API that the compiler is blind to, and THIS test is the only thing
+/// that reads it. WI-20260827-14EV6 deleted `Value::as_int`, which the template called;
+/// the whole workspace stayed green and every emitted bundle would have failed to
+/// compile at the user's machine. Measured — with that one line reverted this test
+/// fails with `no method named `as_int` found for enum `Value``, in 22s on a warm cache.
 #[test]
 #[ignore = "runs nested cargo check; opt in via --ignored"]
 fn emitted_bundle_compiles() {

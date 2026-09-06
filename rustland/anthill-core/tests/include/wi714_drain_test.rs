@@ -41,6 +41,7 @@
 
 use crate::common::interp_for;
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
 const SRC: &str = r#"
 namespace test.wi714drain
@@ -125,7 +126,7 @@ fn wi714_relation_folds_into_a_set() {
         .call("test.wi714drain.nameSetSize", &[])
         .expect("nameSetSize() runs");
     assert_eq!(
-        n.as_int(),
+        n.literal_int64(interp.kb()),
         Some(3),
         "three people → the drained+folded set holds {{alice, bob, carol}}"
     );
@@ -140,7 +141,7 @@ fn wi714_set_dedups_while_the_drain_keeps_the_bag() {
         .call("test.wi714drain.dupNameCount", &[])
         .expect("dupNameCount() runs");
     assert_eq!(
-        rows.as_int(),
+        rows.literal_int64(interp.kb()),
         Some(5),
         "the drain is a BAG: clause 1 yields alice+carol (age 30), clause 2 yields all three"
     );
@@ -148,7 +149,7 @@ fn wi714_set_dedups_while_the_drain_keeps_the_bag() {
         .call("test.wi714drain.dupNameSetSize", &[])
         .expect("dupNameSetSize() runs");
     assert_eq!(
-        distinct.as_int(),
+        distinct.literal_int64(interp.kb()),
         Some(3),
         "...but `put` dedups: the SET holds only {{alice, bob, carol}}"
     );
@@ -172,9 +173,10 @@ fn wi714_collected_set_answers_membership() {
         Value::Entity { named, .. } if !named.is_empty() => named[0].1.clone(),
         other => panic!("alice IS in the collected set → some(true), got {other:?}"),
     };
-    // WI-20260827-3ZNBC — `Value::as_bool` is the INHERENT accessor and sees the
-    // `Value::Bool` variant alone; the same `true` also arrives hash-consed or as an
-    // occurrence now that a relation column keeps its own carrier.
+    // WI-20260827-3ZNBC — the deleted `Value::as_bool` was an INHERENT accessor that saw
+    // the `Value::Bool` variant alone; the same `true` also arrives hash-consed or as an
+    // occurrence now that a relation column keeps its own carrier. (WI-20260827-14EV6
+    // removed it, so `scalar_bool` is the only spelling left.)
     assert_eq!(
         crate::common::scalar_bool(interp.kb(), &payload),
         Some(true),
@@ -196,7 +198,7 @@ fn wi714_drain_composes_with_the_algebra() {
         .call("test.wi714drain.filteredSetSize", &[])
         .expect("filteredSetSize() runs the where+project pipeline and folds it");
     assert_eq!(
-        n.as_int(),
+        n.literal_int64(interp.kb()),
         Some(2),
         "where(age=30).(name) drains+folds to the 2-name set {{alice, carol}}"
     );

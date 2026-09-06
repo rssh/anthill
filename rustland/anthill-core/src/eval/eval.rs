@@ -3277,14 +3277,14 @@ impl Interpreter {
                     else_branch,
                 } => {
                     // WI-20260827-3ZNBC — the condition is read for WHAT IT DENOTES,
-                    // not which variant carries it. `Value::as_bool` is the INHERENT
-                    // accessor and sees `Value::Bool` alone, so an `if` over a
-                    // condition that arrived on a handle — a relation column typed
-                    // `Bool`, a bridged operand — died `TypeMismatch { expected:
+                    // not which variant carries it. This used to be `Value::as_bool`,
+                    // an INHERENT accessor that saw `Value::Bool` alone, so an `if`
+                    // over a condition that arrived on a handle — a relation column
+                    // typed `Bool`, a bridged operand — died `TypeMismatch { expected:
                     // "Bool", got: "Term" }` on a value that plainly denoted one.
-                    // (An inherent method WINS over a trait method, which is why the
-                    // neutral one is spelled `literal_bool` and not `as_bool`; a
-                    // trait `as_bool` would resolve silently back to this.)
+                    // (WI-20260827-14EV6 has since DELETED that accessor and its two
+                    // siblings, so the narrow read cannot be written back here by
+                    // accident; `literal_bool` is now the only spelling.)
                     //
                     // The `top` borrow is dropped before `self.kb` is read and the
                     // frame re-acquired after — the same shape `AwaitState::LetBind`

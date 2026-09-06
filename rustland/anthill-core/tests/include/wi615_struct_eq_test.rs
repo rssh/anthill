@@ -10,6 +10,7 @@
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use smallvec::SmallVec;
@@ -144,7 +145,7 @@ fn struct_eq_evaluates_in_an_operation_body() {
         .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(4)])
         .expect("same(4,4) must evaluate");
     assert_eq!(
-        t.as_bool(),
+        t.literal_bool(interp.kb()),
         Some(true),
         "4 === 4 in an op body must be true"
     );
@@ -152,7 +153,7 @@ fn struct_eq_evaluates_in_an_operation_body() {
         .call("test.wi615.eval.same", &[Value::Int(4), Value::Int(5)])
         .expect("same(4,5) must evaluate");
     assert_eq!(
-        f.as_bool(),
+        f.literal_bool(interp.kb()),
         Some(false),
         "4 === 5 in an op body must be false"
     );

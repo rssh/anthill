@@ -83,6 +83,7 @@
 //! "loads clean" to "refused, and NOT by the capture check".
 
 use anthill_core::eval::Interpreter;
+use anthill_core::kb::term_view::TermView;
 
 /// The one shape every row varies: a two-constructor `Color` whose equality is
 /// stated by MEMBERS, plus whatever the row needs around it. `members` is spliced
@@ -634,7 +635,7 @@ fn the_eq_spelling_of_the_same_carrier_is_answered_semantically() {
     let call = |i: &mut Interpreter, op: &str| -> bool {
         i.call(op, &[])
             .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-            .as_bool()
+            .literal_bool(i.kb())
             .unwrap_or_else(|| panic!("call {op}: not a Bool"))
     };
     assert!(
@@ -648,4 +649,3 @@ fn the_eq_spelling_of_the_same_carrier_is_answered_semantically() {
          FALSE — the structural verdict is TRUE"
     );
 }
-

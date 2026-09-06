@@ -44,8 +44,16 @@
 use crate::common::{interp_for, try_load_kb_with};
 use anthill_core::eval::{Interpreter, Value};
 
-fn expect_int(v: Value) -> i64 {
-    v.as_int().unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
+/// WI-20260827-14EV6: the read is CARRIER-NEUTRAL — it asserts which VALUE the
+/// evaluator produced, not which `Value` variant carried it. Hence the `kb`: a
+/// hash-consed `Value::Term` is only readable through the term store.
+///
+/// The `kb` comes SECOND on purpose. Every caller is shaped
+/// `expect_int(interp.call(…).unwrap(), interp.kb())`, and Rust evaluates arguments
+/// left to right, so the `&mut` borrow for `call` ends before the shared `kb()` read
+/// begins. With the parameters the other way round it does not compile.
+fn expect_int(v: Value, kb: &anthill_core::kb::KnowledgeBase) -> i64 {
+    crate::common::scalar_int(kb, &v).unwrap_or_else(|| panic!("expected Int64, got {v:?}"))
 }
 
 /// A diagnostic carrying a `line:col:` prefix. Spelled out rather than "contains a
@@ -90,16 +98,28 @@ end
 
 fn call_main(ops: &str) -> i64 {
     let mut interp: Interpreter = interp_for(&program(ops));
-    expect_int(interp.call("wiybbc3.main", &[]).expect("call main"))
+    expect_int(
+        interp.call("wiybbc3.main", &[]).expect("call main"),
+        interp.kb(),
+    )
 }
 
 /// `if` as a call argument, bare and parenthesized. Both spellings were the same syntax
 /// error; both now reach the callee and both compute.
 #[test]
 fn an_if_is_a_call_argument() {
-    assert_eq!(call_main("  operation main() -> Int64 = takes_int(if true then 7 else 9)"), 7);
-    assert_eq!(call_main("  operation main() -> Int64 = takes_int(if false then 7 else 9)"), 9);
-    assert_eq!(call_main("  operation main() -> Int64 = takes_int((if true then 7 else 9))"), 7);
+    assert_eq!(
+        call_main("  operation main() -> Int64 = takes_int(if true then 7 else 9)"),
+        7
+    );
+    assert_eq!(
+        call_main("  operation main() -> Int64 = takes_int(if false then 7 else 9)"),
+        9
+    );
+    assert_eq!(
+        call_main("  operation main() -> Int64 = takes_int((if true then 7 else 9))"),
+        7
+    );
 }
 
 /// `match` as a call argument — the form the ticket names first, and the one with the
@@ -140,9 +160,7 @@ fn a_comma_ends_a_match_arm_list_in_an_argument() {
 #[test]
 fn a_let_chain_is_a_call_argument() {
     assert_eq!(
-        call_main(
-            "  operation main() -> Int64 = pair_up(let v = 7\n    v, 3)"
-        ),
+        call_main("  operation main() -> Int64 = pair_up(let v = 7\n    v, 3)"),
         703
     );
 }
@@ -207,7 +225,10 @@ fn a_compound_expression_is_a_list_element() {
 #[test]
 fn parentheses_reach_the_undelimited_positions() {
     // infix operand
-    assert_eq!(call_main("  operation main() -> Int64 = 100 + (if true then 7 else 9)"), 107);
+    assert_eq!(
+        call_main("  operation main() -> Int64 = 100 + (if true then 7 else 9)"),
+        107
+    );
     // dot receiver
     assert_eq!(
         call_main("  operation main() -> Int64 = (if true then mk(7) else mk(9)).a_of()"),
@@ -304,13 +325,20 @@ fn control_a_bare_compound_form_is_not_an_infix_operand() {
 /// re-routed the ORDINARY case through the compound dispatch and broke it.
 #[test]
 fn control_the_ordinary_spellings_are_unchanged() {
-    assert_eq!(call_main("  operation main() -> Int64 = pair_up(7, 3)"), 703);
-    assert_eq!(call_main("  operation main() -> Int64 = pair_up(a: 7, b: 3)"), 703);
-    assert_eq!(call_main("  operation main() -> Int64 = sum3([1, 2, 300])"), 303);
+    assert_eq!(
+        call_main("  operation main() -> Int64 = pair_up(7, 3)"),
+        703
+    );
+    assert_eq!(
+        call_main("  operation main() -> Int64 = pair_up(a: 7, b: 3)"),
+        703
+    );
+    assert_eq!(
+        call_main("  operation main() -> Int64 = sum3([1, 2, 300])"),
+        303
+    );
     assert_eq!(call_main("  operation main() -> Int64 = takes_int((7))"), 7);
 }
-
-
 
 /// WHAT THE WIDENING ALSO REACHES, MEASURED RATHER THAN ASSUMED. A rule head, a rule body
 /// goal and a `fact` argument are all built from the same `_fn_arg` grammar, so widening

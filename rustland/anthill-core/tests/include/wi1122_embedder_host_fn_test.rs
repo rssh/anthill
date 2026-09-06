@@ -60,6 +60,7 @@
 
 use anthill_core::eval::{EvalError, Interpreter, Value};
 use anthill_core::kb::host_fns::HostFnRegError;
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 
 // ── The embedder's own host functions ────────────────────────────────
@@ -147,7 +148,7 @@ fn an_embedder_registered_function_is_callable_from_an_operation_map() {
         .call("wi1122.ok.Driver.ask", &[Value::Int(0)])
         .expect("the mapped operation must run");
     assert_eq!(
-        v.as_int(),
+        v.literal_int64(interp.kb()),
         Some(407),
         "the embedder's function must be what ran: 4 * 100 + 7"
     );
@@ -195,7 +196,7 @@ fn an_embedder_function_survives_a_fresh_interpreter_over_the_same_kb() {
         second
             .call("wi1122.fresh.Driver.ask", &[Value::Int(0)])
             .expect("the mapped operation must run on the second interpreter too")
-            .as_int(),
+            .literal_int64(second.kb()),
         Some(407),
         "and it must reach the SAME embedder function, not merely register something",
     );
@@ -254,7 +255,7 @@ fn the_control_a_matching_arity_runs() {
         interp
             .call("wi1122.arityok.Driver.ask", &[Value::Int(0)])
             .expect("must run")
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(407),
     );
 }
@@ -365,7 +366,7 @@ fn the_control_the_same_registration_before_load_is_accepted() {
         interp
             .call("wi1122.ontime.Driver.ask", &[Value::Int(0)])
             .expect("must run")
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(407),
     );
 }
@@ -387,12 +388,14 @@ fn an_embedder_function_may_close_over_its_own_state() {
     let offset = 9000i64; // stands in for an embedder's config: a token, a repo, a client
 
     let kb = crate::common::try_load_kb_prepared(&src, move |kb| {
-        kb.register_host_fn("embedder_configured", 1, move |_interp, args: &[Value]| {
-            match args {
+        kb.register_host_fn(
+            "embedder_configured",
+            1,
+            move |_interp, args: &[Value]| match args {
                 [Value::Int(n)] => Ok(Value::Int(n * 100 + 7 + offset)),
                 other => Err(EvalError::Internal(format!("got {other:?}"))),
-            }
-        })
+            },
+        )
         .expect("a closure must be registerable");
     })
     .unwrap_or_else(|errs| panic!("expected a clean load; got: {errs:?}"));
@@ -404,7 +407,7 @@ fn an_embedder_function_may_close_over_its_own_state() {
         interp
             .call("wi1122.closure.Driver.ask", &[Value::Int(0)])
             .expect("the closure must run")
-            .as_int(),
+            .literal_int64(interp.kb()),
         Some(9407),
         "the CAPTURED offset must have reached the call",
     );

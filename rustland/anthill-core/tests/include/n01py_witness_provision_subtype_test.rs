@@ -76,6 +76,7 @@
 //! decision.
 
 use crate::common::{interp_for, try_load_kb_with};
+use anthill_core::kb::term_view::TermView;
 
 /// A user-defined spec with a DIRECT provider, a WITNESS provider whose provision is
 /// keyed on `Wrap[S = S]` and GATED by `requires Cap[C = S, …]`, and a sort that provides
@@ -173,7 +174,7 @@ fn drive(use_expr: &str) -> i64 {
     let v = interp
         .call("n01py.use", &[])
         .unwrap_or_else(|e| panic!("call n01py.use over `{use_expr}`: {e:?}"));
-    v.as_int()
+    v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("expected an Int64 from `{use_expr}`, got {v:?}"))
 }
 
@@ -302,7 +303,7 @@ end
         .call("n01pyrec.use", &[])
         .unwrap_or_else(|e| panic!("call n01pyrec.use: {e:?}"));
     assert_eq!(
-        v.as_int(),
+        v.literal_int64(interp.kb()),
         Some(7),
         "`A` provides `Sp` through `AW`; the self-carried `SpW` cannot answer for `A` and \
          must simply drop out, not drive the question into itself",
@@ -412,7 +413,7 @@ fn drive_stdlib_in(src: &str, op: &str) -> i64 {
     let v = interp
         .call(op, &[])
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"));
-    v.as_int()
+    v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("expected an Int64 from {op}, got {v:?}"))
 }
 
@@ -439,7 +440,10 @@ fn an_author_declared_consumer_takes_a_filtered_stream() {
 /// provision is FILED, not that a spec type sits in the parameter position.
 #[test]
 fn the_same_consumer_over_a_list_is_the_control() {
-    assert_eq!(drive_stdlib_in(STDLIB_CONTROL_SRC, "n01pystlctl.totalOfList"), 4);
+    assert_eq!(
+        drive_stdlib_in(STDLIB_CONTROL_SRC, "n01pystlctl.totalOfList"),
+        4
+    );
 }
 
 /// CONTROL — PASSES EITHER WAY BY DESIGN, and it is the stdlib's soundness row.

@@ -13,6 +13,7 @@
 
 use crate::common::{interp_for, register_modify_handler};
 use anthill_core::eval::Value;
+use anthill_core::kb::term_view::TermView;
 
 #[test]
 fn cell_new_then_get_round_trip() {
@@ -30,7 +31,7 @@ end
     let r = interp
         .call("test.wi205_round_trip.make_and_read", &[Value::Int(42)])
         .expect("make_and_read");
-    assert_eq!(r.as_int(), Some(42));
+    assert_eq!(r.literal_int64(interp.kb()), Some(42));
 }
 
 #[test]
@@ -59,7 +60,7 @@ end
     let r = interp
         .call("test.wi205_overwrite.read", &[cell])
         .expect("read");
-    assert_eq!(r.as_int(), Some(99));
+    assert_eq!(r.literal_int64(interp.kb()), Some(99));
 }
 
 #[test]
@@ -99,8 +100,16 @@ end
     let read_b = interp
         .call("test.wi205_distinct.read", &[b])
         .expect("read b");
-    assert_eq!(read_a.as_int(), Some(100), "a's update should land in a");
-    assert_eq!(read_b.as_int(), Some(2), "b should be untouched");
+    assert_eq!(
+        read_a.literal_int64(interp.kb()),
+        Some(100),
+        "a's update should land in a"
+    );
+    assert_eq!(
+        read_b.literal_int64(interp.kb()),
+        Some(2),
+        "b should be untouched"
+    );
 }
 
 #[test]
@@ -196,7 +205,7 @@ end
         .call("test.wi205_recursive.chain", &[Value::Int(100)])
         .expect("chain");
     assert_eq!(
-        r.as_int(),
+        r.literal_int64(interp.kb()),
         Some(0),
         "each recursion frame must read back its own cell value"
     );
@@ -232,7 +241,7 @@ fn modify_set_get_on_cell_routes_through_arena() {
         .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[cell_a_value])
         .expect("Modify.get on Cell A");
     assert_eq!(
-        got_a.as_int(),
+        got_a.literal_int64(interp.kb()),
         Some(100),
         "Cell A should hold the written value"
     );
@@ -241,7 +250,7 @@ fn modify_set_get_on_cell_routes_through_arena() {
         .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[cell_b_value])
         .expect("Modify.get on Cell B");
     assert_eq!(
-        got_b.as_int(),
+        got_b.literal_int64(interp.kb()),
         Some(2),
         "Cell B should remain untouched — functor-keyed aliasing must not happen"
     );

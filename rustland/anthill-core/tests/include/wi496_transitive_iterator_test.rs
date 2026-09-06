@@ -20,6 +20,7 @@
 //! their own impl — only the provides-chain carrier defers.
 
 use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
@@ -81,7 +82,7 @@ fn transitive_iterator_evaluates() {
         .call("wi496.transitive.walk", &[xs])
         .unwrap_or_else(|e| panic!("call walk: {e:?}"));
     assert_eq!(
-        got.as_int(),
+        got.literal_int64(interp.kb()),
         Some(3),
         "iterator(xs) over a 3-element list, counted"
     );

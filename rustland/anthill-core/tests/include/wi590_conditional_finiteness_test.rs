@@ -68,6 +68,7 @@
 
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
@@ -327,6 +328,6 @@ fn int_of(interp: &mut Interpreter, op: &str, args: &[Value]) -> i64 {
     interp
         .call(op, args)
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_int()
+        .literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("call {op}: expected Int64"))
 }

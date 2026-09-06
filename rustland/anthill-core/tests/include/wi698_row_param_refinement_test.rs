@@ -59,6 +59,8 @@
 //!      `() -> ret @ row` (pre-WI-700 it collapsed to its return type, dropping the
 //!      row and bypassing the check).
 
+use anthill_core::kb::term_view::TermView;
+
 /// The 054 §Faking mini-model over the REAL `External`: spec with a row param +
 /// the two carriers. NOTE: no `import anthill.prelude.EffectsRuntime` is needed —
 /// the `effects EM = ?` desugar emits its `requires` anchor by CANONICAL name
@@ -627,7 +629,7 @@ fn nullary_eta_lift_round_trips_through_eval() {
         .call("smoke.eta_nullary.use_it", &[])
         .expect("use_it evaluates");
     assert_eq!(
-        r.as_int(),
+        r.literal_int64(interp.kb()),
         Some(5),
         "nullary `five` eta'd to an OpRef, then called as a thunk at `f()`, yields 5",
     );
@@ -663,7 +665,7 @@ fn nullary_returning_function_prefers_return_type_reading() {
         .call("smoke.nullary_ret_fn.go", &[])
         .expect("go evaluates");
     assert_eq!(
-        r.as_int(),
+        r.literal_int64(interp.kb()),
         Some(0),
         "make_inc reads as its returned Function (not eta'd to `() -> Function`); apply_it(make_inc) applies it to 0",
     );

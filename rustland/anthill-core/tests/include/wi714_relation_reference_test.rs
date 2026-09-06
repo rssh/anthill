@@ -18,6 +18,7 @@
 use anthill_core::eval::Value;
 
 use crate::common::{interp_for, try_load_kb_with};
+use anthill_core::kb::term_view::TermView;
 
 const SRC: &str = r#"
 namespace test.wi714ref
@@ -228,7 +229,7 @@ fn wi714_zero_column_membership_relation() {
         .call("test.wi714ref.aliceIsEmpty", &[])
         .expect("aliceIsEmpty() runs the 0-column relation");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(false),
         "a provable membership relation is non-empty"
     );
@@ -248,7 +249,7 @@ fn wi714_negate_of_provable_is_empty() {
         .call("test.wi714ref.negateProvableIsEmpty", &[])
         .expect("negate(has_alice).isEmpty");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(true),
         "negate of a provable relation is empty (NAF fails)"
     );
@@ -263,7 +264,7 @@ fn wi714_negate_of_empty_is_nonempty() {
         .call("test.wi714ref.negateEmptyIsEmpty", &[])
         .expect("negate(has_zed).isEmpty");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(false),
         "negate of an empty relation is non-empty (NAF succeeds)"
     );
@@ -345,7 +346,7 @@ fn wi714_negate_composes_double_negation() {
         .call("test.wi714ref.doubleNegateIsEmpty", &[])
         .expect("negate(negate(has_alice)).isEmpty");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(false),
         "double negation of a provable relation is non-empty (composes at the query level)"
     );
@@ -399,7 +400,7 @@ fn wi714_union_of_membership_relations() {
         .call("test.wi714ref.unionMembershipIsEmpty", &[])
         .expect("union(has_alice, has_zed).isEmpty");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(false),
         "a membership union is non-empty iff either operand is provable"
     );
@@ -415,7 +416,7 @@ fn wi714_union_composes_under_negate() {
         .call("test.wi714ref.negateUnionIsEmpty", &[])
         .expect("negate(union(has_zed, has_zed)).isEmpty");
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(interp.kb()),
         Some(false),
         "negate of an empty union is non-empty (union composes at the query level)"
     );
@@ -678,7 +679,7 @@ fn wi714_applied_full_binding_is_membership() {
         .call("test.wi714applied.aliceRowPresent", &[])
         .expect("aliceRowPresent runs the fully-bound relation");
     assert_eq!(
-        present.as_bool(),
+        present.literal_bool(interp.kb()),
         Some(false),
         "a fully-bound relation matching a fact is a non-empty membership relation"
     );
@@ -686,7 +687,7 @@ fn wi714_applied_full_binding_is_membership() {
         .call("test.wi714applied.ghostRowPresent", &[])
         .expect("ghostRowPresent runs the fully-bound relation");
     assert_eq!(
-        ghost.as_bool(),
+        ghost.literal_bool(interp.kb()),
         Some(true),
         "a fully-bound relation matching no fact is empty"
     );
@@ -920,7 +921,7 @@ fn wi714_applied_nonlinear_column_binds_as_one() {
         .call("test.wi714cols.aliceIsTwin", &[])
         .expect("aliceIsTwin runs the nonlinear-bound relation");
     assert_eq!(
-        alice.as_bool(),
+        alice.literal_bool(interp.kb()),
         Some(false),
         "binding the single nonlinear column gives a provable (non-empty) membership relation"
     );
@@ -928,7 +929,7 @@ fn wi714_applied_nonlinear_column_binds_as_one() {
         .call("test.wi714cols.ghostIsTwin", &[])
         .expect("ghostIsTwin runs the nonlinear-bound relation");
     assert_eq!(
-        ghost.as_bool(),
+        ghost.literal_bool(interp.kb()),
         Some(true),
         "a non-person is not a twin — the membership relation is empty"
     );
@@ -944,7 +945,7 @@ fn wi714_applied_positional_skips_ground_slot() {
         .call("test.wi714cols.aliceIsRankOne", &[])
         .expect("aliceIsRankOne binds the free column past the ground slot");
     assert_eq!(
-        alice.as_bool(),
+        alice.literal_bool(interp.kb()),
         Some(false),
         "alice is rank 1 — the positionally-bound membership relation is non-empty"
     );
@@ -952,7 +953,7 @@ fn wi714_applied_positional_skips_ground_slot() {
         .call("test.wi714cols.bobIsRankOne", &[])
         .expect("bobIsRankOne runs the relation");
     assert_eq!(
-        bob.as_bool(),
+        bob.literal_bool(interp.kb()),
         Some(true),
         "bob is rank 2, not rank 1 — the membership relation is empty"
     );

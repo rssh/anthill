@@ -77,8 +77,9 @@ fn field(interp: &anthill_core::eval::Interpreter, v: &Value, name: &str, rank: 
     crate::common::entity_field(interp.kb(), v, name, rank)
 }
 
-/// Likewise for the leaf `String`s: `Value::as_str` answers only the `Value::Str`
-/// carrier, so the payload's carrier would decide whether it reads as a string.
+/// Likewise for the leaf `String`s: the deleted `Value::as_str` answered only the
+/// `Value::Str` carrier, so the payload's carrier would decide whether it reads as a
+/// string (WI-20260827-14EV6 removed it; `scalar_str` is the read).
 ///
 /// PANICS rather than defaulting, which `scalar_str`'s own contract demands: it answers
 /// `None` both for a non-literal head and for a literal of the WRONG TYPE, "so a

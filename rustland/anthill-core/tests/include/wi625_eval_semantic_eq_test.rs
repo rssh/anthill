@@ -26,6 +26,7 @@
 
 use anthill_core::eval::{Interpreter, Value};
 use anthill_core::kb::term::{Literal, Term, TermId};
+use anthill_core::kb::term_view::TermView;
 use smallvec::SmallVec;
 
 fn interp() -> Interpreter {
@@ -73,7 +74,7 @@ fn map_val(i: &mut Interpreter, entries: &[(i64, i64)]) -> Value {
 fn call2(i: &mut Interpreter, op: &str, a: Value, b: Value) -> bool {
     i.call(op, &[a, b])
         .unwrap_or_else(|e| panic!("call {op}: {e:?}"))
-        .as_bool()
+        .literal_bool(i.kb())
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
 }
 
@@ -203,7 +204,7 @@ fn eval_eq_buried_override_stays_structural_not_error() {
         .call(EQ, &[some1.clone(), some2.clone()])
         .unwrap_or_else(|e| panic!("buried-override eq must return a Bool, not error: {e:?}"));
     assert_eq!(
-        r.as_bool(),
+        r.literal_bool(i.kb()),
         Some(false),
         "buried override falls back to structural (false)"
     );

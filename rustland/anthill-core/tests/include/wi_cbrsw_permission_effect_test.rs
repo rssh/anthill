@@ -78,6 +78,8 @@
 //! Every row loads the real stdlib, so each is also a standing assertion that the
 //! prelude's own registration is reachable.
 
+use anthill_core::kb::term_view::TermView;
+
 /// Load `src` beside the full stdlib, returning the rendered load errors (empty on a
 /// clean load).
 fn load_errors(src: &str) -> Vec<String> {
@@ -93,8 +95,7 @@ fn expect_clean(errs: &[String], what: &str) {
 
 fn expect_refusal(errs: &[String], needles: &[&str], what: &str) {
     assert!(
-        errs.iter()
-            .any(|e| needles.iter().all(|n| e.contains(n))),
+        errs.iter().any(|e| needles.iter().all(|n| e.contains(n))),
         "{what} must be refused, naming {needles:?}; got: {errs:#?}"
     );
 }
@@ -330,7 +331,10 @@ fn an_operation_acquiring_nothing_loads_where_a_permission_is_granted() {
     // `{} <: {Permission[X]}`. A SUITE OF REFUSALS ALONE IS CONSISTENT WITH A CHECKER
     // THAT REFUSES EVERYTHING, which is what this row and the next exist to rule out.
     let errs = load_errors(&provider("{Permission[Model]}", "{}", "()"));
-    expect_clean(&errs, "a provider acquiring nothing under a granted permission");
+    expect_clean(
+        &errs,
+        "a provider acquiring nothing under a granted permission",
+    );
 }
 
 #[test]
@@ -358,11 +362,7 @@ fn a_spec_granting_the_sub_capability_accepts_an_implementation_acquiring_the_su
     // never match; under invariance the flipped direction is also demanded and fails;
     // under covariance the demanded direction is `Fs <: AdminFs`, which is false. Only
     // contravariance admits it.
-    let errs = load_errors(&provider(
-        "{Permission[AdminFs]}",
-        "{Permission[Fs]}",
-        "()",
-    ));
+    let errs = load_errors(&provider("{Permission[AdminFs]}", "{Permission[Fs]}", "()"));
     expect_clean(
         &errs,
         "an implementation acquiring the SUPER capability under a spec granting the SUB",
@@ -378,11 +378,7 @@ fn a_spec_granting_the_super_capability_refuses_an_implementation_acquiring_the_
     // PASSES WITHOUT (B) — invariance refuses it too — and FAILS under covariance. That
     // asymmetry is why the pair is written both ways: this row alone does not pin the
     // variance, and neither does its twin.
-    let errs = load_errors(&provider(
-        "{Permission[Fs]}",
-        "{Permission[AdminFs]}",
-        "()",
-    ));
+    let errs = load_errors(&provider("{Permission[Fs]}", "{Permission[AdminFs]}", "()"));
     expect_refusal(
         &errs,
         &["effects must not widen", "Permission[T = AdminFs]"],
@@ -634,7 +630,7 @@ fn a_minted_capability_is_a_value_the_program_can_carry() {
         .call("cbrsw.run_it", &[])
         .unwrap_or_else(|e| panic!("call run_it: {e:?}"));
     assert_eq!(
-        got.as_int(),
+        got.literal_int64(interp.kb()),
         Some(7),
         "the minted capability flows into an operation that carries no `Permission`"
     );
@@ -666,7 +662,7 @@ fn a_nullary_capability_handle_carries_no_identity_of_its_own() {
         .call("cbrsw.twice", &[])
         .unwrap_or_else(|e| panic!("call twice: {e:?}"));
     assert_eq!(
-        got.as_bool(),
+        got.literal_bool(interp.kb()),
         Some(true),
         "two mints of a nullary capability are the same value — the handle has no identity"
     );
