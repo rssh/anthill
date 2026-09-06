@@ -1378,11 +1378,11 @@ back-out axis 3 is what says it measures the difference.
 
 ### What is NOT delivered, driven and asserted rather than left to look like coverage
 
-  * **A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED** —
-    `operation viaop() -> Int64 = let g = lambda x -> x + x  1`. The answer it wants is a
-    `PolyType` whose CONTEXT carries `Additive[x]` OUT of the walk, to be discharged wherever
-    the lambda is finally applied. That is part (c)'s remaining half and the row
-    `known_gap_a_binder_no_use_in_the_walk_pins_is_still_refused` holds the program.
+  * ~~**A BINDER WITH NO USE IN ITS WALK IS STILL REFUSED**~~ — DELIVERED by step 2
+    (2026-09-06). `operation viaop() -> Int64 = let g = lambda x -> x + x  1` loads and
+    answers 1; the `PolyType` context carries `Additive[x]` and an obligation nobody has
+    taken on is owed by nobody. Row
+    `part_c_a_binder_no_use_pins_is_generalized_into_a_polytype`.
   * **THE TUPLE ARM IS A DIFFERENT GAP WITH AN OWNER.**
     `let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))` REACHES the licence
     (`minted=2`) and is refused at the discharge for want of an observation. `apply2` DOES
@@ -1390,10 +1390,14 @@ back-out axis 3 is what says it measures the difference.
     the arrow's PARAM, and a binder-list lambda's `?pat` components are separate variables
     the param does not mention — nothing links `?param` to `named_tuple(a: ?pat_a,
     b: ?pat_b)`. That link is **WI-20260904-34J8Z**, not this licence.
-  * **A LAMBDA THAT ESCAPES THE WALK** carries an arrow with no constraint on it. Today that
-    is refused (no observation), so the escape is not yet a hole; it becomes one exactly when
-    the `PolyType` context above lands without a discharge at the eventual use. Named here so
-    the next slice does not have to rediscover it.
+  * ~~**A LAMBDA THAT ESCAPES THE WALK**~~ — DELIVERED (2026-09-06), and NOT by the ∀. A
+    closure escaping to a generic applier computes 1, 12 and 1012 at two types through one
+    closure, and an `Int64` carrier with no instance is still refused. The cause was
+    `resolved_carrier_sort` chasing only a `Value::Var` binding while a type variable here is
+    INTERNED by construction — the chase was a no-op on its own motivating case. Backing out
+    the generalization leaves all three values unchanged. Row
+    `a_part_c_licensed_closure_works_through_a_generic_applier`; the verdict for WI-817 and
+    WI-816 is recorded on WI-817.
 
 ### The container is now NAMED, which is what makes the next move an owner change
 
@@ -1905,3 +1909,132 @@ CONSEQUENCE FOR WI-816: the lambda leg now computes correctly on the one shape t
 supposed to produce the predicted operation-vs-lambda asymmetry, with `Closure.requirements`
 snapshotting the creation frame ONCE — the dispatch inside the body is value-directed. That is
 evidence FOR option (a), recorded on WI-817 and WI-816 rather than decided here.
+
+### Step 3: generalize at the BINDING too, which closes the wart step 2 shipped
+
+`let g = lambda x -> x + x  let h = g  1` LOADS and answers 1, where step 2 refused it. A
+reference instantiates, so an alias bound a MONOTYPE with a fresh carrier and an obligation on
+it, and nothing then pinned that carrier — adding an unused alias broke a working program.
+Step 3 is the other half of the standard rule: instantiate freely at a reference, QUANTIFY
+AGAIN AT THE BINDING (`WalkSolutions::regeneralize_for_let`, at the `LetAfterValue` frame).
+
+**ADDITIVE, WHICH IS WHAT KEEPS THE THREE EXISTING GUARDS INTACT.** A requirement whose
+instance moves back into a type does not have its identity rewritten: the moved instances
+become a NEW deferred entry whose `carriers` are exactly the variables the new ∀ binds, and the
+old entry loses them from `instances`. So `note_instantiation`'s whole-carrier-set gate, the
+`contradicted` test and the discharge all read the shapes they were written for.
+
+SEVEN SHAPES DRIVEN, values asserted: the alias unused and used, used TWICE (two eliminations
+of the alias's own ∀), aliased twice, in both spellings, and the two un-aliased controls. Plus
+the negative — the alias applied at `Bool` is refused exactly as the un-aliased program is.
+BACK-OUT: the `unused` case fails with the `Additive` refusal while the five used and
+un-aliased cases pass unchanged, and so does every other row in the file.
+
+**THE FIRST CUT REINTRODUCED THE CAPTURE WRONG ACCEPT, BY A DOOR WORTH NAMING.**
+`generalize_for_arrow`'s free-var test doubles as an UNSOLVED test only because the arrow
+reaching it has already been resolved through `solved`. A `let`'s bound type has not, so a
+carrier this walk had already pinned to `Bool` still LOOKED free, was quantified here, and the
+requirement's instance list emptied — a licence reached by discarding evidence, which is
+finding 21's class returning through a new producer. Fixed with both tests: free in the
+RESOLVED type, and not already observed. A premise one function gets for free is a premise the
+next one has to establish.
+
+### /code-review on step 3: five findings, three taken, two recorded
+
+27. **A DESTRUCTURING `let` LOST EVERY BINDER'S TYPE — a driven regression.**
+    `let g = lambda x -> x + x  let (h, k) = (g, g)  h(2) + k(3)` loads without the
+    generalization and was REFUSED with it: `bound_ty` is the TUPLE, so quantifying it put a ∀
+    where `bind_and_label_pattern` reads component types, every component fell to the
+    unnameable `?pat` form, and both names reported "unknown functor" — for names that ARE
+    bound. FIXED: generalize only a SINGLE-BINDER `let`, which is where the standard rule is
+    stated. Pinned as `a_destructuring_let_is_unmoved_by_the_generalization`, measured
+    IDENTICAL with and without step 3 on all its rows. Its `k`-unused row is the destructuring
+    twin of the alias wart and is PRE-EXISTING — refused by the same route before step 3 —
+    so it is asserted at its value rather than left to look like coverage.
+
+28. **THE SIDE CONDITION COMPARED A RESOLVED SUBJECT AGAINST AN UNRESOLVED ENVIRONMENT.** The
+    subject arrives σ-resolved and the environment was collected raw, so a carrier the
+    environment reaches only THROUGH `solved` would not count as env-free. FIXED with one
+    owner, `env_free_vars`, since both producers ask the identical question and a side
+    condition computed two ways can come to disagree with itself. Not driven — four attempts
+    were all correctly refused for other reasons — so it is an asymmetry closed, not a defect
+    fixed.
+
+29. **THE ONE SILENT `None` OF THE THREE ∀-READERS.** `eliminate_env_schema` returned the raw
+    type when `instantiate_poly_type` declined, and that `None` also means "malformed schema"
+    since `extract_type` answers `Error` for an undecodable context — so a ∀ could escape the
+    function that exists to keep it out. FIXED to match `check_bare_ref`'s eta arm.
+
+30. **RECORDED, NOT FIXED: Path 2 resolves its result through a σ holding discarded-unify
+    bindings.** `unify_types` binds as it descends and never rolls back, so an argument that
+    passes `validate_arg_against_param` by SUBTYPING but fails the equality unify partway
+    leaves a binding that the call's result type is then read through. The site defers to
+    WI-20260904-60143's census of the discarded-boolean idiom, and this is that census's
+    subject rather than this ticket's; recorded here because the reviewer is right that it now
+    sits beside a sibling fix that took the opposite decision.
+
+31. **RECORDED, NOT FIXED: `LambdaBody` grounds where the file's rule says walk.**
+    `resolve_type_deep_value` δ-grounds a concrete-subject rigid projection, and
+    `walk_type_deep_g`'s doc reserves that for call-site result-resolve points. The lambda
+    arrow built there is STORED. Inert today (`solving.solved` holds only walk-minted
+    bindings, which cannot carry a projection subject), and changing it is a behaviour change
+    to a shipped slice with no witness — so it is written down rather than done.
+
+STATE: workspace 6455/0 — 597 lib, 4143 `wi_tests`, 896 the other core binaries, 503
+cli/stl/todo/version, 312 codegen, 4 doc. scaland 539/0, unchanged. Formatting matches HEAD's
+exactly.
+
+### /code-review pass 2 on step 3: the producer was in the wrong PLACE, not the wrong shape
+
+32. **A LAMBDA WRITTEN DIRECTLY IN AN ARGUMENT SLOT WAS ACCEPTED INTO A NON-CALLABLE ONE.**
+
+        operation addI(a: Int64, b: Int64) -> Int64 = a + b
+        addI(a: lambda x -> x + x, b: 1)      LOADED
+        addI(a: lambda x -> x,     b: 1)      refused, all along
+
+    Step 2 quantified at the `LambdaBody` frame — at EVERY lambda — so a lambda written
+    directly as an argument carried a ∀ into a slot no reader eliminates it for.
+    `validate_arg_against_param` has no arm for a `PolyType` and `type_head_is_callable`
+    answers `false` for one, so nothing objected, and the discharge then licensed the
+    requirement (generalized, no instantiation) so there was no second error either. The
+    requirement-free twin was refused throughout, which is what isolates the ∀.
+
+    MY ROW COULD NOT CONTAIN THIS SHAPE: `a_function_value_is_still_refused_by_a_non_-
+    callable_slot` binds the lambda with a `let` and passes the NAME, which goes through the
+    readers that do eliminate. The direct spelling has no reference at all.
+
+    **THE FIX IS WHERE, NOT WHAT.** The standard rule generalizes at a `let` BINDING, not at
+    a lambda, and step 3 had already built that producer. Moving generalization there and
+    DELETING `generalize_for_arrow` fixes this by construction — a lambda in an argument slot
+    keeps its arrow and is checked as one, and no consumer had to learn to eliminate. It also
+    makes review finding 20's wrong-FRAME capture defect structurally impossible: there is now
+    one generalization point instead of one per lambda. The `env_free` side condition stays,
+    because a `let` inside a lambda body still has an enclosing environment.
+
+    Pinned as `a_lambda_in_an_argument_slot_is_not_generalized`, with the requirement-free
+    twin beside it.
+
+33. **KNOWN GAP, PINNED NOT FIXED: an ANNOTATED ALIAS of an un-annotated lambda is refused.**
+    `let g = lambda x -> x  let h: Function[A = Int64, B = Int64] = g  h(2)` is refused with
+    `h.annotation: expected Function[…], got ??param -> ??param`, while the same annotation
+    written DIRECTLY on the lambda loads and answers 2 (rung 2 instead of rung 3). No ∀ is
+    involved — the lambda mints no requirement — so this is part (a)'s rung-3 flip meeting
+    `types_compatible`, whose dispatch has an arm accepting the old inert `type_var` against
+    anything and none for the real flexible variable rung 3 now mints. §8 says a flex variable
+    unifies with anything; the SUBTYPE relation does not bind it.
+
+    NOT FIXED HERE ON PURPOSE: the repair is an arm in `types_compatible`, the hot relation
+    every conformance check shares, and WI-20260826-N01PY is this repo's record of what
+    widening one reaches. The failure is a REFUSAL of an unusual spelling rather than a wrong
+    accept. Driven and asserted so it cannot be mistaken for coverage.
+
+34. **RECORDED: three more of the reviewer's findings are not this ticket's.** The
+    `varref_arg_env_type` filter is bypassed by `projection_receiver_type`'s THIRD rung
+    (`receiver.inferred_type()`); `builtins.rs`' field-access tuple arm still gates on a
+    native `Value::Tuple` so a bridged twin falls to the entity arm; and the named-component
+    loop in `tuple_components_from_view` drops a duplicate key. The first is a real hole in a
+    guard I added and is written down here rather than widened blind at the end of a long
+    session; the other two are QQPQ2's and pre-date this ticket.
+
+STATE: workspace 6457/0 — 597 lib, 4145 `wi_tests`, 896 the other core binaries, 503
+cli/stl/todo/version, 312 codegen, 4 doc. scaland 539/0. Formatting matches HEAD's.

@@ -6841,6 +6841,25 @@ fn eliminate_env_schema(
     ty: Value,
 ) -> Result<Value, TypeError> {
     let Some(inst) = instantiate_poly_type(kb, &ty) else {
+        // A ∀ THAT DECLINES TO ELIMINATE IS AN ERROR HERE TOO, matching `check_bare_ref`'s
+        // eta arm. `extract_type` answers `Error` for a present-but-undecodable `context`, so
+        // this `None` can mean "malformed schema" as well as "not a schema at all" — and
+        // returning the raw type in the first case hands a consumer the very ∀ this function
+        // exists to keep out. Unreachable while `build_value_list` is the only context
+        // producer; it was the one silent `None` of the three ∀-readers. /code-review.
+        if matches!(type_head(kb, &ty), TypeHead::PolyType) {
+            return Err(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::LetBinding {
+                    var: name.unwrap_or_else(|| kb.intern("?")),
+                },
+                expected: "a well-formed quantified type for this binding".to_string(),
+                actual: "a `PolyType` whose binders or context could not be read \
+                         (WI-20260904-50B2K part (c))"
+                    .to_string(),
+            });
+        }
         return Ok(ty);
     };
     if !inst.obligations.is_empty() && solving.note_instantiation(&inst.binder_map) == 0 {
@@ -14092,6 +14111,49 @@ fn build_type(
                 ),
                 (ann, vty) => ann.or(vty),
             };
+            // WI-20260904-50B2K part (c), step 3 — GENERALIZE AT THE BINDING, the half of the
+            // standard rule step 2 shipped without. A reference instantiates
+            // ([`check_bare_ref`]), so `let h = g` binds a MONOTYPE with a fresh carrier and
+            // an obligation on it; quantifying that carrier here is what makes the alias as
+            // polymorphic as the thing it aliases, and it is why an UNUSED alias no longer
+            // refuses a program that loads without it.
+            //
+            // `ext_env` is still the OUTER environment at this point — the pattern binds
+            // below — which is exactly the side condition's subject.
+            // A SINGLE BINDER ONLY, and the destructuring case is a MEASURED regression, not
+            // a scruple. `let (h, k) = (g, g)  h(2) + k(3)` loads without this generalization
+            // and was refused with it: the bound type is the TUPLE, so quantifying it puts a
+            // ∀ where `bind_and_label_pattern` reads component types, every component falls
+            // to the unnameable `?pat` form, and both names report "unknown functor" — for
+            // names that are in fact bound. The standard rule is stated for a VARIABLE
+            // binding and that is where it is applied; pushing the ∀ inside the components is
+            // a different construct and is not this slice's.
+            let single_binder = extract_pattern_var_name(&pattern).is_some();
+            let bound_ty = match bound_ty {
+                Some(t) if !single_binder => Some(t),
+                Some(t) => Some(
+                    match solving.generalize_at_binding(kb, &t, &ext_env, occ.span, occ.owner) {
+                        Some((binders, context)) => {
+                            let binder_terms: Vec<Value> = binders
+                                .iter()
+                                .map(|v| Value::term(type_param_var_term(kb, Var::Global(*v))))
+                                .collect();
+                            let binder_list = super::load::build_value_list(kb, binder_terms);
+                            let context_list = super::load::build_value_list(kb, context);
+                            let body = value_to_type_child(kb, &t);
+                            Value::Node(kb.make_poly_type_occ(
+                                binder_list,
+                                context_list,
+                                body,
+                                occ.span,
+                                occ.owner,
+                            ))
+                        }
+                        None => t,
+                    },
+                ),
+                None => None,
+            };
             // WI-794: a destructuring binder may carry its own annotation
             // (`let (a: String, b) = intPair`); report a contradiction rather than
             // dropping the annotation. Same rule as the lambda-binder case — the value's
@@ -14673,50 +14735,21 @@ fn build_type(
                 occ.span,
                 occ.owner,
             );
-            // WI-20260904-50B2K part (c), step 2 — GENERALIZE WHAT THE WALK COULD NOT
-            // ANSWER. A requirement this walk deferred because its carrier is a lambda
-            // binder has, until now, had exactly one place to be answered: a later USE, in
-            // this same walk. A binder the walk never applies therefore had no evidence and
-            // was refused — and the refusal named a `requires` clause with nowhere to go,
-            // because a lambda has no declaration site to write one at.
+            // WI-20260904-50B2K part (c) — GENERALIZATION IS NOT HERE, AND THE FIRST CUT
+            // PUT IT HERE. Quantifying at every LAMBDA gives a ∀ to a lambda written
+            // DIRECTLY in an argument slot, where no reader eliminates it: measured,
+            // `addI(a: lambda x -> x + x, b: 1)` against `addI(a: Int64, b: Int64)` LOADED —
+            // a function value in an `Int64` slot — while its requirement-free twin
+            // `lambda x -> x` was correctly refused, which is what isolates the ∀ as the
+            // cause. `validate_arg_against_param` has no arm for a `PolyType` and
+            // `type_head_is_callable` answers `false` for one, so nothing objected.
             //
-            // The answer is the one the known-gap row has always named: the constraint goes
-            // INTO THE TYPE. `lambda x -> x + x` is `∀a. Additive[a] => (a) -> a`, and each
-            // use discharges its own instance — which is also strictly SHARPER than the
-            // walk-lifetime licence beside it, whose first-wins solving answers every use
-            // from the first one.
-            //
-            // ORDER MATTERS AND IS NOT AN ACCIDENT: a `let`'s bound expression is typed
-            // before its body, so at this frame NO use has run yet and the binder is
-            // unsolved in both the used and unused programs. Both therefore generalize, and
-            // `let g = lambda x -> x + x  g(2)` keeps answering 4 through the ∀ path — the
-            // instantiation at `g(2)` pins `Int64` and the obligation is discharged against
-            // it — rather than through the observation licence it used before.
-            let fn_ty = match solving.generalize_for_arrow(
-                kb,
-                &fn_ty,
-                &outer_env.types,
-                occ.span,
-                occ.owner,
-            ) {
-                Some((binders, context)) => {
-                    let binder_terms: Vec<Value> = binders
-                        .iter()
-                        .map(|v| Value::term(type_param_var_term(kb, Var::Global(*v))))
-                        .collect();
-                    let binder_list = super::load::build_value_list(kb, binder_terms);
-                    let context_list = super::load::build_value_list(kb, context);
-                    let body = value_to_type_child(kb, &fn_ty);
-                    Value::Node(kb.make_poly_type_occ(
-                        binder_list,
-                        context_list,
-                        body,
-                        occ.span,
-                        occ.owner,
-                    ))
-                }
-                None => fn_ty,
-            };
+            // THE STANDARD RULE GENERALIZES AT THE `let`, NOT AT THE LAMBDA, and moving it
+            // there fixes this BY CONSTRUCTION rather than by teaching every consumer to
+            // eliminate: a lambda in an argument position simply keeps its arrow and is
+            // checked as one. See `WalkSolutions::generalize_at_binding`, now the only
+            // producer — which also makes the wrong-frame capture defect (review finding 20)
+            // structurally impossible, since there is one frame. /code-review found it.
             // Creating a lambda is itself pure — body effects live in the type.
             // If the body itself errored, propagate that error rather than
             // synthesizing a lambda over an ill-typed body.
@@ -15903,65 +15936,85 @@ impl WalkSolutions {
         });
     }
 
-    /// WI-20260904-50B2K part (c), step 2 — MOVE EVERY REQUIREMENT THIS ARROW CAN CARRY
-    /// INTO ITS TYPE, and answer with the binders and the context a `PolyType` needs.
+    /// WI-20260904-50B2K part (c) — every variable the enclosing environment still reaches,
+    /// σ-RESOLVED as the subjects of the two generalization side conditions are.
     ///
-    /// A requirement qualifies when EVERY one of its carriers still occurs FREE in the
-    /// arrow. That one test does two jobs and both are load-bearing:
+    /// ONE OWNER because both producers ask the identical question, and a side condition
+    /// computed two ways is one that can come to disagree with itself.
+    fn env_free_vars(&self, kb: &mut KnowledgeBase, outer_env: &TypingEnv) -> Vec<VarId> {
+        let mut out: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        let bound: Vec<Value> = outer_env.bound_types().cloned().collect();
+        for t in bound {
+            let r = resolve_type_deep_value(kb, &self.solved, &t);
+            collect_value_type_and_bare_vars(kb, &r, &mut out, &mut seen);
+        }
+        out
+    }
+
+    /// WI-20260904-50B2K part (c), step 3 — RE-GENERALIZE AT THE `let`, which is the half of
+    /// the standard rule step 2 shipped without: instantiate freely at every reference, then
+    /// quantify again at the binding.
     ///
-    ///  * IT IS THE UNSOLVED TEST. The arrow reaching here has already been resolved
-    ///    through `solved`, so a carrier the walk pinned is no longer a variable in it —
-    ///    `?x := Int64` leaves `(Int64) -> Int64`, which mentions no `?x`. A requirement
-    ///    the walk's own evidence answers therefore does NOT generalize, and the licence
-    ///    that answers it is untouched.
-    ///  * IT IS THE EXPRESSIBILITY TEST. Quantifying a variable the body does not mention
-    ///    yields a constraint no instantiation can ever reach: `∀a. C a => t` where `t`
-    ///    lacks `a` is a type whose obligation is undischargeable by construction. The
-    ///    binder-list lambda is exactly this shape — its `?pat` components are not the
-    ///    arrow's `?param` (WI-20260904-34J8Z) — so it stays REFUSED here rather than
-    ///    acquiring a ∀ that would launder it.
+    /// **THE WART THIS REMOVES WAS MEASURED AND SHIPPED DELIBERATELY.**
+    /// `let g = lambda x -> x + x  let h = g  1` was REFUSED while the same program without
+    /// the unused alias LOADED — because [`check_bare_ref`] instantiates at every reference,
+    /// so the alias minted a carrier and an obligation on it and nothing then pinned that
+    /// carrier. Adding an unused alias broke a working program. The narrower repair (only
+    /// instantiate where something expects a type) was also measured, and it ACCEPTS a
+    /// function value into a `Bool` slot — so the rule had to be this one.
     ///
-    /// The context gets ONE ELEMENT PER CARRIER (`Additive[T = ?a]`, `Additive[T = ?b]`),
-    /// which is the same shape the discharge beside it already demands — every carrier
-    /// answered, separately.
-    fn generalize_for_arrow(
+    /// **ADDITIVE, NOT A MUTATION, and that is what keeps the three existing guards intact.**
+    /// A requirement whose instance moves back into a type does not have its own identity
+    /// rewritten: the moved instances become a NEW entry whose `carriers` are exactly the
+    /// variables the new ∀ binds, and the old entry simply loses them from `instances`. So
+    /// `note_instantiation`'s whole-carrier-set gate, the `contradicted` test and the
+    /// discharge all read the same shapes they were written for, and the old entry — now
+    /// with nothing outstanding — is licensed for the reason it always was: a constraint
+    /// that lives in a type is owed by whoever eventually uses it.
+    ///
+    /// The side condition is [`Self::generalize_for_arrow`]'s, for its reason: an instance
+    /// still free in the enclosing environment is not this binding's to quantify.
+    fn generalize_at_binding(
         &mut self,
         kb: &mut KnowledgeBase,
-        arrow: &Value,
+        bound: &Value,
         outer_env: &TypingEnv,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Option<(Vec<VarId>, Vec<Value>)> {
-        if self.deferred.iter().all(|d| d.generalized) {
+        if self
+            .deferred
+            .iter()
+            .all(|d| d.generalized && d.instances.is_empty())
+        {
             return None;
         }
+        // FREE IN THE *RESOLVED* TYPE, which is the premise [`Self::generalize_for_arrow`]
+        // gets for nothing and this frame has to ask for. That function's free-var test
+        // doubles as an UNSOLVED test only because the arrow reaching it was already resolved
+        // through `solved`; a `let`'s bound type is not, so a carrier this walk has already
+        // pinned still LOOKS free here.
+        //
+        // MEASURED, and it is the wrong accept review finding 20 fixed coming back by another
+        // door: `let g = lambda x -> (x + x, lambda y -> x)  let r = g(true)  1` LOADED again,
+        // because `g(true)`'s instance is pinned to `Bool` AND occurs in the result tuple, so
+        // it was quantified here and the requirement's instance list emptied — a licence
+        // reached by discarding evidence, exactly what the `contradicted` guard exists to
+        // refuse one level up.
+        let resolved = resolve_type_deep_value(kb, &self.solved, bound);
         let mut free: Vec<VarId> = Vec::new();
         let mut seen = HashSet::new();
-        collect_value_type_and_bare_vars(kb, arrow, &mut free, &mut seen);
-        // **AND NOT FREE IN THE ENCLOSING ENVIRONMENT** — the side condition every
-        // let-generalization has, which the first cut omitted, and /code-review MEASURED
-        // the wrong accept it lets through:
-        //
-        //     let g = lambda x -> (x + x, lambda y -> x)   let r = g(true)   1
-        //
-        // LOADED. The INNER lambda's arrow is `(?y) -> ?x`, so `?x` — the OUTER binder — is
-        // free in it and this function quantified it there. `g(true)` then pinned `?x` to
-        // `Bool`, but the requirement was already marked generalized with no instantiation
-        // of its own, so `Additive[Bool]` was never asked. The same program with the inner
-        // lambda removed was correctly REFUSED, which is what attributes the accept here.
-        //
-        // The environment outside THIS lambda is exactly the set of variables somebody else
-        // may still pin: a variable it holds is not this lambda's to quantify. At the inner
-        // frame `outer_env` binds `x : ?x`, so `?x` is excluded and the requirement survives
-        // to the OUTER frame, where the environment no longer holds it — which is where it
-        // belonged all along.
-        let mut env_free: Vec<VarId> = Vec::new();
-        let mut env_seen = HashSet::new();
-        for t in outer_env.bound_types() {
-            collect_value_type_and_bare_vars(kb, t, &mut env_free, &mut env_seen);
-        }
+        collect_value_type_and_bare_vars(kb, &resolved, &mut free, &mut seen);
+        let env_free = self.env_free_vars(kb, outer_env);
         let mut binders: Vec<VarId> = Vec::new();
         let mut context: Vec<Value> = Vec::new();
+        let mut spawned: Vec<DeferredSpecRequirement> = Vec::new();
+        // NOT-YET-GENERALIZED REQUIREMENTS FIRST — the carriers themselves, which is what the
+        // `LambdaBody` frame used to do. Every carrier must be free in the resolved bound type
+        // (at once the UNSOLVED test and the EXPRESSIBILITY one — quantifying a variable the
+        // type does not mention gives an obligation no instantiation can reach) and none may
+        // be free in the enclosing environment.
         for i in 0..self.deferred.len() {
             if self.deferred[i].generalized
                 || !self.deferred[i].carriers.iter().all(|v| free.contains(v))
@@ -15973,11 +16026,6 @@ impl WalkSolutions {
                 continue;
             }
             let spec_sort = self.deferred[i].spec_sort;
-            // The spec's own carrier parameter — `T` of `Additive[T]`. Without it there is
-            // no well-formed application to write, so the requirement stays the walk's:
-            // refusing to generalize is the conservative direction (it keeps today's
-            // refusal) where inventing a parameter name would put a malformed constraint
-            // into a stored type.
             let Some(param) = spec_carrier_param_or_sole(kb, spec_sort) else {
                 continue;
             };
@@ -15998,12 +16046,59 @@ impl WalkSolutions {
             }
             self.deferred[i].generalized = true;
         }
+        // THEN the already-generalized ones, whose per-use INSTANCES a rebinding puts back
+        // into a type — `let h = g`, the alias case.
+        for d in &mut self.deferred {
+            if !d.generalized {
+                continue;
+            }
+            let moved: SmallVec<[VarId; 2]> = d
+                .instances
+                .iter()
+                .copied()
+                // AND NOT ALREADY ANSWERED. The resolved-type test above catches an instance
+                // this walk has BOUND; this catches one it has merely OBSERVED, which is the
+                // same evidence in the channel the discharge actually reads. Two tests for
+                // one property is deliberate here: the guard whose absence produced a wrong
+                // accept twice in this ticket is the one that gets the belt and the braces.
+                .filter(|v| !d.observed.iter().any(|(w, _)| w == v))
+                .filter(|v| free.contains(v) && !env_free.contains(v))
+                .collect();
+            if moved.is_empty() {
+                continue;
+            }
+            let Some(param) = spec_carrier_param_or_sole(kb, d.spec_sort) else {
+                continue;
+            };
+            let base = kb.make_sort_ref(d.spec_sort);
+            for v in &moved {
+                let carrier_ty = Value::term(type_param_var_term(kb, Var::Global(*v)));
+                context.push(parameterized_value(
+                    kb,
+                    base,
+                    &[(param, carrier_ty)],
+                    span,
+                    owner,
+                ));
+                if !binders.contains(v) {
+                    binders.push(*v);
+                }
+            }
+            d.instances.retain(|v| !moved.contains(v));
+            spawned.push(DeferredSpecRequirement {
+                occ: Rc::clone(&d.occ),
+                carriers: moved,
+                spec_sort: d.spec_sort,
+                class: d.class.clone(),
+                observed: Vec::new(),
+                generalized: true,
+                instances: SmallVec::new(),
+            });
+        }
+        self.deferred.extend(spawned);
         if binders.is_empty() {
             return None;
         }
-        // MINT ORDER, for the reason `report_call_solutions` sorts: the binder list is
-        // stored in a type and rendered in diagnostics, so an order that varied with a
-        // hash walk would give one program two spellings.
         binders.sort_by_key(|v| v.raw());
         Some((binders, context))
     }

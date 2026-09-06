@@ -846,45 +846,80 @@ fn control_a_multi_type_use_was_already_licensed_and_is_unmoved() {
     assert_eq!(only_int(&mut kb, "zz50b2k.twoty.viaop"), 11);
 }
 
-/// **AN UNUSED ALIAS OF A GENERALIZED LAMBDA IS REFUSED, AND THE FIX IS A PRODUCER THIS
-/// SLICE DOES NOT ADD.**
+/// **AN ALIAS OF A GENERALIZED LAMBDA IS AS POLYMORPHIC AS THE THING IT ALIASES** — part
+/// (c) step 3, and the wart step 2 shipped deliberately.
 ///
-/// `let g = lambda x -> x + x  let h = g  1` is refused, while the same program without the
-/// alias LOADS (the row above) and the same program that USES the alias answers 4 (the
-/// control below). So adding an unused alias breaks a working program, which is a wart and
-/// is stated as one.
+/// `let g = lambda x -> x + x  let h = g  1` was REFUSED while the same program without the
+/// unused alias LOADED: `check_bare_ref` instantiates at every reference, so the alias minted
+/// a fresh carrier and an obligation on it, and nothing then pinned that carrier. Adding an
+/// unused alias broke a working program.
 ///
-/// CAUSE: `check_bare_ref` instantiates at EVERY reference, so the alias mints a fresh
-/// carrier and an obligation on it — and nothing then pins that carrier, so the discharge
-/// has no evidence. The principled repair is let-GENERALIZATION: re-quantify, at the `let`,
-/// a variable still free in the bound value's type. That is a new producer at the `Let`
-/// frame and it is not in this slice.
+/// THE FIX IS THE OTHER HALF OF THE STANDARD RULE — instantiate freely at a reference,
+/// GENERALIZE AGAIN AT THE BINDING (`WalkSolutions::regeneralize_for_let`, hooked at the
+/// `LetAfterValue` frame). The narrower repair, instantiating only where something expects a
+/// type, was measured and REJECTED: it accepts a function value into a `Bool` slot, since an
+/// argument slot is hinted only when it is callable
+/// (`a_function_value_is_still_refused_by_a_non_callable_slot`).
 ///
-/// THE NARROWER GATE IS NOT THE REPAIR, and this is the part worth recording because it
-/// looks like one. Instantiating only where `expected` is `Some` fixes this row — and makes
-/// `needs_b(g)` against `needs_b(b: Bool)` LOAD, a function value accepted into a `Bool`
-/// slot, because an argument slot is hinted only when it is CALLABLE so that position
-/// carries no expectation either. Both directions measured. `a_function_value_is_still_-
-/// refused_by_a_non_callable_slot` beside this row is what would go green-when-it-should-
-/// fail if anyone re-adds that gate.
+/// SEVEN SHAPES, because a rule about binding must be driven at more than the one program it
+/// was written for: the alias unused and used, used TWICE (two instantiations of the alias's
+/// own ∀), aliased twice, in both spellings, and the two un-aliased controls that must not
+/// move. Values are asserted, not just loading.
+///
+/// BACK-OUT, MEASURED: make `regeneralize_for_let` answer `None` and this test fails on its
+/// `unused` case with the `Additive` refusal, while the five USED and un-aliased cases pass
+/// unchanged and so does every other row in this file — including
+/// `a_nested_lambda_does_not_quantify_its_enclosing_binder`. That split is what says step 3
+/// closes a gap rather than changing what an alias means: nothing that already worked moved.
 #[test]
-fn known_gap_an_unused_alias_of_a_generalized_lambda_is_refused() {
-    let unused = "namespace zz50b2k.alias1\n  import anthill.prelude.{Int64}\n  \
-                  operation viaop() -> Int64 = let g = lambda x -> x + x  let h = g  1\nend\n";
-    let errs = crate::common::try_load_kb_with(unused)
+fn an_alias_of_a_generalized_lambda_is_generalized_again() {
+    for (tag, body, want) in [
+        ("unused", "let g = lambda x -> x + x  let h = g  1", 1),
+        (
+            "unused, varref",
+            "let g = lambda x -> x + x  let h = ?g  1",
+            1,
+        ),
+        ("used", "let g = lambda x -> x + x  let h = g  h(2)", 4),
+        // TWICE — the alias's OWN ∀ is eliminated per use, which is the property
+        // re-generalization restores rather than merely the absence of a refusal.
+        (
+            "used twice",
+            "let g = lambda x -> x + x  let h = g  h(2) + h(3)",
+            10,
+        ),
+        (
+            "aliased twice",
+            "let g = lambda x -> x + x  let h = g  let k = g  h(2)",
+            4,
+        ),
+        // CONTROLS: no alias at all, used and unused. Unmoved by this change.
+        ("no alias, used", "let g = lambda x -> x + x  g(2)", 4),
+        ("no alias, unused", "let g = lambda x -> x + x  1", 1),
+    ] {
+        let ns = format!("zz50b2k.al{}", tag.replace([' ', ','], ""));
+        let src = format!(
+            "namespace {ns}\n  import anthill.prelude.{{Int64}}\n  \
+             operation viaop() -> Int64 = {body}\nend\n"
+        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{tag}: must load; got: {errs:?}"));
+        assert_eq!(only_int(&mut kb, &format!("{ns}.viaop")), want, "{tag}");
+    }
+
+    // NEGATIVE — re-generalizing must not launder the constraint. `Bool` has no `Additive`,
+    // and the alias applied to one is refused exactly as the un-aliased program is.
+    let neg = "namespace zz50b2k.alneg\n  import anthill.prelude.{Int64, Bool}\n  \
+               operation tt() -> Bool = true\n  \
+               operation viaop() -> Int64 = \
+               let g = lambda x -> x + x  let h = g  let q = h(tt())  1\nend\n";
+    let errs = crate::common::try_load_kb_with(neg)
         .err()
-        .expect("KNOWN GAP: expected a refusal — if this loads, let-generalization landed");
+        .expect("an alias applied at `Bool` must still be refused, but it loaded");
     assert!(
         errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
-        "expected an unresolved `Additive`, got: {errs:?}",
+        "expected an unresolved `Additive` through the alias, got: {errs:?}",
     );
-    // CONTROL: the SAME alias, USED. The alias is not what refuses — the unpinned instance
-    // is — so a row without this control would read as "aliasing is refused".
-    let used = "namespace zz50b2k.alias2\n  import anthill.prelude.{Int64}\n  \
-                operation viaop() -> Int64 = let g = lambda x -> x + x  let h = g  h(2)\nend\n";
-    let mut kb = crate::common::try_load_kb_with(used)
-        .unwrap_or_else(|errs| panic!("the USED alias must load; got: {errs:?}"));
-    assert_eq!(only_int(&mut kb, "zz50b2k.alias2.viaop"), 4);
 }
 
 /// **A GENERALIZED LAMBDA IS STILL REFUSED BY A NON-CALLABLE SLOT** — the guard on the
@@ -944,29 +979,28 @@ fn a_function_value_is_still_refused_by_a_non_callable_slot() {
     }
 }
 
-/// **AN UNUSED ALIAS REFUSES THE SAME WAY IN BOTH SPELLINGS** — the second half of the
-/// one-binding-two-readers defect above, and the row that would go green-when-it-should-fail
-/// if only one reader eliminates again.
+/// **`g` AND `?g` ARE ONE BINDING AND MUST GET ONE VERDICT** — the row that guards the
+/// one-binding-two-readers defect, now stated on the ACCEPTING side.
 ///
-/// `let h = g  1` and `let h = ?g  1` are one program. Before the `Expr::Var` reader got the
-/// elimination the first was REFUSED and the second LOADED. Both are refused now, which is
-/// the known gap `known_gap_an_unused_alias_of_a_generalized_lambda_is_refused` documents —
-/// stated here as an AGREEMENT between spellings rather than as a second copy of that gap.
+/// Before `visit_type`'s `Expr::Var` arm got the ∀-elimination, `let h = g  1` was REFUSED
+/// and `let h = ?g  1` LOADED — one program, two verdicts, a question mark apart. Step 3
+/// makes both LOAD, so the row moved with them: what it measures is the AGREEMENT, and it
+/// would fail just as loudly if one spelling regressed to a refusal.
+///
+/// THE REFUSING HALF OF THE SAME GUARD is `a_function_value_is_still_refused_by_a_non_-
+/// callable_slot`, which drives both spellings into a `Bool` slot. Between them the two rows
+/// pin the pair on both sides of the verdict.
 #[test]
-fn an_unused_alias_refuses_alike_in_both_spellings() {
+fn both_spellings_of_an_alias_agree() {
     for (tag, rhs) in [("ident", "g"), ("varref", "?g")] {
-        let ns = format!("zz50b2k.al{}", tag.len());
+        let ns = format!("zz50b2k.sp{tag}");
         let src = format!(
             "namespace {ns}\n  import anthill.prelude.{{Int64}}\n  \
-             operation viaop() -> Int64 = let g = lambda x -> x + x  let h = {rhs}  1\nend\n"
+             operation viaop() -> Int64 = let g = lambda x -> x + x  let h = {rhs}  h(2)\nend\n"
         );
-        let errs = crate::common::try_load_kb_with(&src)
-            .err()
-            .unwrap_or_else(|| panic!("{tag}: expected a refusal, but it loaded"));
-        assert!(
-            errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
-            "{tag}: expected an unresolved `Additive`, got: {errs:?}",
-        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{tag}: must load; got: {errs:?}"));
+        assert_eq!(only_int(&mut kb, &format!("{ns}.viaop")), 4, "{tag}");
     }
 }
 
@@ -1364,4 +1398,147 @@ fn a_nested_lambda_does_not_quantify_its_enclosing_binder() {
     let mut kb = crate::common::try_load_kb_with(capture_int)
         .unwrap_or_else(|errs| panic!("the Int64 nesting must load; got: {errs:?}"));
     assert_eq!(only_int(&mut kb, "zz50b2k.cap3.viaop"), 1);
+}
+
+/// **A DESTRUCTURING `let` IS LEFT EXACTLY AS IT WAS, and that is a gate rather than an
+/// omission.** `/code-review` drove the regression the first cut of step 3 caused:
+///
+///     let g = lambda x -> x + x   let (h, k) = (g, g)   h(2) + k(3)
+///
+/// loads without the generalization and was REFUSED with it — `bound_ty` is the TUPLE, so
+/// quantifying it put a ∀ where `bind_and_label_pattern` reads component types, every
+/// component fell to the unnameable `?pat` form, and both names reported "unknown functor"
+/// for names that are in fact bound. The rule is stated for a VARIABLE binding and is now
+/// applied only there; pushing a ∀ inside a tuple's components is a different construct.
+///
+/// MEASURED IDENTICAL WITH AND WITHOUT `regeneralize_for_let` — all four rows below — which
+/// is what says the gate leaves destructuring untouched rather than half-served.
+///
+/// THE `k`-UNUSED ROW IS THE DESTRUCTURING TWIN OF THE ALIAS WART, AND IT IS PRE-EXISTING:
+/// each component reference instantiates, `h(2)` pins one and nothing pins `k`'s, so the
+/// discharge refuses. It was refused before step 3 by the same route. Closing it needs the
+/// ∀ to live on the COMPONENT — the construct this gate declines — so it is pinned at its
+/// value rather than left to look like coverage.
+#[test]
+fn a_destructuring_let_is_unmoved_by_the_generalization() {
+    // Both components USED: loads, and answers `2*2 + 2*3`.
+    let used = "namespace zz50b2k.dl1\n  import anthill.prelude.{Int64}\n  \
+                operation viaop() -> Int64 = \
+                let g = lambda x -> x + x  let (h, k) = (g, g)  h(2) + k(3)\nend\n";
+    let mut kb = crate::common::try_load_kb_with(used)
+        .unwrap_or_else(|errs| panic!("both components used must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.dl1.viaop"), 10);
+
+    // KNOWN GAP, PRE-EXISTING: one component unused, so its instance is never pinned.
+    let one = "namespace zz50b2k.dl2\n  import anthill.prelude.{Int64}\n  \
+               operation viaop() -> Int64 = \
+               let g = lambda x -> x + x  let (h, k) = (g, g)  h(2)\nend\n";
+    let errs = crate::common::try_load_kb_with(one)
+        .err()
+        .expect("KNOWN GAP: expected a refusal — if this loads, the ∀ reached a component");
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
+        "expected an unresolved `Additive` for the unused component, got: {errs:?}",
+    );
+
+    // CONTROL: a destructuring `let` with no lambda in it at all is untouched by any of this.
+    let plain = "namespace zz50b2k.dl3\n  import anthill.prelude.{Int64}\n  \
+                 operation viaop() -> Int64 = let (h, k) = (1, 2)  h + k\nend\n";
+    let mut kb = crate::common::try_load_kb_with(plain)
+        .unwrap_or_else(|errs| panic!("a plain destructuring let must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.dl3.viaop"), 3);
+}
+
+/// **A LAMBDA WRITTEN DIRECTLY IN AN ARGUMENT SLOT KEEPS ITS ARROW** — the wrong accept that
+/// moved generalization from the lambda to the `let`.
+///
+/// Step 2 quantified at the `LambdaBody` frame, i.e. at EVERY lambda. A lambda written
+/// directly as an argument then carried a ∀ into a slot no reader eliminates it for, and
+/// `validate_arg_against_param` has no arm for one (`type_head_is_callable` answers `false`
+/// for a `PolyType`), so:
+///
+///     addI(a: Int64, b: Int64)      addI(a: lambda x -> x + x, b: 1)   LOADED
+///
+/// A function value in an `Int64` slot, in silence. THE CONTROL IS THE SAME PROGRAM WITH A
+/// REQUIREMENT-FREE LAMBDA (`lambda x -> x`, which mints no deferral and so never
+/// generalized): it was refused all along, which is what isolates the ∀ as the cause rather
+/// than the argument position.
+///
+/// THE FIX IS WHERE, NOT WHAT: the standard rule generalizes at a `let` BINDING, not at a
+/// lambda. Moving it there means a lambda in an argument slot simply keeps its arrow and is
+/// checked as one — no consumer had to learn to eliminate, and the wrong-FRAME capture defect
+/// (`a_nested_lambda_does_not_quantify_its_enclosing_binder`) became structurally impossible
+/// at the same time, since there is now one generalization point instead of one per lambda.
+///
+/// BACK-OUT: call the producer from the `LambdaBody` frame again and the first row LOADS
+/// while the second stays refused.
+#[test]
+fn a_lambda_in_an_argument_slot_is_not_generalized() {
+    for (tag, lam) in [
+        ("constrained", "lambda x -> x + x"),
+        ("plain control", "lambda x -> x"),
+    ] {
+        let ns = format!("zz50b2k.dir{}", tag.len());
+        let src = format!(
+            "namespace {ns}\n  import anthill.prelude.{{Int64}}\n  \
+             operation addI(a: Int64, b: Int64) -> Int64 = a + b\n  \
+             operation viaop() -> Int64 = addI(a: {lam}, b: 1)\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| {
+                panic!("{tag}: a function value in an `Int64` slot must be refused, but it loaded")
+            });
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("expected Int64") && e.contains("->")),
+            "{tag}: expected the arrow-vs-Int64 mismatch, got: {errs:?}",
+        );
+    }
+}
+
+/// **KNOWN GAP: AN ANNOTATED ALIAS OF AN UN-ANNOTATED LAMBDA IS REFUSED**, and it is part
+/// (a)'s rung-3 flip meeting `types_compatible`, not part (c)'s ∀.
+///
+///     let g = lambda x -> x   let h: Function[A = Int64, B = Int64] = g   h(2)
+///       -> type mismatch in h.annotation (let-binding):
+///          expected Function[A = Int64, B = Int64], got ??param -> ??param
+///
+/// The lambda mints NO requirement, so nothing here is generalized — which is what places the
+/// gap. Rung 3 now gives an un-annotated binder a real FLEXIBLE variable where it used to
+/// mint the inert `type_var` form, and `types_compatible_term_dispatch` has an arm that
+/// accepts a `type_var` against anything and none for a flex variable, so the subtype
+/// relation refuses what unification would accept. §8 says a flex variable "unifies with
+/// anything"; the SUBTYPE relation does not bind it.
+///
+/// CONTROL, AND IT IS WHAT MAKES THIS A GAP RATHER THAN A RULE: the same annotation written
+/// DIRECTLY on the lambda LOADS and answers 4, because the annotation threads down as
+/// `expected` and the binder takes rung 2 instead of rung 3. One program, two spellings, two
+/// verdicts.
+///
+/// NOT FIXED HERE DELIBERATELY. The repair is an arm in `types_compatible`, a hot relation
+/// shared by every conformance check in the typer — WI-20260826-N01PY is this repo's record
+/// of what widening one reaches — and the failure is a REFUSAL of an unusual spelling rather
+/// than a wrong accept. Driven and asserted at its value so it cannot be mistaken for
+/// coverage. /code-review found it.
+#[test]
+fn known_gap_an_annotated_alias_of_an_unannotated_lambda_is_refused() {
+    let aliased = "namespace zz50b2k.ann1\n  import anthill.prelude.{Int64, Function}\n  \
+        operation viaop() -> Int64 = \
+        let g = lambda x -> x  let h: Function[A = Int64, B = Int64] = g  h(2)\nend\n";
+    let errs = crate::common::try_load_kb_with(aliased)
+        .err()
+        .expect("KNOWN GAP: expected a refusal — if this loads, `types_compatible` grew the arm");
+    assert!(
+        errs.iter().any(|e| e.contains("h.annotation")),
+        "expected the let-binding annotation mismatch, got: {errs:?}",
+    );
+
+    // CONTROL: the annotation written directly on the lambda takes rung 2 and loads.
+    let direct = "namespace zz50b2k.ann2\n  import anthill.prelude.{Int64, Function}\n  \
+        operation viaop() -> Int64 = \
+        let h: Function[A = Int64, B = Int64] = lambda x -> x  h(2)\nend\n";
+    let mut kb = crate::common::try_load_kb_with(direct)
+        .unwrap_or_else(|errs| panic!("the directly-annotated twin must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.ann2.viaop"), 2);
 }
