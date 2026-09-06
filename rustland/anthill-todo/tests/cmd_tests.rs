@@ -35,6 +35,9 @@ mod common;
 #[path = "include/cmd_add_test.rs"]
 mod cmd_add_test;
 
+#[path = "include/cmd_arg_error_test.rs"]
+mod cmd_arg_error_test;
+
 #[path = "include/cmd_bundled_domain_test.rs"]
 mod cmd_bundled_domain_test;
 

@@ -12,9 +12,26 @@
 namespace anthill.cli.help
   import anthill.prelude.{List, Option, String, Bool}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.String.{concat}
+  import anthill.prelude.String.{concat, padRight}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
+
+  -- The COMPACT form: what a command ACCEPTS, with no description prose and no
+  -- section headers, ending in a newline. This is what an ARGUMENT ERROR prints:
+  -- the reader already knows which command they meant and got one token wrong, so
+  -- what helps is the list of tokens that would have worked, not the full page.
+  -- `format_help` stays the full page. Both render from the same `ParamSpec` list,
+  -- so neither can drift from the registry, or from each other.
+  --
+  --   usage: <name> <pos> [--flag VALUE] [--bool]
+  --     pos            <description>
+  --     --flag         <description>
+  operation format_usage(s: OperationSpec) -> String =
+    match s
+      case OperationSpec(name, _, params, _) ->
+        cat3("usage: ", name,
+             cat3(usage_summary(params), "\n",
+                  concat(render_args(params), render_flags(params))))
 
   -- Top-level renderer.
   operation format_help(s: OperationSpec) -> String =
@@ -50,7 +67,8 @@ namespace anthill.cli.help
           case ParamSpec(name, kind, _, desc) ->
             match kind
               case positional() ->
-                concat(cat3("  ", name, cat3("  ", desc, "\n")), render_args(rest))
+                concat(cat3("  ", padRight(name, NAME_COLUMN), concat(desc, "\n")),
+                       render_args(rest))
               case _ -> render_args(rest)
 
   -- FLAGS: section: non-positional params.
@@ -63,7 +81,16 @@ namespace anthill.cli.help
             match kind
               case positional() -> render_flags(rest)
               case _ ->
-                concat(cat3("  --", name, cat3("  ", desc, "\n")), render_flags(rest))
+                concat(cat3("  ", padRight(concat("--", name), NAME_COLUMN),
+                            concat(desc, "\n")),
+                       render_flags(rest))
+
+  -- Width of the name column shared by the ARGS and FLAGS rows, so a positional
+  -- and a flag of the same command line their descriptions up against each other.
+  -- Wide enough for the longest name in the anthill-todo registry
+  -- (`--acceptance`, 12) plus two spaces; `padRight` leaves a longer name
+  -- unchanged, which costs that one row its alignment and nothing else.
+  const NAME_COLUMN: Int64 = 15
 
   -- 3-arg concat helper.
   operation cat3(a: String, b: String, c: String) -> String =

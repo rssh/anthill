@@ -179,7 +179,12 @@ fn unknown_subcommand_returns_parse_err() {
 
 // Golden help-text. Bindings are accumulated by cons, so flag/repeat order
 // follows declaration order; positional appears before flags in our format.
-const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description VALUE] [--acceptance VALUE]...\n\nARGS:\n  id  work item id\n\nFLAGS:\n  --description  new description\n  --acceptance  acceptance criteria\n";
+//
+// The name column is padded to `help.NAME_COLUMN`, so an ARGS row and a FLAGS row
+// of the same command line their descriptions up. Before that, these renderers had
+// no caller that PRINTED them and the raggedness went unseen; `format_usage` (the
+// argument-error block) is the first one that does.
+const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description VALUE] [--acceptance VALUE]...\n\nARGS:\n  id             work item id\n\nFLAGS:\n  --description  new description\n  --acceptance   acceptance criteria\n";
 
 #[test]
 fn help_renders_subcommand_spec() {

@@ -234,8 +234,12 @@ fn add_missing_description_errors() {
         .expect("run");
     assert!(!out.status.success(), "expected failure");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // Was a disjunction over "argument error" / "missing" — the second leg matched
+    // any message containing the word. The diagnostic now names both the command
+    // and the parameter, so assert exactly that.
     assert!(
-        stderr.contains("argument error") || stderr.contains("missing"),
-        "expected diagnostic, got stderr: {stderr}"
+        stderr.contains("anthill-todo: add: missing required argument <description>"),
+        "expected the diagnostic to name the command and the missing positional, \
+         got stderr: {stderr}"
     );
 }

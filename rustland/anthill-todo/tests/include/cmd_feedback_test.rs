@@ -160,8 +160,12 @@ fn feedback_missing_text_errors_cleanly() {
 
     assert!(!out.status.success(), "expected failure for missing text");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The disjunction this used to carry ("argument error" OR "missing text")
+    // could be satisfied by a message that named neither the command nor the
+    // parameter; both legs are now one exact string.
     assert!(
-        stderr.contains("argument error") || stderr.contains("missing text"),
-        "expected diagnostic about missing positional, got stderr: {stderr}",
+        stderr.contains("anthill-todo: feedback: missing required argument <text>"),
+        "expected the diagnostic to name the command and the missing positional, \
+         got stderr: {stderr}",
     );
 }

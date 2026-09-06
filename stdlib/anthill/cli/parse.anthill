@@ -18,13 +18,23 @@ namespace anthill.cli.parse
 
   entity ParsedArgs(spec_name: String, bindings: List[Binding])
 
+  -- Every error a SUBCOMMAND's argv walk can raise carries the `OperationSpec` it
+  -- was walking, and — where the fault is about a declared parameter — that
+  -- `ParamSpec` itself, rather than either one's NAME. A name would make the
+  -- reporter look the spec back up in the registry, which is a lookup that can
+  -- fail for a spec the parser demonstrably just held; carrying the value removes
+  -- both the lookup and its impossible not-found branch. It is also what lets a
+  -- diagnostic print what the command DOES accept: `usage_summary` / `render_flags`
+  -- take params, so the `description:` string every `ParamSpec` declares finally
+  -- has a reader. `unknown_subcommand` keeps a bare `String` because at that point
+  -- no spec was found — that is the error.
   enum ParseError
     entity no_subcommand
     entity unknown_subcommand(given: String)
-    entity unknown_flag(spec_name: String, flag: String)
-    entity flag_expects_value(flag: String)
-    entity unexpected_argument(given: String)
-    entity missing_required(spec_name: String, param_name: String)
+    entity unknown_flag(spec: OperationSpec, flag: String)
+    entity flag_expects_value(spec: OperationSpec, param: ParamSpec)
+    entity unexpected_argument(spec: OperationSpec, given: String)
+    entity missing_required(spec: OperationSpec, param: ParamSpec)
   end
 
   enum ParseResult
@@ -52,9 +62,9 @@ namespace anthill.cli.parse
 
   operation consume_flag(s: OperationSpec, name: String, rest: List[String], acc: List[Binding]) -> ParseResult =
     match s
-      case OperationSpec(sname, _, params, _) ->
+      case OperationSpec(_, _, params, _) ->
         match find_param(params, name)
-          case none() -> parse_err(unknown_flag(sname, name))
+          case none() -> parse_err(unknown_flag(s, name))
           case some(p) ->
             match p
               case ParamSpec(_, kind, _, _) ->
@@ -62,22 +72,22 @@ namespace anthill.cli.parse
                   case bool_flag() -> parse_args(s, rest, cons(Binding(name, "true"), acc))
                   case _ ->
                     match rest
-                      case nil() -> parse_err(flag_expects_value(name))
+                      case nil() -> parse_err(flag_expects_value(s, p))
                       case cons(v, more) -> parse_args(s, more, cons(Binding(name, v), acc))
 
   operation consume_positional(s: OperationSpec, value: String, rest: List[String], acc: List[Binding]) -> ParseResult =
     match s
       case OperationSpec(_, _, params, _) ->
         match next_positional(params, acc)
-          case none() -> parse_err(unexpected_argument(value))
+          case none() -> parse_err(unexpected_argument(s, value))
           case some(p) ->
             match p
               case ParamSpec(pname, _, _, _) -> parse_args(s, rest, cons(Binding(pname, value), acc))
 
   operation finalize(s: OperationSpec, acc: List[Binding]) -> ParseResult =
     match s
-      case OperationSpec(sname, _, params, _) ->
-        match check_required(params, acc, sname)
+      case OperationSpec(sname, _, _, _) ->
+        match check_required(s, acc)
           case none() -> parse_ok(ParsedArgs(sname, acc))
           case some(err) -> parse_err(err)
 
@@ -125,12 +135,16 @@ namespace anthill.cli.parse
             case _ -> false)
 
   -- First required param missing from acc, mapped to the typed error (else none).
-  operation check_required(params: List[ParamSpec], acc: List[Binding], spec_name: String) -> Option[ParseError] =
-    match find(params, lambda p ->
-        match p
-          case ParamSpec(pname, _, required, _) -> and(required, not(has_binding(acc, pname))))
-      case none() -> none()
-      case some(p) ->
-        match p
-          case ParamSpec(pname, _, _, _) -> some(missing_required(spec_name, pname))
+  -- Takes the spec ALONE and opens it here: a `(params, s)` pair would let a
+  -- caller hand over one spec's params beside another spec's identity, and the
+  -- `missing_required` it built would then name the wrong command with nothing
+  -- able to catch it. The two cannot desync if only one is passed.
+  operation check_required(s: OperationSpec, acc: List[Binding]) -> Option[ParseError] =
+    match s
+      case OperationSpec(_, _, params, _) ->
+        match find(params, lambda p ->
+            match p
+              case ParamSpec(pname, _, required, _) -> and(required, not(has_binding(acc, pname))))
+          case none() -> none()
+          case some(p) -> some(missing_required(s, p))
 end

@@ -38,11 +38,16 @@ namespace anthill.todo
   import anthill.prelude.String.{length, substring, indexOf, trim,
                                  toUpper, toLower, padRight,
                                  startsWith, isEmpty, split}
-  import anthill.prelude.Console.{console, println, eprintln,
+  import anthill.prelude.Console.{console, println, eprint, eprintln,
                                   ConsoleOutput, ConsoleError}
   import anthill.cli.parse.{parse_argv, ParseResult, ParsedArgs,
                             parse_ok, parse_err,
                             no_subcommand, unknown_subcommand}
+  -- The four SUBCOMMAND-LEVEL parse errors, and the param lookup that reads the
+  -- same spec they carry. `report_argument_error` is their only reader.
+  import anthill.cli.parse.{ParseError, unknown_flag, flag_expects_value,
+                            unexpected_argument, missing_required, find_param}
+  import anthill.cli.help.{format_usage, cat3}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
   import anthill.cli.spec.ParamKind.{positional, flag, bool_flag}
   import anthill.cli.parse.{Binding}
@@ -526,9 +531,7 @@ namespace anthill.todo
               concat("anthill-todo: unknown subcommand '",
                 concat(given, "'. Try `anthill-todo --help`.")))
             2
-        case parse_err(_) ->
-          let _ = eprintln(console(), "anthill-todo: argument error")
-          2
+        case parse_err(argument_error) -> report_argument_error(argument_error)
         case parse_ok(ParsedArgs(name, args)) ->
           -- WI-434: warn (to stderr) if the project's data-format stamp is
           -- missing or stale, before running the command. A query over the
@@ -841,6 +844,118 @@ namespace anthill.todo
               println(console(),
                 concat("  ", concat(padRight(name, 20), description)))
           print_help_lines(rest)
+
+    -- An ARGUMENT error names the offending token, the command it was given to,
+    -- and what that command would have accepted — the last rendered by
+    -- `format_usage` from the very `ParamSpec` list `specs()` declares, so the
+    -- advice cannot drift from the dispatch the way hand-written usage prose does.
+    -- It is also the first reader those `description:` strings have ever had.
+    --
+    -- Until here the four subcommand-level `ParseError` variants collapsed into a
+    -- single `anthill-todo: argument error` line that named neither the token nor
+    -- the command, and so read exactly like a missing `-d`. `list -unblocked` is
+    -- the worst of them: ONE dash, so `parse_args` never treats it as a flag at
+    -- all and hands it to `consume_positional`, which refuses it as an
+    -- `unexpected_argument` because `list` declares no positionals — a rejection
+    -- whose real cause is a missing character the message never mentioned.
+    --
+    -- `no_subcommand` / `unknown_subcommand` are the SPEC-SELECTION errors and are
+    -- answered by `main`'s own earlier arms (the second also being where `--help`
+    -- lands), so they cannot reach here. The final arm is not drivable today and
+    -- is not named after them either: it would also catch a FIFTH variant added to
+    -- `anthill.cli.parse.ParseError` later, and a message that confidently called
+    -- that "a subcommand-selection error" would misdiagnose the one case it exists
+    -- to report. It names the real cause instead — a variant with no arm here.
+    operation report_argument_error(err: ParseError) -> Int64
+      effects ConsoleError
+    =
+      match err
+        case unknown_flag(s, given) ->
+          emit_argument_error(s, cat3("unknown flag '--", given, "'"))
+        case flag_expects_value(s, p) ->
+          emit_argument_error(s, cat3("flag '--", param_name(p), "' expects a value"))
+        case missing_required(s, p) ->
+          emit_argument_error(s, cat3("missing required argument <", param_name(p), ">"))
+        case unexpected_argument(s, given) -> report_unexpected_argument(s, given)
+        case _ ->
+          let _ = eprintln(console(),
+            "anthill-todo: internal: a ParseError variant with no argument diagnostic reached report_argument_error — add an arm for it")
+          2
+
+    -- Split out because its `match` would otherwise be a NESTED one with arms of
+    -- the enclosing `match err` following it — the shape the loader refuses (a
+    -- less-indented `case` binds to the inner match and silently drops the outer
+    -- arm), and the shape a reader mis-reads the same way.
+    operation report_unexpected_argument(s: OperationSpec, given: String) -> Int64
+      effects ConsoleError
+    =
+      match single_dash_flag(s, given)
+        case some(pname) ->
+          emit_argument_error(s,
+            concat(cat3("unexpected argument '", given, "'"),
+                   cat3(" — a flag takes two dashes: '--", pname, "'")))
+        case none() ->
+          emit_argument_error(s, cat3("unexpected argument '", given, "'"))
+
+    -- The shared shape: `anthill-todo: <command>: <complaint>`, then the command's
+    -- own usage block. Every argument diagnostic goes through here, so none of
+    -- them can be the one that forgets to name the command. Exit 2 is the usage
+    -- code the collapsed line already returned.
+    operation emit_argument_error(s: OperationSpec, complaint: String) -> Int64
+      effects ConsoleError
+    =
+      let _ = eprintln(console(),
+        cat3("anthill-todo: ", spec_name(s), concat(": ", complaint)))
+      let _ = eprint(console(), format_usage(s))
+      2
+
+    -- A single-dash token that names a DASH-SPELLED parameter of this command is
+    -- one character away from being right, which is the whole of `-unblocked`.
+    -- Anything else — `-5`, a stray word — gets the plain refusal: a suggestion
+    -- built from a token the spec does not contain would name a flag that does
+    -- not exist, which is worse than saying nothing.
+    -- (A `--`-prefixed token never arrives here; `parse_args` routes those to
+    -- `consume_flag`, so the leading `-` tested below is always exactly one.)
+    operation single_dash_flag(s: OperationSpec, given: String) -> Option[String] =
+      if startsWith(given, "-")
+        then dashed_param_named(s, substring(given, 1, length(given)))
+        else none()
+
+    -- `find_param` answers "does this command DECLARE this name?", which is not
+    -- the question here — the question is "would that name be SPELLED with
+    -- dashes?", and a POSITIONAL answers the first yes and the second no. Advising
+    -- `--id` for `show WI-001 -id` contradicts the `usage: show <id>` line printed
+    -- directly underneath it, which is the very drift between advice and spec this
+    -- reporter exists to remove. So the kind decides, and only a positional is out.
+    operation dashed_param_named(s: OperationSpec, name: String) -> Option[String] =
+      match find_param(spec_params(s), name)
+        case none() -> none()
+        case some(p) -> if dash_spelled(p) then some(name) else none()
+
+    -- Asked as "not positional" rather than as a list of the three dashed kinds,
+    -- so a ParamKind added to `anthill.cli.spec` later is dashed by default —
+    -- which is what `usage_summary` and `render_flags` already assume of every
+    -- non-positional kind, and keeps the three renderings from disagreeing.
+    operation dash_spelled(p: ParamSpec) -> Bool =
+      match p
+        case ParamSpec(_, kind, _, _) ->
+          match kind
+            case positional() -> false
+            case _ -> true
+
+    -- Field readers, so no caller has to open an `OperationSpec` / `ParamSpec`
+    -- with a nested `match` in an arm position.
+    operation spec_name(s: OperationSpec) -> String =
+      match s
+        case OperationSpec(name, _, _, _) -> name
+
+    operation spec_params(s: OperationSpec) -> List[ParamSpec] =
+      match s
+        case OperationSpec(_, _, params, _) -> params
+
+    operation param_name(p: ParamSpec) -> String =
+      match p
+        case ParamSpec(name, _, _, _) -> name
 
     -- Bump the count for `status` in `acc`, appending a new entry
     -- if absent. Returns the rebuilt list (immutable).
