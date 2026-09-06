@@ -745,6 +745,20 @@ fn tuple_components_from_view<'a>(
     // index and stays named, which leaves source order intact because `iter()` is
     // `pos ++ named`.
     //
+    // A PREFIX PROMOTION BESIDE A USER LABEL CANNOT MAKE THE CARRIERS DISAGREE, and the
+    // reason is structural — /code-review raised the shape (`(_1: 1, b: 2)`, where `_1` at
+    // index 0 IS the synthetic spelling) and it is refuted rather than merely unmeasured.
+    // With a user label still in the list all three questions a consumer asks answer alike
+    // after the move: `iter()` is unchanged, since a prefix moved from `named` to `pos`
+    // sits at the same place in `pos ++ named`; `is_name_keyed` is `!named.is_empty()` and
+    // the user label keeps it TRUE on both carriers, so both take the by-label arm; and
+    // `by_label("_1")` resolves to the same `iter()`-order index either way — by NAME out
+    // of `named` before the move, by `positional_label_index` out of `pos` after it. The
+    // one shape that does empty `named` is an ALL-synthetic list, which is
+    // `an_all_synthetic_named_tuple_destructures_alike_on_both_carriers`. Pinned as
+    // `a_synthetic_prefix_beside_a_user_label_agrees_on_both_carriers`, which passes on the
+    // back-out too and says so: it is a negative control for a hypothesis, not a driver.
+    //
     // Normalized through `short_name_of` on both sides, exactly as
     // `by_label_index`'s `_N` arm and `labels_are_positional` do — a label read off a
     // TYPE's field list can arrive qualified, and a reader that normalized one branch

@@ -499,10 +499,19 @@ enum anthill.prelude.TypeExtractor
      needs no binder node at all — at a declaration it is implied by the return
      position, and at a use it has already been OPENED into a `Skolem` (WI-1063).
 
-     A BINDER CARRIES NO BOUND. §5.4 says `TypeParam ::= Name` and WI-850 refuses the
-     `= default` arm the grammar parses only for its diagnostic, so neither binder form
-     can carry one. Bounds live at SORT level as `requires` clauses and are already
-     reflected as `SortRequiresInfo`; duplicating one here would give it two owners.
+     A BINDER CARRIES NO BOUND, AND THAT IS NOT THE SAME AS "NO CONTEXT" — the two were
+     conflated once and the distinction is written out so they are not again (user,
+     2026-09-05). What has no bound is a BINDER ELEMENT: §5.4 says `TypeParam ::= Name`
+     and WI-850 refuses the `= default` arm the grammar parses only for its diagnostic,
+     so there is no spelling for `T: Additive` on a binder. `context` below is a
+     SEPARATE slot — the `∀a. C a => t` shape — and is a different construct.
+
+     Nor does `context` give bounds two owners. That objection is about a SORT, whose
+     WRITTEN `requires` clause is already reflected as `SortRequiresInfo`; for a sort,
+     duplicating it here would indeed be a second owner. A LAMBDA has no declaration and
+     so no such entry, and a bound is the PRIMARY notion that a `requires` clause is the
+     declaration-level spelling OF — so for a type with no declaration site, `context` is
+     the only owner there is.
 
      `binders` IS A LIST OF VARIABLES, NOT OF NAMES, and that is the one place this
      departs from the shape sketched on WI-1079 (`binders: List[Symbol]`). A binder's
@@ -515,7 +524,12 @@ enum anthill.prelude.TypeExtractor
 
      INSTANTIATING one yields `FlexVar`s (∀-elimination, at each APPLICATION); that is
      the lifecycle the two variable entities above already name. >}
-  entity PolyType(binders: List[Term], body: Term)
+  {< WI-20260904-50B2K part (c): the CONSTRAINTS the quantified variables must satisfy —
+     `∀a. C a => t`. Each element is a spec application over the binders (`Additive[T = ?a]`),
+     and an EMPTY list is the plain ∀ every producer before (c) built. Its consumer
+     discharges it at the ∀-ELIMINATION, which is where the binders become concrete and the
+     constraint becomes answerable; see `check_bare_ref`. >}
+  entity PolyType(binders: List[Term], context: List[Term], body: Term)
   entity Denoted(value: NodeOccurrence)
   {< WI-376: an expression-carried type projection `s.T` / `s.Sort`. `value` is the
      RECEIVER occurrence (a param/local ref, or any typed expression); `member` is the

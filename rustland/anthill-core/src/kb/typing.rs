@@ -6871,7 +6871,42 @@ fn check_bare_ref(
                     // carrying op would report `UnsatisfiableRequirement` (WI-420) instead
                     // of the malformed-∀ error written here for it.
                     let fn_ty = match instantiate_poly_type(kb, &fn_ty) {
-                        Some(inst) => inst,
+                        // WI-20260904-50B2K part (c) — ∀-ELIMINATION IS WHERE A CONTEXT
+                        // COMES DUE: `instantiate_poly_type` hands the constraints back with
+                        // the binders made concrete, which is exactly what makes them
+                        // answerable, and discharging them is this reference's job. The
+                        // empty case is every ∀ that exists today.
+                        Some((inst, obligations)) if obligations.is_empty() => inst,
+                        // WI-20260904-50B2K part (c) — A CONTEXT THAT REACHES ∀-ELIMINATION
+                        // WITH NOWHERE TO GO IS A LOUD ERROR, not a `debug_assert`. The
+                        // first cut asserted, which is silent in release — and the failure
+                        // it guards is a WRONG ACCEPT: a constraint dropped here is a
+                        // program that type-checks without its requirement. The repo's own
+                        // rule ("prefer a loud error over a silent skip") applies exactly.
+                        // /code-review raised it.
+                        //
+                        // UNREACHABLE IN THIS SLICE and written anyway: the one mint
+                        // (`generalize_eta_arrow`) builds the empty context, so nothing
+                        // produces a non-empty one yet. The slice that starts producing them
+                        // must deliver the discharge FIRST or every such reference is
+                        // refused here — which is the ordering this error enforces.
+                        Some((_, obligations)) => {
+                            return Err(TypeError::Other {
+                                site: TypeError::here(),
+                                span,
+                                context: TypeErrorContext::OperationAsFunctionValue {
+                                    op_name: sym,
+                                },
+                                expected: "a quantified type whose constraints this \
+                                           reference can discharge"
+                                    .to_string(),
+                                actual: format!(
+                                    "a `PolyType` carrying {} undischarged constraint(s) \
+                                     (WI-20260904-50B2K part (c))",
+                                    obligations.len()
+                                ),
+                            });
+                        }
                         None if matches!(type_head(kb, &fn_ty), TypeHead::PolyType) => {
                             return Err(TypeError::Other {
                                 site: TypeError::here(),
@@ -8831,7 +8866,14 @@ fn generalize_eta_arrow(
         .collect();
     let binder_list = super::load::build_value_list(kb, binder_terms);
     let body = value_to_type_child(kb, &arrow);
-    Value::Node(kb.make_poly_type_occ(binder_list, body, span, owner))
+    // WI-20260904-50B2K part (c): an EMPTY context, so every ∀ this mint builds is exactly
+    // the plain one it built before. An OPERATION's constraints are its written `requires`
+    // clause, whose owner is `SortRequiresInfo` and whose variables `signature_bound_vars`
+    // already quantifies above — moving them here would be a second owner for a fact that
+    // HAS one, which is the very objection the entity's doc raises. The context is for the
+    // type that has NO declaration site: a lambda's arrow.
+    let empty_context = super::load::build_value_list(kb, Vec::new());
+    Value::Node(kb.make_poly_type_occ(binder_list, empty_context, body, span, owner))
 }
 
 /// WI-1083 — ∀-ELIMINATION: if `ty` is a [`TypeExtractor::PolyType`], return its body
@@ -8876,7 +8918,10 @@ fn generalize_eta_arrow(
 /// reproduce those figures. The measurement is kept because it is what justifies this
 /// function's choice of walk, not as a live inventory — `Iterable.map` is the one named
 /// operation whose signature is unchanged.
-fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> {
+fn instantiate_poly_type<V: TermView>(
+    kb: &mut KnowledgeBase,
+    ty: &V,
+) -> Option<(Value, Vec<Value>)> {
     // HEAD FIRST, then the children: `type_head` reads at most the functor symbol, while
     // `extract_type` materializes a fresh child vector with every bound type cloned into it
     // (the cost this file's WI-798 notes exist to keep off hot paths). Every bare-reference
@@ -8884,7 +8929,12 @@ fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<
     if !matches!(type_head(kb, ty), TypeHead::PolyType) {
         return None;
     }
-    let TypeExtractor::PolyType { binders, body } = extract_type(kb, ty) else {
+    let TypeExtractor::PolyType {
+        binders,
+        context,
+        body,
+    } = extract_type(kb, ty)
+    else {
         return None;
     };
     let mut fresh = Substitution::new();
@@ -8913,7 +8963,15 @@ fn instantiate_poly_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<
         fresh.bind(kb, vid, new_term);
     }
     let (instantiated, _) = super::node_occurrence::subst_value_type(kb, &body, &fresh);
-    Some(instantiated)
+    // WI-20260904-50B2K part (c) — THE CONTEXT IS FRESHENED WITH THE BODY AND HANDED BACK,
+    // because ∀-elimination is exactly where a constraint becomes answerable: the binders
+    // have just become concrete. Dropping it here would be the fail-open the whole slice
+    // exists to avoid, so the obligation is RETURNED and the caller must dispose of it.
+    let instantiated_context: Vec<Value> = context
+        .iter()
+        .map(|c| super::node_occurrence::subst_value_type(kb, c, &fresh).0)
+        .collect();
+    Some((instantiated, instantiated_context))
 }
 
 /// WI-1083 — a ∀'s BODY WITHOUT FRESHENING, for the one reader that must see the
@@ -8944,7 +9002,36 @@ fn poly_type_body<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> 
         return None;
     }
     match extract_type(kb, ty) {
-        TypeExtractor::PolyType { body, .. } => Some(body),
+        // WI-20260904-50B2K part (c) — THE THIRD ∀-READER, AND IT REFUSES RATHER THAN
+        // DROPPING. `check_bare_ref` returns a `TypeError` on a non-empty context and
+        // `eliminate_node_projections` asserts emptiness; this reader patterned `{ body, .. }`
+        // and discarded one WITHOUT A WORD, which in a release build is the wrong accept the
+        // whole slice exists to prevent. An eta'd op reference goes through both paths, so
+        // step 2 reaches here on its first program. /code-review found it twice — once for
+        // the silence, once because a `debug_assert` alone is silence in release.
+        //
+        // TWO BEHAVIOURS, BOTH DELIBERATE, because the doc first claimed only the second and
+        // /code-review asked which one it is. IN A DEBUG BUILD THE ASSERT ABORTS — it is the
+        // tripwire that makes whoever writes step 2 handle this reader, the same role
+        // `check_bare_ref`'s `TypeError` plays on the other path. IN A RELEASE BUILD IT
+        // REFUSES: `None` sends the caller to `arrow_parts(kb, fn_ty)`, which also answers
+        // `None` for a ∀, so the element pin does not happen and the dictionary build is
+        // handed an empty σ — measured under WI-844 to raise a REFUSAL naming the dep it
+        // could not construct. Neither path can accept a program whose constraints were
+        // thrown away, which is the property that matters; not pinning is strictly less
+        // committed than pinning off a body stripped of its context.
+        TypeExtractor::PolyType { context, body, .. } => {
+            debug_assert!(
+                context.is_empty(),
+                "poly_type_body: a ∀ with constraints reached the eta dictionary pin, which \
+                 has no way to discharge them",
+            );
+            if context.is_empty() {
+                Some(body)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -9577,7 +9664,10 @@ fn type_mentions_spec_param(
         } => recur(&param) || recur(&result) || recur(&effects),
         TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| recur(v)),
         TypeExtractor::EffectsRows(e) => recur(&e),
-        TypeExtractor::PolyType { body, .. } => recur(&body),
+        // WI-20260904-50B2K part (c): a spec parameter named in a CONSTRAINT is mentioned
+        // by this type as surely as one in the body — `Additive[T = ?a]` is the shape this
+        // predicate exists to see.
+        TypeExtractor::PolyType { context, body, .. } => recur(&body) || context.iter().any(recur),
         TypeExtractor::Denoted(v) => recur(&v),
         TypeExtractor::ExprCarried { value, .. } => recur(&value),
         // A logical variable, a rigid, and the two empties are LEAVES that name no
@@ -15565,9 +15655,21 @@ impl WalkSolutions {
 
     /// Record every concrete carrier this call's σ gives a deferred requirement's binders.
     /// Runs BEFORE [`report_call_solutions`]' first-wins filter — see the `observed` doc.
-    fn observe_deferred_carriers(&mut self, kb: &KnowledgeBase, subst: &Substitution) {
+    fn observe_deferred_carriers(
+        &mut self,
+        kb: &KnowledgeBase,
+        before: &Substitution,
+        subst: &Substitution,
+    ) {
         for d in &mut self.deferred {
             for v in &d.carriers {
+                // ATTRIBUTABLE TO THIS UNIFY OR NOT OBSERVED. A carrier already resolved in
+                // `before` was decided by an earlier argument, whose own unify may have
+                // FAILED after binding it — `unify_types` never rolls back. See
+                // [`report_walk_solutions`].
+                if resolved_carrier_sort(kb, before, *v).is_some() {
+                    continue;
+                }
                 let Some(c) = resolved_carrier_sort(kb, subst, *v) else {
                     continue;
                 };
@@ -15702,30 +15804,49 @@ fn walk_minted_carriers(
 /// must see a second use's carrier even where the solving does not — see
 /// [`DeferredSpecRequirement::observed`].
 ///
-/// **`unified` GATES THE OBSERVATION AND NOT THE SOLVING, AND THE ASYMMETRY IS THE POINT.**
-/// `unify_types` binds as it DESCENDS and never rolls back, so a pair that agrees partway
-/// and then disagrees — `Function[A = Int64, B = String]` against `?p -> ?p` binds
-/// `?p := Int64` before failing on `B` — leaves real bindings behind on a unification that
-/// did NOT hold. For the solutions half that is the documented no-rollback hazard and its
-/// consequence is ORDERING (first-wins). For the observation half the consequence is a
-/// LICENCE: [`WalkSolutions::discharge`] drops a requirement on the strength of what was
-/// observed, so an observation drawn from a failed unify would license a call on evidence
-/// this file is elsewhere careful to say is not evidence. Raised by /code-review.
+/// **`unified` GATES BOTH HALVES.** `unify_types` binds as it DESCENDS and never rolls
+/// back, so a pair that agrees partway and then disagrees — `Function[A = Int64, B = String]`
+/// against `?p -> ?p` binds `?p := Int64` before failing on `B` — leaves real bindings behind
+/// on a unification that did NOT hold. For the observation half the consequence is a LICENCE:
+/// [`WalkSolutions::discharge`] drops a requirement on the strength of what was observed, so
+/// an observation drawn from a failed unify would license a call on evidence this file is
+/// elsewhere careful to say is not evidence.
 ///
-/// This does not touch the discarded-boolean idiom itself, which is shared by ~10 sites and
-/// is WI-20260904-60143's census — the boolean is READ here, for this one consumer, and
-/// every existing caller's verdict is unchanged.
+/// THE FIRST CUT GATED ONLY THAT HALF, and the argument it gave for the gate applies WORD FOR
+/// WORD to the solutions half — which /code-review said, and it is right. A failed unify's
+/// bindings reach `w.solved`, where FIRST-WINS makes them permanent for the whole walk and
+/// the `LambdaBody` frame resolves the lambda's arrow through them; and the boolean is
+/// DISCARDED at this site (WI-20260904-60143's census), so a false one does not by itself end
+/// the call. Withholding is the safe direction either way: an unpinned binder is a REFUSAL,
+/// while a binding taken from a failed unify is a wrong type accepted quietly.
+///
+/// NO CORPUS PROGRAM SEPARATES THE TWO GATINGS — measured, the suite is green with the
+/// solutions half gated and ungated — so this is a class removed rather than a defect fixed,
+/// and it is recorded as such. What would drive it is a call whose argument unify fails
+/// PARTWAY, binds a walk-minted binder on the way down, and whose enclosing call still types;
+/// the discarded boolean is what makes that shape constructible at all, and closing that
+/// census (WI-20260904-60143) is what would make it reachable on purpose.
+///
+/// **AND THE GATE IS PER-BINDING, NOT PER-CALL, WHICH TOOK THREE CUTS TO GET RIGHT.** `subst`
+/// is ACCUMULATED across a call's whole argument loop, so the boolean alone gates only the
+/// FAILING argument: arg[0] binds something and fails, arg[1] unifies cleanly, and the shared
+/// σ is read as though the failed unify had never happened. `before` — the σ AS IT STOOD
+/// BEFORE THIS ARGUMENT'S UNIFY — is what makes the question per-binding, and BOTH halves
+/// take it. The first cut gave it to neither, the second to the observation half only (and
+/// said in this very doc that both were covered), and /code-review found each in turn.
 fn report_walk_solutions(
     kb: &KnowledgeBase,
     solving: Option<&mut WalkSolutions>,
+    before: &Substitution,
     subst: &Substitution,
     unified: bool,
 ) {
     let Some(w) = solving else { return };
-    if unified {
-        w.observe_deferred_carriers(kb, subst);
+    if !unified {
+        return;
     }
-    report_call_solutions(kb, Some(&mut w.solved), subst, w.watermark);
+    w.observe_deferred_carriers(kb, before, subst);
+    report_call_solutions(kb, Some(&mut w.solved), before, subst, w.watermark);
 }
 
 /// WI-20260904-50B2K part (c) — copy a finished call's bindings into the walk's
@@ -15779,11 +15900,11 @@ fn report_walk_solutions(
 /// TWO THINGS THIS DOES NOT DO, named because they are unmeasured rather than absent:
 ///
 ///   * NO ROLLBACK. A report happens when an argument's unification finishes, which is
-///     BEFORE the call is known to type — `unify_types`' boolean is discarded here as it
-///     is at every one of this file's ~10 call sites (WI-20260904-60143), and a call that
-///     later returns `Err` leaves its bindings behind. Combined with first-wins, a
-///     speculative binding could outrank a later well-typed one. No corpus program shows
-///     it; the scoped container below is what would remove the possibility.
+///     BEFORE the CALL is known to type: [`report_walk_solutions`] withholds a FAILED
+///     argument unify's bindings, but a call whose arguments all unify and which then
+///     returns `Err` for another reason still leaves its bindings behind. Combined with
+///     first-wins, a speculative binding could outrank a later well-typed one. No corpus
+///     program shows it; the scoped container below is what would remove the possibility.
 ///   * THE PROJECTION-DEFERRED PATH DOES NOT REPORT. The report sits inside the
 ///     `!(op_has_projection && value_contains_projection(..))` arm, and WI-398's deferred
 ///     elimination unify afterwards has no report of its own. A binder pinned only through
@@ -15797,18 +15918,58 @@ fn report_walk_solutions(
 fn report_call_solutions(
     kb: &KnowledgeBase,
     solved: Option<&mut Substitution>,
+    before: &Substitution,
     subst: &Substitution,
     watermark: u32,
 ) {
     let Some(out) = solved else { return };
-    let fresh: Vec<(VarId, Value)> = subst
+    // WI-20260904-50B2K part (c) — THE OCCURS-CHECK RUNS AGAINST THE `out` EACH CANDIDATE
+    // ACTUALLY LANDS IN, which the first cut did not do: it filtered the WHOLE batch against
+    // `out` as it stood before any of the batch was bound, so two candidates could jointly
+    // close a cycle that neither closes alone. With `out` holding `?c := (?a,)`, a σ carrying
+    // `?a := (?b,)` and `?b := (?c,)` passes both tests — `?b` is unbound when `?a` is
+    // checked and `?a` is unbound when `?b` is checked — and the pair is cyclic once both
+    // land. That is the same hazard the transitive check was added for, one level up, with
+    // the same consequence: a stack overflow in `resolve_type_deep_value`, not a wrong type.
+    // Only the WALK-LOCAL and watermark filters can be batched, because neither reads `out`.
+    // /code-review found it.
+    let mut candidates: Vec<(VarId, Value)> = subst
         .iter()
         .filter(|(v, val)| v.raw() >= watermark && value_vars_all_walk_local(kb, val, watermark))
-        .filter(|(v, _)| out.resolve_as_value(**v).is_none())
-        .filter(|(v, val)| !value_mentions_var(kb, val, **v))
         .map(|(v, val)| (*v, val.clone()))
         .collect();
-    for (v, val) in fresh {
+    // ORDERED, BECAUSE A SEQUENTIAL DECISION MAKES THE ORDER PART OF THE ANSWER. `subst` is
+    // an `imbl` HashMap over `RandomState` (kb/subst.rs) — HAMT iteration order varies with
+    // a per-process seed. The batch filter this replaced could not see that, every candidate
+    // being tested against a frozen `out`; testing against a GROWING one means WHICH member
+    // of a cycle survives would otherwise differ run to run, and `w.solved` is what the
+    // `LambdaBody` frame resolves the lambda's arrow through. Mint order is the tie-break:
+    // the earlier variable wins, which is the same first-wins rule this function already
+    // applies across calls. /code-review found it.
+    candidates.sort_by_key(|(v, _)| v.raw());
+    for (v, val) in candidates {
+        // ALREADY BOUND BEFORE THIS ARGUMENT'S UNIFY ⇒ NOT THIS ARGUMENT'S TO REPORT, and
+        // this is the half the first two cuts left open. `subst` is ACCUMULATED across the
+        // argument loop, so `if !unified { return }` suppresses only the FAILING argument's
+        // report: the next argument that unifies cleanly hands the whole σ over, leftovers
+        // and all. Concretely, `take(f: (x: Int64) -> String, n: Int64)` applied as
+        // `take(lambda v -> v, 3)` binds `?p := Int64` descending into the param slot, fails
+        // on the result slot, and reports nothing — then `3` unifies and carries `?p := Int64`
+        // into `solved`, where first-wins makes it permanent for the walk. The filter costs
+        // NOTHING on the good path: a variable bound by an earlier SUCCESSFUL argument was
+        // already offered at that argument's own site, and first-wins means re-offering it
+        // is a no-op. Its candidacy cannot have improved in between either — a bound var
+        // keeps its value, and the walk-local test reads only the value and the watermark.
+        // /code-review found it, on the pass after the doc claimed both halves were gated.
+        if before.resolve_as_value(v).is_some() {
+            continue;
+        }
+        if out.resolve_as_value(v).is_some() {
+            continue;
+        }
+        if value_reaches_var(kb, out, &val, v) {
+            continue;
+        }
         out.bind_value(kb, v, val);
     }
 }
@@ -15862,13 +16023,38 @@ fn collect_value_type_and_bare_vars(
     }
 }
 
-/// WI-20260904-50B2K part (c) — does `v` mention `var`? The occurs-check
-/// [`report_call_solutions`] performs itself; see there for why `bind_value` cannot.
-fn value_mentions_var(kb: &KnowledgeBase, v: &Value, var: VarId) -> bool {
-    let mut vars: Vec<VarId> = Vec::new();
-    let mut seen = HashSet::new();
-    collect_value_type_and_bare_vars(kb, v, &mut vars, &mut seen);
-    vars.contains(&var)
+/// WI-20260904-50B2K part (c) — can `var` be reached FROM `v`, following the bindings
+/// already recorded in `out`? The occurs-check [`report_call_solutions`] performs itself.
+///
+/// **THE DIRECT TEST IS NOT ENOUGH, AND THE DOC THAT DEMANDED THIS CHECK SAID SO.** It names
+/// the hazard as "two calls can contribute `?a := f(?b)` and `?b := g(?a)`, each acyclic and
+/// walk-local ON ITS OWN" — and a direct `value_mentions_var` passes each of them, because
+/// neither value mentions its OWN variable. So the first cut implemented the check the doc
+/// argued against. The cycle then reaches `resolve_type_deep_value`, whose `map_fn_children`
+/// recursion has no visited set: a STACK OVERFLOW, not a wrong type. /code-review found it.
+///
+/// Following `out` is what makes the test transitive: a candidate is rejected when `var` is
+/// reachable from its value through bindings THIS walk has already committed.
+fn value_reaches_var(kb: &KnowledgeBase, out: &Substitution, v: &Value, var: VarId) -> bool {
+    let mut stack: Vec<Value> = vec![v.clone()];
+    let mut seen_vars: HashSet<u32> = HashSet::new();
+    while let Some(cur) = stack.pop() {
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        collect_value_type_and_bare_vars(kb, &cur, &mut vars, &mut seen);
+        for w in vars {
+            if w == var {
+                return true;
+            }
+            if !seen_vars.insert(w.raw()) {
+                continue;
+            }
+            if let Some(bound) = out.resolve_as_value(w) {
+                stack.push(bound.clone());
+            }
+        }
+    }
+    false
 }
 
 /// WI-20260904-50B2K part (c) — is every variable inside `v` walk-local? The RANGE half of
@@ -16475,6 +16661,7 @@ fn check_apply_iter(
                     // post-synthesis elimination pass below; the argument type is still
                     // recorded so a LATER param projecting THIS one can read it.
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                        let before = subst.clone();
                         let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
@@ -16483,7 +16670,7 @@ fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
+                        report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -16531,6 +16718,7 @@ fn check_apply_iter(
                 if let Some((param_sym, param_type)) = &matched {
                     // WI-398: defer a projection param's unify (see the positional loop).
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                        let before = subst.clone();
                         let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
@@ -16539,7 +16727,7 @@ fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
+                        report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
                     }
                     if op_has_projection {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -19556,6 +19744,7 @@ fn check_apply_iter(
                                 // ten call sites share it and fixing two would leave the
                                 // other eight. WI-20260904-60143 owns the census.
                                 ArgValidation::Ok => {
+                                    let before = subst.clone();
                                     let unified =
                                         unify_types(kb, &mut subst, &arg_result.ty, slot_type);
                                     // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO.
@@ -19571,6 +19760,7 @@ fn check_apply_iter(
                                     report_walk_solutions(
                                         kb,
                                         solving.as_deref_mut(),
+                                        &before,
                                         &subst,
                                         unified,
                                     );
@@ -19691,10 +19881,17 @@ fn check_apply_iter(
                         // and not the other is the asymmetry this file has been bitten by
                         // before.
                         ArgValidation::Ok => {
+                            let before = subst.clone();
                             let unified = unify_types(kb, &mut subst, &arg_result.ty, &param_type);
                             // WI-20260904-50B2K part (c) — the named twin; see the
                             // positional loop's note.
-                            report_walk_solutions(kb, solving.as_deref_mut(), &subst, unified);
+                            report_walk_solutions(
+                                kb,
+                                solving.as_deref_mut(),
+                                &before,
+                                &subst,
+                                unified,
+                            );
                         }
                         ArgValidation::WrapSome { declared } => {
                             some_wraps.push((pos_args.len() + i, declared));
@@ -45865,7 +46062,18 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
             // WI-1083: quantifying a callable does not stop it being one — `∀A. (x: A)
             // -> A` IS the type of a function value, which is the whole reason the
             // form exists. The binders are variables and carry no callable.
-            TypeNode::PolyType { body, .. } => child(body),
+            //
+            // WI-20260904-50B2K part (c): the CONTEXT is read with the body, the fourth of
+            // the four predicates this file widened. A constraint's type arguments can be
+            // arrows (`Additive[T = (x: Int64) -> Int64]`), so an arrow answering `true` in
+            // the body and `false` in a constraint is the same walk giving one type two
+            // answers. /code-review found the one I missed.
+            TypeNode::PolyType { context, body, .. } => {
+                child(body)
+                    || value_list_elements(kb, context)
+                        .iter()
+                        .any(|c| type_contains_callable(kb, c))
+            }
         },
         // An effect row's labels are not callables; recurse anyway so the walk stays
         // total over the node's children rather than assuming a shape.
@@ -47065,7 +47273,12 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
         TypeExtractor::RigidTypeProjection { subject, .. } => value_contains_rigid(kb, &subject),
         // WI-1083: a ∀'s binders are flexible by construction (a binder is what gets
         // INSTANTIATED, never skolemized), so only the body can hold a rigid.
-        TypeExtractor::PolyType { body, .. } => value_contains_rigid(kb, &body),
+        // WI-20260904-50B2K part (c): the CONTEXT counts too. A constraint is a type, so a
+        // rigid inside one is a skolem written into a stored tree exactly as a rigid in the
+        // body would be — and this predicate's whole job is to catch that. /code-review.
+        TypeExtractor::PolyType { context, body, .. } => {
+            value_contains_rigid(kb, &body) || context.iter().any(|c| value_contains_rigid(kb, c))
+        }
         // A FLEX variable is the other half of the distinction this predicate turns on: it is
         // not a skolem, it is what a skolem is minted INSTEAD of, and a stored tree holding one
         // is fine.
@@ -47108,7 +47321,14 @@ fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
         // WI-1083: an eta'd member's ∀ body carries its receiver projections
         // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`), so the body IS walked — this
         // gate is what routes it to the elimination that rebuilds the ∀.
-        TypeExtractor::PolyType { body, .. } => value_contains_projection(kb, &body),
+        // WI-20260904-50B2K part (c): the CONTEXT counts too, and this reader is the one
+        // that DECIDES whether `eliminate_node_projections` is asked to rewrite the node —
+        // so a projection hiding in a constraint would never be eliminated, and the assert
+        // guarding that path is debug-only. /code-review.
+        TypeExtractor::PolyType { context, body, .. } => {
+            value_contains_projection(kb, &body)
+                || context.iter().any(|c| value_contains_projection(kb, c))
+        }
         // A logical variable of either kind is a LEAF: it has no children to hide a
         // projection in, and it is not one.
         TypeExtractor::FlexVar { .. }
@@ -47642,7 +47862,14 @@ fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<Sy
         // WI-1083: the receivers a ∀ projects are its body's — quantifying a type
         // hides no projection, and `value_contains_projection` above descends the same
         // child, so the gate and the collector agree on what they can see.
-        TypeExtractor::PolyType { body, .. } => collect_projection_receivers(kb, &body, out),
+        // WI-20260904-50B2K part (c): the CONTEXT's receivers are collected with the
+        // body's — the sibling of the two predicates above, and one owner of the answer.
+        TypeExtractor::PolyType { context, body, .. } => {
+            collect_projection_receivers(kb, &body, out);
+            for c in &context {
+                collect_projection_receivers(kb, c, out);
+            }
+        }
     }
 }
 
@@ -47940,10 +48167,35 @@ fn eliminate_node_projections(
             // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`) carries projections under
             // the binders. Elimination rewrites TYPES, never binders, so the binder
             // list crosses unchanged.
-            TypeNode::PolyType { binders, body } => {
+            TypeNode::PolyType {
+                binders,
+                context,
+                body,
+            } => {
                 let b = elim_child(kb, body, arg_types, arg_syms, ctx, span)?;
+                // WI-20260904-50B2K part (c): the context crosses UNCHANGED, and that is
+                // correct only while it is empty — a constraint is a TYPE, so a projection
+                // inside one would need eliminating exactly as the body's does.
+                //
+                // AND THIS NODE IS NOW ROUTED HERE *BECAUSE OF* THE CONTEXT: the same change
+                // widened `value_contains_projection` to look inside it, and that predicate
+                // is the one that DECIDES whether a node is handed to this function. So a
+                // context-borne projection arrives here by design, and a `debug_assert`
+                // alone would carry it un-eliminated into a stored type in release — the
+                // silent-in-release shape `check_bare_ref` was corrected for two passes ago.
+                // Loud, through the same helper the malformed-`ExprCarried` arm above uses.
+                // /code-review found it.
+                if !value_list_elements(kb, context).is_empty() {
+                    return Err(projection_type_error(
+                        ctx,
+                        span,
+                        "a type projection sits in a `PolyType` context, which the \
+                         elimination does not yet rewrite (WI-20260904-50B2K part (c))",
+                    ));
+                }
                 Ok(Value::Node(kb.make_poly_type_occ(
                     binders.clone(),
+                    context.clone(),
                     b,
                     sp,
                     owner,
@@ -50826,6 +51078,26 @@ pub(crate) fn value_list_elements<V: TermView>(kb: &KnowledgeBase, list: &V) -> 
     out
 }
 
+/// WI-20260904-50B2K part (c) — is this view the EMPTY list, as opposed to something
+/// [`value_list_elements`] merely failed to decode?
+///
+/// That decoder is deliberately tolerant — "a `nil` (or a malformed list) reads as the empty
+/// list rather than an error" — which is exactly the ambiguity the `binders` arm of
+/// [`extract_type`] refuses to live with. `binders` can afford to reject an empty answer
+/// outright, because a ∀ with no binders is malformed anyway. A CONTEXT may legitimately be
+/// empty, so it needs the distinction drawn rather than assumed: `nil` is the head
+/// [`crate::kb::load::build_value_list`] writes for an empty list, and anything else that
+/// decoded to nothing did not decode.
+fn value_is_nil_list<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    let Some(nil) = kb.try_resolve_symbol("anthill.prelude.List.nil") else {
+        return false;
+    };
+    matches!(
+        v.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if kb.canonical_sym(f) == kb.canonical_sym(nil)
+    )
+}
+
 /// Is this view a `List.cons` cell? The spine test [`value_list_elements`] and
 /// [`decode_cons_cell`] both walk on — ONE owner, so the two decoders cannot come to
 /// disagree about what a list cell is.
@@ -51206,8 +51478,14 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             // cycle, so BOTH lists are searched — a bound occurrence is still an
             // occurrence, and reporting it is the conservative direction (a missed
             // occurrence is an infinite type, a spurious one only refuses a binding).
-            TypeNode::PolyType { binders, body } => {
-                occurs_in_view(kb, vid, binders) || child(kb, body)
+            TypeNode::PolyType {
+                binders,
+                context,
+                body,
+            } => {
+                occurs_in_view(kb, vid, binders)
+                    || occurs_in_view(kb, vid, context)
+                    || child(kb, body)
             }
         };
     }
@@ -60436,7 +60714,12 @@ pub enum TypeExtractor {
     /// this directly: a ∀ is a schema, and comparing one against a monotype without
     /// ∀-elimination is the aliasing the eta gate used to exclude these operations
     /// over.
-    PolyType { binders: Vec<Value>, body: Value },
+    PolyType {
+        binders: Vec<Value>,
+        /// WI-20260904-50B2K part (c) — the `=>` of `∀a. C a => t`; EMPTY for a plain ∀.
+        context: Vec<Value>,
+        body: Value,
+    },
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
@@ -60783,7 +61066,37 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
                 if binders.is_empty() {
                     TypeExtractor::Error
                 } else {
-                    TypeExtractor::PolyType { binders, body }
+                    // WI-20260904-50B2K part (c): an ABSENT `context` child reads as the
+                    // EMPTY context — a ∀ carried in a shape written before the field
+                    // existed is a plain ∀, which is what it always was.
+                    //
+                    // A PRESENT-BUT-UNDECODABLE ONE IS AN ERROR, NOT AN EMPTY CONTEXT, and
+                    // the first cut had it the other way. `value_list_elements` cannot tell
+                    // `nil` from a list it failed to decode — the reason the `binders` arm
+                    // ten lines up rejects an empty result outright — so mapping the child
+                    // straight to `unwrap_or_default()` turned a malformed constraint list
+                    // into "no constraints": a DROPPED REQUIREMENT, which is the wrong
+                    // accept this whole slice exists to prevent. `value_is_nil_list`
+                    // separates the two. /code-review found it.
+                    match view_child_value(kb, ty, "context") {
+                        None => TypeExtractor::PolyType {
+                            binders,
+                            context: Vec::new(),
+                            body,
+                        },
+                        Some(cs) => {
+                            let context = value_list_elements(kb, &cs);
+                            if context.is_empty() && !value_is_nil_list(kb, &cs) {
+                                TypeExtractor::Error
+                            } else {
+                                TypeExtractor::PolyType {
+                                    binders,
+                                    context,
+                                    body,
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => TypeExtractor::Error,

@@ -8554,14 +8554,20 @@ impl KnowledgeBase {
     pub fn make_poly_type_occ(
         &mut self,
         binders: crate::eval::value::Value,
+        context: crate::eval::value::Value,
         body: node_occurrence::TypeChild,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
         self.intern("binders");
+        self.intern("context");
         self.intern("body");
         NodeOccurrence::new_type(
-            node_occurrence::TypeNode::PolyType { binders, body },
+            node_occurrence::TypeNode::PolyType {
+                binders,
+                context,
+                body,
+            },
             span,
             owner,
         )

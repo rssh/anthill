@@ -355,7 +355,11 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // it is not stored (a PolyType is ∀ by construction), because the whole
             // point of the node is that the ∀ used to be invisible. `binders` is a
             // `Value`-carried `List[Term]` of bare variables.
-            TypeNode::PolyType { binders, body } => {
+            TypeNode::PolyType {
+                binders,
+                context,
+                body,
+            } => {
                 buf.push_str("forall ");
                 for (i, b) in crate::kb::typing::value_list_elements(self.view, binders)
                     .iter()
@@ -367,6 +371,19 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                     self.write_type_value(b, buf);
                 }
                 buf.push_str(". ");
+                // WI-20260904-50B2K part (c): `forall A. C => body`, and the `=>` is
+                // written only when there IS a context — a plain ∀ renders exactly as it
+                // did, so every pre-(c) expectation is unmoved.
+                let ctx = crate::kb::typing::value_list_elements(self.view, context);
+                if !ctx.is_empty() {
+                    for (i, c) in ctx.iter().enumerate() {
+                        if i > 0 {
+                            buf.push_str(", ");
+                        }
+                        self.write_type_value(c, buf);
+                    }
+                    buf.push_str(" => ");
+                }
                 self.write_type_child(body, buf);
             }
         }

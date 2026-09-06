@@ -1520,12 +1520,240 @@ source files, plus the prelude entity gaining a third field and the `..`-pattern
 field always carries. The prelude paragraph itself should gain a sentence saying what it does
 and does not forbid, so the next reader does not repeat this.
 
-AND IT IS BLOCKED ON WI-817's RULE A. That ticket measured the operation-side call-site supply
-failing wherever it must CHANGE instantiation — `build_dep_projection` Strategy 1 forwards a
-sole covering wildcard entry blindly — with outcomes that are SILENTLY WRONG, not loud:
-`drive(0..2)` answers 1 at every depth where correct is 1, 12, 122; a relayed closure reads
-111 where correct is 551. Its own conclusion: "across EVERY measurement in this ticket the
-lambda machinery has not failed once; the operation-side call-site supply has failed everywhere
-it was asked to change instantiation." Rule A (gate Strategy 1 on the σ-class check instead of
-only tie-breaking with it) is upstream of anything part (c)'s last half wants, and its witnesses
-are already committed as pinned tests.
+IT IS NOT BLOCKED ON WI-817's RULE A — I WROTE THAT FROM AN AGED FOLLOW-UP LIST AND RULE A
+HAD ALREADY SHIPPED. WI-817 recorded three F-items; all three are filed and Delivered — Rule A
+as WI-821 (gate `build_dep_projection` Strategy 1 on the σ-class check instead of only
+tie-breaking with it), op-scoped supply as WI-822/WI-823, the unconditioned-parametric-fact
+mis-pin as WI-824 — and WI-817's own header now records every row correct with no pinned
+defects left. What Rule A measured is still the reason it was upstream: the operation-side
+call-site supply failed wherever it had to CHANGE instantiation, SILENTLY (`drive(0..2)`
+answering 1 at every depth where correct is 1, 12, 122; a relayed closure reading 111 where
+correct is 551). That is fixed, so part (c)'s last half has nothing upstream of it left.
+
+### The remaining half, step 1: the `context` slot exists and is always empty
+
+**A GREEN SUITE IS THE CONTROL, and that is the whole point of shipping the field inert.**
+`PolyType` gains a third child in the prelude entity, in `TypeNode`, in `TypeExtractor`, in
+`make_poly_type_occ`, in the term view's arity and label list, in the printer, in `ti_entity`
+— and NOTHING produces a non-empty one. The sole mint, `generalize_eta_arrow`, builds the
+empty list deliberately: an OPERATION's constraints are its written `requires`, whose owner is
+`SortRequiresInfo`. So every ∀ the typer builds today is exactly the ∀ it built before, and a
+suite that stays green measures that the 30 sites carrying the new child carry it correctly.
+What the field is FOR is the type with no declaration site — a lambda's arrow — which step 2
+produces.
+
+BACK-OUT SHAPE, stated because a green suite is not evidence on its own: this step cannot be
+"backed out" into a passing state, because the arity change is what every reader compiles
+against. What it CAN do is fail, and the ways it can are the census: a `..` pattern that
+silently drops the child (found by grepping every `PolyType {` site, not by the compiler), a
+reader that maps the binders and not the context, a lowering that writes the key but no
+reader that reads it. Each is answered at its site below.
+
+**`map_value_type` REWRITES THE CONTEXT — WI-378 LOCKSTEP.** A constraint is a type, so a
+substitution that rewrites the body and not the context would leave a stale variable in a
+tree the body no longer mentions. `rewrite_ref_child` passes it through unchanged, which is
+the opposite decision for the opposite reason: that walk rewrites EFFECT LABELS, and a
+constraint is not one.
+
+**THE FREE-VAR COLLECTOR PUTS THE CONTEXT INSIDE THE QUANTIFIER**, beside the body: a
+variable a constraint mentions is bound by the binders exactly as one the body mentions is.
+
+### /code-review on step 1: seven findings, five fixed and two answered
+
+1. **THE `unified` GATE WAS PER-CALL, NOT PER-BINDING — a fail-open.** `subst` accumulates
+   across a call's whole argument loop, so `arg[0]` could bind a carrier and then FAIL to
+   unify (`unify_types` does not roll back), and `arg[1]`'s clean unify would then read the
+   dead binding out of the shared σ as though it were its own. FIXED: a `before = subst.clone()`
+   snapshot at all four argument-unification sites, and a carrier already resolved in `before`
+   is not attributable to this unify and is not observed.
+2. **THE OCCURS-CHECK DID NOT COVER THE CYCLE ITS OWN DOC NAMES.** The doc says the hazard is
+   `?a := f(?b)` with `?b := g(?a)` — "each acyclic and walk-local ON ITS OWN" — and a direct
+   mention test passes both, because neither value mentions its own variable. The cycle then
+   reaches `resolve_type_deep_value`, whose recursion has no visited set: a STACK OVERFLOW.
+   FIXED: `value_reaches_var` follows the bindings already committed in `out`.
+   CONTROL: `a_binding_that_closes_a_cycle_through_an_earlier_one_is_refused` fails on the
+   back-out and the other five rows pass.
+3. **AN UNDECODABLE `context` READ AS EMPTY.** `value_list_elements` cannot tell `nil` from a
+   list it failed to decode — which is why the `binders` arm rejects an empty result outright
+   — so `unwrap_or_default()` turned a malformed constraint list into "no constraints": a
+   DROPPED REQUIREMENT. FIXED: `value_is_nil_list` draws the distinction; present-but-
+   undecodable is `TypeExtractor::Error`.
+4. **A `debug_assert` DROPPED OBLIGATIONS IN RELEASE.** ∀-elimination handing back a non-empty
+   context that nothing discharges is a program type-checking without its requirement. FIXED:
+   a real `TypeError::Other` in `check_bare_ref`. Unreachable in this slice by construction,
+   and written anyway — it is what forces step 2 to ship its discharge WITH its producer.
+5. **THE `..` READERS WERE NOT CENSUSED.** FIXED: `value_contains_rigid`,
+   `value_contains_projection`, `collect_projection_receivers` and `type_mentions_spec_param`
+   all read the context now. `eliminate_node_projections` passes it through under a
+   `debug_assert` that it is empty, so step 2 trips there rather than silently carrying an
+   un-eliminated projection.
+6. **THE SPEC STILL SAID `PolyType(binders, body)`** (`docs/kernel-language.md` §4.4 and
+   §5.4). FIXED: both cite the three-child form, §4.4 gains a paragraph saying what `context`
+   is and why it is a separate slot rather than a per-binder bound, and §5.4 records that an
+   eta-lifted operation's context is EMPTY and why. The full rationale stays on the prelude
+   declaration, which is where a stdlib sort's API is documented.
+7. **A USER-WRITTEN `_1:` AT INDEX 0 — REFUTED, WITH A REASON, NOT MERELY UNMEASURED.** The
+   reviewer's shape is `(_1: 1, b: 2)`, where `_1` at index 0 IS the synthetic spelling, so
+   `tuple_components_from_view` promotes it into `pos` while a native `Value::Tuple` might
+   not. Driven on two routes (a declared type whose label order CONFLICTS with the written
+   one; the unhinted entity-field-lambda route) — both carriers agree on both. The reason is
+   structural: with a user label still in the list, `iter()` is unchanged (the run is a
+   PREFIX, so `pos ++ named` is the same sequence), `is_name_keyed` stays TRUE on both (it is
+   `!named.is_empty()`), and `by_label("_1")` resolves to the same index either way — by NAME
+   out of `named` before the move, by `positional_label_index` out of `pos` after it. The one
+   shape that DOES empty `named` is an all-synthetic list, which already has a row. Pinned as
+   `a_synthetic_prefix_beside_a_user_label_agrees_on_both_carriers`, which passes on the
+   back-out too and SAYS SO at its site: a negative control for a hypothesis, not a driver.
+
+### /code-review pass 3 on the same tree: three more, and two are the same shape as pass 2's
+
+8. **THE OCCURS-CHECK AGAIN, ONE LEVEL UP — AND PASS 2's FIX DID NOT COVER IT.** Pass 2 made
+   the check TRANSITIVE (`value_reaches_var` follows `out`). Pass 3 found that
+   `report_call_solutions` still filtered the WHOLE batch against `out` AS IT STOOD BEFORE
+   ANY OF THE BATCH WAS BOUND, and then bound them all: with `out` holding `?c := (?a,)`, a σ
+   carrying `?a := (?b,)` and `?b := (?c,)` admits both — `?b` is unbound when `?a` is tested,
+   `?a` is unbound when `?b` is tested — and `out` is cyclic afterwards. Same consequence, a
+   stack overflow in `resolve_type_deep_value`. FIXED: only the watermark and walk-local
+   filters batch (neither reads `out`); the `out`-reading tests run at BIND time, against the
+   `out` the earlier candidates have already grown.
+   CONTROL: `two_candidates_in_one_batch_cannot_jointly_close_a_cycle` fails on the back-out
+   with BOTH bound while the module's other six rows pass, and its own control — the same σ
+   against an empty `out` — passes either way, which is what says the row measures the
+   growing-`out` step rather than a filter that refuses batches.
+   THE LESSON, and it is one this ticket has now paid for twice: A FIX FOR A PREDICATE IS NOT
+   A FIX FOR ITS CALLER'S SCHEDULE. Pass 2 corrected WHAT the check looks at; the caller still
+   decided WHEN, and the batch boundary was a second, independent place the same cycle could
+   close.
+
+9. **`unified` GATED ONE HALF OF A FUNCTION WHOSE OWN DOC ARGUED FOR BOTH.** I wrote the gate
+   for the observation half and wrote out an asymmetry justifying its absence on the solving
+   half. The reviewer read the justification back: a failed unify's partial bindings reach
+   `w.solved`, where FIRST-WINS makes them permanent for the rest of the walk and the
+   `LambdaBody` frame resolves the lambda's arrow through them — and the boolean is DISCARDED
+   at these sites (WI-20260904-60143's census), so a false one does not by itself end the
+   call. FIXED: both halves gated.
+   MEASURED, AND SAID SO AT THE SITE: the corpus does not separate the two — 6447/0 ungated,
+   6448/0 gated (the delta is this pass's own new row) — so this is a CLASS REMOVED, not a
+   defect fixed. What would drive it is a call whose argument unify fails partway, binds a
+   walk-minted binder on the way down, and whose enclosing call still types; the discarded
+   boolean is what makes that shape constructible, and WI-20260904-60143's census is what
+   would make it reachable on purpose.
+
+10. **THE THIRD ∀-READER WAS THE SILENT ONE.** `check_bare_ref` returns a `TypeError` on a
+    non-empty context and `eliminate_node_projections` asserts emptiness — but `poly_type_body`
+    (`attach_eta_dispatch_dict`'s element pin, the reader that must see the operation's OWN
+    variables) patterned `{ body, .. }` and dropped the context without a word. An eta'd op
+    reference goes through both paths, so step 2 would reach it on its first program. FIXED: a
+    `debug_assert` matching the projection site — the three readers are loud together or not
+    at all.
+
+THE CENSUS I SHOULD HAVE RUN: "which readers eliminate a ∀?" has three answers, and I had
+answered it with two. Same shape as the `..`-pattern census in pass 2 finding 5 — a new field's
+real population is the readers that DON'T mention it.
+
+STATE AT THIS POINT: workspace 6448/0, scaland 539/0, formatting identical to HEAD's (484
+pre-existing hunks either side, differing only by line offsets).
+
+### /code-review pass 4: six more, five taken — and one of them was pass 3's own fix
+
+11. **`substitute_ref_syms_occ` PASSED THE CONTEXT THROUGH, ON A REASON THAT TESTED THE WRONG
+    THING.** I wrote "this rewrite re-keys effect labels, and a spec application is not one".
+    The question is not whether a constraint IS an effect label — it is whether it can CONTAIN
+    one, and the `NamedTuple` arm ten lines above is the proof: also a `Value`-carried list,
+    also not an effect label, and REWRITTEN, because its field types can hold one. A
+    constraint's type arguments can be arrows (`Additive[T = (x: Int64) -> Int64 ! {Modify[c]}]`),
+    so passing it through would keep the callee's label in the constraint while `body` took
+    the caller's — one type whose two halves disagree. FIXED: `rewrite_ref_value`, the same
+    call `NamedTuple` makes. Same lockstep argument `map_type_node` already carried; I had
+    written that one correctly and its neighbour wrongly, in the same change.
+
+12. **`poly_type_body` NOW REFUSES INSTEAD OF ASSERTING.** Pass 3 gave it a `debug_assert`,
+    which is silence in release — the very thing pass 2 finding 4 rejected for `check_bare_ref`
+    140 lines away. FIXED: it answers `None`, and `None` is the LOUD answer at this site
+    because the caller falls back to `arrow_parts` on the ∀ itself, which is also `None`, so
+    the element pin does not happen and the dictionary build is handed an empty σ — measured
+    under WI-844 to raise a refusal naming the dep it could not construct. Not pinning is
+    strictly less committed than pinning off a body whose constraints were discarded.
+
+13. **THE ASSERT MESSAGE HAD 18 SPACES BAKED INTO IT** — a Rust `\` line-continuation eaten by
+    the Python heredoc that wrote it. Third time in this codebase, and invisible to the
+    compiler; only a reader of the panic text would ever see it.
+
+14. **`node_contains_callable` WAS THE FOURTH PREDICATE AND I CENSUSED THREE.** Pass 2 finding
+    5 widened `value_contains_rigid`, `value_contains_projection`, `collect_projection_receivers`
+    and `type_mentions_spec_param`; this one patterns `{ body, .. }` in the same file, two
+    lines below a `NamedTuple` arm that DOES walk its list. An arrow in a constraint would
+    answer `false` here and `true` in the body — one walk, two answers for one type. FIXED.
+
+15. **PASS 3's OWN FIX MADE THE ANSWER ORDER-DEPENDENT, AND THE ORDER IS RANDOM.** Deciding
+    admission sequentially against a growing `out` means iteration order is part of the answer
+    — and `subst` is an `imbl` HashMap over `RandomState`, whose HAMT order varies with a
+    per-process seed (its own doc says so, and adds "resolution does not depend on binding
+    order", which was true until this change). So WHICH member of a cycle survived would
+    differ run to run, and `w.solved` is what the `LambdaBody` frame resolves the lambda's
+    arrow through: one program, two arrows, on two runs. The new test asserted only
+    `landed == 1` and could not see it. FIXED: candidates sorted by mint order — the earlier
+    variable wins, which is the first-wins rule the function already applies across calls —
+    and the test now asserts WHICH one lands.
+    THE LESSON, third in this ticket: A FIX CAN INTRODUCE THE NEXT DEFECT. Pass 2 fixed WHAT
+    the occurs-check reads, pass 3 fixed WHEN the caller applies it, and pass 3's sequencing
+    is what made a previously order-free decision order-sensitive.
+
+16. **DECLINED, WITH THE REASON RECORDED: the unconditional `let before = subst.clone()`.** The
+    reviewer read it as a per-argument allocation on the typer's hot loop. It is not:
+    `Substitution` is two `imbl` maps, a bool and a `Vec` that its own doc says is "empty on
+    the happy path", and WI-569 made `Clone` O(1) structural sharing precisely so the resolver
+    could clone per step. Gating it needs an `Option<&Substitution>` parameter and an unwrap
+    path that can only be `None` by mistake — a new failure mode traded for a refcount bump,
+    against this repo's preference for making illegal states unrepresentable.
+
+STATE: workspace 6448/0, scaland 539/0 (unchanged since the stdlib edit, which the earlier
+run covered), formatting identical to HEAD's.
+
+### /code-review pass 5: three more, all taken — and the first was a claim I had written
+
+17. **THE `unified` GATE COVERED ONE HALF, AND THE DOC SAID BOTH.** Pass 3 widened the gate and
+    I wrote "`unified` GATES BOTH HALVES" into the doc. It did not: `observe_deferred_carriers`
+    got the `before` σ, `report_call_solutions` still got the ACCUMULATED one. So
+    `if !unified { return }` suppressed only the FAILING argument's report — the next argument
+    that unified handed over the whole σ, the failed unify's partial bindings included, and
+    first-wins made them permanent for the walk. The reviewer's shape:
+    `take(f: (x: Int64) -> String, n: Int64)` applied as `take(lambda v -> v, 3)` binds
+    `?p := Int64` descending into the param slot, fails on the result slot, reports nothing —
+    then `3` unifies and carries `?p := Int64` into `solved`, which is what
+    `TypeBuildFrame::LambdaBody` resolves the lambda's arrow through. FIXED: `before` filters
+    the solutions half too. It costs nothing on the good path — a variable bound by an earlier
+    SUCCESSFUL argument was already offered at its own site, and first-wins makes re-offering
+    it a no-op; its candidacy cannot have improved either, since a bound var keeps its value
+    and the walk-local test reads only the value and the watermark.
+    CONTROL: `a_binding_made_before_this_argument_is_not_reported_by_it` fails on the guard's
+    back-out while the module's other seven rows pass; its empty-`before` control requires the
+    same binding to LAND, so the row measures provenance and not a gate that refuses
+    everything.
+
+18. **THE ELIMINATOR IS NOW *ROUTED* A CONTEXT-BORNE PROJECTION, SO ITS ASSERT WAS NOT ENOUGH.**
+    Pass 2 finding 5 widened `value_contains_projection` to look inside the context — and that
+    predicate's own doc says it is "the one reader that DECIDES whether
+    `eliminate_node_projections` is asked to rewrite the node". So the widening MADE the
+    un-handled arm reachable, and a `debug_assert` there is silence in release: an
+    un-eliminated projection carried into a stored type. FIXED: a real
+    `projection_type_error`, the same helper the malformed-`ExprCarried` arm beside it uses.
+    THE SHAPE WORTH KEEPING: WIDENING A PREDICATE CAN ARM A NEIGHBOUR'S UN-HANDLED ARM. The
+    two changes were in one commit and the second is what made the first dangerous.
+
+19. **A DOC THAT NAMED ONE OF ITS TWO BEHAVIOURS.** `poly_type_body` both asserts and returns
+    `None`, and the comment described only the `None`. Corrected to say which build does what:
+    the assert ABORTS in debug — the tripwire that makes whoever writes step 2 handle this
+    reader — and `None` REFUSES in release. Neither can accept a program whose constraints
+    were dropped, which is the property that matters.
+
+HOW THE SUITE WAS RUN, because the usual command could not be: every long-running BACKGROUND
+task in this session was killed by a memory watchdog — during compilation, during tests, and
+once two lines into a run with 12.9 GB free and `/proc/pressure/memory` reading 0.00. The
+repo's own `rustland/.cargo/config.toml` documents the real hazard (79 test targets relink
+whenever an `anthill-core` module changes, ~576 MB per `rust-lld`), but the kills continued at
+`jobs=1` and on an already-linked binary. FOREGROUND invocations run fine, so the suite was
+assembled from foreground pieces: `--lib` 597, `wi_tests` 4137, the other ten anthill-core
+binaries 896, cli/stl/todo/version 503, the three codegen crates 312, doc-tests 4 — **6449
+passed, 0 failed**, which is the 6448 of the last whole-suite run plus this pass's new row.
+scaland 539/0, unchanged since the stdlib edit.

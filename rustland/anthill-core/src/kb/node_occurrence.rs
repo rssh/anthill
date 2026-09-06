@@ -185,7 +185,13 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
         // WI-1083: the `body` is the deep child and is hoisted; `binders` is a
         // `Value`-carried list of bare variable terms — no `Value::Node` leaves at
         // all — so it needs no hoist, for `NamedTuple`'s reason one step stronger.
-        TypeNode::PolyType { binders: _, body } => drain_type_child(body, stack),
+        // (c)'s `context` rides the same way: a `Value`-carried list whose `Value::Node`
+        // leaves, if any, have their own iterative `Drop` — `NamedTuple`'s reason exactly.
+        TypeNode::PolyType {
+            binders: _,
+            context: _,
+            body,
+        } => drain_type_child(body, stack),
     }
 }
 
@@ -1782,11 +1788,22 @@ pub enum TypeNode {
     /// binder's whole content. See the `PolyType` entity doc in
     /// `stdlib/anthill/prelude/sort.anthill`.
     ///
+    /// `context` IS THE `=>` OF `∀a. C a => t` and is empty except where (c) put it there.
+    ///
     /// ALWAYS A `Value::Node`, never a hash-consed term: the body is an arrow, and
     /// `make_arrow_value` mints one unconditionally as an occurrence (the
     /// representation note disclaims hash-consing for binders). There is deliberately
     /// no term twin to keep in step.
-    PolyType { binders: Value, body: TypeChild },
+    PolyType {
+        binders: Value,
+        /// WI-20260904-50B2K part (c) — the CONSTRAINTS on the binders (`∀a. C a => t`),
+        /// a `Value`-carried `List[Term]` read exactly like `binders`. EMPTY for every
+        /// producer that predates (c), which is what keeps a plain ∀ unchanged. See the
+        /// `PolyType` entity doc in `stdlib/anthill/prelude/sort.anthill` for why a
+        /// context is NOT the per-binder bound §5.4 has no spelling for.
+        context: Value,
+        body: TypeChild,
+    },
     /// `expr_carried(value, member)` — the Node carrier for an expression-carried
     /// type projection whose receiver is COMPOUND (a field path `a.b`, not a single
     /// value ref). The ground single-ref form `s.T` rides a hash-consed
@@ -2950,15 +2967,25 @@ fn map_type_node<R: TypeChildRewrite>(
         // (`instantiate_poly_type`) before a rewriter can see it. A σ that mapped a
         // binder onto a variable already free in `body` would capture; that is the
         // case to handle if a PolyType ever survives into a rewritten position.
-        TypeNode::PolyType { binders, body } => {
+        TypeNode::PolyType {
+            binders,
+            context,
+            body,
+        } => {
             let (nb, c1) = map_value_type(r, kb, binders);
-            let (nbody, c2) = map_type_child(r, kb, body);
+            // WI-20260904-50B2K part (c): the context is REWRITTEN, not passed through. It
+            // is stated over the binders (`Additive[T = ?a]`), so a rewriter that renamed
+            // `?a` in `binders` and `body` and not here would leave a constraint about a
+            // variable that no longer occurs — WI-378's collect/close/open/σ lockstep.
+            let (nctx, c2) = map_value_type(r, kb, context);
+            let (nbody, c3) = map_type_child(r, kb, body);
             (
                 TypeNode::PolyType {
                     binders: nb,
+                    context: nctx,
                     body: nbody,
                 },
-                c1 || c2,
+                c1 || c2 || c3,
             )
         }
     }
@@ -3712,13 +3739,22 @@ fn collect_type_node_vars(
         // Collected into a LOCAL accumulator with its own `seen` so the filter can run
         // before anything reaches the caller's — pushing then removing would corrupt
         // `seen` for a variable the caller had already recorded from a sibling.
-        TypeNode::PolyType { binders, body } => {
+        TypeNode::PolyType {
+            binders,
+            context,
+            body,
+        } => {
             let mut bound: Vec<VarId> = Vec::new();
             let mut bound_seen = std::collections::HashSet::new();
             collect_value_type(kb, binders, &mut bound, &mut bound_seen);
             let mut inner: Vec<VarId> = Vec::new();
             let mut inner_seen = std::collections::HashSet::new();
             collect_type_child(kb, body, &mut inner, &mut inner_seen);
+            // WI-20260904-50B2K part (c): the context sits INSIDE the quantifier, so its
+            // variables are subject to the same subtraction as the body's — a constraint
+            // over a bound variable contributes nothing free, and one over an OUTER
+            // variable is free exactly as the body's would be.
+            collect_value_type(kb, context, &mut inner, &mut inner_seen);
             for vid in inner {
                 if bound.iter().any(|b| b.raw() == vid.raw()) {
                     continue;
@@ -4313,17 +4349,27 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         // body is an arrow, which `make_arrow_value` mints as a `Value::Node`
         // unconditionally), so this lowering is the only place the term shape exists
         // and canonicalization has nothing to agree with.
-        TypeNode::PolyType { binders, body } => {
+        TypeNode::PolyType {
+            binders,
+            context,
+            body,
+        } => {
             let binders_t = value_to_term(kb, binders).unwrap_or_else(|e| {
                 debug_assert!(false, "poly_type binders not term-representable: {e:?}");
+                kb.alloc(Term::Bottom)
+            });
+            let context_t = value_to_term(kb, context).unwrap_or_else(|e| {
+                debug_assert!(false, "poly_type context not term-representable: {e:?}");
                 kb.alloc(Term::Bottom)
             });
             let body_t = type_child_to_term(kb, body);
             let pt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.PolyType");
             let binders_key = kb.intern("binders");
+            let context_key = kb.intern("context");
             let body_key = kb.intern("body");
             let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> = smallvec::SmallVec::new();
             named.push((binders_key, binders_t));
+            named.push((context_key, context_t));
             named.push((body_key, body_t));
             // Through the same declared-field-order funnel the `ExprCarried` fallback
             // above uses (WI-299), so the two spellings of one type hash-cons alike.
@@ -5455,8 +5501,24 @@ pub(crate) fn substitute_ref_syms_occ(
                 // WI-1083: this rewrite re-keys `Ref(sym)` effect labels, which a
                 // binder (a bare variable term) never is — so `binders` passes
                 // through and only `body` is walked.
-                TypeNode::PolyType { binders, body } => TypeNode::PolyType {
+                //
+                // WI-20260904-50B2K part (c): `context` IS REWRITTEN, and the first cut had
+                // it passing through beside `binders` on the reason "a spec application is
+                // not an effect label". That tests the wrong thing — the question is whether
+                // it can CONTAIN one — and `NamedTuple` ten lines up is the proof: also a
+                // `Value`-carried list, also not an effect label, and rewritten because its
+                // field types can hold one. A constraint's type arguments can be arrows
+                // (`Additive[T = (x: Int64) -> Int64 ! {Modify[c]}]`), so leaving it alone
+                // would keep the callee's label in the constraint while `body` got the
+                // caller's — the two halves of one type disagreeing. Same lockstep argument
+                // `map_type_node` makes for the σ rewrite. /code-review found it.
+                TypeNode::PolyType {
+                    binders,
+                    context,
+                    body,
+                } => TypeNode::PolyType {
                     binders: binders.clone(),
+                    context: rewrite_ref_value(context, map),
                     body: rewrite_ref_child(body, map),
                 },
             };

@@ -452,3 +452,68 @@ fn an_all_synthetic_named_tuple_destructures_alike_on_both_carriers() {
         );
     }
 }
+
+/// **A SYNTHETIC `_N` PREFIX BESIDE A USER LABEL — the third shape, and it cannot
+/// diverge.** `/code-review` (high) raised it against the `context` slice: a user writing
+/// `_1:` AT INDEX 0 spells the synthetic name for that slot (CLAUDE.md: `_N` at its own
+/// index IS the synthetic one), so the occurrence carrier promotes it into `pos` while a
+/// native `Value::Tuple` might keep it in `named` — the `is_name_keyed` disagreement the
+/// sibling rows exist to catch.
+///
+/// DRIVEN, NOT REPRODUCED, and here the reason is STRUCTURAL rather than a measured
+/// coincidence. With a user label still in the list, all three things a consumer can ask
+/// agree after the promotion:
+///  * `iter()` — the run is a PREFIX, so moving it from `named` to `pos` leaves the
+///    `pos ++ named` sequence byte-for-byte where it was;
+///  * `is_name_keyed()` — it is `!named.is_empty()`, and the user label is still there,
+///    so BOTH carriers answer true and both take the by-label arm;
+///  * `by_label("_1")` — the native carrier finds it by name in `named` (step 1), the
+///    promoted one by `positional_label_index` in `pos` (step 2), and the two steps
+///    return the SAME `iter()`-order index.
+/// The one shape where `named` does empty out — an ALL-synthetic list — is the row above.
+///
+/// THE FIXTURE PUTS THE DECLARED ORDER AND THE WRITTEN ORDER IN CONFLICT (`(b, _1)`
+/// declared, `(_1: 1, b: 2)` written), which is what makes the two arms answer
+/// differently at all: by-label gives `b - _1 = 1`, source order would give `1 - 2 = -1`.
+/// A fixture whose two orders agreed could not tell the arms apart.
+///
+/// IT PASSES ON THE BACK-OUT (promotion disabled entirely) AND THAT IS THE POINT — it is a
+/// negative control for a hypothesis, not a driver. What DOES fail when the promotion
+/// changes: `a_user_written_underscore_label_is_not_promoted_and_both_carriers_agree`
+/// (the prefix rule) and `an_op_ref_spreads_a_bridged_tuple_and_keeps_its_labels`.
+#[test]
+fn a_synthetic_prefix_beside_a_user_label_agrees_on_both_carriers() {
+    for (tag, decl, arg) in [
+        ("synthetic prefix", "(b: Int64, _1: Int64)", "(_1: 1, b: 2)"),
+        (
+            "user-labelled control",
+            "(b: Int64, c: Int64)",
+            "(c: 1, b: 2)",
+        ),
+    ] {
+        let src = format!(
+            "namespace zzqqpq2.mixsyn\n  import anthill.prelude.{{Int64}}\n  \
+             operation sub2(p: {decl}) -> Int64 =\n    match p\n      case (x, y) -> x - y\n  \
+             operation viaop() -> Int64 = sub2({arg})\n  \
+             rule value(?r) :- ?r <=> sub2({arg})\n  \
+             rule opval(?r) :- ?r <=> viaop()\nend\n"
+        );
+        let mut kb = crate::common::try_load_kb_with(&src)
+            .unwrap_or_else(|errs| panic!("{tag} must load; got:\n{}", errs.join("\n")));
+        let bridged = crate::common::definite_unary(&mut kb, "zzqqpq2.mixsyn.value");
+        let native = crate::common::definite_unary(&mut kb, "zzqqpq2.mixsyn.opval");
+        assert_eq!(
+            format!("{bridged:?}"),
+            format!("{native:?}"),
+            "{tag}: one program, two carriers, two answers",
+        );
+        // The VALUE too, not only the agreement: two carriers that both stopped
+        // computing would agree on nothing happening. `b - _1` is the by-label read,
+        // which is the arm both must take.
+        assert_eq!(
+            format!("{bridged:?}"),
+            "[Int(1)]",
+            "{tag}: expected the by-label read `b - first = 1`",
+        );
+    }
+}

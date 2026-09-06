@@ -9965,11 +9965,18 @@ impl KnowledgeBase {
             // Subtraction happens on the LOCAL result rather than by filtering `out`,
             // which may already hold the same VarId legitimately from a sibling
             // position (a variable free THERE and bound HERE is still free overall).
-            TypeNode::PolyType { binders, body } => {
+            TypeNode::PolyType {
+                binders,
+                context,
+                body,
+            } => {
                 let mut bound: Vec<VarId> = Vec::new();
                 self.collect_type_value_unbound_vars(binders, subst, &mut bound);
                 let mut inner: Vec<VarId> = Vec::new();
                 self.collect_type_child_unbound_vars(body, subst, &mut inner);
+                // WI-20260904-50B2K part (c): the context is inside the quantifier — see
+                // the loader twin `collect_type_node_vars`, which subtracts the same way.
+                self.collect_type_value_unbound_vars(context, subst, &mut inner);
                 out.extend(
                     inner
                         .into_iter()

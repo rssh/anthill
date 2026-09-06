@@ -4465,14 +4465,26 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         // record, so it builds through `build_value_list` directly rather than through
         // `ti_build_records` (a binder IS a term, and giving it a one-field record
         // would invent structure the entity does not declare).
-        TypeExtractor::PolyType { binders, body } => {
+        TypeExtractor::PolyType {
+            binders,
+            context,
+            body,
+        } => {
             let binder_list = build_value_list(interp, binders)?;
+            // WI-20260904-50B2K part (c): the context reflects like `binders` — a
+            // `List[Term]` of spec applications, empty for a plain ∀.
+            let context_list = build_value_list(interp, context)?;
             let binders_key = interp.kb.intern("binders");
+            let context_key = interp.kb.intern("context");
             let body_key = interp.kb.intern("body");
             ti_entity(
                 interp,
                 "PolyType",
-                vec![(binders_key, binder_list), (body_key, body)],
+                vec![
+                    (binders_key, binder_list),
+                    (context_key, context_list),
+                    (body_key, body),
+                ],
             )
         }
         TypeExtractor::Error => ti_entity(interp, "Error", vec![(term_key, ty)]),

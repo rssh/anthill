@@ -3794,10 +3794,22 @@ mod wi1083_poly_type_tests {
     fn a_type_parameterized_operation_lifts_to_a_forall_and_a_monomorphic_one_does_not() {
         let mut kb = load_stdlib(Some(SRC));
         let poly = eta(&mut kb, "test.wi1083.unit.idp");
-        let TypeExtractor::PolyType { binders, body } = extract_type(&kb, &poly) else {
+        let TypeExtractor::PolyType {
+            binders,
+            context,
+            body,
+        } = extract_type(&kb, &poly)
+        else {
             panic!("a type-parameterized operation's value type must be a PolyType");
         };
         assert_eq!(binders.len(), 1, "exactly the operation's own `[A]`");
+        // WI-20260904-50B2K part (c): an OPERATION's ∀ carries the EMPTY context — its
+        // constraints are its written `requires`, whose owner is `SortRequiresInfo`. The
+        // context exists for the type with no declaration site; see `generalize_eta_arrow`.
+        assert!(
+            context.is_empty(),
+            "an operation's ∀ quantifies but constrains nothing here; got {context:?}"
+        );
         let sym = kb.try_resolve_symbol("test.wi1083.unit.idp").expect("idp");
         let declared = crate::kb::op_info::lookup_operation_info(&kb, sym)
             .expect("op info")
@@ -3856,7 +3868,7 @@ mod wi1083_poly_type_tests {
                 _ => panic!("the result is the instantiated variable"),
             }
         };
-        let (ia, ib) = (param_var(&kb, &a), param_var(&kb, &b));
+        let (ia, ib) = (param_var(&kb, &a.0), param_var(&kb, &b.0));
         assert_ne!(ia, ib, "each instantiation mints its own variable");
         // AND THE TIE SURVIVES: `idp`'s parameter and result are ONE variable, so an
         // instantiation that minted a fresh variable per OCCURRENCE instead of per BINDER
@@ -3865,11 +3877,11 @@ mod wi1083_poly_type_tests {
         // instantiations happening to agree.
         assert_eq!(
             ia,
-            result_var(&kb, &a),
+            result_var(&kb, &a.0),
             "one binder, one fresh variable — `∀A. (x: A) -> A` instantiates to `(x: ?A1) -> \
              ?A1`, not to two unrelated variables",
         );
-        assert_eq!(ib, result_var(&kb, &b));
+        assert_eq!(ib, result_var(&kb, &b.0));
         let TypeExtractor::PolyType { binders, .. } = extract_type(&kb, &poly) else {
             unreachable!("asserted a PolyType above");
         };
@@ -3926,7 +3938,7 @@ mod wi1083_poly_type_tests {
         let inst = instantiate_poly_type(&mut kb, &poly).expect("a ∀ instantiates");
         let mut seen_in_inst: Vec<crate::kb::term::VarId> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        crate::kb::node_occurrence::collect_value_type(&kb, &inst, &mut seen_in_inst, &mut seen);
+        crate::kb::node_occurrence::collect_value_type(&kb, &inst.0, &mut seen_in_inst, &mut seen);
         assert!(
             !seen_in_inst.is_empty(),
             "the instantiation carries variables — without this the absence below is vacuous",
@@ -4006,7 +4018,7 @@ mod wi1084_arrow_function_unify_tests {
             .1
             .clone();
         let mut subst = Substitution::new();
-        let verdict = unify_types(kb, &mut subst, &inst, &param);
+        let verdict = unify_types(kb, &mut subst, &inst.0, &param);
         (verdict, subst.bindings.len())
     }
 
@@ -5671,7 +5683,11 @@ mod part_c_bare_var_collection_test {
         let v = kb.fresh_var(name);
         let val = Value::Var(Var::Global(v));
 
-        assert!(value_mentions_var(&kb, &val, v), "occurs-check must see it");
+        let empty = Substitution::new();
+        assert!(
+            value_reaches_var(&kb, &empty, &val, v),
+            "occurs-check must see it"
+        );
         assert!(
             !value_vars_all_walk_local(&kb, &val, v.raw() + 1),
             "a var older than the watermark is not walk-local"
@@ -5690,7 +5706,7 @@ mod part_c_bare_var_collection_test {
         let nested = tuple_of(vec![Value::Var(Var::Global(v))]);
 
         assert!(
-            value_mentions_var(&kb, &nested, v),
+            value_reaches_var(&kb, &Substitution::new(), &nested, v),
             "`(?v,)` mentions `?v` — a cyclic binding this misses is a stack overflow in \
              `resolve_type_deep_value`, not a wrong type"
         );
@@ -5725,6 +5741,162 @@ mod part_c_bare_var_collection_test {
         );
     }
 
+    /// **THE MUTUAL CYCLE THE OCCURS-CHECK'S OWN DOC NAMED, AND THE FIRST CUT ADMITTED.**
+    ///
+    /// `report_call_solutions` filters a candidate binding through this check, and its doc
+    /// states the hazard as two calls contributing `?a := f(?b)` and `?b := g(?a)` — "each
+    /// acyclic and walk-local ON ITS OWN". A DIRECT self-occurrence test passes both, since
+    /// neither value mentions its own variable, so the check as first written was the one
+    /// its own doc argued against. The cycle then reaches `resolve_type_deep_value`, whose
+    /// recursion has no visited set: a STACK OVERFLOW, not a wrong type.
+    ///
+    /// Here `out` already holds `?b := (?a,)`, so offering `?a := (?b,)` must be REFUSED.
+    /// BACK-OUT: make the filter a direct `vars.contains(&var)` again and this row fails
+    /// while every other row in the module still passes — the transitive case is the only
+    /// one that separates them. /code-review found it.
+    #[test]
+    fn a_binding_that_closes_a_cycle_through_an_earlier_one_is_refused() {
+        let mut kb = KnowledgeBase::new();
+        let na = kb.intern("?a");
+        let nb = kb.intern("?b");
+        let a = kb.fresh_var(na);
+        let b = kb.fresh_var(nb);
+
+        let mut out = Substitution::new();
+        let b_val = tuple_of(vec![Value::Var(Var::Global(a))]);
+        out.bind_value(&kb, b, b_val);
+
+        let a_val = tuple_of(vec![Value::Var(Var::Global(b))]);
+        assert!(
+            value_reaches_var(&kb, &out, &a_val, a),
+            "`?a := (?b,)` closes a cycle through the recorded `?b := (?a,)` and must be \
+             refused; a direct occurs-check sees nothing here"
+        );
+        // CONTROL: with `out` EMPTY the same value is acyclic and must be admitted, so the
+        // row above measures the TRANSITIVE step and not merely "this value has variables".
+        assert!(
+            !value_reaches_var(&kb, &Substitution::new(), &a_val, a),
+            "with nothing recorded, `?a := (?b,)` is acyclic"
+        );
+    }
+
+    /// **TWO CANDIDATES IN ONE BATCH CAN CLOSE A CYCLE NEITHER CLOSES ALONE**, which is the
+    /// row above one level up — and the fix for that row did not cover this one.
+    ///
+    /// `report_call_solutions` filtered the WHOLE batch against `out` as it stood BEFORE any
+    /// of the batch was bound, then bound them all. So with `out` holding `?c := (?a,)`, a σ
+    /// carrying `?a := (?b,)` AND `?b := (?c,)` admits both — `?b` is unbound when `?a` is
+    /// tested, `?a` is unbound when `?b` is tested — and `out` is cyclic afterwards. Same
+    /// consequence as the row above: a stack overflow in `resolve_type_deep_value`, whose
+    /// recursion has no visited set. /code-review found it.
+    ///
+    /// BACK-OUT: restore the collect-then-bind shape (filter in the iterator chain, bind in a
+    /// second loop) and this row fails with BOTH bound, while the CONTROL below — the same σ
+    /// with nothing recorded in `out` — passes either way, which is what says the row
+    /// measures the growing-`out` step and not "the filter refuses things".
+    #[test]
+    fn two_candidates_in_one_batch_cannot_jointly_close_a_cycle() {
+        let mut kb = KnowledgeBase::new();
+        let watermark = kb.var_watermark();
+        let na = kb.intern("?a");
+        let nb = kb.intern("?b");
+        let nc = kb.intern("?c");
+        let a = kb.fresh_var(na);
+        let b = kb.fresh_var(nb);
+        let c = kb.fresh_var(nc);
+
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, a, tuple_of(vec![Value::Var(Var::Global(b))]));
+        subst.bind_value(&kb, b, tuple_of(vec![Value::Var(Var::Global(c))]));
+
+        let mut out = Substitution::new();
+        out.bind_value(&kb, c, tuple_of(vec![Value::Var(Var::Global(a))]));
+        report_call_solutions(&kb, Some(&mut out), &Substitution::new(), &subst, watermark);
+        // WHICH one lands is asserted, not just HOW MANY. A sequential decision makes the
+        // ITERATION ORDER part of the answer, and `subst` is an `imbl` map whose HAMT order
+        // varies with a per-process seed — so `landed == 1` alone would pass while the
+        // typer gave two different lambdas' arrows on two runs of one program. Candidates
+        // are sorted by mint order, so the EARLIER variable wins. /code-review found it.
+        assert!(
+            out.resolve_as_value(a).is_some(),
+            "`?a` is the earlier binding and must land",
+        );
+        assert!(
+            out.resolve_as_value(b).is_none(),
+            "`?b := (?c,)` closes a cycle once `?a := (?b,)` has landed and must be refused; \
+             both landing is the batch defect, and either-one-at-random is the order defect",
+        );
+
+        // CONTROL: with `out` EMPTY the same two bindings are acyclic and BOTH must land, so
+        // the row above measures the cycle and not a filter that refuses batches of two.
+        let mut clean = Substitution::new();
+        report_call_solutions(
+            &kb,
+            Some(&mut clean),
+            &Substitution::new(),
+            &subst,
+            watermark,
+        );
+        assert_eq!(
+            [a, b]
+                .iter()
+                .filter(|v| clean.resolve_as_value(**v).is_some())
+                .count(),
+            2,
+            "with nothing recorded, both bindings are acyclic and must be reported",
+        );
+    }
+
+    /// **A BINDING THAT PREDATES THIS ARGUMENT'S UNIFY IS NOT THIS ARGUMENT'S TO REPORT.**
+    ///
+    /// `subst` is ACCUMULATED across a call's argument loop and `unify_types` never rolls
+    /// back, so `if !unified { return }` suppresses only the FAILING argument's report: the
+    /// next argument that unifies hands over the whole σ, the failed unify's partial bindings
+    /// included, and first-wins then makes them permanent for the walk. `before` is the σ as
+    /// it stood before THIS unify, and a variable already bound there is skipped.
+    ///
+    /// BACK-OUT: drop the `before.resolve_as_value(v).is_some()` guard and this row fails
+    /// with the stale binding reported. The CONTROL below offers the same σ with an EMPTY
+    /// `before` and requires it to land, so the row measures the provenance filter and not a
+    /// gate that refuses everything. /code-review found it, on the pass AFTER the doc claimed
+    /// both halves were covered.
+    #[test]
+    fn a_binding_made_before_this_argument_is_not_reported_by_it() {
+        let mut kb = KnowledgeBase::new();
+        let watermark = kb.var_watermark();
+        let np = kb.intern("?p");
+        let p = kb.fresh_var(np);
+
+        // The shape the reviewer named: arg[0] binds `?p := Int64` descending into a param
+        // slot and then FAILS on the result slot, leaving the binding in σ; arg[1] unifies
+        // cleanly and reports.
+        let mut leftover = Substitution::new();
+        leftover.bind_value(&kb, p, Value::Int(1));
+        let subst = leftover.clone();
+
+        let mut out = Substitution::new();
+        report_call_solutions(&kb, Some(&mut out), &leftover, &subst, watermark);
+        assert!(
+            out.resolve_as_value(p).is_none(),
+            "`?p` was bound by the FAILED unify before this argument ran; reporting it here \
+             is the leak the `unified` gate was supposed to close",
+        );
+
+        // CONTROL: the same σ with nothing bound beforehand IS this argument's to report.
+        let mut fresh = Substitution::new();
+        report_call_solutions(
+            &kb,
+            Some(&mut fresh),
+            &Substitution::new(),
+            &subst,
+            watermark,
+        );
+        assert!(
+            fresh.resolve_as_value(p).is_some(),
+            "a binding this argument's own unify made must still be reported",
+        );
+    }
+
     /// TWO DEEP, because a one-level fix and a recursive one agree at depth 1.
     #[test]
     fn the_walk_is_recursive_not_one_level() {
@@ -5734,7 +5906,7 @@ mod part_c_bare_var_collection_test {
         let watermark = kb.var_watermark();
         let deep = tuple_of(vec![tuple_of(vec![Value::Var(Var::Global(older))])]);
 
-        assert!(value_mentions_var(&kb, &deep, older));
+        assert!(value_reaches_var(&kb, &Substitution::new(), &deep, older));
         assert!(!value_vars_all_walk_local(&kb, &deep, watermark));
     }
 }

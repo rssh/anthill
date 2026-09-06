@@ -400,13 +400,22 @@ any case: types are terms, so a leading bare `[…]` is the collection literal o
 form would need a keyword like every other binder the language has. The quantified form is
 therefore **inferred, never written**: it is minted where an operation first becomes a value
 (§5.4, "as a FUNCTION VALUE") and eliminated at the reference that names it. Its structural
-form is `TypeExtractor.PolyType(binders, body)` — `binders` a list of the bound **variables**
-(so `id` links each to its occurrences in `body`, per §8.1's rule that a variable's identity is
-its `id` and not its name), `body` the arrow they quantify. It is **∀ by construction** and
-stores no quantifier: the polarity rule of §8.1 already makes the quantifier a function of
-*position*, so a per-binder one could disagree with the position it sat in; and the existential
-needs no binder node at all, being implied by the return position at a declaration and already
-opened to a `Skolem` at a use.
+form is `TypeExtractor.PolyType(binders, context, body)` — `binders` a list of the bound
+**variables** (so `id` links each to its occurrences in `body`, per §8.1's rule that a variable's
+identity is its `id` and not its name), `context` the constraints those binders must satisfy, and
+`body` the arrow they quantify. It is **∀ by construction** and stores no quantifier: the
+polarity rule of §8.1 already makes the quantifier a function of *position*, so a per-binder one
+could disagree with the position it sat in; and the existential needs no binder node at all,
+being implied by the return position at a declaration and already opened to a `Skolem` at a use.
+
+**`context` is `∀a. C a => t`** (WI-20260904-50B2K): each element is a spec application over the
+binders (`Additive[T = ?a]`), and the empty list is the plain ∀. It is a **separate slot, not a
+per-binder bound** — a binder is `TypeParam ::= Name` (§5.4) and has no spelling for `T: Additive`
+— and it does not give a **sort's** written `requires` a second owner, because the types that
+carry one have no declaration to write it at: a lambda's inferred ∀ is the whole record of what
+its binders demand. It is discharged at the **∀-elimination**, where the binders become concrete
+and the constraint becomes answerable. Full rationale on the `PolyType` declaration in
+`stdlib/anthill/prelude/sort.anthill`.
 
 **Parameter lists correspond slot by slot** (WI-782). A parameter list is
 *applied positionally*, so one arrow conforms to another only when the two lists
@@ -2357,10 +2366,12 @@ function-typed slot denotes the operation as a value — its eta expansion, `inc
 Int64` becoming `(Int64) -> Int64` (§4.4 "Arrow types"). When the operation declares type
 parameters, or its signature otherwise binds a logical variable, the value's type is the **∀**
 over them: `idp[A](x: A) -> A` denotes `∀A. (x: A) -> A`, whose structural form is
-`TypeExtractor.PolyType(binders, body)` (§4.4). The **reference** is where the ∀ is eliminated,
-which is §5.6's rule read at a value rather than at a call — a type parameter is the caller's
-to instantiate — so two references to one operation are instantiated separately and share no
-variable, and the operation may serve two element types in one program.
+`TypeExtractor.PolyType(binders, context, body)` (§4.4), with an **empty** `context`: an
+operation's constraints are its written `requires` clause, which the declaration already owns.
+The **reference** is where the ∀ is eliminated, which is §5.6's rule read at a value rather than
+at a call — a type parameter is the caller's to instantiate — so two references to one operation
+are instantiated separately and share no variable, and the operation may serve two element types
+in one program.
 
 **Which variables the ∀ quantifies** is the same set §8.1 uses to decide which *return*
 variables are existential, read positively: a variable named in a **parameter** type, in a
