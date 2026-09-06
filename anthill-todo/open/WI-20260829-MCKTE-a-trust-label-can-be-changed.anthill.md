@@ -57,3 +57,28 @@ So the real scope is 17 sites in two shapes, and the acceptance must add: every
 fixture in `fixtures/agent/` still loads or is still refused FOR ITS OWN REASON, with
 the needle unchanged.
 
+### 2026-09-06T08:12:46Z — feedback — claude
+
+THE TICKET UNDERSTATES ITS OWN SEVERITY: THE RELABEL REACHES THE GENERATION PATH, WHERE NOTHING STANDS BEHIND IT. Measured 2026-09-05, three scratch fixtures driven through `guardians_test`'s own loader and then reverted.
+
+THE TICKET SAYS the relabel is "NOT an end-to-end exfiltration", because `Email.send` demands `Permission[Outbox]` on an external target and `Triage.run`'s spec row never grants it. That is TRUE, and it is only true of the SINK. Measured, on the two send routes:
+
+  relabel_leak_internal   -- mailbox content relabelled Public, mailed to boss@ourcorp.com
+    REFUSED: "unsatisfied precondition ... releasable(text(raw: dot_apply(receiver: all, name: raw, args: nil)))"
+  relabel_leak_external   -- the same, to it@othercorp.com
+    REFUSED: the same precondition, PLUS "undeclared effect: Permission[T = Outbox]"
+
+Note WHAT refuses them: `releasable`, and the outbox guard. NOT the trust label — the label was successfully stripped in both, and if the body had been a cleared string both would have gone through on the label's account.
+
+THE THIRD FIXTURE IS THE FINDING. `relabel_generate` — `generate_from_content.anthill` with one line changed, `content: text(raw: all.raw)` in place of `content: join_texts(...)`:
+
+  relabel_generate        LOADED CLEAN. No errors at all.
+
+`fixtures/agent/rejected/generate_from_content.anthill` exists to refuse exactly this program, and its header states the stake in the example's own words: "this is the attack the whole staging argument rests on ... build the generation prompt out of the mailbox, and the agent that gets written is an agent an injected email had a hand in designing". The mechanism it names is `prompt_with(instruction: Public, content: ?t) -> Prompt[?t]`, which makes the prompt Untrusted the moment mailbox text enters it, so `Harness.generate(p: Prompt[Public])` will not take one. THE RELABEL WALKS AROUND THAT IN ONE LINE, and unlike the send routes there is no second mechanism behind it: no precondition, no guarded permission, no row. The refusal was the label, and the label is rewritable.
+
+SO THE ANSWER TO "IS SEALING `Text` NEEDED" IS YES, AND THE REASON IS STRONGER THAN THIS TICKET RECORDS. As written the ticket argues from tidiness — a guarded door beside an open window, a claim one level up that is false. The generation path makes it a live hole in the example's headline argument rather than an overclaim in its prose.
+
+CONSEQUENCE FOR THE ARTICLE (/Users/rssh/RD/toWrite/ICTERI-2026, article-anthill-icteri2026-1.tex), and this is why it matters beyond the repository. The section "Example: Generating and Checking the Agent" states: "Generating an agent cannot be influenced by mailbox content, as can be seen from the operation signatures (Listing~\ref{lst:harness})." The signatures do NOT establish that, and `relabel_generate` is the counter-example: it satisfies every signature in that listing and is built from mailbox content. Until the seal lands, that sentence is false as stated and should either be weakened or wait on this ticket.
+
+WHAT THIS DOES NOT CHANGE. The cost measurement stands as the earlier feedback corrected it — 17 sites in two shapes, 10 fact sites in `fixtures/mailbox.anthill` and 7 call sites in `fixtures/agent/`. Adding `relabel_generate` as a permanent refused fixture is part of the acceptance, not a substitute for it: a fixture that measures the hole is not the seal.
+
