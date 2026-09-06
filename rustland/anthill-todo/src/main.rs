@@ -1492,6 +1492,24 @@ fn run_fsck(
     }
 }
 
+/// `anthill-todo init [<name>]` — the one host-served command that takes a NAME,
+/// which is why it needed its own refusal for a mistyped flag. Sits beside
+/// [`FSCK_USAGE`] and `MIGRATE_USAGE`: the three host-served commands that accept
+/// arguments each carry their own usage text, because none of them is reachable
+/// from the bundle's `OperationSpec` registry that renders every other command's.
+/// (WI-1124 gap (2) is to remove that split, not to grow it.)
+const INIT_USAGE: &str = "\
+usage: anthill-todo [-d <DIR>] init [<name>]
+       anthill-todo [-d <DIR>] init --name <name>
+
+Scaffold anthill-todo/ in the project directory: project.anthill (its
+configuration) and store_format.anthill (the data format its items are
+written in). No work items are created.
+
+  <name>  the project's name. Defaults to the directory's own name.
+  -d <DIR>  scaffold under DIR instead of the current directory. It must
+            already exist.";
+
 const FSCK_USAGE: &str = "\
 usage: anthill-todo fsck [--fix] [--renumber [<id>]]
 
@@ -4589,10 +4607,56 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // there's a project to load, the bundle takes over.
     if bundle_argv.first().map(|s| s.as_str()) == Some("init") {
         // `init --name <name>` (the legacy clap flag) or `init <name>`.
+        //
+        // THE NAME IS POSITIONAL, so before this every dash-led token read as one:
+        // `anthill-todo init --help` in a fresh directory SCAFFOLDED A PROJECT
+        // CALLED `--help`, wrote it into `project.anthill`, and exited 0 (found
+        // censusing WI-1124, 2026-09-06). `init` is host-served — it runs before
+        // any KB exists — so the bundle's spec-driven argument reporter, which
+        // would have refused the flag, never sees it. The three cases are answered
+        // here instead, and the one thing a `-`-led token cannot be is a name.
         let name = match bundle_argv.get(1).map(|s| s.as_str()) {
-            Some("--name") => bundle_argv.get(2).map(|s| s.as_str()),
+            Some("--help") | Some("-h") => {
+                println!("{INIT_USAGE}");
+                return 0;
+            }
+            Some("--name") => match bundle_argv.get(2).map(|s| s.as_str()) {
+                // `init --name` with nothing after it used to fall through to the
+                // directory-derived default — a malformed flag scaffolding a
+                // project under a name the caller never chose.
+                None => {
+                    eprintln!("error: `init --name` expects a project name, and none was given");
+                    eprintln!("{INIT_USAGE}");
+                    return runner::EXIT_COMPILE;
+                }
+                Some(n) if n.starts_with('-') => {
+                    eprintln!("error: `init --name` expects a project name, got the flag `{n}`");
+                    eprintln!("{INIT_USAGE}");
+                    return runner::EXIT_COMPILE;
+                }
+                other => other,
+            },
+            Some(other) if other.starts_with('-') => {
+                eprintln!("error: `init` takes a project name, not the flag `{other}`");
+                eprintln!("{INIT_USAGE}");
+                return runner::EXIT_COMPILE;
+            }
             other => other,
         };
+        // …and everything PAST the name is refused rather than dropped. Guarding
+        // argv[1] alone left the same swallow one position over:
+        // `init myproj --help` scaffolded `myproj` and discarded `--help`
+        // silently, which is the behaviour this guard exists to stop.
+        let consumed = if bundle_argv.get(1).map(|s| s.as_str()) == Some("--name") {
+            3
+        } else {
+            1 + usize::from(name.is_some())
+        };
+        if let Some(extra) = bundle_argv.get(consumed) {
+            eprintln!("error: `init` takes one project name; `{extra}` is unexpected");
+            eprintln!("{INIT_USAGE}");
+            return runner::EXIT_COMPILE;
+        }
         // Honor the stripped `-d <dir>` — every other subcommand does, via
         // find_project_dir; init used to be the lone exception (WI-748).
         return run_init(explicit_dir.as_deref(), name);

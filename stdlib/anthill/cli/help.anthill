@@ -42,21 +42,40 @@ namespace anthill.cli.help
                   cat3("\n\nARGS:\n", render_args(params),
                        concat("\nFLAGS:\n", render_flags(params)))))
 
-  -- " <pos1> <pos2> [--flag VALUE] [--repeated VALUE]..."
+  -- " <pos1> [<pos2>] --required VALUE [--flag VALUE] [--repeated VALUE]..."
   operation usage_summary(params: List[ParamSpec]) -> String =
     match params
       case nil() -> ""
       case cons(p, rest) ->
         match p
-          case ParamSpec(name, kind, _, _) ->
-            concat(usage_token(name, kind), usage_summary(rest))
+          case ParamSpec(name, kind, required, _) ->
+            concat(concat(" ", param_token(name, kind, required)),
+                   usage_summary(rest))
 
-  operation usage_token(name: String, kind: ParamKind) -> String =
+  -- HOW A PARAMETER IS SPELLED, in one place, so a usage line and a diagnostic
+  -- naming the same parameter cannot disagree — which they did: a missing
+  -- `insert --before` was reported as `missing required argument <before>`, a
+  -- POSITIONAL spelling the parser refuses when followed.
+  --
+  -- `required` decides the brackets and nothing else. It was ignored entirely
+  -- until here, so a REQUIRED flag rendered as optional — invisible while nothing
+  -- printed `usage_summary`, and printed by `format_usage` in the one context
+  -- where the distinction is the whole message: directly under `missing required
+  -- argument`, naming the very param the brackets called optional.
+  operation param_token(name: String, kind: ParamKind, required: Bool) -> String =
+    if required then bare_token(name, kind)
+    else cat3("[", bare_token(name, kind), "]")
+
+  -- The spelling without the optionality brackets. `repeated`'s `...` belongs to
+  -- the token, not to the brackets: `[--tag VALUE]...` reads as "zero or more",
+  -- and `--tag VALUE...` as "one or more", which is what required/optional mean
+  -- for a repeatable param.
+  operation bare_token(name: String, kind: ParamKind) -> String =
     match kind
-      case positional() -> cat3(" <", name, ">")
-      case flag()       -> cat3(" [--", name, " VALUE]")
-      case repeated()   -> cat3(" [--", name, " VALUE]...")
-      case bool_flag()  -> cat3(" [--", name, "]")
+      case positional() -> cat3("<", name, ">")
+      case flag()       -> cat3("--", name, " VALUE")
+      case repeated()   -> cat3("--", name, " VALUE...")
+      case bool_flag()  -> concat("--", name)
 
   -- ARGS: section: positional params only.
   operation render_args(params: List[T = ParamSpec]) -> String =
@@ -87,9 +106,10 @@ namespace anthill.cli.help
 
   -- Width of the name column shared by the ARGS and FLAGS rows, so a positional
   -- and a flag of the same command line their descriptions up against each other.
-  -- Wide enough for the longest name in the anthill-todo registry
-  -- (`--acceptance`, 12) plus two spaces; `padRight` leaves a longer name
-  -- unchanged, which costs that one row its alignment and nothing else.
+  -- Wide enough for the longest rendered name in the anthill-todo registry —
+  -- `--description`, 13 characters — plus the two spaces that separate it from
+  -- its description. `padRight` leaves a longer name unchanged, which costs that
+  -- one row its alignment and nothing else.
   const NAME_COLUMN: Int64 = 15
 
   -- 3-arg concat helper.

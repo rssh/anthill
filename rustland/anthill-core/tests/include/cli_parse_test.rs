@@ -184,7 +184,11 @@ fn unknown_subcommand_returns_parse_err() {
 // of the same command line their descriptions up. Before that, these renderers had
 // no caller that PRINTED them and the raggedness went unseen; `format_usage` (the
 // argument-error block) is the first one that does.
-const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description VALUE] [--acceptance VALUE]...\n\nARGS:\n  id             work item id\n\nFLAGS:\n  --description  new description\n  --acceptance   acceptance criteria\n";
+// `repeated`'s `...` sits INSIDE the optionality brackets since `param_token`:
+// `[--acceptance VALUE...]` is "zero or more", `--acceptance VALUE...` (no
+// brackets, when required) is "one or more". The old `[--acceptance VALUE]...`
+// could spell only the first, because `required` was not read at all.
+const EXPECTED_HELP: &str = "update an item\n\nUSAGE: update <id> [--description VALUE] [--acceptance VALUE...]\n\nARGS:\n  id             work item id\n\nFLAGS:\n  --description  new description\n  --acceptance   acceptance criteria\n";
 
 #[test]
 fn help_renders_subcommand_spec() {

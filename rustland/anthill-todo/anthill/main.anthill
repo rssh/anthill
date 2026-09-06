@@ -46,10 +46,17 @@ namespace anthill.todo
   -- The four SUBCOMMAND-LEVEL parse errors, and the param lookup that reads the
   -- same spec they carry. `report_argument_error` is their only reader.
   import anthill.cli.parse.{ParseError, unknown_flag, flag_expects_value,
-                            unexpected_argument, missing_required, find_param}
-  import anthill.cli.help.{format_usage, cat3}
+                            unexpected_argument, missing_required,
+                            find_dashed_param}
+  import anthill.cli.help.{format_usage, param_token, cat3}
   import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
-  import anthill.cli.spec.ParamKind.{positional, flag, bool_flag}
+  -- `repeated` joins the three that were already here: every param whose
+  -- description says "(repeatable)" had been declared `flag()`, so
+  -- `usage_token`'s `repeated()` arm was dead for the whole registry and the
+  -- usage line read `[--acceptance VALUE]` directly above a description calling
+  -- it repeatable. Parsing is unaffected — `consume_flag` treats every
+  -- non-`bool_flag` kind alike and repeats already cons a second binding.
+  import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
   import anthill.cli.parse.{Binding}
   -- WI-20260826-NB88H: the SORT names come from the namespace that declares them.
   -- `import anthill.prelude.Option.{Option}` used to bind `Option` by walking out of
@@ -241,7 +248,7 @@ namespace anthill.todo
           cons(
             ParamSpec(
               name: "acceptance",
-              kind: flag(),
+              kind: repeated(),
               required: false,
               description: "Acceptance tool name (repeatable, replaces all)"),
             cons(
@@ -276,19 +283,19 @@ namespace anthill.todo
         cons(
           ParamSpec(
             name: "depends",
-            kind: flag(),
+            kind: repeated(),
             required: false,
             description: "Dependency work item id (repeatable)"),
           cons(
             ParamSpec(
               name: "acceptance",
-              kind: flag(),
+              kind: repeated(),
               required: false,
               description: "Acceptance tool name (repeatable, default: Project.tools)"),
             cons(
               ParamSpec(
                 name: "tag",
-                kind: flag(),
+                kind: repeated(),
                 required: false,
                 description: "Named list to tag the new item with (repeatable)"),
               cons(
@@ -322,19 +329,19 @@ namespace anthill.todo
           cons(
             ParamSpec(
               name: "tag",
-              kind: flag(),
+              kind: repeated(),
               required: false,
               description: "Named list to tag the new item with (repeatable)"),
             cons(
               ParamSpec(
                 name: "depends",
-                kind: flag(),
+                kind: repeated(),
                 required: false,
                 description: "Dependency work item id (repeatable)"),
               cons(
                 ParamSpec(
                   name: "acceptance",
-                  kind: flag(),
+                  kind: repeated(),
                   required: false,
                   description: "Acceptance tool name (repeatable)"),
                 nil()))))),
@@ -875,7 +882,7 @@ namespace anthill.todo
         case flag_expects_value(s, p) ->
           emit_argument_error(s, cat3("flag '--", param_name(p), "' expects a value"))
         case missing_required(s, p) ->
-          emit_argument_error(s, cat3("missing required argument <", param_name(p), ">"))
+          emit_argument_error(s, concat("missing required argument ", required_spelling(p)))
         case unexpected_argument(s, given) -> report_unexpected_argument(s, given)
         case _ ->
           let _ = eprintln(console(),
@@ -921,27 +928,27 @@ namespace anthill.todo
         then dashed_param_named(s, substring(given, 1, length(given)))
         else none()
 
-    -- `find_param` answers "does this command DECLARE this name?", which is not
-    -- the question here — the question is "would that name be SPELLED with
-    -- dashes?", and a POSITIONAL answers the first yes and the second no. Advising
-    -- `--id` for `show WI-001 -id` contradicts the `usage: show <id>` line printed
-    -- directly underneath it, which is the very drift between advice and spec this
-    -- reporter exists to remove. So the kind decides, and only a positional is out.
+    -- `find_dashed_param` is the SAME lookup `consume_flag` does, which is the
+    -- point: the suggestion may only name a spelling the parser would accept. It
+    -- asks "would this name be spelled with dashes?", not "does the command
+    -- declare it" — a POSITIONAL answers the second yes and the first no, and
+    -- advising `--id` for `show WI-001 -id` would contradict the
+    -- `usage: show <id>` line printed directly underneath. The predicate itself
+    -- lives on `anthill.cli.spec` beside the `ParamKind` it reads; it used to have
+    -- a copy here, and the parser had no copy at all.
     operation dashed_param_named(s: OperationSpec, name: String) -> Option[String] =
-      match find_param(spec_params(s), name)
+      match find_dashed_param(spec_params(s), name)
         case none() -> none()
-        case some(p) -> if dash_spelled(p) then some(name) else none()
+        case some(_) -> some(name)
 
-    -- Asked as "not positional" rather than as a list of the three dashed kinds,
-    -- so a ParamKind added to `anthill.cli.spec` later is dashed by default —
-    -- which is what `usage_summary` and `render_flags` already assume of every
-    -- non-positional kind, and keeps the three renderings from disagreeing.
-    operation dash_spelled(p: ParamSpec) -> Bool =
+    -- A missing param is REQUIRED by definition here, so it is spelled without the
+    -- optionality brackets — and by `param_token`, the one definition the usage
+    -- line printed underneath also uses. Spelling it `<name>` unconditionally
+    -- advertised a POSITIONAL for `insert --before`, whose only accepted spelling
+    -- is `--before VALUE`: following that advice literally was then refused.
+    operation required_spelling(p: ParamSpec) -> String =
       match p
-        case ParamSpec(_, kind, _, _) ->
-          match kind
-            case positional() -> false
-            case _ -> true
+        case ParamSpec(name, kind, _, _) -> param_token(name, kind, true)
 
     -- Field readers, so no caller has to open an `OperationSpec` / `ParamSpec`
     -- with a nested `match` in an arm position.

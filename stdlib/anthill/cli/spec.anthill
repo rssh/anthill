@@ -7,6 +7,7 @@
 -- by ignoring `kind` and addressing params by name only.
 namespace anthill.cli.spec
   import anthill.prelude.{List, Option, String, Bool}
+  import anthill.cli.spec.ParamKind.{positional}
 
   -- How a CLI surface should source the value for a param.
   --   positional  — argv[i], in declaration order across positional params
@@ -25,6 +26,22 @@ namespace anthill.cli.spec
     kind: ParamKind,
     required: Bool,
     description: String)
+
+  -- Is this parameter SPELLED WITH DASHES on the command line? Every question a
+  -- CLI surface asks about a `ParamKind` reduces to this one, and it is stated
+  -- here — beside the enum — because three separate readers had answered it
+  -- separately and disagreed: `parse.anthill` matched a flag name without asking
+  -- (so `show --id` reached the "expects a value" arm for a POSITIONAL), the usage
+  -- renderer excluded positionals from FLAGS, and the argument reporter's
+  -- two-dash suggestion had its own copy. A dash-spelled param is any that is not
+  -- positional, asked that way round so a kind added to the enum later is dashed
+  -- by default — which is what `usage_summary` and `render_flags` already assume.
+  operation dash_spelled(p: ParamSpec) -> Bool =
+    match p
+      case ParamSpec(_, kind, _, _) ->
+        match kind
+          case positional() -> false
+          case _ -> true
 
   -- One subcommand of a CLI program. Top-level commands have parent: none.
   -- Subcommands name their parent's `name`. v1 supports one level of nesting.

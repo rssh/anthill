@@ -10,24 +10,43 @@
 //! read exactly like a missing `-d`. Meanwhile every `ParamSpec` in the registry
 //! carried a `description:` string that nothing ever printed.
 //!
-//! CONTROL. Restore that collapsed arm and EVERY assertion in the first five tests
-//! fails: the stderr is then the fixed string `anthill-todo: argument error`, which
-//! contains no token, no command name, and no `--flag`. Narrower back-outs, each of
-//! which fails exactly one test and leaves the others green:
-//!   * drop the `spec` field from `unknown_flag`/`unexpected_argument` (stdlib
-//!     `cli/parse.anthill`) — nothing can render a usage block, so the `--status`
-//!     description assertions go;
-//!   * make `single_dash_flag` return `some(name)` for any `-`-prefixed token
-//!     instead of consulting `find_param` — `single_dash_token_that_names_nothing_
-//!     gets_no_suggestion` fails while `single_dash_flag_is_named_with_its_two_dash_
-//!     form` still passes, which is why both are here;
-//!   * make `dashed_param_named` skip the `dash_spelled` test and answer for any
-//!     declared name — `a_single_dash_token_naming_a_positional_is_not_advised_to_
-//!     grow_a_dash` fails ALONE, the other two arms of that predicate staying green.
-//!     The three tests are one fixture per `ParamKind` outcome for that reason: a
-//!     fixture of flags alone cannot tell the two questions apart.
-//! `happy_path_flags_still_parse` passes either way BY DESIGN: it is the witness
-//! that the diagnostics were not bought by breaking the parse they report on.
+//! CONTROLS, every one of them RUN rather than reasoned about. Restore the
+//! collapsed arm and the five original diagnostic tests all fail: the stderr is
+//! then the fixed string `anthill-todo: argument error`, which contains no token,
+//! no command name and no `--flag`. Narrower back-outs, with the rows each one
+//! actually failed:
+//!
+//!   * make `single_dash_flag` answer `some(name)` for any `-`-prefixed token
+//!     instead of looking the name up — ONE fails,
+//!     `single_dash_token_that_names_nothing_gets_no_suggestion`, while
+//!     `single_dash_flag_is_named_with_its_two_dash_form` stays green. Both are
+//!     here for that reason.
+//!   * make `find_dashed_param` (stdlib `cli/parse.anthill`) match on the name
+//!     alone, dropping `dash_spelled` — TWO fail:
+//!     `a_positional_is_not_reachable_as_a_flag` and
+//!     `a_single_dash_token_naming_a_positional_is_not_advised_to_grow_a_dash`.
+//!     I first wrote "fails alone" here and measured otherwise. Two is CORRECT and
+//!     is the fix working: the parser's flag lookup and the reporter's suggestion
+//!     are now literally the same call, so the suggestion cannot name a spelling
+//!     the parser would refuse. When they had separate copies, only the second
+//!     row moved.
+//!   * spell `missing_required` as `<name>` again (bypass `required_spelling`) —
+//!     ONE fails, `a_missing_required_flag_is_spelled_the_way_the_parser_accepts_it`.
+//!   * restore the prior `usage_token` body (positional unbracketed, everything
+//!     else always bracketed, `repeated`'s `...` outside) — THREE fail:
+//!     `a_required_param_is_unbracketed_in_the_usage_line`,
+//!     `a_repeatable_param_renders_as_repeatable`, and the `missing_required`
+//!     one again. Also not the "one" I first wrote, and also the point: the
+//!     message and the usage line read the SAME `param_token`, so they move
+//!     together or not at all. (Mutating `param_token` to ignore `required`
+//!     instead fails FIVE, because that also brackets positionals — which the old
+//!     code never did. It is not a back-out of anything; the row above is.)
+//!   * put the seven registry params back to `kind: flag()` — ONE fails,
+//!     `a_repeatable_param_renders_as_repeatable`.
+//!
+//! `happy_path_flags_still_parse` passes under every one of them BY DESIGN: it is
+//! the witness that the diagnostics were not bought by breaking the parse they
+//! report on.
 
 use std::process::Command;
 
@@ -201,5 +220,90 @@ fn happy_path_flags_still_parse() {
     assert!(
         stdout.contains("WI-001"),
         "the open, unblocked fixture item must be listed; got:\n{stdout}"
+    );
+}
+
+// ─── /code-review high, 2026-09-06: four ways the new block contradicted itself ──
+//
+// Each of these printed a message and, one line under it, a usage block DENYING
+// what the message said. The collapsed `anthill-todo: argument error` line said
+// nothing and so misled nobody; asserting a spelling makes the assertion
+// falsifiable, which is the point of the change and also its new failure mode.
+// Their back-outs and the rows each one fails are in the header — they are not one
+// test each, because the fixes deliberately COLLAPSED duplicated definitions.
+
+#[test]
+fn a_missing_required_flag_is_spelled_the_way_the_parser_accepts_it() {
+    // `insert`'s `before` is `kind: flag(), required: true` — the registry's only
+    // required non-positional, and the row that makes this measurable at all.
+    let (ok, stderr, _) = run(&["insert", "a new item"]);
+    assert!(!ok, "a missing required flag must be refused");
+    assert!(
+        stderr.contains("missing required argument --before VALUE"),
+        "a required FLAG must be named as a flag; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("<before>"),
+        "the positional spelling is refused when followed, so it must not be advised; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_required_param_is_unbracketed_in_the_usage_line() {
+    // The other half of the same message: `missing required argument --before VALUE`
+    // printed over `[--before VALUE]` would call the missing param optional.
+    let (ok, stderr, _) = run(&["insert", "a new item"]);
+    assert!(!ok, "a missing required flag must be refused");
+    assert!(
+        stderr.contains("usage: insert <description> --before VALUE ["),
+        "a required flag must render without optionality brackets; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("[--before VALUE]"),
+        "…and must not also appear bracketed; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_positional_is_not_reachable_as_a_flag() {
+    // `show --id` used to reach `flag_expects_value` and print
+    // `flag '--id' expects a value` directly above `usage: show <id>`, a block
+    // that denies `--id` exists. `consume_flag` now asks the same dash-spelled
+    // question every renderer asks, so `--id` is simply unknown.
+    let (ok, stderr, _) = run(&["show", "--id"]);
+    assert!(!ok, "a positional's name is not a flag");
+    assert!(
+        stderr.contains("unknown flag '--id'"),
+        "expected the unknown-flag refusal; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("expects a value"),
+        "must not offer to accept a flag the usage block omits; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("usage: show <id>"),
+        "and the block it agrees with is right there; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_repeatable_param_renders_as_repeatable() {
+    // Seven registry params carried "(repeatable)" in their description while
+    // declared `kind: flag()`, so `usage_token`'s `repeated()` arm was dead and
+    // the usage line said `[--depends VALUE]` above "Dependency work item id
+    // (repeatable)". Nothing printed either string before this change.
+    let (ok, stderr, _) = run(&["add", "--nosuch"]);
+    assert!(!ok, "an unknown flag must be refused");
+    assert!(
+        stderr.contains("[--depends VALUE...]"),
+        "a repeatable param must render its ellipsis; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Dependency work item id (repeatable)"),
+        "…beside the description that says so; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[--created VALUE]"),
+        "and a non-repeatable flag must NOT grow one; got:\n{stderr}"
     );
 }

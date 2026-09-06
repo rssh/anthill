@@ -224,3 +224,128 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
         "default project name must derive from the -d dir basename; got: {project}"
     );
 }
+
+// ─── init's NAME argument, and what a dash-led token in it means ─────────────
+//
+// `init` is host-served — it runs before any KB exists — so the bundle's
+// spec-driven argument reporter never sees its argv, and the name is POSITIONAL.
+// Together that meant every mistyped flag read as a project name: `init --help`
+// scaffolded a project literally CALLED `--help` and exited 0 (found censusing
+// WI-1124, 2026-09-06).
+//
+// CONTROL. Restore the two-arm `match` these replace —
+//     let name = match bundle_argv.get(1).map(|s| s.as_str()) {
+//         Some("--name") => bundle_argv.get(2).map(|s| s.as_str()),
+//         other => other,
+//     };
+// — and all four tests below fail: each one's dash-led token becomes the name and
+// the command exits 0 having scaffolded. `init_names_the_project_from_a_bare_
+// argument` passes either way BY DESIGN; it is the witness that the refusals did
+// not cost `init` the argument it is actually for. The four are one per argv
+// shape because the arms differ: `--help` PRINTS and succeeds, a stray flag and a
+// flag-valued `--name` REFUSE, and a value-less `--name` used to fall through to
+// the directory-derived default rather than to any flag at all.
+
+/// Returns the `TempDir` itself, not its path: the caller has to hold the guard
+/// while it asserts on what was (or was not) written, and a `PathBuf` would let
+/// the directory be cleaned up first, making every `scaffolded()` answer false.
+fn init_in_a_fresh_dir(args: &[&str]) -> (i32, String, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut argv = vec!["-d", dir.path().to_str().unwrap(), "init"];
+    argv.extend_from_slice(args);
+    let out = Command::new(BIN).args(&argv).output().expect("run init");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        dir,
+    )
+}
+
+fn scaffolded(dir: &tempfile::TempDir) -> bool {
+    dir.path().join("anthill-todo/project.anthill").exists()
+}
+
+#[test]
+fn init_help_prints_usage_and_scaffolds_nothing() {
+    let (code, stdout, _, dir) = init_in_a_fresh_dir(&["--help"]);
+    assert_eq!(code, 0, "`init --help` is a help request, not a failure");
+    assert!(
+        stdout.contains("usage: anthill-todo [-d <DIR>] init [<name>]"),
+        "expected init's own usage, got stdout:\n{stdout}"
+    );
+    assert!(
+        !scaffolded(&dir),
+        "a help request must not create a project; {} exists",
+        dir.path().join("anthill-todo").display()
+    );
+}
+
+#[test]
+fn init_refuses_a_stray_flag_as_a_project_name() {
+    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["--nosuch"]);
+    assert_eq!(code, 2, "a mistyped flag is a usage error");
+    assert!(
+        stderr.contains("`init` takes a project name, not the flag `--nosuch`"),
+        "the refusal must name the offending token, got stderr:\n{stderr}"
+    );
+    assert!(!scaffolded(&dir), "a refused init must create nothing");
+}
+
+#[test]
+fn init_name_refuses_a_flag_as_its_value() {
+    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["--name", "--help"]);
+    assert_eq!(code, 2, "a flag where a name belongs is a usage error");
+    assert!(
+        stderr.contains("`init --name` expects a project name, got the flag `--help`"),
+        "the refusal must name the offending token, got stderr:\n{stderr}"
+    );
+    assert!(!scaffolded(&dir), "a refused init must create nothing");
+}
+
+#[test]
+fn init_name_with_no_value_is_refused_rather_than_defaulted() {
+    // This one never involved a flag: `--name` with nothing after it fell through
+    // to the directory-derived default, so a malformed flag scaffolded a project
+    // under a name the caller never chose.
+    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["--name"]);
+    assert_eq!(code, 2, "a value-less --name is a usage error");
+    assert!(
+        stderr.contains("`init --name` expects a project name, and none was given"),
+        "the refusal must say what was missing, got stderr:\n{stderr}"
+    );
+    assert!(!scaffolded(&dir), "a refused init must create nothing");
+}
+
+#[test]
+fn init_names_the_project_from_a_bare_argument() {
+    // Passes with and without the refusals, BY DESIGN: the control that they did
+    // not cost `init` the positional argument they guard.
+    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["my-thing"]);
+    assert_eq!(
+        code, 0,
+        "a plain name must still scaffold; stderr:\n{stderr}"
+    );
+    let project = std::fs::read_to_string(dir.path().join("anthill-todo/project.anthill"))
+        .expect("project.anthill written");
+    assert!(
+        project.contains("name: \"my-thing\""),
+        "the given name must reach the project file, got:\n{project}"
+    );
+}
+
+#[test]
+fn init_refuses_a_token_after_the_project_name() {
+    // /code-review, 2026-09-06: guarding argv[1] alone left the same swallow one
+    // position over — `init myproj --help` scaffolded `myproj` and discarded
+    // `--help` in silence. CONTROL: drop the `consumed`/`extra` check and this
+    // fails alone; `init_names_the_project_from_a_bare_argument` stays green,
+    // which is what says the guard did not eat the name itself.
+    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["myproj", "--help"]);
+    assert_eq!(code, 2, "an unconsumed trailing token is a usage error");
+    assert!(
+        stderr.contains("`init` takes one project name; `--help` is unexpected"),
+        "the refusal must name the dropped token, got stderr:\n{stderr}"
+    );
+    assert!(!scaffolded(&dir), "a refused init must create nothing");
+}

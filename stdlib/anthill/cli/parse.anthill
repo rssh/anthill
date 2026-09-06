@@ -9,7 +9,7 @@ namespace anthill.cli.parse
   import anthill.prelude.Bool.{and, not}
   import anthill.prelude.Iterable.{find}
   import anthill.prelude.String.{startsWith, substring, length}
-  import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind}
+  import anthill.cli.spec.{OperationSpec, ParamSpec, ParamKind, dash_spelled}
   import anthill.cli.spec.ParamKind.{positional, flag, repeated, bool_flag}
 
   -- One name=value pair from the parsed argv.
@@ -63,7 +63,7 @@ namespace anthill.cli.parse
   operation consume_flag(s: OperationSpec, name: String, rest: List[String], acc: List[Binding]) -> ParseResult =
     match s
       case OperationSpec(_, _, params, _) ->
-        match find_param(params, name)
+        match find_dashed_param(params, name)
           case none() -> parse_err(unknown_flag(s, name))
           case some(p) ->
             match p
@@ -113,10 +113,17 @@ namespace anthill.cli.parse
       match s
         case OperationSpec(sname, _, _, _) -> sname === name)
 
-  operation find_param(params: List[ParamSpec], name: String) -> Option[ParamSpec] =
+  -- The param a `--name` token names — and a POSITIONAL is not one. Matching on
+  -- the name alone let `show --id WI-1` bind the positional `id`, an undocumented
+  -- spelling that `usage_summary` renders as `<id>` and `render_flags` omits
+  -- entirely; when the value was missing, the resulting `flag_expects_value`
+  -- printed `flag '--id' expects a value` directly above a `usage: show <id>`
+  -- line denying that flag exists. `--id` is now simply an unknown flag, which is
+  -- what every other reader of the spec already says it is.
+  operation find_dashed_param(params: List[ParamSpec], name: String) -> Option[ParamSpec] =
     find(params, lambda p ->
       match p
-        case ParamSpec(pname, _, _, _) -> pname === name)
+        case ParamSpec(pname, _, _, _) -> and(pname === name, dash_spelled(p)))
 
   operation has_binding(acc: List[Binding], name: String) -> Bool =
     match find(acc, lambda b ->
