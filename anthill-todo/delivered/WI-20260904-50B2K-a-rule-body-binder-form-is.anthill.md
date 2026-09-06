@@ -3,9 +3,9 @@
 - id: WI-20260904-50B2K-a-rule-body-binder-form-is
 - created: 2026-09-04T09:31:41Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-04T12:17:52Z
+- status_at: 2026-09-06T10:45:49Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -2038,3 +2038,4 @@ exactly.
 
 STATE: workspace 6457/0 — 597 lib, 4145 `wi_tests`, 896 the other core binaries, 503
 cli/stl/todo/version, 312 codegen, 4 doc. scaland 539/0. Formatting matches HEAD's.
+
