@@ -1103,9 +1103,78 @@ merges the two declarations onto one symbol (§8.6), so what the block declares
 enters `X`'s own scope, is scoped by `X`'s type parameters, and may back `X`'s
 spec claims. It is the only way to add a member to a type whose declaration one
 does not own, and it is legal before, beside or after the type's declaration, in
-the same file or another. The two are told apart by the **address**, never by the
-text: the same `namespace X` block is an ordinary namespace wherever no sort
-occupies `X`.
+the same file or another.
+
+A scope has one or more **entries** — the texts that declare into it. What makes
+an address an entry address is that **a sort occupies it**, which is the one
+question an implementation asks (`has_kind(X, Sort)` — a *set* of categories, not
+a first one; WI-956), and every declaration that puts a type there satisfies it.
+
+- **Main entry** — the declaration that *defines* the type: its constructors, its
+  type parameters and its requirements. **At most one exists** — that is R1, §5.2.
+  An address may have none, and then no type is there. `sort X … end`,
+  `enum X … end` and `entity X(…)` are the shapes that carry a definition
+  *inside*, and a fieldless `entity X` is one of them.
+
+  **A body-less type alias `sort X = T` is one too, in effect, and 059
+  §Definitions leaves it open on purpose.** Its definition sits after the `=`
+  rather than inside a body, so it is not an entry by that reading — but the
+  address it lands on carries a sort, and every rule keyed on the address treats
+  it accordingly. Measured, with the controls: `sort Path = String` beside
+  `namespace Path { operation len(p: Path) -> Int64 = 7 }` loads and
+  `Path.len("x")` answers, with the loader's own diagnostic calling `len` "a
+  member of sort `Path`"; the same block with a **body-less** `len`, or with a
+  `fact`, is refused as a secondary entry's content; and both controls — the same
+  block with no alias at that address — load. So a `namespace` at an alias's
+  address IS a secondary entry today. What is *not* settled is whether it should
+  be, and R1 has not followed the classification there (§5.2).
+- **Secondary entry** — a `namespace X` at an address that **has** a main entry.
+  It *adds to* `X`'s scope and defines nothing about the type. Any number may
+  exist.
+- **Ordinary namespace** — a `namespace X` at an address with **no** main entry:
+  every namespace in the language until a sort shares its address. It declares a
+  module, not members of a type, and **nothing in the entry rules below reaches
+  it** — a rule, an `entity`, a nested sort are as legal there as they have ever
+  been. (§5.2's capture rule is likewise asked only of declarations in a *sort*
+  scope.)
+- **Entry identity is by FILE.** All `namespace X` text at one address *within
+  one file* is ONE secondary entry; the same text in a second file is a second
+  one. A file holding both the type's declaration and a `namespace X` block holds
+  two entries, main and secondary. The file is the unit because the entry-keyed
+  rules below guard against a predicate assembled by two parties that never
+  agreed on it, and two blocks in one file are one author making one edit — and
+  because it is the unit `import` already uses (§8.6, WI-995). It is also the
+  only checkable one: two blocks at one address compute the same qualified name
+  and reuse the same symbol, so no per-block identity exists to group by.
+- **Member of `X`** — a name declared in `X`'s scope by any entry, main or
+  secondary alike. Reachable bare from within that scope and from outside through
+  `import X.{…}`.
+- **Dispatch surface of `X`** — the members reachable as `receiver.name(…)`. Its
+  elements are exactly the **operations**: a `const` is a member and is not on the
+  surface, in the main entry as much as in a secondary one, and neither is a
+  predicate declaration (§5.3).
+
+**The two are told apart by the ADDRESS, never by the text**, and never by an
+import: `namespace X` is written identically either way, and what decides is
+whether a sort occupies `X`. A `namespace ns.ext.Rec` is not an entry to
+`ns.data.Rec` however it is imported. *Main* and *secondary* name roles and not
+order — a secondary entry may be written first, in the same file or another, and
+the text the loader happens to reach first decides nothing (WI-979 for the
+classification, WI-994 for variant visibility).
+
+**So the classification is a WHOLE-PROGRAM property, and the uncomfortable
+consequence belongs on the record: a namespace becomes a secondary entry because
+someone ELSE declared a sort at its address.** Written alone, `namespace Utils {
+fact q(1) }` is an ordinary namespace and its fact is legal; let another file
+declare `sort Utils` at that address and the same text is a secondary entry, where
+the table below refuses every `fact` (measured, in exactly that two-file pair).
+Nothing local to the namespace changed. It is the same
+property dispatch and dictionary layout already have — both are defined over
+every loaded file (§8.7) — stated here in the classification itself. A module
+boundary is what would let a package refuse entries to its own addresses from
+outside; the language has none, and proposal 059 §*Where this leads* records that
+the `requires` refusal, the orphan spec claim and this flip are one question and
+not three.
 
 **What a secondary entry may contain — members and spec claims, never identity**
 (proposal 059 R3; enforced by `SecondaryEntryPass`, `kb/load.rs`). The list is
@@ -1114,7 +1183,7 @@ admitted:
 
 | in a secondary entry | |
 |---|---|
-| an `operation`, or an `operation { … }` block | **allowed, and it must have a runnable Anthill body.** An entry adds a complete new member; a body-less declaration reserves an implementation slot for a builtin or a host `operation_map`, which is a main entry's to reserve. Asked of the declaration as written — a `[simp]` equation is not a body, and no `operation_map` or builtin makes one appear. A body-less operation in a MAIN entry stays legal, as the host carriers require |
+| an `operation`, or an `operation { … }` block | **allowed, and it must have a runnable Anthill body.** An entry adds a complete new member; a body-less declaration reserves an implementation slot for a builtin or a host `operation_map`, which is a main entry's to reserve. Asked of the declaration as written — a `[simp]` equation is not a body, and no `operation_map` or builtin makes one appear. A body-less operation in a MAIN entry stays legal, as the host carriers require — and a secondary entry never FILLS one: that declaration is the one declaration of the name, so repeating it with a body is a second declaration under one symbol and is refused as a duplicate (§8.7 *One name, one operation*), before host backing is even relevant |
 | a `const` | allowed, **and it must have a defining value** — the same clause as the operation above, for the same reason: a value-less `const` reserves a host slot for a `const_map` entry (§10.2), the const-level peer of `operation_map`. A value-less `const` in a MAIN entry stays legal, as `Float.infinity` / `nan` require |
 | a nested `sort` / `enum` with a body, or a type alias `sort A = T` | allowed: each declares a new type at its own address (`X.A`), so it is that type's main entry and the restrictions do not recurse into it |
 | a nested `namespace` | allowed, and not recursed into: it is an ordinary namespace at `X.Inner` |
@@ -1128,9 +1197,7 @@ admitted:
 | any `fact` | **refused** — a `fact Spec[X]` claim is recognised by SHAPE (a functor that is a sort with type parameters) and cannot be told from an ordinary fact over a parameterized DATA sort, so default-deny refuses the spelling rather than guess. Every spec claim an entry can make is written `provides Spec[…]` — including one whose carrier is some OTHER sort, which is a witness claim and so genuinely about this sort (it supplies the dictionary). `fact Spec[Carrier]` one level out remains available and is the only spelling at an address no type occupies. An ordinary assertion with a fresh head is written as the rule it desugars to, `rule h :- true`, which the row above admits |
 | any `constraint` | **refused** — a constraint has NO head: it introduces nothing and can only take answers away, so it can never meet the condition that admits a rule, and its guard is over the whole knowledge base rather than a member added to the type |
 
-An **entry** is individuated by file: all `namespace X` text at one address
-within one file is ONE secondary entry, and the same text in a second file is a
-second one. A `proof` / `describe` target may be written bare or qualified against
+A `proof` / `describe` target may be written bare or qualified against
 the entry's own address (`describe Rec.g` inside `namespace Rec`); a nested sort's
 member is another entry's, that sort being the main entry of its own type.
 
@@ -1606,6 +1673,50 @@ A type declaration. Sort has three forms — **unspecified** (declared, carrier 
 Design records: [proposal 002](proposals/002-arrow-sorts.md) for the sort/arrow
 parameter lineage and [proposal 045](proposals/045-effect-sets-and-expressions.md)
 for effect-row binders.
+
+**A TYPE IS DEFINED ONCE** (proposal 059 R1; `DeclLedger`, `kb/load.rs`). Two
+*type* declarations sharing a **(scope, local name)** are a load error naming
+both spans: `sort X` beside `sort X`, `enum X` beside `enum X`, and — as
+**siblings** — `entity X` beside `sort X`, §6.3 making that pair two spellings of
+one declaration. The harm is reopening a closed ADT: before this, a second
+`sort C { … }` body beside `sort C { entity Red }` silently added variants —
+both constructed, and the second body's members dispatched. The message names
+the remedy the language does have: a `namespace X … end` at the same address,
+which adds members to the type without redefining it (§5.1's secondary entry).
+
+**Keyed on the declaration AS WRITTEN, not on the address it ends at**, and
+§6.3's eponymous constructor is why. `sort Vec3 { entity Vec3(…) }` collapses the
+constructor onto the sort's own symbol (§8.6, WI-926), so *both* declarations end
+at address `ns.Vec3` — keyed by address that is indistinguishable from the
+sibling pair this rule refuses, and a legal shape is rejected. Written-keyed they
+differ: the sort is `(ns, "Vec3")` while the entity, scanned with the sort's own
+scope, is `(ns.Vec3, "Vec3")`; the sibling pair is `(ns, "Vec3")` twice and stays
+caught. Measured, the corpus holds 4 eponymous sites (`Vec3`, `TotalFloat`,
+`Duration`, `Timestamp`) among 140 `sort`/`enum` headers, and re-keying on the
+address stops the stdlib itself loading at exactly those four. The check must
+also run *while* the defining pass makes the declarations: `define` merges two
+same-named declarations in one scope onto one symbol, so afterwards the
+duplication has been absorbed and no walk over the finished table can find it.
+
+**A body-less type ALIAS is outside the rule — stated as a limit, not covered.**
+`sort Alias = T` is not recorded, so measured today: `sort Code = Int64` twice
+LOADS, and so does `sort Code { entity mk(…) }` followed by `sort Code = Int64`.
+Written in the other order — the alias first, then the body — the pair *is*
+refused, but for a different reason and with a different message: the defining
+pass gives a declaration its enclosing-scope parent link only where the
+declaration is NEW, and the alias has already taken the name, so the later body
+inherits nothing and every name inside it is an `unresolved name`. That is a
+cascade, not a report of the pair — the same loud-for-the-wrong-reason shape
+`entity X` beside `sort X` had before this rule reached it.
+
+**So R1 and the entry classification disagree about an alias, and the divergence
+is here rather than there.** §5.1's classification does reach it — a `namespace`
+at an alias's address is a secondary entry, measured — and R3 admits an alias
+*inside* a secondary entry as a new type at its own address. This rule is the one
+that has not followed, and 059 §Definitions leaves the underlying question open:
+an alias writes its definition after the `=` rather than inside a body, so
+whether it is a main entry at all is undecided. Until it is settled, read R1 as
+covering the three shapes that carry a definition inside.
 
 ```
 Sort ::= DescriptionBlock*
@@ -3360,7 +3471,7 @@ Consequences worth stating, because they are what the rule buys:
   position supplies one without brackets** (WI-933). A `fact` is writable in three of
   the four positions above — the fourth, a `namespace X` block at a sort's address, is
   a **secondary entry**, where `fact` is refused outright and the spelling is `provides
-  Spec[…]` (§6.3's secondary-entry rule; a fact is a rule, and in that position a
+  Spec[…]` (§5.1's secondary-entry table; a fact is a rule, and in that position a
   spec claim cannot be told from an ordinary fact over a parameterized data sort).
   Of the three, only *inside `X`'s own body* is the enclosing type the carrier — which
   is what `sort QueryableStore { fact Store }` says and how the store hierarchy is
@@ -3386,11 +3497,22 @@ Consequences worth stating, because they are what the rule buys:
   operations). The two get different sentences, since only the first can be repaired by
   adding brackets.
 
-- **Operations move a free-standing entity to the long form.** The sugar has no body
-  in which to write one, so `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`
+- **Operations move a free-standing entity to the long form — or arrive in a
+  secondary entry** (proposal 059 R5). The sugar has no body in which to write one, so
+  `sort Box { entity Box(v: Int64); operation unwrap(…) = … }`
   is how a free-standing entity gains members — still one symbol, per the rule above,
   and the fields and operations therefore belong to one type in every backend
   (a C++ backend emits one `struct`, not a data struct beside a traits struct).
+
+  The **second route** is a `namespace Box … end` at the entity's own address, which
+  is a secondary entry to its scope (§5.1): the operation declared there is a member
+  of `Box` exactly as one written in the long form is, and it dot-dispatches on a
+  `Box` receiver. Use the long form to keep an owned interface together; the
+  secondary entry is what remains available when the type's declaration cannot be
+  edited, and it is the only route to a member of a type one does not own. Both
+  produce one symbol, and neither may redeclare an operation the entity's scope
+  already owns (§8.7 *One name, one operation*) — nor, in the secondary entry, may
+  it declare one without a runnable body (§5.1).
 
   What every backend owes is that the **type is one declaration**; where the members
   go is the host language's to answer (WI-940). C++ can put them in the same
@@ -5020,11 +5142,15 @@ Different namespaces may declare different providers of the same spec for the sa
 
 *Consequence.* Two routes to `A[X]` agree unless a call site deliberately says otherwise — the coherence a diamond needs is a property of the calls, not of the importing scopes. Implicit scope-directed selection — a nearer provider silently winning, or providers ranked by the caller's imports — is deliberately **not** the rule (proposal 058 §7). It cannot express the need at all (`fold[Monoid = AddM](xs)` beside `fold[Monoid = MulM](ys)` wants both providers in one body, and a `SortedSet` chooses its order per *construction site*), and it would let an added `import` change what a program computes.
 
+*And the whole premise is WHOLE-PROGRAM, which is what makes all of this decidable at load.* A dictionary layout is defined over the whole knowledge base (WI-857), so is provider search, and so is the member set a receiver dispatches against — every load sees every file, nothing is compiled separately, and therefore **no declaration anywhere can invalidate a previously compiled call site, there being none**. Under that model a secondary entry (§5.1) is exactly as consequential as an edit to the type's own declaration: there is no boundary for anything to cross, which is why the entry rules are argued from *who a declaration binds* rather than from any layout cost — there is none to charge. What the premise does not reach are the questions a compilation module would own: two units that each declare an orphan provision and are **never loaded together** are a pair neither `one_default` nor any load check ever sees, and whether a `namespace X` is an ordinary namespace or a secondary entry depends on which other units are loaded (§5.1). Those are recorded rather than answered; proposal 059 §*Where this leads* argues they are one mechanism — package openness — and not three.
+
 *Where the ambiguity error is raised.* A tie reaching this paragraph is one the default rung did not arbitrate — no default row names any candidate, or two of the tied candidates name the same provider. Most such ties are refused at **load**, before anything runs; a carrier that provides a spec *itself*, beside a second sort providing the same spec for it, is not — that pair reaches the runtime. Such a tie is refused at the point a dictionary for it is actually **built**: when dispatch resolves an impl's `requires` slot and finds two providers, it raises an ambiguity error naming the requirement and both providers, rather than proceeding without the dictionary. Choosing which impl runs for a spec-op call is a separate step, and it is refused the same way (WI-842): when the receiver's carrier has two suppliers of the operation — its own member, an instance fact's binding, a witness sort's member — the refusal names the operation, the carrier, and each candidate *by its supply route*, since the three are written in three different syntaxes and the author must know which text to delete. Which repair the message offers depends on whether any rival can be *named*: a `[Spec = Witness]` bracket binds a **body-less** spec op's dispatch slot to a provider, so it separates rivals only when one is a witness sort and the operation has such a slot — a defaulted operation has none, and a carrier's own member and an instance fact have no name (*A second provider is permitted, gated on nameability*, above). When nothing is nameable the message says to keep exactly one text rather than suggest a spelling that would be refused. **Where** the tie is raised is a separate question, and it is answered before anything runs wherever the type checker can see it: when the carrier is pinned *statically*, the refusal is a **load** error, since the span, the carrier and the candidate list are all in hand at the moment dispatch declines to select (WI-1012 for a **defaulted** operation, WI-1027 for a **body-less** one). What still waits for the call is what no static carrier names: an abstract-spec receiver, and a call whose carrier is a type parameter. The two halves refuse *different* counts, and the difference is not an inconsistency. A defaulted operation has no dispatch slot, so nothing at any call site could ever choose between its suppliers — the type checker does not even attempt a dispatch resolution for one — and two suppliers are always a tie. A body-less operation does have one, so a call site *can* choose — with a `[Spec = Witness]` bracket, or by one provision being strictly more specific than another — and those choices are made by the dispatch resolution before any tie is counted. What that resolution cannot weigh is a supplier which is not a provision at all (the carrier's own member), or one whose operation binding a same-named member of the carrier overrides (an instance fact's). Two suppliers with one of those among them were never chosen between, and that is what the load refusal on this half names. One limit is worth stating, since it is not a general "ambiguity is always caught": inside SLD resolution a tie that reaches the runtime *delays* the bridged evaluation instead of aborting the enclosing rule, so a rule reports it by not answering. A **top-level query** is the one runtime call site that does have a moment to be loud at — its own, the moment the pattern is converted — and it uses it: a query naming a spec-op call whose carrier has two suppliers is refused before it runs, in the same wording and naming each rival by the same supply route (WI-1044). A query has no enclosing rule to protect, and belonging to none is also why no load pass sees it. A rule body that names the spec operation *directly* is type-checked through the same call path on **both** halves — defaulted (WI-1026) and body-less (WI-1043) — so the load refusal and the override rule reach it there, wherever the call names the operation. Such an atom is then type-checked in full (WI-1056), so an ordinary type error inside one — a `String` argument where `Int64` is declared — is a load error wherever it is written, rule body and operation body alike; the one failure deliberately not reported there is a dot whose receiver has no static sort, which an untyped rule-head variable always is (WI-282). The general rule-body call is decided too (WI-1058), and what decides it is the **position** it is written in rather than its functor alone: at *goal* position an atom is a connective, a resolver builtin, a fact pattern, an instance claim, or a **subgoal** — and a subgoal is checked against the clauses its functor heads (a goal no clause can match by shape, e.g. the wrong arity, is refused naming the rule and both shapes) rather than against a signature it has not got. At *data* position a term is not type-checked at all, deliberately and by measurement: the call ladder is expectation-directed and scope-sensitive (a sort name denotes a `Type` only in a slot that expects one; a node under a `lambda` needs its binder), and type-checking a data slot also *rewrites* it, which changes what the rule means. A data slot gets the one context-free check it can have — that its functor names something — described under §5.3 "Naming one from elsewhere". One supply route also stays out of reach from a rule body: an implementation supplied **only** by an instance fact's binding has no static pin (the dispatch resolution does not read those bindings), so an operation body reaches it by value and a rule body answers nothing — WI-1057. A call written as a **dot on the receiver** (`x.describe(?r)`) resolves the member on the receiver's sort by name, before any spec is consulted — but that resolution is now asked the same question the named spellings are asked (WI-1035): where the member it finds backs a spec the receiver provides, and that operation has a second supplier for this carrier, the dot is refused too. This holds on both halves and in an operation body and a rule body alike. On a *concrete* carrier the call is still dispatched to the member, and what a rival changes is only that route order no longer decides silently. On an *abstract-spec* receiver there is no static carrier to count for, so the dot instead hands the call to the spec operation and the value decides it — the same reader the qualified spelling reaches, refusing at the call when two texts supply one implementation (WI-1038). A receiver typed as a **`requires`-constrained type parameter** is the third case and reads the same way (WI-1119): the parameter names no sort whose members could be searched, so the dot resolves the member against the specs that **constrain that parameter** — the clauses on the enclosing operation and on its sort alike, transitively through their `requires` graphs — and hands the call to the spec operation for the value to decide, exactly as the named spelling `Spec.member(x)` does under the same clause (§5.4). A clause lends its spec's members only where it constrains *this* parameter: `probe[A, B](x: A, y: B) requires Desc[B]` does not resolve `x.describe()`, and refusing it is the same rule that stops the clause from licensing the named spelling there. Two constraining specs declaring one member name are refused naming both, rather than settled by the order the clauses are written — the requires-*refinement* rule below already settles the orderable case, and unlike the two ladders above there is no distance between a clause on an operation and a clause on its sort for a first-match to mean anything. They are rivals only where the *call* cannot tell them apart: a candidate the dot's own argument list could not reach is not counted, on the same ground the shadowing rule below starts from (equal arity), and for the same reason a tie must not be reported by suggesting a spelling that is itself refused. A member no constraining spec declares is refused as an unresolved member, naming the parameter and *every* spec that constrains it — including one whose operations receive on nothing, since the author wrote that clause and must not be told to add it. A requirement that is merely *unpinnable* at the argument types is a different case and is not an error at all — the call proceeds, and only a body that actually reads the missing slot fails (WI-822/WI-855).
 
 *One carrier declaring one spec twice.* A carrier may provide a spec many times at **different applications** — `sort Console` provides `Effect` for each of `ConsoleOutput` / `ConsoleError` / `ConsoleInput`. What is refused, at **load**, is two provisions of one spec that agree on the spec's carrier parameter (the same application) and disagree about another parameter: every reader of a carrier's provider view takes the first match, so admitting the pair would let the *order the provisions are written* decide the program's meaning. Provisions that agree are merged into one view, so a parameter bound by a later provision and omitted by an earlier one is still read. The dispatch side follows the same rule (WI-1032): two provisions that agree in everything dispatch consults — the carrier and the spec's *type*-parameter bindings — are **one candidate**, not a tie. A carrier writing `provides Spec[…]` in its own body beside a namespace-level `fact Spec[…]` for itself has said one thing twice, and a call on it resolves rather than being refused. An *operation* binding is not a type-parameter binding and so does not make two provisions differ here; when such a binding rivals an implementation the carrier already supplies, the conflict is reported as the supplier tie above — naming each by its supply route — rather than as two providers.
 
-**One name, one operation (WI-1049).** An operation name is declared at most once per scope, and the loader refuses a second declaration, naming both. Anthill has no signature-keyed overloading: a scope maps a name to one symbol, so a second `operation` of that name does not introduce a second operation — it merges into the first and its signature is lost, leaving *which* signature the kernel reports to depend on which was written first. Same-named operations on **different** sorts are not overloading and stay legal: they are distinct symbols chosen by carrier, per the ladder below. A `rule` whose head names an operation is not a second declaration either — for an operation with a body the equational and relational views are *derived* from that body (WI-580), and for a body-less one the rules are what give it meaning (WI-818, WI-881).
+**One name, one operation (WI-1049; proposal 059 R4 clause 1).** An operation name is declared at most once per scope, and the loader refuses a second declaration, naming both. Anthill has no signature-keyed overloading: a scope maps a name to one symbol, so a second `operation` of that name does not introduce a second operation — it merges into the first and its signature is lost, leaving *which* signature the kernel reports to depend on which was written first. Same-named operations on **different** sorts are not overloading and stay legal: they are distinct symbols chosen by carrier, per the ladder below. A `rule` whose head names an operation is not a second declaration either — for an operation with a body the equational and relational views are *derived* from that body (WI-580), and for a body-less one the rules are what give it meaning (WI-818, WI-881).
+
+**The rule crosses entry boundaries with no special case, and a DECLARATION RESERVES THE NAME whether or not it has an implementation.** Two secondary entries may not declare one operation, and a secondary entry may not redeclare one the main entry declares (§5.1). A body-less declaration is not silence another `operation` may fill: it is the one declaration of that interface, and it may be backed by a resolver builtin or by an `operation_map` in another file or host package (§10.2). So the admission decision never asks whether a body, a mapping or a builtin exists, and never changes when a realization package is added or removed. Measured against `sort String`'s body-less, host-mapped `isEmpty`: a secondary entry supplying `operation isEmpty(s: String) -> Bool = false` used to load clean and its body never ran, the registered host implementation winning before body lookup; it is now refused as a duplicate declaration. That is not a corner case — the host carriers deliberately declare body-less operations whose implementations live in `operation_map` blocks. A separately-written implementation of an existing declaration would need a construct of its own, arbitrated against Anthill bodies and per-language host mappings; it is not an exception to this rule.
 
 **Members and constructors are named per type (WI-999).** *Per scope* above means per **type**, and a namespace is not one flat name space for every member of every sort in it. Two types declared in one namespace may name their operations, consts and constructors freely against one another — `sort SortedSet` may declare `merge` while a sibling `enum EffectExpression` declares an `entity merge`, and those are different declarations, chosen by carrier at the call site. §8.6's *variant exposure* does not change this: it leaks a constructor's short name to the **enclosing** namespace so it can be written unqualified there, and reserves nothing inside the sibling types declared alongside. The alternative would make every constructor name in a namespace a reserved word for every sort in it, which is why proposal 059 R4's capture rule stops at the exposure link.
 
@@ -5054,6 +5180,8 @@ fact Monoid[T, combine = add]
 When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Defaulted operations (a spec-level `operation … = body`) carry over automatically; the satisfying sort only provides the primitive operations. For example, `Stream` defines `head` by a default body over `splitFirst`, so a sort declaring `fact Stream[T]` inherits `head` without redeclaring it.
 
 **A NAMESPACE-level operation is not backing (WI-935).** Backing must be reachable *through the carrier* — the carrier's own member or an inherited spec default (see the next paragraph for the full list). A free operation declared at **namespace** level, with the same name and signature and sitting beside the carrier, is none of those and backs nothing: `check_provider_operations` reports one `… no own <op> on <carrier>` per declared member (measured). The refusal is not incidental. A spec member is dispatched *through* its carrier, so with two carriers of one spec there are two `vec_add`s and the carrier is the only thing that distinguishes them; a namespace-level name has no carrier dimension to distinguish by. The implementation therefore goes in the carrier's sort body. Writing it there means writing the long form `sort E { entity E(…); operation … }` where `entity E(…)` stood — the same declaration (§6.3), now with somewhere to put members, but **not** a no-op edit: it changes the parse-IR item kind, and a codegen backend reached the two spellings by different paths — scaland's `Bootstrap` emitted a `case class` for the sugar and `enum Vec3: case Vec3(…)` for the long form, which is the `Vec3.Vec3` §6.3 rules out. Fixed and pinned by byte-equality of the two emissions (WI-940).
+
+**A `namespace` AT THE CARRIER'S OWN ADDRESS is the other side of that rule, and the discriminator is the address** (proposal 059 R2; WI-978, WI-1008). `namespace E … end` beside `sort E` is a **secondary entry** to `E`'s scope (§5.1), so an `operation show` written in it is declared at `E.show` — the carrier's own member, and backing. The rejected shape is `operation show` beside `sort E` at *namespace* level, which is declared at `ns.show`: same text, same signature, one address apart, and only the first has a carrier dimension. `op_backed` is keyed on exactly that — it looks for `{carrier}.{op}` — so the address is not a proxy for the rule here, it *is* the rule. Two records had to agree before the mechanism worked end to end, and the CLAIM's own placement is not the discriminator: a self-provision for `E` records the same provider and the same carrier whether it is written `provides Spec[E]` in the entry, `provides Spec[E]` in the sort body, or `fact Spec[E]` one level out (§5.1's provider/carrier paragraph; the `fact` spelling is refused inside an entry, for a reason of its own). What decides is where the **operation** is. Until a secondary entry's operations joined `SortInfo.operations`, the load-time check accepted the claim while the requirement-dictionary route substituted the spec's body-less declaration and died `OperationBodyMissing` on a program that loaded clean (WI-1008, measured); accepted by address, unreachable by record. Both reads now answer alike.
 
 **Backing conformance: the member must fit where it is the only backing (WI-20260822-1MAGR).** `op_backed` matches a declared member by **short name only**, and until this rule nothing compared the two declarations: `fact VectorSpace[BadVec, Float]` loaded clean when `vec_add` took one argument, when `vec_sub` returned `Float`, or when `vec_scale`'s parameters were swapped, and each then mis-dispatched or died at the call (WI-935, measured). `check_override_refinement` now compares **arity**, the **parameter types** — and so their **order** — and the **return type**, with the provision's bindings substituted into the spec's declaration, **exactly where the spec operation has no implementation of its own that would back this carrier** — no default body and no resolver builtin. A host `operation_map` naming the spec's own member is deliberately not counted: that index has no carrier dimension, so it says an implementation exists somewhere and never that *this* carrier is realized (WI-876), which is the same reason `op_backed` does not count it either. The refusal names both shapes, the spec's written at this provision's bindings.
 
