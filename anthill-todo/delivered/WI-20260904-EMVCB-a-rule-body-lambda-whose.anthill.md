@@ -268,3 +268,7 @@ FORMATTING: every touched file is at or below its HEAD hunk count. `rustfmt` on
 `kb/mod.rs` follows its `mod` declarations into five untouched files; reverted at file
 granularity (the same trap `wi_tests.rs` set on WI-14EV6, one directory up).
 
+### 2026-09-07T00:39:25Z — feedback — user
+
+FOLLOW-UP FILED for the half this ticket deliberately left open: WI-20260907-VM9Q7 -- the hash-consed `Value::Term(Term::Const)` carrier a FACT-matched literal answers on. It carries the 9-of-6531 measurement and names the FLOAT-RENDERING decision (`TermPrinter` gives `Term::Const(Float)` its decimal point, `Value::Float` renders through Rust's `Display`) as the thing to settle FIRST -- the fold is not the hard part. `a_fact_matched_literal_keeps_its_hash_consed_carrier` is the row that fails the day it lands.
+
