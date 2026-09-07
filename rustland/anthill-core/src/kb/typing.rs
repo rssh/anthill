@@ -838,6 +838,20 @@ pub enum TypeErrorContext {
         /// `"condition"` / `"guard"` — which of its slots.
         slot: &'static str,
     },
+    /// WI-20260826-7JDWY — an ELEMENT of a `[…]` / `{…}` literal whose position DECLARES
+    /// an element type, checked against it.
+    ///
+    /// It carries the element's INDEX because a literal names its elements nothing, and
+    /// the position is the only way to say which one is wrong. Reporting the whole list
+    /// instead — `expected List[T = Int64], got List[T = String]` at the slot — is what
+    /// the unhinted path already does, and it is strictly less precise: with three
+    /// elements it says a list is wrong without saying which element made it so.
+    CollectionElement {
+        /// `"list"` / `"set"` — which literal surface.
+        construct: &'static str,
+        /// The element's 0-based position, rendered 1-based.
+        index: usize,
+    },
 }
 
 impl TypeErrorContext {
@@ -878,6 +892,7 @@ impl TypeErrorContext {
             // report (a lambda is anonymous), so the name rides in `field_name` below.
             TypeErrorContext::BinderAnnotation { .. } => "<binder>".to_string(),
             TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
+            TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
         }
     }
 
@@ -900,6 +915,7 @@ impl TypeErrorContext {
             TypeErrorContext::DotProjection { .. } => "dot-projection",
             TypeErrorContext::BinderAnnotation { .. } => "binder-annotation",
             TypeErrorContext::BooleanPosition { .. } => "boolean-position",
+            TypeErrorContext::CollectionElement { .. } => "collection-element",
         }
     }
 
@@ -919,6 +935,10 @@ impl TypeErrorContext {
             TypeErrorContext::DotProjection { member } => kb.local_name_of(*member).to_string(),
             TypeErrorContext::BinderAnnotation { binder } => kb.local_name_of(*binder).to_string(),
             TypeErrorContext::BooleanPosition { slot, .. } => (*slot).to_string(),
+            // 1-BASED, because it is read by whoever wrote the literal and they counted
+            // from one. The 0-based `index` is kept in the variant so the value is the
+            // element's position in `pos_args` and needs no reader to undo the display.
+            TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
         }
     }
 }
@@ -10725,11 +10745,45 @@ fn variant_slot_arg_hint(
     param_type: Option<&Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these two argument
+    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these three argument
     // shapes can change reading here.
-    // The TUPLE test runs FIRST — see [`arg_is_tuple_literal`] for why the constructor test
-    // would otherwise swallow it, and for why list/set literals are excluded.
+    // The TUPLE and SEQUENCE tests run FIRST — see [`arg_is_tuple_literal`] for why the
+    // constructor test would otherwise swallow them.
     if arg_is_tuple_literal(kb, arg) {
+        return type_mentions_an_entity(kb, pt).then(|| pt.clone());
+    }
+    // WI-20260826-7JDWY — RESTORED. JSFHG built this arm, MEASURED that
+    // `takeReds([blue(v: 1)])` — the WRONG variant — then LOADED CLEAN, and reverted it:
+    // the element type of a hinted literal was taken from the hint without the elements
+    // being read, so the hint did not check the literal, it overwrote it. That hole is
+    // closed ([`seq_literal_element_type`]), so the hint now CHECKS, and the pair
+    // `takeReds([red(v: 1)])` / `takeReds([blue(v: 1)])` separates the two: with the hint
+    // and no check the second loads, with the check and no hint the first is refused.
+    // Gated the way the tuple arm is, on the slot type MENTIONING an entity — a slot whose
+    // element type is an ordinary sort pushes nothing and its elements type as before.
+    // That is JSFHG's containment argument, kept deliberately: a slot declared with a
+    // variant type was UNSATISFIABLE before that ticket, so barely any loading program has
+    // one for this hint to reach.
+    //
+    // ITS SECOND HALF DOES NOT SURVIVE HERE, and `/code-review` was right to say so.
+    // JSFHG's arm "could only turn a refusal into an acceptance"; PAIRED WITH THE ELEMENT
+    // CHECK this one can do the reverse. MEASURED, with `takeReds(l: List[T = Colour.red])`:
+    //
+    //     operation viaArg(r: Colour.red, c: Colour) = takeReds([r, c])
+    //
+    // now refuses `list.element 2: expected red, got Colour`, and loaded before — because
+    // with no hint the literal's element type was element ONE's (`red`) and element two was
+    // never looked at at all. The new verdict is the correct one; what is retired is the
+    // ARGUMENT, so that a future widening of this gate is not justified by a claim that
+    // stopped being true. Its flip-set has not been measured and would have to be.
+    //
+    // WIDENING THE GATE IS A DIFFERENT ITEM, and the note belongs here because the reason
+    // it was blocked has expired. WI-20260828-5NSZY left `head_apply([inc], 41)` refused
+    // where its `cons(inc, nil())` twin returns 42, and recorded the hint as WITHHELD
+    // rather than missing, on exactly the unsoundness this ticket removed. It is still
+    // refused, now only because `Function[A = …, B = …]` names a SPEC and not an entity.
+    // `typer_capability_matrix_test`'s `LITERAL_GAP` cells are the two rows that would flip.
+    if arg_is_seq_literal(kb, arg) {
         return type_mentions_an_entity(kb, pt).then(|| pt.clone());
     }
     if arg_is_constructor_application(kb, arg) {
@@ -12743,10 +12797,41 @@ fn visit_type(
             // declared types live in the expected TUPLE, not in `field_types` (the
             // `TupleLiteral` entity declares none). See [`tuple_component_expected`].
             let self_is_tuple_lit = kb.qualified_name_of(name) == dt::qualified(dt::TUPLE_LITERAL);
+            // WI-20260826-7JDWY: when THIS build is a LIST or SET literal, every element's
+            // declared type is the expectation's `T` — the exact peer of the tuple case
+            // above, and needed for the same reason: the `ListLiteral` / `SetLiteral`
+            // entity declares no element fields, so `field_types` is empty and every
+            // existing hint reads it.
+            //
+            // THE CHECK ALONE IS NOT ENOUGH WITHOUT IT. [`seq_literal_element_type`] now
+            // judges each element against the declared element type, and a constructor
+            // element with no expectation of its own is classified at its PARENT sort
+            // (§8.2) — so `takeReds([red(v: 1)])` against `List[T = Colour.red]` was
+            // refused `expected red, got Colour`, a program the slot exists for. The hint
+            // pushed here is what makes the classification the check demands reachable.
+            //
+            // UNCONDITIONAL, matching what the `Expr::ListLit` build frame already does
+            // for the other carrier — the two spellings of one literal must not differ by
+            // which hints their elements get.
+            let seq_element_expected: Option<Value> = {
+                let qn = kb.qualified_name_of(name);
+                let is_seq =
+                    qn == dt::qualified(dt::LIST_LITERAL) || qn == dt::qualified(dt::SET_LITERAL);
+                if is_seq {
+                    declared_element_type(kb, expected.as_ref())
+                } else {
+                    None
+                }
+            };
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
                 .map(|(i, arg)| {
+                    // Ahead of the `field_types` read: a `ListLiteral` / `SetLiteral`
+                    // declares no element fields, so there is nothing there to consult.
+                    if let Some(h) = &seq_element_expected {
+                        return Some(h.clone());
+                    }
                     let field = field_types.as_ref().and_then(|fs| fs.get(i)).cloned();
                     if self_is_tuple_lit {
                         let label = crate::intern::positional_label(i);
@@ -12935,10 +13020,9 @@ fn visit_type(
         Expr::ListLit(elems) => {
             let elems = elems.clone();
             // WI-270: an outer `List[T = X]` makes X each element's
-            // expected, and the empty-list fallback.
-            let element_hint = expected
-                .as_ref()
-                .and_then(|exp| extract_type_param(kb, exp, "T"));
+            // expected, and the empty-list fallback. WI-20260826-7JDWY: read through
+            // [`declared_element_type`], which is head-gated — see there.
+            let element_hint = declared_element_type(kb, expected.as_ref());
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -12951,9 +13035,7 @@ fn visit_type(
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let element_hint = expected
-                .as_ref()
-                .and_then(|exp| extract_type_param(kb, exp, "T"));
+            let element_hint = declared_element_type(kb, expected.as_ref());
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -15081,52 +15163,18 @@ fn build_type(
             // WI-283: reassemble from the (possibly-rewritten) elements.
             let node = reassemble_group(&occ, &group);
             let (span, owner) = (occ.span, occ.owner);
-            let mut effects = Vec::new();
-            // WI-342: keep the element type carrier-agnostic so a `Value::Node`
-            // element (e.g. a list of effectful lambdas) is CARRIED, not re-grounded.
-            let mut element_type: Option<Value> = element_hint;
-            for r in group {
-                let r = r.expect("aggregator");
-                if element_type.is_none() {
-                    element_type = Some(r.ty.clone());
-                }
-                merge_effects_into(kb, &mut effects, &r.effects);
-            }
-            let t_val = element_type.unwrap_or_else(|| {
-                // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
-                // An EMPTY literal has no element to infer FROM, so the census that put
-                // `?T` in the "to be inferred, must commit" column had it in the wrong
-                // one: its type is genuinely unconstrained, which is part (c)'s question.
-                //
-                // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
-                // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
-                // that could tell the two apart. Both readings accept the same programs for
-                // OPPOSITE reasons — the inert form is compatible-with-anything, the
-                // variable is NON-GROUND so the check is withheld — and a shape mismatch is
-                // refused under both, because the head (`List` / `Set`) is concrete and
-                // `nominal_head_mismatch` decides on the head whatever the binding is:
-                //
-                //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
-                //     addI([], 1)  where addI declares Int64                   refused, both
-                //
-                // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
-                // drive), so it is not made. What DOES change here is part (c)'s job:
-                // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
-                // inert form is the closest thing to that ∀ the typer has.
-                // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `[…]` path reaches
-                // the CONSTRUCTOR checker below instead.
-                let fresh = kb.intern("?T");
-                Value::term(kb.make_type_var(fresh))
-            });
-            // WI-393: the QUALIFIED sort name. A bare `"List"` interns a symbol
-            // whose qualified name is `"List"`, which `canonical_sort_sym` (keyed
-            // on qualified name) never folds onto `anthill.prelude.List` — so a
-            // list LITERAL consumed as a Stream (`collect([1,2,3])`) failed the
-            // carrier provider lookup that a written `List[T]` param passes. The
-            // canonical sort makes the literal's carrier match the provider fact.
-            let list_base = kb.make_sort_ref_by_name("anthill.prelude.List");
-            let t_sym = kb.intern("T");
-            let list_type = parameterized_value(kb, list_base, &[(t_sym, t_val)], span, owner);
+            // WI-20260826-7JDWY: the element type, and the CHECK of the elements against a
+            // hint, are [`seq_literal_element_type`] — shared with the `SetLit` frame and
+            // with the constructor carrier a source `[…]` actually arrives on.
+            let (t_val, effects) =
+                match seq_literal_element_type(kb, SeqLiteral::List, element_hint, &group) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                };
+            let list_type = seq_literal_type(kb, SeqLiteral::List, t_val, span, owner);
             results.push(Ok(TypeResult {
                 ty: list_type,
                 env: unwrap_types(env),
@@ -15149,49 +15197,16 @@ fn build_type(
             // WI-283: reassemble from the (possibly-rewritten) elements.
             let node = reassemble_group(&occ, &group);
             let (span, owner) = (occ.span, occ.owner);
-            let mut effects = Vec::new();
-            // WI-342: carrier-agnostic element type (carry a `Value::Node` element).
-            let mut element_type: Option<Value> = element_hint;
-            for r in group {
-                let r = r.expect("aggregator");
-                if element_type.is_none() {
-                    element_type = Some(r.ty.clone());
-                }
-                merge_effects_into(kb, &mut effects, &r.effects);
-            }
-            let t_val = element_type.unwrap_or_else(|| {
-                // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
-                // An EMPTY literal has no element to infer FROM, so the census that put
-                // `?T` in the "to be inferred, must commit" column had it in the wrong
-                // one: its type is genuinely unconstrained, which is part (c)'s question.
-                //
-                // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
-                // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
-                // that could tell the two apart. Both readings accept the same programs for
-                // OPPOSITE reasons — the inert form is compatible-with-anything, the
-                // variable is NON-GROUND so the check is withheld — and a shape mismatch is
-                // refused under both, because the head (`List` / `Set`) is concrete and
-                // `nominal_head_mismatch` decides on the head whatever the binding is:
-                //
-                //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
-                //     addI([], 1)  where addI declares Int64                   refused, both
-                //
-                // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
-                // drive), so it is not made. What DOES change here is part (c)'s job:
-                // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
-                // inert form is the closest thing to that ∀ the typer has.
-                // MEASURED REACHABILITY: ZERO reaches across the whole binary — the desugared `{…}` path reaches
-                // the CONSTRUCTOR checker below instead.
-                let fresh = kb.intern("?T");
-                Value::term(kb.make_type_var(fresh))
-            });
-            // WI-393: QUALIFIED, like the `ListLit` frame and the `SetLiteral`
-            // constructor path — a bare `"Set"` never canonicalizes for the
-            // carrier provider lookup. Keeps the two set-literal forms agreeing on
-            // the carrier symbol.
-            let set_base = kb.make_sort_ref_by_name("anthill.prelude.Set");
-            let t_sym = kb.intern("T");
-            let set_type = parameterized_value(kb, set_base, &[(t_sym, t_val)], span, owner);
+            // WI-20260826-7JDWY: as the `ListLit` frame above — one owner for both surfaces.
+            let (t_val, effects) =
+                match seq_literal_element_type(kb, SeqLiteral::Set, element_hint, &group) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                };
+            let set_type = seq_literal_type(kb, SeqLiteral::Set, t_val, span, owner);
             results.push(Ok(TypeResult {
                 ty: set_type,
                 env: unwrap_types(env),
@@ -45374,63 +45389,272 @@ fn check_tuple_literal_constructor(
     })
 }
 
+/// WI-20260826-7JDWY — WHICH COLLECTION-LITERAL SURFACE is being typed.
+///
+/// The `T` of a `List` and the `T` of a `Set` are the same question, asked of two
+/// surfaces, so one owner answers both and only the prelude sort and the word in the
+/// diagnostic differ. It replaces a `base_name: &str` parameter that could be handed any
+/// string at all — the two call sites of [`check_seq_literal_constructor`] each passed a
+/// literal, and nothing tied that string to the literal surface the caller had matched on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SeqLiteral {
+    List,
+    Set,
+}
+
+impl SeqLiteral {
+    /// The prelude sort a literal of this surface is typed at.
+    fn base_name(self) -> &'static str {
+        match self {
+            SeqLiteral::List => "anthill.prelude.List",
+            SeqLiteral::Set => "anthill.prelude.Set",
+        }
+    }
+
+    /// The word the element diagnostic names the construct by
+    /// ([`TypeErrorContext::CollectionElement`]).
+    fn construct(self) -> &'static str {
+        match self {
+            SeqLiteral::List => "list",
+            SeqLiteral::Set => "set",
+        }
+    }
+}
+
+/// WI-20260826-7JDWY — THE ELEMENT TYPE A POSITION DECLARES FOR A `[…]` / `{…}`, or `None`
+/// where it declares none.
+///
+/// The `T` binding of an expectation whose HEAD is a collection — `anthill.prelude.List` or
+/// `anthill.prelude.Set`. The head test is a correction `/code-review` found: reading `T`
+/// off any expectation at all meant an unrelated type parameter was pushed down and then
+/// BLAMED ON AN ELEMENT. Measured, `operation mk() -> Option[T = List[T = Int64]] = [1]`
+/// reported `list.element 1 … expected List[T = Int64], got Int64` — an "expected" lifted
+/// off `Option`'s parameter, about a list that is not in the program. The VERDICT was right
+/// either way (the container mismatch is refused on both sides); the message named the
+/// wrong thing, and a diagnostic that blames an element must be reading that element's own
+/// declaration.
+///
+/// BOTH COLLECTIONS FOR BOTH SURFACES, not "the literal's own sort": §4.6 leaves a `[…]`
+/// written in a `Set[T = X]` position as it stands, for that type's own construction to
+/// consume, and `X` is its element type there exactly as in a `List[T = X]`.
+///
+/// A head that is anything else declares nothing about ELEMENTS, so the literal types from
+/// its elements and is checked as a whole where it is consumed — the reading it had before
+/// this ticket, and the one whose message names the container.
+///
+/// ONE OWNER BECAUSE TWO SITES MUST AGREE: [`visit_type`] pushes this down as each
+/// element's own `expected`, and [`seq_literal_element_type`] CHECKS each element against
+/// it. Computed differently, an element would be typed under an expectation it is not then
+/// judged by, or judged by one it never saw.
+fn declared_element_type(kb: &KnowledgeBase, expected: Option<&Value>) -> Option<Value> {
+    let exp = expected?;
+    let base = match type_head(kb, exp) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
+        _ => return None,
+    };
+    match kb.qualified_name_of(base) {
+        "anthill.prelude.List" | "anthill.prelude.Set" => extract_type_param(kb, exp, "T"),
+        _ => None,
+    }
+}
+
+/// WI-285 / WI-289 / WI-20260826-7JDWY — THE ELEMENT TYPE AND EFFECTS OF A COLLECTION
+/// LITERAL, and the ONE place that rule is stated.
+///
+/// **THREE CARRIERS, ONE RULE.** A `[…]` / `{…}` reaches the typer as an
+/// `Expr::ListLit` / `Expr::SetLit` occurrence ([`TypeBuildFrame::ListLit`] /
+/// [`TypeBuildFrame::SetLit`], WI-285) or as an un-lowered
+/// `constructor(ListLiteral | SetLiteral, …)` ([`check_seq_literal_constructor`],
+/// WI-289). The rule about what its elements type at is one rule, and it had been
+/// written out three times. WI-20260826-7JDWY is what that cost: the ticket named the
+/// build frames as the site to fix, and MEASURED REACHABILITY says they are nearly inert.
+/// Instrumented over the whole workspace suite, the two frames are entered **4** times,
+/// every one of them with NO declared element type to overwrite; the constructor carrier
+/// is entered **964** times, **605** of them with a declaration, covering **13693**
+/// elements. The defect the ticket describes is real at all three, but a repair made only
+/// where it was named would have compiled, reviewed clean, and changed nothing an author
+/// can write.
+///
+/// **THE HINT IS WHAT THE POSITION DECLARES, AND THE ELEMENTS ARE CHECKED AGAINST IT.**
+/// Before this ticket `element_hint` was taken as the element type unconditionally and
+/// the elements were walked only to merge effects, so a hint did not CHECK the literal,
+/// it OVERWROTE it: `operation mk() -> List[T = Int64] = ["x"]` loaded clean and
+/// `List.head(mk())` answered `Str("x")` from a slot the signature types `Int64`. The
+/// judgement here is [`validate_arg_against_param`] — the same relation an argument gets
+/// against a declared parameter — so the groundness gate and the boundary conversions are
+/// the ones already in force elsewhere and not a second opinion about what conforms.
+///
+/// **THE HINT IS STILL THE ELEMENT TYPE WHEN IT CONFORMS, WHICH IS NOT THE SAME AS
+/// "PREFER THE ELEMENTS".** `-> List[T = Colour] = [red(v: 1), blue(v: 2)]` must keep
+/// working: its elements type at two different constructors and only the declared
+/// `Colour` covers both, so a repair that took the elements' own types would have to
+/// invent a join. The declaration is the answer; the elements are the check.
+///
+/// **A `WrapSome` IS REPORTED, NOT INSERTED — AND THAT IS A DECISION, NOT AN OBSTACLE.**
+/// A bare `T` in a `List[T = Option[T]]` literal is the WI-408 coercion's shape, and every
+/// position that takes it rebuilds the argument occurrence around a synthesized `some(…)`.
+/// An earlier version of this note claimed this position STRUCTURALLY could not — that its
+/// node is returned unrebuilt — and `/code-review` showed that false: the `occ` handed to
+/// [`check_seq_literal_constructor`] is already a `reassemble_children` of its typed
+/// element results, and both build frames reassemble too, so a wrapped child would
+/// propagate exactly as it does at an argument.
+///
+/// What actually decides it is that inserting the wrap is a NEW capability with an EMPTY
+/// population — measured, zero elements in the workspace corpus reach this arm — while
+/// what it replaces is a program that LOADED and left the element bare at runtime.
+/// Reporting is the loud outcome and needs no census; inserting would need one, and a
+/// second decision about whether a collection element should coerce at all. The message is
+/// the pair (`expected Option[T = Int64], got Int64`), from which the remedy is the
+/// explicit `some(…)` — it does not spell that out, which is a diagnostic shortfall and
+/// the one thing here worth improving later.
+///
+/// The FIRST non-conforming element is reported, at ITS OWN span — a `TypeResult` carries
+/// one error, the same shape `collect_arg_errors` imposes on every other child group.
+fn seq_literal_element_type(
+    kb: &mut KnowledgeBase,
+    kind: SeqLiteral,
+    element_hint: Option<Value>,
+    elements: &[Result<TypeResult, TypeError>],
+) -> Result<(Value, Vec<Value>), TypeError> {
+    let mut effects: Vec<Value> = Vec::new();
+    // WI-342: keep the element type carrier-agnostic so a `Value::Node` element (e.g. a
+    // list of effectful lambdas) is CARRIED, not re-grounded.
+    let mut inferred: Option<Value> = None;
+    for (index, r) in elements.iter().enumerate() {
+        // The caller has already surfaced any `Err` child (`collect_arg_errors`).
+        let r = r.as_ref().expect("aggregator");
+        match &element_hint {
+            Some(hint) => {
+                let context = TypeErrorContext::CollectionElement {
+                    construct: kind.construct(),
+                    index,
+                };
+                // The ELEMENT's own span, not the literal's — with three elements the
+                // literal's span names the whole `[…]` and leaves the reader counting.
+                let span = Some(r.node.span.span);
+                let mut subst = Substitution::new();
+                match validate_arg_against_param(
+                    kb,
+                    &mut subst,
+                    &r.ty,
+                    hint,
+                    span,
+                    context.clone(),
+                    Some(&r.node),
+                ) {
+                    ArgValidation::Ok => {}
+                    ArgValidation::Fail(e) => return Err(e),
+                    // See the `WrapSome` paragraph above: reported, not inserted.
+                    ArgValidation::WrapSome { declared } => {
+                        return Err(TypeError::TypeMismatch {
+                            site: TypeError::here(),
+                            span,
+                            context,
+                            expected: declared,
+                            denoted: denoted_type_value(kb, Some(&r.node)),
+                            actual: r.ty.clone(),
+                        })
+                    }
+                }
+            }
+            // No declaration to check against: the first element's type IS the answer,
+            // which is the reading an argument-position literal has always had.
+            //
+            // THE TWO ARMS ENCODE TWO DIFFERENT RULES, and saying so is the point of them
+            // being side by side. The declared arm judges EVERY element; this one reads
+            // element ONE and never looks at the rest, so `takeInts([1, "a"])` against
+            // `List[T = Int64]` still LOADS CLEAN (measured on this tree) with a `String`
+            // in an `Int64` slot. That is WI-20260829-WBXGX, which is open and has its own
+            // census to run — closing it here would be settling another item's question on
+            // a population nobody has measured. What this ticket changes is that the
+            // asymmetry is now visible in one function instead of split across three.
+            None => {
+                if inferred.is_none() {
+                    inferred = Some(r.ty.clone());
+                }
+            }
+        }
+        merge_effects_into(kb, &mut effects, &r.effects);
+    }
+    let element = element_hint.or(inferred).unwrap_or_else(|| {
+        // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
+        // An EMPTY literal has no element to infer FROM, so the census that put `?T` in the
+        // "to be inferred, must commit" column had it in the wrong one: its type is
+        // genuinely unconstrained, which is part (c)'s question.
+        //
+        // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
+        // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape that
+        // could tell the two apart. Both readings accept the same programs for OPPOSITE
+        // reasons — the inert form is compatible-with-anything, the variable is NON-GROUND
+        // so the check is withheld — and a shape mismatch is refused under both, because
+        // the head (`List` / `Set`) is concrete and `nominal_head_mismatch` decides on the
+        // head whatever the binding is:
+        //
+        //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
+        //     addI([], 1)  where addI declares Int64                   refused, both
+        //
+        // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot drive), so
+        // it is not made. What DOES change here is part (c)'s job: generalizing `[]` to
+        // `∀T. List[T]` replaces this mint, and until then the inert form is the closest
+        // thing to that ∀ the typer has.
+        //
+        // MEASURED REACHABILITY, as WI-20260904-50B2K measured it PER CARRIER before the
+        // three were merged here: EIGHT reaches across the whole `wi_tests` binary, every
+        // one of them through the constructor carrier and none through either build frame.
+        let fresh = kb.intern("?T");
+        Value::term(kb.make_type_var(fresh))
+    });
+    Ok((element, effects))
+}
+
+/// WI-393 — the literal's own type, `List[T = elem]` / `Set[T = elem]`, at the QUALIFIED
+/// prelude sort.
+///
+/// A bare `"List"` / `"Set"` interns a symbol whose qualified name is itself, which
+/// `canonical_sort_sym` (keyed on qualified name) never folds onto the prelude sort — so a
+/// literal consumed as a `Stream` (`collect([1, 2, 3])`) failed the carrier provider
+/// lookup that a written `List[T]` parameter passes. One owner, so the three literal
+/// carriers cannot come to disagree about which symbol they are typed at — the value-level
+/// [`seq_literal_value_type`] included, which is the FOURTH and was open-coding these three
+/// calls until `/code-review` read the "one owner" claim beside it.
+fn seq_literal_type(
+    kb: &mut KnowledgeBase,
+    kind: SeqLiteral,
+    element: Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let base = kb.make_sort_ref_by_name(kind.base_name());
+    let t_sym = kb.intern("T");
+    parameterized_value(kb, base, &[(t_sym, element)], span, owner)
+}
+
 /// Type a `ListLiteral` / `SetLiteral` that reached the constructor checker
-/// (un-desugared `[...]` / `{...}`) as `base[T = elem]`. The element type is
-/// the expected `T` (checking direction) or the first element's type, else a
-/// fresh var. Mirrors the `Expr::ListLit` / `Expr::SetLit` build frames.
-/// (WI-289)
+/// (un-desugared `[...]` / `{...}`) as `base[T = elem]`. Mirrors the `Expr::ListLit` /
+/// `Expr::SetLit` build frames — [`seq_literal_element_type`] is the ONE owner all three
+/// share, and it is where the element type is decided and, where the position declares
+/// one, CHECKED (WI-20260826-7JDWY). (WI-289)
+///
+/// THIS IS THE CARRIER A SOURCE LITERAL ACTUALLY ARRIVES ON, which the census in
+/// [`seq_literal_element_type`] measures. The loader lowers `[…]` to a `cons`/`nil` spine
+/// only where a declaration names a `List` in a rule / fact data slot (§4.6, WI-1096), so
+/// an operation body's literal stays a `constructor(ListLiteral, …)` and reaches here —
+/// which is why fixing only the build frames the ticket named would have changed nothing
+/// an author can write.
 fn check_seq_literal_constructor(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     pos_results: &[Result<TypeResult, TypeError>],
     expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
-    base_name: &str,
+    kind: SeqLiteral,
 ) -> Result<TypeResult, TypeError> {
     // Defensive (the constructor checker already surfaced arg errors before
     // routing here): never `.expect` an `Err` element result.
     collect_arg_errors(pos_results.iter())?;
-    // WI-342: carrier-agnostic element type — a `Value::Node` element (an
-    // effectful lambda) is carried into the `List`/`Set` parameterization.
-    let mut element_type: Option<Value> = expected.and_then(|e| extract_type_param(kb, &e, "T"));
-    let mut effects: Vec<Value> = Vec::new();
-    for r in pos_results {
-        let r = r.as_ref().expect("aggregator");
-        if element_type.is_none() {
-            element_type = Some(r.ty.clone());
-        }
-        merge_effects_into(kb, &mut effects, &r.effects);
-    }
-    let t_val = element_type.unwrap_or_else(|| {
-        // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
-        // An EMPTY literal has no element to infer FROM, so the census that put
-        // `?T` in the "to be inferred, must commit" column had it in the wrong
-        // one: its type is genuinely unconstrained, which is part (c)'s question.
-        //
-        // The flip to `Term::Var(Var::Global(..))` was BUILT and run over the whole
-        // `wi_tests` binary: 4127/0, and byte-identical diagnostics on every shape
-        // that could tell the two apart. Both readings accept the same programs for
-        // OPPOSITE reasons — the inert form is compatible-with-anything, the
-        // variable is NON-GROUND so the check is withheld — and a shape mismatch is
-        // refused under both, because the head (`List` / `Set`) is concrete and
-        // `nominal_head_mismatch` decides on the head whatever the binding is:
-        //
-        //     let xs = []  … used as List[Int64] AND as List[String]   loads, both
-        //     addI([], 1)  where addI declares Int64           refused, both
-        //
-        // A CHANGE WITH NO WITNESS IS NOT A FIX (CLAUDE.md: a branch you cannot
-        // drive), so it is not made. What DOES change here is part (c)'s job:
-        // generalizing `[]` to `∀T. List[T]` replaces this mint, and until then the
-        // inert form is the closest thing to that ∀ the typer has.
-        // MEASURED REACHABILITY: EIGHT reaches across the whole binary. THE ONLY ONE OF THE THREE THAT
-        // FIRES, and the ticket's census named the other two and missed this one — a
-        // row list is not a population.
-        let fresh = kb.intern("?T");
-        Value::term(kb.make_type_var(fresh))
-    });
-    let base = kb.make_sort_ref_by_name(base_name);
-    let t_sym = kb.intern("T");
-    let seq_type = parameterized_value(kb, base, &[(t_sym, t_val)], occ.span, occ.owner);
+    let element_hint = declared_element_type(kb, expected.as_ref());
+    let (t_val, effects) = seq_literal_element_type(kb, kind, element_hint, pos_results)?;
+    let seq_type = seq_literal_type(kb, kind, t_val, occ.span, occ.owner);
     Ok(TypeResult {
         ty: seq_type,
         env: env.clone(),
@@ -46607,18 +46831,11 @@ fn check_constructor_iter(
             pos_results,
             expected,
             occ,
-            "anthill.prelude.List",
+            SeqLiteral::List,
         );
     }
     if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::SET_LITERAL) {
-        return check_seq_literal_constructor(
-            kb,
-            env,
-            pos_results,
-            expected,
-            occ,
-            "anthill.prelude.Set",
-        );
+        return check_seq_literal_constructor(kb, env, pos_results, expected, occ, SeqLiteral::Set);
     }
 
     // Free-standing entities (declared at namespace level, not nested in a
@@ -62594,19 +62811,18 @@ fn tuple_component_expected(
 /// or the tuple is judged by its own head (a `named_tuple`, never an entity) and takes no
 /// hint at all.
 ///
-/// LIST AND SET LITERALS ARE DELIBERATELY NOT HERE, and the reason is a MEASURED fail-open
-/// rather than a scope decision. A first cut included them, and `takeReds([blue(v: 1)])`
-/// against a `List[T = Colour.red]` slot LOADED CLEAN: [`TypeBuildFrame::ListLit`] takes
-/// `element_hint` as the element type UNCONDITIONALLY and never consults what the elements
-/// actually typed as, so a hint there does not check the literal — it OVERWRITES it. That
-/// hole is general and predates this ticket (`operation mk() -> List[T = Int64] = ["x"]`
-/// loads), which is exactly why a hint must not be pushed into it: an unhinted list literal
-/// types from its elements and IS checked, so pushing the hint would trade a correct
-/// refusal for a silent accept. Filed as its own work item; until it is closed, a list of
-/// variants stays refused at an argument, which is the status quo ante.
+/// LIST AND SET LITERALS HAVE THEIR OWN PREDICATE BESIDE THIS ONE
+/// ([`arg_is_seq_literal`]), and the split is worth keeping rather than merging: they are
+/// not tuples, and JSFHG had to EXCLUDE them for a reason that has since been repaired.
+/// A first cut of that ticket included them here and `takeReds([blue(v: 1)])` against a
+/// `List[T = Colour.red]` slot LOADED CLEAN, because a hinted literal took `element_hint`
+/// as its element type unconditionally and never consulted what the elements typed as —
+/// so the hint did not check the literal, it OVERWROTE it. WI-20260826-7JDWY closed that
+/// hole ([`seq_literal_element_type`]) and the arm is restored.
 ///
-/// The tuple path has no such hole — measured on the same shape,
-/// `takePair((a: blue(v: 1), b: 2))` is refused `expected (a: red, …), got (a: blue, …)`.
+/// The tuple path never had the hole — measured on the same shape,
+/// `takePair((a: blue(v: 1), b: 2))` was refused `expected (a: red, …), got (a: blue, …)`
+/// throughout.
 fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     matches!(
         &arg.kind,
@@ -62621,6 +62837,38 @@ fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
             ..
         }
     )
+}
+
+/// WI-20260826-7JDWY — is this argument a LIST or SET literal, whose ELEMENTS the checking
+/// direction reaches one level down?
+///
+/// BOTH CARRIERS, for the reason [`seq_literal_element_type`] records: a source `[…]` in an
+/// argument arrives as an `Expr::Constructor{ListLiteral}` (the un-lowered form — the
+/// loader only lowers to a `cons`/`nil` spine in a rule / fact data slot whose declaration
+/// names a `List`), while the `Expr::ListLit` shape comes from the term→occurrence build.
+/// A predicate that knew only one of them would push the hint on one spelling of the same
+/// program.
+///
+/// Asked BEFORE [`arg_is_constructor_application`], which answers `true` for the
+/// `ListLiteral` constructor form as well — exactly the ordering [`arg_is_tuple_literal`]
+/// needs and for the same reason. It would not be WRONG to fall through to it (a
+/// `List[T = …]` head names a sort, never an entity, so that arm declines), but the hint
+/// this position needs would then never be computed.
+fn arg_is_seq_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    match &arg.kind {
+        NodeKind::Expr {
+            expr: Expr::Constructor { name, .. },
+            ..
+        } => {
+            let qn = kb.qualified_name_of(*name);
+            qn == dt::qualified(dt::LIST_LITERAL) || qn == dt::qualified(dt::SET_LITERAL)
+        }
+        NodeKind::Expr {
+            expr: Expr::ListLit(_) | Expr::SetLit(_),
+            ..
+        } => true,
+        _ => false,
+    }
 }
 
 /// WI-578 — the shared build-finish tail of constructor typing. Given the field-
@@ -62776,10 +63024,10 @@ fn constructor_value_type(
         return tuple_value_type(kb, pos_child_types.to_vec(), named_child_types.to_vec());
     }
     if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::LIST_LITERAL) {
-        return seq_literal_value_type(kb, "anthill.prelude.List", pos_child_types);
+        return seq_literal_value_type(kb, SeqLiteral::List, pos_child_types);
     }
     if kb.qualified_name_of(ctor_sym) == dt::qualified(dt::SET_LITERAL) {
-        return seq_literal_value_type(kb, "anthill.prelude.Set", pos_child_types);
+        return seq_literal_value_type(kb, SeqLiteral::Set, pos_child_types);
     }
 
     // WI-946: the TOTAL belongs-to — the value-typer twin of the same collapse
@@ -62851,17 +63099,20 @@ fn tuple_value_type(
 /// element type (a denoted-poisoned element) losslessly.
 fn seq_literal_value_type(
     kb: &mut KnowledgeBase,
-    base_name: &str,
+    kind: SeqLiteral,
     pos_child_types: &[Value],
 ) -> Value {
     let t_val = pos_child_types
         .first()
         .cloned()
         .unwrap_or_else(|| fresh_type_var(kb));
-    let base = kb.make_sort_ref_by_name(base_name);
-    let t_sym = kb.intern("T");
+    // WI-20260826-7JDWY: through [`seq_literal_type`], the one owner of "which symbol is a
+    // literal typed at" — this site open-coded the same three calls behind the same
+    // `base_name: &str` the [`SeqLiteral`] enum was introduced to remove, so it was the
+    // fourth carrier the "one owner" claim had omitted (found by `/code-review`). A
+    // synthetic span, as before: a runtime value has no source position.
     let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
-    parameterized_value(kb, base, &[(t_sym, t_val)], span, None)
+    seq_literal_type(kb, kind, t_val, span, None)
 }
 
 /// WI-578 — the type-term of a value-level logic variable. Navigates its σ-binding

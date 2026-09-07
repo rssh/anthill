@@ -52,15 +52,16 @@
 //!
 //! ── TWO THINGS THIS TICKET FOUND AND REPORTS RATHER THAN REPAIRS ──
 //!
-//! (a) A COLLECTION LITERAL'S ELEMENTS ARE NOT CHECKED AGAINST THE DECLARED ELEMENT TYPE —
-//!     at all, for any element type, so the `literals` family's list and set halves have no
+//! (a) A COLLECTION LITERAL'S ELEMENTS WERE NOT CHECKED AGAINST THE DECLARED ELEMENT TYPE —
+//!     at all, for any element type, so the `literals` family's list and set halves had no
 //!     negative destination to drive. `operation f() -> List[T = String] = ["a", Cell]`
-//!     loads, and so does `["a", 1]`, which is the control that says this is a missing
-//!     collection-literal check and not a type value slipping through one. The repair is an
-//!     element-type check for list and set literals — its own capability, and one that has
-//!     to agree with §4.6's rival-collection lowering. Pinned in both directions by
-//!     [`a_collection_literal_element_type_is_unchecked_for_every_element_alike`], so the
-//!     day that check lands, this row fails and says so.
+//!     loaded, and so did `["a", 1]`, which was the control saying this was a missing
+//!     collection-literal check and not a type value slipping through one. Reported here
+//!     rather than repaired, and pinned in both directions so the report could not rot.
+//!     THE PIN DID ITS JOB: WI-20260826-7JDWY landed that check, this row failed naming its
+//!     own comment, and it is now
+//!     [`a_collection_literal_element_type_is_checked_for_every_element_alike`] — the
+//!     family has a negative destination, and it names what the element denotes.
 //!
 //! (b) THE INTERPRETER NEVER EVALUATES A `match` ARM GUARD, so the guard family's RUNTIME
 //!     half cannot be driven by anyone. `MatchDispatch` picks the first arm whose PATTERN
@@ -821,20 +822,22 @@ end
     );
 }
 
-/// THE ONE FAMILY WHOSE NEGATIVE DESTINATION DOES NOT EXIST — reported, not repaired, and
-/// pinned in both directions so the report cannot rot.
+/// THE FAMILY WHOSE NEGATIVE DESTINATION DID NOT EXIST, AND NOW DOES — this row was
+/// written as a REPORT, pinned in both directions so it could not rot, and it ended the way
+/// it said it would: WI-20260826-7JDWY landed the collection-literal element check and the
+/// two `unwrap_or_else` assertions failed, naming this comment.
 ///
-/// A LIST or SET literal's elements are not checked against the declared element type. The
-/// type-value row (`["a", Cell]` in a `List[T = String]`) loads, AND SO DOES `["a", 1]` —
-/// which is the control that decides what this is: not a type value escaping a check, but
-/// a check that is not there for any element type. The tuple row beside it is the contrast:
-/// a named tuple's components ARE checked, and a type value in one is refused, which is why
-/// the `literals` row of §3 is otherwise covered.
+/// WHAT IT NOW MEASURES is the `literals` row of §3 having a real negative destination on
+/// its list and set halves: a type value in a `String` element slot is refused AND NAMES
+/// WHAT IT DENOTES (`got Type (Cell)`), which is design §8's ask, at the element that
+/// carries it. The `["a", 1]` row stays, with its polarity flipped: it is still the control
+/// that says the check is about elements and not about type values, and it would now be
+/// green on a repair that refused only `Type`.
 ///
-/// When the collection-literal element check lands, the first two assertions here fail and
-/// name this comment; that is the intended way for this row to end.
+/// The tuple row beside them is unchanged and is still the contrast that made the gap
+/// visible: a named tuple's components were checked all along.
 #[test]
-fn a_collection_literal_element_type_is_unchecked_for_every_element_alike() {
+fn a_collection_literal_element_type_is_checked_for_every_element_alike() {
     let program = |ret: &str, body: &str, i: usize| {
         format!(
             r#"
@@ -846,20 +849,57 @@ end
 "#
         )
     };
-    // The GAP: a type value in a `String` element slot loads…
-    try_load_kb_with(&program("List[T = String]", r#"["a", Cell]"#, 0)).unwrap_or_else(|e| {
-        panic!(
-            "a collection literal's elements are NOT element-type checked today; if this \
-             now refuses, the gap this row reports has been closed — read the row's doc \
-             and turn it into a positive assertion. Errors: {e:?}"
-        )
-    });
-    // …and so does an `Int64` one, which is what says the missing check is not about types.
-    try_load_kb_with(&program("List[T = String]", r#"["a", 1]"#, 1)).unwrap_or_else(|e| {
-        panic!("the CONTROL: an Int64 in a String list is equally unchecked. Errors: {e:?}")
-    });
-    try_load_kb_with(&program("Set[T = String]", r#"{"a", Cell}"#, 2))
-        .unwrap_or_else(|e| panic!("the set half of the same gap. Errors: {e:?}"));
+    let refusal = |ret: &str, body: &str, i: usize, what: &str| -> Vec<String> {
+        match try_load_kb_with(&program(ret, body, i)) {
+            Err(errs) => errs,
+            Ok(_) => panic!("{what} must be refused"),
+        }
+    };
+    // THE NEGATIVE DESTINATION: a type value in a `String` element slot, named at the
+    // element that carries it and printed as what it DENOTES.
+    let type_value = refusal(
+        "List[T = String]",
+        r#"["a", Cell]"#,
+        0,
+        "a `Type` in a `List[T = String]` element",
+    );
+    assert!(
+        type_value.iter().any(|e| {
+            e.contains("list.element 2 (collection-element)")
+                && e.contains("expected String")
+                && e.contains("got Type (Cell)")
+        }),
+        "the element that carries the type value, and its denotation: {type_value:?}",
+    );
+    // THE CONTROL, polarity flipped: an `Int64` in the same slot is refused too, which is
+    // what says the check is about ELEMENTS and not about type values. A repair that
+    // refused only `Type` would leave this row green.
+    let ordinary = refusal(
+        "List[T = String]",
+        r#"["a", 1]"#,
+        1,
+        "an Int64 in a `List[T = String]`",
+    );
+    assert!(
+        ordinary
+            .iter()
+            .any(|e| e.contains("list.element 2 (collection-element)")
+                && e.contains("expected String, got Int64")),
+        "the CONTROL: an ordinary wrong element is refused the same way: {ordinary:?}",
+    );
+    let set_half = refusal(
+        "Set[T = String]",
+        r#"{"a", Cell}"#,
+        2,
+        "a `Type` in a `Set[T = String]` element",
+    );
+    assert!(
+        set_half
+            .iter()
+            .any(|e| e.contains("set.element 2 (collection-element)")
+                && e.contains("expected String")),
+        "the set half of the same check: {set_half:?}",
+    );
 
     // THE CONTRAST — a named tuple's components ARE checked, so the same type value is
     // refused there, and the message names the component that carries it.

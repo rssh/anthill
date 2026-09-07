@@ -35,14 +35,19 @@
 //! because each is governed by something outside this ticket.
 //!
 //!   * A LIST/SET LITERAL. `head_apply([inc], 41)` is refused where its desugared twin
-//!     `head_apply(cons(inc, nil()), 41)` returns 42. The hint is not simply missing here —
-//!     it is WITHHELD, and `arg_is_tuple_literal`'s doc says why with its own measurement:
-//!     `TypeBuildFrame::ListLit` takes `element_hint` as the element type UNCONDITIONALLY
-//!     and never consults what the elements typed as, so a hint pushed into a list literal
-//!     OVERWRITES rather than checks (`operation mk() -> List[T = Int64] = ["x"]` loads
-//!     clean today). Supplying one here would trade a correct refusal for a silent accept.
-//!     That hole is WI-20260826-7JDWY, still open; the literal spelling can be threaded the
-//!     moment it closes, and not before.
+//!     `head_apply(cons(inc, nil()), 41)` returns 42. The hint was not simply missing here —
+//!     it was WITHHELD, because a hinted literal took `element_hint` as its element type
+//!     UNCONDITIONALLY and never consulted what the elements typed as, so a hint pushed
+//!     into a list literal OVERWROTE rather than checked (`operation mk() -> List[T =
+//!     Int64] = ["x"]` loaded clean). Supplying one would have traded a correct refusal for
+//!     a silent accept.
+//!
+//!     THE HOLE IS CLOSED (WI-20260826-7JDWY) AND THIS ROUTE IS STILL REFUSED, which is the
+//!     part worth reading twice: that ticket restored the argument-slot hint only for a
+//!     slot whose element type MENTIONS AN ENTITY (WI-20260826-JSFHG's containment gate),
+//!     and `Function[A = Int64, B = Int64]` names a spec. So the blocker is gone and the
+//!     remaining reason is the gate's width — this item's own question, not that one's.
+//!     `typer_capability_matrix_test`'s `LITERAL_GAP` cells carry the same note.
 //!
 //!   * A CALLEE TYPE PARAMETER inside the arrow. With `take[X](o: Option[T = Function[A = X,
 //!     B = Int64]], w: X)`, the labels go unpinned and the callback spreads by SOURCE ORDER

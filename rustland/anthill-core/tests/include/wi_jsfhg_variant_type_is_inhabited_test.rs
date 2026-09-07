@@ -63,9 +63,9 @@
 //!   `control_an_unhinted_constructor_still_types_at_the_parent`,
 //!   `control_an_unannotated_binding_still_widens_to_the_parent`.
 //! * **KNOWN GAPS** — also pass either way, and that is their point: they measure what this
-//!   ticket does NOT close. `known_gap_a_list_literal_of_variants_is_refused_at_an_argument`
-//!   (whose own third assertion pins the fail-open that CAUSES it) and
-//!   `known_gap_the_auto_some_coercion_is_withheld_at_a_variant_typed_field`.
+//!   ticket does NOT close. `known_gap_the_auto_some_coercion_is_withheld_at_a_variant_-
+//!   typed_field` is the one that remains. A second, the list/set literal at an argument,
+//!   is CLOSED — see the note below.
 //!
 //! A THIRD POSITION WAS FOUND AFTER SHIPPING and is CLOSED rather than recorded as a gap:
 //! a variant reaching a constructor field through a TYPE PARAMETER (`Box[T = Colour.red]`
@@ -83,12 +83,20 @@
 //! own worked example; a named-tuple component; dot dispatch through a variant receiver) and
 //! one is not.
 //!
-//! THE ONE THAT IS NOT is the correction worth recording. A list literal in a variant-typed
-//! argument slot looked like the same fix, and the repair was built: it made
-//! `takeReds([blue(v: 1)])` — the WRONG variant — LOAD CLEAN, because `TypeBuildFrame::ListLit`
-//! takes `element_hint` as the element type UNCONDITIONALLY and never reads what the elements
-//! typed as. The review was right about the asymmetry and the direction that "works" is the
-//! broken one; the repair was REVERTED and the underlying hole filed as WI-20260826-7JDWY.
+//! THE ONE THAT IS NOT, AND HOW IT WAS SETTLED. A list literal in a variant-typed argument
+//! slot looked like the same fix, and the repair was built: it made `takeReds([blue(v: 1)])`
+//! — the WRONG variant — LOAD CLEAN, because a hinted literal took its element type from the
+//! hint UNCONDITIONALLY and never read what the elements typed as. The review was right about
+//! the asymmetry and the direction that "works" was the broken one; the repair was REVERTED
+//! and the underlying hole filed as WI-20260826-7JDWY.
+//!
+//! That hole is now closed — every element of a declared literal is checked — and the repair
+//! is RESTORED with it. The rows live in
+//! `wi_7jdwy_hinted_literal_elements_test`, which owns both halves of the pair
+//! (`takeReds([red(v: 1)])` drives, `takeReds([blue(v: 1)])` is refused naming `blue`), so
+//! this file does not carry a second copy of them. What it kept is the LESSON: the
+//! asymmetry a review finds is not always the defect, and the direction that loads can be
+//! the broken one.
 
 use crate::common::{interp_for, try_load_kb_with};
 
@@ -563,75 +571,6 @@ end
         drive(src, "test.jsfhg.fieldless.applied"),
         "Int(31)",
         "…and its applied twin, which must not differ by a pair of parentheses"
-    );
-}
-
-/// KNOWN GAP — A LIST LITERAL OF VARIANTS IS STILL REFUSED AT AN ARGUMENT, AND THE REASON
-/// IS A FAIL-OPEN ONE LEVEL DOWN. Passes either way BY DESIGN.
-///
-/// /code-review found the ASYMMETRY here and it is real: `-> List[T = Colour.red] =
-/// [red(v: 1)]` loads while `takeReds([red(v: 1)])` is refused. The obvious repair — push
-/// the slot type down as the literal's `expected`, exactly as the tuple row below does —
-/// WAS BUILT AND REVERTED, because it does not check the literal, it OVERWRITES it:
-/// [`TypeBuildFrame::ListLit`] takes `element_hint` as the element type unconditionally and
-/// never consults what the elements typed as. Measured with the hint in place,
-/// `takeReds([blue(v: 1)])` — the WRONG variant — LOADED CLEAN.
-///
-/// SO THE ASYMMETRY IS NOT THE DEFECT; the direction that "works" is the broken one. The
-/// hole is general and predates this ticket, which is what the last row here shows: an
-/// unhinted literal types from its elements and IS checked, while a hinted one is not, at
-/// ANY element type. Filed as its own work item; until it is closed, a list of variants
-/// stays refused at an argument rather than silently accepted.
-#[test]
-fn known_gap_a_list_literal_of_variants_is_refused_at_an_argument() {
-    let src = r#"
-namespace test.jsfhg.agg
-  import anthill.prelude.{Int64, List}
-  sort Colour
-    entity red(v: Int64)
-    entity blue(v: Int64)
-  end
-  operation takeReds(l: List[T = Colour.red]) -> Int64 = 17
-  operation viaArg() -> Int64 = takeReds([red(v: 1)])
-end
-"#;
-    let errs = errs_of(src);
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("expected List[T = red]") && e.contains("got List[T = Colour]")),
-        "THE RESIDUAL: no hint is pushed into a list literal, deliberately — pushing one \
-         would replace this refusal with a silent accept. If this row starts failing, check \
-         FIRST that the wrong-variant program below is still refused; got {errs:#?}"
-    );
-
-    // THE SEPARATOR, and the reason the row above is a deliberate refusal rather than an
-    // oversight: an UNHINTED list literal types from its elements and is checked.
-    let unhinted = r#"
-namespace test.jsfhg.agg2
-  import anthill.prelude.{Int64, String, List}
-  operation takeInts(l: List[T = Int64]) -> Int64 = 1
-  operation wrong() -> Int64 = takeInts(["x"])
-end
-"#;
-    assert!(
-        !errs_of(unhinted).is_empty(),
-        "an argument-position list literal takes no hint, so its elements decide its type \
-         and a wrong one is caught — this is what a hint would have switched off"
-    );
-
-    // …and the HINTED direction, which is the actual defect: a declared return DOES hint,
-    // and the elements are then never consulted at all. Nothing to do with variants.
-    let hinted_return = r#"
-namespace test.jsfhg.agg3
-  import anthill.prelude.{Int64, String, List}
-  operation mk() -> List[T = Int64] = ["x"]
-end
-"#;
-    assert!(
-        errs_of(hinted_return).is_empty(),
-        "PINNING THE REAL DEFECT so closing it is loud here: a hinted list literal ignores \
-         its elements, so a `List[T = Int64]` of strings loads. When this row starts \
-         failing, the hole is closed and the argument-position hint can be restored"
     );
 }
 

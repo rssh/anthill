@@ -89,9 +89,12 @@
 //! goes first because three delivered items live in that row — WI-20260828-2TMB5, -5NSZY,
 //! -8Q0Q5 — each having found ONE route by hand, none able to say what the others did.
 //! `a_bare_operation_name_across_its_routes` is those three plus the routes nobody had
-//! asked about, and `a_literal_is_checked_on_one_route_and_overwritten_on_the_other` is the other side of its
-//! two red cells: the hint they need cannot be supplied while the literal OVERWRITES its
-//! elements instead of checking them (WI-20260826-7JDWY).
+//! asked about, and `a_literal_is_checked_on_every_route_that_declares_an_element_type` is
+//! the other side of its two red cells: the hint they need could not be supplied while a
+//! literal OVERWROTE its elements instead of checking them. WI-20260826-7JDWY closed that,
+//! and the two cells are still red for a narrower reason recorded at `LITERAL_GAP` — which
+//! is the table earning its keep, since a reader would otherwise take the closed ticket
+//! for a closed cell.
 //!
 //! WHAT SLICE 2 TURNED UP that no ticket had: a lambda cannot appear inside a list
 //! literal AT ALL (it does not parse, with or without parentheses — so "write a lambda
@@ -1233,14 +1236,21 @@ fn run_routes(cells: Vec<(String, String, Verdict)>) {
 #[test]
 fn a_bare_operation_name_across_its_routes() {
     // The list/set-literal routes. WI-20260828-5NSZY declined to supply the hint here and
-    // said why: `TypeBuildFrame::ListLit` takes `element_hint` as the element type
-    // UNCONDITIONALLY, so a hint would OVERWRITE the elements rather than check them —
-    // trading a correct refusal for a silent accept. The hole that makes it unsafe is
-    // WI-20260826-7JDWY, pinned by `a_literal_is_checked_on_one_route_and_overwritten_on_the_other`;
-    // these two cells and those are the same defect seen from both sides, which is the
-    // kind of thing a matrix shows and two separate WI files do not.
+    // said why: a hinted literal took `element_hint` as the element type UNCONDITIONALLY,
+    // so a hint would OVERWRITE the elements rather than check them — trading a correct
+    // refusal for a silent accept.
+    //
+    // THAT REASON IS GONE AND THESE CELLS ARE STILL GAPS, which is worth stating because
+    // "the blocker was closed" is not "the cell is fixed". WI-20260826-7JDWY made the
+    // declared element type a CHECK, and restored the argument-slot hint with it — but
+    // confined to a slot whose element type MENTIONS AN ENTITY (`variant_slot_arg_hint`,
+    // WI-20260826-JSFHG's containment argument, whose population on existing code is
+    // empty by construction). `Function[A = Int64, B = Int64]` names a spec, not an
+    // entity, so no hint reaches these two and the bare name still has no arrow to lift
+    // against. Widening that gate is what would close them, and it is 5NSZY's ticket
+    // rather than 7JDWY's: the safety argument it was blocked on now holds.
     const LITERAL_GAP: Verdict = Verdict::KnownGap {
-        wi: "WI-20260826-7JDWY",
+        wi: "WI-20260828-5NSZY",
         expect: "supplies no function type to lift it against",
     };
     run_routes(vec![
@@ -1290,46 +1300,51 @@ fn a_bare_operation_name_across_its_routes() {
     ]);
 }
 
-/// A LITERAL IS CHECKED ON THE ARGUMENT ROUTE AND OVERWRITTEN ON THE RETURN-HINT ROUTE —
-/// which is narrower and more useful than "a hinted literal never checks its elements",
-/// the claim this table carried first (corrected by /code-review, which measured the
-/// argument route I had never run).
+/// A LITERAL IS CHECKED ON BOTH ROUTES, AND THE TWO SAY IT DIFFERENTLY — which is what
+/// the table was built to measure, back when only one of them checked at all.
 ///
-/// `TypeBuildFrame::ListLit` takes `element_hint` as the element type UNCONDITIONALLY and
-/// walks the elements only to merge effects, so where a hint arrives it OVERWRITES the
-/// literal instead of checking it (WI-20260826-7JDWY). But the hint only arrives on some
-/// routes: an operation's declared RETURN pushes one down, and an operation's declared
-/// PARAMETER does not — so an argument-position literal is inferred bottom-up and its
-/// elements are checked normally. The two halves are the point of the table:
+/// IT USED TO BE A HOLE, and the shape of the hole is worth keeping. A hinted literal took
+/// `element_hint` as its element type UNCONDITIONALLY and walked the elements only to merge
+/// effects, so where a hint arrived it OVERWROTE the literal instead of checking it
+/// (WI-20260826-7JDWY). The hint arrives on some routes and not others — an operation's
+/// declared RETURN pushes one down, its declared PARAMETER does not — so the same literal
+/// with the same wrong element had OPPOSITE verdicts by route:
 ///
-///   operation c() -> List[T = Int64] = ["x"]   LOADS      ⇐ hint overwrites
+///   operation c() -> List[T = Int64] = ["x"]   LOADED     ⇐ hint overwrote
 ///   takes_list(["x"])                          REFUSED, `got List[T = String]`
 ///
-/// Same literal, same wrong element, opposite verdicts by ROUTE. Without the second row
-/// the first reads as "literals are unchecked", which would send whoever fixes 7JDWY
-/// looking in the wrong place.
+/// 7JDWY closed the first. The rows stay, and their contrast is now about the DIAGNOSTIC
+/// rather than about the verdict: the declared route names the offending ELEMENT
+/// (`list.element 1 … expected Int64, got String`) while the argument route, which infers
+/// the literal bottom-up and checks it where it is consumed, names the whole list
+/// (`got List[T = String]`). Both are right about their own question, and a reader meeting
+/// one message needs to know the other exists.
 #[test]
-fn a_literal_is_checked_on_one_route_and_overwritten_on_the_other() {
-    const HOLE: Verdict = Verdict::SilentlyAccepted {
-        wi: "WI-20260826-7JDWY",
-        should_say: "type mismatch: expected Int64, got String",
-    };
+fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
     run_routes(vec![
-        // ── the RETURN-HINT route: the hint overwrites, so nothing is checked ──
+        // ── the DECLARED route: the declaration is checked, element by element ──
         (
             "return hint / list literal, ONE wrong element".into(),
             "  operation c() -> List[T = Int64] = [\"x\"]".into(),
-            HOLE,
+            Verdict::RefusesLocated(
+                "list.element 1 (collection-element): expected Int64, got String",
+            ),
         ),
         (
+            // The FIRST offending element is reported, not all of them: a `TypeResult`
+            // carries one error, the shape every other child group has.
             "return hint / list literal, TWO wrong elements".into(),
             "  operation c() -> List[T = Int64] = [\"x\", \"y\"]".into(),
-            HOLE,
+            Verdict::RefusesLocated(
+                "list.element 1 (collection-element): expected Int64, got String",
+            ),
         ),
         (
             "return hint / set literal, TWO wrong elements (7JDWY's Set twin)".into(),
             "  operation c() -> Set[T = Int64] = {\"x\", \"y\"}".into(),
-            HOLE,
+            Verdict::RefusesLocated(
+                "set.element 1 (collection-element): expected Int64, got String",
+            ),
         ),
         (
             // NOT a set-literal row, and the confusion is worth recording where someone
@@ -1381,8 +1396,8 @@ fn a_literal_is_checked_on_one_route_and_overwritten_on_the_other() {
 /// type is CHECKED.
 ///
 /// IT SETTLES THE REPAIR THE TABLE ABOVE COULD NOT OFFER. Routes 6 and 7 record that a
-/// bare operation name in a list/set literal is refused (`LITERAL_GAP`, WI-20260826-7JDWY
-/// through WI-20260828-5NSZY), and the natural advice — "write a lambda instead" — was
+/// bare operation name in a list/set literal is refused (`LITERAL_GAP`, WI-20260828-5NSZY),
+/// and the natural advice — "write a lambda instead" — was
 /// unavailable because that spelling was a syntax error. It is available now, and these
 /// rows are what makes the advice checkable rather than plausible.
 ///
@@ -1394,9 +1409,9 @@ fn a_literal_is_checked_on_one_route_and_overwritten_on_the_other() {
 ///
 /// THE NEGATIVE ROW IS WHAT MAKES THE REST A MEASUREMENT: `takes_list([lambda x -> 7])`
 /// refuses, located, naming the arrow it found. Without it, "loads" would be consistent
-/// with the literal's elements never being looked at — which is exactly what
-/// WI-20260826-7JDWY does on the RETURN-HINT route (`a_literal_is_checked_on_one_route_
-/// and_overwritten_on_the_other`).
+/// with the literal's elements never being looked at — which is exactly what the
+/// RETURN-HINT route used to do before WI-20260826-7JDWY
+/// (`a_literal_is_checked_on_every_route_that_declares_an_element_type`).
 #[test]
 fn a_lambda_inside_a_list_literal() {
     run_routes(vec![
@@ -2101,7 +2116,7 @@ fn the_grid_census_is_honest() {
         // provides only `PartialEq` / `Eq`. Sweeping the LIST alone while the census
         // called the position covered is what /code-review caught.
         ("list/set literal", &[
-            "a_literal_is_checked_on_one_route_and_overwritten_on_the_other",
+            "a_literal_is_checked_on_every_route_that_declares_an_element_type",
             "the_row_remainders",
             "every_position_through_a_provision_chain",
         ]),
@@ -2295,12 +2310,14 @@ end
 /// live refusal — found by /code-review, and the reason each literal route below carries a
 /// `[…]` row and a `{…}` row.
 ///
-/// AND WHAT THE LITERAL ROUTES DO NOT CHECK IS RECORDED, not left to a reader. Three
-/// `SilentlyAccepted` rows name the holes — 7JDWY on the annotated-let route, and
-/// WI-20260829-WBXGX, found here, on the ARGUMENT route that 7JDWY's own table uses as its
-/// control: a literal's element type is its FIRST element's, so `takes_list([1, "a"])`
-/// loads while `takes_list(["a", 1])` refuses. The reversed-order row is the control that
-/// makes that a measurement rather than "literals are unchecked".
+/// AND WHAT THE LITERAL ROUTES DO NOT CHECK IS RECORDED, not left to a reader. Two
+/// `SilentlyAccepted` rows name what is left — WI-20260829-WBXGX, found here, on the
+/// ARGUMENT route that 7JDWY's own table uses as its control: a literal's element type is
+/// its FIRST element's, so `takes_list([1, "a"])` loads while `takes_list(["a", 1])`
+/// refuses. The reversed-order row is the control that makes that a measurement rather
+/// than "literals are unchecked". A third row named 7JDWY on the annotated-let route and
+/// is now a positive: a DECLARED element type is checked element by element, on that
+/// route and on every other.
 ///
 /// TWO REFUSALS HERE ARE CORRECT BY KIND, not gaps, and they are worth a cell precisely
 /// because a reader scanning for red would otherwise have to re-derive that: a lambda and
@@ -2462,17 +2479,17 @@ end
         // those cells "cannot refuse"; these three say exactly what each route lets past,
         // so the coverage claim is bounded rather than overstated.
         (
-            // The ANNOTATED-LET route: the annotation OVERWRITES the elements instead of
-            // checking them, so the row above would be green with the annotation ignored.
-            // Same defect as the return-hint rows in
-            // `a_literal_is_checked_on_one_route_and_overwritten_on_the_other`.
-            "SILENT — an annotated let does not check its literal's elements".into(),
+            // The ANNOTATED-LET route: the annotation is a DECLARATION, so it is checked
+            // element by element like a declared return. It used to OVERWRITE them, which
+            // is what made the row above green with the annotation ignored; closed by
+            // WI-20260826-7JDWY, whose own rows live in
+            // `wi_7jdwy_hinted_literal_elements_test`.
+            "an annotated let CHECKS its literal's elements".into(),
             "  operation c() -> Int64 =\n    let xs: List[T = Int64] = [\"a\", \"b\"]\n    1"
                 .into(),
-            Verdict::SilentlyAccepted {
-                wi: "WI-20260826-7JDWY",
-                should_say: "type mismatch: expected Int64, got String",
-            },
+            Verdict::RefusesLocated(
+                "list.element 1 (collection-element): expected Int64, got String",
+            ),
         ),
         (
             // The TYPE-PARAMETER route accepts anything BY CONSTRUCTION — `take_any[A](x: A)`
