@@ -1614,19 +1614,35 @@ end
         );
     }
 
-    /// INVARIANT: `Box` has no variance fact, so its `T` is invariant. The two
-    /// binding values differ, so there is no parameterized LUB — the join falls back
-    /// to the conservative common supertype, the bare base sort `Box`.
+    /// INVARIANT: `Box` has no variance fact, so its `T` is invariant. The two binding
+    /// values differ, so there is no parameterized LUB — and, since WI-20260829-WBXGX,
+    /// **no join at all**.
+    ///
+    /// THIS ROW OVERTURNS WI-464'S RECORDED DECISION, which was that the bare base sort is
+    /// "the conservative common supertype" and a safe fallback. It is an upper bound and it
+    /// is not a usable one: [`types_compatible`] treats bare-vs-parameterized as compatible
+    /// in BOTH directions, so bare `Box` is also BELOW `Box[T = cat]`, and a "least upper
+    /// bound" that is simultaneously a lower bound launders the binding it dropped.
+    ///
+    /// MEASURED, which is why it was overturned rather than argued: with the fallback in
+    /// place, `takeOpts([some(1), some("x")])` against `List[T = Option[T = Int64]]` loaded,
+    /// putting a `String` where the signature says `Int64` — and so did the same shape
+    /// through an `if`, since `compute_branch_join_type` calls this same function. Nothing
+    /// else in the workspace depended on the fallback: the change turned exactly this test
+    /// and its two `wi769` siblings red and no integration test at all.
+    ///
+    /// WHAT A CALLER DOES WITH THE `None` is the caller's question, and the two real ones
+    /// answer it differently: a branch join with a declared destination still returns that
+    /// destination (every branch conformed), and only an UNBOUNDED join reports the clash.
     #[test]
-    fn invariant_join_falls_back_to_bare_base() {
+    fn invariant_join_has_no_lub_rather_than_widening_to_the_bare_base() {
         let mut kb = load_kb();
-        let box_sym = sym(&kb, "test.wi464.Box");
         let a = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.cat")]);
         let b = param(&mut kb, "test.wi464.Box", &[("T", "test.wi464.Animal.dog")]);
-        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
         assert!(
-            is_sort(&kb, &j, box_sym),
-            "an unequal invariant binding widens to bare Box, got {j:?}"
+            join_types(&mut kb, a, b).is_none(),
+            "an unequal INVARIANT binding has no join; the bare base is not one, because \
+             it is also below both sides"
         );
     }
 
@@ -1845,7 +1861,11 @@ end
     /// duplicate-slot producer defect class WI-764 recorded) resolves BOTH its entries
     /// to b's single `A` slot and never consults b's `B` — a constructed result would
     /// be a duplicate-keyed type that silently drops `B`, not even a bound of `b`. The
-    /// combine must bow out to the conservative whole-type bound (the bare base sort).
+    /// combine must bow out — and since WI-20260829-WBXGX that means NO JOIN, not the bare
+    /// base sort: see [`invariant_join_has_no_lub_rather_than_widening_to_the_bare_base`]
+    /// for why the "conservative bound" was neither conservative nor a bound. The claim this
+    /// row carries is unchanged and is the important one — the combine must not MINT a
+    /// duplicate-keyed type that silently drops `B`.
     /// (The duplicate is built value-equal deliberately: `extract_type` reads named
     /// args BY KEY, so a duplicate-keyed term always PRESENTS as its first value
     /// repeated — a values-differing duplicate cannot reach the lattice as such. And
@@ -1872,20 +1892,19 @@ end
                 ("B", "anthill.prelude.Int64"),
             ],
         );
-        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
         assert!(
-            is_sort(&kb, &j, function),
-            "a duplicate-keyed side must fall back to the bare base sort, not mint a \
-             duplicate-keyed type that drops B, got {j:?}",
+            join_types(&mut kb, a, b).is_none(),
+            "a duplicate-keyed side must bow out, not mint a duplicate-keyed type that \
+             drops B"
         );
     }
 
     /// WI-769 (review sweep) — BOTH sides carrying both spellings of one slot: each
     /// a-key identity-hits its own b slot (the used-guard can't see it), and both
-    /// re-key to the same declared symbol. The re-key COLLISION check must bow out
-    /// to the conservative bound rather than mint `Option[Option.T = .., Option.T
-    /// = ..]` — a duplicate-keyed type whose by-key reads silently drop the second
-    /// value.
+    /// re-key to the same declared symbol. The re-key COLLISION check must bow out rather
+    /// than mint `Option[Option.T = .., Option.T = ..]` — a duplicate-keyed type whose
+    /// by-key reads silently drop the second value. Bowing out is NO JOIN since
+    /// WI-20260829-WBXGX (it was the bare base sort); the mint-nothing claim is unchanged.
     #[test]
     fn wi769_symmetric_mixed_spelling_duplicates_fall_back() {
         let mut kb = load_kb();
@@ -1908,11 +1927,10 @@ end
                 (bare_t, "anthill.prelude.Int64"),
             ],
         );
-        let j = join_types(&mut kb, a, b).expect("the bare base sort is a common supertype");
         assert!(
-            is_sort(&kb, &j, option),
-            "symmetric mixed-spelling duplicates must fall back to the bare base \
-             sort, not mint a duplicate-keyed result, got {j:?}",
+            join_types(&mut kb, a, b).is_none(),
+            "symmetric mixed-spelling duplicates must bow out, not mint a duplicate-keyed \
+             result"
         );
     }
 

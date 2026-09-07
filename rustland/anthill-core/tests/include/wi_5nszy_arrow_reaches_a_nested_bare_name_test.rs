@@ -34,20 +34,22 @@
 //! TWO ROUTES THIS DOES NOT REACH, found by review and recorded rather than papered over,
 //! because each is governed by something outside this ticket.
 //!
-//!   * A LIST/SET LITERAL. `head_apply([inc], 41)` is refused where its desugared twin
-//!     `head_apply(cons(inc, nil()), 41)` returns 42. The hint was not simply missing here —
-//!     it was WITHHELD, because a hinted literal took `element_hint` as its element type
-//!     UNCONDITIONALLY and never consulted what the elements typed as, so a hint pushed
-//!     into a list literal OVERWROTE rather than checked (`operation mk() -> List[T =
-//!     Int64] = ["x"]` loaded clean). Supplying one would have traded a correct refusal for
-//!     a silent accept.
+//!   * A LIST/SET LITERAL — **DEFERRED THEN DELIVERED**, and the sequence is the point.
+//!     `head_apply([inc], 41)` was refused where its desugared twin
+//!     `head_apply(cons(inc, nil()), 41)` returned 42. The hint was not missing, it was
+//!     WITHHELD: a hinted literal took `element_hint` as its element type UNCONDITIONALLY
+//!     and never consulted what the elements typed as, so a hint pushed into a literal
+//!     OVERWROTE rather than checked (`operation mk() -> List[T = Int64] = ["x"]` loaded
+//!     clean). Supplying one then would have traded a correct refusal for a silent accept.
 //!
-//!     THE HOLE IS CLOSED (WI-20260826-7JDWY) AND THIS ROUTE IS STILL REFUSED, which is the
-//!     part worth reading twice: that ticket restored the argument-slot hint only for a
-//!     slot whose element type MENTIONS AN ENTITY (WI-20260826-JSFHG's containment gate),
-//!     and `Function[A = Int64, B = Int64]` names a spec. So the blocker is gone and the
-//!     remaining reason is the gate's width — this item's own question, not that one's.
-//!     `typer_capability_matrix_test`'s `LITERAL_GAP` cells carry the same note.
+//!     WI-20260826-7JDWY removed that, and the route STAYED refused for a narrower reason
+//!     worth having found: 7JDWY restored the argument-slot hint only where the element
+//!     type MENTIONS AN ENTITY (WI-20260826-JSFHG's containment gate), and
+//!     `Function[A = Int64, B = Int64]` names a spec. Widening that gate to admit a
+//!     CALLABLE element ([`typing::seq_slot_arg_hint`], which the same change split out of
+//!     the variant hint) is what closed it. `a_literal_spelling_reaches_the_nested_name`
+//!     below is the driven row, and `typer_capability_matrix_test`'s routes 6 and 7 are
+//!     the cells that were red for two different reasons in turn.
 //!
 //!   * A CALLEE TYPE PARAMETER inside the arrow. With `take[X](o: Option[T = Function[A = X,
 //!     B = Int64]], w: X)`, the labels go unpinned and the callback spreads by SOURCE ORDER
@@ -80,6 +82,73 @@ fn eval_int(src: &str, op: &str) -> i64 {
         anthill_core::eval::Value::Int(i) => i,
         other => panic!("call {op}: expected Int, got {other:?}"),
     }
+}
+
+/// THE LITERAL SPELLING, DRIVEN — the route this ticket deferred and a later pass closed.
+///
+/// `head_apply([inc], 41)` and its desugared twin `head_apply(cons(inc, nil()), 41)` must
+/// BOTH return 42: one program, one answer, whichever way the list is written. While the
+/// hint was withheld the two disagreed by SPELLING alone, which is the shape of defect the
+/// capability matrix exists to surface.
+///
+/// DRIVEN, not load-asserted, for the reason the headline row gives: a clean load would be
+/// satisfied by a fix that typed `inc` as the arrow and minted something eval cannot apply.
+/// The `cons` half is the control — it returned 42 throughout, so a failure here names the
+/// literal and not the arrow.
+///
+/// BACKED OUT (drop the `type_head_is_callable` arm of `seq_slot_arg_hint`): the literal
+/// half FAILS AT LOAD with `inc.function-value (op-as-fn-value)`, the `cons` half passes.
+/// MEASURED over the whole `wi_tests` binary — **3 fail, 4248 pass**: this row, the set row
+/// below, and `typer_capability_matrix_test::a_bare_operation_name_across_its_routes`
+/// (whose routes 6 and 7 are these two cells). Dropping the OTHER arm
+/// (`type_mentions_an_entity`, WI-20260826-JSFHG's) instead fails a DISJOINT 3 — all of
+/// them WI-20260826-7JDWY's variant rows and none of these — and dropping the hint entirely
+/// fails their union, 6. Two gates, not one gate widened twice.
+#[test]
+fn a_literal_spelling_reaches_the_nested_name() {
+    let src = r#"
+namespace wi5nszy.literal
+  import anthill.prelude.{Int64, List, Function}
+  import anthill.prelude.List.{cons, nil}
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation head_apply(fs: List[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 =
+    match fs
+      case nil() -> 0
+      case cons(f, t) -> f(v)
+  operation lit() -> Int64 = head_apply([inc], 41)
+  operation twin() -> Int64 = head_apply(cons(inc, nil()), 41)
+end
+"#;
+    assert_eq!(
+        eval_int(src, "wi5nszy.literal.lit"),
+        42,
+        "the arrow on the parameter must reach a bare name inside a LIST LITERAL",
+    );
+    assert_eq!(
+        eval_int(src, "wi5nszy.literal.twin"),
+        42,
+        "CONTROL — the desugared spelling, which returned 42 throughout",
+    );
+}
+
+/// THE SET SURFACE of the same route. A set literal's elements are `_term`s, so this is the
+/// other half of the capability matrix's routes 6 and 7 and not a restatement of the row
+/// above. Load-asserted rather than driven: `Set` has no `cons`-shaped destructuring to
+/// apply the head through, so what this shape can honestly witness is that the arrow
+/// ARRIVES — the row above drives the value.
+///
+/// BACKED OUT: `inc.function-value (op-as-fn-value)`.
+#[test]
+fn the_set_literal_spelling_reaches_it_too() {
+    let src = r#"
+namespace wi5nszy.setlit
+  import anthill.prelude.{Int64, Set, Function}
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation set_apply(fs: Set[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 = v
+  operation lit() -> Int64 = set_apply({inc}, 41)
+end
+"#;
+    assert_eq!(eval_int(src, "wi5nszy.setlit.lit"), 41);
 }
 
 /// THE HEADLINE, DRIVEN. The ticket's own program: the arrow is pinned on `apply_it`'s

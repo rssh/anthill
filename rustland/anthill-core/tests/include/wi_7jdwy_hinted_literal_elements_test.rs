@@ -58,9 +58,14 @@
 //!    own), `a_variant_element_reaches_an_argument_slot`,
 //!    `the_declaration_reaches_a_literal_nested_in_a_literal`, and
 //!    `the_wrong_variant_in_an_argument_…`.
-//! 3. **The argument-slot HINT** — drop the `arg_is_seq_literal` arm from
-//!    `variant_slot_arg_hint`. **3 fail, 4246 pass**: the two argument rows and
-//!    `the_restored_argument_hint_…`.
+//! 3. **The argument-slot HINT** — this ticket's arm of it. The hint moved out of
+//!    `variant_slot_arg_hint` into `seq_slot_arg_hint` when WI-20260828-5NSZY's residual
+//!    added a second gate beside this one, so there are now two back-outs and they
+//!    SEPARATE: dropping the whole hint from `one_arg_hint`'s chain fails **6, 4245 pass**
+//!    (both tickets' rows), while dropping only the `type_mentions_an_entity` arm fails
+//!    **3, 4248 pass** — this ticket's three, and none of 5NSZY's. The two arms' fail sets
+//!    are disjoint and their union is the whole-hint set, which is what says they are two
+//!    gates rather than one gate widened twice.
 //! 4. **The HEAD test** in `declared_element_type`, which is TWO nested claims and so two
 //!    back-outs. (a) Read `T` off ANY expectation, as the first cut did: **2 fail, 4247
 //!    pass** — `a_declaration_that_is_not_a_collection_declares_no_element_type` and

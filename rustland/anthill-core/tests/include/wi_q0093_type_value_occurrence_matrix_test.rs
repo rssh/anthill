@@ -830,9 +830,11 @@ end
 /// WHAT IT NOW MEASURES is the `literals` row of §3 having a real negative destination on
 /// its list and set halves: a type value in a `String` element slot is refused AND NAMES
 /// WHAT IT DENOTES (`got Type (Cell)`), which is design §8's ask, at the element that
-/// carries it. The `["a", 1]` row stays, with its polarity flipped: it is still the control
-/// that says the check is about elements and not about type values, and it would now be
-/// green on a repair that refused only `Type`.
+/// carries it. The `["a", 1]` row stays, with its polarity flipped, and so does its JOB:
+/// it says the check is about ELEMENTS and not about type values, because a repair that
+/// refused only `Type` would leave it RED. (While the rows asserted a load, the same
+/// separation ran the other way — green under a `Type`-only repair. `/code-review` caught
+/// the sentence still describing the pre-flip row.)
 ///
 /// The tuple row beside them is unchanged and is still the contrast that made the gap
 /// visible: a named tuple's components were checked all along.
@@ -872,8 +874,8 @@ end
         "the element that carries the type value, and its denotation: {type_value:?}",
     );
     // THE CONTROL, polarity flipped: an `Int64` in the same slot is refused too, which is
-    // what says the check is about ELEMENTS and not about type values. A repair that
-    // refused only `Type` would leave this row green.
+    // what says the check is about ELEMENTS and not about type values — a repair that
+    // refused only `Type` would leave this row RED.
     let ordinary = refusal(
         "List[T = String]",
         r#"["a", 1]"#,

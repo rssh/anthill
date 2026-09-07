@@ -10434,7 +10434,8 @@ fn one_arg_hint(
     let base = hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()));
+        .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
+        .or_else(|| seq_slot_arg_hint(kb, arg, pt.as_ref()));
     if base.is_some() {
         return base;
     }
@@ -10753,11 +10754,13 @@ fn type_slot_arg_hint(
 /// ONE predicate ([`type_head_names_an_entity`]) so the two cannot drift.
 ///
 /// THE FOURTH HINT KIND, and confined the way its three siblings are: gated on the slot
-/// naming an entity AND on the argument being a TUPLE literal, a SEQUENCE literal
-/// ([`arg_is_seq_literal`], WI-20260826-7JDWY) or a constructor application
+/// naming an entity AND on the argument being a TUPLE literal or a constructor application
 /// ([`arg_is_constructor_application`]) — the argument shapes whose classification this
 /// changes. Every other argument keeps exactly the `hof_arg_hint` /
-/// `nested_call_arg_hint` / `type_slot_arg_hint` it has today.
+/// `nested_call_arg_hint` / `type_slot_arg_hint` it has today. A LIST/SET literal was a
+/// third shape here and is now [`seq_slot_arg_hint`], its own kind: that gate asks about
+/// the ELEMENT type and admits a callable as well as an entity, which is a different
+/// question from §8.2's classification and did not belong in a function named for it.
 ///
 /// ITS POPULATION ON EXISTING CODE IS EMPTY, which is the soundness argument and is
 /// measurable rather than asserted: before this ticket a slot declared with a variant type
@@ -10787,36 +10790,12 @@ fn variant_slot_arg_hint(
     param_type: Option<&Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these three argument
-    // shapes can change reading here.
-    // The TUPLE and SEQUENCE tests run FIRST — see [`arg_is_tuple_literal`] for why the
-    // constructor test would otherwise swallow them.
+    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these two argument
+    // shapes can change reading here. The TUPLE test runs FIRST — see
+    // [`arg_is_tuple_literal`] for why the constructor test would otherwise swallow it.
+    // A LIST/SET literal has its own hint kind beside this one ([`seq_slot_arg_hint`]);
+    // it lived here while the variant case was the only one that needed it.
     if arg_is_tuple_literal(kb, arg) {
-        return type_mentions_an_entity(kb, pt).then(|| pt.clone());
-    }
-    // WI-20260826-7JDWY — RESTORED. JSFHG built this arm, MEASURED that
-    // `takeReds([blue(v: 1)])` — the WRONG variant — then LOADED CLEAN, and reverted it:
-    // the element type of a hinted literal was taken from the hint without the elements
-    // being read, so the hint did not check the literal, it overwrote it. That hole is
-    // closed ([`seq_literal_element_type`]), so the hint now CHECKS, and the pair
-    // `takeReds([red(v: 1)])` / `takeReds([blue(v: 1)])` separates the two: with the hint
-    // and no check the second loads, with the check and no hint the first is refused.
-    // Gated the way the tuple arm is, on the slot type MENTIONING an entity — a slot whose
-    // element type is an ordinary sort pushes nothing and its elements type as before.
-    // That is JSFHG's containment argument, kept deliberately — and only its FIRST half
-    // survives beside the element check. The retirement of the second is in this function's
-    // HEADER, which is where a reader looks for the gate's soundness argument and where the
-    // retired claim used to stand; `/code-review` found it still there, verbatim, sixty
-    // lines above a body comment retiring it. Its flip-set has not been measured and would
-    // have to be before widening.
-    //
-    // WIDENING THE GATE IS A DIFFERENT ITEM, and the note belongs here because the reason
-    // it was blocked has expired. WI-20260828-5NSZY left `head_apply([inc], 41)` refused
-    // where its `cons(inc, nil())` twin returns 42, and recorded the hint as WITHHELD
-    // rather than missing, on exactly the unsoundness this ticket removed. It is still
-    // refused, now only because `Function[A = …, B = …]` names a SPEC and not an entity.
-    // `typer_capability_matrix_test`'s `LITERAL_GAP` cells are the two rows that would flip.
-    if arg_is_seq_literal(kb, arg) {
         return type_mentions_an_entity(kb, pt).then(|| pt.clone());
     }
     if arg_is_constructor_application(kb, arg) {
@@ -12888,6 +12867,7 @@ fn visit_type(
                     nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                         .or_else(|| type_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
+                        .or_else(|| seq_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
@@ -12927,6 +12907,7 @@ fn visit_type(
                     nested_call_arg_hint(kb, arg, ft.as_ref())
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| seq_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             arrow_field_expected_from_ctor(kb, name, *fname, &expected, arg)
@@ -45554,6 +45535,44 @@ fn declared_element_type(
 ///
 /// The FIRST non-conforming element is reported, at ITS OWN span — a `TypeResult` carries
 /// one error, the same shape `collect_arg_errors` imposes on every other child group.
+/// WI-20260829-WBXGX — did this join ERASE a parameterization rather than combine one?
+///
+/// [`join_parameterized_same_base`] falls back to the BARE base sort when a binding cannot
+/// be combined, so `Option[T = Int64] ⊔ Option[T = String]` is `Option` — and a bare sort
+/// CONFORMS TO EVERY INSTANTIATION. As a literal's element type that launders exactly what
+/// this ticket exists to catch: found by `/code-review`,
+/// `takeOpts([some(1), some("x")])` against `List[T = Option[T = Int64]]` loaded, and so did
+/// the REVERSED spelling, which was refused before the join went in. Order-independence
+/// bought by making the refusing order accept is not the order-independence this ticket
+/// wanted.
+///
+/// A SOUND UPPER BOUND IS NOT A SOUND ELEMENT TYPE, and the difference is what each is for.
+/// A branch join answers "what can this expression be", where the bare `Option` is honest
+/// and nothing further is claimed. A literal's element type is then compared against a
+/// DECLARATION, and there the erasure passes a `String` into an `Int64` slot. So the
+/// erasure is refused HERE and left alone in [`compute_branch_join_type`], where the same
+/// fallback is reachable through `if` — MEASURED, not assumed
+/// (`an_if_join_still_erases_and_that_is_not_this_tickets_hole` pins it) — because that is
+/// the branch join's own question and its own item.
+/// WI-20260829-WBXGX — the element type of a literal so far, extended by one more element:
+/// their JOIN, or `None` where they have none THAT IS USABLE AS AN ELEMENT TYPE.
+///
+/// One owner so the occurrence path ([`seq_literal_element_type`]) and the value path
+/// ([`seq_literal_value_type`]) cannot come to disagree about what "these elements have a
+/// common type" means — they differ only in what they DO with the `None`, which is the one
+/// thing that genuinely differs between a program and a runtime value.
+///
+/// IT IS JUST [`join_types`], and that is the finding rather than an omission. It briefly
+/// carried two things of its own — an identity fast path and a filter rejecting a join that
+/// ERASED a parameterization — and both belonged in the lattice: the fast path because
+/// every caller wants it, the filter because `Option[T = Int64] ⊔ Option[T = String] = S`
+/// was not a defect of literals but of the LUB (see [`SameBaseCombine::NoCombination`]).
+/// Fixing them there also closed the `if`/`match` twin, which the literal-local version
+/// could not reach and had to record as a known gap.
+fn combine_element_types(kb: &mut KnowledgeBase, acc: &Value, next: &Value) -> Option<Value> {
+    join_types(kb, acc.clone(), next.clone())
+}
+
 fn seq_literal_element_type(
     kb: &mut KnowledgeBase,
     kind: SeqLiteral,
@@ -45620,13 +45639,16 @@ fn seq_literal_element_type(
             // `wi_wbxgx_collection_literal_element_join_test`, whose order-independence rows
             // are what separates the two repairs.
             //
-            // THE WIDENING DIRECTION IS INERT ON THIS CORPUS and is said so rather than
-            // claimed: instrumented over the whole workspace suite, 4 literals reach this
-            // comparison at all and every one of them CLASHES; none widens. So the join's
-            // ability to return a supertype is exercised only by this ticket's own rows.
+            // THE WIDENING DIRECTION IS INERT ON THIS CORPUS: instrumented over the whole
+            // workspace suite before the change, 4 literals reach this comparison at all and
+            // every one CLASHES; none widens. THAT IS A CENSUS OF WHAT EXISTS, NOT A SAFETY
+            // ARGUMENT — `/code-review` was right to separate the two. What an author can
+            // write reaches the widening immediately, and one shape of it is a FAIL-OPEN
+            // that [`join_erases_a_parameterization`] now refuses; read the census as "no
+            // corpus program's type moved", which is all it says.
             None => match inferred.take() {
                 None => inferred = Some(r.ty.clone()),
-                Some(acc) => match join_types(kb, acc.clone(), r.ty.clone()) {
+                Some(acc) => match combine_element_types(kb, &acc, &r.ty) {
                     Some(joined) => inferred = Some(joined),
                     None => {
                         return Err(TypeError::TypeMismatch {
@@ -58188,6 +58210,39 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
     // the raw functor — a term-backed type_var is `Fn{TypeExtractor.TypeVar, …}`
     // whose raw functor name is "TypeVar", so a raw `== "type_var"` check would
     // miss the inference wildcard and force the full lattice climb (spurious clash).
+    // WI-20260829-WBXGX — AN APPLICATION OF HASH-CONSING, and the cheapest arm here.
+    // `join(a, a) = a`, which the loop below reaches only after `types_compatible` in BOTH
+    // directions (two `Substitution` allocations and a lattice walk) and then
+    // `more_general_type`. `TermId` equality answers it in ONE comparison, and is sound
+    // precisely because the store is hash-consed by structure — CLAUDE.md's representation
+    // note names O(1) structural equality as exactly what that buys.
+    //
+    // IT IS HERE RATHER THAN AT A CALL SITE so every caller gets it: the branch join over
+    // `if`/`match` arms asks this of homogeneous arms as often as a collection literal asks
+    // it of homogeneous elements.
+    //
+    // MEASURED over the whole `wi_tests` corpus — 449,660 calls, bucketed by carrier:
+    //
+    //     both interned, EQUAL      397,064   88.3%   this arm, one integer compare
+    //     both interned, different   52,596   11.7%   the walk below
+    //     either not interned             0    0.0%
+    //
+    // So the fast path is the DOMINANT one, and the last row answers a question that was
+    // asked and is worth recording as settled: a computed hash on `Value` would generalize
+    // this arm past the interned carrier, and there is nothing here for it to serve — a
+    // `Value::Node` (an arrow, a denoted type — deliberately not interned) never reaches
+    // `join_types` at all. If a producer ever routes one here, this comment is the place
+    // that says the fast path silently stops covering it.
+    //
+    // IT HAS NO TEST ROW AND SHOULD NOT: backing it out fails NOTHING (lib 600/0, `wi_tests`
+    // 4253/0), which is the correct outcome for a performance change and is itself the
+    // correctness evidence — the one-integer answer is the answer the walk below gives, so a
+    // red row would mean it had changed behaviour.
+    if let (Value::Term { id: x }, Value::Term { id: y }) = (&a, &b) {
+        if x == y {
+            return Some(a);
+        }
+    }
     if type_dispatch_name_view(kb, &a) == Some("type_var") {
         return Some(b);
     }
@@ -58233,8 +58288,17 @@ fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
             // dual over the same lattice, built directly in Rust like the WI-293
             // subtyping half — no per-sort-algorithm framework needed.)
             (false, false) => {
-                if let Some(lub) = join_parameterized_same_base(kb, &a, &b) {
-                    return Some(lub);
+                match join_parameterized_same_base(kb, &a, &b) {
+                    SameBaseCombine::Combined(lub) => return Some(lub),
+                    // WI-20260829-WBXGX: same base, and a binding has no combination —
+                    // `Option[T = Int64]` vs `Option[T = String]` on an invariant `T`. The
+                    // search is OVER: there is no upper bound of the two that is not also
+                    // BELOW both of them (see [`SameBaseCombine::NoCombination`]), and
+                    // widening cannot help — `widen_value` climbs a bare `sort_ref` and
+                    // these are applications. Returning the bare base here is what let a
+                    // `String` reach an `Int64` slot.
+                    SameBaseCombine::NoCombination => return None,
+                    SameBaseCombine::NotApplicable => {}
                 }
                 // Not same-base parameterized: widen the entity side(s) one level
                 // (entity → enclosing sort) up the nominal lattice and retry.
@@ -58402,26 +58466,59 @@ fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
 /// value still follow the a-side). When a binding
 /// cannot be combined — a covariant/contravariant sub-combine has no result, an
 /// invariant param's values differ, the two sides bind different param subsets, or
-/// a duplicate-keyed side double-consumes one slot — it returns the CONSERVATIVE
-/// whole-type bound: the
-/// bare base sort `S` for the LUB (every `S[..] <: S`), the bottom type for the GLB.
+/// a duplicate-keyed side double-consumes one slot — it answers
+/// [`SameBaseCombine::NoCombination`], which the LUB reads as NO JOIN (WI-20260829-WBXGX
+/// retired the bare-base fallback: `S` is an upper bound that is also a lower bound) and
+/// the GLB as the bottom type.
 /// Construction stays on the hash-consed term path (the
 /// nominal, heavily-shared structure that should remain a `TermId`); a `Value::Node`
 /// combined binding (an arrow / denoted type — exotic for a branch join) falls back
 /// to the conservative bound rather than minting a Node-carried type.
+/// WI-20260829-WBXGX — what [`combine_parameterized_same_base`] found, as three answers
+/// rather than two.
+///
+/// `Option<Value>` conflated the two failures, and they call for opposite things: "these
+/// are not two same-base parameterized types" means the caller should WIDEN and retry,
+/// while "same base, and a binding has no combination" means the search is OVER. For the
+/// GLB the conflation was harmless (both end at the bottom type); for the LUB it was the
+/// bug — see [`SameBaseCombine::NoCombination`].
+enum SameBaseCombine {
+    /// Not two same-base parameterized types. The caller widens (LUB) or bottoms out (GLB).
+    NotApplicable,
+    /// Combined per binding, by each parameter's declared variance.
+    Combined(Value),
+    /// Same base, and some binding has NO combination in this direction — a covariant
+    /// sub-combine with no result, an invariant param whose values differ, different param
+    /// subsets, a duplicate key.
+    ///
+    /// **FOR THE LUB THIS IS "NO JOIN", NOT "THE BARE BASE".** It used to return `S`, on the
+    /// reasoning that every `S[..] <: S` so the bare sort is a sound upper bound. It IS an
+    /// upper bound; it is not a usable one, because `types_compatible` treats bare-vs-
+    /// parameterized as compatible in BOTH directions — so `S` is also below every
+    /// instantiation, and handing it back as a join launders the bindings. MEASURED
+    /// (`/code-review`): `takeOpts([some(1), some("x")])` against `List[T = Option[T =
+    /// Int64]]` loaded, putting a `String` in an `Int64` slot, and so did the same shape
+    /// through an `if`. A lattice whose "least upper bound" is also a lower bound has no
+    /// join there, and saying so is the honest answer.
+    ///
+    /// FOR THE GLB the bottom type stays: `nothing` is below everything and is not
+    /// compatible upward, so it carries none of this.
+    NoCombination,
+}
+
 fn combine_parameterized_same_base(
     kb: &mut KnowledgeBase,
     dir: LatticeDir,
     a: &Value,
     b: &Value,
-) -> Option<Value> {
+) -> SameBaseCombine {
     let (a_base, a_binds) = match extract_type(kb, a) {
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-        _ => return None,
+        _ => return SameBaseCombine::NotApplicable,
     };
     let (b_base, b_binds) = match extract_type(kb, b) {
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
-        _ => return None,
+        _ => return SameBaseCombine::NotApplicable,
     };
     // WI-769: ONE canonical comparison derives both the same-base gate and the
     // per-binding key-match mode (the dispatch arm-(2) idiom, `match_candidate_
@@ -58432,7 +58529,7 @@ fn combine_parameterized_same_base(
     // (LUB) or bottoms out (GLB).
     let key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
     if key_match != BindingKeyMatch::Label {
-        return None;
+        return SameBaseCombine::NotApplicable;
     }
     // The combine CONSTRUCTS a type — build base AND binding keys on the sort's
     // canonical symbols (canonicalize at the producer, WI-581), whichever
@@ -58444,16 +58541,9 @@ fn combine_parameterized_same_base(
     // invariant binding's kept value still follow the a-side.
     let base = kb.canonical_sort_sym(a_base);
     let declared = sort_type_params_as_pairs(kb, base);
-    // The conservative whole-type bound when a binding can't be combined.
-    let fallback = |kb: &mut KnowledgeBase| -> Value {
-        match dir {
-            LatticeDir::Lub => Value::term(kb.make_sort_ref(base)),
-            LatticeDir::Glb => Value::term(kb.make_nothing_type()),
-        }
-    };
     // Same base sort ⇒ same params; guard a malformed/partial binding set.
     if a_binds.len() != b_binds.len() {
-        return Some(fallback(kb));
+        return SameBaseCombine::NoCombination;
     }
     let mut used = vec![false; b_binds.len()];
     let mut result: Vec<(Symbol, TermId)> = Vec::with_capacity(a_binds.len());
@@ -58469,30 +58559,30 @@ fn combine_parameterized_same_base(
         // injective, and constructing from it would mint a duplicate-keyed type
         // that silently drops one of b's bindings.
         let Some(bi) = binding_index_for_param(kb, &b_binds, *param, key_match) else {
-            return Some(fallback(kb));
+            return SameBaseCombine::NoCombination;
         };
         if std::mem::replace(&mut used[bi], true) {
-            return Some(fallback(kb));
+            return SameBaseCombine::NoCombination;
         }
         let bv = &b_binds[bi].1;
         let combined: Value = match declared_variance(kb, base, *param) {
             Variance::Covariant | Variance::Bivariant => {
                 match combine_binding(kb, dir, av.clone(), bv.clone()) {
                     Some(v) => v,
-                    None => return Some(fallback(kb)),
+                    None => return SameBaseCombine::NoCombination,
                 }
             }
             Variance::Contravariant => {
                 match combine_binding(kb, dir.flip(), av.clone(), bv.clone()) {
                     Some(v) => v,
-                    None => return Some(fallback(kb)),
+                    None => return SameBaseCombine::NoCombination,
                 }
             }
             Variance::Invariant => {
                 if types_equivalent(kb, av, bv) {
                     av.clone()
                 } else {
-                    return Some(fallback(kb));
+                    return SameBaseCombine::NoCombination;
                 }
             }
         };
@@ -58516,21 +58606,23 @@ fn combine_parameterized_same_base(
             *param
         };
         if result.iter().any(|(k, _)| *k == canon_key) {
-            return Some(fallback(kb));
+            return SameBaseCombine::NoCombination;
         }
         match combined {
             Value::Term { id: t, .. } => result.push((canon_key, t)),
             // A Node-carried combined binding: stay off the Node path; bail.
-            _ => return Some(fallback(kb)),
+            _ => return SameBaseCombine::NoCombination,
         }
     }
     let base_ref = kb.make_sort_ref(base);
-    Some(Value::term(kb.make_parameterized_type(base_ref, &result)))
+    SameBaseCombine::Combined(Value::term(kb.make_parameterized_type(base_ref, &result)))
 }
 
 /// WI-464: combine one binding's two values per the lattice `dir`. `Lub` is the
 /// partial [`join_types`] (the Type lattice is top-less, so `None` propagates);
-/// `Glb` is the total [`meet_types`] (a bottom exists, so always `Some`).
+/// `Glb` is the total [`meet_types`] (a bottom exists, so always `Some`). WI-20260829-WBXGX
+/// made the `Lub` genuinely partial at the same-base arm too — see
+/// [`SameBaseCombine::NoCombination`] — so a `None` here now propagates from one more place.
 fn combine_binding(kb: &mut KnowledgeBase, dir: LatticeDir, a: Value, b: Value) -> Option<Value> {
     match dir {
         LatticeDir::Lub => join_types(kb, a, b),
@@ -58541,14 +58633,25 @@ fn combine_binding(kb: &mut KnowledgeBase, dir: LatticeDir, a: Value, b: Value) 
 /// WI-464: the parameterized LUB of two same-base parameterized types — the
 /// `Lub` instance of [`combine_parameterized_same_base`]. `join(Option[T = Cat],
 /// Option[T = Dog]) = Option[T = Animal]`.
-fn join_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
+fn join_parameterized_same_base(
+    kb: &mut KnowledgeBase,
+    a: &Value,
+    b: &Value,
+) -> SameBaseCombine {
     combine_parameterized_same_base(kb, LatticeDir::Lub, a, b)
 }
 
 /// WI-464: the parameterized GLB of two same-base parameterized types — the `Glb`
 /// instance of [`combine_parameterized_same_base`].
 fn meet_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
-    combine_parameterized_same_base(kb, LatticeDir::Glb, a, b)
+    match combine_parameterized_same_base(kb, LatticeDir::Glb, a, b) {
+        SameBaseCombine::Combined(v) => Some(v),
+        // The GLB is TOTAL: a bottom exists, and `nothing` is a sound lower bound of any
+        // pair. Unlike the LUB's bare base it is not compatible upward, so it launders
+        // nothing — see [`SameBaseCombine::NoCombination`].
+        SameBaseCombine::NoCombination => Some(Value::term(kb.make_nothing_type())),
+        SameBaseCombine::NotApplicable => None,
+    }
 }
 
 /// WI-20260829-9TGP7: is this expected type NO REAL BOUND on a branching expression's
@@ -62883,7 +62986,8 @@ fn tuple_component_expected(
 /// hint at all.
 ///
 /// LIST AND SET LITERALS HAVE THEIR OWN PREDICATE BESIDE THIS ONE
-/// ([`arg_is_seq_literal`]), and the split is worth keeping rather than merging: they are
+/// ([`seq_literal_kind`], consumed by [`seq_slot_arg_hint`]), and the split is worth
+/// keeping rather than merging: they are
 /// not tuples, and JSFHG had to EXCLUDE them for a reason that has since been repaired.
 /// A first cut of that ticket included them here and `takeReds([blue(v: 1)])` against a
 /// `List[T = Colour.red]` slot LOADED CLEAN, because a hinted literal took `element_hint`
@@ -62920,26 +63024,84 @@ fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
 /// A predicate that knew only one of them would push the hint on one spelling of the same
 /// program.
 ///
-/// Asked BEFORE [`arg_is_constructor_application`], which answers `true` for the
-/// `ListLiteral` constructor form as well — exactly the ordering [`arg_is_tuple_literal`]
-/// needs and for the same reason. It would not be WRONG to fall through to it (a
-/// `List[T = …]` head names a sort, never an entity, so that arm declines), but the hint
-/// this position needs would then never be computed.
-fn arg_is_seq_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+/// IT IS ASKED AFTER [`arg_is_constructor_application`], not before, and that is safe
+/// rather than intended: `variant_slot_arg_hint` runs first in every chain and its
+/// constructor arm answers `true` for the `ListLiteral` form — but it then asks
+/// [`type_head_names_an_entity`] of a `List[T = …]` head, which names a sort, so it
+/// declines and control reaches here. An earlier version of this note claimed the opposite
+/// ordering; `/code-review` read the chains and found it false. It matters because
+/// reordering `seq_slot_arg_hint` ABOVE `variant_slot_arg_hint` is what a reader would do
+/// on the strength of the old claim — harmless today, and not a thing to rely on.
+fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<SeqLiteral> {
     match &arg.kind {
         NodeKind::Expr {
             expr: Expr::Constructor { name, .. },
             ..
         } => {
             let qn = kb.qualified_name_of(*name);
-            qn == dt::qualified(dt::LIST_LITERAL) || qn == dt::qualified(dt::SET_LITERAL)
+            if qn == dt::qualified(dt::LIST_LITERAL) {
+                Some(SeqLiteral::List)
+            } else if qn == dt::qualified(dt::SET_LITERAL) {
+                Some(SeqLiteral::Set)
+            } else {
+                None
+            }
         }
         NodeKind::Expr {
-            expr: Expr::ListLit(_) | Expr::SetLit(_),
+            expr: Expr::ListLit(_),
             ..
-        } => true,
-        _ => false,
+        } => Some(SeqLiteral::List),
+        NodeKind::Expr {
+            expr: Expr::SetLit(_),
+            ..
+        } => Some(SeqLiteral::Set),
+        _ => None,
     }
+}
+
+/// WI-20260826-JSFHG / WI-20260828-5NSZY — the hint a slot declared `List[T = X]` /
+/// `Set[T = X]` pushes down to a LITERAL argument, so the literal's elements are typed
+/// against `X` (`seq_element_expected` in [`visit_type`]) and then CHECKED against it
+/// ([`seq_literal_element_type`]).
+///
+/// **SPLIT OUT OF [`variant_slot_arg_hint`]**, which is about §8.2's classification and had
+/// been carrying this because the variant case was the first that needed it. The two ask
+/// different questions of different types — that one whether the SLOT mentions an entity,
+/// this one what the ELEMENT is — and a reader looking for "why does my list literal get an
+/// expected type" was reading a function named for variants.
+///
+/// **THE GATE IS ON THE DECLARED ELEMENT, and admits two shapes**, each with its own item
+/// and its own rows:
+///
+///  - it MENTIONS AN ENTITY (WI-20260826-JSFHG, restored by WI-20260826-7JDWY once the
+///    elements were checked rather than overwritten): `takeReds([red(v: 1)])` against
+///    `List[T = Colour.red]` drives, and `takeReds([blue(v: 1)])` is refused naming `blue`.
+///  - it is CALLABLE BY HEAD (WI-20260828-5NSZY): `head_apply([inc], 41)` against
+///    `List[T = Function[A = Int64, B = Int64]]` was REFUSED where its desugared twin
+///    `head_apply(cons(inc, nil()), 41)` returned 42 — one program, two verdicts by
+///    spelling. A bare operation name needs an arrow to lift against, and this is the only
+///    thing that carries one into a literal. [`type_head_is_callable`] is
+///    [`arrow_slot_arg_hint`]'s own predicate, borrowed so "is this slot callable" has one
+///    answer wherever it is asked.
+///
+/// 5NSZY WITHHELD THE SECOND deliberately, and said why: a hinted literal took its element
+/// type from the hint without reading the elements, so pushing one would have traded a
+/// correct refusal for a silent accept. WI-20260826-7JDWY removed that, which is what makes
+/// this admissible now rather than a re-litigation of a settled decision.
+///
+/// THE ELEMENT IS READ THROUGH [`declared_element_type`], so the slot's collection must
+/// match the literal's own surface: a `[…]` in a `Set[T = X]` slot is a shape disagreement
+/// and gets nothing, which is the rule the check itself follows.
+fn seq_slot_arg_hint(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    param_type: Option<&Value>,
+) -> Option<Value> {
+    let pt = param_type?;
+    let kind = seq_literal_kind(kb, arg)?;
+    let element = declared_element_type(kb, kind, Some(pt))?;
+    (type_mentions_an_entity(kb, &element) || type_head_is_callable(kb, &element))
+        .then(|| pt.clone())
 }
 
 /// WI-578 — the shared build-finish tail of constructor typing. Given the field-
@@ -63190,7 +63352,7 @@ fn seq_literal_value_type(
     for cty in pos_child_types {
         joined = match joined {
             None => Some(cty.clone()),
-            Some(acc) => join_types(kb, acc, cty.clone()),
+            Some(acc) => combine_element_types(kb, &acc, cty),
         };
         if joined.is_none() {
             break;

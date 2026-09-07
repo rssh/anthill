@@ -1235,24 +1235,18 @@ fn run_routes(cells: Vec<(String, String, Verdict)>) {
 /// separate discovery by hand; together they are one row of a table.
 #[test]
 fn a_bare_operation_name_across_its_routes() {
-    // The list/set-literal routes. WI-20260828-5NSZY declined to supply the hint here and
-    // said why: a hinted literal took `element_hint` as the element type UNCONDITIONALLY,
-    // so a hint would OVERWRITE the elements rather than check them — trading a correct
-    // refusal for a silent accept.
+    // The list/set-literal routes CLOSED IN THREE STEPS, and the sequence is the reason
+    // this table exists. WI-20260828-5NSZY declined to supply the hint and said why: a
+    // hinted literal took `element_hint` as the element type UNCONDITIONALLY, so a hint
+    // would OVERWRITE the elements rather than check them, trading a correct refusal for a
+    // silent accept. WI-20260826-7JDWY removed that — the declared element type is now a
+    // CHECK — and restored the argument-slot hint, but confined to a slot whose element
+    // type MENTIONS AN ENTITY, so these two stayed red for a NARROWER reason:
+    // `Function[A = Int64, B = Int64]` names a spec, not an entity. Widening that gate to
+    // admit a CALLABLE element (`seq_slot_arg_hint`) is what finally closed them.
     //
-    // THAT REASON IS GONE AND THESE CELLS ARE STILL GAPS, which is worth stating because
-    // "the blocker was closed" is not "the cell is fixed". WI-20260826-7JDWY made the
-    // declared element type a CHECK, and restored the argument-slot hint with it — but
-    // confined to a slot whose element type MENTIONS AN ENTITY (`variant_slot_arg_hint`,
-    // WI-20260826-JSFHG's containment argument, whose population on existing code is
-    // empty by construction). `Function[A = Int64, B = Int64]` names a spec, not an
-    // entity, so no hint reaches these two and the bare name still has no arrow to lift
-    // against. Widening that gate is what would close them, and it is 5NSZY's ticket
-    // rather than 7JDWY's: the safety argument it was blocked on now holds.
-    const LITERAL_GAP: Verdict = Verdict::KnownGap {
-        wi: "WI-20260828-5NSZY",
-        expect: "supplies no function type to lift it against",
-    };
+    // "THE BLOCKER WAS CLOSED" IS NOT "THE CELL IS FIXED" — these cells spent a whole
+    // ticket red for a reason nobody had written down until this table forced it.
     run_routes(vec![
         (
             "1 operation param, ARROW slot".into(),
@@ -1282,17 +1276,19 @@ fn a_bare_operation_name_across_its_routes() {
         (
             "6 inside a LIST literal".into(),
             "  operation c() -> Int64 = head_apply([inc], 41)".into(),
-            LITERAL_GAP,
+            Verdict::Loads,
         ),
         (
             "7 inside a SET literal".into(),
             "  operation c() -> Int64 = set_apply({inc}, 41)".into(),
-            LITERAL_GAP,
+            Verdict::Loads,
         ),
         (
-            // THE CONTROL FOR 6 AND 7, and it is what makes them a gap rather than a
-            // property of bare names in collections: the SAME name, the same declared
-            // slot, spelled through the constructors the literal desugars to — accepted.
+            // THE CONTROL FOR 6 AND 7. While they were red it said their refusal was a
+            // property of the SPELLING and not of bare names in collections: the same name,
+            // the same declared slot, through the constructors the literal desugars to,
+            // accepted. Now that they load it is what says the two spellings AGREE, which
+            // is the same claim from the other side.
             "8 CONTROL — the desugared twin `cons(inc, nil())`".into(),
             "  operation c() -> Int64 = head_apply(cons(inc, nil()), 41)".into(),
             Verdict::Loads,
@@ -1395,9 +1391,11 @@ fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
 /// parentheses, since `paren_expr` wrapped a `_term` too); it now loads, and its element
 /// type is CHECKED.
 ///
-/// IT SETTLES THE REPAIR THE TABLE ABOVE COULD NOT OFFER. Routes 6 and 7 record that a
-/// bare operation name in a list/set literal is refused (`LITERAL_GAP`, WI-20260828-5NSZY),
-/// and the natural advice — "write a lambda instead" — was
+/// IT SETTLED THE REPAIR THE TABLE ABOVE COULD NOT OFFER, while routes 6 and 7 recorded
+/// that a bare operation name in a list/set literal was refused. Those two load now
+/// (WI-20260828-5NSZY's residual), so the lambda is no longer the only spelling — but these
+/// rows stay, because a lambda in a literal is its own capability and was its own parse
+/// bug. At the time the natural advice — "write a lambda instead" — was
 /// unavailable because that spelling was a syntax error. It is available now, and these
 /// rows are what makes the advice checkable rather than plausible.
 ///

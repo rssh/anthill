@@ -40,20 +40,38 @@
 //! `the_element_type_is_a_join_so_it_does_not_depend_on_order` is the row that separates
 //! the two repairs.
 //!
-//! ## THE WIDENING DIRECTION IS INERT ON THIS CORPUS, and that is stated rather than
-//! claimed
+//! ## THE WIDENING DIRECTION IS INERT ON THIS CORPUS — A CENSUS, NOT A SAFETY ARGUMENT
 //!
 //! Instrumented over the whole workspace suite before the change: **4** literals reach the
-//! element-vs-element comparison at all, and **every one CLASHES** — none widens. So the
-//! join's ability to return a common supertype is exercised only by this file's own rows,
-//! and the order-independence pair is the one witness that the join is doing something a
-//! first-element rule would not. There is no corpus program whose TYPE this widens.
+//! element-vs-element comparison at all, and **every one CLASHES** — none widens. So no
+//! corpus program's type moved.
 //!
-//! ## THREE BACK-OUTS, because there are three claims — whole `wi_tests` binary, each a run
+//! THAT IS ALL IT SAYS, and reading it as a safety argument is the mistake `/code-review`
+//! caught: what an AUTHOR can write reaches the widening immediately, and one shape of it
+//! was a fail-open (`an_erasing_join_is_refused_rather_than_widened_to_the_bare_base`). A
+//! census of what exists is not a census of what is expressible.
 //!
-//! **A. Is anything combined at all?** Replace the `join_types` call in
-//! `seq_literal_element_type`'s `None` arm with `Some(acc)` — element one's type, nothing
-//! checked, the pre-ticket reading. **7 fail, 4242 pass**: the four arms here, plus
+//! ## FIVE BACK-OUTS, because there are five claims — the `--lib` unit tests AND the whole
+//! `wi_tests` binary, each a run
+//!
+//! **L1. Is an ERASING join a join?** Restore the bare-base fallback in the LUB arm of
+//! `SameBaseCombine::NoCombination`. **5 fail** (3 lib, 2 here):
+//! `an_erasing_join_is_refused_rather_than_widened_to_the_bare_base`,
+//! `the_branch_join_refuses_the_same_erasure`, and the three WI-464 / WI-769 unit tests
+//! whose recorded decision this overturns. The `if` row is the one that matters — a repair
+//! confined to the literal, which is what this ticket first shipped, cannot make it pass,
+//! so it separates "repaired the lattice" from "repaired the caller".
+//!
+//! **L2. The hash-consed identity fast path in `join_types`.** Remove it. **NOTHING FAILS**
+//! — lib 600/0, `wi_tests` 4253/0 — and that is the correct outcome rather than a missing
+//! row: it is a PERFORMANCE claim, and a back-out that turned rows red would mean it had
+//! changed behaviour. Its witness is the measurement recorded at the site (88.3% of 449,660
+//! joins across this corpus take it, and 0.0% involve a non-interned carrier) TOGETHER with
+//! this zero, which is what says the one-integer answer is the answer the walk gives.
+//!
+//! **A. Is anything combined at all?** Make `combine_element_types` return `Some(acc)` —
+//! element one's type, nothing checked, the pre-ticket reading. **9 fail**: the six arms
+//! here, plus
 //! `typer_capability_matrix_test::the_row_remainders` (whose two cells recorded this hole
 //! as `SilentlyAccepted`), `wi_7jdwy_…::control_an_unhinted_literal_still_types_from_its_-
 //! elements` (whose residual `load_clean` was PINNING this item and is the assertion that
@@ -61,16 +79,15 @@
 //! whose mixed-element half reaches this arm because a `Set` declaration is not a `[…]`'s.
 //!
 //! **B. Is it a JOIN, or a subtype test against element one?** Replace the join with the
-//! ticket's own prescription. **1 fails, 4248 pass** — exactly
+//! ticket's own prescription. **1 fails** — exactly
 //! `the_element_type_is_a_join_so_it_does_not_depend_on_order`, and nothing else in the
 //! binary. That single row IS the difference between the two designs; every other row here
 //! is satisfied by either, which is why it exists.
 //!
 //! **C. Does the VALUE carrier join too?** Restore `pos_child_types.first()` in
-//! `seq_literal_value_type`. **1 fails, 4248 pass** —
-//! `the_value_carrier_joins_its_elements_too`. It is its own axis because it is its own
-//! function: `/code-review` found it still reading element one after the other three
-//! carriers were fixed, and a back-out of A leaves it untouched.
+//! `seq_literal_value_type`. **1 fails** — `the_value_carrier_joins_its_elements_too`.
+//! `/code-review` found it still reading element one after the other three carriers were
+//! fixed. It shares `combine_element_types` now, so back-out A fails it too.
 //!
 //! Note what A does NOT fail: the order-independence row passes under it, because element
 //! one's type (`red`) is a subtype of the declared `Colour` and both orders loaded before
@@ -234,6 +251,100 @@ end
         drive(src, "test.wbxgx.order.ba"),
         "Int(2)",
         "PARENT FIRST — which that repair accepts, and that difference is the defect",
+    );
+}
+
+/// AN ERASING "JOIN" IS NOT A JOIN HERE — the fail-open `/code-review` found, and the one
+/// place this ticket made something WORSE before it made it better.
+///
+/// `join_parameterized_same_base` falls back to the BARE base sort when a binding cannot be
+/// combined, so `Option[T = Int64] ⊔ Option[T = String]` is `Option` — which conforms to
+/// EVERY instantiation. Both spellings below therefore loaded, passing a `String` into an
+/// `Int64` slot, and the reversed one had been REFUSED before this ticket: order-independence
+/// bought by making the refusing order ACCEPT is the opposite of what the ticket wanted.
+///
+/// BOTH ORDERS, because one order is what a first-element rule would already have caught and
+/// the other is what the join newly broke. BACKED OUT (restore the bare-base LUB fallback in
+/// [`SameBaseCombine::NoCombination`]'s arm): both load.
+#[test]
+fn an_erasing_join_is_refused_rather_than_widened_to_the_bare_base() {
+    let host = r#"
+namespace test.wbxgx.erase%d
+  import anthill.prelude.{Int64, String, List, Option}
+  operation takeOpts(l: List[T = Option[T = Int64]]) -> Int64 = 1
+  operation go() -> Int64 = takeOpts([%s])
+end
+"#;
+    for (i, elems, order) in [
+        (0, "Option.some(value: 1), Option.some(value: \"x\")", "conforming element first"),
+        (1, "Option.some(value: \"x\"), Option.some(value: 1)", "offending element first"),
+    ] {
+        let src = format!("{}", host.replacen("%d", &i.to_string(), 1).replacen("%s", elems, 1));
+        assert_reports(
+            &src,
+            "(collection-element-join)",
+            &format!("{order}: two `Option`s that only erase have no element type"),
+        );
+    }
+
+    // THE SEPARATOR: a single non-conforming element was refused throughout, by the
+    // ARGUMENT check. Without it "refused" here is consistent with `Option` elements simply
+    // not working.
+    let one = r#"
+namespace test.wbxgx.erase2
+  import anthill.prelude.{Int64, String, List, Option}
+  operation takeOpts(l: List[T = Option[T = Int64]]) -> Int64 = 1
+  operation go() -> Int64 = takeOpts([Option.some(value: "x")])
+end
+"#;
+    assert_reports(
+        one,
+        "takeOpts.l (op-arg): expected List[T = Option[T = Int64]], got List[T = Option[T = String]]",
+        "ONE element keeps its parameterization, so the argument check sees it",
+    );
+
+    // …and the conforming pair, which must still load: erasure is the refusal, not `Option`.
+    let ok = r#"
+namespace test.wbxgx.erase3
+  import anthill.prelude.{Int64, List, Option}
+  operation takeOpts(l: List[T = Option[T = Int64]]) -> Int64 = List.length(l)
+  operation go() -> Int64 = takeOpts([Option.some(value: 1), Option.some(value: 2)])
+end
+"#;
+    load_clean(ok, "two `Option[T = Int64]`s, which join to themselves");
+    assert_eq!(drive(ok, "test.wbxgx.erase3.go"), "Int(2)");
+}
+
+/// THE `if` TWIN IS REFUSED TOO, because the repair went into the LATTICE and not into the
+/// literal — the correction that turned this row from a known gap into an arm.
+///
+/// It was first fixed at the literal, with a filter rejecting a join that erased a
+/// parameterization, and this row was written as a PINNED GAP saying the `if` spelling still
+/// loaded and that repairing it was someone else's question. That was the wrong place: the
+/// erasure is not a property of literals, it is `join_types` returning an "upper bound" that
+/// `types_compatible` also treats as a LOWER bound. Fixing it there
+/// ([`SameBaseCombine::NoCombination`]) closed both spellings with less code, and the
+/// literal-local filter is gone.
+///
+/// SO THIS ROW IS THE REACH OF THE FIX. `compute_branch_join_type` calls the same
+/// `join_types`, and a fix confined to the literal could not have made this row pass — it
+/// is the one row that separates "repaired the lattice" from "repaired the caller".
+///
+/// BACKED OUT (restore the bare-base LUB fallback): loads clean.
+#[test]
+fn the_branch_join_refuses_the_same_erasure() {
+    let src = r#"
+namespace test.wbxgx.ifjoin
+  import anthill.prelude.{Int64, String, Bool, Option}
+  operation takeOpt(o: Option[T = Int64]) -> Int64 = 1
+  operation viaIf(b: Bool) -> Int64 = takeOpt(if b then Option.some(value: 1) else Option.some(value: "x"))
+end
+"#;
+    let errs = errs_of(src);
+    assert!(
+        !errs.is_empty(),
+        "an `if` over `Option[T = Int64]` and `Option[T = String]` has no join, so it \
+         cannot fill an `Option[T = Int64]` slot — got a clean load"
     );
 }
 
