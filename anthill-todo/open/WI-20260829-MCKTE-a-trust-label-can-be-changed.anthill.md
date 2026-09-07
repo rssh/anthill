@@ -226,3 +226,67 @@ by it. The `generate` declaration now carries a scoping note saying which half o
 its claim is false today, rather than the example shipping prose its own record
 contradicts.
 
+### 2026-09-07T13:04:35Z — feedback — user
+
+ITEM (2) PROTOTYPED AND BACKED OUT. The MECHANISM works end to end; the COVERAGE
+does not, and a marker that looks enforced and is not is the exact "advisory"
+trap this ticket exists to close. Nothing committed. Recorded so the next attempt
+starts here rather than re-deriving it.
+
+THE SPELLING SHOULD BE A FACT, NOT A GRAMMAR MODIFIER, and this is the finding
+that most changes the plan. The previous entry proposed
+`entity text(raw: literal String)` — a field modifier, so tree-sitter, the Rust
+parser, the grammar corpus and scaland's fastparse all move. Unnecessary:
+`anthill.reflect.typing` ALREADY declares typing properties as facts the typer
+reads directly, and `Contravariant(sort: Permission, param: T)` in this very
+example is the precedent. So:
+
+  entity LiteralOnly(ctor: Symbol, field: Symbol)   -- reflect/typing.anthill
+  fact LiteralOnly(ctor: text, field: raw)          -- guardians/lib/vocabulary.anthill
+
+No grammar, no parser, no scaland divergence. The enforcement core is identical
+either way, so the modifier stays available later as pure sugar.
+
+WHAT WAS BUILT AND MEASURED WORKING:
+  - the `LiteralOnly` declaration in `stdlib/anthill/reflect/typing.anthill`;
+  - `is_literal_only_field` in `kb/typing.rs`, mirroring `matches_variance_fact`
+    (fact index, no SLD) — the ONE departure being that `ctor` matches by SYMBOL
+    and not by short name, since a constructor is a top-level name and `text` is
+    not rare, while `field` stays a label matched only after the ctor has;
+  - `literal_only_violation`, one constructor so the fact and body checks cannot
+    drift into two spellings of one rule;
+  - the check in `check_entity_facts`, placed BEFORE the existing `Term::Var`
+    skip — that skip exists because an unbound variable has no type to check, and
+    it would otherwise exempt the plainest spelling of the thing being refused.
+
+  DRIVEN: `fact text(raw: ?anything)` against guardians ->
+    "type mismatch in text.raw (entity-field): expected a literal written here —
+     'raw' is declared LiteralOnly, got a variable, call or projection"
+  CONTROL: guardians lib+fixtures still load clean (3162 facts) with the marker
+  declared, so all 11 literal fact sites pass.
+
+WHY IT IS NOT ENOUGH, MEASURED. `check_entity_facts` iterates CONSTRUCTORS and
+visits facts whose HEAD FUNCTOR is that constructor. Every real site is NESTED:
+`fact releasable(text(raw: ?anything))` LOADED CLEAN with the check in place, and
+so would all ten `fixtures/mailbox.anthill` sites, where `text` sits two levels
+under `InMailbox`. So the hook is per-head-functor, not a walk.
+
+THE REMAINING WORK IS TWO WALKS, NOT ONE, and the previous entry's "both facts and
+bodies are terms by then" was wrong. Stored rules carry `Term` (`Term::Fn` with
+`named_args`, literals as `Term::Const`, a projection as a `dot_apply` `Fn`), but
+operation bodies are `Rc<NodeOccurrence>` trees (`op_bodies_iter`). Each needs its
+own subterm walk finding applications of a marked constructor. The fact walk must
+cover rule HEADS and BODIES, not just heads.
+
+WHAT IS ALREADY SETTLED and needs no re-litigation: `TypeError::Other` +
+`TypeErrorContext::EntityField` renders correctly with span and file attribution;
+`check_entity_facts` / `check_operation_bodies` are the two homes; and literalness
+IS distinguishable in the term representation (`Term::Const` vs everything else).
+
+ACCEPTANCE FOR THE NEXT ATTEMPT, tightened by the above: the three relabel probes
+(`text(raw: m.body.raw)`, `text(raw: m.from.local)`, `text(raw: m.id.value)`) must
+each become a permanent refused fixture with the LiteralOnly needle, and the ten
+mailbox facts plus `lib/email.anthill`'s `releasable` row must still load. A test
+that only asserts the marker is declared measures nothing — the nested-fact probe
+above is the one that would have caught this coverage gap.
+
