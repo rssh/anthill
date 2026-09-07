@@ -3021,10 +3021,21 @@ impl KnowledgeBase {
     /// of which binds the next declared param not already given by name (`Cell[Int64]` ≡
     /// `Cell[V = Int64]`).
     ///
-    /// Skipped for a non-`Sort` head (an unresolved name — which already has its own
-    /// diagnostic, so piling on would double-report — or an entity / value head, whose
+    /// Skipped for a head that plays no `Sort` role (an unresolved name — which already
+    /// has its own diagnostic, so piling on would double-report — or a value head, whose
     /// arguments are not sort type-args at all). This keeps the gate identical to the
-    /// value-position arm's own `kind_of(..) == Sort` firing condition.
+    /// value-position arm's own firing condition, and that pairing is the point rather
+    /// than a coincidence: the classifier decides which applications REACH this check, so
+    /// a head it admits and this gate declines is a written type nobody validates.
+    ///
+    /// WI-20260824-Q0093 — `has_kind`, because that arm now asks `has_kind`
+    /// ([`crate::kb::load::Loader::bare_name_denotes_type`] carries the reason). Found by
+    /// `/code-review`, which measured the desync the moment the two spellings differed:
+    /// with the classifier widened and this gate still reading the FIRST-declared kind,
+    /// `namespace Box … end sort Box … end` followed by
+    /// `Box[Zork = String, Zork = Bool, Int64, String]` LOADED CLEAN — an undeclared
+    /// param, a duplicate param and two excess positionals, none of them heard, on
+    /// exactly the names the widening had newly admitted.
     pub fn check_sort_type_args(
         &self,
         sort_sym: Symbol,
@@ -3032,7 +3043,7 @@ impl KnowledgeBase {
         named: &[Symbol],
         positional_count: usize,
     ) -> Result<(), TypeArgProblem> {
-        if self.kind_of(sort_sym) != Some(crate::intern::SymbolKind::Sort) {
+        if !self.has_kind(sort_sym, crate::intern::SymbolKind::Sort) {
             return Ok(());
         }
         for (i, n) in named.iter().enumerate() {

@@ -330,6 +330,14 @@ pub enum LoadError {
         entity_name: String,
         field_name: String,
         expected_type: String,
+        /// RENDERED MESSAGE TEXT, not a type spelling, and it has never been only one:
+        /// `TypeError::Other` routes here too and puts a whole clause in this slot ("one
+        /// spec constraining the receiver's type parameter to declare this member"), and
+        /// `AmbiguousConstrainedParamMember` a paragraph. WI-20260824-Q0093 adds one more
+        /// shape — a proposal-055 type value carries what it DENOTES after its type,
+        /// `Type (Cell[V = Int64])` (design 055 §8) — so a reader must not parse this back
+        /// as a type. The structured pair lives on [`super::typing::TypeError`], which is
+        /// where a consumer that needs the types themselves should look.
         actual_type: String,
         span: Option<Span>,
         /// WI-510: typer provenance — the originating `TypeError` context variant
@@ -21975,11 +21983,17 @@ impl<'a> Loader<'a> {
                 // `Expr::Apply` reading it has today and fails where it fails today.
                 // Widening that is not this increment's business.
                 //
-                // `kind_of`, not `has_kind` — see [`Self::bare_name_denotes_type`], which
-                // asks the same question about the bare face and carries the reason.
+                // `has_kind`, and NOT `kind_of` — [`Self::bare_name_denotes_type`] asks
+                // this same question about the BARE face and carries the reason
+                // (WI-20260824-Q0093: `kind_of` is the first-declared keyword, so it made
+                // the classification depend on declaration ORDER). The two faces are one
+                // question about one name, so they ask it the same way: keyed differently,
+                // `namespace Box … end sort Box … end` would classify the bare `Box` and
+                // not `Box[V = Int64]`, and the pair that WAHB6 requires to key alike
+                // would key alike only in one declaration order.
                 let is_type_value = !is_entity
                     && self.parsed.terms.is_type_application(outer_parse_id)
-                    && self.kb.kind_of(kb_functor) == Some(SymbolKind::Sort);
+                    && self.kb.has_kind(kb_functor, SymbolKind::Sort);
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -24008,24 +24022,71 @@ impl<'a> Loader<'a> {
     ///   `true` for a sort-nested constructor whose registration has not happened yet,
     ///   which would silently re-read `none` as a type value. Left on its existing arms
     ///   until it can be asked at a point that can answer it.
-    /// THE PRIMARY KIND, not the set, and deliberately — this is the one predicate in
-    /// this neighbourhood that asks `kind_of` where its sibling `is_entity` asks
-    /// `has_kind`, so the reason belongs here rather than in a reader's head.
+    /// THE CATEGORY SET, not the first-declared keyword — `has_kind`, as its sibling
+    /// `is_entity` asks it one line up.
     ///
-    /// Symbol categories ARE a set, and a name can carry `Sort` alongside another kind
-    /// (D0EXD's census counted two that are both a predicate and a sort). Widening to
-    /// `has_kind(Sort)` would classify every bare reference to such a name as a type
-    /// value — and this classification runs BEFORE the typer, so it would answer first
-    /// and take the reading `check_bare_ref`'s relation arm gives it today. A missed
-    /// classification leaves today's behavior in place; an extra one silently replaces
-    /// it, so narrow is the safe direction for an increment whose fence is "the decision
-    /// moves, the answers do not".
+    /// WAHB6 SHIPPED THIS AS `kind_of` AND SAID WHY: symbol categories are a set, a name
+    /// can carry `Sort` alongside another kind, and classifying such a name here — before
+    /// the typer — would answer first and take a reading `check_bare_ref` gives it today.
+    /// A missed classification leaves today's behavior in place while an extra one
+    /// silently replaces it, so narrow was the safe direction for an increment whose
+    /// fence was "the decision moves, the answers do not". It also said the corpus did
+    /// not separate the two spellings, so this was a policy rather than a measurement,
+    /// and named WI-20260824-Q0093 as the ticket that should revisit it with a row that
+    /// DOES separate them.
     ///
-    /// MEASURED: the corpus does not separate the two — the whole suite passes either
-    /// way — so this is a policy, not a measurement, and it is the widening ticket
-    /// (WI-20260824-Q0093) that should revisit it with a row that DOES separate them.
+    /// WI-20260824-Q0093 REVISITED IT, WITH THAT ROW, and the answer went the other way.
+    ///
+    /// THE ROW: `namespace Box … end` written BEFORE `sort Box … end` (the pair proposal
+    /// 059 R2 blesses, and the one the `add_kind` call in `scan_definitions` exists for)
+    /// leaves `Box` with kinds `[Namespace, Sort]`. Under `kind_of` the bare `Box` in
+    /// `operation f() -> Type = Box` was NOT classified and the program did not load —
+    /// `expected resolved name, got unresolved` — while THE SAME TWO DECLARATIONS IN THE
+    /// OTHER ORDER loaded and evaluated to the type term. That is exactly the source-order
+    /// dependence WI-926's category SET was introduced to remove, reintroduced here by
+    /// reading the set's FIRST element; the two orders are one program written twice, and
+    /// a classifier may not tell them apart. Pinned by
+    /// `wi_q0093_type_value_occurrence_matrix_test::a_sort_declared_after_a_namespace_of_-
+    /// the_same_name_still_denotes`.
+    ///
+    /// WHAT THE OLD NOTE FEARED, AND WHY THE SECOND CONJUNCT ALREADY ANSWERED IT. The
+    /// worry was that a name carrying `Sort` alongside another kind would be classified
+    /// and would take a reading `check_bare_ref` gives it today. The population is the
+    /// two `add_kind(.., Sort)` sites plus `define`'s merge, and it is exactly three
+    /// shapes:
+    ///
+    ///  * an EPONYMOUS constructor (`Sort` first, `Entity` added) and a FREE-STANDING
+    ///    entity (`Entity` first, `Sort` added) — both are `is_entity_constructor`, which
+    ///    this predicate has always excluded, so widening reaches neither;
+    ///  * a NAMESPACE beside a sort, which is the row above;
+    ///  * a RULE HEAD spelled like a sort, which is the case the old note imagined — and
+    ///    it cannot be built. Measured in BOTH orders (the axis this ticket exists to
+    ///    remove, so one order would not have been a measurement): `rule Both(?x) :- …`
+    ///    written before `sort Both … end` and after it both leave `kinds == [Sort]` with
+    ///    no `Goal` at all, because `scan_definitions` pass 1 defines every sort in every
+    ///    file before pass 3 looks at a single rule head — a head that resolves is a
+    ///    clause of what it resolves to and mints nothing (§"A rule head functor is
+    ///    resolved, not declared"). The BODY-LESS declaration form, which does mint, is
+    ///    refused outright when a sort holds the name ("a body-less rule adds nothing to
+    ///    it").
+    ///
+    /// CORPUS, since the old note's own claim was that the corpus does not separate the
+    /// two spellings: of the 239 sorts in a loaded stdlib, **none** has a non-`Sort`
+    /// primary kind, so this widening newly classifies nothing that ships. (Found by
+    /// `/code-review`, which read the rule-head claim as one-sided — it was, and the
+    /// second order says the same thing for a structural reason rather than by luck.)
+    ///
+    /// AND IT IS THE READING THE REST OF THE REPO ALREADY SETTLED, not a new opinion:
+    /// WI-956 moved the kind GATES to `has_kind` for the same reason, and proposal 059
+    /// §"told apart by the address" states it of this exact pair — "a plain namespace's
+    /// symbol is `Namespace` alone, and one beside a main entry carries `Sort` too, so
+    /// the question an implementation asks is `has_kind(X, Sort)`". This predicate was
+    /// the one asking it the other way.
+    ///
+    /// MEASURED after the change: the full workspace suite passes, and the `kind_of`
+    /// spelling backed in again fails exactly the one row above.
     fn bare_name_denotes_type(&self, sym: Symbol) -> bool {
-        self.kb.kind_of(sym) == Some(SymbolKind::Sort) && !self.kb.is_entity_constructor(sym)
+        self.kb.has_kind(sym, SymbolKind::Sort) && !self.kb.is_entity_constructor(sym)
     }
 
     /// WI-487: convert an op-body logical variable (`Expr::Var(Global)`). A

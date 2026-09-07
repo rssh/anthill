@@ -1623,3 +1623,6 @@ mod wi_emvcb_answer_is_a_value_test;
 
 #[path = "include/wi_02err_type_var_occurrence_test.rs"]
 mod wi_02err_type_var_occurrence_test;
+
+#[path = "include/wi_q0093_type_value_occurrence_matrix_test.rs"]
+mod wi_q0093_type_value_occurrence_matrix_test;

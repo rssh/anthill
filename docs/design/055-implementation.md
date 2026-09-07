@@ -92,6 +92,21 @@ Controls must pin both sides at each family: a nominal type occurrence that was
 previously rejected becomes a `Type` value, while the corresponding head,
 label, binder or pattern remains unchanged or loudly refused.
 
+Two rows above rest on a check that did not exist when they were written, and
+step 2 (WI-20260824-Q0093) supplied it. "Ordinary typing rejects `Type` as a
+Boolean condition" was false of both the `if` condition and the `match` guard:
+their types were computed and dropped, so `if "x" then …` and `case x | 1 -> …`
+loaded as readily as a type value did. Both are checked now
+(`typing.rs::boolean_position_error`), through the same predicate an argument
+gets against a declared parameter — which also refuses a relation-valued
+condition or guard (measured: it failed at eval with the same "expected Bool,
+got Relation") and a value at a rigid type parameter (refused identically in an
+argument slot). The `literals` row's list and set halves have
+the mirror of that gap and it is NOT closed here: a collection literal's elements
+are not checked against the declared element type at all, so `["a", 1]` in a
+`List[T = String]` loads — a missing collection-literal check rather than a
+classification question, and its own work item.
+
 ## 4. Dot receiver split
 
 A type-shaped receiver currently participates in two different mechanisms:

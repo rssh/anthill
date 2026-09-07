@@ -7415,6 +7415,9 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
         },
         expected: Value::term(pure_arrow),
         actual: Value::term(noisy_arrow),
+        // WI-20260824-Q0093: no occurrence behind this hand-built pair, and no type value
+        // in it either — the field is what a classified type value's SURFACE rides in.
+        denoted: None,
         site: TypeError::here(),
     };
     let msg = err.format(&kb);

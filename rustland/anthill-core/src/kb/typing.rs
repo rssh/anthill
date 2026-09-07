@@ -124,6 +124,24 @@ pub enum TypeError {
         // marker is threaded into `LoadError::TypeMismatch.origin` so a mismatch
         // can be traced to its construction site without hand-instrumenting.
         site: &'static std::panic::Location<'static>,
+        /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8, *wrong
+        /// destination*) — WHAT THE REJECTED EXPRESSION DENOTES, rendered, when it is a
+        /// proposal-055 classified type value: `Some("Cell[V = Int64]")`, printed as
+        /// `expected String, got Type (Cell[V = Int64])`.
+        ///
+        /// It cannot be read off `actual`, and that is the whole reason for the field.
+        /// `actual` is the expression's TYPE, and every classified type value has the
+        /// same one — `Type` — so the pair renderer can only ever say `got Type`. What
+        /// the author needs to see is the VALUE: which sort the name they wrote now
+        /// denotes, since a bare `Leaf` in a `String` slot is most often a `Leaf()` with
+        /// the parentheses left off, and §8 asks for exactly that to be visible.
+        ///
+        /// `None` at every site that has no expression occurrence to ask — a check run
+        /// between two types alone (a branch join, a declared/actual signature pair)
+        /// knows the types and nothing about what produced them. Filled by
+        /// [`conformance_error`], which is the one renderer the op-argument,
+        /// entity-field, let-annotation and op-return channels all route through.
+        denoted: Option<String>,
     },
     NoParentSort {
         name: Symbol,
@@ -803,6 +821,23 @@ pub enum TypeErrorContext {
     BinderAnnotation {
         binder: Symbol,
     },
+    /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §3, the `conditionals`
+    /// and `matching` rows) — a position whose destination is `Bool`: an `if`
+    /// CONDITION and a `match` arm GUARD.
+    ///
+    /// Its own variant rather than a [`TypeErrorContext::Rule`] with a borrowed
+    /// [`RuleField`], because the two neighbouring slots of the same construct are
+    /// already spoken for: the `if`/`match` branch JOIN renders as `if.rule` /
+    /// `match.rule` ([`compute_branch_join_type`]), so reusing that context would give
+    /// a condition mismatch and a branch mismatch one name and make the two
+    /// indistinguishable in a diagnostic — the defect [`TypeMismatchOrigin`] exists to
+    /// undo.
+    BooleanPosition {
+        /// `"if"` / `"match"` — the enclosing construct.
+        construct: &'static str,
+        /// `"condition"` / `"guard"` — which of its slots.
+        slot: &'static str,
+    },
 }
 
 impl TypeErrorContext {
@@ -842,6 +877,7 @@ impl TypeErrorContext {
             // The binder IS the subject here; there is no enclosing named entity to
             // report (a lambda is anonymous), so the name rides in `field_name` below.
             TypeErrorContext::BinderAnnotation { .. } => "<binder>".to_string(),
+            TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
         }
     }
 
@@ -863,6 +899,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
             TypeErrorContext::DotProjection { .. } => "dot-projection",
             TypeErrorContext::BinderAnnotation { .. } => "binder-annotation",
+            TypeErrorContext::BooleanPosition { .. } => "boolean-position",
         }
     }
 
@@ -881,6 +918,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
             TypeErrorContext::DotProjection { member } => kb.local_name_of(*member).to_string(),
             TypeErrorContext::BinderAnnotation { binder } => kb.local_name_of(*binder).to_string(),
+            TypeErrorContext::BooleanPosition { slot, .. } => (*slot).to_string(),
         }
     }
 }
@@ -942,14 +980,23 @@ impl TypeError {
     pub fn format(&self, kb: &KnowledgeBase) -> String {
         match self {
             TypeError::TypeMismatch {
-                expected, actual, ..
+                expected,
+                actual,
+                denoted,
+                ..
             } => {
                 // WI-795: the SAME pair renderer `to_load_error` uses. This is a
                 // second, currently-unreached rendering of the same two values —
                 // rendering them independently here would silently reintroduce the
                 // `expected X, got X` arity blindness on whichever path reaches it
-                // first.
+                // first. WI-20260824-Q0093: and the same denotation suffix, for the
+                // same reason — two renderings of one error may not say different
+                // things about it.
                 let (expected, actual) = render_mismatch_pair(kb, expected, actual);
+                let actual = match denoted {
+                    Some(d) => format!("{actual} ({d})"),
+                    None => actual,
+                };
                 format!("type mismatch: expected {expected}, got {actual}")
             }
             TypeError::NoParentSort { name } => {
@@ -1424,6 +1471,7 @@ impl TypeError {
                 context,
                 expected,
                 actual,
+                denoted,
                 site,
                 ..
             } => {
@@ -1431,6 +1479,14 @@ impl TypeError {
                 // arity-only arrow mismatch is invisible to the per-side
                 // renderer. See [`render_mismatch_pair`].
                 let (expected_type, actual_type) = render_mismatch_pair(kb, expected, actual);
+                // WI-20260824-Q0093: …and the DENOTATION after the type, when the rejected
+                // expression was a classified type value — `got Type (Cell[V = Int64])`
+                // (design 055 §8). Appended rather than folded into the pair renderer:
+                // that renderer answers about the two TYPES, and this is the third thing.
+                let actual_type = match denoted {
+                    Some(d) => format!("{actual_type} ({d})"),
+                    None => actual_type,
+                };
                 LoadError::TypeMismatch {
                     origin: Some(TypeMismatchOrigin {
                         error_kind: "TypeMismatch",
@@ -14201,8 +14257,14 @@ fn build_type(
                     // same arity disagreement as the op-arg channel's, and
                     // rendered raw it prints the two sides identically.
                     let (ann, vty) = (ann.clone(), vty.clone());
-                    let err =
-                        conformance_error(kb, ann, vty, None, TypeErrorContext::LetBinding { var });
+                    let err = conformance_error(
+                        kb,
+                        ann,
+                        vty,
+                        None,
+                        TypeErrorContext::LetBinding { var },
+                        Some(&value_node),
+                    );
                     results.push(Err(err));
                     return;
                 }
@@ -14607,6 +14669,18 @@ fn build_type(
                         ) {
                             Ok(r) => {
                                 merge_effects_into(kb, &mut guard_effects, &r.effects);
+                                // WI-20260824-Q0093: and its DESTINATION — the `if`
+                                // condition's twin, through the one predicate. The
+                                // comment above ("No `Bool` hint") is still true and is
+                                // still not a check; this is the check.
+                                guard_error = boolean_position_error(
+                                    kb,
+                                    &r.ty,
+                                    Some(g),
+                                    Some(g.span.span),
+                                    "match",
+                                    "guard",
+                                );
                             }
                             Err(e) => guard_error = Some(e),
                         }
@@ -14688,10 +14762,15 @@ fn build_type(
             let mut effects = scr_effects;
             // WI-342: branch types are carrier-agnostic `Value`s — a branch may be
             // a `Value::Node` lambda arrow; the join carries it (no re-grounding).
-            let mut branch_tys: Vec<(Value, Option<Span>)> = Vec::with_capacity(branch_count);
+            let mut branch_tys: Vec<(Value, Option<Span>, Option<Rc<NodeOccurrence>>)> =
+                Vec::with_capacity(branch_count);
             for (i, body_r) in branch_results.into_iter().enumerate() {
                 let body_r = body_r.expect("aggregator");
-                branch_tys.push((body_r.ty.clone(), Some(body_r.node.span.span)));
+                branch_tys.push((
+                    body_r.ty.clone(),
+                    Some(body_r.node.span.span),
+                    Some(Rc::clone(&body_r.node)),
+                ));
                 // Filter effects against this branch's locals so
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
@@ -14896,6 +14975,22 @@ fn build_type(
             let cond_r = it.next().unwrap();
             let then_r = it.next().unwrap();
             let else_r = it.next().unwrap();
+            // WI-20260824-Q0093: the condition's DESTINATION, which nothing checked — see
+            // [`boolean_position_error`] for what that admitted and for the control that
+            // says it was never a type-value question. Reported ahead of the branch join,
+            // which would otherwise answer about the arms while the condition is the thing
+            // that is wrong.
+            if let Some(e) = boolean_position_error(
+                kb,
+                &cond_r.ty,
+                Some(&cond_r.node),
+                Some(cond_r.node.span.span),
+                "if",
+                "condition",
+            ) {
+                results.push(Err(e));
+                return;
+            }
             let mut effects = Vec::new();
             merge_effects_into(kb, &mut effects, &cond_r.effects);
             merge_effects_into(kb, &mut effects, &then_r.effects);
@@ -14907,8 +15002,16 @@ fn build_type(
             // WI-342: branch types are carrier-agnostic `Value`s (a branch may be
             // a `Value::Node` lambda arrow); the join carries it (no re-grounding).
             let branch_tys = [
-                (then_r.ty.clone(), Some(then_r.node.span.span)),
-                (else_r.ty.clone(), Some(else_r.node.span.span)),
+                (
+                    then_r.ty.clone(),
+                    Some(then_r.node.span.span),
+                    Some(Rc::clone(&then_r.node)),
+                ),
+                (
+                    else_r.ty.clone(),
+                    Some(else_r.node.span.span),
+                    Some(Rc::clone(&else_r.node)),
+                ),
             ];
             let ty: Value = match compute_branch_join_type(kb, &branch_tys, expected, "if") {
                 Ok(ty) => ty,
@@ -17563,6 +17666,7 @@ fn check_apply_iter(
                                 op_name: fn_sym,
                                 param: *param_sym,
                             },
+                            Some(&arg_result.node),
                         ) {
                             ArgValidation::Ok => {}
                             ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
@@ -17604,6 +17708,7 @@ fn check_apply_iter(
                                 op_name: fn_sym,
                                 param: *param_sym,
                             },
+                            Some(&arg_result.node),
                         ) {
                             ArgValidation::Ok => {}
                             ArgValidation::WrapSome { declared } => {
@@ -18175,6 +18280,9 @@ fn check_apply_iter(
                             surface,
                         },
                         expected: rt,
+                        // A DECLARED projection return against a declared receiver return:
+                        // two signatures, no expression between them to denote anything.
+                        denoted: None,
                         actual,
                     });
                 }
@@ -20441,6 +20549,7 @@ fn check_apply_iter(
                                     op_name: fn_sym,
                                     param: *param_sym,
                                 },
+                                Some(&arg_result.node),
                             ) {
                                 // WI-20260904-50B2K — BIND THE ARROW'S OWN HOLES from the
                                 // argument, exactly as Path 1's argument loop does. The
@@ -20602,6 +20711,7 @@ fn check_apply_iter(
                             op_name: fn_sym,
                             param: param_sym,
                         },
+                        Some(&arg_result.node),
                     ) {
                         // WI-20260904-50B2K — the named twin of the positional bind above;
                         // see its note, including why it is `Ok`-only. Written at BOTH
@@ -42615,6 +42725,11 @@ fn validate_arg_against_param(
     declared: &Value,
     span: Option<Span>,
     context: TypeErrorContext,
+    // WI-20260824-Q0093: the occurrence `actual` is the type OF, when the caller has one
+    // — read only on the failure path, by [`denoted_type_value`], so a rejected
+    // proposal-055 type value can say what it denotes. `None` from a caller with no
+    // expression in hand (a relational result column, a declared/actual signature pair).
+    actual_node: Option<&Rc<NodeOccurrence>>,
 ) -> ArgValidation {
     let actual_g = walk_view(kb, subst, actual);
     let declared_g = walk_view(kb, subst, declared);
@@ -42725,7 +42840,14 @@ fn validate_arg_against_param(
         // less-resolved can only make this check DECLINE (a var and a sort-param are both
         // "not a nominal head"), never claim a mismatch it would not claim deeply.
         if nominal_head_mismatch(kb, subst, &actual_g, &declared_g, HeadPosition::Argument) {
-            return ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context));
+            return ArgValidation::Fail(conformance_error(
+                kb,
+                declared_g,
+                actual_g,
+                span,
+                context,
+                actual_node,
+            ));
         }
         // THE CALLABLE-KIND VERDICT IS NOT ASKED AGAIN HERE, and it was until
         // `/code-review` read the call above. `nominal_head_mismatch`'s FIRST statement is
@@ -42761,6 +42883,7 @@ fn validate_arg_against_param(
                     &inner,
                     span,
                     context.clone(),
+                    actual_node,
                 ) {
                     ArgValidation::Ok => ArgValidation::WrapSome {
                         declared: declared_g,
@@ -42777,6 +42900,7 @@ fn validate_arg_against_param(
                             span,
                             context,
                             expected: declared_g,
+                            denoted: denoted_type_value(kb, actual_node),
                             actual: actual_g,
                         })
                     }
@@ -42807,7 +42931,14 @@ fn validate_arg_against_param(
             return ArgValidation::Ok;
         }
     }
-    ArgValidation::Fail(conformance_error(kb, declared_g, actual_g, span, context))
+    ArgValidation::Fail(conformance_error(
+        kb,
+        declared_g,
+        actual_g,
+        span,
+        context,
+        actual_node,
+    ))
 }
 
 /// WI-RKMD4: does `actual` disagree with `declared` at a NOMINAL HEAD CONSTRUCTOR —
@@ -43203,6 +43334,9 @@ fn validate_arrow_param_result(
         span,
         context: context.clone(),
         expected: walk_type_deep_value(kb, subst, declared),
+        // A CALLBACK's arrow component against the slot's: the pair is two arrow types,
+        // and neither side is an expression this call has an occurrence for.
+        denoted: None,
         actual: walk_type_deep_value(kb, subst, actual),
     };
     // WI-792: ARITY, and it runs FIRST because it is THE ONE COMPONENT THIS CHECK
@@ -44000,6 +44134,9 @@ fn result_column_error(
         declared_return,
         span,
         context.clone(),
+        // A RESULT COLUMN is a goal's argument place, not an expression: there is no
+        // occurrence here whose denotation a message could name.
+        None,
     ) {
         ArgValidation::Fail(err) => return Some(err),
         ArgValidation::WrapSome { declared } => {
@@ -44008,6 +44145,7 @@ fn result_column_error(
                 span,
                 context,
                 expected: declared,
+                denoted: None,
                 actual: column_type.clone(),
             })
         }
@@ -44017,7 +44155,15 @@ fn result_column_error(
     // backwards — "expected <column>, got <return>" — so only its VERDICT is taken and
     // the mismatch is stated in the reader's orientation.
     let mut probe = subst.clone();
-    match validate_arg_against_param(kb, &mut probe, declared_return, column_type, span, context) {
+    match validate_arg_against_param(
+        kb,
+        &mut probe,
+        declared_return,
+        column_type,
+        span,
+        context,
+        None,
+    ) {
         ArgValidation::Ok => None,
         ArgValidation::Fail(_) | ArgValidation::WrapSome { .. } => Some(TypeError::TypeMismatch {
             site: TypeError::here(),
@@ -44027,6 +44173,7 @@ fn result_column_error(
                 surface: None,
             },
             expected: declared_return.clone(),
+            denoted: None,
             actual: column_type.clone(),
         }),
     }
@@ -45986,14 +46133,30 @@ fn validate_field_arg(
         field: field_sym,
     };
     let mut probe = subst.clone();
-    let first = validate_arg_against_param(kb, &mut probe, &r.ty, declared_type, span, ctx.clone());
+    let first = validate_arg_against_param(
+        kb,
+        &mut probe,
+        &r.ty,
+        declared_type,
+        span,
+        ctx.clone(),
+        Some(&r.node),
+    );
     if !matches!(first, ArgValidation::Fail(_)) {
         *subst = probe;
         return first;
     }
     let rebuilt = field_arg_type(kb, env, declared_type, r);
     let mut probe = subst.clone();
-    match validate_arg_against_param(kb, &mut probe, &rebuilt, declared_type, span, ctx) {
+    match validate_arg_against_param(
+        kb,
+        &mut probe,
+        &rebuilt,
+        declared_type,
+        span,
+        ctx,
+        Some(&r.node),
+    ) {
         ArgValidation::Fail(_) => first,
         ok => {
             *subst = probe;
@@ -47263,12 +47426,20 @@ fn function_pairing_permutes_a(
 /// each paying a `kb.intern` the surrounding code deliberately hoists — and it
 /// still reached only ONE of the three channels that render this error. The three
 /// are the op-ARGUMENT, the let-ANNOTATION and the op-RETURN; all now route here.
+///
+/// WI-20260824-Q0093 hangs one more thing on that: `actual_node` is the occurrence
+/// `actual` is the type OF, so a rejected proposal-055 type value can name what it
+/// DENOTES (`got Type (Cell[V = Int64])`, design §8) — see
+/// [`TypeError::TypeMismatch::denoted`]. Being the shared renderer is exactly why it
+/// belongs here: one place to fill, and the four channels above cannot answer it
+/// differently.
 fn conformance_error(
     kb: &mut KnowledgeBase,
     declared: Value,
     actual: Value,
     span: Option<Span>,
     context: TypeErrorContext,
+    actual_node: Option<&Rc<NodeOccurrence>>,
 ) -> TypeError {
     if let Some(err) = function_slot_arity_error(kb, &declared, &actual, span, &context) {
         return err;
@@ -47278,7 +47449,137 @@ fn conformance_error(
         span,
         context,
         expected: declared,
+        denoted: denoted_type_value(kb, actual_node),
         actual,
+    }
+}
+
+/// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8) — the SURFACE a rejected
+/// occurrence denotes, when it is a proposal-055 classified type value, for
+/// [`TypeError::TypeMismatch::denoted`]. `None` for every other expression, and for a
+/// check with no occurrence to ask.
+///
+/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`]), never on "the type came out as
+/// `Type`": a `Type`-valued expression that is not a written type — a call returning one,
+/// a variable holding one — denotes nothing at this source position, and a message
+/// inventing a surface for it would name a sort the author did not write.
+///
+/// Printed through [`TermPrinter::print_occurrence`], which is the writer that already
+/// owes this shape its SOURCE spelling (`Cell[V = Int64]`, brackets and `=`, per its own
+/// `Expr::TypeValue` arm) — so the message quotes text that would load back as what was
+/// written, rather than a debug form. No interning: the occurrence is read as it stands,
+/// which is what CLAUDE.md's note asks of a transient term on a diagnostic path.
+fn denoted_type_value(kb: &KnowledgeBase, node: Option<&Rc<NodeOccurrence>>) -> Option<String> {
+    let mut node = node?;
+    // THROUGH THE WRAPPERS WHOSE TYPE IS ALREADY THEIR CHILD'S, and only those. A `let`
+    // reports its CONTINUATION's type (`TypeBuildFrame::LetFinal`) and an in-body `proof`
+    // its continuation's too ("the proof is transparent to types",
+    // `TypeBuildFrame::ProofStmt`) — so where the rejected `Type` came from the child,
+    // the denotation does too, and stopping at the wrapper would print `got Type` about a
+    // type value standing in plain sight. Every other expression form contributes
+    // something of its own to the type it reports (a lambda's arrow, a tuple's components)
+    // and is NOT descended: its `actual` already shows the `Type` in the position that
+    // carries it, and naming one component's denotation as the whole expression's would be
+    // a different claim.
+    loop {
+        node = match node.as_expr() {
+            Some(Expr::TypeValue { .. }) => {
+                return Some(crate::persistence::print::TermPrinter::new(kb).print_occurrence(node))
+            }
+            Some(Expr::Let { body, .. }) | Some(Expr::Proof { body, .. }) => body,
+            _ => return None,
+        };
+    }
+}
+
+/// WI-20260824-Q0093 (`docs/design/055-implementation.md` §3, the `conditionals` and
+/// `matching` rows) — THE DESTINATION CHECK OF A BOOLEAN POSITION: an `if` condition and
+/// a `match` arm guard.
+///
+/// THE FINDING THIS ARM IS. Q0093 asks each `ValueExpression` family for a negative
+/// destination "where the family admits one", and design §3 says of the conditional row
+/// that a type value is admitted there because "ordinary typing rejects `Type` as a
+/// Boolean condition". Measured, ordinary typing rejected NOTHING there: the condition's
+/// type was computed and dropped on the floor, so `if Cell then … else …` loaded — and so
+/// did `if "x" then …` and `if 1 then …`, which is the control that says this is not a
+/// proposal-055 regression but a slot that never had a check. The `match` guard is the
+/// same hole written twice: its own site said "No `Bool` hint (matching how `if` treats
+/// its condition)", and a hint is not a check. Both slots are checked here, through ONE
+/// predicate, so the two cannot drift apart again.
+///
+/// BORROWED, NOT INVENTED. The judgement is [`validate_arg_against_param`] — the same
+/// predicate an ARGUMENT gets against a declared parameter — so the groundness gate and
+/// the boundary conversions are the ones already in force elsewhere rather than a second
+/// opinion about what conforms. A `Bool` destination can never take the WI-408
+/// some-coercion (it is not an `Option[T]`), so that arm is reported as the mismatch it
+/// is rather than silently accepted.
+///
+/// WHAT THAT PREDICATE REFUSES HERE THAT NOTHING REFUSED BEFORE — three shapes, each
+/// measured with the check backed out, because "it used to load" is only half a fact and
+/// the other half is what it then DID. Found by `/code-review`, whose reading of the two
+/// tolerances named above was right and is corrected here:
+///
+///  * a RELATION-VALUED condition or guard — `if warm(c) then …` over `rule warm(?c) :- …`
+///    — is refused at load. With the check backed out it loads and then fails at EVAL:
+///    `EvalError::TypeMismatch { expected: "Bool", got: "Relation" }` for the `if`, and
+///    `Internal("deliver: parent frame had no awaiting state")` for the guard. So this is
+///    the runtime's own rule, moved one phase earlier and given a span, not a spelling
+///    taken away — which is what CLAUDE.md's "know about errors early" asks for.
+///  * a reflect-`Term` condition (`operation f(t: Term) = if t then …`). The `Term`
+///    tolerance is ONE-DIRECTIONAL — it fires when the DECLARED side is `Term`, and here
+///    the declared side is `Bool` — so it does not reach this position. Backed out, it
+///    fails at eval like the relation above.
+///  * a RIGID type parameter (`operation f[T](c: T) = if c then …`, reported `got ?T`).
+///    A `Var::Rigid` is DETERMINED since WI-1059, so the groundness gate does not defer
+///    it, and the refusal is the one §8.1 already states for a body that pins a parameter
+///    its signature quantified: measured, the same value in an ARGUMENT slot
+///    (`sink(c)` with `sink(b: Bool)`) is refused with the identical `expected Bool, got
+///    ?T`. That pairing is asserted rather than asserted-about, in
+///    `wi_q0093_type_value_occurrence_matrix_test`. It DOES cost a program that ran:
+///    `poly(true)` evaluated before, and the repair is to write the parameter `c: Bool`.
+///
+/// σ is FRESH and discarded: this asks a question ABOUT the condition, and a binding made
+/// while answering it belongs to no call.
+fn boolean_position_error(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    node: Option<&Rc<NodeOccurrence>>,
+    span: Option<Span>,
+    construct: &'static str,
+    slot: &'static str,
+) -> Option<TypeError> {
+    let context = TypeErrorContext::BooleanPosition { construct, slot };
+    // `try_`, not the interning form: `make_sort_ref_by_name` falls through to a bare
+    // `intern` for a name nothing declares, which in a KB without the prelude would mint a
+    // PHANTOM `Bool` and compare every condition against an unresolved sort — reporting
+    // `expected Bool, got Bool`. The `Expr::Const` arm asks the same question the same way
+    // and raises rather than inventing a sort; this says so out loud too, because a
+    // destination check with no destination cannot be run and must not be skipped in
+    // silence (found by `/code-review`).
+    let Some(bool_tid) = kb.try_make_sort_ref_by_name("anthill.prelude.Bool") else {
+        return Some(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context,
+            expected: "the prelude's `Bool` sort, so this position's destination can be \
+                       checked"
+                .to_string(),
+            actual: "a knowledge base that declares no `anthill.prelude.Bool`".to_string(),
+        });
+    };
+    let bool_ty = Value::term(bool_tid);
+    let mut subst = Substitution::new();
+    match validate_arg_against_param(kb, &mut subst, ty, &bool_ty, span, context.clone(), node) {
+        ArgValidation::Ok => None,
+        ArgValidation::Fail(e) => Some(e),
+        ArgValidation::WrapSome { .. } => Some(TypeError::TypeMismatch {
+            site: TypeError::here(),
+            span,
+            context,
+            expected: bool_ty,
+            denoted: denoted_type_value(kb, node),
+            actual: ty.clone(),
+        }),
     }
 }
 
@@ -51050,6 +51351,9 @@ fn binder_annotation_conflict(
         span,
         context: TypeErrorContext::BinderAnnotation { binder },
         expected: context_ty.clone(),
+        // The two sides are the binder's WRITTEN annotation and the type its context
+        // threads in — both types, neither an expression.
+        denoted: None,
         actual: annotation.clone(),
     })
 }
@@ -58016,7 +58320,12 @@ fn expected_is_unconstraining(kb: &KnowledgeBase, exp: &Value) -> bool {
 /// [`expected_is_unconstraining`]; the three arms it guards are marked below.
 fn compute_branch_join_type(
     kb: &mut KnowledgeBase,
-    branch_tys: &[(Value, Option<Span>)],
+    // WI-20260824-Q0093: per branch — its type, its span, and the OCCURRENCE that type
+    // came from. The third is read only on the failure path ([`denoted_type_value`]), so a
+    // branch rejected for denoting a type says which one; the branch families' negative
+    // destination is this check, so without it `if c then "a" else Cell` could only say
+    // `got Type`.
+    branch_tys: &[(Value, Option<Span>, Option<Rc<NodeOccurrence>>)],
     expected: Option<Value>,
     construct: &str,
 ) -> Result<Value, TypeError> {
@@ -58031,7 +58340,7 @@ fn compute_branch_join_type(
     // re-grounding. `TypeError` fields are `Value` (S2), so the branch carrier
     // flows straight into any diagnostic below.
     let first_ty: Value = match branch_tys.first() {
-        Some((b, _)) => b.clone(),
+        Some((b, _, _)) => b.clone(),
         None => {
             return Err(TypeError::Other {
                 site: TypeError::here(),
@@ -58059,7 +58368,7 @@ fn compute_branch_join_type(
         .as_ref()
         .filter(|e| !expected_is_unconstraining(kb, e));
     if let Some(exp) = checked {
-        for (bt, span) in branch_tys {
+        for (bt, span, node) in branch_tys {
             // WI-335: each branch's conformance check is independent.
             let mut subst = Substitution::new();
             if !types_compatible(kb, &mut subst, bt, exp) {
@@ -58068,6 +58377,7 @@ fn compute_branch_join_type(
                     span: *span,
                     context: branch_ctx,
                     expected: exp.clone(),
+                    denoted: denoted_type_value(kb, node.as_ref()),
                     actual: bt.clone(),
                 });
             }
@@ -58077,12 +58387,12 @@ fn compute_branch_join_type(
     // Synthesized type: the join (common supertype) of the branch types. Track the
     // branch that breaks the join (no common supertype) for diagnostics.
     let mut acc = first_ty;
-    let mut clash: Option<(Value, Option<Span>)> = None;
-    for (bt, span) in &branch_tys[1..] {
+    let mut clash: Option<(Value, Option<Span>, Option<Rc<NodeOccurrence>>)> = None;
+    for (bt, span, node) in &branch_tys[1..] {
         match join_types(kb, acc.clone(), bt.clone()) {
             Some(j) => acc = j,
             None => {
-                clash = Some((bt.clone(), *span));
+                clash = Some((bt.clone(), *span, node.clone()));
                 break;
             }
         }
@@ -58115,7 +58425,7 @@ fn compute_branch_join_type(
         // with anything), so accepting it would collapse a genuine clash
         // to a wildcard — report the clash instead, mirroring the
         // type_var guard in the `(None, Some)` arm above.
-        (Some((bt, span)), Some(exp)) => {
+        (Some((bt, span, node)), Some(exp)) => {
             // WI-20260829-9TGP7: `FlexVar` joins `type_var` here for the same reason the
             // comment above gives — an unbound inference variable is no upper bound, so
             // accepting it would collapse a genuine branch clash to a wildcard.
@@ -58125,6 +58435,7 @@ fn compute_branch_join_type(
                     span,
                     context: branch_ctx,
                     expected: acc.clone(),
+                    denoted: denoted_type_value(kb, node.as_ref()),
                     actual: bt.clone(),
                 })
             } else {
@@ -58133,11 +58444,12 @@ fn compute_branch_join_type(
         }
         // No expected type and no common supertype — the top-less lattice
         // has no join, so the branch types genuinely clash.
-        (Some((bt, span)), None) => Err(TypeError::TypeMismatch {
+        (Some((bt, span, node)), None) => Err(TypeError::TypeMismatch {
             site: TypeError::here(),
             span,
             context: branch_ctx,
             expected: acc.clone(),
+            denoted: denoted_type_value(kb, node.as_ref()),
             actual: bt.clone(),
         }),
     }
@@ -67531,6 +67843,7 @@ fn check_operation_bodies(
                             op_name: op.op_sym,
                             surface: None,
                         },
+                        Some(&result.node),
                     ));
                 } else if let Some(e) =
                     abstracting_return_error(kb, &body_ty, &effective_return, op.op_sym)
@@ -70548,6 +70861,7 @@ fn dispatch_calls_in_occ(
                         name: rs,
                         field: RuleField::Body,
                     },
+                    Some(&result.node),
                 ) {
                     ArgValidation::Fail(e) => errors.push(e),
                     // ACCEPTED, AND THE ACCEPT IS ALL THIS SITE CLAIMS — spelled out

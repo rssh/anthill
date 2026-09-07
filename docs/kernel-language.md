@@ -926,6 +926,21 @@ position at all or only the explicit `Expr.…` constructor.  Until it is settle
 expression syntax in a rule through `anthill.reflect.Expr` (which is what a `[simp]`
 macro reads — proposal 056), not by writing the surface form.
 
+**The `if` CONDITION and a `match` arm GUARD are `Bool` positions.**  Both are
+ordinary value expressions — anything admissible in a value position may be written
+there, a nominal type value included (§4.4) — and both are checked against `Bool`
+where the type is decidable, so `if Cell then …` and `case x | Cell -> …` are refused
+as `expected Bool, got Type (Cell)` rather than loading and being decided at run time.
+The check is the one an argument gets against a declared parameter, so what is admitted
+here and what is admitted at an argument slot cannot drift apart.  A **goal-shaped**
+condition is therefore not a second spelling of a Boolean one: `if warm(c) then …` over a
+rule `warm` is refused, naming `Relation[…]` — which is the message evaluation gave it
+before, one phase later and without a span.  So is a value at a **rigid type parameter**
+(`operation f[T](c: T) = if c then …`), for the reason §8.1 gives for a body that pins a
+parameter its signature quantified; the repair is to write the parameter `c: Bool`.
+(WI-20260824-Q0093 — before it neither slot had a destination check of any kind:
+`if "x" then …`, `if 1 then …` and `case x | "y" -> …` all loaded clean.)
+
 There is no `end` belonging to `match`: each `case` arm's body is an `Expr`, and
 the surrounding declaration/body delimiter ends the last arm.  A guard after
 `|` is checked only for that arm.  Patterns bind lexically in their arm or
