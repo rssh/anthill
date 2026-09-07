@@ -3853,13 +3853,7 @@ impl Interpreter {
     }
 
     fn literal_to_value(&self, lit: Literal) -> Result<Value, EvalError> {
-        Ok(match lit {
-            Literal::Int(n) => Value::Int(n),
-            Literal::Float(f) => Value::Float(f.into_inner()),
-            Literal::Bool(b) => Value::Bool(b),
-            Literal::String(s) => Value::Str(s),
-            Literal::BigInt(n) => Value::BigInt(n),
-        })
+        Ok(Value::from_literal(lit))
     }
 }
 

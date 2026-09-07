@@ -91,8 +91,22 @@ pub fn build_args_value(interp: &mut Interpreter, args: &[String]) -> Result<Val
 ///     now shares, WI-757.)
 ///   - any other evaluator error → `error: <e>` + `EXIT_RUNTIME`.
 pub fn exit_code_from_main(kb: &KnowledgeBase, result: Result<Value, EvalError>) -> i32 {
+    use anthill_core::kb::term_view::TermView;
     match result {
-        Ok(Value::Int(n)) => {
+        // WI-20260827-14EV6 — READ FOR WHAT IT DENOTES, not which variant carries it.
+        // This was `Ok(Value::Int(n))`, a narrow match that saw the native carrier alone,
+        // so `operation main(...) -> Int64 = code_n.head.n` — a `main` returning a
+        // relation COLUMN, which has ridden as a `Value::Term` since WI-20260827-3ZNBC
+        // stopped normalizing them — exited 1 with `main returned non-Int64 value:
+        // Term { id: … }` about a value that was an Int64. Found by /code-review: the
+        // sibling read in `anthill-rust-gen`'s bundle template had already been fixed,
+        // so `anthill run` and the bundle GENERATED FROM THE SAME PROGRAM disagreed.
+        //
+        // Worth knowing for the next such sweep: a narrow read spelled as a PATTERN
+        // MATCH is invisible to the census that caught the rest (mark the accessor
+        // `#[deprecated]`, compile the workspace) — there is no accessor to mark.
+        Ok(ref v) if v.literal_int64(kb).is_some() => {
+            let n = v.literal_int64(kb).expect("guarded by the arm above");
             if (0..=255).contains(&n) {
                 n as i32
             } else {

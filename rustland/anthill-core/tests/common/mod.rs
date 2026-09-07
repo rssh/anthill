@@ -650,7 +650,27 @@ pub fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(eval::Value, bool)>
     });
     kb.resolve(&[goal], &ResolveConfig::default())
         .iter()
-        .map(|sol| (kb.reify(r_var, &sol.subst), sol.is_definite()))
+        .map(|sol| {
+            // WI-20260904-EMVCB — READ THE ANSWER THE WAY A CONSUMER DOES.
+            //
+            // This used to be a bare `kb.reify(r_var, &sol.subst)`, which is a RAWER
+            // read than any product consumer performs: `materialize_solution`'s
+            // relation column, `Substitution.lookup`, and the CLI's query printer all
+            // go through `answer_binding`, which folds a `Const` occurrence to the
+            // scalar it denotes (an answer is a value; `Value::Node` is the ACCEPTING
+            // carrier). Reading past that made this helper report `Node(Const(Int(2)))`
+            // where every real consumer sees `Int(2)` — a measuring instrument that
+            // disagrees with the thing measured, and the reason EMVCB's own headline
+            // rows looked unfixed after the repair landed.
+            //
+            // `reify` stays the FALLBACK, so the UNBOUND case is untouched:
+            // `answer_binding` answers `None` there, where `reify` yields the var's own
+            // term. Only a BOUND answer changes, and only by folding a Const.
+            let v = kb
+                .answer_binding(r_vid, &sol.subst)
+                .unwrap_or_else(|| kb.reify(r_var, &sol.subst));
+            (v, sol.is_definite())
+        })
         .collect()
 }
 

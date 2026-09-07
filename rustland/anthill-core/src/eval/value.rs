@@ -455,6 +455,26 @@ impl Value {
         }
     }
 
+    /// The native scalar carrier for a `Literal` — THE owner of that mapping.
+    ///
+    /// Total, and deliberately so: every `Literal` variant has an unboxed `Value`
+    /// twin, which is what lets a `Const` head be folded to a value without asking
+    /// whether it can be. `eval::Interpreter::literal_to_value` and
+    /// `KnowledgeBase::fold_const_occurrences` both read it here rather than re-listing
+    /// the five arms — a second copy is how the two would drift. (NOT `reify_value`,
+    /// which deliberately has no `Const` fold: it is shared with the ACCEPT side and
+    /// its own site argues at length that it must not have one.)
+    pub fn from_literal(lit: crate::kb::term::Literal) -> Value {
+        use crate::kb::term::Literal;
+        match lit {
+            Literal::Int(n) => Value::Int(n),
+            Literal::Float(f) => Value::Float(f.into_inner()),
+            Literal::Bool(b) => Value::Bool(b),
+            Literal::String(s) => Value::Str(s),
+            Literal::BigInt(n) => Value::BigInt(n),
+        }
+    }
+
     /// Unwrap the hash-consed `Value::Term` variant, panicking LOUDLY on any
     /// other carrier. WI-477: this replaces the old silent `as_term() ->
     /// Option<TermId>`, whose `None` on a `Value::Node`/`Entity`/scalar was read

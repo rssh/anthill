@@ -6924,6 +6924,15 @@ impl KnowledgeBase {
             // deliberately NOT promoted to a `Term` (that would drop the Node
             // identity `value_fact_full_resolver_search_binds_node_as_value`
             // asserts); an answer stays on the carrier it was proved on.
+            //
+            // WI-20260904-EMVCB NARROWED THAT SENTENCE BY EXACTLY ONE CASE, and this
+            // is not the site that does it. `reify` is shared with the ACCEPT side —
+            // `bridge_op_to_eval` walks its operands through `reify_value`, which is
+            // the whole of what WI-20260827-3ZNBC established — so a `Const` fold here
+            // would undo it. The fold lives at [`Self::answer_binding`], the boundary
+            // where a binding is handed OUT; see the argument on
+            // `fold_const_occurrences`. Everything reaching THIS line keeps its
+            // carrier, including a `Const` occurrence still in flight.
             other => self.reify_value(&other, subst),
         }
     }
@@ -7116,15 +7125,159 @@ impl KnowledgeBase {
     /// Deep, not a top-level chase: a chase alone still reports `B(v: Var(G))` for
     /// `?x <=> B(v: ?y), ?y <=> 6`. [`Self::reify_value`] is the existing owner of
     /// both halves (its own doc states the true invariant — a chain "collapses even
-    /// when σ is not path-compressed") and preserves a non-`Term` carrier's
-    /// identity, so a `Value::Node` answer stays a `Value::Node`.
+    /// when σ is not path-compressed") and preserves a non-`Term` carrier's identity.
+    ///
+    /// WI-20260904-EMVCB THEN NARROWED THAT LAST CLAUSE, and this is the site that does
+    /// it, so the sentence is corrected here rather than only argued elsewhere: a
+    /// `Value::Node` answer NO LONGER always stays a `Value::Node`. One whose expr is
+    /// `Expr::Const` folds to the scalar it denotes ([`Self::fold_const_occurrences`]) —
+    /// `Value::Node` is the carrier on which a compile-time expression is ACCEPTED, and
+    /// an answer is a value. Every OTHER occurrence still rides through unchanged.
     pub fn answer_binding(
         &mut self,
         var: VarId,
         subst: &subst::Substitution,
     ) -> Option<crate::eval::value::Value> {
         let bound = subst.resolve_as_value(var)?.clone();
-        Some(self.reify_value(&bound, subst))
+        let reified = self.reify_value(&bound, subst);
+        Some(Self::fold_const_occurrences(reified))
+    }
+
+    /// WI-20260904-EMVCB — an ANSWER is a value, so a `Const` occurrence in one is
+    /// folded to the scalar it denotes.
+    ///
+    /// **`Value::Node` is the ACCEPTING carrier, not an emitting one.** It exists so a
+    /// consumer can be handed a compile-time expression on the carrier the resolver
+    /// proved it on — WI-20260827-3ZNBC hands every bridged operand that way, and
+    /// WI-20260904-QQPQ2 made the READ side cope with it. What had no owner was the
+    /// way BACK: a bridged body that returns its own parameter (`apply1(lambda x -> x,
+    /// 2)`), and a bare `?r <=> 2`, both hand the operand's occurrence out as the
+    /// answer. `?r` then IS the expression rather than its value.
+    ///
+    /// WHY ONLY `Const`, and why here rather than deeper. A `Const` occurrence denotes
+    /// a literal and a literal already HAS a native carrier, so folding loses nothing
+    /// but the span — every other `Expr` is structure a reader may still need to walk.
+    /// And this is the one boundary at which resolution hands a binding OUT: both live
+    /// callers of [`KnowledgeBase::answer_binding`] are emit sites, and the list is the
+    /// whole of it — the argument for folding HERE rather than deeper rests on that, so
+    /// it is spelled out: `materialize_solution` (eval/mod.rs) building a relation
+    /// column, `Substitution.lookup` (eval/builtins.rs) answering anthill code what a
+    /// var is bound to, the CLI query printer (anthill-cli/src/main.rs), and
+    /// `receiver_short_name` (anthill-cpp-gen/src/lib.rs). The last reads the answer
+    /// carrier-neutrally and so is indifferent to this fold; it is named because a
+    /// census that omits a caller is not a census. Folding any deeper — in `reify_value`, in `builtin_unify`, in
+    /// `Value::node` — reaches the ACCEPT side too, which is precisely what the carrier
+    /// is for. `reify_value` in particular is shared: `bridge_op_to_eval` walks its
+    /// operands through it, and folding there would undo WI-3ZNBC.
+    ///
+    /// RECURSIVE over `Entity`/`Tuple` children, because an answer is value-shaped all
+    /// the way down: `some(2)`'s payload is as much of the answer as a bare `2`.
+    ///
+    /// ## The hash-consed literal is DELIBERATELY out of scope, and it was measured
+    ///
+    /// A literal answer has TWO non-native carriers, not one: the `Value::Node`
+    /// occurrence this folds, and a hash-consed `Value::Term` over `Term::Const` —
+    /// which is what a FACT-matched column rides on. So the contract "an answer is a
+    /// value" holds for `rule value(?r) :- ?r <=> 2` and NOT for
+    /// `rule value(?r) :- code(n: ?r)` over `fact code(n: 0)`. /code-review named that
+    /// asymmetry and it is real.
+    ///
+    /// Folding the `Term` carrier here as well was BUILT AND MEASURED rather than
+    /// argued: **9 of 6531 fail**, in two classes, and the first is why it is not done:
+    ///
+    ///  * A USER-VISIBLE REGRESSION. `wi863_operator_arithmetic_test::float_division_computes`
+    ///    — `6.0 / 2.0` prints `?r = 3` instead of `3.0`. `TermPrinter` renders a
+    ///    `Term::Const(Float)` with its decimal point; a native `Value::Float(3.0)`
+    ///    renders through Rust's `Display`, which drops it. The hash-consed carrier is
+    ///    holding a PRINTABLE FORM the native one does not reproduce, so folding it is
+    ///    not carrier-neutral the way folding an occurrence is.
+    ///  * Stale carrier-enumerating test helpers (`wi999`, `wi936`, `wi1034`, `wi_gmg6n`)
+    ///    — the same shape as `wi_p9y67`'s, panicking on a correct `Int(7)`.
+    ///
+    /// Closing that half therefore needs a float-rendering decision first, and is its
+    /// own change. What is NOT true is that it "just works": recorded here so the next
+    /// reader inherits the measurement rather than the guess. Pinned as behaviour by
+    /// `wi_emvcb_answer_is_a_value_test::a_fact_matched_literal_keeps_its_hash_consed_carrier`.
+    fn fold_const_occurrences(v: crate::eval::value::Value) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::Expr;
+        match v {
+            Value::Node(ref occ) => match occ.as_expr() {
+                Some(Expr::Const(lit)) => Value::from_literal(lit.clone()),
+                _ => v,
+            },
+            Value::Entity {
+                ref pos, ref named, ..
+            }
+            | Value::Tuple { ref pos, ref named }
+                if !Self::bears_const_occurrence(pos, named) =>
+            {
+                v
+            }
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => Value::Entity {
+                functor,
+                pos: Self::fold_children_pos(&pos),
+                named: Self::fold_children_named(&named),
+            },
+            Value::Tuple { pos, named } => Value::Tuple {
+                pos: Self::fold_children_pos(&pos),
+                named: Self::fold_children_named(&named),
+            },
+            other => other,
+        }
+    }
+
+    /// Does any child of a compound answer carry a `Const` occurrence?
+    ///
+    /// A READ-ONLY pre-pass, so the common case — nothing to fold — returns the value
+    /// UNCHANGED and keeps its existing `Rc` sharing. Without it,
+    /// [`Self::fold_const_occurrences`] rebuilt both child slices of every compound
+    /// answer unconditionally, and `materialize_solution` calls `answer_binding` once
+    /// per column per row: draining a relation of compound values paid two fresh slice
+    /// allocations per compound column per row to return exactly what it was given
+    /// (/code-review on WI-20260904-EMVCB).
+    fn bears_const_occurrence(
+        pos: &Rc<[crate::eval::value::Value]>,
+        named: &Rc<[(Symbol, crate::eval::value::Value)]>,
+    ) -> bool {
+        pos.iter()
+            .chain(named.iter().map(|(_, c)| c))
+            .any(Self::value_bears_const_occurrence)
+    }
+
+    /// [`Self::bears_const_occurrence`] for one value — the same walk
+    /// [`Self::fold_const_occurrences`] makes, answering whether it would change
+    /// anything.
+    fn value_bears_const_occurrence(v: &crate::eval::value::Value) -> bool {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::Expr;
+        match v {
+            Value::Node(occ) => matches!(occ.as_expr(), Some(Expr::Const(_))),
+            Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+                Self::bears_const_occurrence(pos, named)
+            }
+            _ => false,
+        }
+    }
+
+    fn fold_children_pos(pos: &Rc<[crate::eval::value::Value]>) -> Rc<[crate::eval::value::Value]> {
+        pos.iter()
+            .cloned()
+            .map(Self::fold_const_occurrences)
+            .collect()
+    }
+
+    fn fold_children_named(
+        named: &Rc<[(Symbol, crate::eval::value::Value)]>,
+    ) -> Rc<[(Symbol, crate::eval::value::Value)]> {
+        named
+            .iter()
+            .map(|(s, c)| (*s, Self::fold_const_occurrences(c.clone())))
+            .collect()
     }
 
     /// WI-629: reify (fully σ-apply) the positional + named children of a compound

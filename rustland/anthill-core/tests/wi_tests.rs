@@ -1616,3 +1616,6 @@ mod wi_60143_total_unify_descent_test;
 
 #[path = "include/wi14ev6_carrier_neutral_scalar_read_test.rs"]
 mod wi14ev6_carrier_neutral_scalar_read_test;
+
+#[path = "include/wi_emvcb_answer_is_a_value_test.rs"]
+mod wi_emvcb_answer_is_a_value_test;

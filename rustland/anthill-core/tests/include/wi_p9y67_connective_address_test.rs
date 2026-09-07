@@ -41,33 +41,31 @@
 //!     removed — a separate defect this ticket found, see its own doc.
 
 use crate::common::{interp_for, query_unary, try_load_kb_with};
-use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::kb::term::{Literal, Term};
 
 /// The sole DEFINITE integer `qn` answers, or a panic naming what came back instead.
 ///
-/// Reads the answer as a TERM: a rule answers by unification, so the binding is the
-/// literal term the goal carried and the eval-side `Int` carrier never appears here.
 /// The `true` in the pattern is load-bearing — the defect this file pins answered ONE
 /// solution that was CONDITIONAL, so a count alone would have called it success.
+///
+/// CARRIER-NEUTRAL, AND THIS HELPER LEARNED THAT THE EXPENSIVE WAY TWICE. It began
+/// reading the answer as a `Term` only, on the reasoning that "a rule answers by
+/// unification, so the binding is the literal term the goal carried and the eval-side
+/// `Int` carrier never appears here". A `<=>` over a hash-consed literal then handed
+/// back an occurrence, and a `Value::Node` arm was added beside the `Value::Term` one.
+/// WI-20260904-EMVCB then made an ANSWER fold a `Const` occurrence to its scalar, and
+/// the two-arm list panicked on `Int(1)` — the right integer, through a carrier the
+/// list had not met.
+///
+/// Enumerating carriers is the defect, not the length of the list: each new one is a
+/// PANIC ON A CORRECT ANSWER. `scalar_int` asks which VALUE this denotes and cannot go
+/// stale when a carrier is added or removed (WI-20260827-14EV6).
 fn sole_definite_int(kb: &mut KnowledgeBase, qn: &str) -> i64 {
     let answers = query_unary(kb, qn);
-    // BOTH CARRIERS, deliberately: a rule answers by unification and the binding comes
-    // back as the literal TERM the goal carried, while a `<=>` over a hash-consed
-    // literal can hand back the occurrence carrier instead. Same integer, two
-    // representations, and a helper that knows only one silently turns a passing row
-    // into a panic about the wrong thing (measured — it did).
     match answers.as_slice() {
-        [(Value::Term { id, .. }, true)] => match kb.get_term(*id) {
-            Term::Const(Literal::Int(i)) => *i,
-            other => panic!("`{qn}` must answer an Int literal, got {other:?}"),
-        },
-        [(Value::Node(occ), true)] => match occ.as_expr() {
-            Some(anthill_core::kb::node_occurrence::Expr::Const(Literal::Int(i))) => *i,
-            other => panic!("`{qn}` must answer an Int literal, got {other:?}"),
-        },
-        other => panic!("`{qn}` must answer exactly one DEFINITE term, got {other:?}"),
+        [(v, true)] => crate::common::scalar_int(kb, v)
+            .unwrap_or_else(|| panic!("`{qn}` must answer an Int literal, got {v:?}")),
+        other => panic!("`{qn}` must answer exactly one DEFINITE answer, got {other:?}"),
     }
 }
 
