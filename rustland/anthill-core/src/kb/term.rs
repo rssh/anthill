@@ -298,6 +298,20 @@ pub struct TermStore {
 }
 
 impl TermStore {
+    /// WI-20260904-02ERR's acceptance instrument: how many LIVE `Term::Var(Global)` the
+    /// store holds. A per-site inference variable hash-conses with nothing and nothing
+    /// releases it, so before that ticket this count grew by one per un-annotated binder
+    /// PER LOAD. Counting the kind directly — rather than the store's total length — is
+    /// what makes the measurement immune to unrelated vocabulary the program also interns.
+    pub fn global_var_count(&self) -> usize {
+        self.terms
+            .iter()
+            .filter(|t| matches!(t, Some(Term::Var(Var::Global(_)))))
+            .count()
+    }
+}
+
+impl TermStore {
     pub fn new() -> Self {
         Self {
             terms: Vec::new(),

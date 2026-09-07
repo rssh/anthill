@@ -10006,6 +10006,17 @@ impl KnowledgeBase {
         out: &mut Vec<VarId>,
     ) {
         match tn {
+            // WI-20260904-02ERR: the var leaf must report itself, or this walk goes blind to
+            // exactly the variables that changed carrier — the same shape as WI-20260905-N20EZ's
+            // `Expr::Spliced` blindness, where a goal that was NOT ground read as ground and NAF
+            // succeeded unsoundly. Route through the same `collect_unbound_vars` seam the
+            // interned twin used so a var bound in σ is still not reported.
+            TypeNode::Var(Var::Global(vid)) => {
+                if subst.resolve_as_value(*vid).is_none() && !out.contains(vid) {
+                    out.push(*vid);
+                }
+            }
+            TypeNode::Var(_) => {}
             TypeNode::Denoted { value } => self.collect_unbound_vars_node(value, subst, out),
             TypeNode::Parameterized { base, bindings } => {
                 self.collect_type_child_unbound_vars(base, subst, out);

@@ -3400,12 +3400,41 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
 /// `Value::Node` occurrence being built — `Term` → `Ground`, `Node` → `Node`.
 /// A scalar/`Var` type value is a typer bug (types are `Term`/`Node`); re-ground
 /// it defensively so we don't panic.
+/// WI-20260904-02ERR: [`value_to_type_child`] with the caller's provenance. A type
+/// VARIABLE is the only child whose carrier is minted here rather than carried in, so it is
+/// the only one whose span this decides; every other arm ignores it.
+fn value_to_type_child_at(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> TypeChild {
+    match v {
+        Value::Var(var) => kb.type_var_child(*var, span, owner),
+        other => value_to_type_child(kb, other),
+    }
+}
+
 fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
     match v {
         Value::Term { id: t, .. } => TypeChild::Interned(*t),
         Value::Node(occ) => TypeChild::Node(Rc::clone(occ)),
+        // WI-20260904-02ERR: a VARIABLE in a type slot is well-formed, not a typer bug.
+        // WI-1079 admitted it at the READING end (`type_head`'s arm, and the `FlexVar` /
+        // `Skolem` reflect forms) and never gave the BUILDING path the matching arm — so
+        // this site called it "a typer bug" while `type_head` called the same form
+        // "perfectly well-formed". `type_var_child` decides the carrier (see there: a
+        // `DeBruijn` is still interned, a per-site `Global`/`Rigid` is not).
+        //
+        // THE SPAN COMES FROM THE CALLER when it has one — see [`value_to_type_child_at`],
+        // which is what the container builders use. This bare entry point has none to
+        // inherit, so it stamps `empty_span()`; `/code-review` found the earlier version
+        // claiming producers called `type_var_child` directly when NONE did, which meant
+        // every inferred var was stamped offset 0 of the FIRST LOADED SOURCE — a real file
+        // position, in the prelude, that any diagnostic anchored on it would point at.
+        Value::Var(v) => kb.type_var_child(*v, super::node_occurrence::empty_span(), None),
         other => {
-            // A scalar/`Var`/`Entity` is a typer bug here (types are `Term`/`Node`);
+            // A scalar/`Entity` is a typer bug here (types are `Term`/`Node`/`Var`);
             // mint a fresh `?ungrounded` type var so we don't panic in release.
             debug_assert!(
                 false,
@@ -3422,6 +3451,21 @@ fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChild {
 /// lambda-arrow carrying `Modify[c]`), mint a `Value::Node` via
 /// [`KnowledgeBase::make_parameterized_occ`] so the poisoned child is CARRIED,
 /// not re-grounded; otherwise the hash-consed [`KnowledgeBase::make_parameterized_type`].
+/// WI-20260904-02ERR: does this type value force the OCCURRENCE carrier for its container?
+///
+/// Two forms cannot ride a hash-consed container. A `Value::Node` is the original one — a
+/// `denoted` that cannot hash-cons. A `Value::Var` is the one this ticket added: a per-site
+/// inference variable is unique to its site, so a container built over it is shareable with
+/// NOTHING and interning it buys nothing while pinning a slot for ever.
+///
+/// THE GATE USED TO SPELL ONLY THE FIRST, and each builder's ground branch then read every
+/// remaining field with `expect_term` — so a variable field walked into "expected a
+/// hash-consed Value::Term, got Value::Var" rather than taking the carrier it needed.
+/// MEASURED on `wi_50b2k_binder_inference_test`'s two nested/solved-arrow rows.
+fn type_value_needs_occurrence(v: &Value) -> bool {
+    matches!(v, Value::Node(_) | Value::Var(_))
+}
+
 /// `base` is the ground `sort_ref` (`List`/`Set`/…); `span`/`owner` stamp the new
 /// occurrence when Node-carried.
 fn parameterized_value(
@@ -3439,14 +3483,15 @@ fn parameterized_value(
     // arrow→effect-row spine is what this migration moves to occurrence-primary, not
     // `List[T]`. (Flipping closed parameterizeds to `Node` added erasure risk at every
     // `.as_term()` consumer for no payoff — reverted.)
-    if bindings.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
+    if bindings.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
         let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
-            children.push((*s, value_to_type_child(kb, v)));
+            children.push((*s, value_to_type_child_at(kb, v, span, owner)));
         }
         Value::Node(kb.make_parameterized_occ(TypeChild::Interned(base), children, span, owner))
     } else {
-        // Closed: every binding is a `Value::Term` (checked above) — hash-consed.
+        // Closed: no binding is a `Value::Node` OR a `Value::Var` (checked above), so
+        // every one is a `Value::Term` — hash-consed.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
         for (s, v) in bindings {
             terms.push((*s, v.expect_term()));
@@ -3467,15 +3512,15 @@ fn named_tuple_value(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
-    if fields.iter().any(|(_, v)| matches!(v, Value::Node(_))) {
+    if fields.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
         let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(fields.len());
         for (s, v) in fields {
-            children.push((*s, value_to_type_child(kb, v)));
+            children.push((*s, value_to_type_child_at(kb, v, span, owner)));
         }
         Value::Node(kb.make_named_tuple_occ(children, span, owner))
     } else {
-        // Ground branch: no field is a `Value::Node` (checked above), so every
-        // value is a `Value::Term` — unwrap it directly for the hash-consed builder.
+        // Ground branch: no field is a `Value::Node` OR a `Value::Var` (checked above),
+        // so every value is a `Value::Term` — unwrap it for the hash-consed builder.
         let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
         for (s, v) in fields {
             terms.push((*s, v.expect_term()));
@@ -4788,7 +4833,7 @@ fn make_arrow_value(
                 kb.make_open_occ(TypeChild::Interned(tail), span, owner)
             }
             _ => {
-                let label_child = value_to_type_child(kb, label);
+                let label_child = value_to_type_child_at(kb, label, span, owner);
                 kb.make_present_occ(label_child, span, owner)
             }
         };
@@ -4796,8 +4841,10 @@ fn make_arrow_value(
     }
     let effects_child =
         TypeChild::Node(kb.make_effects_rows_occ(TypeChild::Node(row), span, owner));
-    let param_child = value_to_type_child(kb, param);
-    let result_child = value_to_type_child(kb, result);
+    // WI-20260904-02ERR: the arrow builder has the written span — an un-annotated binder
+    // is the commonest inferred type var, so this is the one that most wants provenance.
+    let param_child = value_to_type_child_at(kb, param, span, owner);
+    let result_child = value_to_type_child_at(kb, result, span, owner);
     // WI-791: `arity` is passed in, never read back off `param` — the caller is the
     // only one that still knows whether a `named_tuple` param is a parameter LIST
     // or one tuple-typed parameter.
@@ -5018,9 +5065,11 @@ fn walk_type_deep_value_g(
 /// [`walk_type_deep`] and every `TypeChild::Node` recursed. Share-preserving:
 /// an unchanged subtree returns its original `Rc` (so an all-ground-stable
 /// tree costs only the traversal). `Denoted` (a VALUE occurrence — no type
-/// vars), `NamedTuple` (Value-carried fields list) and `ExprCarried` (an
-/// expression receiver) are returned as-is — none of them can embed a row
-/// var today; extend when one does.
+/// vars) and `ExprCarried` (an expression receiver) are returned as-is — neither can
+/// embed a row var today; extend when one does. `NamedTuple` WAS in that list and is
+/// not any more: WI-20260904-02ERR walks its `Value`-carried `fields` through
+/// [`walk_type_deep_value_g`], because once a type VARIABLE could ride the occurrence
+/// carrier a tuple's field types stopped resolving (a wrong accept).
 fn rewrite_type_occ_deep(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -5042,6 +5091,33 @@ fn rewrite_type_occ_deep(
                 }
                 TypeChild::Interned(w)
             }
+            // WI-20260904-02ERR: the SECOND σ walk that must be able to change a child's
+            // carrier (the first is `node_occurrence::map_type_child`). A bound `?T` becomes
+            // the interned type it denotes; an unbound one keeps the un-interned leaf.
+            // Without this arm the recursion below returns an occurrence and the variable is
+            // never substituted on this path — the deep walk would silently stop resolving
+            // type vars that moved carrier.
+            TypeChild::Node(n) if matches!(n.as_type(), Some(TypeNode::Var(_))) => {
+                let Some(TypeNode::Var(v)) = n.as_type() else {
+                    unreachable!("guarded by the arm's `matches!`")
+                };
+                match v {
+                    Var::Global(vid) => match subst.resolve_as_value(*vid) {
+                        None => TypeChild::Node(Rc::clone(n)),
+                        Some(bound) => {
+                            let bound = bound.clone();
+                            *changed = true;
+                            // The same answer `SubstTypeRewrite::var` gives, from the same
+                            // helper, so the two σ walks cannot drift: the type the binding
+                            // DENOTES, or a loud `⊥` when it denotes none.
+                            let t = super::node_occurrence::type_denoted_by(kb, &bound)
+                                .unwrap_or_else(|| kb.alloc(Term::Bottom));
+                            TypeChild::Interned(walk_type_deep_g(kb, subst, t, ground))
+                        }
+                    },
+                    _ => TypeChild::Node(Rc::clone(n)),
+                }
+            }
             TypeChild::Node(n) => {
                 let r = rewrite_type_occ_deep(kb, subst, n, ground);
                 if !Rc::ptr_eq(&r, n) {
@@ -5054,6 +5130,9 @@ fn rewrite_type_occ_deep(
     let mut changed = false;
     let rebuilt: Option<NodeKind> = match &occ.kind {
         NodeKind::Type(node) => match node {
+            // WI-20260904-02ERR: substituting a var can change its CARRIER, which a
+            // `NodeKind` cannot express — so it is done one level up, in `child` above.
+            TypeNode::Var(_) => None,
             TypeNode::Arrow {
                 param,
                 result,
@@ -5096,10 +5175,42 @@ fn rewrite_type_occ_deep(
             // body's genuinely free variables lose nothing by it, because every
             // consumer instantiates the ∀ away first
             // ([`instantiate_poly_type`]) and what a σ walk meets downstream is the
-            // instantiated body. Joins `Denoted` / `NamedTuple` / `ExprCarried`, which
-            // decline for their own reasons.
+            // instantiated body. Joins `Denoted` / `ExprCarried`, which decline for their
+            // own reasons. (`NamedTuple` USED to be in this list and no longer is —
+            // WI-20260904-02ERR gave it a walking arm above.)
+            // WI-20260904-02ERR — A NAMED TUPLE'S FIELDS ARE WALKED. It used to join the
+            // decliners above, and its "own reason" was never written down because it did
+            // not have one: WI-361 carries `fields` as a `Value`-carried
+            // `List[NamedTupleElement]` rather than as `TypeChild` children, so the
+            // `child` helper this function is built on had nothing to walk — an omission
+            // wearing a decision's clothes.
+            //
+            // IT WAS UNREACHABLE UNTIL A VARIABLE COULD RIDE THIS CARRIER. A tuple whose
+            // field types were all ground stayed HASH-CONSED, and `walk_type_deep_g`
+            // resolved its vars structurally; only a `denoted` field forced the occurrence
+            // form, and a `denoted` carries no type var to resolve. Once a per-site type
+            // variable stopped being interned, `(a: Int64, b: ?param)` took the occurrence
+            // carrier and its `?param` stopped resolving — MEASURED as a WRONG ACCEPT, not
+            // a crash: `both_halves_of_a_solved_arrow_resolve_together` LOADED
+            // `Function[A = Int64, B = (a: Int64, b: String)]` whose body pins `b` to
+            // `Int64`.
+            //
+            // `walk_type_deep_value_g` is the right walk and already total over the shapes
+            // in that list — it descends `Value::Entity` (WI-20260904-B1KFS) and resolves a
+            // `Value::Var` child (the arm below it), which are exactly the element records
+            // and the field types.
+            //
+            // REBUILT UNCONDITIONALLY. The other arms set `changed` by comparing children,
+            // but WI-486 left ONE `Value` comparator and it is not a cheap structural
+            // equality — so this arm pays a rebuild of the tuple occurrence rather than a
+            // deep compare to decide whether to. Correct either way; the share-preservation
+            // the sibling arms get is what is given up.
+            TypeNode::NamedTuple { fields } => {
+                let walked = walk_type_deep_value_g(kb, subst, fields, ground);
+                changed = true;
+                Some(NodeKind::Type(TypeNode::NamedTuple { fields: walked }))
+            }
             TypeNode::Denoted { .. }
-            | TypeNode::NamedTuple { .. }
             | TypeNode::ExprCarried { .. }
             | TypeNode::PolyType { .. } => None,
         },
@@ -5121,8 +5232,9 @@ fn rewrite_type_occ_deep(
             EffectExprNode::Guarded { label, guard } => {
                 // Substitute the label (a `TypeChild`, like `Present`); the guard
                 // `Value` is inert phase-1 metadata (decompose treats guarded as
-                // present), carried unchanged — as `TypeNode::NamedTuple` is not
-                // descended by this `TypeChild`-only walk either.
+                // present), carried unchanged. (This used to cite `TypeNode::NamedTuple`
+                // as the precedent; that arm now walks its fields — WI-20260904-02ERR —
+                // so the reason here stands on the guard's own inertness alone.)
                 let l = child(kb, subst, label, ground, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Guarded {
                     label: l,
@@ -9036,9 +9148,13 @@ fn generalize_eta_arrow(
 /// freshening reaches every child a σ would rather than a hand-rolled walk that would have
 /// to be kept in step with it.
 ///
-/// NOT [`walk_type_deep_value`], which is what the first cut used and which is WRONG HERE:
-/// it routes a `Value::Node` through [`rewrite_type_occ_deep`], whose `NamedTuple` arm
-/// answers "unchanged". An eta arrow's parameter LIST is a `named_tuple`, and it rides the
+/// NOT [`walk_type_deep_value`], which is what the first cut used and which was WRONG HERE
+/// for a reason that has since been REPAIRED AT ITS SOURCE: it routes a `Value::Node`
+/// through [`rewrite_type_occ_deep`], whose `NamedTuple` arm answered "unchanged" until
+/// WI-20260904-02ERR gave it a walking arm. The measurement below is therefore historical —
+/// it is why this function uses the shared close/open/σ walk, and that choice still stands
+/// on its own ground (one walk, kept in step with σ by construction), but the specific hole
+/// it dodges is closed. An eta arrow's parameter LIST is a `named_tuple`, and it rides the
 /// Node carrier whenever any parameter's type does (an arrow parameter always does) — so
 /// every multi-parameter higher-order operation had its parameter-position binders left
 /// SHARED between references, which is precisely the aliasing the deleted gate existed to
@@ -12014,35 +12130,25 @@ fn visit_type(
                     // exactly what must commit. Note the ladder comment above stated that
                     // intent all along ("to pin via unification") while the mint could
                     // not honour it.
-                    // INTERNED, AND THE ALTERNATIVE WAS TRIED AND DOES NOT EXIST HERE.
-                    // `/code-review` found that `type_param_var_term` reaches its `alloc`
-                    // fallback unconditionally for a brand-new `VarId` — its own doc calls
-                    // that "not a case any caller here is expected to hit" — so each
-                    // un-annotated binder leaves a refcounted `Term::Var` in the store,
-                    // against CLAUDE.md's rule that transient terms are not interned. The
-                    // proposed `Value::Var(Var::Global(..))` carrier FAILS: a type value
-                    // reaching a `TypeChild` slot must be a `Term` or a `Node`
-                    // (`value_to_type_child`: "A scalar/`Var`/`Entity` is a typer bug
-                    // here"), measured as `WI-342: non-type Value in a TypeChild slot:
-                    // Var(Global(..))` on every row in `wi_50b2k_binder_inference_test`.
-                    // `TypeChild::Interned` holds a `TermId`, so a variable in TYPE position
-                    // is interned by construction. Removing it needs a transient type-term
-                    // carrier, which is a representation change and not this ticket's —
-                    // WI-20260904-02ERR owns it.
+                    // NOT INTERNED — WI-20260904-02ERR delivered the carrier this site was
+                    // waiting for. `kb.fresh_var` mints a brand-new `VarId` every time, so
+                    // the old `Value::term(type_param_var_term(..))` took that function's
+                    // `alloc` fallback on EVERY un-annotated binder and left a refcounted
+                    // `Term::Var` nothing releases — one pinned `TermStore` slot per binder
+                    // PER LOAD, unbounded in a process that loads repeatedly, against
+                    // CLAUDE.md's rule that transient terms are not interned.
                     //
-                    // AND THIS CALLER IS EXACTLY THE CASE `type_param_var_term`'s OWN DOC
-                    // EXCLUDES — /code-review, and worth stating where the cost is paid
-                    // rather than only where it is filed. That function's `alloc` fallback
-                    // is documented as "not a case any caller here is expected to hit",
-                    // because its other callers hand it a variable that already exists;
-                    // `kb.fresh_var` never does, so this site takes the fallback EVERY
-                    // time. The earlier note called the cost "bounded by (binders x
-                    // passes)", which reads as a constant of the program and is not one:
-                    // nothing decrements the refcount, so a process that LOADS REPEATEDLY
-                    // accumulates without bound.
+                    // `Value::Var` IS THE CARRIER NOW, and the note this replaces was right
+                    // that it used to fail: `value_to_type_child` called a `Var` in a type
+                    // slot "a typer bug". It no longer does — it routes through
+                    // `KnowledgeBase::type_var_child`, which gives a per-site `Global` the
+                    // `TypeNode::Var` occurrence carrier and leaves a shared `DeBruijn`
+                    // interned. A BARE type variable in VALUE position stays `Value::Var`,
+                    // which is what σ already substitutes; the occurrence form is the
+                    // NESTED spelling, minted at that narrowing seam.
                     let fresh = kb.intern("?param");
                     let vid = kb.fresh_var(fresh);
-                    Value::term(type_param_var_term(kb, Var::Global(vid)))
+                    Value::Var(Var::Global(vid))
                 });
             let mut lambda_env = (*env).clone();
             // WI-794: at arity 1 `param_type` IS the annotation (it won the priority
@@ -25703,12 +25809,13 @@ struct OperationInfoFull {
 /// reason it is readable — the fact this record was decoded from holds it — so the
 /// `alloc` fallback is for a KB where that fact has since been retracted, not a case any
 /// caller here is expected to hit.
+/// WI-20260904-02ERR: interning a `Term::Var`. This used to be the ONLY way a variable
+/// could reach a type slot, which is why it was reached unconditionally for brand-new
+/// `VarId`s its own doc said no caller was expected to hit. A type slot now takes
+/// `KnowledgeBase::type_var_child` instead, and this remains only for the callers that
+/// genuinely want the INTERNED term (a stored/DeBruijn spine).
 fn type_param_var_term(kb: &mut KnowledgeBase, v: Var) -> TermId {
-    let term = Term::Var(v);
-    match kb.find_term(&term) {
-        Some(t) => t,
-        None => kb.alloc(term),
-    }
+    kb.alloc_or_find_var_term(v)
 }
 
 /// Look up complete OperationInfo for a functor.
@@ -42247,6 +42354,12 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
     };
     match &occ.kind {
         NodeKind::Type(tn) => match tn {
+            // WI-20260904-02ERR: THE SAME TWO ANSWERS `type_view_is_ground_g` gives a
+            // `ViewHead::Var` — a rigid skolem is ground iff this gate says rigids count, a
+            // flex `Global` never is. The carrier must not change the verdict (WI-20260904-B1KFS
+            // is the ticket for exactly this class of two-carriers-two-answers bug).
+            TypeNode::Var(Var::Rigid(_)) => rigid_ok,
+            TypeNode::Var(_) => false,
             // WI-470: a denoted (value-in-type) is ground for THIS gate iff its value
             // is CLOSED — see [`denoted_value_is_closed`]. A closed denoted
             // (`Vector[Int64, 3]`, `Modify[store]`) is conformance-checked; a var-bearing
@@ -46670,6 +46783,9 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
     };
     match &occ.kind {
         NodeKind::Type(tn) => match tn {
+            // WI-20260904-02ERR: a bare variable is not an arrow. If σ later binds it to
+            // one, the check runs again on the substituted type.
+            TypeNode::Var(_) => false,
             // A denoted carries a VALUE, not a type spine — no callable type inside it.
             TypeNode::Denoted { .. } => false,
             TypeNode::Parameterized { base, bindings } => {
@@ -48688,6 +48804,9 @@ fn eliminate_node_projections(
     let owner = occ.owner;
     match &occ.kind {
         NodeKind::Type(node) => match node {
+            // WI-20260904-02ERR: a variable carries no projection to eliminate — and it
+            // leaves through the choke point, not as a bare `Value::Node`.
+            TypeNode::Var(_) => Ok(super::node_occurrence::occurrence_as_type_value(occ)),
             TypeNode::Arrow {
                 param,
                 result,
@@ -50589,12 +50708,14 @@ fn bind_and_label_pattern(
                         // A type EXISTS one level up and is itself a hole — a tuple
                         // binder whose param type is the lambda's own rung 3. The
                         // components are exactly what inference must solve, so this mints
-                        // what rung 3 mints, for the same reason and with the same
-                        // interning caveat (a variable in TYPE position is interned by
-                        // construction; see the `?param` site).
+                        // what rung 3 mints — including its CARRIER: WI-20260904-02ERR
+                        // removed the interning caveat this comment used to record, so a
+                        // per-site inference variable is no longer pinned in the term
+                        // store. The two producers must move together; fixing only rung 3
+                        // would leave every tuple-binder component still interned.
                         UnpinnedBinder::ToBeInferred => {
                             let vid = kb.fresh_var(fresh);
-                            Value::term(type_param_var_term(kb, Var::Global(vid)))
+                            Value::Var(Var::Global(vid))
                         }
                         // The DECLARATION is what is missing and no parent can supply it.
                         // `SetLiteral` is a parse-level marker with no declared field
@@ -51882,7 +52003,11 @@ fn view_item_value(item: &ViewItem) -> Value {
         ViewItem::Term(t) => Value::term(*t),
         ViewItem::Value(v) => (*v).clone(),
         ViewItem::Owned(v) => v.clone(),
-        ViewItem::Node(rc) => Value::Node(Rc::clone(rc)),
+        // WI-20260904-02ERR: through the choke point, so an arrow param that IS a type
+        // variable reads back as `Value::Var` and the σ walks resolve it. Leaving it a
+        // `Value::Node` made `resolved_type_is_ground` answer false and skipped
+        // `arrow_params_compatible` entirely — a wrong accept (`/code-review`).
+        ViewItem::Node(rc) => super::node_occurrence::occurrence_as_type_value(rc),
     }
 }
 
@@ -51944,6 +52069,24 @@ fn walk_value_to_resolved(kb: &KnowledgeBase, subst: &Substitution, val: Value) 
                     None => return Value::Var(Var::Global(vid)),
                 }
             }
+            // WI-20260904-02ERR: THE THIRD SPELLING OF A TYPE VARIABLE, chased exactly like
+            // the two above. The doc's "every other form is already resolved" stopped being
+            // true when a variable gained the occurrence carrier: a `TypeNode::Var` returned
+            // as-is is an UNWALKED var, so a BOUND one would be compared structurally
+            // against its own binding and mismatch.
+            Value::Node(ref occ) if occ_type_var_global(occ).is_some() => {
+                let vid = occ_type_var_global(occ).expect("guarded by the arm");
+                if visited.contains(&vid) {
+                    return cur;
+                }
+                match subst.resolve_as_value(vid) {
+                    Some(bound) => {
+                        visited.push(vid);
+                        cur = bound.clone();
+                    }
+                    None => return cur,
+                }
+            }
             other => return other,
         }
     }
@@ -52000,6 +52143,23 @@ fn resolved_var(kb: &KnowledgeBase, r: &Value) -> Option<VarId> {
             _ => None,
         },
         Value::Var(Var::Global(vid)) => Some(*vid),
+        // WI-20260904-02ERR: the occurrence-carried spelling. Its absence here was the
+        // single most consequential `_ =>` in the census: `unify_types` asks this before
+        // its structural arms, so a `TypeNode::Var` read as "not a variable" fell through
+        // to a STRUCTURAL comparison and an identity lambda's `?param` stopped unifying
+        // with `Int64` — MEASURED as "type mismatch in main.return (op-return): expected
+        // Int64, got ??param" on `let f = lambda x -> x  f(7)`.
+        Value::Node(occ) => occ_type_var_global(occ),
+        _ => None,
+    }
+}
+
+/// WI-20260904-02ERR: the `VarId` of an occurrence that IS a flex type variable, else
+/// `None`. One reader for the shape, so the σ walk and the unifier cannot disagree about
+/// what counts as a variable.
+fn occ_type_var_global(occ: &Rc<NodeOccurrence>) -> Option<VarId> {
+    match occ.as_type() {
+        Some(TypeNode::Var(Var::Global(vid))) => Some(*vid),
         _ => None,
     }
 }
@@ -52191,6 +52351,11 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
     };
     if let Some(tn) = occ.as_type() {
         return match tn {
+            // WI-20260904-02ERR: THE OCCURS CHECK'S WHOLE SUBJECT. Its interned twin is
+            // caught by `occurs_in` through the `Interned` arm; missing it here would let
+            // `?T := List[?T]` through and build an infinite type.
+            TypeNode::Var(Var::Global(w)) => *w == vid,
+            TypeNode::Var(_) => false,
             // A `denoted`'s carried value is a VALUE reference — an `Expr::Ref` or a
             // WI-302 field-access path (`c.contents`, a `DotApply` chain over value
             // Refs + field names) — never a type var, so it cannot capture `vid`.

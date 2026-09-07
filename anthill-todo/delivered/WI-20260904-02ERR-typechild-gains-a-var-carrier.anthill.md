@@ -3,13 +3,11 @@
 - id: WI-20260904-02ERR-typechild-gains-a-var-carrier
 - created: 2026-09-04T15:07:27Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-04T15:07:27Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-07T00:28:42Z
 
 - acceptance: cargo-test, scaland-sbt-test
-
-- depends_on: WI-20260904-DTY3B-why-typechild-accept
 
 ## Description
 
@@ -190,3 +188,4 @@ A SECOND PRODUCER, AND A SHARPER BOUND — /code-review on WI-20260904-50B2K's `
     long-lived CLI session, the `*_across_loads` test shape) accumulates one pinned
     `TermStore` slot per binder per load, without bound. That is the part worth measuring
     before choosing a representation — a per-load figure, not a per-program one.
+

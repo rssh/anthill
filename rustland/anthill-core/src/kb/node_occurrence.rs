@@ -150,6 +150,8 @@ fn drain_type_child(child: &mut TypeChild, stack: &mut Vec<Rc<NodeOccurrence>>) 
 /// [`drain_expr_children`] for the `Type` carrier.
 fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match tn {
+        // WI-20260904-02ERR: a leaf owns no `Rc`, so there is nothing to drain.
+        TypeNode::Var(_) => {}
         TypeNode::Denoted { value } => {
             let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
             stack.push(std::mem::replace(value, placeholder));
@@ -1710,29 +1712,88 @@ pub enum TypeChild {
     Node(Rc<NodeOccurrence>),
 }
 
+
+/// WI-20260904-02ERR: WIDEN a type occurrence back to a `Value`, restoring the
+/// VALUE-POSITION spelling of a variable.
+///
+/// THE INVARIANT: a BARE type variable in VALUE position is `Value::Var`; [`TypeNode::Var`]
+/// is only its NESTED spelling inside the `TypeChild`/`TypeNode` spine. That split is what
+/// makes substitution total — σ resolves a `Value::Var` directly, and a nested one is
+/// resolved by [`map_type_child`], which returns a `TypeChild` and so CAN change carrier
+/// when the binding arrives. Neither σ walk can re-carry a variable that is the WHOLE
+/// occurrence, so one must never escape into value position.
+///
+/// EVERY WIDENING OUT OF THE SPINE MUST GO THROUGH HERE. `/code-review` found two that did
+/// not — `typing::view_item_value` (reached from `type_child_view_item`, i.e. any
+/// `TermView` read of an arrow's param) and `eliminate_node_projections` — and the symptom
+/// is a WRONG ACCEPT, not a crash: an un-annotated lambda's param read back as
+/// `Value::Node(var)` is not resolved by `walk_type_deep_value`, so `resolved_type_is_ground`
+/// answers false and `arrow_params_compatible` never runs. That is the WI-836 / WI-1084 hole
+/// reopened on a new carrier.
+pub fn occurrence_as_type_value(occ: &Rc<NodeOccurrence>) -> crate::eval::value::Value {
+    use crate::eval::value::Value;
+    match &occ.kind {
+        NodeKind::Type(TypeNode::Var(v)) => Value::Var(*v),
+        _ => Value::Node(Rc::clone(occ)),
+    }
+}
+
+/// [`occurrence_as_type_value`] for a whole `TypeChild`.
+pub fn type_child_as_value(child: &TypeChild) -> crate::eval::value::Value {
+    match child {
+        TypeChild::Interned(t) => crate::eval::value::Value::term(*t),
+        TypeChild::Node(o) => occurrence_as_type_value(o),
+    }
+}
+
 /// Structural `Type`-sort IR (WI-342). One arm per `Type` entity variant that
 /// can sit on a `denoted` spine for the first migrated producer
 /// (`{-Modify[c]}`). THE MEMBERSHIP RULE: a form gets an arm here iff it can
-/// TRANSITIVELY CONTAIN a `denoted`. `sort_ref`, `type_var` and `nothing` are LEAVES —
-/// no children, so no `denoted` can ever be beneath them — which is why they have no arm
-/// and always ride [`TypeChild::Interned`]. That is also the answer to "why is a `Ref`
-/// not a `Node`": not a preference for interning, but that it can never need the other
-/// carrier.
+/// TRANSITIVELY CONTAIN a `denoted`, OR needs an identity of its own. `sort_ref` and
+/// `nothing` are LEAVES that satisfy neither — no children, so no `denoted` can ever be
+/// beneath them, and each is shared across every signature that names it — which is why
+/// they have no arm and always ride [`TypeChild::Interned`]. That is also the answer to
+/// "why is a `Ref` not a `Node`": not a preference for interning, but that it can never
+/// need the other carrier. `type_var` USED to be listed here and no longer is; see
+/// [`TypeNode::Var`].
 ///
 /// (The old wording listed `named_tuple` here as unrepresented, which is STALE:
 /// [`TypeNode::NamedTuple`] exists — a tuple has children, so it can carry a `denoted`.
 /// The list was "variants the slice doesn't yet mint" and outlived its slice.)
 ///
-/// A CONSEQUENCE WORTH STATING, because a proposal runs into it: giving a LEAF an arm
-/// here — a type VARIABLE, for provenance or to keep it out of the term store
-/// (WI-20260904-02ERR) — is not filling a gap in this rule, it is EXTENDING the rule to
-/// "can carry a `denoted`, OR needs an identity of its own".
+/// THE RULE WAS EXTENDED, deliberately, by WI-20260904-02ERR: [`TypeNode::Var`] is a LEAF
+/// with an arm. The membership rule now reads "a form gets an arm iff it can TRANSITIVELY
+/// CONTAIN a `denoted`, OR needs an identity of its own". The second clause is the
+/// carrier rule WI-20260904-DTY3B settled — the carrier is chosen by whether a subtree is
+/// WORTH SHARING, not by whether it is CAPABLE of being shared — and a per-site-unique
+/// type variable is never worth sharing. `sort_ref` and `nothing` remain LEAVES WITHOUT an
+/// arm under the first clause, and interning is what genuinely pays for them: `Int64`
+/// across 500 signatures is one `TermId` against 500 identity-bearing `Rc`s.
 ///
 /// "carry no `denoted`", not "are always ground", which is what this said: `type_var`
 /// is not ground in the LOGICAL sense at all. See [`TypeChild`] for the two readings
 /// the old wording ran together.
 #[derive(Debug)]
 pub enum TypeNode {
+    /// `type_var(v)` — a TYPE VARIABLE carried per-site instead of interned
+    /// (WI-20260904-02ERR). A LEAF: it can never contain a `denoted`, so it is here under
+    /// the membership rule's SECOND clause — it needs an identity of its own.
+    ///
+    /// WHY IT IS NOT A `TermId`. A `Var::Global` is minted fresh per site, so
+    /// `Term::Var(Global(v))` hash-conses with nothing and is never released — one pinned
+    /// `TermStore` slot per binder PER LOAD, unbounded in a process that loads repeatedly
+    /// (an embedder, a long-lived CLI session). That is CLAUDE.md's "transient terms are
+    /// deliberately NOT interned", applied to the one form that was still violating it.
+    ///
+    /// WHICH `Var` KINDS REACH HERE IS A POLICY AT THE MINT, not a limit of this arm:
+    /// `DeBruijn` is the canonical variable of every STORED rule and is therefore
+    /// heavily shared — worth interning, and left interned. See
+    /// [`crate::kb::KnowledgeBase::make_type_var_occ`] for the decision and its reason.
+    ///
+    /// A container holding one becomes non-interned by the SAME predicate a `denoted`
+    /// child triggers (`matches!(c, TypeChild::Node(_))`), so no container needed a new
+    /// case for this.
+    Var(Var),
     /// `denoted(value: NodeOccurrence)` — the poison source. `value` is an
     /// `Expr`-kind occurrence (e.g. `Expr::Ref(c)`), identity-bearing and
     /// span-carrying, which is exactly why its containers cannot hash-cons.
@@ -2866,6 +2927,21 @@ trait TypeChildRewrite {
     /// Rewrite a `Rc<NodeOccurrence>` child — a nested Type/EffectExpr node or a
     /// `Denoted` value occurrence — by recursing the owning rewriter.
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence>;
+    /// WI-20260904-02ERR: rewrite a per-site type VARIABLE leaf ([`TypeNode::Var`]).
+    ///
+    /// Returns a `TypeChild` rather than a `TypeNode` because answering can change the
+    /// CARRIER: a bound `?T` becomes the interned type it denotes. THE DEFAULT KEEPS THE
+    /// LEAF, which is right for every rewriter that carries no bindings — only σ overrides
+    /// it. That default is also why adding this hook could not silently change behaviour
+    /// for the other implementors.
+    fn var(
+        &self,
+        _kb: &mut KnowledgeBase,
+        _v: Var,
+        occ: &Rc<NodeOccurrence>,
+    ) -> (TypeChild, bool) {
+        (TypeChild::Node(Rc::clone(occ)), false)
+    }
 }
 
 fn map_type_child<R: TypeChildRewrite>(
@@ -2877,6 +2953,27 @@ fn map_type_child<R: TypeChildRewrite>(
         TypeChild::Interned(t) => {
             let (nt, ch) = r.term(kb, *t);
             (TypeChild::Interned(nt), ch)
+        }
+        // WI-20260904-02ERR: THE CARRIER-CHANGING ARM, and the reason the var rewrite lives
+        // here rather than in [`map_type_node`]. A `TypeNode::Var` occurrence stands where
+        // an interned `Term::Var` stood before, so it must answer σ the SAME way
+        // [`subst_type_term`]'s `Term::Var(Global)` arm does:
+        //
+        //   UNBOUND -> keep the leaf. Identical to that arm's `None => t`, and it is the
+        //     case worth having the carrier for: nothing is interned, so a per-site `?T`
+        //     that never gets bound costs no `TermStore` slot at all.
+        //   BOUND   -> the type the binding DENOTES, interned. Interning is right here: the
+        //     answer is a real shared type (`Int64`), not a per-site variable. `⊥` when the
+        //     binding denotes no type, which is `subst_type_term`'s own loud answer.
+        //
+        // Asking through `r.var` keeps this a property of the REWRITER: a non-σ rewriter
+        // (`substitute_ref_syms_occ`'s, the De Bruijn openers) has no bindings to consult
+        // and its default keeps the leaf.
+        TypeChild::Node(n) if matches!(&n.kind, NodeKind::Type(TypeNode::Var(_))) => {
+            let NodeKind::Type(TypeNode::Var(v)) = &n.kind else {
+                unreachable!("guarded by the arm's `matches!`")
+            };
+            r.var(kb, *v, n)
         }
         TypeChild::Node(n) => {
             let nn = r.node(kb, n);
@@ -2892,6 +2989,14 @@ fn map_type_node<R: TypeChildRewrite>(
     tn: &TypeNode,
 ) -> (TypeNode, bool) {
     match tn {
+        // WI-20260904-02ERR: UNCHANGED HERE, DELIBERATELY, and this is the one arm whose
+        // reason is not "a leaf has no children". Substituting a variable can CHANGE ITS
+        // CARRIER — `?T` bound to `Int64` becomes an interned type — and this function
+        // returns a `TypeNode`, which cannot express that. The rewrite therefore lives one
+        // level up in [`map_type_child`], which returns a `TypeChild` and so can hand back
+        // `Interned`. A BARE type variable in VALUE position never reaches here either: it
+        // rides `Value::Var`, which σ already substitutes (`subst_var_leaf`).
+        TypeNode::Var(v) => (TypeNode::Var(*v), false),
         TypeNode::Denoted { value } => {
             let nv = r.node(kb, value);
             let ch = !Rc::ptr_eq(&nv, value);
@@ -3161,6 +3266,28 @@ impl TypeChildRewrite for CloseTypeRewrite<'_> {
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
         node_to_debruijn(kb, n, self.var_order)
     }
+    /// WI-20260904-02ERR — CLOSING A VAR LEAF, and the default hook is WRONG here.
+    ///
+    /// The default keeps the leaf, which is right only for a rewriter carrying no
+    /// bindings; this one carries `var_order`. `/code-review` caught the lockstep break:
+    /// [`collect_type_node_vars`] was taught to SEE a `TypeNode::Var` while this side was
+    /// not taught to CLOSE it, and those two are documented structural twins — "the var set
+    /// gathered there is exactly the set `node_to_debruijn` later closes". A `Global` that
+    /// survives closing aliases across invocations (the WI-819 failure).
+    ///
+    /// IT CLOSES TO THE INTERNED CARRIER ON PURPOSE. A De Bruijn index is the canonical
+    /// variable of every stored rule — the heavily-shared structure interning exists for —
+    /// so `type_var_child`'s policy sends it to `TypeChild::Interned`, and going through
+    /// `term` here is exactly the pre-WI-20260904-02ERR path for this var.
+    fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
+        let t = kb.alloc_or_find_var_term(v);
+        let (nt, changed) = self.term(kb, t);
+        if changed {
+            (TypeChild::Interned(nt), true)
+        } else {
+            (TypeChild::Node(Rc::clone(occ)), false)
+        }
+    }
 }
 
 struct OpenTypeRewrite<'a> {
@@ -3173,6 +3300,25 @@ impl TypeChildRewrite for OpenTypeRewrite<'_> {
     }
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
         open_debruijn_node(kb, n, self.fresh)
+    }
+    /// WI-20260904-02ERR — the OPEN twin of [`CloseTypeRewrite::var`], and it must move with
+    /// it: a rewriter that closes a var leaf but cannot open one is half a round trip.
+    /// Opening yields a fresh `Global`, so the result takes the OCCURRENCE carrier — the
+    /// same policy `KnowledgeBase::type_var_child` states, reached the same way.
+    fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
+        let Var::DeBruijn(_) = v else {
+            return (TypeChild::Node(Rc::clone(occ)), false);
+        };
+        let t = kb.alloc_or_find_var_term(v);
+        let (nt, changed) = self.term(kb, t);
+        if !changed {
+            return (TypeChild::Node(Rc::clone(occ)), false);
+        }
+        let opened = match kb.get_term(nt) {
+            Term::Var(w) => *w,
+            _ => return (TypeChild::Interned(nt), true),
+        };
+        (kb.type_var_child(opened, occ.span, occ.owner), true)
     }
 }
 
@@ -3258,7 +3404,7 @@ fn subst_type_term(kb: &mut KnowledgeBase, t: TermId, subst: &Substitution) -> T
 /// neighbouring "this instantiation has no value to put here", and `Term::Bottom` is GROUND
 /// (`type_value_is_ground_g`), so it is CHECKED and reported where keeping the un-denoting
 /// carrier would restore the silent skip this whole ticket removes.
-fn type_denoted_by(kb: &mut KnowledgeBase, v: &Value) -> Option<TermId> {
+pub(crate) fn type_denoted_by(kb: &mut KnowledgeBase, v: &Value) -> Option<TermId> {
     match v {
         // Already a type term — this is `apply_subst`'s own arm, unchanged.
         Value::Term { id, .. } => Some(*id),
@@ -3375,6 +3521,37 @@ impl TypeChildRewrite for SubstTypeRewrite<'_> {
     }
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
         substitute_occurrence(kb, n, self.subst)
+    }
+    /// WI-20260904-02ERR: the occurrence-carried twin of [`subst_type_term`]'s
+    /// `Term::Var(Global)` arm — deliberately the same two answers, so a variable behaves
+    /// identically whichever carrier it arrived on.
+    fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
+        let Var::Global(vid) = v else {
+            // DeBruijn/Rigid: `subst_type_term` leaves both alone (`Term::Var(DeBruijn) => t`,
+            // and Rigid falls to its `_ => t`).
+            return (TypeChild::Node(Rc::clone(occ)), false);
+        };
+        match self.subst.resolve_as_value(vid) {
+            // UNBOUND keeps the leaf — and keeps it UNINTERNED, which is the whole point.
+            None => (TypeChild::Node(Rc::clone(occ)), false),
+            // A VAR-TO-VAR BINDING KEEPS THE OCCURRENCE CARRIER. `/code-review`: routing it
+            // through `type_denoted_by` would hit that function's `Value::Var` arm, which
+            // `alloc_from_value`s a `Term::Var` — re-interning the very per-site global this
+            // ticket exists to keep out of the store, on a chain (`?T ↦ ?U`) that unification
+            // produces routinely.
+            Some(Value::Var(w @ Var::Global(_))) => {
+                let w = *w;
+                (
+                    TypeChild::Node(kb.make_type_var_occ(w, occ.span, occ.owner)),
+                    true,
+                )
+            }
+            Some(bound) => {
+                let bound = bound.clone();
+                let t = type_denoted_by(kb, &bound).unwrap_or_else(|| kb.alloc(Term::Bottom));
+                (TypeChild::Interned(t), true)
+            }
+        }
     }
 }
 
@@ -3744,6 +3921,17 @@ fn collect_type_node_vars(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match tn {
+        // WI-20260904-02ERR: THE VAR LEAF IS THE THING THIS WALK COLLECTS. Before the
+        // occurrence carrier existed the same variable was an interned `Term::Var` reached
+        // through `collect_type_child`'s `Interned` arm; missing it here would make the
+        // walk blind to exactly the vars that moved carrier. Only a flex `Global` is
+        // collected, matching `collect_vars_rec`.
+        TypeNode::Var(Var::Global(vid)) => {
+            if seen.insert(vid.raw()) {
+                vars.push(*vid);
+            }
+        }
+        TypeNode::Var(_) => {}
         TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
         TypeNode::Parameterized { base, bindings } => {
             collect_type_child(kb, base, vars, seen);
@@ -4303,6 +4491,9 @@ fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> TermId {
 /// a canonical `effects_rows`; re-canonicalizing would change bytes).
 fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
     match tn {
+        // WI-20260904-02ERR: this function's whole job is "give me the hash-consed twin",
+        // so interning here is the CALLER's request, not the leak the ticket removes.
+        TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
         TypeNode::Denoted { value } => {
             let v = occurrence_to_term(kb, value);
             kb.make_denoted(v)
@@ -5517,6 +5708,8 @@ pub(crate) fn substitute_ref_syms_occ(
     match &occ.kind {
         NodeKind::Type(tn) => {
             let rebuilt = match tn {
+                // WI-20260904-02ERR: a variable carries no `Ref` to re-key.
+                TypeNode::Var(v) => TypeNode::Var(*v),
                 TypeNode::Denoted { value } => TypeNode::Denoted {
                     value: rewrite_ref_expr(value, map),
                 },

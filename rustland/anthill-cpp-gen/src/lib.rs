@@ -4060,6 +4060,19 @@ fn classify_effect_label(
                 base: TypeChild::Interned(t),
                 ..
             }) => kind_of(*t),
+            // WI-20260904-02ERR: THE ROW PARAMETER, occurrence-carried. `kind_of`'s
+            // `Term::Var` test above is the interned spelling of this SAME judgement, and
+            // once a type variable can ride un-interned that test alone stops seeing it —
+            // the label would fall to the `_` below and read `Unreadable`, silently, which
+            // is the failure mode this ticket's census was looking for. Same VarId identity
+            // compare (WI-632/WI-849), so the two carriers answer alike.
+            NodeKind::Type(TypeNode::Var(v)) => {
+                if type_params.iter().any(|(_, p)| p == v) {
+                    EffectLabel::RowParam
+                } else {
+                    EffectLabel::Unreadable
+                }
+            }
             _ => EffectLabel::Unreadable,
         },
         _ => EffectLabel::Unreadable,

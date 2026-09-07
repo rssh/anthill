@@ -1611,6 +1611,7 @@ mod wi_qqpq2_tuple_carrier_test;
 
 #[path = "include/wi_n20ez_answer_links_transient_test.rs"]
 mod wi_n20ez_answer_links_transient_test;
+
 #[path = "include/wi_60143_total_unify_descent_test.rs"]
 mod wi_60143_total_unify_descent_test;
 
@@ -1619,3 +1620,6 @@ mod wi14ev6_carrier_neutral_scalar_read_test;
 
 #[path = "include/wi_emvcb_answer_is_a_value_test.rs"]
 mod wi_emvcb_answer_is_a_value_test;
+
+#[path = "include/wi_02err_type_var_occurrence_test.rs"]
+mod wi_02err_type_var_occurrence_test;

@@ -1317,6 +1317,13 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
 /// discrim tree's `RigidVar` constant edge — see `discrim::DiscrimKey`.) `None`
 /// for a non-`Var` head — the walk then keys on [`occ_head`].
 fn occ_index_var(occ: &Rc<NodeOccurrence>) -> Option<Var> {
+    // WI-20260904-02ERR: a TYPE-kind variable occurrence is a var for INDEXING too. The
+    // goal side (`occ_head` -> `type_node_head`) already surfaces it as `ViewHead::Var`;
+    // without this the index side would fall through to the head walk and key a stored type
+    // var differently from the goal that must match it.
+    if let super::node_occurrence::NodeKind::Type(TypeNode::Var(v)) = &occ.kind {
+        return Some(*v);
+    }
     match occ.as_expr() {
         Some(Expr::Var(v)) => Some(*v),
         _ => None,
@@ -1550,7 +1557,19 @@ fn parameterized_base_functor(base: &TypeChild, kb: &KnowledgeBase) -> Option<Sy
 }
 
 fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
+    // WI-20260904-02ERR: A VARIABLE HAS NO FUNCTOR — it heads as `ViewHead::Var`, exactly
+    // as its interned twin `Term::Var(v)` does. This is load-bearing for the discrimination
+    // tree, not cosmetic: `ViewHead::Var` is what makes a flex `Global` index and match as a
+    // WILDCARD and a `Rigid` as a `DiscrimKey::RigidVar` constant edge. Falling through to
+    // the functor table below would give `None => ViewHead::Opaque`, and an opaque head
+    // matches nothing — a type variable would silently stop unifying.
+    if let TypeNode::Var(v) = tn {
+        return ViewHead::Var(*v);
+    }
     let (functor, named_arity) = match tn {
+        // Unreachable: returned above. Kept so this match stays exhaustive over `TypeNode`
+        // and a future arm still has to answer here.
+        TypeNode::Var(_) => (None, 0),
         // WI-361: a parameterized type's occurrence carrier mirrors the term-backed
         // `Fn{S, named}` — its head functor IS the base sort and the named args ARE
         // the bindings (no `parameterized` wrapper), so `TermView` reads the carrier
@@ -1587,6 +1606,8 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
 
 fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
     let short_keys: &[&str] = match tn {
+        // WI-20260904-02ERR: a leaf has no children, hence no named-arg keys.
+        TypeNode::Var(_) => &[],
         // Bindings ARE the named args (WI-361) — the keys are the binding params,
         // which come from terms (already interned), so return them directly.
         TypeNode::Parameterized { bindings, .. } => {

@@ -6459,6 +6459,13 @@ impl KnowledgeBase {
         self.terms.len()
     }
 
+    /// WI-20260904-02ERR's acceptance instrument: live `Term::Var(Global)` count. See
+    /// [`crate::kb::term::TermStore::global_var_count`] for why this and not
+    /// [`Self::term_store_len`].
+    pub fn interned_global_var_count(&self) -> usize {
+        self.terms.global_var_count()
+    }
+
     /// How many logic variables the KB has minted — the `fresh_var` counter.
     ///
     /// WI-20260904-J0RM4's acceptance instrument, beside [`Self::term_store_len`]. The
@@ -8847,6 +8854,63 @@ impl KnowledgeBase {
     /// the `Value`-carried `List[NamedTupleElement]` the carrier stores (mirroring the term
     /// form), so the field-type poison rides as `Value::Node` while ground field
     /// types stay `Value::Term`.
+    /// WI-20260904-02ERR: build a `TypeChild` for a TYPE VARIABLE, and OWN THE POLICY of
+    /// which `Var` kinds are worth interning.
+    ///
+    /// The carrier rule (WI-20260904-DTY3B): a subtree is interned when it is WORTH
+    /// SHARING, not when it is merely CAPABLE of being shared.
+    ///
+    ///   * `Global` / `Rigid` are minted FRESH PER SITE. They hash-cons with nothing, and
+    ///     nothing releases the slot, so interning one is a pure leak — unbounded across
+    ///     repeated loads. They ride [`node_occurrence::TypeNode::Var`].
+    ///   * `DeBruijn` is the canonical variable of every STORED rule: index 0 is the same
+    ///     term in every binder in the KB. That is the heavily-shared, persistent
+    ///     structure interning exists for, so it STAYS [`node_occurrence::TypeChild::Interned`].
+    ///
+    /// This is the ONE place that decision is made; callers pass a `Var` and get back
+    /// whichever carrier it earns.
+    pub fn type_var_child(
+        &mut self,
+        v: crate::kb::term::Var,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        use crate::kb::term::Var;
+        match v {
+            Var::DeBruijn(_) => {
+                let t = self.alloc_or_find_var_term(v);
+                node_occurrence::TypeChild::Interned(t)
+            }
+            Var::Global(_) | Var::Rigid(_) => {
+                node_occurrence::TypeChild::Node(self.make_type_var_occ(v, span, owner))
+            }
+        }
+    }
+
+    /// WI-20260904-02ERR: the `type_var` occurrence itself. Prefer
+    /// [`Self::type_var_child`], which also decides whether this `Var` earns the
+    /// occurrence carrier at all.
+    pub fn make_type_var_occ(
+        &mut self,
+        v: crate::kb::term::Var,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Rc<NodeOccurrence> {
+        NodeOccurrence::new_type(node_occurrence::TypeNode::Var(v), span, owner)
+    }
+
+    /// Intern a `Term::Var`, reusing the existing id when there is one. The DeBruijn
+    /// half of [`Self::type_var_child`]; also the honest name for what
+    /// `typing::type_param_var_term` was doing for EVERY var kind before
+    /// WI-20260904-02ERR.
+    pub fn alloc_or_find_var_term(&mut self, v: crate::kb::term::Var) -> TermId {
+        let term = Term::Var(v);
+        match self.find_term(&term) {
+            Some(t) => t,
+            None => self.alloc(term),
+        }
+    }
+
     pub fn make_named_tuple_occ(
         &mut self,
         fields: Vec<(Symbol, node_occurrence::TypeChild)>,
@@ -8883,10 +8947,7 @@ impl KnowledgeBase {
 
         let mut elems: Vec<Value> = Vec::with_capacity(fields.len());
         for (field_name, child) in fields {
-            let type_value = match child {
-                TypeChild::Interned(t) => Value::term(t),
-                TypeChild::Node(o) => Value::Node(o),
-            };
+            let type_value = node_occurrence::type_child_as_value(&child);
             let name_ref = Value::term(self.alloc(Term::Ref(field_name)));
             let mut named = vec![(name_key, name_ref), (type_key, type_value)];
             self.canonicalize_record_named_args(element_sym, &mut named);

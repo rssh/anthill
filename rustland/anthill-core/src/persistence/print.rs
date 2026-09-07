@@ -271,6 +271,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// value-in-type so it reads distinctly from a type argument.
     fn write_type_node(&self, tn: &TypeNode, buf: &mut String) {
         match tn {
+            // WI-20260904-02ERR: rendered by the SHARED `write_var`, so a type variable
+            // reads identically whether it arrived interned or occurrence-carried.
+            TypeNode::Var(v) => self.write_var(*v, buf),
             TypeNode::Denoted { value } => {
                 buf.push_str("denoted(");
                 self.write_occurrence(value, buf);

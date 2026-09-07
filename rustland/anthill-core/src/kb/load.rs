@@ -24362,10 +24362,12 @@ impl<'a> Loader<'a> {
     fn type_expr_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let span = self.type_expr_span(ty);
         let owner = self.current_owner;
-        match self.type_expr_to_child(ty, span, owner) {
-            node_occurrence::TypeChild::Interned(t) => crate::eval::value::Value::term(t),
-            node_occurrence::TypeChild::Node(n) => crate::eval::value::Value::Node(n),
-        }
+        // WI-20260904-02ERR: through `type_child_to_value`, which restores the
+        // VALUE-position spelling of a variable (`Value::Var`) rather than leaving a bare
+        // `TypeNode::Var` occurrence σ's occurrence walk cannot re-carry. Same reason as
+        // `build_named_tuple_fields_value`; both are widenings out of the `TypeChild` spine.
+        let child = self.type_expr_to_child(ty, span, owner);
+        node_occurrence::type_child_as_value(&child)
     }
 
     /// Span for a lowered type's occurrence — its leading `Name` span when
