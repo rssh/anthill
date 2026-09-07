@@ -2310,14 +2310,14 @@ end
 /// live refusal — found by /code-review, and the reason each literal route below carries a
 /// `[…]` row and a `{…}` row.
 ///
-/// AND WHAT THE LITERAL ROUTES DO NOT CHECK IS RECORDED, not left to a reader. Two
-/// `SilentlyAccepted` rows name what is left — WI-20260829-WBXGX, found here, on the
-/// ARGUMENT route that 7JDWY's own table uses as its control: a literal's element type is
-/// its FIRST element's, so `takes_list([1, "a"])` loads while `takes_list(["a", 1])`
-/// refuses. The reversed-order row is the control that makes that a measurement rather
-/// than "literals are unchecked". A third row named 7JDWY on the annotated-let route and
-/// is now a positive: a DECLARED element type is checked element by element, on that
-/// route and on every other.
+/// THE LITERAL ROUTES ARE NOW FULLY CHECKED, AND THIS TABLE IS WHERE THAT WAS RECORDED
+/// BEFORE THEY WERE. Three cells here were `SilentlyAccepted` naming two work items, and
+/// all three are positives now: WI-20260826-7JDWY on the annotated-let route (a DECLARED
+/// element type is checked element by element), and WI-20260829-WBXGX, FOUND HERE, on the
+/// argument and type-parameter routes (a literal with no declaration takes the JOIN of its
+/// elements, so `takes_list([1, "a"])` and `takes_list(["a", 1])` now agree — they did not,
+/// which was the tell). Writing the holes down as verdicts is what made both of them fail
+/// LOUDLY on the day each was closed.
 ///
 /// TWO REFUSALS HERE ARE CORRECT BY KIND, not gaps, and they are worth a cell precisely
 /// because a reader scanning for red would otherwise have to re-derive that: a lambda and
@@ -2493,34 +2493,40 @@ end
         ),
         (
             // The TYPE-PARAMETER route accepts anything BY CONSTRUCTION — `take_any[A](x: A)`
-            // unifies `A` with whatever arrives — so its literal cell measures the literal
-            // and not the route. Stated here rather than left implicit.
-            "SILENT — a type parameter accepts a mixed literal (it accepts anything)".into(),
+            // unifies `A` with whatever arrives — so this cell measures the LITERAL and not
+            // the route, which is exactly why it moved: WI-20260829-WBXGX made the literal's
+            // element type the JOIN of its elements, so a mixed one is refused before the
+            // route is reached at all.
+            "a type parameter takes any literal, but the LITERAL must still have a type".into(),
             "  operation c() -> Int64 = take_any([1, \"a\"])".into(),
-            Verdict::SilentlyAccepted {
-                wi: "WI-20260829-WBXGX",
-                should_say: "list element 2 has type String; the literal's elements are Int64",
-            },
+            Verdict::RefusesLocated(
+                "list.element 2 (collection-element-join): expected Int64, got String",
+            ),
         ),
         (
-            // AND THE ARGUMENT ROUTE, which IS the checking one, lets the same literal
-            // past — a distinct hole from 7JDWY, on the very route that ticket's table
-            // uses as its control. `takes_list([\"a\"])` refuses; `takes_list([1, \"a\"])`
-            // does not, because the element type is element ONE's and the rest ride free.
-            "SILENT — a checked ARGUMENT slot takes the first element's type".into(),
+            // AND THE ARGUMENT ROUTE, which is the one 7JDWY's table uses as its control:
+            // it used to take element ONE's type and let the rest ride free, so
+            // `takes_list([\"a\"])` refused while `takes_list([1, \"a\"])` loaded — the same
+            // two elements in the other order. WI-20260829-WBXGX made it a join, and the
+            // refusal is now at the ELEMENT rather than at the argument.
+            "an ARGUMENT slot joins its literal's elements, in either order".into(),
             "  operation c() -> Int64 = takes_list([1, \"a\"])".into(),
-            Verdict::SilentlyAccepted {
-                wi: "WI-20260829-WBXGX",
-                should_say: "list element 2 has type String; the literal's elements are Int64",
-            },
+            Verdict::RefusesLocated(
+                "list.element 2 (collection-element-join): expected Int64, got String",
+            ),
         ),
         (
-            // THE CONTROL THAT MAKES THE TWO ROWS ABOVE A MEASUREMENT: the SAME two
-            // elements in the other order DO refuse. Without it "loads" is consistent
-            // with the argument route checking nothing at all.
-            "CONTROL — the same two elements reversed DO refuse".into(),
+            // THE ROW THAT MADE THE TWO ABOVE A MEASUREMENT, and it has done its job: the
+            // SAME two elements in the other order refused while they loaded, which is how
+            // the order-dependence was seen at all. Both orders now refuse, at the ELEMENT
+            // and in the same words — so what this cell pins today is that the asymmetry is
+            // GONE. It used to read `takes_list.l (op-arg): expected List[T = Int64], got
+            // List[T = String]`, the whole-list message.
+            "the same two elements reversed refuse IDENTICALLY now".into(),
             "  operation c() -> Int64 = takes_list([\"a\", 1])".into(),
-            Verdict::RefusesLocated("expected List[T = Int64], got List[T = String]"),
+            Verdict::RefusesLocated(
+                "list.element 2 (collection-element-join): expected String, got Int64",
+            ),
         ),
         // ── inline constructor, the one cell outside the three rows above ──
         (

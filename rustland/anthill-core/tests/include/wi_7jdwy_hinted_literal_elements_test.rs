@@ -34,11 +34,12 @@
 //! stringly-typed base name; `/code-review` read the "one owner" claim beside it and it now
 //! goes through `seq_literal_type` too.
 //!
-//! ## FOUR AXES, FOUR BACK-OUTS — one mutation at a time, whole `wi_tests` binary, every
-//! count below a run
+//! ## FOUR AXES, FIVE BACK-OUTS — one mutation at a time, whole `wi_tests` binary, every
+//! count below a run (RE-MEASURED on the final tree after WI-20260829-WBXGX, which added
+//! rows to the binary and narrowed axis 4 into the two claims it always was)
 //!
 //! 1. **The element CHECK** — in `seq_literal_element_type`, make the `Some(hint)` arm a
-//!    no-op (drop the `validate_arg_against_param` match). **11 fail, 4227 pass.** Eight of
+//!    no-op (drop the `validate_arg_against_param` match). **12 fail, 4237 pass.** Eight of
 //!    this file's rows — the six that assert a refusal on a declared literal, plus
 //!    `the_restored_argument_hint_also_turns_an_acceptance_into_a_refusal` and
 //!    `the_wrong_variant_in_an_argument_…`. Three more elsewhere, each a row that had
@@ -46,21 +47,27 @@
 //!    `typer_capability_matrix_test::a_literal_is_checked_on_every_route_that_declares_-
 //!    an_element_type`, `::the_row_remainders`, and
 //!    `wi_q0093_type_value_occurrence_matrix_test::a_collection_literal_element_type_is_-
-//!    checked_for_every_element_alike`.
+//!    checked_for_every_element_alike`, and — added by WI-20260829-WBXGX, which needed to
+//!    keep the two element-type SOURCES apart in the diagnostic —
+//!    `wi_wbxgx_collection_literal_element_join_test::control_a_declared_element_type_-
+//!    still_takes_the_other_route`.
 //! 2. **The element HINT at the constructor carrier** — drop `seq_element_expected` from
-//!    `pos_hints` in the `Expr::Constructor` visit. **4 fail, 4234 pass**, all here:
+//!    `pos_hints` in the `Expr::Constructor` visit. **4 fail, 4245 pass**, all here:
 //!    `a_declared_variant_element_is_classified_at_its_constructor` (`expected red, got
 //!    Colour` — the parent classification §8.2 gives an element with no expectation of its
 //!    own), `a_variant_element_reaches_an_argument_slot`,
 //!    `the_declaration_reaches_a_literal_nested_in_a_literal`, and
 //!    `the_wrong_variant_in_an_argument_…`.
 //! 3. **The argument-slot HINT** — drop the `arg_is_seq_literal` arm from
-//!    `variant_slot_arg_hint`. **3 fail, 4235 pass**: the two argument rows and
+//!    `variant_slot_arg_hint`. **3 fail, 4246 pass**: the two argument rows and
 //!    `the_restored_argument_hint_…`.
-//! 4. **The `List`/`Set` HEAD test** in `declared_element_type` — read `T` off any
-//!    expectation, as the first cut did. **1 fails, 4237 pass**:
-//!    `a_declaration_that_is_not_a_collection_declares_no_element_type`, and nothing else in
-//!    the binary, which is what says the head test moved a MESSAGE and no verdict.
+//! 4. **The HEAD test** in `declared_element_type`, which is TWO nested claims and so two
+//!    back-outs. (a) Read `T` off ANY expectation, as the first cut did: **2 fail, 4247
+//!    pass** — `a_declaration_that_is_not_a_collection_declares_no_element_type` and
+//!    `a_rival_collection_declares_no_element_type`. (b) Keep a head test but accept EITHER
+//!    collection rather than the literal's own — the shape `/code-review` narrowed: **1
+//!    fails, 4248 pass**, the rival-collection row alone. Neither moves a verdict anywhere
+//!    else in the binary, which is what says the head test decides a MESSAGE.
 //!
 //! HOW THE FOUR SEPARATE. Axis 2 is separated from axis 3 by
 //! `a_declared_variant_element_is_classified_at_its_constructor` and
@@ -413,6 +420,46 @@ end
     );
 }
 
+/// A RIVAL COLLECTION DECLARES NOTHING ABOUT THIS LITERAL'S ELEMENTS — the narrowing of the
+/// head test that `/code-review` asked for, and the same complaint as the head test itself.
+///
+/// §4.6's "a `[…]` written in a `Set[T = X]` position is left as it stands" is about the
+/// LOADER's lowering; at the typer a `[…]` is always `List`-typed, so a `Set`-headed
+/// expectation is a SHAPE disagreement and its `X` is not this literal's element type.
+/// Reading it as one tagged the refusal `(collection-element)` — the tag that says a
+/// declaration named `Int64` — when nothing declared anything about these elements.
+///
+/// BOTH HALVES ARE REFUSED EITHER WAY, which is why the assertions are about the TAG and
+/// the CHANNEL rather than the verdict: the mixed literal has no join, and the homogeneous
+/// one is a container mismatch. Backed out (accept either collection's head): the first
+/// reports `(collection-element)`.
+#[test]
+fn a_rival_collection_declares_no_element_type() {
+    let mixed = r#"
+namespace test.jdy.rival
+  import anthill.prelude.{Int64, String, List, Set}
+  operation mk() -> Set[T = Int64] = [1, "x"]
+end
+"#;
+    assert_reports(
+        mixed,
+        "list.element 2 (collection-element-join): expected Int64, got String",
+        "the elements decide, and the tag says so — the `Set` declaration is not theirs",
+    );
+
+    let well_formed = r#"
+namespace test.jdy.rival2
+  import anthill.prelude.{Int64, List, Set}
+  operation mk() -> Set[T = Int64] = [1, 2]
+end
+"#;
+    assert_reports(
+        well_formed,
+        "mk.return (op-return): expected Set[T = Int64], got List[T = Int64]",
+        "with elements that agree, what is left is the shape disagreement it always was",
+    );
+}
+
 /// THE ARM DOES TURN AN ACCEPTANCE INTO A REFUSAL, and this is the row that says so.
 ///
 /// WI-20260826-JSFHG's containment argument — "it can only turn a refusal into an
@@ -449,11 +496,12 @@ end
 /// about the DECLARED direction only: the reading an argument-position literal has always
 /// had is untouched, including the whole-list diagnostic it reports.
 ///
-/// AND ITS RESIDUAL IS NAMED HERE rather than left to be rediscovered: this route reads the
-/// FIRST element and never compares the rest, so `takeInts([1, "a"])` loads clean with a
-/// `String` in an `Int64` slot (measured on this tree, asserted below). That is
-/// WI-20260829-WBXGX — open, with its own census — and it is what the declared route above
-/// no longer does.
+/// ITS RESIDUAL WAS NAMED HERE AND HAS SINCE CLOSED. This route read the FIRST element and
+/// never compared the rest, so `takeInts([1, "a"])` loaded clean with a `String` in an
+/// `Int64` slot — pinned below by a `load_clean` so that closing it would fail LOUDLY here.
+/// It did: WI-20260829-WBXGX made the element type the JOIN of the elements, and the
+/// assertion is now the refusal. The two routes differ only in WHERE the element type comes
+/// from, which is what their two diagnostic tags say.
 #[test]
 fn control_an_unhinted_literal_still_types_from_its_elements() {
     let wrong = r#"
@@ -479,8 +527,10 @@ end
     load_clean(right, "a conforming unhinted literal");
     assert_eq!(drive(right, "test.jdy.unhinted2.n"), "Int(3)");
 
-    // THE RESIDUAL, pinned so the asymmetry between the two routes is a measurement and not
-    // a claim in a comment. WI-20260829-WBXGX; when it closes, this row fails and says so.
+    // THE RESIDUAL THAT CLOSED. This was a `load_clean` pinning WI-20260829-WBXGX — the
+    // unhinted route read element one and never the rest — and it is the assertion that
+    // failed the day that item landed. Kept as the positive it became: the route now joins
+    // its elements, and the tag says the type came from SIBLINGS rather than a declaration.
     let later_element = r#"
 namespace test.jdy.unhinted3
   import anthill.prelude.{Int64, String, List}
@@ -488,10 +538,10 @@ namespace test.jdy.unhinted3
   operation wrong() -> Int64 = takeInts([1, "a"])
 end
 "#;
-    load_clean(
+    assert_reports(
         later_element,
-        "the UNHINTED route reads element one and never the rest (WI-20260829-WBXGX) — if \
-         this now refuses, that item has closed and this row becomes a positive",
+        "list.element 2 (collection-element-join): expected Int64, got String",
+        "the UNHINTED route joins its elements too, and says which one broke the join",
     );
 }
 

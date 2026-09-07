@@ -838,20 +838,40 @@ pub enum TypeErrorContext {
         /// `"condition"` / `"guard"` — which of its slots.
         slot: &'static str,
     },
-    /// WI-20260826-7JDWY — an ELEMENT of a `[…]` / `{…}` literal whose position DECLARES
-    /// an element type, checked against it.
+    /// WI-20260826-7JDWY — an ELEMENT of a `[…]` / `{…}` literal, checked against the
+    /// element type its position declares or its siblings join to.
     ///
     /// It carries the element's INDEX because a literal names its elements nothing, and
     /// the position is the only way to say which one is wrong. Reporting the whole list
-    /// instead — `expected List[T = Int64], got List[T = String]` at the slot — is what
-    /// the unhinted path already does, and it is strictly less precise: with three
-    /// elements it says a list is wrong without saying which element made it so.
+    /// instead — `expected List[T = Int64], got List[T = String]` at the slot — says a
+    /// list is wrong without saying which element made it so.
     CollectionElement {
         /// `"list"` / `"set"` — which literal surface.
         construct: &'static str,
         /// The element's 0-based position, rendered 1-based.
         index: usize,
+        /// WI-20260829-WBXGX — where the type on the `expected` side CAME FROM, which
+        /// changes what the message means and so is in the tag rather than left for a
+        /// reader to guess.
+        source: ElementTypeSource,
     },
+}
+
+/// WI-20260829-WBXGX — where the type a collection literal's element was judged against
+/// came from.
+///
+/// A message reading `expected Int64, got String` means two different things depending on
+/// the answer, and a reader repairing the program needs to know which: with a DECLARATION
+/// the fix is usually the element, with a JOIN it may equally be any earlier element or the
+/// declaration that is missing. [`TypeErrorContext::kind_tag`] renders them apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ElementTypeSource {
+    /// The position's own declaration — a `List`/`Set`-headed expected type
+    /// ([`declared_element_type`], WI-20260826-7JDWY).
+    Declared,
+    /// The JOIN of the literal's EARLIER elements; the position declares nothing
+    /// (WI-20260829-WBXGX).
+    Siblings,
 }
 
 impl TypeErrorContext {
@@ -893,6 +913,7 @@ impl TypeErrorContext {
             TypeErrorContext::BinderAnnotation { .. } => "<binder>".to_string(),
             TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
+            // (the `source` rides in `kind_tag`)
         }
     }
 
@@ -915,7 +936,14 @@ impl TypeErrorContext {
             TypeErrorContext::DotProjection { .. } => "dot-projection",
             TypeErrorContext::BinderAnnotation { .. } => "binder-annotation",
             TypeErrorContext::BooleanPosition { .. } => "boolean-position",
-            TypeErrorContext::CollectionElement { .. } => "collection-element",
+            TypeErrorContext::CollectionElement {
+                source: ElementTypeSource::Declared,
+                ..
+            } => "collection-element",
+            TypeErrorContext::CollectionElement {
+                source: ElementTypeSource::Siblings,
+                ..
+            } => "collection-element-join",
         }
     }
 
@@ -6684,10 +6712,12 @@ enum TypeBuildFrame {
         env: Rc<TypingEnv>,
         has_conclude: bool,
     },
-    /// WI-285: all list elements finished; drain `count`, infer the
-    /// element type (`element_hint` when bound by an outer
-    /// `List[T = X]`, else the first element's type), build
-    /// `List[T = elem]` (former `check_list_literal`).
+    /// WI-285: all list elements finished; drain `count` and build `List[T = elem]`
+    /// (former `check_list_literal`). BOTH halves of "what is `elem`" moved to
+    /// [`seq_literal_element_type`], and both changed: `element_hint` is the element type
+    /// the position DECLARES (head-gated, WI-20260826-7JDWY) and every element is CHECKED
+    /// against it rather than overwritten by it; with no hint the type is the JOIN of the
+    /// elements, not the first one's (WI-20260829-WBXGX).
     ListLit {
         occ: Rc<NodeOccurrence>,
         env: Rc<TypingEnv>,
@@ -10723,16 +10753,28 @@ fn type_slot_arg_hint(
 /// ONE predicate ([`type_head_names_an_entity`]) so the two cannot drift.
 ///
 /// THE FOURTH HINT KIND, and confined the way its three siblings are: gated on the slot
-/// naming an entity AND on the argument being a constructor application
-/// ([`arg_is_constructor_application`]) — the only argument shape whose classification
-/// this changes. Every other argument keeps exactly the `hof_arg_hint` /
+/// naming an entity AND on the argument being a TUPLE literal, a SEQUENCE literal
+/// ([`arg_is_seq_literal`], WI-20260826-7JDWY) or a constructor application
+/// ([`arg_is_constructor_application`]) — the argument shapes whose classification this
+/// changes. Every other argument keeps exactly the `hof_arg_hint` /
 /// `nested_call_arg_hint` / `type_slot_arg_hint` it has today.
 ///
 /// ITS POPULATION ON EXISTING CODE IS EMPTY, which is the soundness argument and is
 /// measurable rather than asserted: before this ticket a slot declared with a variant type
 /// was UNSATISFIABLE — every constructor application typed at the parent, so the program
-/// did not load — so no loading program has such a slot for the hint to reach. What it can
-/// do is turn a refusal into an acceptance, never the reverse.
+/// did not load — so no loading program has such a slot for the hint to reach.
+///
+/// **THE SECOND HALF OF THAT ARGUMENT — "so it can only turn a refusal into an acceptance,
+/// never the reverse" — IS RETIRED**, and this is where it stood. It was true of this hint
+/// ALONE and is false of it beside WI-20260826-7JDWY's element check. MEASURED:
+/// `takeReds(l: List[T = Colour.red])` applied to `[r, c]` with `r: Colour.red` and
+/// `c: Colour` is refused now (`list.element 2: expected red, got Colour`) and LOADED
+/// before, because with no hint the literal's element type was element ONE's and element
+/// two was never looked at. The new verdict is the correct one; what is gone is the
+/// ARGUMENT, so a future widening of this gate is not justified by a claim that stopped
+/// being true — its flip-set has not been measured and would have to be. The row is
+/// `wi_7jdwy_hinted_literal_elements_test::the_restored_argument_hint_also_turns_an_-
+/// acceptance_into_a_refusal`.
 ///
 /// IT SEES ONLY THE DECLARED TYPE, which is a real limit rather than a simplification:
 /// `entity box(v: T)` declares a type VAR, so a variant arriving through the parameter
@@ -10761,21 +10803,12 @@ fn variant_slot_arg_hint(
     // and no check the second loads, with the check and no hint the first is refused.
     // Gated the way the tuple arm is, on the slot type MENTIONING an entity — a slot whose
     // element type is an ordinary sort pushes nothing and its elements type as before.
-    // That is JSFHG's containment argument, kept deliberately: a slot declared with a
-    // variant type was UNSATISFIABLE before that ticket, so barely any loading program has
-    // one for this hint to reach.
-    //
-    // ITS SECOND HALF DOES NOT SURVIVE HERE, and `/code-review` was right to say so.
-    // JSFHG's arm "could only turn a refusal into an acceptance"; PAIRED WITH THE ELEMENT
-    // CHECK this one can do the reverse. MEASURED, with `takeReds(l: List[T = Colour.red])`:
-    //
-    //     operation viaArg(r: Colour.red, c: Colour) = takeReds([r, c])
-    //
-    // now refuses `list.element 2: expected red, got Colour`, and loaded before — because
-    // with no hint the literal's element type was element ONE's (`red`) and element two was
-    // never looked at at all. The new verdict is the correct one; what is retired is the
-    // ARGUMENT, so that a future widening of this gate is not justified by a claim that
-    // stopped being true. Its flip-set has not been measured and would have to be.
+    // That is JSFHG's containment argument, kept deliberately — and only its FIRST half
+    // survives beside the element check. The retirement of the second is in this function's
+    // HEADER, which is where a reader looks for the gate's soundness argument and where the
+    // retired claim used to stand; `/code-review` found it still there, verbatim, sixty
+    // lines above a body comment retiring it. Its flip-set has not been measured and would
+    // have to be before widening.
     //
     // WIDENING THE GATE IS A DIFFERENT ITEM, and the note belongs here because the reason
     // it was blocked has expired. WI-20260828-5NSZY left `head_apply([inc], 41)` refused
@@ -12815,13 +12848,14 @@ fn visit_type(
             // which hints their elements get.
             let seq_element_expected: Option<Value> = {
                 let qn = kb.qualified_name_of(name);
-                let is_seq =
-                    qn == dt::qualified(dt::LIST_LITERAL) || qn == dt::qualified(dt::SET_LITERAL);
-                if is_seq {
-                    declared_element_type(kb, expected.as_ref())
+                let kind = if qn == dt::qualified(dt::LIST_LITERAL) {
+                    Some(SeqLiteral::List)
+                } else if qn == dt::qualified(dt::SET_LITERAL) {
+                    Some(SeqLiteral::Set)
                 } else {
                     None
-                }
+                };
+                kind.and_then(|k| declared_element_type(kb, k, expected.as_ref()))
             };
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
@@ -13022,7 +13056,7 @@ fn visit_type(
             // WI-270: an outer `List[T = X]` makes X each element's
             // expected, and the empty-list fallback. WI-20260826-7JDWY: read through
             // [`declared_element_type`], which is head-gated — see there.
-            let element_hint = declared_element_type(kb, expected.as_ref());
+            let element_hint = declared_element_type(kb, SeqLiteral::List, expected.as_ref());
             work.push(TypeWorkOp::Build(TypeBuildFrame::ListLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -13035,7 +13069,7 @@ fn visit_type(
         }
         Expr::SetLit(elems) => {
             let elems = elems.clone();
-            let element_hint = declared_element_type(kb, expected.as_ref());
+            let element_hint = declared_element_type(kb, SeqLiteral::Set, expected.as_ref());
             work.push(TypeWorkOp::Build(TypeBuildFrame::SetLit {
                 occ: Rc::clone(&occ),
                 env: Rc::clone(&env.types),
@@ -45434,9 +45468,15 @@ impl SeqLiteral {
 /// wrong thing, and a diagnostic that blames an element must be reading that element's own
 /// declaration.
 ///
-/// BOTH COLLECTIONS FOR BOTH SURFACES, not "the literal's own sort": §4.6 leaves a `[…]`
-/// written in a `Set[T = X]` position as it stands, for that type's own construction to
-/// consume, and `X` is its element type there exactly as in a `List[T = X]`.
+/// THE LITERAL'S OWN SORT, not "either collection" — the narrowing `/code-review` asked
+/// for, and the same complaint as the head test itself. §4.6's "a `[…]` written in a
+/// `Set[T = X]` position is left as it stands" is about the LOADER's lowering; at the typer
+/// a `[…]` is always `List`-typed, so a `Set`-headed expectation is a SHAPE disagreement
+/// and its `X` is not this literal's element type. Reading it as one made
+/// `-> Set[T = Int64] = [1, "x"]` report `(collection-element)` — the tag that says a
+/// declaration named `Int64` — when nothing declared anything about this literal's
+/// elements. It is refused either way and by the elements either way (they have no join);
+/// what changes is that the tag stops claiming a declaration that does not exist.
 ///
 /// A head that is anything else declares nothing about ELEMENTS, so the literal types from
 /// its elements and is checked as a whole where it is consumed — the reading it had before
@@ -45446,16 +45486,20 @@ impl SeqLiteral {
 /// element's own `expected`, and [`seq_literal_element_type`] CHECKS each element against
 /// it. Computed differently, an element would be typed under an expectation it is not then
 /// judged by, or judged by one it never saw.
-fn declared_element_type(kb: &KnowledgeBase, expected: Option<&Value>) -> Option<Value> {
+fn declared_element_type(
+    kb: &KnowledgeBase,
+    kind: SeqLiteral,
+    expected: Option<&Value>,
+) -> Option<Value> {
     let exp = expected?;
     let base = match type_head(kb, exp) {
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
         _ => return None,
     };
-    match kb.qualified_name_of(base) {
-        "anthill.prelude.List" | "anthill.prelude.Set" => extract_type_param(kb, exp, "T"),
-        _ => None,
+    if kb.qualified_name_of(base) != kind.base_name() {
+        return None;
     }
+    extract_type_param(kb, exp, "T")
 }
 
 /// WI-285 / WI-289 / WI-20260826-7JDWY — THE ELEMENT TYPE AND EFFECTS OF A COLLECTION
@@ -45528,6 +45572,7 @@ fn seq_literal_element_type(
                 let context = TypeErrorContext::CollectionElement {
                     construct: kind.construct(),
                     index,
+                    source: ElementTypeSource::Declared,
                 };
                 // The ELEMENT's own span, not the literal's — with three elements the
                 // literal's span names the whole `[…]` and leaves the reader counting.
@@ -45557,22 +45602,48 @@ fn seq_literal_element_type(
                     }
                 }
             }
-            // No declaration to check against: the first element's type IS the answer,
-            // which is the reading an argument-position literal has always had.
+            // WI-20260829-WBXGX — NO DECLARATION, SO THE ELEMENTS DECIDE: the element type
+            // is the JOIN of them, and the first element with no join is refused at its own
+            // span. Before this it was element ONE's type and the rest rode free, so
+            // `takeInts([1, "a"])` against `List[T = Int64]` LOADED CLEAN with a `String` in
+            // an `Int64` slot — while `takeInts(["a", 1])`, the same two elements in the
+            // other order, was refused. Order-dependence was the tell.
             //
-            // THE TWO ARMS ENCODE TWO DIFFERENT RULES, and saying so is the point of them
-            // being side by side. The declared arm judges EVERY element; this one reads
-            // element ONE and never looks at the rest, so `takeInts([1, "a"])` against
-            // `List[T = Int64]` still LOADS CLEAN (measured on this tree) with a `String`
-            // in an `Int64` slot. That is WI-20260829-WBXGX, which is open and has its own
-            // census to run — closing it here would be settling another item's question on
-            // a population nobody has measured. What this ticket changes is that the
-            // asymmetry is now visible in one function instead of split across three.
-            None => {
-                if inferred.is_none() {
-                    inferred = Some(r.ty.clone());
-                }
-            }
+            // THE JOIN, NOT A SUBTYPE TEST AGAINST ELEMENT ONE, and the ticket prescribed
+            // the latter on the ground that "anthill has no join today". It has one:
+            // [`join_types`], which [`compute_branch_join_type`] already gives `if` and
+            // `match` arms — the neighbouring construct that asks this exact question of
+            // several expressions at once. A subtype test against element one would have
+            // KEPT an order-dependence, only a different one: `[r, c]` with `r: Colour.red`
+            // and `c: Colour` would refuse while `[c, r]` loads. MEASURED, not predicted —
+            // built that alternative and ran the pair; see
+            // `wi_wbxgx_collection_literal_element_join_test`, whose order-independence rows
+            // are what separates the two repairs.
+            //
+            // THE WIDENING DIRECTION IS INERT ON THIS CORPUS and is said so rather than
+            // claimed: instrumented over the whole workspace suite, 4 literals reach this
+            // comparison at all and every one of them CLASHES; none widens. So the join's
+            // ability to return a supertype is exercised only by this ticket's own rows.
+            None => match inferred.take() {
+                None => inferred = Some(r.ty.clone()),
+                Some(acc) => match join_types(kb, acc.clone(), r.ty.clone()) {
+                    Some(joined) => inferred = Some(joined),
+                    None => {
+                        return Err(TypeError::TypeMismatch {
+                            site: TypeError::here(),
+                            span: Some(r.node.span.span),
+                            context: TypeErrorContext::CollectionElement {
+                                construct: kind.construct(),
+                                index,
+                                source: ElementTypeSource::Siblings,
+                            },
+                            expected: acc,
+                            denoted: denoted_type_value(kb, Some(&r.node)),
+                            actual: r.ty.clone(),
+                        })
+                    }
+                },
+            },
         }
         merge_effects_into(kb, &mut effects, &r.effects);
     }
@@ -45652,7 +45723,7 @@ fn check_seq_literal_constructor(
     // Defensive (the constructor checker already surfaced arg errors before
     // routing here): never `.expect` an `Err` element result.
     collect_arg_errors(pos_results.iter())?;
-    let element_hint = declared_element_type(kb, expected.as_ref());
+    let element_hint = declared_element_type(kb, kind, expected.as_ref());
     let (t_val, effects) = seq_literal_element_type(kb, kind, element_hint, pos_results)?;
     let seq_type = seq_literal_type(kb, kind, t_val, occ.span, occ.owner);
     Ok(TypeResult {
@@ -63093,19 +63164,39 @@ fn tuple_value_type(
 
 /// WI-578 — the value-level analog of [`check_seq_literal_constructor`]: type an
 /// un-desugared `[...]` / `{...}` (a `ListLiteral` / `SetLiteral` entity, which has no
-/// element field) as `base[T = elem]`. The element type is the first child's type — the
-/// value path has no checking-direction `expected`, so it reads the elements only — else
-/// a fresh `?_` for an empty literal. [`parameterized_value`] carries a `Value::Node`
-/// element type (a denoted-poisoned element) losslessly.
+/// element field) as `base[T = elem]`. The value path has no checking-direction
+/// `expected`, so it reads the elements only. [`parameterized_value`] carries a
+/// `Value::Node` element type (a denoted-poisoned element) losslessly.
+///
+/// WI-20260829-WBXGX — THE ELEMENTS ARE JOINED, not read off the first one. This is the
+/// no-declaration arm of [`seq_literal_element_type`] on the value carrier, and it had
+/// been left behind: a runtime `ListLiteral(1, "a")` answered `List[T = Int64]`, a
+/// `String` inside a type that says `Int64` — the very defect the ticket closed on the
+/// other three carriers, in the one place a value can be inspected at runtime. Found by
+/// `/code-review`, which read the "one owner" claim beside this function and checked it.
+///
+/// A CLASH FLOUNDERS TO `?_` RATHER THAN ERRORING, and that is the difference from the
+/// occurrence path rather than an oversight: a runtime value EXISTS, so there is no
+/// program to refuse — the honest answer to "what type is this heterogeneous list" is that
+/// it is under-determined. That is the M6 / WI-067 convention this file already follows
+/// for a cyclic or over-deep value ([`TYPE_DEPTH_CAP`]): under-determined suspends, never
+/// crashes. An empty literal floundered here already, for the same reason.
 fn seq_literal_value_type(
     kb: &mut KnowledgeBase,
     kind: SeqLiteral,
     pos_child_types: &[Value],
 ) -> Value {
-    let t_val = pos_child_types
-        .first()
-        .cloned()
-        .unwrap_or_else(|| fresh_type_var(kb));
+    let mut joined: Option<Value> = None;
+    for cty in pos_child_types {
+        joined = match joined {
+            None => Some(cty.clone()),
+            Some(acc) => join_types(kb, acc, cty.clone()),
+        };
+        if joined.is_none() {
+            break;
+        }
+    }
+    let t_val = joined.unwrap_or_else(|| fresh_type_var(kb));
     // WI-20260826-7JDWY: through [`seq_literal_type`], the one owner of "which symbol is a
     // literal typed at" — this site open-coded the same three calls behind the same
     // `base_name: &str` the [`SeqLiteral`] enum was introduced to remove, so it was the

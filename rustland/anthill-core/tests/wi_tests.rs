@@ -1629,3 +1629,6 @@ mod wi_q0093_type_value_occurrence_matrix_test;
 
 #[path = "include/wi_7jdwy_hinted_literal_elements_test.rs"]
 mod wi_7jdwy_hinted_literal_elements_test;
+
+#[path = "include/wi_wbxgx_collection_literal_element_join_test.rs"]
+mod wi_wbxgx_collection_literal_element_join_test;
