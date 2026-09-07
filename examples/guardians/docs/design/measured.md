@@ -413,6 +413,46 @@ never used a gate.
 row the other two rest on, which is the reverse of how the group reads at first
 glance.
 
+## D3a · The same finding at the type the pipeline RETURNS
+
+**Scenario.** Skip generation entirely: mint the candidate program yourself, out
+of the mailbox.
+
+**Flow.** `rejected/forged_source.anthill` writes
+`source(text: join_texts(msgs.map(lambda m -> m.body).collect()).raw)` and returns
+it where `generate`'s result would go. No model is acquired and none is called.
+
+**Fires** — `'source' is internal to 'guardians.Source' and cannot be referenced
+from scope 'guardians.agent.ForgingGenerator.build'`. D3's mechanism exactly, at a
+second carrier: a NAME RESOLUTION failure, independent of every row.
+
+**Why it is a separate row and not a note on D3.** `Source`'s claim is about
+PROVENANCE, not about authority — its header says the text came from `generate`,
+and D3's group is about acquiring a capability. Nothing else in the example
+declines it: the labels do not (`Source` carries none, by design), the rows do
+not (`{External, Error}` is honest), and group A's generation guard does not,
+because that guard is about the PROMPT and here there is no prompt.
+
+**Control.** `fixtures/agent/checker.anthill` — `HonestChecker` RECEIVES a
+`Source` and hands it to the gate, and is ACCEPTED. So what `internal` removed is
+minting, not use. It cannot be a minting control: `internal` leaves `Source` with
+no anthill-reachable introduction at all, `generate` being body-less with a host
+binding. That is a real narrowing — a pure-anthill `Harness` carrier is now
+unwritable — and it costs this example nothing only because every carrier here
+declares and the host implements.
+
+**Backing it out** reds `a_forged_candidate_program_is_refused_by_containment`
+and that row alone; the fixture loaded clean before the fix
+(WI-20260829-MCKTE, measured 2026-09-07 with four sibling probes that still do).
+
+**What it does NOT close.** The seal is against anthill, not against the host:
+`guardians_test.rs` builds a `Source` at three sites through
+`try_resolve_symbol` + `Value::Entity`, which §8.6 does not gate — one of them
+standing in for `generate`, so it must not. And it is one of three independent
+holes on the generation path; the other two (a relabel through `text(raw: …)`,
+and `render_task` returning `Prompt[Public]` from `feedback: List[String]`) are
+open under the same work item.
+
 ## D4 · A permission can be CONDITIONAL, and the article's policy is one
 
 **Scenario.** The article states the policy as *"forbid data flow from

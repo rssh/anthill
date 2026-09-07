@@ -32,9 +32,41 @@
 -- asks whether attacker data influenced a value, and for a program generated from
 -- a Public prompt the answer is no. Unverified-ness is a different axis, carried
 -- by the type being opaque.
+--
+-- OPAQUE MEANS `internal`, AND IT DID NOT USED TO. Both sentences above are
+-- claims about PROVENANCE — that the text came from `generate` — and a public
+-- constructor made them advisory in exactly the way proposal 064 found the
+-- capability carriers advisory: `source(text: <mailbox bytes>)` mints a
+-- candidate program no model ever wrote, and then nothing said about the PROMPT
+-- constrains the program. Measured clean before the fix, and
+-- `rejected/forged_source.anthill` is the program that measured it
+-- (WI-20260829-MCKTE).
+--
+-- WHAT IT DOES NOT REST ON is `Prompt[Public]`. That claim is itself conditional
+-- today — `render_task` below takes `feedback: List[T = String]` and returns
+-- `Prompt[Public]` unconditionally, so mailbox bytes reach a Public prompt
+-- without touching a `Source` at all (WI-20260829-MCKTE item 3, measured). The
+-- two are independent holes on one path, and this seal closes only its own.
+--
+-- NO ANTHILL INTRODUCTION AT ALL, WHICH IS THE DESIGN AND NOT AN OVERSIGHT.
+-- `generate` is the sole introduction and is body-less with a host binding, so
+-- unlike `LlmOutput` (paired with `text_of`) and `LiveLlm` (paired with `open`)
+-- this sort has no sibling that mints. A pure-anthill `Harness` carrier is
+-- therefore unwritable, which costs this example nothing — every carrier here
+-- declares and the host implements — but it is a real narrowing and is why the
+-- ACCEPTED control for the refusal is `fixtures/agent/checker.anthill`, which
+-- RECEIVES a `Source` and passes it on: opaque, still usable, never mintable.
+--
+-- THE SEAL IS AGAINST ANTHILL, NOT AGAINST THE HOST. §8.6 gates name resolution,
+-- and a host function reaching `guardians.Source.source` through
+-- `try_resolve_symbol` + `Value::Entity` bypasses it — `guardians_test.rs` does
+-- exactly that at three sites to stand in for the generator. So the property is
+-- "no candidate can mint one", not "nothing can". If an embedder host-fn table
+-- (WI-1122) is ever exposed to candidates, this seal is void and no test here
+-- would notice.
 sort guardians.Source
   import anthill.prelude.{String}
-  entity source(text: String)
+  internal entity source(text: String)
 end
 
 enum guardians.CheckResult
@@ -86,6 +118,16 @@ sort guardians.Harness
   -- With it, a generation prompt built from mailbox text is `Prompt[Untrusted]`
   -- and does not type here: an agent whose CODE was written under the influence
   -- of an injected email cannot be produced at all.
+  --
+  -- THAT LAST SENTENCE IS TRUE OF `tools` AND FALSE OF `feedback`, and it is
+  -- written down rather than fixed because the fix is a signature change with a
+  -- decision behind it (WI-20260829-MCKTE item 3). `render_task` above returns
+  -- `Prompt[Public]` UNCONDITIONALLY, so mailbox bytes handed to it as
+  -- `feedback: List[T = String]` arrive here Public and this signature admits
+  -- them — measured, 0 errors. The repair loop is the channel: `Rejected`'s
+  -- diagnostics ARE next round's feedback, and a checker may put a model's
+  -- answer in them (rejected/steering_checker.anthill). The repair is to make
+  -- `render_task` JOIN its inputs' labels the way `prompt_with` does.
   --
   -- That is the difference between generation and every other model call in
   -- this pipeline. `summarize` may read untrusted content — its OUTPUT is

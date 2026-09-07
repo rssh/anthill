@@ -80,6 +80,12 @@ naming the capability's `internal` constructor, and is refused before any effect
 is considered. That one is what makes the rest mean anything: without it a
 generated checker acquires nothing, calls nothing, and holds a model anyway.
 
+`rejected/forged_source.anthill` is the same move at the type the pipeline
+returns: mint the candidate program out of the mailbox and skip generation
+altogether. `Source`'s claim is that its text came from `generate`, so its
+constructor is `internal` too, and `fixtures/agent/checker.anthill` is the
+control — a `Source` stays usable, it just cannot be made (`measured.md` D3a).
+
 And `rejected/frontier_checker.anthill`, which asks for `Permission[LiveLlm]`
 rather than the denied `Permission[Llm]`. It is refused either way, but only the
 downward closure names it as a **violated denial** rather than a missing

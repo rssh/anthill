@@ -326,11 +326,18 @@ fn spec_name(kb: &KnowledgeBase, v: &Value) -> Result<String, anthill_core::eval
 
 /// The program text inside a `guardians.Source`.
 ///
-/// BOTH SPELLINGS, and LOUD on anything else. `Source`'s sole constructor is
-/// `entity source(text: String)`, so the field arrives positionally from a host-built
-/// value and by name from one anthill constructed — and the reader this replaced fell
-/// through to `format!("{other:?}")`, which would have handed the checker a Rust debug
-/// rendering to load and reported the resulting parse errors as the candidate's.
+/// BOTH SPELLINGS, and LOUD on anything else. `Source`'s sole constructor takes one
+/// field, which arrives positionally from a host-built value and by name from one
+/// anthill constructed — and the reader this replaced fell through to
+/// `format!("{other:?}")`, which would have handed the checker a Rust debug rendering
+/// to load and reported the resulting parse errors as the candidate's.
+///
+/// THE NAMED ARM IS UNREACHABLE TODAY AND IS KEPT ON PURPOSE. `internal entity source`
+/// (§8.6) leaves `Source` with no anthill-reachable introduction, so every value that
+/// gets here is host-built and positional — the three `guardians.Source.source` sites
+/// in this file. It is the SEAL that makes the arm unreachable, not the shape of the
+/// value, so it is one `internal` away from live again and stays a loud read rather
+/// than a fall-through.
 fn source_text(kb: &KnowledgeBase, v: &Value) -> Result<String, anthill_core::eval::EvalError> {
     let inner = match v {
         Value::Str(s) => return Ok(s.clone()),
@@ -1251,6 +1258,46 @@ fn a_forged_capability_constructor_is_refused_by_containment() {
     assert_refused(
         "forged_llm",
         "'fake_llm' is internal to 'guardians.FakeLlm'",
+    );
+}
+
+#[test]
+fn a_forged_candidate_program_is_refused_by_containment() {
+    // THE SAME FINDING AS `forged_llm`, AT THE TYPE THE WHOLE PIPELINE RETURNS.
+    // `Source`'s header says its text came from `generate` — "the only thing to do
+    // with one is submit it to a `Checker`", and attacker data did not influence
+    // "a program generated from a Public prompt". A public constructor made both
+    // advisory: `source(text: <mailbox bytes>)` mints a candidate program no model
+    // ever wrote, and every guarantee about what a model was ASKED is then beside
+    // the point.
+    //
+    // NOT COVERED BY ANY OTHER ROW HERE, which is why it is a test and not a
+    // comment. The taint labels decline by design (`Source` carries none); the
+    // effect rows decline honestly (`{External, Error}` — nothing is acquired and
+    // no model is called); `generate_from_content` EXISTS TO REFUSE the longer
+    // attack that still goes through a model — and only one spelling of it, since
+    // routing the same bytes through `prompt_with`'s `Text[Public]` instruction
+    // slot still loads (WI-20260829-MCKTE). This one skips generation entirely,
+    // so no prompt guarantee, sound or not, bears on it.
+    //
+    // THE ACCEPTED CONTROL IS `checker.anthill`, and this row needs one for the
+    // reason measured.md gives about `forged_llm`: a vocabulary appearing only in
+    // refused programs is indistinguishable from one that refuses everything.
+    // `HonestChecker` RECEIVES a `Source` and passes it to the gate, and loads —
+    // so what `internal` removed is minting, not use. It cannot be an honest
+    // MINTING control, because `internal` leaves `Source` with no anthill
+    // introduction at all (lib/harness.anthill says why that is the design).
+    //
+    // WHAT FAILS WHEN BACKED OUT: drop `internal` from `entity source`
+    // (lib/harness.anthill) and this row alone goes red — the fixture loads clean,
+    // measured before the fix (WI-20260829-MCKTE). Every other row in this file
+    // passes either way, `internal` being invisible to a program that does not
+    // name the constructor. What is measured is "no CANDIDATE can mint one": the
+    // three host sites in this file that build a `Source` are unaffected, §8.6
+    // gating name resolution only.
+    assert_refused(
+        "forged_source",
+        "'source' is internal to 'guardians.Source'",
     );
 }
 

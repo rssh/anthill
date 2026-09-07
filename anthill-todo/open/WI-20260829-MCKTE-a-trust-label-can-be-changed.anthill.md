@@ -82,3 +82,147 @@ CONSEQUENCE FOR THE ARTICLE (/Users/rssh/RD/toWrite/ICTERI-2026, article-anthill
 
 WHAT THIS DOES NOT CHANGE. The cost measurement stands as the earlier feedback corrected it — 17 sites in two shapes, 10 fact sites in `fixtures/mailbox.anthill` and 7 call sites in `fixtures/agent/`. Adding `relabel_generate` as a permanent refused fixture is part of the acceptance, not a substitute for it: a fixture that measures the hole is not the seal.
 
+### 2026-09-07T11:40:17Z — feedback — user
+
+THE TICKET NAMES THE WRONG MECHANISM, AND ITS OWN FIX DOES NOT CLOSE THE HOLE.
+Five fixtures measured 2026-09-07 through `guardians_test`'s own loader (scratch
+files under fixtures/agent/, reverted). ALL FIVE LOADED CLEAN.
+
+  relabel via Text projection    text(raw: m.body.raw)          0 errors
+  relabel via Address            text(raw: m.from.local)        0 errors
+  relabel via MessageId          text(raw: m.id.value)          0 errors
+  the feedback channel           attempt(..., [all.raw])        0 errors
+  the forged program             source(text: all.raw)          0 errors
+
+Each is `rejected/generate_from_content.anthill` with one line changed, so each
+reaches `Harness.generate` — the path the ticket correctly identifies as the one
+with no second mechanism behind it.
+
+WHY SEALING `Text` FAILS. The ticket's fix is `internal entity text(...)` plus
+smart constructors at the boundary. But 13 sites need a `Text[Public]` —
+lib/tasks.anthill:30's instruction, lib/email.anthill:73's `releasable` row,
+every cleared `body:` in the agent fixtures — so the seal needs a public
+`literal(s: String) -> Text[Public]`, and `literal(m.from.local)` is the same
+laundering one call later. The door moves; it does not shut. Rows 2 and 3 above
+are the proof that it survives sealing `Text.raw` entirely: neither touches it.
+
+NOR CAN A PERMISSION SHUT IT. `Permission[Declassify]` on the Public door has to
+be granted for `good.anthill` and `internal_send.anthill` to send a cleared body
+at all, and once `Triage.run`'s row grants it the candidate holds it too. A
+permission cannot tell the program's own literal from the attacker's bytes,
+because at run time both are `String`. THE DISTINCTION IS SYNTACTIC BY NATURE.
+
+THE RULE THAT COVERS ALL FIVE. No public operation or constructor may take a
+`String` and return a value whose TYPE ASSERTS SOMETHING THE STRING CANNOT BACK.
+Audited against lib/:
+
+  text(raw: String)              -> Text[?t]         a trust level      VIOLATES
+  render_task(... List[String])  -> Prompt[Public]   content-blindness  VIOLATES
+  source(text: String)           -> Source           came from generate VIOLATES
+  LiveLlm.open(endpoint, model)  -> LiveLlm          model authority    ok (064)
+  Address(local:, domain:)       -> Address          NOTHING            ok
+  MessageId(value: String)       -> MessageId        NOTHING            ok
+
+SO `Address` AND `MessageId` NEED NO CHANGE, and the reason is worth recording
+because the obvious inference is the wrong one: they carry attacker-authored
+bytes, but a `String` there buys only matchable structure. Every dangerous use of
+a computed `Address` is already refused by the `Permission[Outbox]` guard
+(computed_recipient, letbound_recipient), and a fabricated `MessageId` covers no
+real message in `mentions_all`. They become load-bearing ONLY if `Text.raw` is
+sealed while a `String -> labelled` door stays open — which is an argument for
+keeping `.raw` public and closing the doors instead. Keeping it public also keeps
+`steering_checker` failing on `Permission[Reveal]` rather than on a name, so no
+fixture loses its needle.
+
+THE MINIMAL SHAPE, ranked by hole over fix.
+
+(1) `internal entity source(text: String)` — DELIVERED INLINE with this feedback.
+One word, ZERO construction sites in the whole example (`generate` is the only
+introduction and is body-less), and it closes the largest hole: the model is not
+in the loop at all. `rejected/forged_source.anthill` +
+`a_forged_candidate_program_is_refused_by_containment` drive it; control measured,
+backing out `internal` turns that one row red and no other.
+
+(2) `entity text(raw: literal String)` — a field modifier admitting only a source
+literal. ALL 23 EXISTING SITES ARE LITERALS AND STAY VERBATIM, so lib/, the
+mailbox fixture and every agent fixture are untouched; rows 1-3 above die at the
+construction site whatever the String's provenance; the `match` spelling dies on
+the construction half while the pattern still binds. It needs one grammar token
+and one term-shape test at argument binding (the choke point WI-1100 put arity
+on). NOT YET IMPLEMENTED — it is the one language affordance this needs, and the
+ticket should say so rather than describing a vocabulary fix that cannot work.
+
+(3) `render_task` must JOIN its inputs' labels the way `prompt_with` does, rather
+than asserting `Public` unconditionally:
+  render_task(self: C, spec: Symbol, tools: List[T = Text[?t]],
+              feedback: List[T = Text[?t]]) -> Prompt[?t]
+Row 4 above then yields `Prompt[Untrusted]` and `generate` refuses it, by the
+mechanism already in the example. THIS IS A DESIGNED FLOW, not an oversight:
+`Rejected(diagnostics: List[String])` is documented as feeding `feedback`, and
+steering_checker puts `text_of(...)` output straight into diagnostics, so model
+output -> feedback -> `Prompt[Public]` is a path the design intends. The cost is
+that lib/gate.anthill's diagnostics (`clause_diagnostic`, `symbol_diagnostic`,
+`naming_violations`) build `String` from the trusted layer and need a route to
+`Text[Public]`. OPEN DECISION: an `internal` `String -> Text[Public]` confined to
+the gate's scope (stronger, reintroduces the shape at one site), or leave
+`feedback: List[String]` and say plainly that the repair loop is NOT
+content-blind and `generate`'s claim covers `tools` only (smaller, truthful).
+
+CONSEQUENCE FOR THE ARTICLE, extending the 2026-09-06 note. The sentence
+"Generating an agent cannot be influenced by mailbox content, as can be seen from
+the operation signatures" is falsified by a parameter IN THAT LISTING —
+`render_task`'s `feedback: List[T = String]` — not only by the relabel. Until (3)
+lands the claim must be scoped to `tools`, or the listing must change.
+
+WHAT THE EARLIER COST MEASUREMENT STILL UNDERCOUNTS: it is 23 `text(raw: ...)`
+sites, not 17. Eleven facts (ten in fixtures/mailbox.anthill plus
+lib/email.anthill:73's `releasable` row) and twelve calls (the seven listed plus
+uncleared_body:38, uncleared_external:34, steering_checker:27 TWICE, and
+lib/tasks.anthill:30). The two lib/ sites matter more than the number: they put
+the seal inside the library, not only in the fixtures. Line numbers in the
+earlier list have drifted (computed_recipient:46, letbound_recipient:40). Under
+fix (2) the count is moot — every one of the 23 stays as written.
+
+### 2026-09-07T12:42:06Z — feedback — user
+
+CORRECTION TO THE PREVIOUS ENTRY, from /code-review on the inline (1).
+
+"ZERO construction sites in the whole example" IS WRONG. There are three, all in
+Rust: `guardians_test.rs` builds a `Source` through
+`try_resolve_symbol("guardians.Source.source")` + `Value::Entity` at :390
+(`guardians_generate`), :1484 and :2213. §8.6 gates NAME RESOLUTION, so a host
+function bypasses it entirely — and must, one of those sites standing in for
+`generate`. The claim that holds is "no anthill construction site", and the
+property measured is "no CANDIDATE can mint one", not "nothing can". If an
+embedder host-fn table (WI-1122) is ever exposed to candidates the seal is void
+and no test here would notice. Recorded at the declaration and in measured.md D3a.
+
+AND THE HIDE IS NOT FREE, which the previous entry also overstated. `internal`
+leaves `Source` with NO anthill-reachable introduction at all — unlike
+`LlmOutput` (paired with `text_of`) and `LiveLlm` (paired with `open`), whose
+sibling mints live in the same sort. `generate` is the sole introduction and is
+body-less with a host binding, so a pure-anthill `Harness` carrier is now
+unwritable. That costs this example nothing (every carrier here declares and the
+host implements) but it is a real narrowing and is now written down.
+
+THE ACCEPTED CONTROL IS `fixtures/agent/checker.anthill`. measured.md's own
+discipline is that a vocabulary appearing only in refused programs is
+indistinguishable from one that refuses everything, and D3 pairs `forged_llm`
+with `HonestChecker` for exactly that reason. `HonestChecker` RECEIVES a `Source`
+and passes it to the gate, and is accepted — so what `internal` removed is
+MINTING, not USE. It cannot be a minting control, per the paragraph above.
+
+DELIVERED with (1): `internal entity source`, `rejected/forged_source.anthill`,
+`a_forged_candidate_program_is_refused_by_containment`, measured.md D3a, and the
+README containment paragraph. Guardians suite 51 green (was 50); BACK-OUT RUN
+50 green / 1 red, that row alone. Full `anthill-core` 5702 green across 12 test
+binaries, 0 failures. Diagnostic verified verbatim: `'source' is internal to
+'guardians.Source' and cannot be referenced from scope
+'guardians.agent.ForgingGenerator.build'`.
+
+ITEMS (2) AND (3) REMAIN OPEN AND ARE THE TICKET'S WORK. (1) closes one of three
+independent holes on the generation path; the ticket should not read as narrowed
+by it. The `generate` declaration now carries a scoping note saying which half of
+its claim is false today, rather than the example shipping prose its own record
+contradicts.
+
