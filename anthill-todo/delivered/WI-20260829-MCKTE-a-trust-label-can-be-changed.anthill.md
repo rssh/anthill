@@ -3,9 +3,9 @@
 - id: WI-20260829-MCKTE-a-trust-label-can-be-changed
 - created: 2026-08-29T14:48:45Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-08-29T14:48:45Z
+- status_at: 2026-09-08T08:01:38Z
 
 - acceptance: cargo-test
 
