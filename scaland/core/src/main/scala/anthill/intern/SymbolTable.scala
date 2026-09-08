@@ -401,6 +401,49 @@ class SymbolTable:
     val visited = HashSet.empty[ScopeId]
     resolveRecursive(name, scopeId, visited)
 
+  /** WI-980 / WI-20260821-SBZ2A — the same question [[resolveInScope]] answers, with
+    * names the caller supplies for scopes that do not carry them as symbols yet, and
+    * with the ENTRY scope's own locals skipped.
+    *
+    * THE RULE-HEAD PASS IS ITS CALLER, and it exists because that pass cannot ask
+    * [[resolveInScope]] plainly. What it needs is *would this name resolve here IF every
+    * scope's rule heads were already symbols* — a question about the finished program —
+    * and the overlay supplies that IF. The entry scope is skipped because the asker's own
+    * head is the thing being decided; `overlay` is expected to answer `None` for it too,
+    * and the two guards are deliberately both present (rustland's twin carries the same
+    * pair).
+    *
+    * IT IS THE RESOLVER'S OWN WALK, and that is the point rather than an economy. A
+    * SECOND traversal built from the parent-eligibility filter alone is not what a
+    * reference obeys: the enclosing stop is a PATH property recomputed at every hop
+    * (WI-1089/N2865/6BX85), the `exposed` gate runs per inclusion, and each scope
+    * short-circuits on its own locals and imports before any parent is considered.
+    * Measured in rustland, such a walk climbed out of a wildcard-imported scope into
+    * namespaces no reference can reach and REFUSED three programs that load clean.
+    *
+    * NO `ExposureLinks` SWITCH, unlike rustland's `resolve_captured_name_with_overlay`,
+    * and that is an equality rather than a gap: rustland skips the variant-exposure hop
+    * for its WI-999 name-capture check, and here the `exposed` gate in the walk already
+    * refuses every name that is not one of the sort's entity variants — while a name
+    * that IS one makes the head DENOTE, so it never becomes a candidate. scaland has no
+    * WI-999 capture check for the switch's other reader to serve.
+    *
+    * Rustland's twin is `SymbolTable::resolve_captured_name_with_overlay`. */
+  def resolveWithOverlay(
+    name: String, scopeId: ScopeId, overlay: ScopeNameOverlay
+  ): ResolveResult =
+    val visited = HashSet.empty[ScopeId]
+    resolveRecursive(name, scopeId, visited, ownLocalsVisible = false, overlay = overlay)
+
+  /** A caller-supplied answer for "does this scope hold that name", for scopes whose
+    * names are not symbols yet. `ScopeId` is this table's member type, so an overlay
+    * cannot be written against another table's scopes. */
+  type ScopeNameOverlay = ScopeId => Option[TermSymbol]
+
+  /** The overlay every ordinary resolution runs under — a `val` so the default costs one
+    * shared closure rather than one per call. */
+  private val NoOverlay: ScopeNameOverlay = _ => None
+
   /** WI-20260826-NB88H — [[resolveInScope]] asked FROM BELOW AN IMPORT EDGE: the scope's
     * own contents and everything its declared clauses reach, but never the lexical
     * container around it.
@@ -441,7 +484,8 @@ class SymbolTable:
     * exposure and its own imports are contents of the thing named, and stay reachable.
     * Rustland's twin is `EnclosingLinks` in `intern.rs`. */
   private def resolveRecursive(
-    name: String, scopeId: ScopeId, visited: HashSet[ScopeId], enclosingStopped: Boolean = false
+    name: String, scopeId: ScopeId, visited: HashSet[ScopeId], enclosingStopped: Boolean = false,
+    ownLocalsVisible: Boolean = true, overlay: ScopeNameOverlay = NoOverlay
   ): ResolveResult =
     if !visited.add(scopeId) then return ResolveResult.NotFound // cycle
 
@@ -449,7 +493,14 @@ class SymbolTable:
       case None => ResolveResult.NotFound
       case Some(scope) =>
         // 1. Local
-        scope.locals.get(name).foreach(sym => return ResolveResult.Found(sym))
+        if ownLocalsVisible then
+          scope.locals.get(name).foreach(sym => return ResolveResult.Found(sym))
+          // WI-20260821-SBZ2A / WI-980 — a name the CALLER says this scope holds, though
+          // no symbol carries it yet. Read exactly where a local is read, so an overlaid
+          // name shadows and short-circuits precisely as a declared one does; the
+          // `ownLocalsVisible` gate is what keeps it off the ENTRY scope, which is the
+          // whole reason [[resolveWithOverlay]] turns that switch off.
+          overlay(scopeId).foreach(sym => return ResolveResult.Found(sym))
         // 1b. Imports — WI-1074: an entry written by another file is not here at all;
         // the resolution continues to the parents as if the import had never been
         // written. Among several visible writes the LAST wins, preserving the in-file
@@ -519,7 +570,9 @@ class SymbolTable:
             case ImportOrigin.File(_) | ImportOrigin.Requirement => true
             case _                                               => false)
           val stoppedBelow = enclosingStopped || namesItsTarget
-          resolveRecursive(name, parent, visited, stoppedBelow) match
+          // `ownLocalsVisible = true`, always: that switch is the ENTRY scope's alone —
+          // a parent's declarations are not what a declaration here shadows.
+          resolveRecursive(name, parent, visited, stoppedBelow, ownLocalsVisible = true, overlay) match
             case ResolveResult.Found(sym) => matches += sym
             case ResolveResult.Ambiguous(candidates) => matches ++= candidates
             case ResolveResult.NotFound =>

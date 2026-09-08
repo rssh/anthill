@@ -46,13 +46,19 @@ enum SymbolKind:
   // equational head introduces a function symbol its equations define
   // (`EquationFunctor`) — and an equation-introduced functor is not a relation.
   //
-  // `EquationFunctor` has NO reader in scaland yet, deliberately: rustland's readers
-  // are its typer (`UnreducedEquationFunctor` at a VALUE citation, and since
-  // WI-20260902-8K4RB `EquationSubjectInGoalPosition` at a GOAL one) and the simp
-  // machinery, none of which scaland has — the goal-position refusal in particular is
-  // raised by the rule-body goal-READING pass, and scaland has no typer to run it. It is
-  // recorded now so the two loaders agree on what a rule introduced — recovering it
-  // later would mean re-walking every rule head.
+  // WI-20260821-SBZ2A GAVE `EquationFunctor` ITS FIRST READERS HERE, and they are all
+  // in the loader: proposal 061's `ruleReading` (an equation head is a CLAUSE, never a
+  // declaration), 061's file rule (an equation subject owns no predicate, so it is
+  // exempt) and 845G7's collision message (a body-less `rule` does not collect an
+  // equation's subject — WI-898). The kind was recorded before any of them existed,
+  // deliberately, so the two loaders would agree on what a rule introduced; recovering
+  // it later would have meant re-walking every rule head.
+  //
+  // RUSTLAND'S OTHER READERS ARE STILL ABSENT: its typer
+  // (`UnreducedEquationFunctor` at a VALUE citation, and since WI-20260902-8K4RB
+  // `EquationSubjectInGoalPosition` at a GOAL one) and the simp machinery, neither of
+  // which scaland has — the goal-position refusal in particular is raised by the
+  // rule-body goal-READING pass, and scaland has no typer to run it.
   case Sort, Entity, Operation, Const, Namespace, Fact, Rule, Constraint, Param, Field,
        Goal, EquationFunctor
 

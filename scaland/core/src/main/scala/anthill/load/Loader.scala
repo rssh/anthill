@@ -1,12 +1,12 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult, ImportOrigin}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult, ImportOrigin, FileId}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
 
-import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
+import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, LinkedHashMap}
 
 /** Load errors.
   *
@@ -94,10 +94,19 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(DefinePass(kb, file.symbols), file.items)
 
+    // Pass 1b (proposal 061): the PREDICATES body-less rules declare. A separate walk,
+    // after every other name in every file exists — see [[DeclarePredicatePass]] for why
+    // scaland cannot interleave it the way rustland does.
+    for (file, fid) <- files.zip(fileIds) do
+      kb.symbols.setAskingFile(Some(fid))
+      walkScopes(DeclarePredicatePass(kb, file.symbols, file.terms, errors), file.items)
+
     // Pass 2: Process requires and imports (all sorts exist now). A Selective
-    // import of a RULE-INTRODUCED predicate cannot resolve here — its head-functor
-    // symbol is not registered until pass 3 — so such names are deferred into
-    // `pending` and retried below (WI-295).
+    // import of an AUTO-DECLARED predicate cannot resolve here — its head-functor symbol
+    // is not registered until pass 3 — so such names are deferred into `pending` and
+    // retried below (WI-295). A predicate a body-less rule DECLARES is not one of those
+    // since proposal 061: pass 1b minted it above, so it resolves here like any other
+    // declared name.
     val pending = ArrayBuffer.empty[PendingImport[kb.ScopeId]]
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
@@ -112,35 +121,53 @@ object Loader:
     // the same state by registering the prelude before `scan_definitions` runs.
     autoImportPrelude(kb)
 
-    // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898).
+    // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898), in
+    // THREE phases — collect, freeze, mint. WI-20260821-SBZ2A ports WI-980 / 059 R6 and
+    // WI-20260822-845G7 from rustland; `docs/kernel-language.md` §"A rule head functor
+    // is resolved, not declared" states the rule for both implementations.
     //
-    // DIVERGES FROM RUSTLAND — WI-980 / 059 R6 IS NOT PORTED HERE, and the absence is a
-    // gap, not a shape scaland lacks. OWNED BY WI-20260821-SBZ2A, which carries the
-    // algorithm and the acceptance rows. `scanRuleGoal`'s guard below asks whether the name
-    // ALREADY DENOTES, and this loop mints as it walks, so the table it reads is the one
-    // it is filling: `namespace demo { rule p(1); sort Rec { rule p(2) } }` is ONE
-    // predicate with two clauses, and moving `rule p(1)` below the sort makes it TWO.
-    // Rustland now decides it on a question the pass cannot move — does some scope this
-    // one can SEE already INTRODUCE the name — answered by `Ownership` over
-    // `SymbolTable.resolve_captured_name_with_overlay`, which runs the resolver's OWN
-    // walk over an overlay of the program's rule heads (a second traversal built from
-    // the parent-eligibility filter alone refused three programs that load clean).
+    // WHY THE PASS IS SPLIT. Deciding a head is ASKING THE LADDER, and this is the only
+    // pass whose own work changes what the ladder answers — so a single walk that minted
+    // as it went asked its question against a half-built table: `namespace demo { rule
+    // p(1) :- true  sort Rec { rule p(2) :- true } }` loaded as ONE predicate with two
+    // clauses when the namespace-level rule came first and as TWO when it came second,
+    // and the same pair across two files split on whichever file was reached first. Both
+    // loaded clean, and the split silently decided whether a rule EXTENDS someone else's
+    // predicate. Nothing is decided now until every head is in hand.
     //
-    // A ROUND-BASED FIXPOINT, not a recursion: the relation is non-monotone (the more
-    // scopes own a name, the more heads yield, so the fewer own it), so a demand-driven
-    // recursion has to break cycles provisionally, and caching anything computed under
-    // such a break reintroduced the very order dependence — measured, six permutations
-    // of three files gave two different programs. Three rules instead: a scope that can
-    // see nothing even optimistically OWNS; a scope that sees a settled owner from every
-    // file YIELDS; and a remaining tie is broken inside ONE strongly-connected
-    // component, by real enclosing edges, never across the whole undecided set.
-    // `<global>` may own what is written at it and is never yielded to.
+    // AND THERE IS NO OWNERSHIP DECISION LEFT TO TAKE (845G7). A head that does not
+    // already DENOTE declares its predicate at the scope it is WRITTEN IN, full stop —
+    // so no order can enter, and order-freedom is a property of the rule rather than a
+    // result computed over the finished program. What replaced the decision is a
+    // REFUSAL: two scopes that can see each other may not both introduce one name
+    // ([[headNameCollisions]]), because a second scope's same-named head is a SHADOW
+    // rather than a clause and inventing one silently is the defect.
     //
-    // docs/kernel-language.md §"A rule head functor is resolved, not declared" states
-    // the rule for BOTH implementations; this one does not yet meet it.
-    for (file, fid) <- files.zip(fileIds) do
+    // Runs after pass 2 because a head that ALREADY DENOTES references what it resolves
+    // to and introduces nothing — the ladder must see every import and every `requires`
+    // first.
+    val heads = ArrayBuffer.empty[RuleHeadSite[kb.ScopeId]]
+    for ((file, fid), fileIdx) <- files.zip(fileIds).zipWithIndex do
       kb.symbols.setAskingFile(Some(fid))
-      walkScopes(RuleHeadPass(kb, file.symbols, file.terms, errors), file.items)
+      walkScopes(RuleHeadCollectPass(kb, file.symbols, file.terms, fileIdx, heads, errors), file.items)
+
+    // PHASE 2 — every ladder answer read off the PRE-MINT table, in full, before phase 3
+    // starts. That is what makes them order-free. WI-995: imports are file-local, so
+    // each is asked on behalf of the file the HEAD is written in.
+    val headSites = heads.toIndexedSeq
+    val denotes: IndexedSeq[Boolean] = headSites.map { h =>
+      kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
+      kb.symbols.resolveInScope(h.name, h.scope).denotes
+    }
+
+    // PHASE 3 — DECIDE, then mint. Deciding reads the table and minting writes it, so
+    // they cannot interleave: [[headNameCollisions]] sees a scope through a per-scope
+    // SENTINEL symbol, and no mint has happened when any of its answers is taken.
+    val collided = reportHeadNameCollisions(kb, headSites, denotes, fileIds, errors)
+    reportPredicateHeadsSpanningFiles(kb, headSites, denotes, collided, errors)
+    for (head, denoted) <- headSites.zip(denotes) if !denoted do
+      kb.symbols.setAskingFile(Some(fileIds(head.fileIdx)))
+      scanRuleGoal(kb, head)
 
     // Pass 4 (WI-295): retry the deferred predicate imports. Pass 3's head-functor
     // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
@@ -213,7 +240,7 @@ object Loader:
     * pass supplies only what it does AT a scope (`enterScope`, which yields the scope to
     * recurse into) and at every other item (`atItem`, in the scope that encloses it).
     *
-    * WI-949: ONE walker, not one per pass. The three scan passes and the loader each
+    * WI-949: ONE walker, not one per pass. The four scan passes and the loader each
     * re-spelled this recursion, which is how the WI-853 top-level-import arm and the
     * WI-295 `pending` buffer had to be threaded through separate copies in lockstep —
     * and how the copies came to disagree about a scope that is missing (see
@@ -249,7 +276,8 @@ object Loader:
       * "everything that reaches the KB reaches it here", so an `Item` kind it does not
       * name is data loss — that is how `ConstraintItem` was found being dropped in
       * silence. The other three are narrow scans (`DefinePass` defines names,
-      * `ImportPass` handles imports, `RuleHeadPass` handles 2 of 23 kinds), where a
+      * `ImportPass` handles imports, `DeclarePredicatePass` and `RuleHeadCollectPass`
+      * handle 2 of 23 kinds each), where a
       * catch-all says "not my job" honestly and enumerating would be 18 arms of noise. */
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit
 
@@ -315,7 +343,11 @@ object Loader:
   // ── Pass 1: Define names ─────────────────────────────────────
 
   /** Pass 1 — DEFINE every name. The pass that creates the scopes the others look up,
-    * so its `enterScope` defines rather than resolving, and can never miss. */
+    * so its `enterScope` defines rather than resolving, and can never miss.
+    *
+    * A PREDICATE IS NOT DEFINED HERE, and that is a scaland-specific ordering rather than
+    * a difference of rule — see [[DeclarePredicatePass]], the sub-pass that follows this
+    * one. */
   private final class DefinePass(val kb: KnowledgeBase, val fileSym: SymbolTable) extends ScopePass:
 
     def enterScope(
@@ -417,20 +449,13 @@ object Loader:
           val (shortName, qualName, target) = declSite(kb, fileSym, c.name.segments, prefix, scope)
           defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, target)
 
-        case Item.RuleItem(rule) =>
-          rule.label.foreach { label =>
-            val shortName = joinSegments(fileSym, label.segments)
-            val qualName = makeQualified(prefix, shortName)
-            kb.symbols.define(shortName, qualName, SymbolKind.Rule, scope)
-          }
+        // The LABEL only. A rule's label is a citation handle (`using X`) and exists
+        // whatever the rule reads as; the PREDICATE a body-less rule declares is minted
+        // one sub-pass later ([[DeclarePredicatePass]]).
+        case Item.RuleItem(rule) => defineRuleLabel(rule, scope, prefix)
 
         case Item.RuleBlockItem(block) =>
-          for rule <- block.entries do
-            rule.label.foreach { label =>
-              val shortName = joinSegments(fileSym, label.segments)
-              val qualName = makeQualified(prefix, shortName)
-              kb.symbols.define(shortName, qualName, SymbolKind.Rule, scope)
-            }
+          for rule <- block.entries do defineRuleLabel(rule, scope, prefix)
 
         // WI-840 (proposal 058 §4.7): a NAMED requirement slot — `requires O: Ord[T]`
         // — declares a type PARAMETER of the enclosing sort, which is what lets the
@@ -454,6 +479,88 @@ object Loader:
           }
 
         case _ => // Other items don't define symbols in pass 1
+
+    private def defineRuleLabel(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
+      rule.label.foreach { label =>
+        val shortName = joinSegments(fileSym, label.segments)
+        kb.symbols.define(shortName, makeQualified(prefix, shortName), SymbolKind.Rule, scope)
+      }
+
+  /** Pass 1b (proposal 061, WI-20260821-SBZ2A) — DEFINE THE PREDICATES BODY-LESS RULES
+    * DECLARE. A predicate was the only name in the language created as a side effect of
+    * USING it, so the pass that decided its binding was the pass that created it; every
+    * other name kind is immune because pass 1 defines all of them across every file
+    * before anything resolves anything (WI-321). A declaration gives the head something
+    * to land on, put there like every other name, so WHEN pass 3's ladder is asked stops
+    * mattering.
+    *
+    * A SEPARATE WALK, AND THAT IS SCALAND-SPECIFIC. rustland mints a declaration inside
+    * pass 1 itself, which is safe there because a symbol carries a kind SET —
+    * `SymbolDef::Resolved.kinds: SmallVec<[SymbolKind; 2]>` with `add_kind`, so a
+    * repeated `(name, scope)` ACCUMULATES roles. Here [[anthill.intern.SymbolDef]] has a
+    * single `kind` field and no merge: `define` returns the existing symbol and keeps
+    * whichever kind got there first. (scaland records a name's OTHER roles in separate
+    * registries instead — `SortKind` per sort TERM, `constructorSymbols_`,
+    * `entityParent_` — one role each, never a set on the symbol.)
+    *
+    * SO AN INTERLEAVED WALK LET THE TEXT ORDER DECIDE THE KIND: MEASURED,
+    * `operation has(x) -> Bool` beside `rule has(?x)` was refused with the operation
+    * written first and LOADED CLEAN with the rule written first, stamping `has` a `Goal`
+    * and silently swallowing the no-op line. Deferring every declaration until every
+    * other name in every file exists restores the WI-321 invariant for this kind too:
+    * whatever else declares the name, it is already there.
+    *
+    * THE OTHER FIX WOULD BE A KIND SET, and it is worth naming rather than leaving as an
+    * unstated road not taken: give scaland's `SymbolDef` rustland's `kinds` and this pass
+    * folds back into pass 1. That is a change to every one of the ~20 sites that
+    * pattern-match `SymbolDef.Resolved` by kind, so it is a ticket of its own, not this
+    * one's to take.
+    *
+    * BEFORE PASS 2, so a selective `import P.{p}` of a DECLARED predicate resolves like
+    * any other declared name rather than through pass 4's deferred retry. */
+  private final class DeclarePredicatePass(
+    val kb: KnowledgeBase,
+    val fileSym: SymbolTable,
+    fileTerms: SimpleTermStore,
+    errors: ArrayBuffer[LoadError]
+  ) extends ScopePass:
+
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
+    ): Option[kb.ScopeId] =
+      lookupScope(kb, qualName, decl.name.span, errors)
+
+    def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
+      item match
+        case Item.RuleItem(rule) => declare(rule, scope, prefix)
+        case Item.RuleBlockItem(block) => for rule <- block.entries do declare(rule, scope, prefix)
+        case _ =>
+
+    /** [[defineSymbolOnce]], like every other declaration mint in this loader. Its gate
+      * is `define`'s UNCONDITIONAL `byQualifiedName` write, reached "by any route to a
+      * colliding qualified name" (see its doc) — and this pass is a new such route, so
+      * exempting it would reopen exactly what that gate is for. rustland's `scan_rule`
+      * writes a plain `define` here; it can, because its `SymbolTable::define` merges a
+      * kind SET onto a repeated `(name, scope)` and scaland's keeps the first kind.
+      *
+      * IT COSTS NOTHING THE DECLARATION NEEDS. Two declarations of one predicate at one
+      * scope stay idempotent (the second finds the qualified name registered), and
+      * another construct's kind is still left in place for
+      * [[refuseDeclarationThatCannotStand]] to find (the operation's mint got there
+      * first). What changes is only the unreachable case the gate exists for, and it
+      * changes it from a silent remapping to that method's loud
+      * "was never brought into existence". */
+    private def declare(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
+      if ruleReading(rule, fileSym, fileTerms) == RuleReading.Declaration then
+        // A `Declaration` reading is reached only through the `Some((_, Goal))` arm of
+        // that very call, so a `None` here would mean the two disagree — which is the
+        // defect this pairing exists to make impossible. Raised rather than skipped.
+        ruleIntroducedFunctor(rule, fileSym, fileTerms) match
+          case Some((name, kind)) =>
+            defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
+          case None =>
+            throw AssertionError(
+              "internal: a Declaration reading must name the predicate it declares")
 
   /** Define an ABSTRACT sort in `scope` and, when `isParam` and the scope is a
     * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
@@ -665,18 +772,38 @@ object Loader:
 
   // ── Pass 3: rule-introduced functors ─────────────────────────
 
-  /** Pass 3 — WI-894/896/898: register the functor a RULE HEAD introduces. `ite` is the
-    * motivating case — `bool.anthill` declares no `ite` operation; its two `[simp]`
-    * equations ARE its definition, and `int64.anthill` / `ordered.anthill` reach it by
-    * `import anthill.prelude.Bool.{ite}`. Without this pass that import resolves to
-    * nothing, which is how the whole stdlib failed to load.
+  /** ONE RULE HEAD, its introduced name already read off the head, waiting for the
+    * decision — sub-pass 3's unit of work since the pass was split in three
+    * (WI-20260821-SBZ2A). The split exists because deciding a head is *asking the
+    * ladder*, and this is the only pass whose own work changes what the ladder answers.
     *
-    * Runs after pass 2 because it must see whether the name ALREADY denotes: a head
-    * naming a declared operation references it, and introduces nothing. */
-  private final class RuleHeadPass(
+    * PARAMETERIZED BY THE SCOPE TYPE for the reason [[PendingImport]] is (WI-1004): a
+    * scope identity belongs to the table that issued it, and this record is held outside
+    * [[anthill.intern.SymbolTable]].
+    *
+    * `fileIdx` indexes `scanDefinitions`' own `files`/`fileIds` — the file this head is
+    * WRITTEN in, so the decision can be taken on that file's behalf (imports are
+    * file-local, WI-995) and the 061 file rule can count files. `span` is the RULE's own
+    * span, which carries the file name a refusal prints. */
+  private case class RuleHeadSite[S](
+    fileIdx: Int, scope: S, prefix: String, name: String, kind: SymbolKind, span: Span
+  )
+
+  /** Sub-pass 3, PHASE 1 — read each rule head's introduced name and remember WHERE it
+    * is written. Takes no decision and mints nothing, so nothing it does depends on the
+    * order it runs in; [[scanRuleGoal]] is the mint.
+    *
+    * WI-894/896/898 is what the mint is FOR. `ite` is the motivating case —
+    * `bool.anthill` declares no `ite` operation; its two `[simp]` equations ARE its
+    * definition, and `int64.anthill` / `ordered.anthill` reach it by `import
+    * anthill.prelude.Bool.{ite}`. Without the mint that import resolves to nothing,
+    * which is how the whole stdlib failed to load. */
+  private final class RuleHeadCollectPass(
     val kb: KnowledgeBase,
     val fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
+    fileIdx: Int,
+    sites: ArrayBuffer[RuleHeadSite[kb.ScopeId]],
     errors: ArrayBuffer[LoadError]
   ) extends ScopePass:
 
@@ -687,30 +814,602 @@ object Loader:
 
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
       item match
-        case Item.RuleItem(rule) => scanRuleGoal(kb, rule, fileSym, fileTerms, scope, prefix)
-        case Item.RuleBlockItem(block) =>
-          for rule <- block.entries do
-            scanRuleGoal(kb, rule, fileSym, fileTerms, scope, prefix)
-
+        case Item.RuleItem(rule) => collect(rule, scope, prefix)
+        case Item.RuleBlockItem(block) => for rule <- block.entries do collect(rule, scope, prefix)
         case _ =>
 
-  private def scanRuleGoal(
+    private def collect(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
+      for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
+        sites += RuleHeadSite(fileIdx, scope, prefix, name, kind, rule.span)
+
+  /** Sub-pass 3, PHASE 3 — the MINT, and no longer the DECISION.
+    *
+    * WI-894 — A RULE DOES NOT TRAVEL TO THE GLOBAL NAMESPACE FROM ITS PLACE. A name a
+    * rule introduces belongs to the scope the rule is WRITTEN IN: the sort when written
+    * inside a sort, the namespace when written at namespace level — the same rule every
+    * other member (`operation`, `entity`, `const`) follows. A functor with no scoped
+    * symbol falls to the bare `intern(name)` fallback, which is ONE GLOBAL NAME: two
+    * sorts defining the same short name then share one definition and the loser's own
+    * laws are ignored INSIDE ITS OWN SORT, on a program that loads clean.
+    *
+    * WI-898 — WHICH KIND the fresh symbol gets travelled with the name from the same
+    * head walk that picked it ([[ruleIntroducedFunctor]]), so no second walk can
+    * disagree.
+    *
+    * `defineSymbolOnce`, not `define`: `define` writes `byQualifiedName` for the
+    * qualified name UNCONDITIONALLY whenever the SHORT name is new in the target scope,
+    * so a rule head in a re-opened namespace could replace a builtin's mapping (the case
+    * that gate was written for — see its doc).
+    *
+    * NO RE-CHECK OF THE LADDER HERE. The caller passes only heads whose frozen phase-2
+    * answer was `NotFound`; re-asking would put the question back against the table THIS
+    * LOOP IS FILLING, which is the defect the split removes. Two heads of one name at one
+    * scope are two clauses of one predicate, and `defineSymbolOnce` is already idempotent
+    * for them. */
+  private def scanRuleGoal(kb: KnowledgeBase, site: RuleHeadSite[kb.ScopeId]): Unit =
+    defineSymbolOnce(kb, site.name, makeQualified(site.prefix, site.name), site.kind, site.scope)
+
+  /** How many scope names a collision message prints before it says "… and N more".
+    * Mirrors rustland's `COLLISION_SCOPES_SHOWN`. */
+  private val CollisionScopesShown = 6
+
+  /** ONE NAME INTRODUCED AT TWO SCOPES THAT CAN SEE EACH OTHER — the whole of what
+    * rustland's deleted `Ownership` fixpoint used to DECIDE, now a report.
+    *
+    * `owner` is the scope a declaration belongs at when one place collects every head:
+    * the member that EVERY other member reaches FROM EVERY FILE it writes a head in.
+    * `None` where no member does — a chain (a wildcard import is not re-exported) or two
+    * siblings a third scope imports — and the message then prescribes a per-scope
+    * declaration instead. */
+  private case class HeadNameCollision[S](
+    name: String, scopes: IndexedSeq[S], owner: Option[S], sites: IndexedSeq[Int]
+  )
+
+  /** Mint one sentinel per scope that writes a rule head — a symbol standing for "a head
+    * is written here", so the resolver can be told about names that are not symbols yet.
+    *
+    * PER SCOPE, not one shared sentinel: the walk deduplicates its matches by symbol, so
+    * one sentinel for every scope would collapse two distinct owners into a single
+    * `Found` and the group would lose a member. The spelling is unspellable by any
+    * identifier token, like [[anthill.intern.GLOBAL_SCOPE_NAME]], so it can never be a
+    * name a program writes. */
+  private def mintHeadSentinels(
+    kb: KnowledgeBase, sites: Seq[RuleHeadSite[kb.ScopeId]]
+  ): Map[kb.ScopeId, TermSymbol] =
+    sites.map(_.scope).distinct
+      .sortBy(sc => TermSymbol.raw(kb.symbols.symbolOf(sc)))
+      .zipWithIndex
+      .map((sc, i) => sc -> kb.intern(s"<head-present:$i>"))
+      .toMap
+
+  /** WHAT A HEAD NAMED `name`, WRITTEN AT `scope` IN `file`, CAN SEE among the scopes
+    * that introduce that name — with every candidate overlaid as though its head were
+    * already a symbol.
+    *
+    * `<global>` DOES NOT APPEAR HERE, and that is deliberate rather than an omission:
+    * [[headNameCollisions]] leaves it out of the CANDIDATE SET, so `!candidates.contains`
+    * already answers for it. */
+  private def headNameReach(
+    kb: KnowledgeBase,
+    name: String,
+    scope: kb.ScopeId,
+    file: FileId,
+    candidates: Set[kb.ScopeId],
+    sentinels: Map[kb.ScopeId, TermSymbol],
+    ofSymbol: Map[TermSymbol, kb.ScopeId]
+  ): Set[kb.ScopeId] =
+    val previous = kb.symbols.setAskingFile(Some(file))
+    val found = kb.symbols.resolveWithOverlay(name, scope,
+      sc => if sc == scope || !candidates.contains(sc) then None else sentinels.get(sc))
+    kb.symbols.setAskingFile(previous)
+    found match
+      // NOTHING, or an ordinary DECLARATION. Neither is a collision: a name that resolves
+      // to a real declaration makes the head DENOTE, so it never became a candidate.
+      case ResolveResult.NotFound         => Set.empty
+      case ResolveResult.Found(sym)       => ofSymbol.get(sym).toSet
+      // AMBIGUOUS IS STILL RESOLVING (§"the same ladder, to the rung", WI-900): every
+      // candidate among the alternatives is a scope that introduces the name and is
+      // visible from here, so all of them collide.
+      case ResolveResult.Ambiguous(cands) => cands.flatMap(ofSymbol.get).toSet
+
+  /** Every name introduced at two or more mutually-reachable scopes (845G7).
+    *
+    * ONE RESOLVER CALL PER `(candidate scope, file)`, and no iteration around it. The
+    * fixpoint this replaced existed to decide WHO WINS, which is a non-monotone question
+    * — the more scopes own a name the more heads yield, so the fewer own it — and had to
+    * be settled in rounds inside one strongly-connected component at a time. Nobody wins
+    * any more: each scope keeps its own, so the only question left is whether two of them
+    * can see each other, which each scope answers for itself and nothing can change. */
+  private def headNameCollisions(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    denotes: IndexedSeq[Boolean],
+    fileIds: IndexedSeq[FileId],
+    sentinels: Map[kb.ScopeId, TermSymbol]
+  ): IndexedSeq[HeadNameCollision[kb.ScopeId]] =
+    // The sentinel map inverted ONCE, not once per resolver call: `headNameReach` runs
+    // per (candidate scope, file) and reads it on every answer.
+    val ofSymbol: Map[TermSymbol, kb.ScopeId] = sentinels.map((k, v) => v -> k)
+    // CANDIDATES PER NAME — EVERY head shape, INCLUDING AN EQUATION'S SUBJECT. 061 puts
+    // equations outside the DECLARATION rule (their clauses index under the connective,
+    // so the subject owns none), but not outside this one: exempting them silently splits
+    // `zeq { rule f(true) <=> 1  sort Rec { rule f(false) <=> 2 } }` into two symbols
+    // where it had been one, which is the exact hazard this refusal exists for, permitted
+    // for half the head shapes.
+    //
+    // `<global>` IS NOT A PARTY IN EITHER DIRECTION, and it is excluded from the
+    // CANDIDATE SET rather than only from the overlay. Excluding it from the overlay
+    // alone stops a namespace head from seeing it, but the group is built on the
+    // UNDIRECTED closure of reach — so a namespace-less file that writes `import ns.*`
+    // and a head would still pull `ns` into a group with `<global>`, and the repair such
+    // a refusal names DELETES the `<global>` head's predicate. THE COST IS A NAMED
+    // SILENCE: a namespace-less file importing a namespace and writing its head name
+    // shadows it, and nothing says so. That is the one scope where the language has
+    // always taken that trade — nobody opts into `<global>`.
+    val byName = LinkedHashMap.empty[String, LinkedHashMap[kb.ScopeId, ArrayBuffer[Int]]]
+    for (head, idx) <- heads.zipWithIndex if !denotes(idx) && head.scope != kb.globalScope do
+      byName.getOrElseUpdate(head.name, LinkedHashMap.empty)
+        .getOrElseUpdate(head.scope, ArrayBuffer.empty) += idx
+
+    val out = IndexedSeq.newBuilder[HeadNameCollision[kb.ScopeId]]
+    for (name, scopes) <- byName if scopes.size >= 2 do
+      val candidates: Set[kb.ScopeId] = scopes.keySet.toSet
+      // WHAT EACH CANDIDATE SEES, asked once per FILE it writes a head in — imports are
+      // file-local (WI-995), so a sibling head at the same scope in a file without the
+      // import gets a different answer, and seeing it from ANY of them is seeing it.
+      //
+      // KEPT PER FILE, not only unioned per scope: the two readers below want different
+      // answers. The GROUP asks whether any file of a scope reaches another (seeing it
+      // once is enough to make them one group), while the named OWNER must be seen from
+      // EVERY file, because the message promises that declaring there collects every
+      // head.
+      //
+      // AND THE ASKED SET IS THE HEAD-WRITING FILES, WHICH IS A LIMIT. A file that
+      // re-opens the scope and writes the `import` but NO head is never asked, so it
+      // contributes no edge and the pair is not refused — while the same program with
+      // that import line moved into the head-writing file IS. Whether it loads depends on
+      // which file the import was typed in. rustland answers identically (its `asked` is
+      // the same set), MEASURED through `anthill load` on the same three files, so this
+      // is a limit of the shipped rule and not a port gap; closing it needs one decision
+      // taken for both trees. Driven by the test row named "845G7 LIMIT: the reach is
+      // asked only from files that WRITE a head".
+      val perFile = HashMap.empty[(kb.ScopeId, FileId), Set[kb.ScopeId]]
+      val edges = HashMap.empty[kb.ScopeId, Set[kb.ScopeId]]
+      for (scope, sites) <- scopes do
+        var seen = Set.empty[kb.ScopeId]
+        for file <- sites.map(i => fileIds(heads(i).fileIdx)).distinct do
+          val r = headNameReach(kb, name, scope, file, candidates, sentinels, ofSymbol)
+          seen ++= r
+          perFile((scope, file)) = r
+        edges(scope) = seen
+
+      // THE GROUPS ARE THE WEAKLY-CONNECTED COMPONENTS of that relation. Two scopes
+      // neither of which can reach the other are two unrelated predicates that happen to
+      // share a short name — the overwhelmingly common case, and not a collision.
+      val undirected = HashMap.empty[kb.ScopeId, Set[kb.ScopeId]]
+      for (s0, targets) <- edges; t <- targets do
+        undirected(s0) = undirected.getOrElse(s0, Set.empty) + t
+        undirected(t) = undirected.getOrElse(t, Set.empty) + s0
+      val assigned = HashSet.empty[kb.ScopeId]
+      // A DETERMINISTIC group order and a deterministic seed, so nothing below depends on
+      // a hash map's iteration.
+      for seed <- candidates.toIndexedSeq.sortBy(kb.scopeDisplayName)
+          if !assigned.contains(seed) && undirected.contains(seed) do
+        val group = ArrayBuffer.empty[kb.ScopeId]
+        val stack = scala.collection.mutable.Stack(seed)
+        while stack.nonEmpty do
+          val n = stack.pop()
+          if assigned.add(n) then
+            group += n
+            for t <- undirected.getOrElse(n, Set.empty) do stack.push(t)
+        if group.size >= 2 then
+          val ordered = group.toIndexedSeq.sortBy(kb.scopeDisplayName)
+          // WHERE THE DECLARATION BELONGS — AND ONLY WHEN IT REALLY COLLECTS EVERY HEAD.
+          // The message that names a scope promises that declaring there makes every
+          // other member's head a clause of it, so the test is not "reaches nothing" but
+          // "IS REACHED BY EVERY OTHER MEMBER". The two differ exactly where reach is NOT
+          // transitive, which is the common case: a wildcard import is not re-exported,
+          // so in a chain `a -> b -> c` the SINK is `c` and `a` cannot see it — declaring
+          // at the sink would leave `a`'s head a separate predicate with no error at all,
+          // a promise the repair does not keep.
+          //
+          // MORE THAN ONE MEMBER CAN QUALIFY, and naming the first is right rather than a
+          // coin toss: in a mutual cycle every member is reached by every other, so
+          // declaring at ANY of them collects the whole group. `ordered` is sorted by
+          // display name, so which one is named is deterministic.
+          val owner = ordered.find { cand =>
+            ordered.forall { other =>
+              other == cand || scopes(other).forall { i =>
+                perFile((other, fileIds(heads(i).fileIdx))).contains(cand)
+              }
+            }
+          }
+          out += HeadNameCollision(
+            name, ordered, owner, ordered.flatMap(sc => scopes(sc)).sorted)
+    // A DETERMINISTIC report order across names.
+    out.result().sortBy(c => (c.name, c.scopes.map(kb.scopeDisplayName).mkString(",")))
+
+  /** Push one refusal per collision, and answer with the `(scope, name)` pairs a
+    * declaration is already being asked for — which is what keeps the 061 FILE rule from
+    * printing a second message about the same missing declaration. */
+  private def reportHeadNameCollisions(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    denotes: IndexedSeq[Boolean],
+    fileIds: IndexedSeq[FileId],
+    errors: ArrayBuffer[LoadError]
+  ): Set[(kb.ScopeId, String)] =
+    val sentinels = mintHeadSentinels(kb, heads)
+    val collisions = headNameCollisions(kb, heads, denotes, fileIds, sentinels)
+    var collided = Set.empty[(kb.ScopeId, String)]
+    for c <- collisions do
+      for sc <- c.scopes do collided += ((sc, c.name))
+      val first = c.sites.minBy(i => (heads(i).fileIdx, heads(i).span.start))
+      val names = c.scopes.map(kb.scopeDisplayName)
+      val named =
+        if names.length <= CollisionScopesShown then names.mkString(", ")
+        else s"${names.take(CollisionScopesShown).mkString(", ")}, … and " +
+          s"${names.length - CollisionScopesShown} more"
+      // WI-898 — a body-less `rule` in the named owner does NOT collect an EQUATION's
+      // subject written elsewhere: an equation's clauses index under the connective, so
+      // it is not a clause of a predicate. Asked per SITE, not per group — where every
+      // subject in the group sits AT the owner, the ordinary text is still true.
+      val equationElsewhere = c.sites.exists(i =>
+        heads(i).kind == SymbolKind.EquationFunctor && !c.owner.contains(heads(i).scope))
+      val repair = c.owner match
+        case Some(o) if equationElsewhere =>
+          s"One of those heads is an EQUATION's subject, which a body-less `rule` does " +
+          s"not collect — an equation is not a clause of a predicate (WI-898). Declare " +
+          s"what the equations define: an `operation ${c.name}(…) -> R` in " +
+          s"'${kb.scopeDisplayName(o)}' makes every one of those heads its own, or a " +
+          s"body-less `rule ${c.name}(…)` in EACH scope says they are separate."
+        case Some(o) =>
+          s"Declare it (proposal 061): a body-less `rule ${c.name}(…)` in " +
+          s"'${kb.scopeDisplayName(o)}', with a named import of that predicate in each " +
+          s"non-enclosing contributor, makes every one of those heads a clause of it. " +
+          s"Alternatively, one declaration in EACH scope says they are separate predicates."
+        case None =>
+          // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces, and so does a
+          // chain, and so does a pair of siblings a third scope imports. The text says
+          // only what is true of every shape that produces it: NOT "they reach each
+          // other", which is false for the last two.
+          s"No one of them is reachable from all the others, so nothing in the program " +
+          s"says which should own it. Declare it (proposal 061): a body-less `rule " +
+          s"${c.name}(…)` in each scope that should own one says they are separate " +
+          s"predicates, and one in a scope the others can all reach, with named imports " +
+          s"in its non-enclosing contributors, makes their heads its clauses" +
+          (if equationElsewhere then
+            " — except an EQUATION's subject, which a body-less `rule` does not collect " +
+            "(WI-898); an `operation` there does."
+          else ".")
+      errors += LoadError.Other(
+        s"the rule head `${c.name}` introduces that name at ${c.scopes.length} scopes, " +
+        s"each of which reaches or is reached by another of them — $named — and none of " +
+        s"them declares it. Each scope's own name beats what it imports or inherits, so " +
+        s"a bare `${c.name}` written in any of them would silently reach only that " +
+        s"scope's half, with no ambiguity reported. $repair",
+        heads(first).span)
+    collided
+
+  /** PROPOSAL 061 — AUTO-DECLARATION STOPS AT THE FILE BOUNDARY.
+    *
+    * A predicate whose heads are all in ONE file is auto-declared by them, at the scope
+    * they are written in. One with heads in MORE THAN ONE file is a predicate assembled
+    * by two parties that never agreed on it (059 §Definitions), and must be DECLARED — a
+    * body-less rule, minted in pass 1b — or the load is refused naming the files.
+    *
+    * KEYED ON THE SCOPE, which since 845G7 is the same thing as the predicate: a head
+    * never lands anywhere but where it is written, so the group is `(scope, name)` and
+    * the cross-SCOPE half of what this used to report is [[reportHeadNameCollisions]].
+    *
+    * A DECLARED predicate never reaches here: its heads all denote (pass 1b minted the
+    * name), so they are excluded — which is what makes "declare it" a remedy the message
+    * can name.
+    *
+    * "THE PROGRAM" IS THE FILES OF ONE SCAN, exactly as everything else in this pass is.
+    * A predicate assembled across two `loadAll` batches is therefore not caught: the
+    * earlier batch's heads are already minted, so the later batch's denote. */
+  private def reportPredicateHeadsSpanningFiles(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    denotes: IndexedSeq[Boolean],
+    collided: Set[(kb.ScopeId, String)],
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val byPredicate =
+      LinkedHashMap.empty[(kb.ScopeId, String), ArrayBuffer[Int]]
+    for (head, idx) <- heads.zipWithIndex
+        // An EQUATION is out of scope (061 §"Equational rules are NOT this construct"):
+        // its clauses index under the connective, so its subject owns none and there is
+        // no predicate to declare.
+        if !denotes(idx) && head.kind == SymbolKind.Goal do
+      byPredicate.getOrElseUpdate((head.scope, head.name), ArrayBuffer.empty) += idx
+    // A DETERMINISTIC report order, so a program with two such predicates does not print
+    // them in hash order.
+    for ((owner, name), sites) <- byPredicate.toIndexedSeq
+        .sortBy((k, _) => (kb.scopeDisplayName(k._1), k._2)) do
+      val fileIdxs = sites.map(i => heads(i).fileIdx).distinct.sorted
+      // ONE MISSING DECLARATION IS ONE MESSAGE. A scope already named by the visibility
+      // refusal is repaired by the declaration THAT message asks for, so reporting both
+      // prints one fault twice and prescribes two owners for it.
+      if fileIdxs.length >= 2 && !collided.contains((owner, name)) then
+        // ONE error per predicate, located at its FIRST head — not one per head. The
+        // defect is the predicate, and a report per clause would print it N times.
+        val first = sites.minBy(i => (heads(i).fileIdx, heads(i).span.start))
+        // THE FILE NAMES COME OFF THE SPANS, which is where a scaland diagnostic's file
+        // always comes from — `ParsedFile` carries no path, and the span's `file` is the
+        // label the parse was given. One source, not two.
+        val names = fileIdxs.map(f => sites.find(i => heads(i).fileIdx == f)
+          .map(i => heads(i).span.file).getOrElse("<unknown>"))
+        errors += LoadError.Other(
+          s"the predicate `$name` has rule heads in ${fileIdxs.length} files — " +
+          s"${names.mkString(", ")} — and no declaration. A predicate whose clauses are " +
+          s"all in ONE file is declared by them; one assembled from several must be " +
+          s"declared once, in the scope that owns it, by a rule with no body: write " +
+          s"`rule $name(…)` in '${kb.scopeDisplayName(owner)}' (proposal 061).",
+          heads(first).span)
+
+  /** §6.1 — a TOP-LEVEL body goal spelling `true` is erased at load, so the body stays
+    * EMPTY.
+    *
+    * THIS IS A BODY-SHAPE DEVICE, NOT THE MEANING OF `true`, and the distinction is
+    * WI-20260822-J38JE's. 061 introduced this strip under the reading "`true` IS the
+    * empty conjunction"; J38JE then settled the meaning elsewhere and one rung lower —
+    * **a boolean constant in GOAL position is a SEARCH: `true` succeeds, `false` fails**,
+    * at EVERY goal position, which is where §6.6 already puts the boolean OPERATORS. The
+    * strip cannot be that reading: it walks the body's top-level goal list, so by
+    * construction it never reaches a `true` nested under `not` or `|`.
+    *
+    * WHAT THE STRIP IS STILL FOR is the one thing the resolver arm cannot do: keep the
+    * body EMPTY. Only an empty body makes `fact H` and `rule H :- true` ONE clause rather
+    * than two with equal answers — [[anthill.kb.KnowledgeBase.isEquation]] reads
+    * body-emptiness, and so does every reader that asks whether a rule is a fact. 061
+    * item 5, settled by keeping BOTH readings.
+    *
+    * SCALAND HAS ONLY THIS HALF. J38JE's resolver arm is not ported, so a boolean
+    * constant the strip cannot see gets no reading at all — MEASURED here:
+    * `:- not(false)` answers 0 where logic says 1, `:- base(9) | true` answers 0 where
+    * logic says 1, and a NON-Bool constant goal (`:- 42`) loads clean and silently never
+    * matches (J38JE item 4, refused in rustland). `:- false` answers 0 for the WRONG
+    * REASON — a constant names no name, so it resolves to no clause and no builtin, and
+    * WI-1034's "names nothing" refusal cannot reach it. Recorded rather than discovered:
+    * the row "J38JE GAP: a boolean constant goal has no reading below the top level"
+    * drives every one of those answers.
+    *
+    * THE COROLLARY FOR THIS FILE'S BACK-OUTS: removing the strip fells rows HERE that it
+    * fells none of in rustland, because there the arm answers what the strip stops
+    * seeing. That number measures the missing arm, not the strip. */
+  private def isEmptyConjunctionGoal(fileTerms: SimpleTermStore, tid: TermId): Boolean =
+    fileTerms.get(tid) match
+      case Term.Const(Literal.BoolLit(true)) => true
+      case _                                 => false
+
+  /** Does this rule's body add NOTHING to its head — no body at all, or a body of
+    * nothing but erased `true`s? Asked by [[ruleIntroducedFunctor]], for which an
+    * equation is BODYLESS (§8.3), and by [[loadRuleHeads]]'s non-defining-connective
+    * refusal, whose subject is the same emptiness.
+    *
+    * NOT the same question as "is this a DECLARATION", which is [[ruleReading]]'s and is
+    * keyed on the SYNTACTIC absence of a body. That is 061's split point: `rule p(?x)`
+    * declares and `rule p(?x) :- true` asserts, so the two must never be fused. */
+  private def ruleBodyIsEmptyConjunction(rule: Rule, fileTerms: SimpleTermStore): Boolean =
+    rule.body.forall(_.forall(isEmptyConjunctionGoal(fileTerms, _)))
+
+  /** PROPOSAL 061 — HOW A RULE READS: **no body ⇒ DECLARES, a body ⇒ asserts.**
+    *
+    * A rule with no body declares its head's predicate and asserts nothing; `fact` is
+    * how a body-less assertion is written, and it desugars to an explicit `:- true`.
+    * This removes `rule`'s exception — `operation f(…) -> R` declares and `= body`
+    * defines, `const N: T` declares and `= expr` defines, and `rule` was the sole
+    * construct whose body-less form ASSERTED, only because §6.1's desugaring had spent
+    * that form on `fact`.
+    *
+    * THE SPLIT POINT ALREADY EXISTED and this does not newly overload it: the loader
+    * already reads a body-less head two ways, and [[parseConnectiveHead]] is where. */
+  private enum RuleReading:
+    /** A body-less plain head: it DECLARES its predicate and asserts nothing. The name
+      * is minted in PASS 1b by [[DeclarePredicatePass]], like every other declared name
+      * (WI-321),
+      * which is what makes a head's binding independent of the order a pass walks in.
+      *
+      * A SECOND DECLARATION OF ONE PREDICATE AT ONE SCOPE IS IDEMPOTENT, and admitted:
+      * a predicate declaration carries no signature, no arity claim and no clause, so
+      * two of them name the same symbol and lose nothing. */
+    case Declaration
+    /** Anything with a body — and the shapes 061 leaves alone, which are the
+      * equality-family connective heads: `<=>` DEFINES (its clauses index under the
+      * connective, so its subject owns none and there is no predicate to declare —
+      * WI-898), while `=` and `===` are refused at a body-less head where they cannot
+      * define (WI-888 / WI-1090), and that refusal must keep firing rather than be
+      * swallowed by a declaration reading. */
+    case Clause
+    /** A body-less head that can declare NOTHING: a `⊥` denial (which names no
+      * predicate), several heads at once (a declaration declares ONE name), or a head
+      * whose functor introduces no name at all — a QUALIFIED head, which references
+      * rather than introduces, or a desugared one (`?x.m(?y)` carries the converter's
+      * `dot_apply`). Under 061 such a rule asserts nothing and declares nothing, so it
+      * is refused rather than dropped in silence. */
+    case DeclaresNothing
+
+  /** [[RuleReading]] for one rule — the single decider, asked by pass 1's mint
+    * ([[DeclarePredicatePass]]) and by [[loadRuleHeads]]. Both must give the same answer:
+    * the mint puts in exactly the names the load then declines to assert. Mirrors
+    * rustland's `rule_reading`. */
+  private def ruleReading(
+    rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
+  ): RuleReading =
+    if rule.body.isDefined then RuleReading.Clause
+    // The equality family, WHOLE — not [[parseEquationLhs]]'s defining subset. A
+    // body-less `===` / `=` head has its own refusal in [[loadRuleHeads]], and reading
+    // it as a declaration here would return before that refusal ever ran.
+    else if rule.heads.length == 1 && (rule.heads.head match
+        case RuleHead.TermHead(t) => parseConnectiveHead(fileSym, fileTerms, t).isDefined
+        case RuleHead.Bottom      => false)
+    then RuleReading.Clause
+    else ruleIntroducedFunctor(rule, fileSym, fileTerms) match
+      case Some((_, SymbolKind.Goal)) => RuleReading.Declaration
+      // An EQUATION reaches here only through a head this function already sent to
+      // `Clause`; the arm is stated rather than fused so a future head shape cannot
+      // acquire a declaration reading by accident. `SymbolKind.EquationFunctor` is the
+      // introduction kind [[ruleIntroducedFunctor]] stamps for it — WI-898's split, and
+      // this is its first reader in scaland.
+      case Some((_, _)) => RuleReading.Clause
+      case None         => RuleReading.DeclaresNothing
+
+  /** The kinds a body-less rule's own mint can produce, and therefore the ones a
+    * DECLARATION may find already sitting at its scope without having declared nothing:
+    * [[SymbolKind.Goal]] (its own), [[SymbolKind.EquationFunctor]] (a sibling equation
+    * about the same subject) and [[SymbolKind.Rule]] (a LABEL of that spelling, which
+    * [[DefinePass.defineRuleLabel]] defines one pass earlier). Anything else is another
+    * construct's declaration that pass 1's `define` merged into. */
+  private val DeclarableByARule: Set[SymbolKind] =
+    Set(SymbolKind.Goal, SymbolKind.EquationFunctor, SymbolKind.Rule)
+
+  /** WHY a [[RuleReading.DeclaresNothing]] rule declares nothing, in the author's terms.
+    * Asks the SAME shape questions [[ruleIntroducedFunctor]] asks, in its order, so the
+    * message and the verdict cannot describe different rules. Mirrors rustland's
+    * `bodyless_declares_nothing_detail`. */
+  private def bodylessDeclaresNothingDetail(
+    rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
+  ): String =
+    val prefix = "a body-less rule DECLARES its predicate (proposal 061, §5.3), but this " +
+      "one declares nothing: "
+    if rule.heads.length != 1 then
+      return prefix + s"it writes ${rule.heads.length} heads at once, and a declaration " +
+        "declares ONE predicate"
+    val tid = rule.heads.head match
+      case RuleHead.TermHead(t) => t
+      case RuleHead.Bottom =>
+        return prefix + "a `⊥` denial names no predicate, so there is nothing for it to declare"
+    // A DOTTED PAREN-LESS HEAD IS MINTED AND STILL NAMES SOMETHING (WI-20260901-719FJ),
+    // so it is asked ahead of the desugaring sentence — the same order
+    // [[ruleIntroducedFunctor]] takes, because the two walks must describe one rule.
+    val chain = dottedCitationName(fileSym, fileTerms, tid)
+    if chain.isEmpty && fileTerms.isMinted(tid) then
+      return prefix + "its head functor is the DESUGARING's (`?x.m(?y)` carries " +
+        "`dot_apply`, `?a + ?b` carries `add`), not a name the rule introduces"
+    // A BARE NAME DOES NOT REACH THE FALLTHROUGH (WI-20260821-P85Z7):
+    // [[ruleIntroducedFunctor]] reads a `Term.Ident` head as an application of arity 0,
+    // so it carries a name and the qualified test below must run for it — this walk has
+    // to agree or the two describe different rules. What still reaches the fallthrough
+    // is a bare VARIABLE head (`rule ?x`).
+    val name = chain.orElse(fileTerms.get(tid) match
+      case fn: Term.Fn    => Some(fileSym.name(fn.functor))
+      case id: Term.Ident => Some(fileSym.name(id.sym))
+      case _              => None)
+    name match
+      case None =>
+        prefix + "its head is not a functor application, so it names no predicate"
+      case Some(n) if n.contains('.') =>
+        prefix + s"`$n` is a QUALIFIED name, and a qualified name references an " +
+          "existing predicate — it never introduces one"
+      case Some(n) =>
+        // Every shape [[ruleIntroducedFunctor]] refuses has been named above, so
+        // reaching here means the two walks have diverged. Said rather than left as a
+        // plausible-looking sentence — and NOT thrown: this is a DIAGNOSTIC path, and
+        // aborting while rendering an error would replace a message with a crash.
+        prefix + s"the loader's two readings of `$n` disagree — please report this"
+
+  /** Proposal 061 — the two ways a DECLARATION can be written and still stand for
+    * nothing, refused rather than dropped in silence. Mirrors rustland's
+    * `declaration_clause_carrier` plus the `local` lookup in its `Declaration` arm.
+    *
+    * ONE CARRIER SCALAND CANNOT ASK ABOUT: rustland also refuses a `[t]` type-variable
+    * INTRODUCER on the head, whose only possible bound is a body's `:- Spec[t]` guard
+    * (WI-582). scaland's `Rule` has no head type-parameter field — WI-582's fold is not
+    * ported — so there is nothing here to read, and the arm is absent rather than
+    * guessed at. */
+  private def refuseDeclarationThatCannotStand(
     kb: KnowledgeBase,
     rule: Rule,
     fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
     scope: kb.ScopeId,
-    prefix: String
+    errors: ArrayBuffer[LoadError]
   ): Unit =
-    for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
-      // Already denotes something in this scope ⇒ the head REFERENCES it, and a
-      // second definition would shadow the real target for the whole scope.
-      // `defineSymbolOnce`, not `define`: `define` writes `byQualifiedName` for the
-      // qualified name UNCONDITIONALLY whenever the SHORT name is new in the target
-      // scope, so a rule head in a re-opened namespace could replace a builtin's
-      // mapping (the case that gate was written for — see its doc).
-      if !kb.symbols.resolveInScope(name, scope).denotes then
-        defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
+    val name = ruleIntroducedFunctor(rule, fileSym, fileTerms).map(_._1).getOrElse("")
+    // A declaration stores no clause, so there is nothing for a citation handle or a
+    // `[…]` tag to attach to. Refused rather than dropped: a label on a declaration
+    // defines a `Rule` symbol that `using` then finds nothing under, and both carriers
+    // were silently lost the moment this arm stopped asserting.
+    val carrier: Option[String] =
+      if rule.label.isDefined then Some("A citation label on it has nothing to cite.")
+      else if rule.meta.isDefined then Some("A `[…]` tag on it has no clause to govern.")
+      else rule.heads.headOption.flatMap {
+        case RuleHead.TermHead(t) if headCarriesTypedColumn(fileSym, fileTerms, t) =>
+          Some("A typed column `?x: T` has exactly one enforcer, a rewrite's " +
+            "typed-pattern bound (WI-903), which a predicate declaration is not.")
+        case _ => None
+      }
+    carrier match
+      case Some(why) =>
+        errors += LoadError.Other(
+          s"the body-less rule `$name` DECLARES a predicate and stores no clause. $why",
+          rule.span)
+      case None =>
+        // WHAT PASS 1 ACTUALLY PUT AT THIS SCOPE — the scope's OWN locals, not the
+        // ladder. Two silent no-ops hide here, and only this question separates them
+        // from a working declaration. The LADDER is the wrong instrument: it answers YES
+        // for any name the scope can SEE, so a declaration whose name the prelude
+        // already provides would pass it and still introduce nothing.
+        kb.symbols.scope(scope).flatMap(_.locals.get(name)) match
+          // NOTHING WAS MINTED HERE. One shape reaches this: the interior of a
+          // `provides … language … end` block, which [[walkScopes]] hands to `atItem`
+          // and no scan pass descends into — so the declaration would introduce nothing
+          // AND assert nothing.
+          case None =>
+            errors += LoadError.Other(
+              s"`$name` was never brought into existence: the defining pass does not " +
+              "descend into this position (a `provides … language … end` block's " +
+              "interior is the one such place), so the declaration would introduce " +
+              "nothing and assert nothing",
+              rule.span)
+          case Some(sym) =>
+            // SOMETHING ELSE ALREADY DECLARED THE NAME HERE, and pass 1b's mint left it
+            // alone rather than minting anything — `operation has(x) -> Bool` beside
+            // `rule has(?x)`, or `sort Foo` beside `rule Foo(?x)`. The declaration then
+            // declares nothing new and asserts nothing: a no-op line, which 059 R4
+            // clause 3 refuses for every other pair of declarations at one address. NOT
+            // refused at the mint: whichever construct the walk reached first would
+            // decide it, which is the order dependence 061 exists to remove.
+            //
+            // A `DeclarableByARule` KIND IS NOT REFUSED, and one shape makes that a
+            // decision rather than an omission: a body-less rule inside a `provides …
+            // language anthill … end` block whose name the ENCLOSING scope already
+            // declares. The block opens no scope, so it IS that scope, and the rule is
+            // 061's admitted SECOND DECLARATION of one predicate at one address —
+            // idempotent, and naming a predicate that really exists. Only the `None` arm
+            // above is the silent no-op, and it is the one that speaks.
+            val kind = kb.symbols.get(sym) match
+              case SymbolDef.Resolved(_, _, k, _) => Some(k)
+              case SymbolDef.Unresolved(_)        => None
+            kind.filterNot(DeclarableByARule.contains).foreach { k =>
+              errors += LoadError.Other(
+                s"`$name` is already declared in this scope (kind: $k), so a body-less " +
+                "rule adds nothing to it — write `:- true` to make this a CLAUSE of it, " +
+                "or delete the line",
+                rule.span)
+            }
+
+  /** Does this head carry a `?x: T` ascription in its ARGUMENTS? The parser lowers one
+    * to a `typed_var` MARKER node (WI-582), so the question is asked of that shape
+    * rather than of a node kind — and through [[isTypedVarMarker]], which pairs the name
+    * with the marker's exact shape, because `typed_var` is also an ordinary identifier a
+    * user may write (WI-948's *a name, not a verdict*).
+    *
+    * THE HEAD'S OWN FUNCTOR IS NOT ASKED: the grammar puts a typed column only in an
+    * ARGUMENT position, so a marker can never be the head. */
+  private def headCarriesTypedColumn(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, tid: TermId
+  ): Boolean =
+    fileTerms.get(tid) match
+      case fn: Term.Fn =>
+        (fn.posArgs.iterator ++ fn.namedArgs.iterator.map(_._2)).exists { a =>
+          fileTerms.get(a) match
+            case af: Term.Fn => isTypedVarMarker(af, fileSym)
+            case _           => false
+        }
+      case _ => false
 
   /** The functor a rule introduces, and which kind of introduction it is — or `None`
     * when the rule introduces nothing. Mirrors rustland's
@@ -742,7 +1441,15 @@ object Loader:
       case RuleHead.Bottom => return None
     // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
     // ordinary predicate whose head happens to be an equality goal).
-    val equationLhs = if rule.body.isDefined then None else parseEquationLhs(fileSym, fileTerms, headId)
+    //
+    // §8.3 — an equation is BODYLESS, which is a property of the RULE, so the question
+    // goes through the ONE owner of it ([[ruleBodyIsEmptyConjunction]]) rather than off
+    // `body.isDefined` directly: since 061 `rule f(?x) <=> ?x :- true` is the explicit
+    // spelling of the same empty body, and it must read as the equation it is HERE and
+    // at [[loadRuleHeads]] alike.
+    val equationLhs =
+      if ruleBodyIsEmptyConjunction(rule, fileTerms) then parseEquationLhs(fileSym, fileTerms, headId)
+      else None
     val (subject, kind) = equationLhs match
       case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
       case None      => (headId, SymbolKind.Goal)
@@ -1375,16 +2082,43 @@ object Loader:
     // (`lhs === rhs`) is a definition that cannot define — refused before any clause is
     // asserted. A rule with a body is untouched: it is not an equation at all (§8.3) but
     // an ordinary law about the operator, which `totalfloat.anthill` writes.
-    if rule.body.isEmpty then
+    //
+    // 061 WIDENS "BODYLESS" HERE, and only here among this method's three readings of
+    // it: the emptiness this refusal is about is the one every equation reader uses
+    // ([[ruleBodyIsEmptyConjunction]]), so `rule a === b :- true` — the explicit
+    // spelling of the same empty body — is refused exactly as the arrow-less form is.
+    // [[ruleReading]]'s question stays SYNTACTIC (`body.isDefined`), which is 061's own
+    // split point; the two must not be fused.
+    if ruleBodyIsEmptyConjunction(rule, fileTerms) then
       val refused = positiveHeads.exists(h =>
         refuseNonDefiningConnectiveHead(fileSym, fileTerms, h, fileTerms.spanOf(h), errors))
       if refused then return
+
+    // PROPOSAL 061 — NO BODY ⇒ DECLARES. A body-less plain head brought its predicate
+    // into existence in PASS 1b ([[DeclarePredicatePass]]) and asserts NOTHING here;
+    // asserting it is what `fact` and the explicit `:- true` are for. The reading is
+    // taken from the ONE decider both passes share, so the name pass 1 minted and the
+    // clause this pass declines to store cannot disagree.
+    ruleReading(rule, fileSym, fileTerms) match
+      case RuleReading.Clause => ()
+      case RuleReading.Declaration =>
+        refuseDeclarationThatCannotStand(kb, rule, fileSym, fileTerms, scope, errors)
+        return
+      case RuleReading.DeclaresNothing =>
+        errors += LoadError.Other(bodylessDeclaresNothingDetail(rule, fileSym, fileTerms), rule.span)
+        return
 
     // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
     // citation written there is the NAME. Only the top level, and that is a
     // MEASUREMENT rather than an omission — see `reallocTerm`'s `Term.Fn` arm, and
     // the row `negation in a rule body does not reach NAF, for any spelling`.
-    val kbBody = rule.body.map(_.map(b =>
+    // §6.1 — a top-level `true` is ERASED, so the body stays EMPTY. That is what makes
+    // `rule H :- true` the exact spelling of `fact H`: the same clause, with the same
+    // empty body, reached by the two syntaxes §6.1 says mean one thing. It is NOT what
+    // `true` MEANS — that is J38JE's "a boolean constant in goal position is a SEARCH",
+    // which belongs in the resolver and is not ported here. See
+    // [[isEmptyConjunctionGoal]] for the split and for what scaland is missing.
+    val kbBody = rule.body.map(_.filterNot(isEmptyConjunctionGoal(fileTerms, _)).map(b =>
       reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm, atGoal = true))).getOrElse(IndexedSeq.empty)
 
     if hasBottom then

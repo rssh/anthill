@@ -378,10 +378,15 @@ class LoaderTest extends munit.FunSuite:
     * pass, which is what says the axis is the SPELLING and not the predicate machinery.
     */
   test("WI-20260902-CZJ2N: a nullary predicate answers in BOTH goal spellings") {
+    // `fact`, not `rule`, since proposal 061 (WI-20260821-SBZ2A): a body-less rule
+    // DECLARES its predicate and asserts nothing, so `rule bczj(1)` would leave every
+    // row below with no clause to find. `fact` is the body-less ASSERTION, which is what
+    // this row always meant. rustland's `wi_czj2n_nullary_spelling_test` writes the same
+    // line.
     val kb = KnowledgeBase()
     Prelude.register(kb)
     val parsed = Parser.parse(
-      """rule bczj(1)
+      """fact bczj(1)
         |rule tgtA :- bczj(1)
         |rule tgtB() :- bczj(1)
         |rule aa(1) :- tgtA
@@ -422,10 +427,12 @@ class LoaderTest extends munit.FunSuite:
   // marker; the loader STRIPS it back to the bare `?x` (scaland has no typer, so
   // the bound is dropped, not enforced), keeping the head matchable as `p(?x)`.
   test("WI-582: a typed rule pattern loads with a BARE head (marker stripped)") {
+    // `fact q(42)` — see the 061 note on the CZJ2N row above. The head under test is
+    // still a bodied `rule`, so its own reading is unchanged.
     val kb = KnowledgeBase()
     Prelude.register(kb)
     val parsed = Parser.parse(
-      """rule q(42)
+      """fact q(42)
         |rule p(?x: Numeric) :- q(?x)""".stripMargin, "<wi582load>")
       .toOption.getOrElse(fail("parse failed"))
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
@@ -448,7 +455,11 @@ class LoaderTest extends munit.FunSuite:
   test("WI-582: a non-marker functor named `typed_var(a, b)` loads intact (not stripped)") {
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val parsed = Parser.parse("rule typed_var(1, 2)", "<wi582guard2>")
+    // `:- true` — the 061 spelling of a body-less ASSERTION that keeps the `rule`
+    // keyword (§6.1: `true` IS the empty conjunction). Written this way rather than as a
+    // `fact` because the row asserts through `ruleFunctor`, and only a rule HEAD
+    // introduces a registered functor; a fact's head falls to the bare intern.
+    val parsed = Parser.parse("rule typed_var(1, 2) :- true", "<wi582guard2>")
       .toOption.getOrElse(fail("parse failed"))
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
     assert(errors.isEmpty, s"Load errors: $errors")
@@ -461,7 +472,8 @@ class LoaderTest extends munit.FunSuite:
   test("WI-582: a bare `typed_var()` (0 args) does not crash the loader") {
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val parsed = Parser.parse("rule typed_var()", "<wi582guard0>")
+    // `:- true` for the same reason as the row above.
+    val parsed = Parser.parse("rule typed_var() :- true", "<wi582guard0>")
       .toOption.getOrElse(fail("parse failed"))
     // Matching by name alone would do `posArgs(0)` → IndexOutOfBounds; the guard
     // requires exactly one pos arg, so this loads as an ordinary 0-ary functor.
