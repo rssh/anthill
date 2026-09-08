@@ -445,3 +445,84 @@ fn wi995_measure_import_file_locality_cost() {
         "no corpus groups were audited"
     );
 }
+
+/// **THE POSITIVE HALF OF `audit_corpus`'s `parent_edges == 0`** — raised by
+/// `/code-review` on WI-20260902-VZC2C's change.
+///
+/// That assertion pins one direction only. It reds when a NEW `ImportOrigin` variant falls
+/// through `import_record_counts`'s negated `matches!` and lands in the import-edge count —
+/// which has happened twice (`Provision`, WI-20260825-N2865, 0 → 11; `Requirement`,
+/// WI-20260906-6BX85, 0 → 24/28). It does NOT red the other way: if
+/// `import_record_counts` stopped counting import parent edges AT ALL — the predicate made
+/// unsatisfiable, or the `import_parent_origin` write dropped — all six corpus groups still
+/// report 0 and every row stays green, and the audit would deliver a verdict while
+/// measuring nothing. That is the precise failure mode this file exists to guard against,
+/// and it was the only half not covered, because the corpus writes no wildcard import for
+/// the denominator to be built from.
+///
+/// So the denominator is written here instead. A WILDCARD import is the one form that files
+/// a parent edge (WI-1089: a plain `import a.b.C` binds the name and links nothing), and
+/// the pair varies exactly that one line.
+///
+/// MEASURED, not argued: with `import_record_counts`'s edge predicate made unsatisfiable
+/// (`false &&` in front of the negated `matches!`), the WHOLE `wi_tests` binary was run and
+/// **EXACTLY ONE ROW FAILS — this one**, out of 4 277. Every corpus group still reports 0
+/// and `audit_corpus`'s six `parent_edges == 0` assertions still pass, which is the gap
+/// itself, stated as a number.
+///
+/// WHICH ROW FAILS WHEN WHAT IS BACKED OUT: the `wildcard` row is the measurement — it goes
+/// 1 → 0 the moment the import-edge count stops counting. The `member` row is the control
+/// and is what says the first is counting the WILDCARD and not merely counting something;
+/// it is also the corpus's own situation, so the two together pin `audit_corpus`'s zero
+/// from both sides.
+#[test]
+fn wi995_an_import_parent_edge_is_actually_counted() {
+    // Same text either way but for the import form, so the pair varies ONE line.
+    let case = |import_line: &str| {
+        format!(
+            "\
+namespace wi995pc.lib
+  import anthill.prelude.Int64
+  sort Widget
+    entity Widget(v: Int64)
+  end
+end
+namespace wi995pc.reader
+{import_line}
+  import anthill.prelude.Int64
+  sort Holder
+    entity Holder(w: wi995pc.lib.Widget)
+  end
+end
+"
+        )
+    };
+
+    let edges = |src: &str| -> usize {
+        let kb = crate::common::load_kb_with(src);
+        let (aliases, parent_edges) = kb.import_record_counts();
+        // The alias half must be non-zero either way, or the load recorded no import at
+        // all and neither row below means anything.
+        assert!(
+            aliases > 0,
+            "the fixture recorded no file-written import alias at all"
+        );
+        parent_edges
+    };
+
+    let wildcard = edges(&case("  import wi995pc.lib.*"));
+    let member = edges(&case("  import wi995pc.lib.{Widget}"));
+
+    assert!(
+        wildcard > 0,
+        "a wildcard `import wi995pc.lib.*` must file an import parent edge — \
+         `import_record_counts` counted {wildcard}, so `audit_corpus`'s `parent_edges == 0` \
+         is satisfied by an instrument that counts nothing"
+    );
+    assert_eq!(
+        member, 0,
+        "a MEMBER import binds the name and links nothing (WI-1089), so it must file no \
+         parent edge — this is the corpus's own case, and it is what says the row above \
+         counts the WILDCARD rather than counting any import at all"
+    );
+}

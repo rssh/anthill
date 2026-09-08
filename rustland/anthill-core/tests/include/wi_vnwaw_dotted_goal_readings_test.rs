@@ -362,17 +362,23 @@ rule slotVd(?t) :- ?t <=> zzvd.inner.acct
     );
 }
 
-/// **A MEASURED NON-GOAL, recorded so the next reader does not mistake it for this
-/// ticket's defect.** A nullary Bool OPERATION written as a branch of a GOAL CONNECTIVE
-/// (`|` / `&`) answers nothing — in ALL FOUR spellings, one-segment or dotted, bare or
-/// applied — while the same goal as a plain body atom answers, and while an ENTITY
-/// branch answers in every spelling. So the connective, not the qualification, is what
-/// drops it: WI-580's relational view is reached from a body atom and from `not(…)`, and
-/// not from `kernel.or` / `kernel.and`'s branch slots.
+/// **THE DOTTED COLUMN EQUALS THE ONE-SEGMENT COLUMN, at whatever value that is** — which
+/// is the only thing THIS ticket claims about a goal-connective branch, and it held while
+/// both columns were 0.
 ///
-/// GREEN BEFORE AND AFTER, and that is the assertion: this ticket makes the dotted column
-/// EQUAL the one-segment column here too, at 0, rather than fixing either. Filed as
-/// WI-20260902-VZC2C.
+/// They were. A nullary Bool OPERATION written as a branch of `|` / `&` answered nothing in
+/// all four spellings, while the same goal as a plain body atom answered and an ENTITY
+/// branch answered in every spelling — so the connective, not the qualification, was what
+/// dropped it. Recorded here as a measured NON-GOAL and filed as WI-20260902-VZC2C, which
+/// has since closed it: the six op rows below now read 1, and the `dOrEnt` control is
+/// unchanged.
+///
+/// THE OP ROWS THEREFORE NO LONGER MEASURE THIS TICKET. Backing out either VNWAW axis
+/// still fells the `dAtom` row (the dotted BODY-ATOM reading, which is VNWAW's own); the
+/// six connective rows are now VZC2C's, driven with their value controls and their NAF
+/// twins in `wi_vzc2c_connective_branch_op_test`. They stay here because the EQUALITY of
+/// the two columns is what this test is for, and it is a live claim at 1 exactly as it was
+/// at 0.
 #[test]
 fn a_goal_connective_branch_reads_alike_for_every_spelling() {
     const SRC: &str = "\
@@ -406,18 +412,18 @@ end
         &[
             ("zzvc.one.sAtom", 1, "a body ATOM reaches the relational view"),
             ("zzvc.outer.dAtom", 1, "…in the dotted spelling too — this ticket's row"),
-            ("zzvc.one.sOr", 0, "a `|` BRANCH does not, one-segment and bare"),
-            ("zzvc.one.sOrP", 0, "…nor applied — so it is not a spelling question"),
-            ("zzvc.outer.dOr", 0, "…nor dotted and bare — EQUAL to the column above"),
-            ("zzvc.outer.dOrP", 0, "…nor dotted and applied"),
-            ("zzvc.one.sAnd", 0, "`&` drops it too, one-segment"),
-            ("zzvc.outer.dAnd", 0, "…and dotted — the same 0"),
+            ("zzvc.one.sOr", 1, "a `|` BRANCH does too since VZC2C, one-segment and bare"),
+            ("zzvc.one.sOrP", 1, "…and applied — so it is not a spelling question"),
+            ("zzvc.outer.dOr", 1, "…and dotted and bare — EQUAL to the column above, which is what THIS test asserts at whatever value the pair holds"),
+            ("zzvc.outer.dOrP", 1, "…and dotted and applied"),
+            ("zzvc.one.sAnd", 1, "`&` reaches it too, one-segment"),
+            ("zzvc.outer.dAnd", 1, "…and dotted — the same 1"),
             (
                 "zzvc.outer.dOrEnt",
                 1,
-                "…while an ENTITY branch DOES answer under the same connective, which is \
-                 what says the gap is the operation's relational view and not `or` \
-                 itself (WI-20260902-VZC2C)",
+                "…and an ENTITY branch answers under the same connective, as it always \
+                 did — the row that said the gap was the OPERATION's relational view and \
+                 not `or` itself, which is what WI-20260902-VZC2C then repaired",
             ),
         ],
     );

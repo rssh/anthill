@@ -1643,6 +1643,117 @@ impl SearchStream {
                     }
                     other => other.clone(),
                 };
+                // WI-20260902-VZC2C — AND IT GOES IN AS AN APPLICATION, which for a
+                // NULLARY operation is not the same thing as going in on the occurrence
+                // carrier. The storage canon ([`KnowledgeBase::nullary_canon`]) makes
+                // `Fn{f}` and `Ref(f)` ONE TERM, so an occurrence built FROM a term comes
+                // back as the bare `Expr::Ref` leaf — and `reduce_op_value` hands anything
+                // but an `Apply` straight back un-reduced, so the `eq(…, true)` this hook
+                // builds then fails. Same sentence as the paragraph above, one shape in:
+                // that repair fixed the CARRIER and this one fixes the SHAPE.
+                //
+                // THREE PRODUCERS REACH IT, which is why the repair is here and not at any
+                // one of them. All three were MEASURED silently answering nothing, each by
+                // a program that loads clean and exits 0:
+                //   * A `|` / `&` BRANCH — the ticket's own. `kernel.or` / `kernel.and` are
+                //     stdlib RULES (`or(?a, ?b) :- push_choice(?a, ?b)`), so a branch is
+                //     bound by a HEAD MATCH — and `with_fresh_vars` (kb/mod.rs) reifies every
+                //     non-`Term` head-match binding through `value_to_term`, because the De
+                //     Bruijn / rename / answer-link walks under it read `tree_subst`
+                //     term-only (WI-636). That boundary's own doc calls the `Node` reification
+                //     LOSSLESS, and it is — for everything but a nullary call, which the canon
+                //     collapses on the way in. MEASURED: the `or` goal reaches this function
+                //     carrying `Node(Apply{onx})` at its source span; the branch, one head
+                //     match later, arrives as `Node(Ref(onx))` with the span zeroed.
+                //     `kernel.not` has no such rule — it is a builtin that reads its negand
+                //     off the goal's own view — and that is exactly why `not(onx)` reached the
+                //     view when a branch did not.
+                //   * A TOP-LEVEL QUERY. `load::nullary_query_canon` builds the transient
+                //     carrier's `Expr::Ref` deliberately, to keep the two carriers' canons
+                //     one test; so `anthill run`'s own query path could never reduce a
+                //     nullary Bool operation.
+                //   * A CONSTRAINT GUARD — WI-20260830-DQD5W's population, one shape in.
+                //     `lower_query` hands over a hash-consed `Value::Term`, which the
+                //     materialization above turns into that same `Ref` leaf, so
+                //     `no ?n: Box(n: ?n) -: flag` held vacuously over every row.
+                //
+                // THE ELABORATION IS THE LOADER'S, AT THE LAST PRODUCER.
+                // `nullary_op_call_or_ref` (WI-20260902-CZJ2N / VNWAW) builds an
+                // `Expr::Apply` for a bare nullary op in a rule body for precisely this
+                // reason. The three producers above cannot each make that call: a bare
+                // nullary op in an ARROW-typed slot is §5.4's unapplied function value, and
+                // none of them has an expected type to consult — which is also why
+                // `reduce_op_value` may not simply open a `Ref`. THIS site does have the
+                // reading: arriving here means the goal was already read as the relational
+                // view of `f` AT ITS DECLARED ARITY, so the application is what that reading
+                // MEANS and there is no value reading left to lose.
+                //
+                // THE TEST IS "NOT ALREADY AN APPLICATION", NOT "IS AN `Expr::Ref`", and
+                // that is the difference between asking this site's own question and
+                // enumerating the spellings I happened to meet. Raised by /code-review,
+                // which named a carrier the first form left out; DRIVEN by
+                // `a_spliced_symbol_ref_goal_takes_the_same_reading`, which fails against
+                // that form.
+                //
+                // FOUR SPELLINGS OF A BARE NULLARY NAME reach a goal, and term_view.rs says
+                // so at its own head list: `Term::Ref(f)`, `Value::SymbolRef(f)`,
+                // `Expr::Ref(f)` and a stored nullary application. All four head as
+                // `ViewHead::nullary(f)`, so all four pass the outer gate; none of them but
+                // the application can be REDUCED, because `reduce_op_value` opens an
+                // `Expr::Apply` and hands everything else back. Two arrive here:
+                //   * `Value::Node(Expr::Ref(f))` — what the canon's materialization
+                //     produces, and what all three producers above deliver. Repaired with
+                //     `rebuilt_expr`, which carries the occurrence's span, owner and typer
+                //     stamps, exactly as the arity+1 hook's own rebuild does (WI-1026).
+                //   * `Value::SymbolRef(f)` — the carrier term_view.rs calls
+                //     "indistinguishable from its `Term::Ref` twin here". It has NO
+                //     occurrence to rebuild, so it gets a synthesized one. MEASURED that it
+                //     is reachable rather than argued: `resolve`'s front door maps each goal
+                //     through `as_bind_value`, which unwraps an `Expr::Spliced` to the value
+                //     it carries — so a `Spliced(SymbolRef)` goal, the shape the dictionary /
+                //     `OpRef` mints ride on, arrives at this hook as a bare `Value::SymbolRef`
+                //     and answered NOTHING.
+                //
+                // ARITY 0 IS NOT RE-TESTED, because the outer gate already decided it:
+                // reaching here means `goal_val.head(kb)` was `Functor { f, 0, 0 }` and
+                // `bare_bodied_bool_relation(f)` held — so `f` is a bodied, rule-less,
+                // effect-free Bool OPERATION carrying no arguments. A goal WITH arguments
+                // never meets the canon (it fires on an empty argument list) and is an
+                // `Apply` already, so it takes the untouched arm. The arity+1 sibling below
+                // needs nothing for the same reason — its call shape is `f(a…, ?r)`.
+                //
+                // THE SPAN IS 0..0 for the synthesized arm, and that is not a regression on
+                // the `materialize_from_handle` above: a term with no `term_spans` stamp
+                // materializes at that same offset (WI-1039). A `SymbolRef` goal has no
+                // source location to lose — no parse node ever spelled it.
+                let apply_f = || Expr::Apply {
+                    recv_type: None,
+                    functor: f,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                };
+                let operand = match operand {
+                    Value::Node(occ) => {
+                        if matches!(
+                            occ.as_expr(),
+                            Some(Expr::Apply { .. } | Expr::ApplyWithin { .. })
+                        ) {
+                            Value::Node(occ)
+                        } else {
+                            Value::Node(occ.rebuilt_expr(apply_f()))
+                        }
+                    }
+                    // Every remaining carrier that got through the gate: `SymbolRef` today,
+                    // and anything later that heads as a bare nullary bodied Bool op. The
+                    // application is what the reading MEANS at this point, so build one
+                    // rather than pass a value `reduce_op_value` will hand straight back.
+                    _ => Value::Node(NodeOccurrence::new_expr(
+                        apply_f(),
+                        crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0),
+                        None,
+                    )),
+                };
                 let eq_goal = kb.make_goal_value(eq_sym, vec![operand, Value::Bool(true)]);
                 let fr = self.stack.last_mut().unwrap();
                 // Rewrite goal[0] in place, same goal count — `delay_mode` is
