@@ -44,3 +44,17 @@ THE FINDING NEITHER TICKET STARTED FROM, recorded because the restructure does n
 
 ACCEPTANCE: the deployer's surface is ONE call and constructs nothing they did not author; `Harness` keeps its spec and loses its threaded instance; `check` is declared at an address no sort occupies and reaches its host through a namespace binding block; `Checker`/`LoadChecker` are gone. The seven ex-checker fixtures keep the refusals they measure today — measured, none needs `provides` — with a decision RECORDED for where they live once they stop naming a spec the pipeline never generates. Every existing row in `guardians_test.rs` stays green, and the count is stated before and after.
 
+## Changes
+
+### 2026-09-08T14:25:13Z — feedback — user
+
+ABSORBS THE SURVIVING HALF OF WI-20260830-E0JE6 (delivered as superseded by this one): RENAME `guardians.Harness` TO `AgentGenerator` as part of this restructure, in the same pass.
+
+WHY IT COMES HERE RATHER THAN STAYING ITS OWN TICKET. E0JE6 asked for two renames and this ticket moots one of them: `Checker` and `LoadChecker` are DELETED here, so `Checker` -> `AgentChecker` has no sort to rename. The other is not mooted but ENTAILED — E0JE6's argument is that `Harness` has two operations, `render_task` and `generate`, and 'that is a GENERATOR', while 'harness' names the whole generate-and-check rig, which is what `attempt` and `open_round` are. That argument is conditional today, since `check` is a second sort a reader may or may not count as part of the rig; after this ticket it is unconditional, because `check` is not on the sort AT ALL and the enclosing loop is the only thing left that generates AND checks. So the restructure is what makes the name correct, and doing the rename in a second pass over the same file would be two edits to one declaration.
+
+E0JE6's OWN MEASUREMENT IS THIS TICKET'S TOO, and it is worth carrying because it is a reader study rather than taste: a reader of the article's Listing 7 asked, in order, 'why is Checker not in Harness', 'I can't understand attempt outside of harness', and then proposed the merge. That is the same reading failure this ticket's interface argument starts from — the difference is that E0JE6 answers it by naming the two parties and this ticket answers it by making one of them stop being a party.
+
+ALSO CARRIED: the article (ICTERI-2026, Listing 7) already uses the new name, so leaving `Harness` in the example keeps a divergence of the kind WI-20260830-THZ8R tracks. And E0JE6's scope list is STALE — it names `rejected/steering_checker.anthill`, which WI-20260829-MCKTE deleted; take the fixture list from the tree rather than from that ticket.
+
+ADDED TO ACCEPTANCE: no live occurrence of `Harness` outside a comment recording the old name, and every fixture still accepted or refused FOR ITS OWN REASON with diagnostic substrings unchanged.
+
