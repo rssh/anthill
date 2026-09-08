@@ -1339,6 +1339,20 @@ pub struct KnowledgeBase {
     /// `unindex_functor`.
     simp_gate_cache: Option<bool>,
 
+    /// WI-20260820-8RJK8 — how many CONDITIONAL-REWRITE GUARDS are being proved
+    /// right now, nested. A guarded equation's guard is discharged by an ordinary
+    /// nested SLD search ([`super::simp_rewrite::guard_holds`]), and that search can
+    /// in principle reach the rewriter again (a builtin that calls
+    /// [`Self::apply_eq_rules`] — `fact_monotonicity` does), so without a bound the
+    /// two could chase each other. The bound is
+    /// [`super::simp_rewrite::SIMP_GUARD_MAX_DEPTH`]; past it a guard is UNDECIDED,
+    /// which for a rewrite means "do not fire" — the same conservative answer an
+    /// under-determined guard gets, never a NAF-decided "false" (WI-067).
+    ///
+    /// A counter rather than a bool so the bound is a number that can be raised and
+    /// stated, not a hidden one-shot.
+    pub(crate) simp_guard_depth: usize,
+
     /// WI-627: the resolved `anthill.prelude.PartialEq.eq` / `anthill.kernel.unify`
     /// connective symbols, cached at [`Self::register_builtin_tags`] time
     /// (re-synced in [`Self::resolve_builtins`]) so
@@ -1991,6 +2005,7 @@ impl KnowledgeBase {
             const_bodies: HashMap::new(),
             has_dot_applies: false,
             simp_gate_cache: None,
+            simp_guard_depth: 0,
             eq_connective_sym: None,
             or_connective_sym: None,
             and_connective_sym: None,
@@ -8134,9 +8149,38 @@ impl KnowledgeBase {
     /// ([`Self::is_equality_connective_functor`]), so a carrier's own bodyless
     /// `eq(empty(), empty())` base case (`Map.eq`, a different symbol sharing the
     /// short name) is NOT mistaken for a law and dropped from SLD candidates.
+    ///
+    /// THE EMPTY BODY IS PART OF THE QUESTION HERE, and stays so
+    /// (WI-20260820-8RJK8). This is the UNCONDITIONAL-equation predicate, read by
+    /// the resolver's candidate triage (`step_init` / `rule_is_dead`) to mean "this
+    /// candidate is a law, not a clause that can resolve the goal", and by the
+    /// loader's `=`-spelling refusal (WI-888). A GUARDED equation
+    /// (`lhs = rhs :- g`) IS a Horn clause with a body and has always been one of
+    /// those candidates; 8RJK8 gave it a second reading — a conditional REWRITE —
+    /// without taking the first away. The rewrite reading is
+    /// [`Self::has_equational_head`], which is this shape test with the body clause
+    /// dropped, and every FIRING site asks that one.
     pub fn is_equation(&self, id: RuleId) -> bool {
+        if !self.rules[id.index()].body_nodes.is_empty() {
+            return false;
+        }
+        self.has_equational_head(id)
+    }
+
+    /// WI-20260820-8RJK8 — the EQUATION-HEAD shape alone: the canonical `eq` (`=`)
+    /// or `unify` (`<=>`) connective at 2 positional args, on a live rule. Body-
+    /// agnostic, and that is the whole difference from [`Self::is_equation`].
+    ///
+    /// This is what a FIRING site selects by. An equation's guard is its ordinary
+    /// `:- body` (proposal 043 §4.1, `docs/design/constrained-term-substrate.md`
+    /// "Conditional rewrite rules"), evaluated post-match against the match
+    /// substitution by [`super::simp_rewrite::guard_holds`] — so a non-empty body
+    /// no longer disqualifies a rule from being a rewrite, it gives it a
+    /// precondition. `[simp]`/`[unfold]` remains the ENABLEMENT (WI-881): the tag,
+    /// not the body, is what decides whether anything fires.
+    pub fn has_equational_head(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];
-        if !entry.body_nodes.is_empty() || entry.retracted {
+        if entry.retracted {
             return false;
         }
         // WI-348: the resolver's candidate triage (`resolve.rs` eq/non-eq split)

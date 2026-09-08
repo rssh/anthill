@@ -138,6 +138,15 @@ sort anthill.prelude.Field
   -- when the guard is satisfied." A verifier uses the guard to discharge
   -- the rule's preconditions; a typer/resolver skips the rewrite when the
   -- guard is not (yet) known to hold.
+  --
+  -- DELIBERATELY UNTAGGED (WI-20260820-8RJK8, which made a `[simp]` guarded equation
+  -- fire). The guard says when the equation is TRUE; the tag says whether to ORIENT it,
+  -- and these three are not one decision. `div(?a, ?b) = mul(?a, recip(?b))` oriented
+  -- left-to-right rewrites every division in the program into a reciprocal multiply —
+  -- a normalization choice for the algebra library to make deliberately, not a
+  -- consequence of a firing gap closing. The other two are reducing and could be tagged;
+  -- whether this file wants a normal form at all is the question, and it is not this
+  -- ticket's to answer. They are here for the verifier until it is.
   rule mul(div(?a, ?b), ?b) = ?a :- neq(?b, 0)
   rule div(?a, ?b) = mul(?a, recip(?b)) :- neq(?b, 0)
   rule mul(recip(?a), ?a) = 1 :- neq(?a, 0)

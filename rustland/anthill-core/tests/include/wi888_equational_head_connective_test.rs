@@ -34,7 +34,9 @@
 //!     directly beneath its `<=>` siblings. Refusing it would be a second decision.
 //!     That such a rule fires NOWHERE is a separate, pre-existing gap owned by
 //!     WI-20260820-8RJK8; the refusal message says so, which is why it withholds the
-//!     "give it a body goal" remedy `===` gets.
+//!     "give it a body goal" remedy `===` gets — that turns the rule into a GUARDED
+//!     equation, which is a different rule (WI-20260820-8RJK8: it fires, but only where
+//!     its guard is proved; before that ticket it fired nowhere at all).
 //!   * `=` in a BODY GOAL, a contract or a constraint. That is where §5.3's
 //!     test-vs-bind distinction actually holds, and it is untouched.
 //!   * the KB-side `is_equality_connective_functor`, which still answers for `eq`
@@ -117,11 +119,18 @@ fn a_bodyless_eq_head_is_refused_and_names_the_substitute() {
         "…and say what `=` is, which is why it cannot head an equation: {msg}",
     );
     // The one thing an author cannot see from here: `===`'s second remedy ("give it a
-    // body goal") is WRONG for `=`, because a guarded equation is read by no firing
-    // site. A message that offered it would trade a working rule for a dead one.
+    // body goal") is WRONG for `=`. It used to be worse than wrong — a guarded equation
+    // was read by no firing site, so the advice traded a working rule for a dead one —
+    // and since WI-20260820-8RJK8 it is a SILENT NARROWING instead: the guarded rule
+    // fires, but only where its guard is proved at the redex. Either way it is not the
+    // same rule, and the message must say so rather than offer it.
     assert!(
-        msg.contains("Adding a body goal is NOT the alternative"),
+        msg.contains("Adding a body goal is NOT the same rule"),
         "the `===` remedy must be withheld for `=`: {msg}",
+    );
+    assert!(
+        msg.contains("guard is proved at the redex"),
+        "…and must say WHY it is a different rule, in the terms that are true now: {msg}",
     );
 }
 

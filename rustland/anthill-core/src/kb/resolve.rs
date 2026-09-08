@@ -4224,6 +4224,25 @@ impl KnowledgeBase {
             if !super::typing::typed_pattern_bounds_hold(self, rid, &msubst, &fresh) {
                 continue;
             }
+            // WI-20260820-8RJK8: the equation's own `:- guard`, proved post-match
+            // against the head match by a nested definite-only search. LAST of the
+            // three post-match filters deliberately — it is the only one that runs a
+            // SEARCH, so the two cheap type-side verdicts get to decline first. A
+            // body-less equation short-circuits inside `guard_verdict`, which is why
+            // this costs an unconditional rewrite nothing.
+            //
+            // The verdict may EXTEND the match: a variable the guard binds and the RHS
+            // mentions is part of the answer, not a by-product, so the RHS is built
+            // with whatever σ the verdict hands back.
+            let extended;
+            let build = match super::simp_rewrite::guard_verdict(self, rid, rhs, &fresh, &msubst) {
+                super::simp_rewrite::GuardVerdict::NotHeld => continue,
+                super::simp_rewrite::GuardVerdict::HoldsUnchanged => &msubst,
+                super::simp_rewrite::GuardVerdict::HoldsWith(s) => {
+                    extended = s;
+                    &extended
+                }
+            };
             // Build the RHS in the redex's carrier: a `Value::Node` redex keeps
             // occurrence identity (`instantiate_rhs_verbatim` — the shared RHS builder,
             // with NO macro expansion: macros are the typer's, 043.1 §5); a term (or
@@ -4234,9 +4253,9 @@ impl KnowledgeBase {
             // as `apply_subst` did, one fire at a time.
             let rewritten = match redex {
                 Value::Node(occ) => Value::Node(super::simp_rewrite::instantiate_rhs_verbatim(
-                    self, rid, rhs, &fresh, &msubst, occ,
+                    self, rid, rhs, &fresh, build, occ,
                 )),
-                _ => self.reify(rhs, &msubst),
+                _ => self.reify(rhs, build),
             };
             return Some((rid, rewritten));
         }
@@ -4314,8 +4333,22 @@ impl KnowledgeBase {
     /// pattern bound (`?x: T`) has an enforcer at all — the same reason WI-902
     /// raised the typer's `is_simp_equation`. A refusal stated in the loader's own
     /// vocabulary was measurably wider than this.
-    pub(super) fn is_directional_equation(&self, rid: RuleId) -> bool {
-        self.is_equation(rid) && self.equation_is_directional_rewrite(rid)
+    ///
+    /// WI-20260820-8RJK8 raised the equation-hood half from `is_equation` to
+    /// [`Self::has_equational_head`], so a GUARDED equation (`lhs = rhs :- g`) is a
+    /// directional rewrite too. The guard did not stop being part of the decision —
+    /// it moved to `simp_rewrite::guard_holds`, which the fire site runs POST-MATCH,
+    /// beside the requires-guard and the typed-pattern bound that already sit there.
+    /// The LOADER reads this too (the WI-903 typed-pattern refusal), so widening it
+    /// here narrows that refusal in lockstep: a `[simp]`-tagged guarded equation now
+    /// HAS the enforcer the refusal said it lacked, and that narrowing needed no edit
+    /// at the loader.
+    ///
+    /// `pub` since the same ticket, for the reason that made it `pub(super)` one hop
+    /// out: a TEST asserting that a stdlib law "will fire" must ask this rather than
+    /// re-spell its two conjuncts, or the assertion drifts from the site it is about.
+    pub fn is_directional_equation(&self, rid: RuleId) -> bool {
+        self.has_equational_head(rid) && self.equation_is_directional_rewrite(rid)
     }
 
     /// WI-646: whether the KB holds ANY directional (`[simp]`/`[unfold]`) equation

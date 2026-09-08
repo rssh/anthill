@@ -1647,3 +1647,6 @@ mod wi_0qv5a_match_arm_guard_test;
 
 #[path = "include/wi_pw9a0_rule_tvar_in_bound_test.rs"]
 mod wi_pw9a0_rule_tvar_in_bound_test;
+
+#[path = "include/wi_8rjk8_guarded_equation_fires_test.rs"]
+mod wi_8rjk8_guarded_equation_fires_test;

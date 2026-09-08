@@ -119,18 +119,26 @@ fn unannotated_dot_rule_still_loads_and_fires() {
     );
 }
 
-/// The sibling leak, found by the same question and MEASURED the same way. The
-/// loader used to ask its OWN version of "is this a rewrite" — `is_equational_head`
-/// plus a `[simp]`/`[unfold]` tag — which is wider than the predicate the resolver
-/// actually fires on (`is_directional_equation`, whose `is_equation` also demands
-/// an EMPTY BODY, §8.3). A GUARDED equation therefore installed its bound while no
-/// site could read it: measured `rule_type_bounds == [(1, …)]` with
-/// `kb.is_equation(rid) == false`.
+/// The sibling leak, found by the same question and MEASURED the same way — AND THE
+/// ROW THAT SHOWS THE DISCIPLINE PAYING OFF.
 ///
-/// Both gates are now asked in the firing sites' own terms, so this is refused too
-/// — and its message names the guard, since the author DID tag the rule.
+/// The loader used to ask its OWN version of "is this a rewrite" — `is_equational_head`
+/// plus a `[simp]`/`[unfold]` tag — which was wider than the predicate the resolver
+/// actually fires on. A GUARDED equation therefore installed its bound while no site
+/// could read it: measured `rule_type_bounds == [(1, …)]` with
+/// `kb.is_equation(rid) == false`. WI-903 made the loader ask `is_directional_equation`
+/// instead, and the guarded case became refused.
+///
+/// WI-20260820-8RJK8 THEN MADE IT FIRE, and because the loader borrows the firing
+/// site's predicate rather than restating it, the refusal narrowed with NO EDIT AT THE
+/// LOADER. A `[simp]`-tagged guarded equation is a directional rewrite, so
+/// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it and the bound has its
+/// reader — it is KEPT below. The UNTAGGED spelling is still refused, and for the
+/// reason it always had: nothing fires it (`[simp]` is the enablement, WI-881).
+///
+/// Both rows over ONE program text, so nothing but the tag differs.
 #[test]
-fn typed_bound_on_a_guarded_equation_is_refused() {
+fn typed_bound_on_a_guarded_equation_follows_the_tag() {
     const SRC: &str = r#"
 namespace test.wi903guarded
   import anthill.prelude.{Int64}
@@ -144,13 +152,26 @@ namespace test.wi903guarded
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
-    rule pk: pick(?x: Summable, ?y) = ?y :- gt(?y, 0) [simp]
+    rule pk: pick(?x: Summable, ?y) = ?y :- gt(?y, 0) TAG
   end
 end
 "#;
-    let errs = try_load_kb_with(SRC)
+    // TAGGED: a conditional rewrite, so the bound is installed and enforced at the match.
+    let kb = load_kb_with(&SRC.replace("TAG", "[simp]"));
+    let rid = kb
+        .rule_id_by_qn("test.wi903guarded.Lib.pk")
+        .expect("the tagged guarded equation loads");
+    assert_eq!(
+        kb.rule_type_bounds(rid).len(),
+        1,
+        "a TAGGED guarded equation is fired by `fire_simp_equation`, which enforces \
+         typed-pattern bounds — so the bound is kept, not refused",
+    );
+
+    // UNTAGGED: nothing fires it, so the bound would be ignored — still refused.
+    let errs = try_load_kb_with(&SRC.replace("TAG", ""))
         .err()
-        .expect("a guarded equation cannot enforce a bound");
+        .expect("an untagged equation cannot enforce a bound");
     let found = mentioning(&errs, "WI-582");
     let [msg] = found[..] else {
         panic!("expected exactly one typed-pattern refusal, got: {errs:?}");
@@ -159,11 +180,6 @@ end
         msg.contains("pk"),
         "the refusal must name the offending rule: {msg}"
     );
-    assert!(
-        msg.contains("bodyless"),
-        "a TAGGED rule's refusal must name what actually disqualifies it — the \
-         body — not just tell the author to tag it: {msg}",
-    );
     // …and must NOT tell the author to drop the guard: a `Spec[T]` INTRODUCER guard
     // is where the bound comes from in the `k[T](?x: T, ?y) = ?x :- Summable[T]`
     // spelling (`wi619_two_ary_head_introducer_test`), which folds and loads fine.
@@ -171,6 +187,11 @@ end
         !msg.contains("drop its `:- …` guard"),
         "the advice must not push the author toward deleting the guard that \
          SUPPLIES the bound in the introducer form: {msg}",
+    );
+    assert!(
+        !msg.contains("bodyless"),
+        "the message must no longer say a rewrite is bodyless — since 8RJK8 a tagged \
+         guarded equation IS one, and the untagged rule's fault is the missing tag: {msg}",
     );
 }
 

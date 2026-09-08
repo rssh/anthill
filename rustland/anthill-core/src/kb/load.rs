@@ -2099,9 +2099,18 @@ pub enum TypedPatternRefusal {
     /// Not a directional rewrite — the only shape the resolver fires through
     /// `typed_pattern_bounds_hold`. Keyed on `KnowledgeBase::is_directional_
     /// equation`, the predicate `fire_simp_equation` itself gates on, so this
-    /// covers an untagged equation, a non-equational head, AND (WI-903, MEASURED)
-    /// a GUARDED one — `f(?x: T) = g(?x) :- p(?x)` has a body, so `is_equation`
-    /// rejects it and its bound was installed for no reader.
+    /// covers an untagged equation and a non-equational head.
+    ///
+    /// IT NO LONGER COVERS A TAGGED GUARDED ONE, and that narrowing is not a
+    /// relaxation of the rule but the rule tracking its own predicate
+    /// (WI-20260820-8RJK8). WI-903 added the guarded case because
+    /// `f(?x: T) = g(?x) :- p(?x)` had a body, so `is_equation` rejected it and no
+    /// site could read the bound — MEASURED then. `is_directional_equation` now
+    /// answers `true` for a `[simp]`/`[unfold]`-tagged guarded equation, and
+    /// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it like any other,
+    /// so the bound HAS its reader and the refusal lifts by itself. An UNTAGGED
+    /// guarded equation is still refused, for the reason it always was: nothing
+    /// fires it, `[simp]` being the enablement (WI-881).
     NotARewrite,
     /// WI-903: an equational `[simp]` rewrite whose LHS is the reflect
     /// `Expr.dot_apply` ENTITY — a WI-279 INC2 DOT rule, which clears
@@ -2134,12 +2143,13 @@ fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal)
     match reason {
         TypedPatternRefusal::NotARewrite => format!(
             "WI-582: a typed rule pattern (`?x: T`) is enforced only where the \
-             resolver fires a directional rewrite — a `[simp]`/`[unfold]` EQUATION, \
-             which is bodyless (§8.3). {rule} is not one, so it would silently \
-             ignore the bound. Give it that shape or drop the annotation. (A \
-             `Spec[T]` introducer guard is NOT what disqualifies a rule — \
-             `k[T](?x: T, ?y) = ?x :- Summable[T] [simp]` folds its guard away and \
-             is a legal bounded equation; any OTHER body goal does not fold.)"
+             resolver fires a directional rewrite — an EQUATION tagged \
+             `[simp]`/`[unfold]` (§8.3). {rule} is not one, so it would silently \
+             ignore the bound. Tag it or drop the annotation. (A GUARD is not what \
+             disqualifies a rule: since WI-20260820-8RJK8 a tagged \
+             `f(?x: T) = g(?x) :- p(?x)` is a conditional rewrite and enforces the \
+             bound at the match. What disqualifies this one is that nothing fires \
+             it — `[simp]` is the enablement, WI-881.)"
         ),
         TypedPatternRefusal::DotRule => format!(
             "WI-903: {rule} is a DOT rule (`dot_apply(?receiver, member, …)`), \
@@ -5817,6 +5827,14 @@ fn parse_connective_head<'a>(
 /// is `cut`'s situation exactly (`kernel_mint_address_test::
 /// a_rule_head_named_cut_introduces_a_local_name`). A rule head is RESOLVED, not
 /// declared (WI-896), so that is a resolution moving, not a declaration changing.
+///
+/// DELIBERATELY NOT WIDENED WITH ITS RHS SIBLING (WI-20260820-8RJK8). That reader asks
+/// where the operands SIT and so moved to the shape list; this one asks whether the
+/// head INTRODUCES its subject as an equation functor, which is a name-resolution
+/// question, not a firing one. A guarded `=` head fires now, but whether it should also
+/// mint `SymbolKind::EquationFunctor` for its subject is a separate change with its own
+/// population — every guarded `=` rule in the corpus writes a subject that some
+/// `operation` already declares, so nothing here is currently withheld by it.
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
@@ -5827,21 +5845,32 @@ fn parse_equation_lhs(
         .map(|(_, lhs, _)| lhs)
 }
 
-/// WI-20260903-FCZ3N — the RHS operand of a parse-layer DEFINING EQUATION head, the
+/// WI-20260903-FCZ3N — the RHS operand of a parse-layer equality-family head, the
 /// mirror of [`parse_equation_lhs`] at `pos_args[1]`. What
 /// `Loader::equation_rhs_occurrence` needs in order to build that RHS's occurrence from
 /// the syntax the author wrote instead of re-deriving it from the stored head term.
 ///
-/// The DEFINING subset, exactly as the LHS reader takes it: `===` compares and defines
-/// nothing, so it has no RHS a `[simp]` fire could ever splice.
+/// A SHAPE QUESTION, and it asks the SHAPE list (WI-20260820-8RJK8). It used to filter
+/// on `is_equation_functor` — the DEFINING subset, which since WI-888 has exactly one
+/// member, `<=>` — on the reading that `===` compares and defines nothing so has no RHS
+/// to splice. True of `===`, and it took `=` with it. That was invisible while a `=`
+/// head was either bodyless (refused, WI-888) or GUARDED (fired nowhere); a guarded `=`
+/// equation fires now, `map.anthill` and `indexed_seq.anthill` write three of them, and
+/// each was silently left on the term-derived RHS path — MEASURED by
+/// `wi_fcz3n_simp_rhs_occurrence_test`'s census, which named all three.
+///
+/// `===` is still excluded, by the ONE authority that decides what a firing site opens:
+/// the caller pairs this with `KnowledgeBase::is_equality_connective_functor` on the
+/// stored head (eq + unify, never struct_eq) and returns `None` when that says no. So
+/// the meaning is asked once, of the KB, and this reader answers only "where do the
+/// operands sit" — which is what [`EQUALITY_FAMILY_FUNCTORS`](crate::parse::pratt::EQUALITY_FAMILY_FUNCTORS)
+/// is for, in its own words.
 fn parse_equation_rhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
     head: TermId,
 ) -> Option<TermId> {
-    parse_connective_head(parse_sym, parse_terms, head)
-        .filter(|(name, _, _)| crate::parse::pratt::is_equation_functor(name))
-        .map(|(_, _, rhs)| rhs)
+    parse_connective_head(parse_sym, parse_terms, head).map(|(_, _, rhs)| rhs)
 }
 
 /// §6.1 (proposal 061) — `true` IS THE EMPTY CONJUNCTION, so a body goal spelling it
@@ -6571,18 +6600,12 @@ fn duplicate_type_message(
 /// * `=` — nothing went wrong. The rule FIRED (WI-884 drove all four connective ×
 ///   attribute combinations), so a message about silent uselessness would be false
 ///   here; what the author needs is the substitute spelling and the reason the spelling
-///   moved. It also must NOT offer `===`'s second remedy — "give the rule a body goal"
-///   turns an `=` equation into a GUARDED one, which no firing site reads, so the
-///   advice would trade a working rule for a dead one. That a guarded equation fires
-///   nowhere is a KNOWN, OWNED gap rather than a WI-888 consequence: `is_equation`
-///   requires an empty body and every firing site gates on it
-///   (`is_directional_equation`, `is_simp_equation`). WI-20260820-8RJK8 owns it (split out of
-///   WI-292's "SIBLING GAP" note, which was delivered and so had no live owner), and
-///   docs/design/constrained-term-substrate.md §"Conditional rewrite rules" has the
-///   frame. Note the gap is NOT "unindexed": indexing tracks the `[simp]` TAG alone
-///   (WI-139 keys on the head shape, not the body), so a tagged guarded equation IS in
-///   the bucket and IS reachable by `simp_equation_rids` — measured under that ticket.
-///   Every firing site rejects it on the empty-body clause instead.
+///   moved. It also must NOT offer `===`'s second remedy unqualified — "give the rule a
+///   body goal" turns an `=` equation into a GUARDED one, which is a DIFFERENT rule:
+///   since WI-20260820-8RJK8 a guarded equation does fire, but only where its guard is
+///   proved at the redex, so the advice would silently narrow an unconditional
+///   definition into a conditional one. (Before 8RJK8 it was worse — the guarded rule
+///   fired nowhere at all — and the sentence said so.)
 ///
 /// `subject` is `None` when the left operand names nothing (`rule ?x === ?x`), and the
 /// sentence then omits it rather than substituting something. A first cut put the
@@ -6614,8 +6637,8 @@ fn non_defining_connective_head_message(connective: &str, subject: Option<&str>)
              `<=>` is the connective that binds, and it is the only one admitted at a \
              bodyless head (proposal 049; the `=` spelling was accepted while that \
              migration was in flight and no longer is). {remedy}. Adding a body goal \
-             is NOT the alternative here: `lhs = rhs :- guard` is a guarded equation, \
-             which no firing site reads."
+             is NOT the same rule: `lhs = rhs :- guard` is a guarded equation, which \
+             fires only where its guard is proved at the redex."
         );
     }
     let what = match subject {
@@ -29342,12 +29365,19 @@ impl<'a> Loader<'a> {
             // so a `[simp]` fire splices the nodes the author wrote (their spans, their
             // `dot_chain` provenance) instead of re-deriving them from the head term.
             //
-            // BODYLESS ONLY, and that is `is_equation`'s own emptiness test, asked where
-            // its answer exists: a GUARDED equation (`lhs = rhs :- g`) is not an equation
-            // (§8.3) and no firing site can reach it. Read off `body_nodes`, i.e. AFTER
-            // guard folding and after §6.1's `:- true`, so the two rules agree exactly —
-            // the parse-level `r.body` would call a folded-guard or `:- true` rule bodied
-            // and silently leave it on the term path.
+            // EVERY EQUATIONAL HEAD, guarded or not (WI-20260820-8RJK8). This used to
+            // read `body_nodes.is_empty()` — `is_equation`'s own emptiness test — on the
+            // ground that a guarded equation reaches no firing site. It reaches both of
+            // them now, so it needs its written RHS for the same reason a bodyless one
+            // does: without it `build_rhs_template` falls to the term-derived
+            // `substitute_to_occurrence`, which re-mints every node as `Synthesized` and
+            // loses the spans and `dot_chain` the author wrote. Keyed on
+            // `has_equational_head` — the same predicate the firing sites select by — so
+            // the producer cannot fall behind the consumer again; the census in
+            // `wi_fcz3n_simp_rhs_occurrence_test` walks that same population.
+            //
+            // `equation_rhs_occurrence` self-gates on the connective functor, so a
+            // non-equational head still yields `None` and stores nothing.
             //
             // THE BUILD IS HERE AND NOT IN THE HEAD LOOP, and that is the whole reason
             // this is a second pass rather than a stored vector: a build up there ran for
@@ -29361,7 +29391,7 @@ impl<'a> Loader<'a> {
             // omitted-optional fill and `in_rule_head` gates WI-582's `?x: T` strip. Every
             // `convert_term` this walk reaches is memoized in `term_map` from the head
             // conversion, so it re-reads and cannot re-report.
-            if body_nodes.is_empty() {
+            if self.kb.has_equational_head(rid) {
                 if let Some(&parse_tid) = positive_head_parse_ids.get(head_idx) {
                     let (pv, ph) = (self.in_value_position, self.in_rule_head);
                     self.in_value_position = true;
@@ -29388,10 +29418,12 @@ impl<'a> Loader<'a> {
             // `is_typer_fired_dot_rule` the one `try_fire_dot_rule` selects by — so
             // the refusal cannot drift wider than the firing that justifies it.
             // WI-903: both were previously restated in the loader's vocabulary, and
-            // both were wider. MEASURED: `is_equational_head && [simp]` admits a
-            // GUARDED equation (`f(?x: T) = g(?x) :- p(?x)`), which `is_equation`
-            // rejects for its non-empty body, so its bound installed and no site
-            // could read it — the same silent-ignore as the dot case.
+            // both were wider. That the loader ASKS the firing site rather than
+            // restating it is what made WI-20260820-8RJK8 a one-line change here:
+            // `is_directional_equation` learned to accept a tagged GUARDED equation,
+            // and this refusal narrowed with it, in the same commit and with no edit
+            // at this line. A restatement would have gone stale instead — refusing a
+            // bound the resolver had just started enforcing.
             if let Some(bounds) = head_type_bounds.get(head_idx) {
                 if !bounds.is_empty() {
                     let refusal = if self.kb.is_directional_equation(rid) {

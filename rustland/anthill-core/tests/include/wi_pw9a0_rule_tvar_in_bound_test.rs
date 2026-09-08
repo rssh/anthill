@@ -397,29 +397,19 @@ end
     );
 }
 
-/// A GUARDED EQUATION KEEPS ITS REFUSAL, and this row exists because this ticket tried
-/// to lift it and was wrong.
+/// AN UNTAGGED GUARDED EQUATION KEEPS ITS REFUSAL. This row exists because THIS ticket
+/// (PW9A0) tried to lift the refusal for BOTH spellings and was wrong about the reason;
+/// WI-20260820-8RJK8 then lifted the TAGGED half for a different reason, and the untagged
+/// half is what is left.
 ///
-/// The argument for lifting was: a guarded equation (`lhs = rhs :- guard`) can never be a
+/// PW9A0'S ARGUMENT, and why it did not hold: a guarded equation can never be a
 /// directional rewrite (an equation is BODYLESS, §8.3), the refusal's stated reason is
 /// "neither reader exists", and WI-742's `install_typed_head_domain_goals` skips only
 /// `is_directional_equation` — so a guarded equation DOES get a generated `domain(?x, T)`
 /// goal prepended. The bound installs and the body carries the extra goal; both are
-/// observable.
-///
-/// THE GOAL IS NOT A READER, and WI-20260820-8RJK8 owns the reason: NOTHING ANYWHERE
-/// EVALUATES A MATCHED EQUATION'S BODY. Every firing site gates on `is_equation`, whose
-/// FIRST clause is `body_nodes.is_empty()` — `is_directional_equation` (what
-/// `apply_eq_rules` / `fire_simp_equation` gate on) and `is_simp_equation` (what the
-/// typer's `try_fire` selects by) both build on it.
-///
-/// SELECTION IS NOT THE BLOCKER, and reading it as one is the conflation 8RJK8 was
-/// written to correct: indexing tracks the TAG alone (WI-139 unindexes untagged
-/// equational HEADS by shape, body irrelevant), so a `[simp]`-guarded equation IS in the
-/// bucket and IS reachable. It is the body clause that kills it, at the firing site.
-///
-/// MEASURED with an UNSATISFIABLE bound, three rows over one program whose parameters
-/// are `Int64`:
+/// observable. THE GOAL WAS NOT A READER, because nothing evaluated a matched equation's
+/// body. MEASURED then, with an UNSATISFIABLE bound, three rows over one program whose
+/// parameters are `Int64`:
 ///
 /// | annotation on `pk: pick(?x: …, ?y) = ?y :- src(?x, ?y)` | `simplify(pick(1, 5))` |
 /// |---|---|
@@ -427,15 +417,16 @@ end
 /// | `?x: Int64` (satisfiable) | byte-identical |
 /// | `?x: Bool` (UNSATISFIABLE) | byte-identical |
 ///
-/// So the annotation is decorative: nothing would notice if it were absurd. That is what
-/// the refusal is for, and installing the bound is not evidence against it — the mechanism
-/// running is not the effect happening. `docs/kernel-language.md` §"§8.3" already says as
-/// much from the other side: a guarded equation is a shape "no firing site reads".
-///
-/// BOTH guarded spellings are refused, tagged or not; `wi903_typed_bound_dot_rule_test`
-/// owns the tagged one, where the `[simp]` makes it a broken promise as well.
+/// WHAT 8RJK8 CHANGED, and what it did not. A guarded equation's body is now proved
+/// post-match, so a `[simp]`-TAGGED one is a directional rewrite and
+/// `typed_pattern_bounds_hold` enforces its bound — that half is now KEPT, and
+/// `wi903_typed_bound_dot_rule_test::typed_bound_on_a_guarded_equation_follows_the_tag`
+/// owns the pair. The UNTAGGED half is untouched: `[simp]` is the enablement (WI-881),
+/// so nothing fires an untagged equation, guarded or not, and its bound would still be
+/// decoration. The measurement above stands as the record of what "the mechanism ran"
+/// is worth without a firing site behind it.
 #[test]
-fn a_guarded_equation_keeps_its_refusal() {
+fn an_untagged_guarded_equation_keeps_its_refusal() {
     const PROG: &str = r#"
 namespace test.pw9a0.guarded
   import anthill.prelude.{Int64}
@@ -446,16 +437,11 @@ namespace test.pw9a0.guarded
   sort Lib
     sort A = ?
     operation g(x: A) -> A
-    rule { law: g(?x: Colour) = ?x :- item(?x) TAG }
+    rule { law: g(?x: Colour) = ?x :- item(?x) }
   end
 end
 "#;
-    for tag in ["", "[simp]"] {
-        crate::common::expect_load_errors(
-            crate::common::try_load_kb_with(&PROG.replace("TAG", tag)),
-            &["bodyless"],
-        );
-    }
+    crate::common::expect_load_errors(crate::common::try_load_kb_with(PROG), &["WI-582"]);
 }
 
 /// THE DIAGNOSTIC HALF. An introducer with no `:- Spec[A]` guard is ONE fault, and it

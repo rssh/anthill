@@ -29,9 +29,22 @@
 //! concrete functor (`add(?x, 0) = ?x` at top level) is guard-free. Loaded
 //! equations are headed by the canonical `anthill.prelude.PartialEq.eq`
 //! ([`KnowledgeBase::eq_functor`]), the symbol the firing index keys on.
-//! Explicit value-level guards (`:- compare(?x, ?y) <= 0`) give the rule a
-//! non-empty body, so it is not `is_equation` and not yet indexed for
-//! firing — proposal 043 §4.1 / a follow-up.
+//!
+//! An EXPLICIT value-level guard (`:- neq(?b, 0)`) is the THIRD tier
+//! (WI-20260820-8RJK8, proposal 043 §4.6): it gives the rule a non-empty body, and
+//! that body is now PROVED POST-MATCH by [`guard_verdict`] rather than
+//! disqualifying the rule. Selection moved off `is_equation` (which demands an
+//! empty body, and still does — it is the SLD triage's predicate) onto
+//! [`KnowledgeBase::has_equational_head`]; `[simp]` remains the enablement, so an
+//! untagged guarded equation is as inert as an untagged bodyless one.
+//!
+//! THREE SELECTION SITES, ONE EVALUATOR: [`rewrite`]'s resolver firer
+//! (`resolve::fire_simp_equation`), [`try_fire`] here, and the typer's dot-rule pass
+//! (`typing::try_fire_dot_rule`). Every one of them calls [`guard_verdict`], and it is
+//! worth knowing WHY that census had to be taken rather than assumed: the third site
+//! selects through [`fires_as_dot_rule`] → [`is_simp_equation`], so widening the latter
+//! reached it silently. A selection widened in one place is a firing widened everywhere
+//! that predicate is read.
 //!
 //! Recursion depth (WI-278): the walk is iterative. [`rewrite`] descends the
 //! tree on an explicit `Visit`/`Build` work-stack, and both RHS builders
@@ -146,8 +159,184 @@ pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
 /// alone and never fire a `<=>`-spelled dot rule. Both properties this test names —
 /// equation-hood (connective-agnostic, `is_equation`) and the `[simp]` tag — are
 /// exactly the ones a firing site must not re-derive.
+///
+/// WI-20260820-8RJK8 raised the equation-hood half from `is_equation` (which demands
+/// an EMPTY body) to [`KnowledgeBase::has_equational_head`] (which does not), so a
+/// GUARDED equation is selected here too. Its `:- guard` is not gone from the
+/// decision — it moved to where a guard belongs, POST-MATCH ([`guard_verdict`]),
+/// exactly as the type-directed guard and the typed-pattern bound already sit.
 pub(super) fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
-    kb.is_equation(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
+    kb.has_equational_head(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
+}
+
+/// WI-20260820-8RJK8 — how deep the conditional-rewrite guard recursion may go.
+///
+/// A guard is discharged by an ordinary nested SLD search, which can reach the
+/// rewriter again (a builtin that calls `apply_eq_rules`), so the two need a bound
+/// or they can chase each other. ONE level: proving a guard may not itself require
+/// proving a guard. The nested search runs with `simplify: false`, so the ordinary
+/// goal-time rewrite path is already out of the loop and this bound covers only the
+/// eval-side re-entry — no guarded equation in the corpus reaches it, which is said
+/// here rather than left to be inferred from a green suite: NOTHING COVERS THE
+/// EXCEEDED ARM, and removing it changes no test.
+pub(super) const SIMP_GUARD_MAX_DEPTH: usize = 1;
+
+/// WI-20260820-8RJK8 — a matched equation's GUARD verdict, and what the RHS must be
+/// built with when it holds. Three-valued because a guard can bind as well as decide.
+#[derive(Debug)]
+pub(super) enum GuardVerdict {
+    /// No guard at all, or a guard that bound nothing the right-hand side needs —
+    /// build the RHS with the head match alone. The unconditional-rewrite case, and it
+    /// deliberately carries NO substitution so that every `[simp]` fire in the corpus
+    /// keeps paying exactly what it paid before this ticket.
+    HoldsUnchanged,
+    /// Proved, and the witness bound rule variables the RHS mentions — build the RHS
+    /// with THIS substitution, the head match extended by the guard's answer.
+    HoldsWith(Substitution),
+    /// Refuted, under-determined, or not uniquely determined — do not fire.
+    NotHeld,
+}
+
+/// WI-20260820-8RJK8 — does a matched equation's GUARD hold at this redex, and what did
+/// proving it bind?
+///
+/// The post-match third tier of conditional-rewrite firing (043 §4.6 /
+/// `docs/design/constrained-term-substrate.md` "Indexing — LHS only; the guard is a
+/// post-match filter"): the discrimination tree narrows structurally on the LHS, the
+/// type-directed / typed-pattern guards decide on carried types, and this decides on
+/// VALUES. [`GuardVerdict::HoldsUnchanged`] for a body-less equation, trivially — an
+/// unconditional rewrite is the guard-`true` case, not a separate shape — so every
+/// firing site calls this unconditionally rather than testing body-emptiness first.
+///
+/// `fresh` is the rule's own frame from [`open_equation`] and `msubst` the head
+/// match. The body atoms are stored DeBruijn-closed against that same frame, so
+/// opening them with `fresh` and applying `msubst` puts the guard on exactly the
+/// values the LHS matched — the shared openers ([`node_occurrence::open_debruijn_node`],
+/// [`node_occurrence::substitute_occurrence`]) rather than a private walk, so the
+/// guard sees what the RHS builder sees.
+///
+/// THE WITNESS IS PART OF THE ANSWER, not a by-product (found by `/code-review`, and
+/// MEASURED before the fix: `rule h: pick(?a) <=> wrap(v: ?p) :- src(?a, ?p) [simp]`
+/// over `fact src(1, 42)` fired to `wrap(v: <unbound Global>)` — a WRONG value, not an
+/// absent rewrite). A variable bound only by the guard and used in the right-hand side
+/// is the standard conditional-rewrite idiom — `stream.anthill` writes six of them
+/// (`headOption(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)`) — so discarding the
+/// proof's bindings would hand the RHS builder an unbound rule variable.
+///
+/// WHICH BINDINGS, and the uniqueness they must have: only the `fresh` globals the RHS
+/// MENTIONS and the head match did NOT bind. When that set is empty the search stops at
+/// the first definite answer, exactly as before. When it is not, the rewrite's RESULT
+/// depends on the witness, so a guard with two different witnesses does not DETERMINE
+/// the rewrite and the rule declines — the same WI-067 reading an under-determined
+/// guard gets. Two answers are enough to see that (`max_solutions: 2`); a third could
+/// not make an already-ambiguous guard determined.
+///
+/// THREE-VALUED, COLLAPSED TO "FIRE" / "DO NOT FIRE" (WI-067, the same collapse
+/// [`super::typing::typed_pattern_bounds_hold`] documents). The search runs
+/// `definite_only`, so a FLOUNDERED answer — an undischarged residual, a delayed
+/// goal over an unbound variable — is not yielded and the guard does not hold; an
+/// undetermined guard therefore leaves the redex standing instead of being decided
+/// by negation-as-failure. That matters for a NEGATED guard above all: `not(p(?x))`
+/// over an undecidable `p` must not launder into a fire, and under `definite_only`
+/// it does not (WI-628 taints the outer stream with the inner truncation).
+///
+/// AN OPEN-WORLD OPERAND DECLINES BEFORE THE SEARCH RUNS (also found by
+/// `/code-review`). A scalar builtin reads a `var_ref` reflect term — the typer's
+/// compile-time stand-in for a parameter — as a ground constant, so `neq(var_ref(a),
+/// var_ref(b))` succeeds STRUCTURALLY over two parameters that may be equal at run
+/// time. `step_init` guards exactly this (WI-537/WI-067) but only under a Γ overlay,
+/// which a guard search does not have, so the test is made here instead, on the goals
+/// themselves. Declining is the conservative answer an undetermined guard already gets.
+/// MEASURED, in both directions: with this test removed, `pick(?a, ?b) <=> ?a :-
+/// neq(?a, ?b) [simp]` rewrites an operation body `pick(p, q)` over two `Int64`
+/// PARAMETERS to `var_ref(p)` at compile time, while the ground `pick(1, 2)` beside it
+/// folds to `1` either way — `wi_8rjk8_guarded_equation_fires_test::
+/// a_guard_over_symbolic_parameters_declines_at_the_typer`.
+///
+/// A DEFINITE witness fires REGARDLESS of truncation elsewhere in the search — the
+/// same reading `eval_forall_guard` takes of its own witness, and for the same
+/// reason: truncation can only hide MORE solutions, so it cannot unmake the one
+/// already proved.
+///
+/// A head var the match did NOT bind and the RHS does NOT mention (one that appears
+/// only in the guard — `r(?a) <=> ?a :- p(?a, ?b)`) rides into the goal as a free
+/// `Global` and is resolved EXISTENTIALLY, which is what a Horn body means; it is not
+/// an error and not a reason to decline.
+///
+/// THE THIRD POSITIONAL READER OF `fresh` (WI-20260903-2M5XR). That frame is a SLOT
+/// vector for a DeBruijn rule and a term-walk-ordered SET for a legacy arity-0 Global
+/// head, and `open_debruijn_node`'s `fresh.get(idx)` would read an arbitrary variable
+/// out of the second. It cannot reach one: the legacy shape comes from `assert_fact`
+/// (`load_fact`), a fact has no body, and this returns at `body.is_empty()` before
+/// touching `fresh`. A written arity-0 guarded rule goes through
+/// `assert_rule_debruijn_with_nodes` and has no DeBruijn leaf to index either.
+pub(super) fn guard_verdict(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    rhs: TermId,
+    fresh: &[VarId],
+    msubst: &Substitution,
+) -> GuardVerdict {
+    // Emptiness FIRST, off the borrowed slice: every unconditional `[simp]` fire in the
+    // KB reaches this line, and the overwhelming majority of them leave here — so the
+    // owned clone below is paid only by a rule that actually has a guard.
+    if kb.rule_body_nodes(rid).is_empty() {
+        return GuardVerdict::HoldsUnchanged;
+    }
+    if kb.simp_guard_depth >= SIMP_GUARD_MAX_DEPTH {
+        return GuardVerdict::NotHeld;
+    }
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    let goals: Vec<Value> = body
+        .iter()
+        .map(|atom| {
+            let opened = node_occurrence::open_debruijn_node(kb, atom, fresh);
+            Value::Node(node_occurrence::substitute_occurrence(kb, &opened, msubst))
+        })
+        .collect();
+    // The open-world test, before any search: see the doc.
+    if goals.iter().any(|g| kb.value_has_open_world_ref(g, msubst)) {
+        return GuardVerdict::NotHeld;
+    }
+    // The RHS variables the head match left for the guard to bind.
+    let needed: Vec<VarId> = kb
+        .collect_vars(&rhs)
+        .into_iter()
+        .filter(|v| fresh.contains(v) && !msubst.bindings.contains_key(v))
+        .collect();
+    let config = super::resolve::ResolveConfig {
+        // Two only when the witness DECIDES the result — see the doc's uniqueness note.
+        max_solutions: if needed.is_empty() { 1 } else { 2 },
+        // WI-519: only a DEFINITE solution discharges the guard.
+        definite_only: true,
+        // The guard is proved as goals, not rewritten: leaving `simplify` off keeps
+        // the nested search from re-entering `apply_eq_rules` at every candidate
+        // step, which is the re-entry `SIMP_GUARD_MAX_DEPTH` would otherwise have to
+        // absorb on every guarded fire rather than in the rare eval-side case.
+        ..super::resolve::ResolveConfig::default()
+    };
+    kb.simp_guard_depth += 1;
+    let (solutions, _truncated) = kb.resolve_goals_with_truncation(goals, &config);
+    kb.simp_guard_depth -= 1;
+    let [solution] = &solutions[..] else {
+        // Zero: refuted or undetermined. Two: the guard does not determine the rewrite.
+        return GuardVerdict::NotHeld;
+    };
+    if needed.is_empty() {
+        return GuardVerdict::HoldsUnchanged;
+    }
+    let mut extended = msubst.clone();
+    for vid in needed {
+        let Some(value) = kb.answer_binding(vid, &solution.subst) else {
+            // The guard held but left this RHS variable unbound — the rewrite has no
+            // value to build with, so it is not determined. Declining is the same
+            // answer an undetermined guard gets, and the alternative is the wrong
+            // value this whole branch exists to stop.
+            return GuardVerdict::NotHeld;
+        };
+        extended.bindings.insert(vid, value);
+    }
+    GuardVerdict::HoldsWith(extended)
 }
 
 /// WI-898 — how many equations define `functor`, and how many of them can EVER
@@ -184,7 +373,11 @@ pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> Cla
     // the firing sites' own predicate and this module's doc is explicit that a reader
     // must not re-derive it to save a walk.
     for rid in kb.live_rule_ids_iter() {
-        if !kb.is_equation(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
+        // WI-20260820-8RJK8: `has_equational_head`, not `is_equation` — a GUARDED
+        // clause defines the functor too, and since 8RJK8 it can also FIRE, so
+        // counting it only in `simp_tagged` would let that count exceed `defining`
+        // and make the message blame a retraction for a clause it can see.
+        if !kb.has_equational_head(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
             continue;
         }
         census.defining += 1;
@@ -214,7 +407,10 @@ pub(super) fn equation_lhs_shapes(
 ) -> Option<Vec<(usize, Vec<Symbol>)>> {
     let mut out: Vec<(usize, Vec<Symbol>)> = Vec::new();
     for rid in kb.live_rule_ids_iter() {
-        if !kb.is_equation(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
+        // WI-20260820-8RJK8: a GUARDED equation's LHS is a shape this call could have
+        // been written against too — and one that now fires — so it counts here for
+        // the same reason the doc gives for counting an untagged one.
+        if !kb.has_equational_head(rid) || stored_lhs_functor(kb, rid) != Some(functor) {
             continue;
         }
         let head = kb.fact_head_term(rid)?;
@@ -819,10 +1015,33 @@ pub(super) fn try_fire(
             if subst.is_contradiction() {
                 continue;
             }
+            // WI-20260820-8RJK8 — the equation's own `:- guard`, post-match. The TYPER
+            // fires guarded equations too, and that is a decision rather than a
+            // consequence: `[simp]` is one enablement (WI-881), so a tagged rule must
+            // mean the same thing at both firing sites, and this is the site where a
+            // `[simp]` equation gives a body-less operation a meaning (§5.3) — leaving
+            // it out would make a guarded law fire for a resolver GOAL and not for the
+            // OPERATION BODY that spells the same call.
+            //
+            // The typer's redex is compile-time syntax, so most guards here are
+            // under-determined (a body's `?k` is a symbolic occurrence variable, and
+            // `guard_holds` declines rather than deciding) and the ones that fire are
+            // the ones already decidable from the program text — `nth(xs, -1)` under
+            // `nth(?_, ?i) = none :- lt(?i, 0)`. That is constant folding, which is
+            // what a compile-time rewriter is for.
+            let extended;
+            let build = match self::guard_verdict(kb, rid, rhs, &fresh, &subst) {
+                GuardVerdict::NotHeld => continue,
+                GuardVerdict::HoldsUnchanged => &subst,
+                GuardVerdict::HoldsWith(s) => {
+                    extended = s;
+                    &extended
+                }
+            };
             // The RHS is instantiated `from` the FOLDED redex when there is one, so the
             // synthesized provenance chain reaches the record occurrence the macro was
             // handed rather than a node it never saw.
-            return Ok(Some(instantiate_rhs(kb, rid, rhs, &fresh, &subst, target)?));
+            return Ok(Some(instantiate_rhs(kb, rid, rhs, &fresh, build, target)?));
         }
     }
     Ok(None)
@@ -1701,10 +1920,12 @@ pub(super) fn open_equation(
         // two agree by construction instead of by convention, which they did not:
         // `fact fu(?x) <=> sink(?y) [simp]` loaded clean while the `rule` spelling of
         // the same equation was refused.
-        // NOT A SLOT VECTOR — and the two readers that INDEX `fresh` positionally must
+        // NOT A SLOT VECTOR — and the readers that INDEX `fresh` positionally must
         // therefore never see this one. `open_debruijn_node` does `fresh.get(idx)` for a
-        // `Var::DeBruijn(idx)`, and `typed_pattern_bounds_hold` the same for a bound's
-        // slot; `collect_vars` returns term-walk order, which is not slot order. Both are
+        // `Var::DeBruijn(idx)` — from `instantiate_rhs_verbatim`, and since
+        // WI-20260820-8RJK8 from [`guard_holds`] as well, which states its own
+        // unreachability at its site — and `typed_pattern_bounds_hold` the same for a
+        // bound's slot; `collect_vars` returns term-walk order, which is not slot order. Both are
         // unreachable here — an arity-0 rule's stored `rhs_node` is closed against an
         // EMPTY `globals`, so it holds no `DeBruijn` leaf for the first to find, and
         // `install_rule_type_bounds` runs only from `load_rule` (a typed pattern on a

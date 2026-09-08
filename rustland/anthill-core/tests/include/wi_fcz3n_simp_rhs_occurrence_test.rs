@@ -403,7 +403,12 @@ fn every_fireable_source_equation_keeps_its_rhs_occurrence() {
     let mut tagged = 0usize;
     let mut missing: Vec<String> = Vec::new();
     for rid in kb.live_rule_ids_iter() {
-        if !kb.is_equation(rid) {
+        // WI-20260820-8RJK8: `has_equational_head`, not `is_equation` — a GUARDED
+        // equation is fireable now, so it is in this census's population and its
+        // producer (the loader's `equation_rhs_occurrence` install) had to widen with
+        // it. Left as `is_equation` the census would simply not look at the rules the
+        // widening added, which is the shape of miss this test exists to catch.
+        if !kb.has_equational_head(rid) {
             continue;
         }
         let meta = kb.rule_meta(rid);

@@ -439,17 +439,33 @@ The guard never enters the index: a guarded and an unguarded rule with the same 
 and the guard is a post-match condition — the same shape as a typed pattern's match (structural match,
 then the carried-type check).
 
-### The firing gap (and the fix)
+### The firing gap — CLOSED (WI-20260820-8RJK8)
 
-Conditional rewrites are *specified* (043) and *parseable* (the grammar), but the resolver does not
-fire the guarded ones yet — 043's own indexing note: *"guarded equations must be indexed for firing
-too; today `is_equation` requires an empty body, so guarded `[simp]` rules aren't indexed."* Two steps
-close it:
-- **Index guarded equations** — drop `is_equation`'s empty-body requirement, so a guarded rule is a
-  firing candidate at all.
-- **Evaluate the guard post-match** — a **value** guard resolves normally; a **type** guard reads the
-  carried type off the redex (the typed-value substrate, WI-578) and discharges `subsort`/`provides`
-  (the WI-292 consumer). Both stay in the decidable fragment and suspend when under-determined.
+Conditional rewrites were *specified* (043) and *parseable* (the grammar), and fired nowhere. 043's
+own indexing note named the wrong mechanism: *"guarded equations must be indexed for firing too;
+today `is_equation` requires an empty body, so guarded `[simp]` rules aren't indexed."* **Indexing was
+never the blocker** — it tracks the `[simp]` TAG alone (WI-139 unindexes untagged equational HEADS by
+shape, the body irrelevant), so a tagged guarded equation was in the bucket and reachable all along.
+The ticket measured that directly, over four (body × tag) combinations against a rule-free base of 20
+`unify` rules: guarded + `[simp]` → 21, guarded untagged → 20, bodyless + `[simp]` → 21, bodyless
+untagged → 20. The fix confirmed it from the other side — widening the FIRING predicate alone made a
+tagged guarded equation fire, with nothing about indexing touched. The blocker was the empty-body
+clause **at the firing site**.
+
+What closed it:
+- **Select on the head shape, not on emptiness** — `KnowledgeBase::has_equational_head` (the
+  connective at two positional arguments) is what `is_directional_equation` / `is_simp_equation` now
+  build on. `is_equation` keeps the empty-body clause and keeps its own readers: the resolver's
+  candidate triage, where a guarded equation is an ordinary Horn clause and always was.
+- **Evaluate the guard post-match** — `simp_rewrite::guard_holds` opens the stored body against the
+  rule's own frame (the same `fresh` the LHS opened with), applies the match substitution, and proves
+  it by an ordinary **definite-only** search. A **type** guard is the pre-existing pair beside it: the
+  sort's `requires` (WI-283) and a typed pattern's bound (WI-582) read the carried type off the redex
+  (WI-578) and discharge `subsort`/`provides`. All three suspend when under-determined.
+- **The tag stays the enablement** — an untagged guarded equation is inert, exactly as an untagged
+  bodyless one is (WI-881). The stdlib's fifteen guarded equations were all untagged, so closing the
+  firing gap alone changed nothing for any of them; the reducing ones were tagged as part of the same
+  change and the non-orienting ones (the `Field` identities, `euclid_div`) deliberately were not.
 
 So a conditional rewrite is the general object; the typed `[simp]` rule is the case whose guard is a
 type-bound, and the carried-type substrate is exactly what lets the resolver evaluate *that* guard.
@@ -467,10 +483,15 @@ WI-292):
   — ~14 rules, dormant in the resolver (they fire in the typer). The `requires` is at sort level *by
   design* (a set needs element-`Eq`), so the fix is to **honor** it via the carried type, not
   op-scope it as `List` did (WI-562).
-- **Explicit `:- guard` (the `is_equation` empty-body gap), mostly value guards:** `head` / `tail` /
-  `isEmpty` on a stream (stream.anthill:127-134, guarded by `splitFirst` — the file notes `head` is
-  "NOT yet wired"), the `Field` identities (field.anthill:25-27, guarded by `neq`), and `nth`
-  recursion (list.anthill:139, guarded by `gt`).
+- **Explicit `:- guard`, mostly value guards** — the population WI-20260820-8RJK8 measured and, for
+  the reducing ones, woke: `headOption` / `head` / `tail` / `isEmpty` on a stream (stream.anthill,
+  guarded by `splitFirst`), the `Field` identities and `euclid_div` (guarded by `neq`), `interleave`
+  (logical_stream.anthill), `nth`'s two out-of-bounds cases (indexed_seq.anthill, guarded by `lt` /
+  `gte`) and `Map.get` past a different key (guarded by `neq`). Fifteen, every one **untagged** — so
+  each was dead twice over, and closing the firing gap alone would have changed nothing for any of
+  them. The `nth` bounds and the `Map.get` law are now `[simp]`; the stream laws wait on a guard
+  (`splitFirst(?s) = none` over an abstract carrier) that needs WI-567's spec-op discharge, and the
+  `Field` / `euclid_div` / `interleave` laws stay untagged because they do not orient.
 
 ### A type guard selects a dictionary (runtime monomorphization)
 

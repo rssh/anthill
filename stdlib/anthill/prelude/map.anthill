@@ -110,14 +110,17 @@ sort anthill.prelude.Map
   -- runnable `size` body gets the O(1) override. Closing the body-less gap is WI-444.
   operation size(m: Map) -> Int64
 
-  -- Laws (algebraic specification). The genuinely-reducing (terminating,
-  -- body-less) laws are tagged [simp] so the type-directed rewriter fires them
-  -- once the redex's carrier is known to provide Map (WI-596; the sort-level
-  -- `requires Eq[T = K]` rides on that provides fact). The `get(put(m,k2,v),k)`
-  -- law is left UNTAGGED: it carries an explicit `:- neq(k, k2)` guard, so it is
-  -- a conditional rewrite (a non-empty body) the resolver's `is_equation` gate
-  -- does not yet index — that "explicit :- guard" firing path is a separate
-  -- sibling concern, not WI-596.
+  -- Laws (algebraic specification). The genuinely-reducing laws are tagged [simp] so
+  -- the type-directed rewriter fires them once the redex's carrier is known to provide
+  -- Map (WI-596; the sort-level `requires Eq[T = K]` rides on that provides fact).
+  --
+  -- WI-20260820-8RJK8: the `get(put(m,k2,v),k)` law is tagged TOO, and its `:- neq(k, k2)`
+  -- guard is now what it always read as — a CONDITIONAL rewrite, the guard proved at the
+  -- redex after the left-hand side matches. It was left untagged before because every
+  -- firing site demanded an empty body, which made it dead beside the `<=>` siblings it is
+  -- written under. It reduces (`get(put(m, …), k)` → `get(m, k)` strips one `put`), so
+  -- orienting it terminates. Its firing still needs a carrier that provides Map, exactly
+  -- as its siblings do.
   -- NOTE: a bare-identifier RHS immediately before `[simp]` (`<=> none [simp]`)
   -- parses as an instantiation `none[simp]`, not as a rule meta-block; writing
   -- the nullary constructor as `none()` / `empty()` makes `[simp]` attach as the
@@ -126,7 +129,7 @@ sort anthill.prelude.Map
   rule get(empty, ?) <=> none() [simp]
   rule get(put(?m, ?k, ?v), ?k) <=> some(?v) [simp]
   rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
-    :- neq(?k, ?k2)
+    :- neq(?k, ?k2)   [simp]
 
   rule contains(?m, ?k) <=> neq(get(?m, ?k), none) [simp]
 

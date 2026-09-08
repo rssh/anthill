@@ -102,6 +102,9 @@ sort anthill.prelude.EuclideanDomain
 
   -- The division identity, over the pair that satisfies it. Guarded, so it keeps `=`
   -- (a bodyless equational head takes `<=>`; a guarded one does not — spec §5.3).
+  -- UNTAGGED on purpose (WI-20260820-8RJK8): a guarded equation fires when tagged, and
+  -- this one does not reduce — its left-hand side is the larger term. It is a law for
+  -- the verifier, like the `Field` identities.
   rule euclid_div: add(mul(?b, div(?a, ?b)), rem(?a, ?b)) = ?a :- neq(?b, 0)
 
   -- `mod`'s precondition, in the shape this library writes an integrity guard:

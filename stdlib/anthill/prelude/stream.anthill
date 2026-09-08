@@ -128,6 +128,14 @@ sort anthill.prelude.Stream
   -- Laws (derived from splitFirst). WI-818: laws are SPECIFICATION, not
   -- backing — the eval-side semantics (including the empty-case raises) live
   -- in the default bodies above; only a body or a builtin backs an operation.
+  --
+  -- UNTAGGED, and waiting on a guard rather than on a decision (WI-20260820-8RJK8 made a
+  -- `[simp]` guarded equation fire, and these six are the part of its population it did
+  -- not wake). Every guard here is `splitFirst(?s) = …` — a SPEC OP over the carrier, so
+  -- discharging it means dispatching through the carrier's dictionary, which is WI-567's
+  -- wall. Over an ABSTRACT stream the guard is under-determined and must SUSPEND (WI-067),
+  -- which is what the firing engine does; tagging them today would add a guard that always
+  -- declines. Tag them with WI-567.
   rule headOption(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
   rule headOption(?s) = none :- splitFirst(?s) = none
   -- WI-567: `head`'s happy path. The empty case has no law — at the TYPE level

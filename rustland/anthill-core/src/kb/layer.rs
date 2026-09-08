@@ -432,6 +432,13 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // roll back — the rule the memos above obey ("a memo is scoped exactly when the
         // thing it caches is") does not reach it, because it caches nothing.
         witness_admissibility_in_flight: _,
+        // WI-20260820-8RJK8 — NEITHER MONOTONE NOR SCOPED, for the same reason as its
+        // neighbour above and stated in the same place: it counts the conditional-rewrite
+        // guards currently ON THE STACK, and every increment is paired with a decrement on
+        // the way out. Outside a `simp_rewrite::guard_holds` call it is 0, so a layer has
+        // nothing of it to roll back. Bound to `_` here and deliberately ABSENT from
+        // `kb_scoped_fields!`.
+        simp_guard_depth: _,
     } = kb;
 }
 

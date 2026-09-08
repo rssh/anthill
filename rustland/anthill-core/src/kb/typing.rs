@@ -11288,7 +11288,29 @@ fn try_fire_dot_rule(
             continue;
         };
         if let Some(subst) = match_dot_rule_lhs(kb, lhs, member, receiver, pos_args, named_args) {
-            return super::simp_rewrite::instantiate_rhs(kb, rid, rhs, &fresh, &subst, from)
+            // WI-20260820-8RJK8 — THE THIRD SELECTION SITE, and it needs the guard for
+            // the reason it needed `fires_as_dot_rule`: that predicate is
+            // `is_simp_equation`, which 8RJK8 widened from "bodyless equation" to
+            // "equational head", so a `[simp]`-tagged GUARDED dot rule reaches this loop
+            // now where it could not before. Selecting it and skipping its precondition
+            // would fire a conditional rewrite unconditionally — silently, since a
+            // wrongly-fired rewrite leaves no diagnostic. Found by `/code-review`; the
+            // spec's "both firing sites answer alike" was written from a census of two.
+            //
+            // NOTHING IN THE CORPUS DRIVES THIS, and that is said here rather than left
+            // to a green suite: no guarded dot rule is written anywhere today, so
+            // removing this call turns no test red. It is here so that the first author
+            // who writes one gets the guard rather than a coincidence.
+            let extended;
+            let build = match super::simp_rewrite::guard_verdict(kb, rid, rhs, &fresh, &subst) {
+                super::simp_rewrite::GuardVerdict::NotHeld => continue,
+                super::simp_rewrite::GuardVerdict::HoldsUnchanged => &subst,
+                super::simp_rewrite::GuardVerdict::HoldsWith(s) => {
+                    extended = s;
+                    &extended
+                }
+            };
+            return super::simp_rewrite::instantiate_rhs(kb, rid, rhs, &fresh, build, from)
                 .map(Some);
         }
     }
