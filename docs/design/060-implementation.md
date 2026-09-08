@@ -279,7 +279,12 @@ spec's type arguments at the guard tier (`record_find_dictionary_grounding`'s ow
 "the guard tier strips the spec's type-args at convert time, so it cannot attribute WHICH
 type-parameter each `requires` names", which is why two `requires` on one spec base are
 refused). So the parameter-attribution the op supplies is not recoverable from the
-surface either, and supplying it is Tier B (WI-613) rather than a detail of this ticket.
+surface either.
+
+That note calls the repair "Tier B (WI-613)", and the CITATION IS STALE: WI-613 is
+Delivered and the strip and its refusal are both still in place — so retaining the
+bracket has no live owner. Whoever takes the anchor should re-read that comment rather
+than trust its ticket number.
 
 **The shape of the fix, for whoever takes it.** The grounding is STATIC: the bound is a
 `TermId` at load, so `sort_provides(bound_sort, spec_sort)` is decidable at typing —
