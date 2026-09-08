@@ -47,3 +47,24 @@ ACCEPTANCE: with the live path configured, `LiveLlm.complete` performs a real re
 
 RELATED. WI-20260830-THZ8R part D records the same shape of gap in `render_task`, which accepts `tools` and `feedback` and drops them. Both are host stand-ins that a signature promises more than.
 
+## Changes
+
+### 2026-09-08T14:15:16Z — feedback — user
+
+A THIRD SITE, AND IT IS THE ONE THIS TICKET'S ACCEPTANCE WOULD MISS: `guardians_generate` never calls the model at all. Measured (`guardians_test.rs:398`):
+
+    kb.register_host_fn("guardians_generate", 3, |interp, _args| {
+        let reply = FAKE_REPLY.with(|r| r.borrow().clone());
+        entity0(interp.kb(), "guardians.Source.source", vec![Value::Str(reply)])
+    })
+
+`|interp, _args|` — it ignores EVERY argument, including the `llm: Llm` its anthill signature takes (`Harness.generate(self: C, llm: Llm, p: Prompt[Trusted]) -> Source`), and reads the same thread-local `complete` does. So generation does not route through `Llm.complete`, and the fake/live axis it should inherit from its `llm` parameter does not flow through it.
+
+WHY IT BELONGS HERE RATHER THAN BESIDE IT. The two defects are one shape — a host function standing in for the carrier — but this one defeats the ticket's acceptance as written. "`LiveLlm.complete` performs a real request and its reply reaches `summarize`" can be true with generation still never touching a model: `summarize` is the TRIAGE path, and `generate` is the GENERATION path, the one that turns a `Prompt[Trusted]` into a candidate program. Wire a real `complete` and the second flow stays a thread-local.
+
+IT ALSO COSTS THE ROW CLAIM THIS TICKET IS ABOUT. `generate` is declared `effects {llm.E, Error}` — row-polymorphic in the model it was HANDED, which `harness.anthill` argues at length is what keeps `External` a fact about `LiveLlm` rather than about being an `Llm`. A body that never calls the `llm` makes `llm.E` a claim about nothing at exactly the operation written to demonstrate it, which is this ticket's own "one stub behind both makes the row a claim about nothing", one operation over.
+
+SUGGESTED ADDITION TO ACCEPTANCE: `generate` reaches its `Source` THROUGH `Llm.complete` on the carrier it was handed — so that driving it with `FakeLlm` still answers from the fixture while driving it with a configured `LiveLlm` performs the request. The control is that swapping the carrier changes the reply with no change to `generate` or to any agent source, which is the article claim this ticket already sets out to make true of the host side.
+
+FOUND WHILE DECIDING WI-20260908-K5HVE (the pipeline's top-level interface). K5HVE notes it only because its restructure moves this same code; the fix is this ticket's.
+
