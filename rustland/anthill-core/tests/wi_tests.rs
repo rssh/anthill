@@ -600,6 +600,9 @@ mod wi_1wbzt_syntax_category_test;
 #[path = "include/wi_n2865_provision_edge_scope_test.rs"]
 mod wi_n2865_provision_edge_scope_test;
 
+#[path = "include/wi_6bx85_requires_opens_the_spec_test.rs"]
+mod wi_6bx85_requires_opens_the_spec_test;
+
 #[path = "include/wi466_swapped_nominal_subtype_test.rs"]
 mod wi466_swapped_nominal_subtype_test;
 

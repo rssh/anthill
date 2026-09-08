@@ -43,6 +43,10 @@
 //!     `the_stop_survives_a_requires_hop` and
 //!     `the_refusal_is_located_and_names_the_written_path`. Each fixture loads CLEAN,
 //!     which is the defect: the name binds, and using it then works.
+//!     RE-MEASURED after WI-20260906-6BX85: THREE, not four —
+//!     `the_stop_survives_a_requires_hop` now passes under this back-out, because the
+//!     `requires` edge stops the enclosing chain on its own and closes that route a
+//!     second way. Its own note carries the amendment.
 //!   * FIVE pass EITHER WAY by design — `an_offered_member_still_imports_and_runs`,
 //!     `a_required_member_still_imports`, `an_exposed_constructor_still_imports`,
 //!     `a_declared_member_still_imports` and
@@ -51,15 +55,23 @@
 //!     not the enclosing one.
 //!
 //! A SECOND back-out, measured, separates this fix from a weaker one: make the stop
-//! apply at the ENTRY scope and resume below it. THREE rows fall —
+//! apply at the ENTRY scope and resume below it. THREE rows fell —
 //! `the_stop_survives_a_requires_hop`,
 //! `a_member_import_does_not_rebind_the_sort_itself` and
 //! `the_refusal_is_located_and_names_the_written_path` — because each reaches its target
 //! one hop past the entry (`Host requires nb88h.far.Constrained` for the first,
 //! `Numeric requires PartialOrd` for the other two, both landing in a namespace holding
-//! the name). `a_member_import_does_not_reach_a_sibling_of_the_sort` PASSES under that
+//! the name). `a_member_import_does_not_reach_a_sibling_of_the_sort` PASSED under that
 //! weaker rule, which is why it is not the row to read for this distinction: `Host`'s own
 //! sibling sits in the namespace the entry stop already closes.
+//!
+//! THAT SECOND BACK-OUT WAS NOT RE-RUN AFTER WI-20260906-6BX85, and this line says so
+//! rather than restating its count as if it were. Its three rows all reach their target
+//! through a `requires` hop, and that edge now stops the enclosing chain by itself — so
+//! at least `the_stop_survives_a_requires_hop` is expected to survive the weaker rule
+//! now (the FIRST back-out was re-run and that row does survive it). Whether the other
+//! two still fall is unmeasured; implementing the entry-scope-only variant is what it
+//! would take, and nobody has.
 
 use crate::common::{interp_for, try_load_kb_with, try_load_kb_with_files};
 
@@ -193,17 +205,33 @@ fn a_member_import_does_not_rebind_the_sort_itself() {
 /// `Host requires nb88h.far.Constrained`, and `Remote` is a sibling of that CONSTRAINT,
 /// in a namespace `Host` has no enclosing link to. So the only route from `Host` to
 /// `Remote` leaves through the `requires` target's own container, one hop further on
-/// than the entry scope. A `requires` edge is not itself a stopper
-/// (`parent_edge_stops_enclosing` admits only `File` / `Invocation` / `Provision`), so
-/// the refusal here comes from the mode being INHERITED down the walk rather than
-/// tested at the edge.
+/// than the entry scope.
 ///
-/// MEASURED, both back-outs: swapping `resolve_below_import` for `resolve_in_scope`
-/// fails this row, and so does a variant that stops the enclosing link at the entry
-/// scope and resumes below it — under which `Remote` binds again while
-/// `a_member_import_does_not_reach_a_sibling_of_the_sort` still passes. That asymmetry
-/// is the whole content of this row: `Remote` is the only target in this file that no
-/// enclosing link of `Host`'s own can reach.
+/// THIS ROW NO LONGER DRIVES ANYTHING, AND THAT IS THE HONEST STATE OF IT.
+/// WI-20260906-6BX85 made the `requires` edge stop the enclosing chain on its own
+/// (`parent_edge_stops_enclosing` admits `Requirement`), so the route from `Host` to
+/// `Remote` is now closed at the edge as well as by the inherited path mode this row
+/// was written to isolate.
+///
+/// RE-MEASURED, not reasoned: with 6BX85 in place, swapping `resolve_below_import` for
+/// `resolve_in_scope` fails THREE of this file's rows —
+/// [`a_member_import_does_not_reach_a_sibling_of_the_sort`],
+/// [`a_member_import_does_not_rebind_the_sort_itself`] and
+/// [`the_refusal_is_located_and_names_the_written_path`] — and this row PASSES. Before
+/// 6BX85 it was four, this one included; the file header's count is stated against that
+/// tree and this note is the amendment.
+///
+/// It is kept rather than deleted because the FIXTURE is still the only one here whose
+/// target no enclosing link of `Host`'s own can reach, and because a future narrowing of
+/// the `requires` stop would put it back in play. What no row covers today is the
+/// inherited path mode BY ITSELF; saying so rather than letting the sentence below read
+/// as still-driven.
+///
+/// MEASURED ON THE TREE THIS WAS WRITTEN FOR (both back-outs, before 6BX85): swapping
+/// `resolve_below_import` for `resolve_in_scope` failed this row, and so did a variant
+/// that stops the enclosing link at the entry scope and resumes below it — under which
+/// `Remote` bound again while `a_member_import_does_not_reach_a_sibling_of_the_sort`
+/// still passed.
 #[test]
 fn the_stop_survives_a_requires_hop() {
     let errs = unresolved_imports("import nb88h.lib.Host.{Remote}");

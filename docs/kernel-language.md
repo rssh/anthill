@@ -4419,11 +4419,12 @@ the latter to the unique symbol. Each scope holds:
 - **exposed** — the scope's entity-variant names, filtering its *variant
   exposure* link alone (see below);
 - **parents** — included scopes, each carrying the CLAUSE THAT WROTE IT:
-  *enclosing* (the lexical sort/namespace body it sits in), a `requires` /
-  `provides`, a wildcard `import`, or a *variant exposure*. The three
+  *enclosing* (the lexical sort/namespace body it sits in), a `requires`, a
+  `provides`, a wildcard `import`, or a *variant exposure*. The four
   non-enclosing kinds resolve differently, so the kind is recorded rather than
   inferred from the shape (WI-M460D); a link two clauses justify carries both,
-  and the more permissive one governs;
+  and the more permissive one governs — a restriction such as the enclosing stop
+  below therefore holds only where *every* writer of the link imposes it;
 - **type parameters** — `sort T = ?` names, which do not leak to parents.
 
 **The top-level scope.** A file's top-level declarations land in one synthetic
@@ -4873,16 +4874,35 @@ file's text.
   importable by its short name.
 - `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
 
-**An import opens what it names, and not the module around it** (WI-1089). The
-parent walk of step 3 above does not leave an import-contributed parent through
-that scope's *enclosing* links, and stays stopped for the rest of the path. So
-`import a.b.*` brings `a.b`'s names and not `a`'s, and `import a.b.C.*` brings
-`C`'s and not `a.b`'s. The other links out of an imported scope — a `requires`,
-a variant exposure, the scope's own imports — are contents of the thing imported
-and stay reachable. Without this stop every import also delivered the whole
-declaration chain above its target, which is what made the plain form *look*
-like "include `a.b`": the reach was an artifact of the walk, and it disappeared
-whenever the imported name had no scope of its own (WI-993).
+**A clause opens what it names, and not the module around it** (WI-1089,
+WI-20260825-N2865, WI-20260906-6BX85). The parent walk of step 3 above does not
+leave such a parent through that scope's *enclosing* links, and stays stopped
+for the rest of the path. **Three** clauses name a target and therefore stop it:
+a wildcard `import`, a spec's `provides` conversion, and a `requires`. So
+`import a.b.*` brings `a.b`'s names and not `a`'s, `import a.b.C.*` brings `C`'s
+and not `a.b`'s, and `requires a.b.C` likewise brings `C`'s and not `a.b`'s.
+
+The other links out of a named scope — *its* own `requires` and `provides`, a
+variant exposure, its own imports — are contents of the thing named and stay
+reachable: `requires Mid` reaches whatever `Mid requires Deep` declares, which is
+what makes `import anthill.prelude.Ord.{gte}` resolve through `Ord provides
+WeakOrd` and `WeakOrd requires PartialOrd`. The stop is on the **enclosing** link
+alone, and the two link kinds that do not take it are that one — it *is* the
+chain — and a *variant exposure*, which runs from a scope to a sort declared in
+it and so leads only back where the walk came from.
+
+Without this stop each such clause also delivered the whole declaration chain
+above its target. For an import that is what made the plain form *look* like
+"include `a.b`": the reach was an artifact of the walk, and it disappeared
+whenever the imported name had no scope of its own (WI-993). For a `requires` it
+was a shadowing hazard as wide as the target's namespace — measured at **78 of
+the 79** one-segment `anthill.prelude` names going `ambiguous symbol` at a
+consumer that declared its own sort of that name beside one `requires
+anthill.prelude.Field[T]`, the 79th being `Field` itself, which the consumer
+imports and so resolves at step 2 before the walk runs. None of the 78 was named
+by the clause. A sibling the author genuinely wants costs one `import
+lib.{Sib}` line, which also states the dependency; qualifying the *use* site
+does not help, the collision being on the unqualified name.
 
 **The selective form's own resolution obeys it** (WI-20260826-NB88H), and until
 that ticket it did not — because it crosses no edge to be stopped at. Its second

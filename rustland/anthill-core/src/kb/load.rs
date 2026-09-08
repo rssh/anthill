@@ -9318,13 +9318,17 @@ impl ScopePass for ImportPass<'_> {
                     // 64,445 name a `Sort` — the refusal costs the corpus nothing.
                     if let ResolveResult::Found(sym) = resolved {
                         match parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
-                            Some(parent_scope) => kb.symbols.add_parent(
-                                scope,
-                                ScopeInclusion {
-                                    parent_scope,
-                                    is_enclosing: false,
-                                },
-                            ),
+                            // WI-20260906-6BX85 — `add_requires_parent`, not
+                            // `add_parent`: the same inclusion, filed under an origin
+                            // that says WHICH clause wrote it, so the resolver can stop
+                            // the ENCLOSING chain below it. `add_parent` stamps
+                            // `ImportOrigin::Declaration`, which is also every enclosing
+                            // link's and the bootstrap's, and a stop keyed on that would
+                            // cut a namespace off from its own parents. See
+                            // `SymbolTable::add_requires_parent`.
+                            Some(parent_scope) => {
+                                kb.symbols.add_requires_parent(scope, parent_scope)
+                            }
                             None => errors.push(LoadError::RequiresNamesNonSort {
                                 written: req_sort_name.clone(),
                                 resolved: kb.qualified_name_of(sym).to_string(),

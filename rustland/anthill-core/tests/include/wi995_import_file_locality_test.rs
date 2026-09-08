@@ -97,13 +97,30 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
     // WI-1089 narrowed which half that is on a CORPUS. An import parent edge is now
     // written by the wildcard form alone — a plain `import a.b.C` binds the name and
     // links nothing — and the corpus writes no wildcard imports, so `parent_edges` is
-    // legitimately 0 here. The alias half is what these groups exercise, and the
-    // parent-edge half keeps its own control in `the_instrument_is_not_vacuous`
-    // below, which writes `import lib.*` precisely so the second predicate is driven.
+    // legitimately 0 here. The alias half is what these groups exercise.
     assert!(
         alias_entries > 0,
         "{label}: the alias origin table is empty — the instrument suppressed nothing, \
          so its verdict measures nothing"
+    );
+    // …AND THE ZERO IS NOW CHECKED, not merely stated (WI-20260906-6BX85).
+    // `SymbolTable::import_record_counts` classifies an edge by a NEGATED `matches!`
+    // over `ImportOrigin`, which is the one reader the compiler cannot fail when a
+    // variant is added — so a new declaration-kind origin silently lands in this
+    // IMPORT-edge count. It has happened twice: `Provision` (WI-20260825-N2865, caught
+    // by `/code-review`, `parent_edges` 0 -> 11) and `Requirement`
+    // (WI-20260906-6BX85, caught by censusing the readers, 0 -> 24 on five of these six
+    // groups and 0 -> 28 on the sixth). Both times the suite stayed GREEN, because the
+    // only assertion was the alias one above.
+    //
+    // IF THIS GOES RED: either the corpus genuinely gained a wildcard `import` — then
+    // update the expectation and say which file — or a new `ImportOrigin` variant fell
+    // through that negation and belongs in its exclusion list.
+    assert_eq!(
+        parent_edges, 0,
+        "{label}: no corpus file writes a wildcard import, so `import_record_counts` \
+         must count no import parent edge — see this row's note for the two ways this \
+         number has been wrong"
     );
     if !load_errors.is_empty() {
         out.push_str(&format!(
@@ -153,6 +170,12 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
                 // seeing it in the alias table would mean a leak between two tables.
                 // Loud rather than plausible, for the reason the line above states.
                 ImportOrigin::Provision => format!("BUG:provision-origin-in-alias→{target}"),
+                // WI-20260906-6BX85 — the `requires` CLAUSE origin, third of the same
+                // family and treated the same way: `add_requires_parent` is its only
+                // writer and it writes a PARENT EDGE, never an alias.
+                ImportOrigin::Requirement => {
+                    format!("BUG:requirement-origin-in-alias→{target}")
+                }
             })
             .collect();
         out.push_str(&format!("     `{name}` in `{scope}`: {}\n", w.join(", ")));

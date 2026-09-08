@@ -30,12 +30,27 @@ enum ImportOrigin:
   /** Written in one file's text, and spent there. */
   case File(id: FileId)
   /** Contributed by a DECLARATION at the address rather than by an import — an enclosing
-    * body, a `requires`, a variant exposure, the prelude parenting. Visible under every
+    * body, a `provides` clause, the prelude parenting. Visible under every
     * reading of the rule, and recorded rather than merely omitted because a link can have
-    * BOTH justifications: with only import writes recorded, an edge that a `requires`
+    * BOTH justifications: with only import writes recorded, an edge that a declaration
     * also justifies would be suppressed on the strength of a foreign file's import alone,
     * refusing a name the rule never meant to touch. */
   case Declaration
+  /** WI-20260906-6BX85 — a sort's `requires` CLAUSE, and nothing else. A declaration
+    * property like [[Declaration]] and visible exactly as widely; it is its own case so
+    * the ENCLOSING chain can be stopped below it, `requires lib.Spec` opening `Spec` and
+    * not the `lib` around it. `Declaration` cannot carry that: it also stamps every
+    * enclosing link and the prelude parenting, and stopping the chain below THOSE cuts a
+    * namespace off from its own parents.
+    *
+    * MEASURED in rustland, where the leak was counted: a consumer declaring its own sort
+    * beside one `requires anthill.prelude.Field[T]` went `ambiguous symbol` for 78 of the
+    * 79 one-segment `anthill.prelude` names, none of which the clause named.
+    *
+    * Rustland's twin is `ImportOrigin::Requirement`. Its sibling `ImportOrigin::Provision`
+    * has NO case here: WI-20260825-N2865 is unported, so scaland's `provides` edge still
+    * re-enters the target's enclosing chain. State the gap, don't invent the case. */
+  case Requirement
   /** WI-M460D — §8.6's VARIANT-EXPOSURE link, and nothing else: the edge a
     * variant-bearing `sort` gets from its ENCLOSING scope so its constructors can be
     * written bare there (proposal 044 job 2). A declaration property like
@@ -345,6 +360,19 @@ class SymbolTable:
   def addParent(scopeId: ScopeId, parent: ScopeId, isEnclosing: Boolean): Unit =
     scopeEntry(scopeId).parents += ScopeInclusion(parent, isEnclosing, ImportOrigin.Declaration)
 
+  /** WI-20260906-6BX85 — [[addParent]] for a sort's `requires` CLAUSE. One call site
+    * ([[Loader.linkSpecScope]]'s `requires` arm), for the reason [[addImportParent]] and
+    * [[addExposureParent]] each have one: the KIND of the link is what the walk has to
+    * ask about, and `isEnclosing` alone cannot say it.
+    *
+    * IT NARROWS NOTHING THE CLAUSE REACHES. A `requires` still opens its target WHOLE —
+    * every member, and whatever the target's own `requires` / `provides` / imports reach
+    * beneath it. What the origin buys is the stop on the hop OUT of the target into the
+    * namespace that declares it, which the clause never named. See
+    * [[ImportOrigin.Requirement]]. */
+  def addRequiresParent(scopeId: ScopeId, parent: ScopeId): Unit =
+    scopeEntry(scopeId).parents += ScopeInclusion(parent, isEnclosing = false, ImportOrigin.Requirement)
+
   /** WI-1074 — [[addParent]] for a link an IMPORT contributed (a wildcard import splices
     * its target in as a resolution parent), stamping the writing file on the link. */
   def addImportParent(scopeId: ScopeId, parent: ScopeId, isEnclosing: Boolean, origin: ImportOrigin): Unit =
@@ -397,16 +425,21 @@ class SymbolTable:
     val visited = HashSet.empty[ScopeId]
     resolveRecursive(name, scopeId, visited, enclosingStopped = true)
 
-  /** WI-1089 — `enclosingStopped` is set once the walk has crossed a link an IMPORT
-    * contributed, and stays set for the rest of that path: an import opens what it
-    * NAMES, and not the module around it. `import a.b.*` splices `a.b` in, and `a.b`
-    * sits inside `a` — so a walk that re-enters the enclosing chain answers with every
-    * name of `a`, and of whatever encloses THAT, from a line that named one namespace.
-    * §8.6 has never said an import means that.
+  /** WI-1089 — `enclosingStopped` is set once the walk has crossed a link written by a
+    * clause that NAMES ITS TARGET, and stays set for the rest of that path: such a
+    * clause opens what it names, and not the module around it. `import a.b.*` splices
+    * `a.b` in, and `a.b` sits inside `a` — so a walk that re-enters the enclosing chain
+    * answers with every name of `a`, and of whatever encloses THAT, from a line that
+    * named one namespace. §8.6 has never said an import means that.
     *
-    * It applies to the ENCLOSING link alone. A `requires`, a variant exposure and the
-    * imported scope's own imports are contents of the thing imported, and stay
-    * reachable. Rustland's twin is `EnclosingLinks` in `intern.rs`. */
+    * TWO CLAUSES NAME A TARGET HERE: a wildcard `import` (WI-1089) and a `requires`
+    * (WI-20260906-6BX85). Rustland has a third, the `provides` conversion
+    * (WI-20260825-N2865), which scaland has not ported — see
+    * [[ImportOrigin.Requirement]].
+    *
+    * It applies to the ENCLOSING link alone. The target's OWN `requires`, its variant
+    * exposure and its own imports are contents of the thing named, and stay reachable.
+    * Rustland's twin is `EnclosingLinks` in `intern.rs`. */
   private def resolveRecursive(
     name: String, scopeId: ScopeId, visited: HashSet[ScopeId], enclosingStopped: Boolean = false
   ): ResolveResult =
@@ -458,20 +491,34 @@ class SymbolTable:
         // `import X.*` write separate inclusions here, an enclosing body and an import
         // of that same namespace likewise), and `visited` admits the parent once — so
         // deciding the mode from whichever inclusion happened to be traversed first
-        // made the answer depend on the ORDER the clauses were written in. An import
-        // stops the enclosing chain only where it is the edge's SOLE justification:
-        // a link a declaration also justifies keeps that declaration's reach, and
-        // adding a strictly-additive `import` line must not take a name away.
+        // made the answer depend on the ORDER the clauses were written in. The chain is
+        // stopped only where EVERY writer of the edge stops it: a link a non-stopping
+        // declaration also justifies keeps that declaration's reach, and adding a
+        // strictly-additive `import` line must not take a name away.
+        //
+        // TWO STOPPING WRITERS since WI-20260906-6BX85 — a wildcard `import` and a
+        // `requires`, each of which NAMES its target and gets what that name holds, not
+        // the module around it. The two that keep the chain are the ENCLOSING link (it
+        // IS the chain) and a variant EXPOSURE (it runs from a scope to a sort declared
+        // in it, so the hop back out lands where the walk came from).
+        //
+        // THE `forall` HAS ONE WITNESS, and only one: `sort Outer { sort Inner {
+        // requires Outer } }`, whose `(Inner, Outer)` edge is the enclosing link AND a
+        // `requires`. `ImportOpensWhatItNamesTest`'s "a requires on the enclosing sort
+        // does not stop the chain" is that row. It was written because the pair that
+        // used to drive this — `requires Spec` beside `import Spec.*` — stopped
+        // discriminating the moment `requires` joined the stopping set: MEASURED, the
+        // flip to `exists` moved zero of 540 rows before it existed.
         val perParent = eligibleParents.groupBy(_.parent).toIndexedSeq.sortBy(kv =>
           TermSymbol.raw(symbolOf(kv._1))
         )
 
         val matches = ArrayBuffer.empty[TermSymbol]
         for (parent, inclusions) <- perParent do
-          val importOnly = inclusions.forall(i => i.origin match
-            case ImportOrigin.File(_) => true
-            case _                    => false)
-          val stoppedBelow = enclosingStopped || importOnly
+          val namesItsTarget = inclusions.forall(i => i.origin match
+            case ImportOrigin.File(_) | ImportOrigin.Requirement => true
+            case _                                               => false)
+          val stoppedBelow = enclosingStopped || namesItsTarget
           resolveRecursive(name, parent, visited, stoppedBelow) match
             case ResolveResult.Found(sym) => matches += sym
             case ResolveResult.Ambiguous(candidates) => matches ++= candidates
@@ -492,7 +539,8 @@ class SymbolTable:
     * no one — "nothing is asking" must not mean "everything is visible", or every
     * resolution outside the per-file passes would quietly get the pre-rule behaviour. */
   private def originVisible(origin: ImportOrigin): Boolean = origin match
-    case ImportOrigin.Builtin | ImportOrigin.Declaration | ImportOrigin.Exposure => true
+    case ImportOrigin.Builtin | ImportOrigin.Declaration | ImportOrigin.Exposure |
+        ImportOrigin.Requirement => true
     case ImportOrigin.File(f) => askingFile.contains(f)
 
   /** Get the display name of a symbol. */

@@ -6,7 +6,7 @@
 //! `load::wire_provides_scope_parent` and the `requires` linker both wrote a plain
 //! `ScopeInclusion { is_enclosing: false }`, and `resolve_in_scope_recursive_with_mode`
 //! RE-ENTERS a reached scope's enclosing parents afterwards — only an IMPORT edge stopped
-//! that (`EnclosingLinks::StoppedByImport`, WI-1089: "below an import edge, the ENCLOSING
+//! that (`EnclosingLinks::Stopped`, WI-1089: "below an import edge, the ENCLOSING
 //! chain is not re-entered — `import a.b.C` opens `C`, not the `a.b` around it").
 //!
 //! So a `provides` ACROSS NAMESPACES opened a path all the way to `<global>` at every
@@ -17,32 +17,40 @@
 //! references inside `algebra.anthill` into `ambiguous symbol 'Ring'`, and that file
 //! carried a sibling-import workaround until this landed.
 //!
-//! ## Why `requires` is NOT stopped, which is the whole shape of the fix
+//! ## Why `requires` was NOT stopped here — and why it is now
 //!
-//! Stopping the chain below EVERY non-enclosing edge is the one-line version, and it is
-//! wrong: measured, it fails exactly one row out of 5,724 —
+//! Stopping the chain below EVERY non-enclosing edge was the one-line version, and it
+//! failed exactly one row out of 5,724:
 //! `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`,
-//! which pins that `requires lib.Spec` must still reach `lib`'s sibling `Sib`. A
-//! `requires` clause is written BY the author naming the target; a conversion edge is
-//! crossed TRANSITIVELY, by a consumer that never wrote the far sort's name. So the stop
-//! is keyed on a new `ImportOrigin::Provision`, and `parent_edge_is_provision_only` keeps
-//! an edge that a `requires` ALSO justifies un-stopped — `parent_edge_is_import_only`'s
-//! exact argument, for the same reason.
+//! which pinned that `requires lib.Spec` reaches `lib`'s sibling `Sib`. The argument
+//! recorded for keeping it was that a `requires` is written BY the author naming the
+//! target while a conversion is crossed TRANSITIVELY — so this fix minted
+//! `ImportOrigin::Provision` and stopped that edge alone.
+//!
+//! WI-20260906-6BX85 REVERSED THE `requires` HALF, on this file's own predicate read
+//! twice: `import a.b.C.*` is written by the author naming the target too, and WI-1089
+//! stops it. What the author named is `Spec`; the enclosing chain delivered `Spec`'s
+//! SIBLINGS — 78 of the 79 one-segment `anthill.prelude` names, at every consumer of a
+//! prelude spec. `requires` now files `ImportOrigin::Requirement` and joins the admitted
+//! set, so the two rows below that recorded the residual are inverted rather than
+//! deleted, and each says which back-out re-reds it.
 //!
 //! ## The back-out these rows are stated against
 //!
 //! Point `wire_provides_scope_parent` back at `add_parent` (or drop `Provision` from
 //! `parent_edge_stops_enclosing`'s admitted set). MEASURED by doing it: exactly ONE row
-//! fails — `a_cross_namespace_provides_does_not_leak_the_global_scope`. The other three
-//! pass either way BY DESIGN and each says so at its own site; this summary claimed
+//! failed — `a_cross_namespace_provides_does_not_leak_the_global_scope`. The other three
+//! passed either way BY DESIGN and each says so at its own site; this summary claimed
 //! "both rows below fail" until `/code-review` drove the back-out and counted.
 //!
-//! Their jobs are not the same, which is why three of them are here for a one-row
-//! back-out: the same-namespace control says the fix addressed the right AXIS,
-//! `a_requires_still_reaches_the_targets_siblings` is WI-1089's rule restated so a later
-//! "simplification" to `!edge_is_enclosing` fails HERE rather than there, and
-//! `a_provides_beside_an_import_still_stops` is the two-writers shape whose first cut
-//! `/code-review` found broken.
+//! The `Requirement` half is a SECOND back-out, and it moves a different set. MEASURED
+//! over `wi_tests` and `algebra_tests`: FIVE rows, of which TWO are here —
+//! `a_requires_beside_a_provides_no_longer_leaks` and
+//! `a_requires_does_not_reach_the_targets_siblings`. The other three are
+//! `wi_6bx85_requires_opens_the_spec_test`'s two subject rows and
+//! `algebra_spec_test::requiring_ring_across_namespaces_costs_a_consumer_nothing`.
+//! The two `provides` rows above pass under it, which is what says the two stops are
+//! independent rather than one restated.
 
 use crate::common::try_load_kb_with_files;
 
@@ -178,23 +186,24 @@ end
     );
 }
 
-/// THE RESIDUAL, PINNED RATHER THAN CLAIMED AWAY: `requires X` beside `provides X` leaves
-/// the leak live, and that is the price of not taking WI-1089's rule away.
+/// THE RESIDUAL, NOW CLOSED — and this row is the inversion it was written to become.
 ///
-/// Both clauses write the same `(scope, parent)` inclusion, `requires` files
-/// `Declaration`, and `parent_edge_stops_enclosing` admits no `Declaration` — so the
-/// enclosing chain is re-entered and the global rival is back in reach. Driven: adding
-/// one `requires Additive[T]` line to the repro above reproduces both ambiguity errors
-/// verbatim.
+/// It shipped asserting the LEAK: `requires X` beside `provides X` is one `(scope,
+/// parent)` inclusion with two writers, `requires` filed `ImportOrigin::Declaration`,
+/// and `parent_edge_stops_enclosing` admitted no `Declaration` — so the `all` quantifier
+/// found a non-stopping writer, the enclosing chain was re-entered, and the global rival
+/// came back. Its own note said the row "INVERTS the day that lands".
 ///
-/// NOT A BUG TO FIX HERE. Stopping an edge a `requires` justifies is exactly what fails
-/// `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`.
-/// The real repair is to key the stop per CLAUSE rather than per `(scope, parent)` pair,
-/// which is a change to how inclusions are stored; this row exists so the residual is a
-/// KNOWN shape with a failing witness rather than a surprise, and it INVERTS the day that
-/// lands. Found by `/code-review`.
+/// WI-20260906-6BX85 landed it, though not by the mechanism that note predicted. The
+/// repair is not a per-CLAUSE stop: `requires` simply joined the admitted set as
+/// `ImportOrigin::Requirement`, because a `requires` opens the spec it names and not the
+/// module around it for the same reason a `provides` does. Both writers stop, so the
+/// `all` quantifier is satisfied and the shape loads.
+///
+/// FAILS IF the `requires` stop is backed out — the two `ambiguous symbol 'Base'` errors
+/// return verbatim, which is what this row asserted before.
 #[test]
-fn a_requires_beside_a_provides_still_leaks() {
+fn a_requires_beside_a_provides_no_longer_leaks() {
     let providing = r#"
 namespace probe.alg3
   import anthill.prelude.{Int64, Additive}
@@ -222,25 +231,33 @@ end
         .map(|_| Vec::new())
         .unwrap_or_else(|e| e);
     assert!(
-        errs.iter().any(|e| e.contains("ambiguous symbol 'Base'")),
-        "RECORDING THE RESIDUAL: a `requires` on the same edge keeps the enclosing chain, \
-         so this shape still leaks — if it now loads, the stop went per-CLAUSE and this \
-         row should become the positive test it wants to be; got {errs:?}"
+        errs.is_empty(),
+        "a `requires` beside a `provides` is one edge both of whose writers stop the \
+         enclosing chain, so the global `sort Base` must not be a rival of \
+         `probe.alg3.Base`; got {errs:?}"
     );
 }
 
-/// THE RULE THE STOP MUST NOT TAKE: `requires lib.Spec` still reaches `lib`'s SIBLING.
+/// THE RULE THIS FIX WAS KEPT NARROW FOR, AND WHICH WI-20260906-6BX85 THEN TOOK.
 ///
-/// WI-1089 measured this and `adding_an_import_beside_a_requires_takes_no_name_away` owns
-/// it; the row is restated here because it is the reason this fix is keyed on a new
-/// origin instead of on `is_enclosing` alone. Stopping the chain below every
-/// non-enclosing edge makes `Sib` unresolvable — driven, that one-line version fails
-/// exactly WI-1089's row and nothing else in 5,724.
+/// N2865 narrowed its stop to `provides` because stopping every non-enclosing edge made
+/// `Sib` unresolvable, failing WI-1089's row and nothing else in 5,724. That trade was
+/// re-measured on this ticket's own terms — the reach it preserved was 78 of the 79
+/// one-segment `anthill.prelude` names, shadowable at every consumer of a prelude spec —
+/// and reversed. So the row is REPLACED rather than deleted: same fixture, opposite
+/// verdict, plus the one-line repair.
 ///
-/// Passes either way BY DESIGN. Its job is to fail if someone later "simplifies" the
-/// predicate to `!edge_is_enclosing`.
+/// ITS ORIGINAL JOB — failing if the predicate is "simplified" to `!edge_is_enclosing` —
+/// is now carried by `wi1089_import_binds_one_name_test::an_import_of_the_enclosing_namespace_is_not_a_stop`
+/// alone, and only for the ENCLOSING half. The other origin the predicate still excludes,
+/// `Exposure`, cannot be driven from here: a variant-exposure edge runs from a scope to a
+/// sort DECLARED IN IT, so the enclosing hop back out lands on a scope the walk has
+/// already visited. Stating that rather than claiming a row for it.
+///
+/// FAILS IF the `requires` stop is backed out: `Sib` resolves and the first arm's
+/// expected refusal disappears.
 #[test]
-fn a_requires_still_reaches_the_targets_siblings() {
+fn a_requires_does_not_reach_the_targets_siblings() {
     let src = r#"
 namespace n2865.two.lib
   import anthill.prelude.{Int64}
@@ -263,9 +280,21 @@ end
         .map(|_| Vec::new())
         .unwrap_or_else(|e| e);
     assert!(
-        errs.is_empty(),
-        "`requires` is written BY the author naming the target, so it keeps the target's \
-         enclosing chain — narrowing the stop to `provides` is what preserves this; got \
-         {errs:?}"
+        errs.iter()
+            .any(|e| e.contains("unresolved name 'Sib'")),
+        "`requires n2865.two.lib.Spec` names ONE sort; `Sib` is its sibling and the \
+         clause never named it or the namespace holding both; got {errs:?}"
     );
+
+    // THE REPAIR, in the same fixture: one import, and the sibling is back. Without this
+    // arm the row above says only that a name stopped resolving, not that the author has
+    // a way to ask for it.
+    let repaired = src.replace(
+        "    requires n2865.two.lib.Spec\n",
+        "    requires n2865.two.lib.Spec\n    import n2865.two.lib.{Sib}\n",
+    );
+    let errs = try_load_kb_with_files(&[&repaired])
+        .map(|_| Vec::new())
+        .unwrap_or_else(|e| e);
+    assert!(errs.is_empty(), "the import repair must load; got {errs:?}");
 }

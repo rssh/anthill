@@ -360,7 +360,9 @@ impl SymbolDef {
     }
 }
 
-/// A scope's link to a parent scope — an enclosing body, a `requires`, an import.
+/// A scope's link to a parent scope — an enclosing body, a `requires`, a `provides`,
+/// a wildcard import, or §8.6's variant exposure. WHICH of those wrote it is not here
+/// but on the origin list ([`ImportOrigin`]), because one link can have two writers.
 ///
 /// WI-994: `PartialEq` is what makes [`SymbolTable::add_parent`] idempotent — a
 /// scope's parents are a SET.
@@ -573,10 +575,12 @@ pub enum ImportOrigin {
     /// `anthill query -i <ns>` flags. Local to no file, so visible throughout the run.
     Invocation,
     /// Contributed by a DECLARATION at the address rather than by an import — an
-    /// enclosing body, a `requires`/`provides` clause, the prelude wiring. Visible
+    /// enclosing body, the prelude wiring. NOT a `requires` or a `provides` since
+    /// WI-20260825-N2865 / WI-20260906-6BX85: those carry their own variants, because
+    /// they stop the enclosing chain and an enclosing link must not. Visible
     /// under every reading of the rule, and recorded rather than merely omitted
     /// because a link can have BOTH justifications: with only import writes recorded,
-    /// an edge that a `requires` also justifies would be suppressed on the strength of
+    /// an edge that a declaration also justifies would be suppressed on the strength of
     /// a foreign file's import alone, refusing a name the rule never meant to touch.
     Declaration,
     /// WI-M460D — §8.6's VARIANT-EXPOSURE link, and nothing else: the edge a
@@ -606,13 +610,35 @@ pub enum ImportOrigin {
     /// NEIGHBOURS, and it is crossed TRANSITIVELY, by a consumer that never wrote the
     /// far sort's name.
     ///
-    /// `requires` KEEPS THE ENCLOSING CHAIN and is deliberately NOT filed here: WI-1089
-    /// measured that `requires lib.Spec` must reach `lib`'s sibling `Sib`, and
-    /// `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`
-    /// is the row. That clause is written BY the author naming the target, which is the
-    /// difference. Driven: stopping the chain below EVERY non-enclosing edge fails
-    /// exactly that one row out of 5,724.
+    /// It is filed apart from [`Self::Requirement`] because the two answer a SECOND
+    /// question differently: [`Self::provision_parents`] — what a sort offers under its
+    /// own name (`Numeric.add`) — reads a `provides` edge and must not read a `requires`
+    /// one, a demand being no offer (§8.6). On the enclosing-chain question they now
+    /// agree.
     Provision,
+    /// WI-20260906-6BX85 — a sort's `requires` CLAUSE, and nothing else: the edge
+    /// `sort User { requires lib.Spec }` puts in the chain so `Spec`'s members are
+    /// written bare inside `User`.
+    ///
+    /// A declaration property like [`Self::Declaration`] and visible exactly as widely;
+    /// it is a variant of its own so the enclosing chain can be stopped below it —
+    /// `Declaration` also stamps every ENCLOSING link and the bootstrap's prelude
+    /// wiring, and stopping the chain below those cuts a namespace off from its own
+    /// parents (`wi1089_import_binds_one_name_test::an_import_of_the_enclosing_namespace_is_not_a_stop`
+    /// is that shape).
+    ///
+    /// `requires lib.Spec` USED TO KEEP THE ENCLOSING CHAIN, and the argument recorded
+    /// for it was that the clause is "written BY the author naming the target" while a
+    /// conversion is crossed transitively. That predicate does not separate the two
+    /// cases it was asked to: `import a.b.C.*` is written by the author naming the
+    /// target too, and is stopped. What the author named is `Spec`; `Spec`'s SIBLINGS
+    /// are what the chain delivered. MEASURED on the delivered tree, with a top-level
+    /// rival declared beside one `requires anthill.prelude.Field[T]`: 78 of the 79
+    /// one-segment `anthill.prelude` names went `ambiguous symbol`, the 79th being
+    /// `Field` itself, which the consumer imports and so resolves at §8.6 step 2 before
+    /// the walk runs. The repair for what this takes away is one `import lib.{Sib}`
+    /// line, which also says what the sort depends on.
+    Requirement,
 }
 
 /// WI-995 — how much of the import machinery a resolution may read.
@@ -647,8 +673,8 @@ enum ExposureLinks {
 }
 
 /// WI-1089 — may the walk leave a scope through an ENCLOSING parent (the lexical
-/// sort/namespace body it sits in)? `Followed` until the walk crosses a link an
-/// `import` contributed; below one it is `Stopped`.
+/// sort/namespace body it sits in)? `Followed` until the walk crosses an edge that
+/// NAMES ITS TARGET; below one it is `Stopped`.
 ///
 /// `import a.b.C` puts `C` in scope. `C`'s scope is enclosed by `a.b`, so a walk that
 /// re-enters the enclosing chain answers with every name of `a.b` — and of the
@@ -657,15 +683,22 @@ enum ExposureLinks {
 /// current scope; it does not by itself add a sort's contents"), and the reach
 /// existed because the walk treats every parent alike, not because any rule chose it.
 ///
+/// THREE CLAUSES NAME A TARGET AND SO STOP IT, which is why the variant is not called
+/// `StoppedByImport` any more: a wildcard `import` (WI-1089), a spec's `provides`
+/// conversion (WI-20260825-N2865) and a `requires` (WI-20260906-6BX85). Each writes
+/// ONE name and gets what that name holds; none of them wrote the container.
+/// [`SymbolTable::parent_edge_stops_enclosing`] is where the three are asked together.
+///
 /// A PATH property, not an edge one, for the reason [`ExposureLinks`] is: the leak is
 /// one hop further on than the edge that licenses it. It applies to the ENCLOSING
-/// link alone — a `requires`, a variant exposure and the imported scope's own imports
-/// are contents of the thing imported, and stay reachable.
+/// link alone — the target's own `requires`, `provides`, variant exposure and imports
+/// are contents of the thing named, and stay reachable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EnclosingLinks {
     Followed,
-    /// Below an import edge: what was imported is in scope, its container is not.
-    StoppedByImport,
+    /// Below an edge that named its target: what was named is in scope, its container
+    /// is not.
+    Stopped,
 }
 
 /// C666A — which PARENT edges a resolution may cross.  Direct named imports are
@@ -1257,12 +1290,23 @@ impl SymbolTable {
                     // edge. MEASURED — the WI-995 audit's `parent_edges` went 0 -> 11 on
                     // every corpus group, silently falsifying that file's own
                     // "the corpus writes no wildcard imports, so this is legitimately 0".
+                    // WI-20260906-6BX85: `Requirement` joins them, and the note above is
+                    // why this line was checked at all — a `requires` clause is a
+                    // declaration property of the address, and a NEGATED `matches!` over
+                    // a closed enum is the one reader the compiler will not fail. LEFT
+                    // OUT at first here too, and found by censusing every `ImportOrigin`
+                    // reader rather than by a red test: MEASURED, dropping it takes
+                    // `parent_edges` from 0 to 24 on five of the six corpus groups and
+                    // to 28 on the sixth, while `wi995_import_file_locality_test` stays
+                    // GREEN — it asserts only `alias_entries > 0`, so the falsified
+                    // number is reported and never checked.
                     .any(|o| {
                         !matches!(
                             o,
                             ImportOrigin::Declaration
                                 | ImportOrigin::Exposure
                                 | ImportOrigin::Provision
+                                | ImportOrigin::Requirement
                         )
                     })
             })
@@ -1340,9 +1384,11 @@ impl SymbolTable {
     }
 
     /// WI-999 — did an `import` justify the `scope → parent` edge, as opposed to a
-    /// declaration at the address (an enclosing body, a `requires`, §8.6's variant
-    /// exposure)? Only [`Self::add_import_parent`] files a `File`/`Invocation` origin;
-    /// [`Self::add_exposure_parent`] files `Exposure` and [`Self::add_parent`]
+    /// declaration at the address (an enclosing body, a `requires`, a `provides`,
+    /// §8.6's variant exposure)? Only [`Self::add_import_parent`] files a
+    /// `File`/`Invocation` origin;
+    /// [`Self::add_exposure_parent`] files `Exposure`, [`Self::add_provides_parent`]
+    /// `Provision`, [`Self::add_requires_parent`] `Requirement`, and [`Self::add_parent`]
     /// `Declaration` for every other edge (WI-995, WI-M460D).
     ///
     /// Asked WHO WROTE THE EDGE, not whether it is visible: an import written in
@@ -1364,47 +1410,18 @@ impl SymbolTable {
             })
     }
 
-    /// WI-1089 — is an import the edge's ONLY justification? The question
-    /// [`EnclosingLinks`] is decided by, and NOT the same as
-    /// [`Self::parent_edge_is_imported`], which asks whether an import is AMONG them.
-    ///
-    /// The two differ exactly where a link has more than one writer, and the origin
-    /// list exists because that is routine (see [`ImportOrigin::Declaration`]). An
-    /// edge a DECLARATION also justifies — an enclosing body, a `requires`, variant
-    /// exposure — keeps the reach that declaration gives it, so it is not stopped:
-    ///
-    /// - `namespace a.b { import a.* … }`: the pair `(a.b, a)` is the ENCLOSING edge
-    ///   AND the imported one. Stopping it cut everything above `a`, the top level and the
-    ///   prelude included, so a bare `Int64` in that namespace stopped resolving —
-    ///   found by `/code-review`, driven by `an_import_of_the_enclosing_namespace_is_not_a_stop`.
-    /// - `sort U { requires Spec  import Spec.* }`: one inclusion, two writers. Adding
-    ///   the second, strictly-additive line REMOVED the names `requires` reaches.
-    ///
-    /// Neither is a scope an import brought into view, so neither is this rule's
-    /// business. Only an edge whose sole justification is a file's `import` opens
-    /// something the author asked for by importing it.
-    fn parent_edge_is_import_only(&self, scope: ScopeId, parent: ScopeId) -> bool {
-        self.import_parent_origin
-            .get(&(scope, parent))
-            .is_some_and(|origins| {
-                !origins.is_empty()
-                    && origins
-                        .iter()
-                        .all(|o| matches!(o, ImportOrigin::File(_) | ImportOrigin::Invocation))
-            })
-    }
-
     fn origin_visible(&self, origin: ImportOrigin) -> bool {
         match origin {
-            // `Provision` sits with `Declaration` and `Exposure` (WI-20260825-N2865): a
-            // spec's `provides` is written on the DECLARATION, so it is visible to every
-            // asking file. It is a separate variant only so the enclosing-chain stop can
-            // tell a conversion edge from a `requires` one, which is a different question
-            // from this one.
+            // `Provision` and `Requirement` sit with `Declaration` and `Exposure`
+            // (WI-20260825-N2865, WI-20260906-6BX85): a `provides` and a `requires` are
+            // both written on the DECLARATION, so they are visible to every asking file.
+            // They are separate variants only so the enclosing-chain stop can tell those
+            // two edges from an ENCLOSING one, which is a different question from this.
             ImportOrigin::Builtin
             | ImportOrigin::Declaration
             | ImportOrigin::Exposure
             | ImportOrigin::Provision
+            | ImportOrigin::Requirement
             | ImportOrigin::Invocation => true,
             ImportOrigin::File(f) => self.asking_file() == Some(f),
         }
@@ -1535,6 +1552,34 @@ impl SymbolTable {
         );
     }
 
+    /// WI-20260906-6BX85 — [`Self::add_parent`] for a sort's `requires` CLAUSE. One call
+    /// site (`load.rs`'s `Item::RequiresDecl` arm in sub-pass 2), for the same reason
+    /// [`Self::add_provides_parent`] has one: the KIND of the edge is what the walk has
+    /// to ask about, and `is_enclosing` alone cannot say it — `requires`, `provides`,
+    /// the exposure link and a wildcard import are all `is_enclosing: false`.
+    ///
+    /// THE POINT OF THE VARIANT IS THE ENCLOSING STOP. A `requires` reaches its target
+    /// WHOLE — every member, and whatever the target's own `requires` / `provides` /
+    /// imports reach beneath it — and nothing here narrows that. What it stops is the
+    /// hop OUT of the target into the namespace that declares it, which the clause never
+    /// named: see [`ImportOrigin::Requirement`] for the census that made this a bug
+    /// rather than a convenience.
+    ///
+    /// The origin rides on the ORIGIN LIST rather than on [`ScopeInclusion`] because a
+    /// link can have two justifications and the inclusion list is a SET: `sort U {
+    /// requires Spec  import Spec.* }` is ONE edge with two writers, and
+    /// [`Self::parent_edge_stops_enclosing`] asks `all` over them.
+    pub fn add_requires_parent(&mut self, scope: ScopeId, parent_scope: ScopeId) {
+        self.record_parent_origin(scope, parent_scope, ImportOrigin::Requirement);
+        self.add_parent_raw(
+            scope,
+            ScopeInclusion {
+                parent_scope,
+                is_enclosing: false,
+            },
+        );
+    }
+
     /// WI-20260825-X9RRN — the scopes `scope` OFFERS UNDER ITS OWN NAME, because it
     /// `provides` them. The edges `load::dotted_by_provision` walks, and nothing else:
     /// not `requires`, not the enclosing chain, not an import.
@@ -1547,7 +1592,7 @@ impl SymbolTable {
     /// name", and a `requires` written beside it withdraws nothing. `sort U { requires
     /// Spec  provides Spec[T = T] }` is ONE edge with two origins — `add_parent_raw` dedups
     /// on the whole [`ScopeInclusion`] — so `all` would drop exactly that case, which is
-    /// [`Self::parent_edge_is_import_only`]'s own two-writer note read the other way round.
+    /// [`Self::parent_edge_stops_enclosing`]'s own two-writer note read the other way round.
     ///
     /// WHY NOT SIMPLY A SCOPE WALK AT THE HEAD'S SCOPE — the shape the SELECTIVE-IMPORT
     /// path uses (`load::process_imports`, strategy 2), which is what makes
@@ -1606,11 +1651,38 @@ impl SymbolTable {
     /// here — `wi1089_import_binds_one_name_test::adding_an_import_beside_a_requires_takes_no_name_away`
     /// is the same shape one clause over.
     ///
-    /// `_ONLY`, on [`Self::parent_edge_is_import_only`]'s argument: a pair that is ALSO
-    /// a `requires` edge (or an enclosing one) keeps what those reach, because WI-1089
-    /// measured that a `requires` must still see the target's siblings. That residual is
-    /// deliberate and pinned — see
-    /// `wi_n2865_provision_edge_scope_test::a_requires_beside_a_provides_still_leaks`.
+    /// THREE STOPPING KINDS SINCE WI-20260906-6BX85, and the third closes the residual
+    /// the `_ONLY` argument used to protect. A pair that is ALSO a `requires` edge no
+    /// longer keeps the chain, because `requires` stops it on its own: `requires
+    /// lib.Spec` opens `Spec`, not the `lib` around it, exactly as `import lib.Spec.*`
+    /// does.
+    ///
+    /// THE ENCLOSING EDGE IS WHAT KEEPS THIS FROM BEING `true`, and it is the whole of
+    /// it: a pair that is also the lexical parent link carries
+    /// [`ImportOrigin::Declaration`], and stopping it cuts a namespace off from
+    /// `<global>` and the prelude. Two programs, both driven:
+    ///
+    /// - `namespace a.b { import a.* … }` — the pair `(a.b, a)` is the ENCLOSING edge
+    ///   AND the imported one, and stopping it took `<global>` and the prelude with it,
+    ///   so a bare `Int64` stopped resolving in a namespace that had merely imported its
+    ///   own parent. Found by `/code-review` on WI-1089's first cut; driven by
+    ///   `wi1089_import_binds_one_name_test::an_import_of_the_enclosing_namespace_is_not_a_stop`.
+    /// - `sort Outer { sort Inner { requires Outer } }` — the pair `(Inner, Outer)` is
+    ///   the enclosing edge AND a `requires` one, so under `any` the nested sort loses
+    ///   its own namespace. Driven by
+    ///   `wi_6bx85_requires_opens_the_spec_test::a_requires_on_the_enclosing_sort_is_not_a_stop`,
+    ///   which is the post-WI-20260906-6BX85 shape of the two-writer question — the
+    ///   `requires`-beside-`import` pair no longer answers it, both writers stopping now.
+    ///
+    /// [`ImportOrigin::Exposure`] is excluded too, but NOT on a driven row and it is
+    /// worth saying why rather than implying one: a variant-exposure edge runs from a
+    /// scope to a sort DECLARED IN IT, so the enclosing hop out of that sort lands back
+    /// on the scope the walk arrived from and the `visited` guard answers first. The
+    /// classification is right either way; only the enclosing cases are observable.
+    ///
+    /// This predicate absorbed `parent_edge_is_import_only`, WI-1089's first cut, which
+    /// WI-20260825-N2865 left uncalled when it folded a second stopping kind in; the two
+    /// programs above are that function's, restated where the `_ONLY` quantifier lives.
     fn parent_edge_stops_enclosing(&self, scope: ScopeId, parent: ScopeId) -> bool {
         self.import_parent_origin
             .get(&(scope, parent))
@@ -1622,6 +1694,7 @@ impl SymbolTable {
                             ImportOrigin::File(_)
                                 | ImportOrigin::Invocation
                                 | ImportOrigin::Provision
+                                | ImportOrigin::Requirement
                         )
                     })
             })
@@ -1630,7 +1703,8 @@ impl SymbolTable {
     /// WI-M460D — is §8.6's variant exposure the edge's ONLY justification, and so the
     /// one thing [`Scope::exposed`] is entitled to filter?
     ///
-    /// The shape of [`Self::parent_edge_is_import_only`], and for the same reason: an
+    /// The shape of [`Self::parent_edge_stops_enclosing`]'s `_ONLY` quantifier, and for
+    /// the same reason: an
     /// edge a `requires` clause or an `import` also justifies is one the author asked
     /// to reach INWARD with, which is a different question from what the sort leaks
     /// OUTWARD. Only where exposure is the sole writer is the leak the whole of what
@@ -1824,7 +1898,7 @@ impl SymbolTable {
             ImportVisibility::OwnFileOnly,
             OwnLocals::Visible,
             ExposureLinks::Followed,
-            EnclosingLinks::StoppedByImport,
+            EnclosingLinks::Stopped,
             ParentLinks::All,
             None,
         );
@@ -2117,14 +2191,16 @@ impl SymbolTable {
                     }
                     // WI-1089: below an import edge, the ENCLOSING chain is not
                     // re-entered — `import a.b.C` opens `C`, not the `a.b` around it.
-                    if enclosing == EnclosingLinks::StoppedByImport && p.is_enclosing {
+                    if enclosing == EnclosingLinks::Stopped && p.is_enclosing {
                         return None;
                     }
                     // WI-995: an IMPORT-contributed parent link written by another file
                     // is likewise absent under `OwnFileOnly`. Enclosing / `requires` /
-                    // exposure links stay eligible because their origin is visible to
-                    // every asker (`Declaration`, `Exposure`), not because they are
-                    // missing from `import_parent_origin` — EVERY edge has an entry
+                    // `provides` / exposure links stay eligible because their origin is
+                    // visible to every asker — that is every `ImportOrigin` except
+                    // `File`, and `origin_visible` is the ONE place that list is
+                    // written, deliberately not restated here. It is not that they are
+                    // missing from `import_parent_origin`: EVERY edge has an entry
                     // there, which is what `parent_edge_is_exposure_only` twenty lines
                     // below reads to decide the `exposed` filter (WI-M460D). They
                     // belong to the declaration at the address, not to one file's text.
@@ -2217,15 +2293,15 @@ impl SymbolTable {
                 }
                 ExposureLinks::Skipped => ExposureLinks::Skipped,
             };
-            // WI-1089 — an import edge is where the enclosing chain stops, and it stays
-            // stopped for the rest of the path: what the author imported is in scope,
-            // and the module it was taken from is not.
+            // WI-1089 — an edge that NAMED its target is where the enclosing chain
+            // stops, and it stays stopped for the rest of the path: what the author
+            // named is in scope, and the module it was taken from is not.
             //
-            // `import_ONLY`, not `is_imported`: an edge a declaration also justifies
+            // `_ONLY`, not "is among the writers": an edge a declaration also justifies
             // keeps that declaration's reach, and this is the same edge — the origin
             // list is per `(scope, parent)`, so a pair that is BOTH the enclosing edge
-            // and an imported one answers `is_imported` and must not be stopped. The
-            // predicate's doc carries the two programs that proved it.
+            // and an imported one must not be stopped. The predicate's doc carries the
+            // two programs that proved it.
             // WI-20260825-N2865 adds the CONVERSION edge to the same stop, on WI-1089's
             // own sentence read one clause over: `import a.b.C` opens `C` and not the
             // `a.b` around it, and `Numeric provides Additive` opens `Additive` and not
@@ -2235,8 +2311,13 @@ impl SymbolTable {
             // measured with `algebra.Ring providing anthill.prelude.Additive`, which
             // turned a user's top-level `sort Ring` into seven load errors inside
             // `algebra.anthill`.
+            // WI-20260906-6BX85 adds the `requires` edge, which is the same sentence
+            // read one clause further: `requires lib.Spec` opens `Spec` and not the
+            // `lib` around it. That was the residual N2865 left, and it was not small —
+            // 78 of the 79 one-segment `anthill.prelude` names were reachable, hence
+            // shadowable, at any consumer writing one `requires` on a prelude spec.
             let enclosing_below = if self.parent_edge_stops_enclosing(scope, parent_scope) {
-                EnclosingLinks::StoppedByImport
+                EnclosingLinks::Stopped
             } else {
                 enclosing
             };
@@ -2526,16 +2607,15 @@ mod tests {
         let ordered = scope(&mut st, "Ord");
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
 
-        // `Ord` includes `Eq` — a REQUIRES-shaped edge, which since WI-M460D reaches
-        // the parent WHOLE. It needed an `add_exposed("eq")` before that, and the line
+        // `Ord` includes `Eq` — a REQUIRES edge, which since WI-M460D reaches the
+        // parent WHOLE. It needed an `add_exposed("eq")` before that, and the line
         // did nothing but get past a filter this edge was never subject to.
-        st.add_parent(
-            ordered,
-            ScopeInclusion {
-                parent_scope: eq,
-                is_enclosing: false,
-            },
-        );
+        //
+        // `add_requires_parent`, not `add_parent` (WI-20260906-6BX85): since that
+        // ticket every `add_parent` call site in `src/` passes `is_enclosing: true`,
+        // so a non-enclosing `Declaration` edge is a shape the loader cannot build and
+        // a fixture writing one models nothing.
+        st.add_requires_parent(ordered, eq);
 
         match st.resolve_in_scope("eq", ordered) {
             ResolveResult::Found(found) => assert_eq!(found, eq_sym),
@@ -2555,13 +2635,7 @@ mod tests {
 
         let eq_sym = st.define("eq", "Eq.eq", SymbolKind::Operation, eq);
 
-        st.add_parent(
-            ordered,
-            ScopeInclusion {
-                parent_scope: eq,
-                is_enclosing: false,
-            },
-        );
+        st.add_requires_parent(ordered, eq);
 
         // "T" should NOT resolve from parent (it's a type param)
         match st.resolve_in_scope("T", ordered) {
@@ -2619,13 +2693,7 @@ mod tests {
         let mut st = SymbolTable::new();
         let (colour, red, shade) = colour_scope(&mut st);
         let user = scope(&mut st, "User");
-        st.add_parent(
-            user,
-            ScopeInclusion {
-                parent_scope: colour,
-                is_enclosing: false,
-            },
-        );
+        st.add_requires_parent(user, colour);
 
         assert_eq!(
             st.resolve_in_scope("shade", user),
@@ -2654,15 +2722,15 @@ mod tests {
             let mut st = SymbolTable::new();
             let (colour, _red, shade) = colour_scope(&mut st);
             let outer = scope(&mut st, "Outer");
-            let requires = ScopeInclusion {
-                parent_scope: colour,
-                is_enclosing: false,
-            };
+            // `add_requires_parent` since WI-20260906-6BX85, so the origins are
+            // `[Exposure, Requirement]` — the pair the loader actually writes. Built
+            // with `add_parent` it was `[Exposure, Declaration]`, and a non-enclosing
+            // `Declaration` edge is now a shape no call site in `src/` can produce.
             if exposure_first {
                 st.add_exposure_parent(outer, colour);
-                st.add_parent(outer, requires);
+                st.add_requires_parent(outer, colour);
             } else {
-                st.add_parent(outer, requires);
+                st.add_requires_parent(outer, colour);
                 st.add_exposure_parent(outer, colour);
             }
             assert_eq!(
@@ -2843,20 +2911,11 @@ mod tests {
         let mut syms = SymbolTable::new();
         let child = scope(&mut syms, "Stack");
         let eq = scope(&mut syms, "Eq");
-        syms.add_parent(
-            child,
-            ScopeInclusion {
-                parent_scope: eq,
-                is_enclosing: false,
-            },
-        );
-        syms.add_parent(
-            child,
-            ScopeInclusion {
-                parent_scope: eq,
-                is_enclosing: false,
-            },
-        );
+        // Through `add_requires_parent`, which is what a `requires` clause calls
+        // (WI-20260906-6BX85); `add_parent` would build a non-enclosing `Declaration`
+        // edge the loader no longer writes anywhere.
+        syms.add_requires_parent(child, eq);
+        syms.add_requires_parent(child, eq);
         assert_eq!(syms.scope(child).unwrap().parents.len(), 1);
     }
 

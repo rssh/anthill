@@ -404,28 +404,31 @@ fn a_field_extension_is_a_vector_space_over_the_base_field() {
     );
 }
 
-// ── THE CROSS-NAMESPACE `requires` WIDENS THE SIBLING REACH, AND BY HOW MUCH ──
+// ── THE CROSS-NAMESPACE `requires` COSTS A CONSUMER NOTHING ──
 //
-// `Field` requires `anthill.prelude.algebra.Ring`, which crosses a namespace boundary. A
-// `requires` reaches the target's SIBLINGS BY DESIGN — WI-1089's rule, restated by
-// `wi_n2865_provision_edge_scope_test::a_requires_still_reaches_the_targets_siblings` —
-// and N2865 stopped the enclosing chain on a `provides` edge ONLY, recording the
-// `requires` residual as deliberate rather than a bug. So the resolver is not where this
-// is fixed, and the honest thing is to measure the cost and pin it.
+// `Field` requires `anthill.prelude.algebra.Ring`, which crosses a namespace boundary.
+// This block shipped asserting the opposite: a `requires` reached the target's SIBLINGS,
+// so the line put `algebra`'s two names — and, through `Field` itself, the whole of
+// `anthill.prelude` — in reach of every consumer, and a consumer's own top-level `Ring`
+// went `ambiguous symbol`. The row's own note said to DELETE it rather than repair it if
+// the enclosing chain ever stopped below a `requires`.
 //
-// THE FIRST DRAFT OF THIS TEST ASSERTED "NO LEAK" AND WAS WRONG, which is why it is
-// written this way. It declared a NAMESPACED `user.Ring` reached by explicit import and
-// passed — but the collision needs two candidates for one UNQUALIFIED name, so the shape
-// that reproduces it is a BARE top-level `Ring`, which is N2865's own shape.
+// WI-20260906-6BX85 stopped it, so the row is rewritten to the assertion it was blocking:
+// both names load clean beside `requires Field[T]`. MEASURED, both back-outs:
 //
-// AND THE HAZARD IS PRE-EXISTING, which is the measurement that decided the change was
-// acceptable. Driven with the old `requires Numeric[T]` in place, a consumer's own
-// top-level `Additive`, `Numeric` and `Divisible` were EACH already ambiguous under
-// `requires Field` — `Field` lives in `anthill.prelude`, so a `requires` on it already
-// reached that whole namespace. Only `Ring` was not, because it lives one namespace over.
-// This change adds `Ring` and `VectorSpace` to a set that already held the entire prelude.
+//   back out 6BX85's `requires` stop            BOTH arms fail
+//   back out `field.anthill`'s `requires Ring`  both arms still pass
+//
+// SO THIS ROW MEASURES 6BX85'S STOP AND NOTHING OF THIS FILE'S OWN, and saying so is the
+// point. As a characterization of the AMBIGUITY it used to be this file's only guard on
+// `requires Ring[T]`, and rewriting it took that guard away: `/code-review` drove the
+// gap — with the clause commented out, all 23 rows here and all 4,259 in `wi_tests`
+// stayed green. `a_field_carrier_owes_ring` below is the replacement and is where the
+// clause is driven now. This row is kept for the CONSUMER-side half nothing else states:
+// that a cross-NAMESPACE `requires` costs a consumer nothing, one level further out than
+// `wi_6bx85_requires_opens_the_spec_test`'s own fixtures reach.
 #[test]
-fn requiring_ring_across_namespaces_widens_the_sibling_reach() {
+fn requiring_ring_across_namespaces_costs_a_consumer_nothing() {
     let consumer = |name: &str| {
         format!(
             r#"
@@ -443,45 +446,34 @@ fn requiring_ring_across_namespaces_widens_the_sibling_reach() {
         )
     };
 
-    // ONE REPRESENTATIVE OF WHAT WAS ALREADY AMBIGUOUS, not the whole census. Each case
-    // costs a full stdlib load and this file exists to amortize those (see its header);
-    // the full count — 69 of 75 one-segment prelude names — is measured and recorded on
-    // WI-20260906-6BX85 rather than re-run here on every suite.
+    // `Additive` — a sibling of `Field` in `anthill.prelude`, reachable through this
+    // consumer's `requires` line before 6BX85 whatever `field.anthill` required.
     let errs = crate::common::try_load_kb_with(&consumer("Additive"))
-        .err()
-        .expect("a top-level `Additive` beside `requires Field` was ALREADY ambiguous before \
-                 this change, and must stay so — it is the control, not the cost");
+        .map(|_| Vec::new())
+        .unwrap_or_else(|e| e);
     assert!(
-        errs.iter().any(|e| e.contains("ambiguous symbol")),
-        "expected the pre-existing ambiguity for Additive; got {errs:?}"
+        errs.is_empty(),
+        "a top-level `Additive` beside `requires Field` must load: the clause names \
+         `Field`, not the namespace holding both; got {errs:?}"
     );
 
-    // AND THE ONE THIS CHANGE ADDED. Backing `requires Ring[T]` out of `field.anthill`
-    // makes this row fail and leaves the one above passing — which is what makes it a
-    // measurement of the COST rather than of the hazard.
-    //
-    // THIS ROW PINS BEHAVIOUR THE PROJECT WANTS TO LOSE. It asserts an ambiguity that
-    // WI-20260906-6BX85 exists to remove: when the `requires` edge stops carrying the
-    // enclosing chain, this assertion goes red and that is the FIX landing, not a
-    // regression. Delete the row then; do not repair it.
+    // `Ring` — one namespace further out, reachable only because `Field requires Ring`.
+    // Dropping that clause leaves this arm passing for a SECOND reason (nothing reaches
+    // `algebra` at all), so it is NOT a guard on the clause — `a_field_carrier_owes_ring`
+    // is. What it adds over the `Additive` arm is the cross-NAMESPACE hop.
     let errs = crate::common::try_load_kb_with(&consumer("Ring"))
-        .err()
-        .expect("a top-level `Ring` beside `requires Field` is ambiguous once Field requires Ring");
+        .map(|_| Vec::new())
+        .unwrap_or_else(|e| e);
     assert!(
-        errs.iter().any(|e| {
-            e.contains("ambiguous symbol 'Ring'") && e.contains("anthill.prelude.algebra.Ring")
-        }),
-        "the ambiguity must name `algebra.Ring` as the rival candidate. If this went away \
-         because WI-20260906-6BX85 stopped the enclosing chain below a `requires`, DELETE \
-         this row rather than repairing it; got {errs:?}"
+        errs.is_empty(),
+        "a top-level `Ring` beside `requires Field` must load: `algebra.Ring` is reached \
+         only out through `Field`'s own `requires`, which opens `Ring` and not the \
+         `anthill.prelude.algebra` around it; got {errs:?}"
     );
 
-    // THE REPAIR, MEASURED, because `field.anthill`'s header now offers it to anyone who
-    // hits the ambiguity and an unmeasured repair is worth nothing. An explicit import of
-    // the name you meant resolves at §8.6 step 2, BEFORE the parent walk runs, so it wins
-    // over everything the `requires` edge dragged in. This is also why `Field` itself was
-    // one of the three prelude names that did not collide in the census: the consumer
-    // imports it.
+    // CONTROL, and it passes either way BY DESIGN: an explicit import of the name you
+    // meant resolves at §8.6 step 2, before the parent walk runs at all. It was the ONLY
+    // repair before 6BX85 and is still the way to name a sibling on purpose.
     crate::common::load_kb_with(
         r#"
         namespace mine
@@ -562,5 +554,54 @@ fn a_field_carrier_owes_equality() {
         errs.iter()
             .any(|e| e.contains("PartialEq") && e.contains("test.noeq.NoEq")),
         "the refusal must name the missing `PartialEq` and the carrier; got {errs:?}"
+    );
+}
+
+/// …AND ITS SIBLING: a `Field` carrier owes `Ring`, which is what `requires Ring[T]`
+/// SAYS. Same fixture one clause apart — `provides PartialEq` in, `provides Ring` out —
+/// so the pair varies the requirement under test and nothing else.
+///
+/// THIS ROW EXISTS BECAUSE THE ONE THAT USED TO COVER THE CLAUSE STOPPED COVERING IT.
+/// `requiring_ring_across_namespaces_costs_a_consumer_nothing` above was, before
+/// WI-20260906-6BX85, a characterization of the ambiguity `requires Ring[T]` caused, and
+/// deleting the clause turned it red. Now that the ambiguity is gone the row passes
+/// either way, and `/code-review` MEASURED the consequence: with `requires Ring[T]`
+/// commented out of `field.anthill`, all 23 `algebra_tests` and all 4,259 `wi_tests`
+/// stayed green. The clause had no guard left. This is it.
+///
+/// WHAT FAILS WHEN IT IS BACKED OUT: delete `requires Ring[T]` from
+/// `stdlib/anthill/prelude/field.anthill` and this row alone fails — the carrier below
+/// loads clean, owing an arithmetic it never provides.
+#[test]
+fn a_field_carrier_owes_ring() {
+    let src = r#"
+        -- A would-be field with equality and no RING: it provides `PartialEq` and
+        -- `Field`, and never claims the additive/multiplicative structure `Field`'s own
+        -- laws are written over.
+        sort test.noring.NoRing
+          import anthill.prelude.{Int64, Bool, Field, PartialEq}
+
+          entity nr(v: Int64)
+
+          operation add(a: NoRing, b: NoRing) -> NoRing = nr(v: Int64.add(a.v, b.v))
+          operation neg(a: NoRing) -> NoRing            = nr(v: Int64.sub(0, a.v))
+          operation zero() -> NoRing                    = nr(v: 0)
+          operation mul(a: NoRing, b: NoRing) -> NoRing = nr(v: Int64.mul(a.v, b.v))
+          operation one() -> NoRing                     = nr(v: 1)
+          operation eq(a: NoRing, b: NoRing) -> Bool    = a.v = b.v
+          operation recip(a: NoRing) -> NoRing          = a
+          operation div(a: NoRing, b: NoRing) -> NoRing = a
+
+          provides PartialEq[T = NoRing]
+          provides Field[T = NoRing]
+        end
+    "#;
+    let errs = crate::common::try_load_kb_with(src)
+        .err()
+        .expect("a carrier providing Field while providing no Ring must be REFUSED");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("Ring") && e.contains("test.noring.NoRing")),
+        "the refusal must name the missing `Ring` and the carrier; got {errs:?}"
     );
 }

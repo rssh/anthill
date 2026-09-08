@@ -172,7 +172,7 @@ Each scope holds: `locals` (short_name → Symbol), `imports` (alias short_name 
 
 1. `scope.locals[name]` → Found (shadows everything below).
 2. `scope.imports[name]` → Found.
-3. Else recurse into parent scopes. A **non-enclosing** parent is skipped if `name` is one of its `type_params`, or if the parent has a non-empty `exports` set that doesn't contain `name`. **Enclosing** parents (sort/namespace body nesting) bypass the export filter. Below a parent an **import** contributed, enclosing links are not followed for the rest of the walk: an import opens what it names, not the module around it (WI-1089, kernel-language.md §8.6).
+3. Else recurse into parent scopes. A **non-enclosing** parent is skipped if `name` is one of its `type_params`, or if the parent has a non-empty `exports` set that doesn't contain `name`. **Enclosing** parents (sort/namespace body nesting) bypass the export filter. Below a parent contributed by a clause that NAMES ITS TARGET — a wildcard `import`, a spec's `provides` conversion, or a `requires` — enclosing links are not followed for the rest of the walk: such a clause opens what it names, not the module around it (WI-1089, WI-20260825-N2865, WI-20260906-6BX85; kernel-language.md §8.6). The enclosing link itself and a *variant exposure* do not take the stop.
 4. Collect, dedup → 0 NotFound / 1 Found / ≥2 Ambiguous.
 
 ### Import forms

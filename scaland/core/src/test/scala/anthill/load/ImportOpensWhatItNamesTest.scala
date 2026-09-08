@@ -20,7 +20,11 @@ import anthill.intern.ResolveResult
   * `SymbolTable.resolveRecursive`): `a wildcard does not open the module around what it
   * names` — the sibling resolves. The other rows pass either way BY DESIGN: they are
   * the controls that the stop does not close what an import DID name, and does not
-  * touch a link a declaration justifies.
+  * touch a link a non-stopping declaration justifies.
+  *
+  * THE SAME STOP NOW COVERS A `requires` (WI-20260906-6BX85), which NAMES its target
+  * exactly as an import does — the last row here. Backing THAT out is a separate edit:
+  * drop `ImportOrigin.Requirement` from `resolveRecursive`'s `namesItsTarget`.
   */
 class ImportOpensWhatItNamesTest extends munit.FunSuite:
 
@@ -124,12 +128,19 @@ class ImportOpensWhatItNamesTest extends munit.FunSuite:
     * the second half drives: `visited` admits a parent scope once, so a mode decided
     * from whichever inclusion was traversed first would answer differently for the two
     * spellings of the same program. Both found by `/code-review`.
+    *
+    * IT USED TO ASSERT THIS ON `Sib`, a SIBLING of the target — the reach WI-1089 left a
+    * `requires` and WI-20260906-6BX85 took away. The row is restated on the spec's own
+    * MEMBER; `Sib`'s new answer is the row below.
+    *
+    * AND THAT REWRITE MADE IT INERT FOR THE `forall`: `op1` is a LOCAL of `Spec`, and
+    * since 6BX85 both writers of this edge stop the chain anyway. MEASURED by
+    * `/code-review` over the whole suite — flipping `namesItsTarget`'s `forall` to
+    * `exists` moved ZERO rows. What this row still says is the ADDITIVE one (an import
+    * beside a `requires` takes no name away, in either order); the quantifier is driven
+    * by "a requires on the enclosing sort does not stop the chain" below.
     */
   test("an import beside a requires takes no name away, in either order") {
-    // `Sib` sits in ANOTHER namespace than `User`, so the only route to it is out
-    // through `Spec`'s enclosing chain — i.e. through the very link the two clauses
-    // share. With `Sib` beside `User` the fixture would prove nothing: `User`'s own
-    // enclosing namespace would answer whatever the import did.
     val twoLib =
       """namespace wi1089.two.lib
         |  sort Sib
@@ -160,10 +171,111 @@ class ImportOpensWhatItNamesTest extends munit.FunSuite:
         )
       )
       assert(
-        resolvedIn(kb, "Sib", "wi1089.two.app.User").isInstanceOf[ResolveResult.Found],
-        s"[$label] `Sib` is reached through the `requires` link, which the import " +
+        resolvedIn(kb, "op1", "wi1089.two.app.User").isInstanceOf[ResolveResult.Found],
+        s"[$label] `op1` is reached through the `requires` link, which the import " +
           "beside it neither adds nor removes",
       )
+  }
+
+  /** WI-20260906-6BX85 (rustland's twin, same ticket) — A `requires` OPENS THE SPEC IT
+    * NAMES, AND NOT THE MODULE AROUND IT.
+    *
+    * `Sib` sits in ANOTHER namespace than `User`, so the only route to it is out through
+    * `Spec`'s enclosing chain — the hop `requires wi1089.two.lib.Spec` never asked for.
+    * The rule is WI-1089's read one clause over: what was NAMED is in scope, the module
+    * around it is not. Rustland measured the cost of the old reading — 78 of the 79
+    * one-segment `anthill.prelude` names shadowable at a consumer of one prelude spec.
+    *
+    * FAILS IF `ImportOrigin.Requirement` is dropped from `resolveRecursive`'s
+    * `namesItsTarget`, or if `Loader.processRequires` stops passing it: `Sib` is Found
+    * again. MEASURED by doing it, over the whole suite: exactly ONE row of 540 moves,
+    * this one — every other row here, `MemberImportStopsAtTheSortTest` and
+    * `RequiresReachesSpecMembersTest` included, passes either way. (Two rows of the 540
+    * are red BEFORE and AFTER: `BootstrapTest`'s cross-package `requires Ring` pair,
+    * which is scaland codegen and not name resolution.)
+    *
+    * The MEMBER arm passes either way BY DESIGN — it is what fails if the stop is
+    * widened from the enclosing link to the `requires` edge itself.
+    */
+  test("a requires does not open the module around the spec it names") {
+    val twoLib =
+      """namespace bx85.two.lib
+        |  sort Sib
+        |    entity sib(v: Int64)
+        |  end
+        |  sort Spec
+        |    operation op1(x: Int64) -> Int64
+        |  end
+        |end""".stripMargin
+    val app =
+      """namespace bx85.two.app
+        |  sort User
+        |    requires bx85.two.lib.Spec
+        |    entity user(v: Int64)
+        |  end
+        |end""".stripMargin
+    val kb = LoadFixture.loaded(
+      IndexedSeq(
+        LoadFixture.parsed(twoLib, "bx85-lib.anthill"),
+        LoadFixture.parsed(app, "bx85-app.anthill"),
+      )
+    )
+    assertEquals(
+      resolvedIn(kb, "Sib", "bx85.two.app.User"),
+      ResolveResult.NotFound,
+      "`requires bx85.two.lib.Spec` names ONE sort; `Sib` is its sibling and the clause " +
+        "named neither it nor the namespace holding both",
+    )
+    assert(
+      resolvedIn(kb, "op1", "bx85.two.app.User").isInstanceOf[ResolveResult.Found],
+      "CONTROL: the spec's own member is what a `requires` is for, and is untouched",
+    )
+  }
+
+  /** WI-20260906-6BX85 — TWO WRITERS ON ONE EDGE MUST NOT CANCEL, and this is the only
+    * row that says so.
+    *
+    * `resolveRecursive`'s `namesItsTarget` asks `forall` over the inclusions reaching one
+    * parent: the chain is stopped only where EVERY writer of the edge stops it. The row
+    * above used to drive that with `requires Spec` beside `import Spec.*`; since this
+    * ticket BOTH of those stop, so that pair answers `forall` and `exists` alike.
+    * MEASURED before this row was written: flipping `forall` to `exists` moved ZERO of
+    * the 540 tests.
+    *
+    * THE PAIR THAT STILL DISCRIMINATES is an edge that is the ENCLOSING link and a
+    * `requires` at once. `sort Outer { sort Inner { requires Outer } }` appends two
+    * `ScopeInclusion`s for one parent — `(Outer, isEnclosing = true, Declaration)` and
+    * `(Outer, isEnclosing = false, Requirement)`. Under `forall` the `Declaration` keeps
+    * the chain and `Inner` still sees its own namespace; under `exists` the `requires`
+    * stops it and `Inner` loses `Shared` and everything above.
+    *
+    * Rustland's twin is
+    * `wi_6bx85_requires_opens_the_spec_test::a_requires_on_the_enclosing_sort_is_not_a_stop`.
+    */
+  test("a requires on the enclosing sort does not stop the chain") {
+    val src =
+      """namespace bx85.nested
+        |  sort Shared
+        |    entity shared(v: Int64)
+        |  end
+        |  sort Outer
+        |    operation outer_op(x: Int64) -> Int64
+        |    sort Inner
+        |      requires Outer
+        |      entity inner(v: Int64)
+        |    end
+        |  end
+        |end""".stripMargin
+    val kb = LoadFixture.loaded(IndexedSeq(LoadFixture.parsed(src, "bx85-nested.anthill")))
+    assert(
+      resolvedIn(kb, "Shared", "bx85.nested.Outer.Inner").isInstanceOf[ResolveResult.Found],
+      "the `(Inner, Outer)` edge is the ENCLOSING link AND a `requires`; one writer that " +
+        "keeps the chain keeps it, so `Inner` still reaches its own namespace",
+    )
+    assert(
+      resolvedIn(kb, "outer_op", "bx85.nested.Outer.Inner").isInstanceOf[ResolveResult.Found],
+      "CONTROL: what the `requires` itself brings is untouched",
+    )
   }
 
   test("CONTROL: a sort still sees the namespace it is declared in") {

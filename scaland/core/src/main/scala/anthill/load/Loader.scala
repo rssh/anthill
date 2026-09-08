@@ -1059,7 +1059,8 @@ object Loader:
     // a base name that did not resolve from inside a top-level DOTTED declaration. That
     // was WI-992's gap in the scope graph, fixed at [[ensureNamespacePath]], and the arm
     // now goes through the same one rung order as the bare form.
-    linkSpecScope(kb, req.typeExpr, req.span, "requires", fileSym, scope, errors)
+    linkSpecScope(kb, req.typeExpr, req.span, "requires", fileSym, scope, errors,
+      ImportOrigin.Requirement)
 
   /** WI-869 (058 §3.8) — a provision's `:- goals` tail, linked exactly as a `requires`
     * is. A condition is a spec instantiation over the declaring sort's parameters, and
@@ -1073,7 +1074,8 @@ object Loader:
     errors: ArrayBuffer[LoadError]
   ): Unit =
     pc.conditions.foreach(c =>
-      linkSpecScope(kb, c, pc.span, "provides … :-", fileSym, scope, errors))
+      linkSpecScope(kb, c, pc.span, "provides … :-", fileSym, scope, errors,
+        ImportOrigin.Declaration))
 
   /** WI-1110 — a SPEC's `provides` is a CONVERSION, and a conversion lends its names
     * exactly as a `requires` does: both put a dictionary in the declaring sort's hands,
@@ -1120,7 +1122,8 @@ object Loader:
       // target's names with no diagnostic at all (§8.6: an ambiguity ends the ladder, it
       // is not a miss). So the miss is dropped and the ambiguity is kept.
       val silenced = ArrayBuffer.empty[LoadError]
-      linkSpecScope(kb, pc.spec, pc.span, "provides", fileSym, scope, silenced)
+      linkSpecScope(kb, pc.spec, pc.span, "provides", fileSym, scope, silenced,
+        ImportOrigin.Declaration)
       errors ++= silenced.collect { case e: LoadError.AmbiguousSymbol => e }
 
   /** The `effects E = ?` desugar's `anthill.prelude.EffectsRuntime` anchor — a synthetic
@@ -1136,7 +1139,14 @@ object Loader:
 
   /** Resolve a spec instantiation by its BASE NAME and link the spec's scope as a
     * parent of `scope`. Shared by `requires` and by a provision's `:- goals`;
-    * `clause` names the writer for the diagnostic. */
+    * `clause` names the writer for the diagnostic.
+    *
+    * `origin` says WHICH clause wrote the link, and the walk reads it: a `requires`
+    * files [[ImportOrigin.Requirement]] and stops the target's ENCLOSING chain
+    * (WI-20260906-6BX85), a `provides` files [[ImportOrigin.Declaration]] and does not.
+    * That asymmetry is not a decision taken here — rustland stops the `provides` edge
+    * too (WI-20260825-N2865) and scaland has not ported it; the origin is the seam that
+    * port lands on. */
   private def linkSpecScope(
     kb: KnowledgeBase,
     typeExpr: TypeExpr,
@@ -1144,7 +1154,8 @@ object Loader:
     clause: String,
     fileSym: SymbolTable,
     scope: kb.ScopeId,
-    errors: ArrayBuffer[LoadError]
+    errors: ArrayBuffer[LoadError],
+    origin: ImportOrigin
   ): Unit =
     (typeExpr match
       case TypeExpr.Simple(name) => Some(name)
@@ -1165,7 +1176,16 @@ object Loader:
             // A requirement names an algebraic SPEC (§5.2), and a spec is a sort.
             parentScopeOf(kb, sym, Set(SymbolKind.Sort),
               s"`$clause $nameStr`", name.span, errors)
-              .foreach(p => kb.symbols.addParent(scope, p, isEnclosing = false))
+              .foreach(p =>
+                origin match
+                  case ImportOrigin.Requirement => kb.symbols.addRequiresParent(scope, p)
+                  case ImportOrigin.Declaration => kb.symbols.addParent(scope, p, isEnclosing = false)
+                  case other =>
+                    // No default arm and no silent fallback: a new clause kind routed
+                    // through here is a decision about the enclosing stop, and one that
+                    // quietly took `Declaration`'s reach is the defect
+                    // WI-20260906-6BX85 spent a census on.
+                    sys.error(s"linkSpecScope: `$clause` may not link a parent as $other"))
           case ResolveResult.Ambiguous(candidates) =>
             errors += LoadError.AmbiguousSymbol(
               nameStr, candidates.map(kb.qualifiedNameOf).toIndexedSeq,

@@ -23,11 +23,16 @@
 //!     `a_plain_import_does_not_open_the_thing_it_names` and
 //!     `importing_a_namespace_does_not_bring_its_contents` fail: both fixtures load
 //!     clean, which is the defect.
-//!   * Drop the `EnclosingLinks::StoppedByImport` propagation (intern.rs) ⇒
+//!   * Drop the `EnclosingLinks::Stopped` propagation (intern.rs) ⇒
 //!     `a_wildcard_opens_what_it_names_and_not_the_module_around_it` fails: the
 //!     sibling sort resolves through an import that never named it.
 //!   * The four CONTROLS pass either way by design; they are what fails if the rule
 //!     over-reaches and stops a name that was never reached through an import edge.
+//!
+//! THE SAME STOP NOW COVERS TWO MORE CLAUSES, each of which NAMES its target exactly as
+//! an import does: a spec's `provides` conversion (WI-20260825-N2865) and a `requires`
+//! (WI-20260906-6BX85). The second is why the `requires` row below asserts on the
+//! spec's own MEMBER rather than on `lib`'s sibling `Sib`, which this file used to pin.
 
 use crate::common::{expect_load_errors, load_kb_with, try_load_kb_with};
 
@@ -179,7 +184,8 @@ end
 /// imported its own parent.
 ///
 /// Found by `/code-review` on the first cut, and this is the row that fails when
-/// `parent_edge_is_import_only` is weakened back to `parent_edge_is_imported`.
+/// `parent_edge_stops_enclosing`'s `all` is weakened to `any` — the quantifier
+/// WI-1089 minted as `parent_edge_is_import_only` and WI-20260825-N2865 folded in.
 #[test]
 fn an_import_of_the_enclosing_namespace_is_not_a_stop() {
     load_kb_with(
@@ -205,14 +211,27 @@ end
 /// the import's account removed what the `requires` reaches. An import line is
 /// additive; adding one must not take a name away.
 ///
-/// Also fails when the predicate is weakened, and it is the half that says WHY the
-/// weaker one is wrong rather than merely that it breaks something.
+/// IT USED TO ASSERT THIS ON A SIBLING of the target, and that was the one row
+/// WI-20260825-N2865 measured as blocking the `requires` stop. WI-20260906-6BX85 took
+/// the trade: `requires lib.Spec` no longer reaches `lib`'s `Sib`, so the invariant is
+/// restated on a name the clause genuinely delivers — the spec's own MEMBER, called
+/// bare. `wi_6bx85_requires_opens_the_spec_test` owns the sibling's new answer.
+///
+/// AND THAT REWRITE MADE THIS ROW INERT FOR THE QUANTIFIER, which is worth saying
+/// plainly rather than leaving the old sentence ("also fails when the predicate is
+/// weakened") standing. `op1` is a LOCAL of `Spec`, so it resolves whether or not the
+/// edge stops the enclosing chain — and since 6BX85 both writers of this edge stop it
+/// anyway, so `all` and `any` agree here. MEASURED by `/code-review`: flipping
+/// `parent_edge_stops_enclosing`'s `.all(` to `.any(` leaves this row GREEN.
+///
+/// WHAT THIS ROW STILL SAYS is the additive one, and it is not nothing: an `import`
+/// line beside a `requires` must not take a name away, in either write order. The
+/// QUANTIFIER is driven by `an_import_of_the_enclosing_namespace_is_not_a_stop` below
+/// and by `wi_6bx85_requires_opens_the_spec_test::a_requires_on_the_enclosing_sort_is_not_a_stop`,
+/// which are the two edges that still have a non-stopping writer.
 #[test]
 fn adding_an_import_beside_a_requires_takes_no_name_away() {
     let src = r#"namespace wi1089.two.lib
-  sort Sib
-    entity sib(v: Int64)
-  end
   sort Spec
     operation op1(x: Int64) -> Int64
   end
@@ -222,7 +241,7 @@ namespace wi1089.two.app
   sort User
     requires wi1089.two.lib.Spec
     import wi1089.two.lib.Spec.*
-    entity user(n: Sib)
+    operation use_it(y: Int64) -> Int64 = op1(y)
   end
 end
 "#;
@@ -230,7 +249,7 @@ end
 
     // The CONTROL that makes the row above a comparison: the same file without the
     // import line loads too, so what is being asserted is that the import CHANGED
-    // nothing — not that `Sib` happens to resolve.
+    // nothing — not that `op1` happens to resolve.
     load_kb_with(&src.replace("    import wi1089.two.lib.Spec.*\n", ""));
 }
 
