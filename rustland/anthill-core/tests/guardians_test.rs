@@ -1450,6 +1450,24 @@ fn a_relabel_is_refused_by_the_constructor_seal() {
 }
 
 #[test]
+fn destructuring_a_text_is_refused_by_the_seal() {
+    // THE THIRD SURFACE OF ONE `internal`, and the clause WI-20260829-MCKTE's
+    // acceptance names outright: the relabel "and the `match` spelling of the same"
+    // must be a load error. §8.6 hides a constructor from resolution, from field
+    // projection AND from a pattern; `relabel` drives the first, `reads_text` the
+    // second, this the third.
+    //
+    // NOT A DUPLICATE: a pattern is the one surface where the name appears without
+    // being CALLED, so a gate keyed on application would let it through. And agents
+    // do write the match form — `good.anthill`'s header records that an inlined
+    // projection replaced a declared `bodies_of` for exactly that reason.
+    //
+    // WHAT FAILS WHEN BACKED OUT: drop `internal` from `entity text` and this row
+    // reds with `relabel` and `reads_text`, and nothing else — measured.
+    assert_refused("match_relabel", "'text' is internal to 'guardians.Text'");
+}
+
+#[test]
 fn reading_a_texts_content_is_refused_by_the_projection_seal() {
     // THE OTHER HALF OF THE SAME `internal`. §8.6 hides a constructor AND its field
     // projection, and each needs its own program or half the gate is untested. This

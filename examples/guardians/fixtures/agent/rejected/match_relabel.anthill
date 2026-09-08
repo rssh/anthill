@@ -1,0 +1,50 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` that DESTRUCTURES a `Text`, REFUSED BY THE SEAL.
+--
+-- THE THIRD SURFACE OF ONE `internal`, and WI-20260829-MCKTE's acceptance names
+-- it outright: "a program that re-labels — `text(raw: u.raw)`, AND THE `match`
+-- SPELLING OF THE SAME — is a LOAD ERROR naming the constructor and the scope it
+-- is internal to". §8.6 hides a constructor from cross-scope resolution, from
+-- field projection, and from a pattern; each needs its own program or the clause
+-- is asserted rather than measured.
+--
+--   ../relabel.anthill      text(raw: box.owner.local)      construction
+--   ../reads_text.anthill   answer.raw                      projection
+--   this file               case text(raw: r) -> r          destructuring
+--
+-- IT IS NOT A DUPLICATE OF THE OTHER TWO. A pattern is the one surface where the
+-- name appears without being CALLED, so a gate keyed on application would let it
+-- through — and `../good.anthill`'s header records that agents do write the match
+-- form (`msgs.map(lambda m -> m.body)` replaced a declared `bodies_of` precisely
+-- because a generated agent can spell the projection itself).
+--
+-- WHAT IT WOULD BUY AN AGENT is the same thing the other two would: a `String` out
+-- of a labelled value, and from there a re-wrap at whatever label it liked. The
+-- lattice would pin a label at a SINK and say nothing about how one was ACQUIRED,
+-- which is the defect this whole ticket is about.
+--
+-- BACKING IT OUT: drop `internal` from `entity text` (lib/vocabulary.anthill) and
+-- this row reds together with `relabel` and `reads_text`, and nothing else.
+-- ================================================================
+sort guardians.agent.MatchRelabelTriage
+  import anthill.prelude.{String, List, Error, External}
+  import guardians.{Triage, Email, Mailbox, Report, Text, Llm, summarize,
+                    Verdict, categories_of}
+  import guardians.TrustLevel.{Trusted}
+  entity mk
+
+  operation strip(t: Text[Trusted]) -> String =
+    match t
+      case text(raw: r) -> r
+
+  operation run(self: MatchRelabelTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = MatchRelabelTriage]
+end
