@@ -283,9 +283,12 @@ fn set_fake_reply(src: &str) {
     FAKE_REPLY.with(|r| *r.borrow_mut() = src.to_string());
 }
 
-/// Build a `guardians.Text` value. `Text`'s sole constructor is
-/// `entity text(raw: String)`, so a bare `Value::Str` is the WRONG carrier —
-/// it loads and then fails to match anything that destructures a `Text`.
+/// Build a `guardians.Text` value. `Text`'s only constructor is
+/// `internal entity text(raw: String)` — anthill code reaches it solely through the
+/// `untrusted` / `trusted` doors (WI-20260829-MCKTE), while a host fn resolves the
+/// symbol directly, §8.6 gating name resolution and not the host. A bare
+/// `Value::Str` is the WRONG carrier: it loads and then fails to match anything
+/// that destructures a `Text`.
 fn text_value(kb: &KnowledgeBase, raw: &str) -> Result<Value, anthill_core::eval::EvalError> {
     let f = kb
         .try_resolve_symbol("guardians.Text.text")
@@ -390,7 +393,7 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
     .expect("register guardians_render_task");
 
     // Completes the prompt and takes the reply as a candidate program. The
-    // `Prompt[Public]` in its anthill signature is what makes "generation is
+    // `Prompt[Trusted]` in its anthill signature is what makes "generation is
     // blind to content" a check rather than a comment.
     kb.register_host_fn("guardians_generate", 3, |interp, _args| {
         let reply = FAKE_REPLY.with(|r| r.borrow().clone());
@@ -548,10 +551,10 @@ fn exfiltrating_agent_is_refused_by_the_label() {
     // THE ARTICLE'S ATTACK, as generated code: summarize the mailbox, mail the
     // summary to it@othercorp.com. Refused because `summarize` preserves its
     // argument's label (`?t` in, `?t` out), so the summary is Untrusted and
-    // `Email.send` wants Public. The summarizer does not launder.
+    // `Email.send` wants Trusted. The summarizer does not launder.
     assert_refused(
         "leak",
-        "expected Text[Trust = Public], got LlmOutput",
+        "expected Text[Trust = Trusted], got Text[Trust = Untrusted]",
     );
 }
 
@@ -588,7 +591,7 @@ fn an_external_send_is_refused_by_the_conditional_permission() {
     // "forbid data flow from fetch_email's result to the body parameter of
     // send_email WITH AN EXTERNAL EMAIL ADDRESS AS THE TARGET". The FLOW half is
     // `exfiltrating_agent_is_refused_by_the_label`; this is the TARGET half, and
-    // the two are independent — `outbox.anthill` mails a literal `Public` string,
+    // the two are independent — `outbox.anthill` mails the `Text[Trusted]` the task handed it,
     // so nothing flows out of the mailbox and no label is violated.
     //
     // `Email.send` demands `Permission[Outbox]` GUARDED on its recipient
@@ -599,12 +602,14 @@ fn an_external_send_is_refused_by_the_conditional_permission() {
     // declare it (a widening). NO generated triage can mail outside, and that is
     // a property of the spec rather than of this agent.
     assert_refused("outbox", "undeclared effect: Permission[T = Outbox]");
-    // AND IT IS THE ONLY ERROR. The body it mails is the line the organisation cleared,
-    // so `Email.send`'s `requires releasable(body)` discharges and the proof tier has
-    // nothing to say: one broken rule, one diagnostic. Asserted because
-    // `both_contract_tiers_report_at_one_call` names this row as its control, and a
-    // control that does not count is consistent with a checker reporting both tiers for
-    // every refusal.
+    // AND IT IS THE ONLY ERROR. The body it mails is the `Text[Trusted]` the TASK
+    // handed it, not one it minted, so neither tier on `Text.trusted` is touched:
+    // one broken rule, one diagnostic. (It used to say the body was a cleared literal
+    // discharging `Email.send`'s `requires releasable(body)` — that precondition moved
+    // to the mint in WI-20260829-MCKTE and the send site carries none.) Asserted
+    // because `both_contract_tiers_report_at_one_call` names this row as its control,
+    // and a control that does not count is consistent with a checker reporting every
+    // tier for every refusal.
     let errs = errors_for("outbox");
     assert_eq!(
         errs.len(),
@@ -703,11 +708,13 @@ fn the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed() {
     // the relation has no clause at all, not merely no matching row — and the
     // refusal below is the same one, at the same substring.
     //
-    // IT ALSO PINS WHERE `Email.send`'s PRECONDITION MAY LIVE. This is the one
-    // load in the suite with a library and no deployment, so a `requires` on
-    // `send` that a deployment fact discharges would fail HERE on the
-    // precondition and stop naming the missing authority. `releasable` is
-    // asserted in `lib/email.anthill` for exactly that reason (measured.md C2a).
+    // IT ALSO PINS WHERE THE CONTENT TIER MAY LIVE. This is the one load in the
+    // suite with a library and no deployment, so an obligation that only a
+    // deployment fact discharges would fail HERE and stop naming the missing
+    // authority. `approved` is asserted in `lib/vocabulary.anthill` for exactly that
+    // reason — and since WI-20260829-MCKTE the obligation sits on `Text.trusted`
+    // rather than on `Email.send`, so it is reachable from `lib/` alone
+    // (measured.md C2a).
     let mut owned = lib_sources();
     owned.push(agent_source("internal_send"));
     let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -947,7 +954,7 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
     // QUERY — what a declaration is FOR. The design history, the WI references and the
     // measurement notes stay in `--`: those are commentary ON the source, not intent.
     //
-    // `in_org` AND `releasable` ARE THE TWO BODY-LESS DECLARATIONS, and they were the
+    // `in_org` AND `approved` ARE THE TWO BODY-LESS DECLARATIONS, and they were the
     // finding this list used to record rather than cover. `in_org` is the declaration
     // a reader most wants explained, and until WI-20260830-VFAKK a body-less `rule`
     // could carry no description at all: unlabeled, the converter refused the block
@@ -959,7 +966,7 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
     //
     // WHICH KIND OF TARGET EACH ROW EXERCISES, because the list is no longer
     // homogeneous: `Text` is a sort, `Message` an enum, `Triage.run` and `Email.send`
-    // operations, `in_org` and `releasable` PREDICATE DECLARATIONS. The last two are
+    // operations, `in_org` and `approved` PREDICATE DECLARATIONS. The last two are
     // the only ones whose target the loader mints from a rule head.
     //
     // WHAT FAILS WHEN IT IS BACKED OUT: deleting any one block reds THIS ROW AND
@@ -976,7 +983,7 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
         "guardians.Triage.run",
         "guardians.Email.send",
         "guardians.in_org",
-        "guardians.releasable",
+        "guardians.approved",
     ] {
         assert!(
             descriptions.iter().any(|(t, _)| t == target),
@@ -1012,45 +1019,79 @@ fn the_intent_of_a_declaration_is_a_fact_in_the_kb() {
 fn an_uncleared_body_is_refused_by_the_send_precondition() {
     // THE OTHER CONTRACT FORM. Every other refusal in this suite is the TYPER's — a
     // taint label, an effect row, a name gate. This one is a PROOF obligation:
-    // `Email.send` carries `requires releasable(body)`, and a precondition naming no
-    // spec is discharged at the CALL SITE from what the caller knows (§5.4). That is
-    // the form the article calls "an obligation the agent must discharge", and the
-    // agent — not the harness — is who discharges it.
+    // `Text.trusted` carries `requires approved(raw)`, and a precondition naming no
+    // spec is discharged at the CALL SITE from what the caller knows (§5.4).
     //
-    // ONE TOKEN FROM `internal_send.anthill`: the same internal recipient, the same
-    // row, a body the organisation never cleared. Its control is
-    // `an_internal_send_needs_no_permission`, which mails the cleared line and loads.
+    // IT MOVED FROM `Email.send` TO THE MINT, and the move is the ticket's
+    // (WI-20260829-MCKTE). On `send`'s `body` the obligation could only be discharged
+    // when the body was written INLINE at the call — measured: a body merely LET-BOUND
+    // to the cleared literal already failed it — so it could not survive trusted text
+    // being handed to an agent rather than minted by it. At the mint the argument is
+    // always a literal, so the obligation is dischargeable by construction.
     //
-    // WHY THE PRECONDITION IS ON `body` AND NOT ON `to` is measured and recorded at
-    // `Email.send` — a precondition over the guarded argument PREEMPTS the effect
-    // check at exactly the two call sites the checker cannot read, so
-    // `a_recipient_computed_at_run_time_is_refused` and
-    // `a_let_bound_internal_recipient_is_refused_too` would stop naming
-    // `Permission[Outbox]` and stop measuring the conditional permission. The
-    // suppression itself is a defect and is filed as WI-20260830-JM7A8; the choice
-    // of argument here does not depend on it being fixed.
-    //
-    // WHAT FAILS WHEN IT IS BACKED OUT: deleting `requires releasable(body)` reds
-    // THIS ROW AND NOTHING ELSE — measured. In particular `outbox`, `leak`,
-    // `computed_recipient` and `letbound_recipient` keep their exact diagnostic
-    // substrings with the precondition present, which is the property the choice of
-    // `body` over `to` was made for.
+    // TWO TIERS, ONE CALL. `Permission[Vouch]` says WHO may vouch; `approved` says WHAT
+    // was vouched for. `uncleared_body` breaks both, because a candidate can never
+    // satisfy the row — which is why the exactly-one control below CANNOT be a
+    // candidate program any more, and is a trusted-position one instead.
     assert_refused("uncleared_body", "unsatisfied precondition");
     let errs = errors_for("uncleared_body");
     assert!(
-        errs.iter().any(|e| e.contains("releasable")),
+        errs.iter().any(|e| e.contains("approved")),
         "the diagnostic must name the precondition that could not be proved; got: \
          {errs:#?}"
     );
-    // AND IT IS THE ONLY ERROR, which is the control for the row below. The recipient is
-    // internal, so `external_addr` is refuted and no `Permission[Outbox]` is incurred:
-    // one broken rule, one diagnostic. Without this assertion the row below could pass
-    // against a checker that reports the effect unconditionally.
+
+    // THE PROOF TIER ALONE, and it takes a caller that HOLDS the authority — the row
+    // is satisfied, so only the obligation can fail. Without this the row assertions
+    // elsewhere would pass against a checker that reports every tier unconditionally.
+    let alone = errors_for_extra(
+        r#"
+        namespace guardians
+          import anthill.prelude.{Permission}
+          import guardians.{Text, Vouch}
+          import guardians.TrustLevel.{Trusted}
+
+          operation house_notice() -> Text[Trusted]
+            effects {Permission[Vouch]} =
+              Text.trusted(raw: "the organisation never approved this")
+        end
+        "#,
+    );
     assert_eq!(
-        errs.len(),
+        alone.len(),
         1,
-        "a cleared-row program breaking only the proof tier owes exactly one \
-         diagnostic; got: {errs:#?}"
+        "a vouching caller breaking only the proof tier owes exactly one \
+         diagnostic; got: {alone:#?}"
+    );
+    assert!(
+        alone[0].contains("unsatisfied precondition") && alone[0].contains("approved"),
+        "and it must name the obligation; got: {alone:#?}"
+    );
+
+    // THE POSITIVE CONTROL FOR THE DOOR ITSELF, and it is needed for the reason
+    // measured.md gives about `forged_llm`: `Text.trusted`, `approved` and
+    // `Permission[Vouch]` appear in the shipped example ONLY inside refused
+    // fixtures — nothing legitimately mints trusted text, because the mint happens
+    // above the agent and outside anthill (the harness supplies `Triage.run`'s
+    // `wording`). A vocabulary seen only in refusals is indistinguishable from one
+    // that refuses everything, so this drives the accepting case: same caller, same
+    // authority, a line the organisation DID approve.
+    let ok = errors_for_extra(
+        r#"
+        namespace guardians
+          import anthill.prelude.{Permission}
+          import guardians.{Text, Vouch}
+          import guardians.TrustLevel.{Trusted}
+
+          operation house_notice_ok() -> Text[Trusted]
+            effects {Permission[Vouch]} =
+              Text.trusted(raw: "routine compliance copy")
+        end
+        "#,
+    );
+    assert!(
+        ok.is_empty(),
+        "the vouched door must ADMIT an approved line under the authority: {ok:#?}"
     );
 }
 
@@ -1070,16 +1111,25 @@ fn both_contract_tiers_report_at_one_call() {
     // the second assertion below found nothing — while the first stayed green, which is
     // exactly why the loss was invisible.
     //
-    // ITS CONTROLS ARE THE TWO NEIGHBOURS, each of which asserts a count of ONE:
-    // `an_external_send_is_refused_by_the_conditional_permission` (row tier alone) and
-    // `an_uncleared_body_is_refused_by_the_send_precondition` (proof tier alone). Without
-    // them this row is consistent with a checker that emits both diagnostics for every
+    // ITS CONTROLS EACH ISOLATE ONE TIER.
+    // `an_external_send_is_refused_by_the_conditional_permission` counts ONE for the
+    // outbox row; `a_candidate_that_vouches_for_itself_is_refused_by_the_row` isolates
+    // `Permission[Vouch]` with approved content; and the proof tier alone is the
+    // TRUSTED-POSITION source inside
+    // `an_uncleared_body_is_refused_by_the_send_precondition`, which asserts a count of
+    // ONE — it cannot be a candidate, since minting at all breaks the row too. Without
+    // them this row is consistent with a checker that emits every diagnostic for every
     // refusal.
     let errs = errors_for("uncleared_external");
     assert!(
         errs.iter()
-            .any(|e| e.contains("unsatisfied precondition") && e.contains("releasable")),
+            .any(|e| e.contains("unsatisfied precondition") && e.contains("approved")),
         "the proof tier: the organisation never cleared this body; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("undeclared effect: Permission[T = Vouch]")),
+        "the authority tier: the agent vouched for the body itself; got: {errs:#?}"
     );
     assert!(
         errs.iter()
@@ -1127,11 +1177,12 @@ fn honest_checker_is_accepted() {
     // does not refuse every checker on sight. Without this, the refusals are
     // consistent with a checker that rejects anything mentioning a model.
     //
-    // ONE FEWER REFUSAL THAN BEFORE. `bad_checker` — handed an `Llm` in its own
-    // carrier, and calling it — was refused by `-Model`, and is now ACCEPTED: with
-    // `LlmOutput` sealed it obtains a token it cannot read, so the call teaches it
-    // nothing and cannot steer it. Consulting became harmless, so it stopped being
-    // refused; `rejected/bad_checker.anthill` went with the label.
+    // ONE FEWER REFUSAL THAN BEFORE, AND IT STAYED THAT WAY. `bad_checker` —
+    // handed an `Llm` in its own carrier, and calling it — was refused by `-Model`;
+    // when a sealed reply made consulting harmless it became ACCEPTED. The wrapper
+    // is gone (WI-20260829-MCKTE) and the verdict did not move: the reply is a
+    // `Text` whose content nothing can read. Its successor is
+    // `consulting_checker.anthill`, an acceptance control rather than a refusal.
     let errs = errors_for("checker");
     assert!(errs.is_empty(), "agent/checker.anthill should load: {errs:#?}");
 }
@@ -1199,11 +1250,17 @@ fn the_legitimate_acquisition_path_is_accepted() {
         "open_round must declare exactly `Permission[T = Llm]`; got: {:?}",
         row("guardians.open_round")
     );
-    // … and NOTHING DOWNSTREAM carries a Permission of ANY capability. This is the
-    // half that would rot silently: `attempt` and `complete` consume a capability
-    // they were handed, so the check already happened and the `Llm` in the
-    // signature is the evidence. Matched by PREFIX here — the claim is "no
-    // permission at all", so a narrower or wider one must fail it too.
+    // … and NOTHING DOWNSTREAM CARRIES A `Permission[Llm]`. This is the half that
+    // would rot silently: `attempt` and `complete` consume a MODEL they were handed,
+    // so the check already happened and the `Llm` in the signature is the evidence.
+    //
+    // THE CLAIM IS PER-CAPABILITY, NOT "no permission at all", and it was the latter
+    // until `render_task` began declaring `Permission[Vouch]` (WI-20260829-MCKTE).
+    // The distinction is 064's own and is worth the sharpening: a row carries a
+    // permission for an authority the body EXERCISES, and carries none for a
+    // capability it was HANDED. `attempt` is handed a model and mints trusted text,
+    // so it is silent about the first and declares the second — and `open_round`
+    // above it declares both, which is the one place either authority enters.
     for qn in [
         "guardians.attempt",
         "guardians.LiveLlm.complete",
@@ -1211,8 +1268,20 @@ fn the_legitimate_acquisition_path_is_accepted() {
         "guardians.summarize",
     ] {
         assert!(
-            !row(qn).iter().any(|e| e.starts_with("Permission")),
-            "{qn} consumes a capability it was handed and must carry no Permission; got: {:?}",
+            !row(qn).iter().any(|e| e.contains("Llm")),
+            "{qn} consumes a model it was handed and must carry no Permission[Llm]; got: {:?}",
+            row(qn)
+        );
+    }
+
+    // AND THE VOUCHING AUTHORITY IS DECLARED WHERE IT IS EXERCISED, which is the
+    // positive half: `render_task` mints a `Prompt[Trusted]` out of `List[String]`,
+    // so it vouches, and every caller up to `open_round` says so. Without this the
+    // prefix relaxation above could hide the authority going missing entirely.
+    for qn in ["guardians.Harness.render_task", "guardians.attempt", "guardians.open_round"] {
+        assert!(
+            row(qn).iter().any(|e| e.contains("Vouch")),
+            "{qn} mints trusted text and must declare Permission[Vouch]; got: {:?}",
             row(qn)
         );
     }
@@ -1224,10 +1293,11 @@ fn minting_checker_is_refused_by_lacks_permission() {
     // holds no `Llm` — its carrier is bare `mk`, so an audit of "what was this
     // checker given" comes back empty — and MINTS one instead.
     //
-    // IT USED TO HAVE A MIRROR. `bad_checker` was handed an `Llm` and CONSULTED
-    // it, refused by a second denial `-Model`. Sealing what `complete` returns
-    // (`LlmOutput`) made consulting harmless, so that denial and that fixture are
-    // both gone and `Checker.check` carries one denial rather than two.
+    // ITS MIRROR IS `consulting_checker`, and only this half is a refusal.
+    // `bad_checker` was handed an `Llm` and CONSULTED it, refused by a second
+    // denial `-Model`; that denial is gone and `Checker.check` carries one.
+    // Consulting is PERMITTED and harmless — the reply is a `Text` whose content
+    // nothing can read (WI-20260829-MCKTE).
     //
     // NEITHER LABEL SEES THE OTHER'S PROGRAM, which is what makes this a test
     // rather than a duplicate. Minting is not consulting, so `Model` is never
@@ -1266,7 +1336,7 @@ fn a_forged_candidate_program_is_refused_by_containment() {
     // THE SAME FINDING AS `forged_llm`, AT THE TYPE THE WHOLE PIPELINE RETURNS.
     // `Source`'s header says its text came from `generate` — "the only thing to do
     // with one is submit it to a `Checker`", and attacker data did not influence
-    // "a program generated from a Public prompt". A public constructor made both
+    // "a program generated from a Trusted prompt". A public constructor made both
     // advisory: `source(text: <mailbox bytes>)` mints a candidate program no model
     // ever wrote, and every guarantee about what a model was ASKED is then beside
     // the point.
@@ -1276,7 +1346,7 @@ fn a_forged_candidate_program_is_refused_by_containment() {
     // effect rows decline honestly (`{External, Error}` — nothing is acquired and
     // no model is called); `generate_from_content` EXISTS TO REFUSE the longer
     // attack that still goes through a model — and only one spelling of it, since
-    // routing the same bytes through `prompt_with`'s `Text[Public]` instruction
+    // routing the same bytes through `prompt_with`'s `Text[Trusted]` instruction
     // slot still loads (WI-20260829-MCKTE). This one skips generation entirely,
     // so no prompt guarantee, sound or not, bears on it.
     //
@@ -1302,22 +1372,276 @@ fn a_forged_candidate_program_is_refused_by_containment() {
 }
 
 #[test]
-fn a_checker_that_reads_what_a_model_said_is_refused() {
-    // BEING HANDED A MODEL IS FINE; READING IT IS NOT. `check` denies only
-    // acquisition, so a checker may hold an `Llm` and call it — what `LlmOutput`
-    // buys is that the answer is unreadable. This drives that: the fixture calls
-    // `text_of` and puts the reply in its verdict.
+fn the_empty_list_cannot_mint_trusted_text() {
+    // A REGRESSION GUARD FOR A HOLE THIS TICKET BRIEFLY OPENED. `join_texts` was
+    // label-polymorphic and preserves nothing at `nil`, so `join_texts(nil)` was a
+    // `Text[Trusted]` obtained with neither `Permission[Vouch]` nor `approved` — and
+    // the PREVIOUS design refused it, `requires releasable(body)` on `Email.send`
+    // catching the term. Moving the content tier to the mint is what let it through,
+    // since the mint is never reached.
     //
-    // THE SEAL IS THE ROW, NOT THE VISIBILITY, and this row exists because that
-    // was briefly got wrong. `internal` on `entity llm_output` hides the
-    // constructor and its projection, not a sibling operation, so a public
-    // `text_of` loaded clean here — measured. `Permission[Reveal]` is what
-    // refuses it.
+    // NARROWING `join_texts` TO `Untrusted` closes it and costs nothing: every caller
+    // joins mailbox content. WHAT FAILS WHEN BACKED OUT: restore the polymorphic
+    // signature (lib/llm.anthill) and this row alone goes green — measured.
+    assert_refused(
+        "empty_join",
+        "expected Text[Trust = Trusted], got Text[Trust = Untrusted]",
+    );
+}
+
+#[test]
+fn a_checker_holding_a_spec_typed_model_cannot_call_it() {
+    // THE OTHER HALF OF `a_checker_may_consult_a_model_and_learns_nothing`, and its
+    // header rests on it: that fixture holds a CONCRETE `FakeLlm`, whose `E` is `{}`,
+    // so the call incurs nothing its row does not declare. Written with a SPEC-typed
+    // `Llm` the same body is refused — the carrier's row parameter is undeclared, and
+    // `Checker.check` has no slot for it.
     //
-    // WHAT FAILS WHEN BACKED OUT: drop `Permission[Reveal]` from `text_of`
-    // (lib/llm.anthill) and this row alone goes green. Successor to
-    // `bad_checker`, which `-Model` used to refuse.
-    assert_refused("steering_checker", "undeclared effect: Permission[T = Reveal]");
+    // WITHOUT THIS ROW the acceptance next door cannot distinguish "consulting is
+    // permitted, and the spec-typed form is confined by the effect row" from "the row
+    // check happens to be vacuous here". It is the row, and only for a carrier whose
+    // effects are unknown — a concrete `LiveLlm` (`E = {External}`, which the row
+    // declares) would be admitted too. That is a coverage fact, not a security one:
+    // what makes consulting harmless is that the reply is unreadable.
+    let errs = errors_for_extra(
+        r#"
+        sort guardians.agent.SpecTypedChecker
+          import anthill.prelude.{String, List, Error, External, Permission}
+          import anthill.prelude.List.{nil, cons}
+          import anthill.reflect.{Symbol}
+          import guardians.{Checker, Source, CheckResult, Llm, Text, Prompt}
+          import guardians.CheckResult.{Rejected}
+          entity mk(oracle: Llm)
+
+          operation check(self: SpecTypedChecker, src: Source, spec: Symbol) -> CheckResult
+            effects {External, Error, -Permission[Llm]} =
+              let answer = self.oracle.complete(prompt(body: Text.untrusted(raw: "hm")))
+              Rejected(diagnostics: cons(head: "consulted", tail: nil))
+
+          provides Checker[C = SpecTypedChecker]
+        end
+        "#,
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: ?E")),
+        "a spec-typed carrier's row parameter is not covered by `check`: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_relabel_is_refused_by_the_constructor_seal() {
+    // WI-20260829-MCKTE'S OWN ACCEPTANCE: "a program that re-labels … is a LOAD
+    // ERROR naming the constructor and the scope it is internal to. A test that only
+    // asserts the seal loads is not evidence — drive the relabel and assert the
+    // refusal." This is that row, and until it existed the seal was measured by
+    // nothing: backing `internal` out of `entity text` left all nineteen fixtures
+    // byte-identical, so the whole mechanism was asserted in prose only.
+    //
+    // WHAT IT DRIVES is the CONSTRUCTOR half — a program choosing a label for bytes
+    // it did not author. Its bytes come from `Address.local`, a `String` field of a
+    // public entity, so the projection seal is not a second cause here; that half is
+    // `reads_text`. Together the two cover one `internal`.
+    //
+    // WHAT FAILS WHEN BACKED OUT: drop `internal` from `entity text`
+    // (lib/vocabulary.anthill) and THIS ROW and `reads_text` go red, and nothing
+    // else — measured. Before the seal this exact program loaded and mailed the
+    // mailbox to a colleague as trusted text.
+    assert_refused("relabel", "'text' is internal to 'guardians.Text'");
+}
+
+#[test]
+fn reading_a_texts_content_is_refused_by_the_projection_seal() {
+    // THE OTHER HALF OF THE SAME `internal`. §8.6 hides a constructor AND its field
+    // projection, and each needs its own program or half the gate is untested. This
+    // one takes a model's reply and puts it in `Rejected`'s `List[String]` — the
+    // example's only `String` sink a candidate can reach and a human reads.
+    //
+    // CONSULTING IS NOT THE OFFENCE, and `consulting_checker.anthill` is the control
+    // that says so: the same call, the reply discarded, ACCEPTED. What is refused is
+    // taking the content OUT of the lattice.
+    //
+    // IT IS THE SUCCESSOR TO `steering_checker`, whose refusal was
+    // `Permission[Reveal]` on a sealed `LlmOutput`. Both are gone; the refusal is
+    // not, and this row is what keeps that claim honest rather than asserted.
+    assert_refused("reads_text", "'raw' is internal to 'guardians.Text'");
+}
+
+#[test]
+fn the_runner_holds_the_vouching_authority_and_hands_the_result_down() {
+    // THE PRODUCER FOR `Triage.run`'s `wording`, and the positive half of
+    // `a_candidate_that_vouches_for_itself_is_refused_by_the_row`. Without it the
+    // design's premise — "the mint happens once, above the agent" — is a signature
+    // nothing satisfies, and every candidate fixture carries a parameter that exists
+    // only as a binder.
+    //
+    // HOW A PERMISSION IS GRANTED, since anthill has no `grant` construct: a
+    // `Permission` in a row is a DEMAND, and a caller satisfies it by declaring it in
+    // its own row, so the obligation propagates upward. That makes a SPEC's row a
+    // grant boundary in reverse — `Triage.run` declares no `Permission[Vouch]`, so no
+    // implementation may incur one, while `run_triage` above it declares one and may.
+    // It is `open_round`'s shape for the model authority, applied to the trust label.
+    //
+    // BOTH TIERS RUN HERE TOO, which is what this row drives that the refusals do
+    // not: the runner satisfies the ROW and must still discharge `approved(raw)` for
+    // the wording it mints. Measured — before the wording was added to the whitelist
+    // this load failed on the obligation, from inside `lib/` and with the authority
+    // in hand.
+    let errs = errors_for_extra(
+        r#"
+        namespace guardians
+          import anthill.prelude.{Permission, Error, External}
+          import guardians.{Triage, Mailbox, Report, Llm, Vouch, run_triage}
+
+          operation drive(t: Triage, box: Mailbox, llm: Llm) -> Report
+            effects {External, llm.E, Error, Permission[Vouch]} =
+              run_triage(t, box, llm)
+        end
+        "#,
+    );
+    assert!(
+        errs.is_empty(),
+        "a caller declaring the authority may drive the runner: {errs:#?}"
+    );
+
+    // AND THE AUTHORITY DOES NOT LEAK DOWNWARD. The same caller WITHOUT the
+    // declaration is refused, which is what makes the row above a grant and not
+    // decoration.
+    let denied = errors_for_extra(
+        r#"
+        namespace guardians
+          import anthill.prelude.{Error, External}
+          import guardians.{Triage, Mailbox, Report, Llm, run_triage}
+
+          operation drive_unauthorised(t: Triage, box: Mailbox, llm: Llm) -> Report
+            effects {External, llm.E, Error} =
+              run_triage(t, box, llm)
+        end
+        "#,
+    );
+    assert!(
+        denied
+            .iter()
+            .any(|e| e.contains("undeclared effect: Permission[T = Vouch]")),
+        "the vouching authority must not be assumed by a caller that omits it: {denied:#?}"
+    );
+}
+
+#[test]
+fn a_candidate_may_declare_its_own_trusted_producer() {
+    // A PINNED GAP, and it LOADS — the shelf `conceal.anthill` sits on. It is the
+    // class the four producer seals do not reach: `Text.trusted` is gated,
+    // `join_texts` is `Untrusted`-only, `render_task` declares its authority, and
+    // `entity text` is `internal` — and this candidate needs none of them, because
+    // it declares `operation launder(s: String) -> Text[Trusted]` itself.
+    //
+    // THE FIX IS NOT IN THIS EXAMPLE, and that is the finding. Body-less-and-called
+    // is the NORMAL shape here: twenty-one operations in `lib/` are declared with no
+    // body, every accepted fixture calls some of them, and the harness binds five
+    // names while a real deployment would bind the rest. A spec DECLARES and a
+    // deployment BINDS, so nothing at load separates a declaration awaiting its
+    // binding from one asserting a type its author cannot produce — and no seal in
+    // the vocabulary reaches a name the candidate invents.
+    //
+    // WHAT REACHES IT is a KERNEL check that a called body-less operation has some
+    // implementation by the end of the load. WI-1122 put the host-fn table on the KB
+    // BEFORE `load_all` so that late registration could be refused, so the
+    // information exists. Under such a check this program is ill-formed and stops
+    // loading — the right outcome, and this row is what notices. FILED AS
+    // WI-20260908-FJG8B; when it lands, delete the fixture and this test rather than
+    // repairing either.
+    //
+    // THE PREVIOUS DESIGN REFUSED IT BY ACCIDENT: `requires releasable(body)` on
+    // `Email.send` failed because `releasable(launder(…))` is nobody's row — the
+    // sink catching an ill-formed program while checking content, not the lattice
+    // working.
+    //
+    // WHY IT IS INERT: nothing runs a `Triage`. The pipeline generates and CHECKS;
+    // `run_triage` is `run`'s only caller and only a test drives it. So the missing
+    // implementation is never reached and no bytes move — an accident of the
+    // pipeline, not a property of the check.
+    //
+    // WHAT FAILS WHEN THE GAP CLOSES: this row. Written as an ACCEPTANCE so that a
+    // sink-side obligation, or a load-side check that a called body-less operation
+    // has a binding, reds it and forces the decision instead of passing silently.
+    let errs = errors_for("declared_mint");
+    assert!(
+        errs.is_empty(),
+        "the declared-producer gap is pinned as ACCEPTED; if this reds, it closed: {errs:#?}"
+    );
+}
+
+#[test]
+fn laundering_through_the_harness_is_refused_by_the_row() {
+    // THE THIRD ROUTE TO A `Text[Trusted]`, and the one that survived two rounds of
+    // closing the others. `Text.trusted` is gated and `join_texts` was narrowed to
+    // `Untrusted`; `render_task` still returned a `Prompt[Trusted]`, and
+    // `entity prompt(body: Text[Trust])`'s projection is public, so
+    // `h.render_task(spec, nil, nil).body` was a trusted text with neither tier.
+    //
+    // IT WAS A DECLARED `String -> Text[Trusted]` PATH, which is what the audit line
+    // in lib/vocabulary.anthill forbids: `feedback: List[T = String]` in, and a
+    // `String` carries no label — `m.from.local` is one and it is the attacker's.
+    //
+    // CLOSED BY AN HONEST ROW, NOT A SEAL. `render_task` really does vouch, so it
+    // declares `Permission[Vouch]`, and the authority propagates to `attempt` and
+    // `open_round` — where it sits beside `Permission[Llm]`, both of the pipeline's
+    // authorities entering at one point. The candidate still HOLDS a harness
+    // (`entity file_harness` is public); what it cannot do is use the operation that
+    // vouches, which is a stronger statement than hiding the constructor would make.
+    //
+    // WHAT FAILS WHEN BACKED OUT: drop `Permission[Vouch]` from
+    // `Harness.render_task` and this row alone goes green — measured.
+    assert_refused("harness_launder", "undeclared effect: Permission[T = Vouch]");
+}
+
+#[test]
+fn a_candidate_that_vouches_for_itself_is_refused_by_the_row() {
+    // THE HEADLINE OF WI-20260829-MCKTE, and the single-cause probe for it. The
+    // content is a line the organisation HAS approved, so `Text.trusted`'s
+    // `requires approved(raw)` discharges and only the authority is left.
+    //
+    // PROVENANCE IS ASSERTED, NOT DERIVED — the same bytes are the organisation's
+    // when it writes them and the attacker's when he does — so vouching is an
+    // AUTHORITY. `Triage.run`'s spec row grants none, so no generated agent can mint
+    // a `Text[Trusted]`, and the refusal never inspects the argument: one cause kills
+    // every relabel route, which is why `Address`/`MessageId` needed no change.
+    //
+    // WHAT FAILS WHEN BACKED OUT: drop `effects {Permission[Vouch]}` from
+    // `Text.trusted` and this row alone goes green — `uncleared_body` stays red on
+    // its `approved` obligation, which is what keeps the two tiers apart.
+    assert_refused("vouching", "undeclared effect: Permission[T = Vouch]");
+}
+
+#[test]
+fn a_checker_may_consult_a_model_and_learns_nothing() {
+    // CONSULTING IS PERMITTED; ACQUIRING IS NOT. `check` denies acquisition, and
+    // nothing denies the call itself — `complete` takes an unparameterized `Prompt`
+    // because `summarize` sends untrusted mailbox content to a model, and
+    // `entity prompt(body: Text[Trust])` is label-preserving, so building one takes
+    // no authority. This fixture holds a `FakeLlm`, calls it, and LOADS.
+    //
+    // WHAT MAKES IT HARMLESS is that the reply teaches nothing: `complete` returns
+    // `Text[Untrusted]`, and WI-20260829-MCKTE sealed `Text`'s constructor and its
+    // `raw` projection, so no text's content reaches a `String`. The checker holds a
+    // value it cannot read, cannot render into `Rejected`'s `List[String]`, and
+    // cannot return.
+    //
+    // THE VERDICT IS UNCHANGED ACROSS THREE DESIGNS, only the reason moved:
+    // `bad_checker` was refused by a `-Model` denial; then accepted because
+    // `complete` returned a sealed `LlmOutput`; and accepted now because the label's
+    // own confinement does what the wrapper did. An earlier draft of this row
+    // asserted a REFUSAL on the ground that a checker "cannot prompt" — that was
+    // false, and the fixture had been rewritten to manufacture the refusal by
+    // calling `Text.trusted`. Both are reverted.
+    //
+    // WHAT IS NO LONGER MEASURED ANYWHERE: reading a model's reply. Nothing can read
+    // any text's content, so there is nothing left to gate; a `Text`-valued field on
+    // `CheckResult` would reopen it.
+    let errs = errors_for("consulting_checker");
+    assert!(
+        errs.is_empty(),
+        "a checker may hold a concrete model and call it: {errs:#?}"
+    );
 }
 
 #[test]
@@ -1613,9 +1937,9 @@ fn a_carriers_effect_row_reaches_the_caller_that_was_handed_it() {
 sort guardians.agent.Caller
   import anthill.prelude.{{Error}}
   import guardians.{{Harness, Prompt, Source, {carrier}}}
-  import guardians.TrustLevel.{{Public}}
+  import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {{Error}} = h.generate(llm, p)
 end
 "#
@@ -1706,9 +2030,9 @@ fn a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_time
 sort guardians.agent.Caller
   import anthill.prelude.{{Error, Branch}}
   import guardians.{{Harness, Prompt, Source, {carrier}}}
-  import guardians.TrustLevel.{{Public}}
+  import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {effects} = h.generate(llm, p)
 end
 "#
@@ -1796,7 +2120,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
     // THE WHOLE ROUND: `render_task` → `generate` → `check`. Everything else in this
     // file calls the checker directly; this is the one row where the MODEL REPLY becomes
     // the candidate, so it is what makes the fake oracle earn its place, and the only
-    // one that exercises the `Prompt[Public]` staging together with the verdict.
+    // one that exercises the `Prompt[Trusted]` staging together with the verdict.
     //
     // DRIVEN THROUGH THE CARRIERS, NOT THROUGH `guardians.attempt`, and the reason is
     // measured rather than assumed: calling `attempt` from a host dies
@@ -1878,7 +2202,7 @@ fn harness_rejects_the_exfiltrating_agent_with_a_repairable_diagnostic() {
     // merely that something failed — is what pins the repair loop as usable.
     let errs = check_candidate(&agent_source("leak")).expect_err("must be rejected");
     assert!(
-        errs.iter().any(|e| e.contains("expected Text[Trust = Public], got LlmOutput")),
+        errs.iter().any(|e| e.contains("expected Text[Trust = Trusted], got Text[Trust = Untrusted]")),
         "expected the taint diagnostic; got: {errs:#?}"
     );
 }
@@ -1941,7 +2265,7 @@ fn an_agent_can_inline_the_body_projection() {
             .unwrap_or_else(|| panic!("the leak must stay refused ({label})"));
         assert!(
             errs.iter().any(|e| e.contains(
-                "expected Text[Trust = Public], got LlmOutput"
+                "expected Text[Trust = Trusted], got Text[Trust = Untrusted]"
             )),
             "an inlined projection must preserve the Untrusted label ({label}); got: {errs:#?}",
         );
@@ -1975,18 +2299,20 @@ fn a_wrong_sort_at_a_label_polymorphic_parameter_is_refused() {
     let candidate = r#"
 sort guardians.agent.MisprojectingTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Email, Mailbox, Report, Llm, summarize,
+  import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
                     Verdict, categories_of, join_texts}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let joined = join_texts(msgs)
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = MisprojectingTriage]
 end
@@ -2000,26 +2326,26 @@ end
 }
 
 #[test]
-fn a_model_cannot_mint_releasable_text() {
+fn a_model_cannot_mint_trusted_text() {
     // REGRESSION for a hole that was real and had a working exploit.
     //
     // `Llm.complete` was typed `?t` in, `?t` out for one revision. Preserving a
     // label is correct for a PURE transformation; a model is not one. So a
-    // Public prompt yielded Public text, Public is what the sink accepts, and
-    // an agent could mint releasable output out of nothing and mail it away —
+    // Trusted prompt yielded Trusted text, Trusted is what the sink accepts, and
+    // an agent could mint trusted output out of nothing and mail it away —
     // measured loading clean before the fix.
     //
     // Every other refusal test here starts from mailbox content, so all of them
     // were blind to it: the exploit uses no untrusted input at all.
     assert_refused(
         "minting",
-        "expected Text[Trust = Public], got LlmOutput",
+        "expected Text[Trust = Trusted], got Text[Trust = Untrusted]",
     );
 }
 
 #[test]
 fn code_generation_may_not_read_content() {
-    // THE STAGING CLAIM, enforced. `Harness.generate` demands `Prompt[Public]`,
+    // THE STAGING CLAIM, enforced. `Harness.generate` demands `Prompt[Trusted]`,
     // and `prompt_with` makes a prompt Untrusted the moment mailbox text enters
     // it — so an agent whose CODE an injected email helped design cannot be
     // produced at all. Refused at construction, not at use.
@@ -2029,7 +2355,7 @@ fn code_generation_may_not_read_content() {
     // claim was prose sitting in a type slot.
     assert_refused(
         "generate_from_content",
-        "expected Prompt[Trust = Public], got Prompt[Trust = Untrusted]",
+        "expected Prompt[Trust = Trusted], got Prompt[Trust = Untrusted]",
     );
 }
 
@@ -2187,17 +2513,19 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
         r#"
         sort guardians.agent.TidyTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Email, Mailbox, Report, Llm, summarize,
+          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
                             Verdict, categories_of}
+          import guardians.TrustLevel.{Trusted}
           entity mk
 
-          operation run(self: TidyTriage, box: Mailbox, llm: Llm) -> Report
+          operation run(self: TidyTriage, box: Mailbox, llm: Llm,
+                        wording: Text[Trusted]) -> Report
             ensures mentions_all(result)
             effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
               Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-                     summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+                     summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
           provides Triage[C = TidyTriage]
         end
@@ -2284,18 +2612,20 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
         r#"
         sort guardians.agent.ShadowTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Email, Mailbox, Report, Llm, summarize,
+          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
                             Verdict, categories_of}
+          import guardians.TrustLevel.{Trusted}
           import guardians.agent.{mentions_all}
           entity mk
 
-          operation run(self: ShadowTriage, box: Mailbox, llm: Llm) -> Report
+          operation run(self: ShadowTriage, box: Mailbox, llm: Llm,
+                        wording: Text[Trusted]) -> Report
             ensures mentions_all(result)
             effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
               Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-                     summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+                     summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
           provides Triage[C = ShadowTriage]
         end
@@ -2411,9 +2741,9 @@ fn a_denial_is_not_evaded_by_projecting_the_label_it_denies() {
 sort guardians.agent.Caller
   import anthill.prelude.{{Error, External}}
   import guardians.{{Harness, Prompt, Source, {carrier}}}
-  import guardians.TrustLevel.{{Public}}
+  import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Public]) -> Source
+  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {effects} = h.generate(llm, p)
 end
 "#

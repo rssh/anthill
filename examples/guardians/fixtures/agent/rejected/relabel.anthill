@@ -1,0 +1,43 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` that RE-LABELS, REFUSED BY CONTAINMENT.
+--
+-- THIS IS WI-20260829-MCKTE'S OWN ACCEPTANCE, and for a long time it loaded
+-- clean: `text(raw: <anything>)` chose its own label, so any `Text[Untrusted]`
+-- became a `Text[Trusted]` in one line and the lattice pinned a label at a SINK
+-- while saying nothing about how a label was ACQUIRED.
+--
+-- IT TAKES ITS BYTES FROM AN ADDRESS AND JOINS NOTHING, and both are needed to
+-- keep it to ONE cause. `m.body` would need `.raw`, whose seal is a second cause
+-- (driven by `reads_text.anthill`); and routing the result through `join_texts`
+-- adds a third, since that operation is `Untrusted`-only, so the send would be
+-- refused on the LABEL even with the seal removed — measured, and it is what an
+-- earlier draft of this file did. `Address.local` is a `String` field of a public
+-- entity, so the bytes are still attacker-chosen and the only thing refused here
+-- is naming the constructor.
+--
+-- WHAT REFUSES IT is `internal entity text` (lib/vocabulary.anthill, §8.6): the
+-- two doors `untrusted` and `trusted` are the only way in, each pinning its own
+-- level, so no program chooses a label for bytes it did not author. Backing the
+-- `internal` out reds THIS ROW — measured; before it, this exact file loaded and
+-- mailed the mailbox to a colleague as trusted text.
+-- ================================================================
+sort guardians.agent.RelabelTriage
+  import anthill.prelude.{List, Error, External}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    Verdict, categories_of}
+  import guardians.TrustLevel.{Trusted}
+  entity mk
+
+  operation run(self: RelabelTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: text(raw: box.owner.local))
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = RelabelTriage]
+end

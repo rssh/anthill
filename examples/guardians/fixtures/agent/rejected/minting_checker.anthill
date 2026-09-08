@@ -6,13 +6,12 @@
 -- so every audit of "what was this checker handed" comes back empty — and simply
 -- MINTS one.
 --
--- ITS FORMER TWIN IS GONE. `bad_checker` smuggled an `Llm` into its own carrier
--- and CONSULTED it, and `-Model` refused it. Consulting is now harmless: what
--- `complete` returns is a sealed `LlmOutput`, unreadable by generated code, so a
--- checker that calls a model learns nothing from it and cannot be steered by it.
--- Minting is not consulting. `Llm` is the spec and declares no mint; the
--- carriers do, and `FakeLlm.open`'s `Permission[Llm]` reaches a row that DENIES
--- it (proposal 064).
+-- ITS FORMER TWIN IS `../consulting_checker.anthill`, AND ONLY ONE OF THE TWO IS
+-- A REFUSAL. `bad_checker` smuggled an `Llm` into its own carrier and CONSULTED
+-- it; consulting is permitted and harmless, the reply being a `Text` whose content
+-- nothing can read. MINTING IS NOT CONSULTING, and this file is the minting half:
+-- `Llm` is the spec and declares no mint; the carriers do, and `FakeLlm.open`'s
+-- `Permission[Llm]` reaches a row that DENIES it (proposal 064).
 --
 -- The refusal is on the BODY leg — the declared row is the spec's, verbatim — so
 -- it is independent of wide_row.anthill's declared-row leg.

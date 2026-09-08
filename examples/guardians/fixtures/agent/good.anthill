@@ -28,13 +28,15 @@
 -- ================================================================
 sort guardians.agent.GoodTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Email, Mailbox, Report, Llm, summarize,
+  import guardians.{Text, Triage, Email, Mailbox, Report, Llm, summarize,
                     Verdict, categories_of}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
   -- The row and the postcondition are RESTATED; the row half is checked
   -- against the spec's (an override may not widen it).
-  operation run(self: GoodTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: GoodTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       -- `Email.fetch` is External, so it is called ONCE and the result reused.
@@ -43,7 +45,7 @@ sort guardians.agent.GoodTriage
       let msgs = Email.fetch(box)
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = GoodTriage]
 end

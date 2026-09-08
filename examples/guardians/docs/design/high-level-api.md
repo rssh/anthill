@@ -184,6 +184,12 @@ cannot make one — withholding a handle prevents reach, but the *signature* the
 says nothing, and the reader must audit a parameter list instead of reading a
 contract.
 
+> **SUPERSEDED IN PART, 2026-09-07 (WI-20260829-MCKTE).** `LlmOutput` and its
+> `Permission[Reveal]` are gone; `Llm.complete` returns an ordinary
+> `Text[Untrusted]`. The reasoning below is kept because it is how the `-Model`
+> question was settled, and its conclusion still holds. The canonical note — what
+> replaced the wrapper, and what it does NOT buy — is in `measured.md` beside D1.
+
 > **Built, 2026-08-26; HALF OF IT RETIRED 2026-08-29.** A project sort registered
 > with `fact Effect[T = Model]` is a label, and `effects.md` §"Families" remains
 > unfiled. But `-Model` is gone: `Llm.complete` returns a sealed `LlmOutput`, so a

@@ -1,0 +1,48 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` that MINTS FROM NOTHING, REFUSED BY THE LABEL.
+--
+-- THE REGRESSION GUARD FOR A HOLE THIS TICKET BRIEFLY OPENED, and it is here
+-- because the previous design caught what the new one nearly did not.
+--
+-- `join_texts` was label-POLYMORPHIC — `List[T = Text[?t]] -> Text[?t]`,
+-- "preserves the label of its parts". Correct for every non-empty list, and
+-- vacuous at `nil`: with no parts there is no label to preserve, so `?t` took
+-- whatever the sink asked and `join_texts(nil)` was a `Text[Trusted]` obtained
+-- with neither `Permission[Vouch]` nor the `approved` obligation.
+--
+-- WHAT MAKES IT A REGRESSION RATHER THAN A CURIOSITY: the OLD design refused this
+-- program. `Email.send` carried `requires releasable(body)`, and `join_texts(nil)`
+-- is not an approved term, so the sink caught it. Moving the content tier to the
+-- mint (WI-20260829-MCKTE) is what let it through — the mint is never reached.
+-- Measured both ways.
+--
+-- WHAT CLOSES IT is narrowing `join_texts` to `Untrusted` (lib/llm.anthill), which
+-- costs nothing: every caller joins mailbox content. Restore the polymorphic
+-- signature and THIS ROW loads — that is the back-out, and it is the reason this
+-- file is a fixture rather than a paragraph.
+--
+-- THE BODY IS EMPTY, so nothing an attacker wrote ever travelled this way; what it
+-- bought was an unapproved body with no content in it. Small, and refused anyway,
+-- because a sentence about what a `Text[Trusted]` implies is worth keeping true.
+-- ================================================================
+sort guardians.agent.EmptyJoinTriage
+  import anthill.prelude.{List, Error, External}
+  import anthill.prelude.List.{nil}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    Verdict, categories_of, join_texts}
+  import guardians.TrustLevel.{Trusted}
+  entity mk
+
+  operation run(self: EmptyJoinTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: join_texts(nil))
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = EmptyJoinTriage]
+end

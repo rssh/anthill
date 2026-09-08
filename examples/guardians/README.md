@@ -15,14 +15,14 @@ Each is refused by a **different** mechanism. Four of them:
 
 ```
 rejected/leak.anthill: type mismatch in send.body (op-arg):
-    expected Text[Trust = Public], got LlmOutput
+    expected Text[Trust = Trusted], got Text[Trust = Untrusted]
 ```
 The article's attack, as generated code: summarize the mailbox, mail the summary
-to `it@othercorp.com`. Refused twice over, and the message names the outer half:
-what a model returns is a sealed `LlmOutput`, which is not a `Text` at all, and
-the `Text` inside it carries the label its input had — `summarize` preserves it,
-so nothing that went through the mailbox comes back `Public`.
-**Summarizing does not launder.**
+to `it@othercorp.com`. A model's reply is `Text[Untrusted]`, always — `complete`
+returns nothing else, whatever went in — so a summary of the mailbox cannot be
+`Trusted` and the sink will not take it. **Summarizing does not launder**, and
+neither does anything else: there is no operation from an untrusted value to a
+trusted one.
 
 ```
 'WideRowTriage' overrides 'Triage.run' but does not refine it: the override
@@ -36,12 +36,14 @@ Leaks nothing; claims a capability the spec never granted. One token apart from
 manipulable as the thing it verifies. There are two routes to a model — being
 handed one, and acquiring one — and only the second is still denied.
 
-A checker CAN now be handed an `Llm` in its own carrier and call it. That used to
-be `rejected/bad_checker.anthill`, refused by a `-Model` label on the row; it is
-accepted today, because what `complete` returns is an `LlmOutput` — sealed, with
-no projection and no pattern to match. The call hands the checker a token it
-cannot read, so it learns nothing and cannot be steered. Being steered requires
-reading the answer, and the type forbids that.
+A checker CAN be handed a model in its own carrier and call it
+(`fixtures/agent/consulting_checker.anthill` loads). Consulting takes no
+authority, and should not: `complete` accepts a prompt of any label because
+`summarize` sends untrusted mailbox content to a model. What makes the call
+harmless is that the REPLY teaches nothing — `Text`'s content is reachable only
+through an `internal` projection, so no text's bytes can become a `String`. The
+checker holds a value it can neither read, nor render into its diagnostics, nor
+return. Being steered requires reading the answer, and nothing can.
 
 ```
 rejected/minting_checker.anthill: check.effects (op-effects):
@@ -64,8 +66,8 @@ rejected/outbox.anthill: run.effects (op-effects): expected declared:
 The article's policy has two halves — *"forbid data flow from `fetch_email`'s
 result to the `body` parameter of `send_email` **with an external email address as
 the target**"* — and this is the second one, `Email.send` being the sink the
-article names. The body it mails is a literal
-`Public` string, so nothing flows and no label is violated; it is refused because
+article names. The body it mails is the `Text[Trusted]` the task
+handed it, so nothing flows and no label is violated; it is refused because
 the recipient is outside the organisation. `Email.send` demands
 `Permission[Outbox]` **guarded on its target**, so mailing a colleague needs no
 authority at all (`fixtures/agent/internal_send.anthill`, one token away, loads)
@@ -96,12 +98,12 @@ model. The capability is the SORT you acquire; there is no marker sort beside it
 
 | file | what |
 |---|---|
-| `lib/vocabulary.anthill` | the trust lattice and nothing else that is not it: `TrustLevel`, `Text[Trust]`, and the one remaining project effect kind (`Filesystem`) |
-| `lib/email.anthill` | the **email service** and every email-shaped declaration with it: `Message[Trust]`, `MessageId`, `Address`, `Mailbox`, the `Outbox` capability, `in_org`/`external_addr`, `releasable`, and `Email.fetch` / `Email.send` — the article's source and sink, adjacent |
+| `lib/vocabulary.anthill` | the trust lattice and nothing else that is not it: `TrustLevel`, `Text[Trust]` with its two doors, the `Vouch` capability, the `approved` whitelist, and the one remaining project effect kind (`Filesystem`) |
+| `lib/email.anthill` | the **email service** and every email-shaped declaration with it: `Message[Trust]`, `MessageId`, `Address`, `Mailbox`, the `Outbox` capability, `in_org`/`external_addr`, and `Email.fetch` / `Email.send` — the article's source and sink, adjacent |
 | `lib/observe.anthill` | the **only** vocabulary the model may write at run time — a closed `Feature` enum with no constructor naming an address, a tool, or an action |
-| `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Llm]`-carrying `open`, answering in a sealed `LlmOutput` |
+| `lib/llm.anthill` | the LLM as a **spec with interchangeable carriers** (`LiveLlm` / `FakeLlm`), on the `anthill.persistence.Store` pattern — and, since proposal 064, as a **capability object**: `internal` constructors, minted by a `Permission[Llm]`-carrying `open`, answering in ordinary `Text[Untrusted]`, confined by the label rather than by a wrapper |
 | `lib/spec.anthill` | `Triage` — the task, as a spec the generated agent must provide — and what is SPECIFIC to it: `Category`, `Report`, `Verdict`, `categories_of`, `choose_recipient`, `mentions_all`, and the `verdict_is_not_silent` constraint |
-| `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Llm]` — it may not ACQUIRE a model; being handed one is harmless, since `LlmOutput` is unreadable |
+| `lib/harness.anthill` | the generation loop as declarations: `check` carries `-Permission[Llm]` — it may not ACQUIRE a model; being handed one is harmless, since it cannot mint the `Text[Trusted]` a prompt needs |
 | `lib/tasks.anthill` | `summarize` and `observe`, built on the one primitive rather than bound per task |
 | `lib/classify.anthill` | what counts as suspicious — rules in the KB, not a prompt |
 | `lib/gate.anthill` | the trust partition, as a policy: what the candidate DECLARED and what it ASSERTED, asked of a discardable layer |

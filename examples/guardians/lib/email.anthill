@@ -31,7 +31,6 @@ end
 
 namespace guardians
   import anthill.prelude.{String}
-  import guardians.{Text}
 
   entity MessageId(value: String)
   entity Address(local: String, domain: String)
@@ -46,38 +45,13 @@ namespace guardians
      `Email.send` reads to decide whether it needs `Permission[Outbox]`. >}
   rule in_org(?a)
   rule external_addr(?a) :- not(in_org(?a))
-
-  -- WHAT AN AGENT MAY PUT IN AN OUTGOING BODY. `Text[Public]` says the body
-  -- carries no label that forbids release; it does not say the organisation
-  -- meant to send it. This does, and it is a different KIND of statement: the
-  -- label is about PROVENANCE and is decided by the typer, this is about
-  -- CONTENT and is proved from the KB. lib/observe.anthill closes what the
-  -- model may say on the way in; this closes what an agent may say on the way
-  -- out, and the two are the same instinct at opposite ends.
-  --
-  -- IT IS A RELATION, NOT AN ENUM, and the difference is deliberate: an
-  -- outgoing body is `Text`, so the closed set is a set of VALUES a deployment
-  -- can extend, not a sort a deployment would have to recompile against.
-  --
-  -- LIBRARY, NOT DEPLOYMENT, and the placement is load-bearing rather than
-  -- tidy: `Email.send`'s precondition must be dischargeable with `lib/` alone,
-  -- or `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`
-  -- — which loads the library WITHOUT any deployment — would fail on the
-  -- precondition instead of on the missing authority, and stop measuring the
-  -- closed default it exists for.
-  {< Which text the organisation has cleared for release. A statement about CONTENT,
-     proved from the KB at the call site — not about provenance, which is the
-     `Text[Public]` label the typer decides. A deployment extends the set by
-     asserting rows; `Email.send` may carry nothing else. >}
-  rule releasable(?t)
-  fact releasable(text(raw: "routine compliance copy"))
 end
 
 sort guardians.Email
   import anthill.prelude.{List, Unit, Error, External, Permission}
   import guardians.{Text, Message, MessageId, Address, Mailbox, Outbox,
-                    external_addr, releasable}
-  import guardians.TrustLevel.{Untrusted, Public}
+                    external_addr}
+  import guardians.TrustLevel.{Untrusted, Trusted}
 
   operation fetch(box: Mailbox) -> List[Message[Untrusted]]
     effects {External, Error}
@@ -94,32 +68,39 @@ sort guardians.Email
   -- THE CONSEQUENCE: `Triage.run`'s spec row grants no `Permission[Outbox]`, so no
   -- generated triage can mail outside the organisation — a property of the SPEC.
   --
-  -- BOTH TIERS OF ONE POLICY, SIDE BY SIDE. The row states what AUTHORITY the
-  -- call consumes and is decided by the typer; `requires` states an OBLIGATION
-  -- the caller must discharge and is proved from the KB at the call site
-  -- (§5.4). They fail differently and catch different programs — the row
-  -- catches `it@othercorp.com` (rejected/outbox.anthill), the precondition
-  -- catches a body the organisation never cleared (rejected/uncleared_body.anthill).
+  -- NO PRECONDITION HERE, AND THAT IS THE TICKET'S DOING (WI-20260829-MCKTE).
+  -- This operation used to carry `requires releasable(body)` beside the row —
+  -- the two contract tiers side by side, one deciding AUTHORITY and one an
+  -- OBLIGATION (§5.4). Both tiers survive; they moved to `Text.trusted`, where
+  -- the content is a literal and the obligation can actually be discharged. A
+  -- body merely LET-BOUND to the cleared line already failed it here — measured —
+  -- so the precondition could not survive trusted text being handed to an agent
+  -- instead of minted by it.
   --
-  -- WHY THE PRECONDITION IS ON `body` AND NOT ON `to`, which is where the
-  -- obvious `deliverable(to)` would put it. TWO reasons, and only the second
-  -- still bites. The first was a defect and is FIXED: a precondition naming `to`
-  -- is unprovable at exactly the two call sites whose recipient the checker
-  -- cannot read — rejected/computed_recipient.anthill and
-  -- rejected/letbound_recipient.anthill — and its diagnostic used to PREEMPT the
-  -- effect check there, so both fixtures stopped reporting the missing
-  -- `Permission[Outbox]` and stopped measuring the conditional permission they
-  -- exist for. WI-20260830-JM7A8 closed that, and measured.md C2a carries the
-  -- re-run: both lines now arrive in one load, and
-  -- rejected/uncleared_external.anthill is the fixture that keeps them arriving.
-  -- What remains is the reason that does not depend on a defect: a precondition
-  -- on `to` would DUPLICATE what the guard already decides, and it would still
-  -- have to be dischargeable from lib/ alone — see the placement note on
-  -- `releasable` above.
+  -- WHAT `body: Text[Trusted]` NOW CARRIES is the result of both: one cannot exist
+  -- unless someone holding `Permission[Vouch]` vouched for content the organisation
+  -- had approved. So the sink states one thing and states it
+  -- once, and `rejected/uncleared_body.anthill` is refused where the vouching
+  -- happens rather than where the mail is sent.
+  --
+  -- THAT SENTENCE WAS BRIEFLY FALSE, and the exception is worth recording because
+  -- the OLD design caught what the new one nearly did not. A label-polymorphic
+  -- `join_texts` preserves nothing at `nil`, so `join_texts(nil)` was a
+  -- `Text[Trusted]` obtained with neither tier — and `requires releasable(body)`
+  -- HERE used to refuse it, while the mint is never reached. Narrowing `join_texts`
+  -- to `Untrusted` (lib/llm.anthill) closed it; rejected/empty_join.anthill is the
+  -- regression guard, and restoring the polymorphic signature reds it.
+  --
+  -- THE TWO-TIER READING IS NOT LOST, only relocated: measured.md C2a's property
+  -- — that a precondition must not PREEMPT the effect check at one call — is now
+  -- measured at the mint, where an unapproved body reports the obligation AND the
+  -- missing `Permission[Vouch]` in one load, and `uncleared_external` reports
+  -- those two plus `Permission[Outbox]`. WI-20260830-JM7A8 is what keeps them
+  -- arriving together.
   {< Send one message. Demands `Permission[Outbox]` only when the recipient is
-     outside the organisation, and only ever carries a body the organisation has
-     cleared for release. >}
-  operation send(to: Address, body: Text[Public]) -> Unit
-    requires releasable(body)
+     outside the organisation. The body is a `Text[Trusted]`, which cannot exist
+     unless the organisation vouched for its content — both who vouched
+     (`Permission[Vouch]`) and what was vouched for (`approved`). >}
+  operation send(to: Address, body: Text[Trusted]) -> Unit
     effects {External, Error, (Permission[Outbox] :- external_addr(to))}
 end

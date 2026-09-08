@@ -1,0 +1,56 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` that CONSULTS a model, ACCEPTED.
+--
+-- CONSULTING IS PERMITTED, AND HARMLESS, AND THIS FILE IS THE CONTROL THAT SAYS
+-- SO. `check` denies ACQUISITION (`-Permission[Llm]`); being handed a model in
+-- one's own carrier and calling it is denied by nothing, and should not be:
+-- `complete` takes an unparameterized `Prompt` on purpose, because `summarize`
+-- sends untrusted mailbox content to a model and that is the task. Nor does
+-- building the prompt take any authority — `entity prompt(body: Text[Trust])` is
+-- label-PRESERVING, so an untrusted body makes an untrusted prompt and nothing is
+-- forged.
+--
+-- THE CARRIER IS CONCRETE, AND THAT IS LOAD-BEARING RATHER THAN INCIDENTAL. The
+-- oracle is a `FakeLlm`, whose `E` is `{}`, so the call incurs nothing this row
+-- does not already declare. Written with a SPEC-typed `Llm` the same body is
+-- REFUSED — `undeclared effect: ?E`, the carrier's row parameter, which
+-- `Checker.check` has no slot for. So the pipeline's own shape does confine a
+-- checker's model use, but by the effect ROW and only for a carrier whose effects
+-- are unknown; it is not a statement about prompts, and a concrete `LiveLlm`
+-- (`E = {External}`, which this row declares) would be admitted too.
+--
+-- WHAT MAKES IT HARMLESS IS THAT THE REPLY TEACHES NOTHING. `complete` returns a
+-- `Text[Untrusted]`, and since WI-20260829-MCKTE sealed `Text`'s constructor and
+-- its `raw` projection, no text's content can reach a `String` at all. So this
+-- checker holds a value it cannot read, cannot render into its `List[String]`
+-- diagnostics, and cannot return — `check` returns a `CheckResult`. It learns
+-- nothing from the call and cannot be steered by it.
+--
+-- IT IS THE SUCCESSOR TO `bad_checker`, TWICE OVER, and the history is the point.
+-- `bad_checker` consulted a model and was refused by a `-Model` label on the row.
+-- That label went away when `complete` began returning a sealed `LlmOutput`,
+-- unreadable by generated code, and the fixture was accepted. `LlmOutput` has now
+-- gone too — its `text_of` had no caller outside a refused program, and the
+-- general seal on `Text` provides what the wrapper provided for one sort. The
+-- verdict is unchanged across all three designs; only the reason has moved, from a
+-- denial, to a special-purpose wrapper, to the label's own confinement.
+--
+-- WHAT IT IS NOT A CONTROL FOR: there is no longer any check that fires on
+-- READING a model's reply, because nothing can read any text's content. Add a
+-- `Text`-valued field to `CheckResult` and that question reopens.
+-- ================================================================
+sort guardians.agent.ConsultingChecker
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
+  import guardians.{Checker, Source, CheckResult, FakeLlm, Text, Prompt}
+  import guardians.CheckResult.{Rejected}
+  entity mk(oracle: FakeLlm)
+
+  operation check(self: ConsultingChecker, src: Source, spec: Symbol) -> CheckResult
+    effects {External, Error, -Permission[Llm]} =
+      let answer = self.oracle.complete(prompt(body: Text.untrusted(raw: "is this fine?")))
+      Rejected(diagnostics: cons(head: "the oracle was consulted", tail: nil))
+
+  provides Checker[C = ConsultingChecker]
+end

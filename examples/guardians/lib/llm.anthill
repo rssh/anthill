@@ -14,35 +14,36 @@ enum guardians.Prompt
   entity prompt(body: Text[Trust])
 end
 
--- The authority to READ a model's answer — a different power from
--- `Permission[Llm]`, the authority to obtain one. A generated row grants neither.
-sort guardians.Reveal
-end
-
--- WHAT A MODEL RETURNED, and what retired the `Model` effect label: a trust label
--- on a value is strippable (WI-20260829-MCKTE), an opaque wrapper is not. Not
--- parameterized — a model's answer is always `Text[Untrusted]`, so there is no
--- relationship for a variable to hold.
-sort guardians.LlmOutput
-  import anthill.prelude.{Permission}
-  import guardians.{Text, Reveal}
-  import guardians.TrustLevel.{Untrusted}
-
-  internal entity llm_output(value: Text[Untrusted])
-
-  -- GATED ON THE ROW, NOT ON VISIBILITY, and the difference is measured:
-  -- `internal` hides the constructor and its projection but NOT a sibling
-  -- operation, so a public `text_of` loaded clean for a checker reading
-  -- `text_of(llm.complete(p))`. `Permission[Reveal]` is what refuses it
-  -- (rejected/steering_checker.anthill). Reading is not declassifying — the
-  -- result is `Text[Untrusted]`, which the sink still refuses.
-  operation text_of(o: LlmOutput) -> Text[Untrusted]
-    effects {Permission[Reveal]} = o.value
-end
+-- WHAT A MODEL RETURNS IS ORDINARY UNTRUSTED TEXT, and it used to be a sealed
+-- `LlmOutput` with a `Permission[Reveal]`-gated `text_of` beside it. Both are
+-- gone (WI-20260829-MCKTE), and what removed them is that the general mechanism
+-- grew strong enough to subsume the special one.
+--
+-- THE OLD JUSTIFICATION WAS "A TRUST LABEL IS STRIPPABLE, AN OPAQUE WRAPPER IS
+-- NOT", and it was true when written: `text(raw: u.raw)` re-labelled anything in
+-- one line, so a label could not carry the weight and an opaque wrapper had to.
+-- Since `Text`'s constructor became `internal` and its `raw` projection with it,
+-- NO text's content can reach a `String` at all, and no `Text[Trusted]` can be
+-- minted without `Permission[Vouch]`. A model's reply is confined by exactly the
+-- same two facts that confine a mailbox body — so the wrapper was restating the
+-- label's own guarantee in a second vocabulary.
+--
+-- AND `text_of` HAD NO CALLER OUTSIDE A REFUSED PROGRAM. Its one use in the
+-- whole example was the checker fixture that consulted a model, which is the pattern
+-- docs/design/measured.md warns about — a vocabulary appearing only in refused
+-- programs is indistinguishable from one that refuses everything — and the same
+-- finding that deleted `widen`/`declassify` from the vocabulary.
+--
+-- WHAT IS GIVEN UP, stated because it is real: a `Text`-valued field added to
+-- `CheckResult` later would open a channel `Permission[Reveal]` would have caught
+-- and the label alone does not, an `Untrusted` diagnostic being unremarkable. That
+-- is a specific future guard traded for one less mechanism, and it is the trade
+-- this example already made once.
 
 sort guardians.Llm
   import anthill.prelude.{Error}
-  import guardians.{Prompt, Text, LlmOutput}
+  import guardians.{Prompt, Text}
+  import guardians.TrustLevel.{Untrusted}
   import guardians.TrustLevel.{Untrusted}
 
   sort C = ?
@@ -54,7 +55,7 @@ sort guardians.Llm
   -- the declared row and cannot see which carrier is behind it.
   effects E = ?
 
-  operation complete(self: C, p: Prompt) -> LlmOutput
+  operation complete(self: C, p: Prompt) -> Text[Untrusted]
     effects {E, Error}
 end
 
@@ -80,18 +81,28 @@ end
 --
 -- IT USED TO CARRY A SECOND LABEL, `Model`, answering a DIFFERENT question —
 -- *did this code consult a model*, not *did it acquire the authority to*. That
--- question stopped mattering when `complete` started returning a sealed
--- `LlmOutput`: a component that calls a model learns nothing from the call, so
--- of the three ways a checker can reach one, only two are still failures:
+-- question stopped being worth asking, and it is the ANSWER that changed rather
+-- than the question: a component that calls a model learns nothing from the call,
+-- because the reply is a `Text` whose content nothing can read. So of the three
+-- ways a checker can reach a model, only two are failures:
 --
---   holds an Llm it was handed, calls it   HARMLESS — the reply is `LlmOutput`,
---                                          which it can neither project nor match
+--   holds an Llm it was handed, calls it   HARMLESS — the reply is unreadable, so
+--                                          it teaches nothing, and READING it is
+--                                          the offence (rejected/reads_text)
 --   holds none, mints one                  caught by `-Permission[Llm]` (minting_checker)
 --   holds none, forges one                 caught by `internal`         (forged_llm)
+--
+-- CONSULTING TAKES NO AUTHORITY, and a draft of this file claimed it did. Building
+-- a prompt is label-PRESERVING (`entity prompt(body: Text[Trust])`) and `complete`
+-- takes an unparameterized `Prompt` on purpose, since `summarize` sends untrusted
+-- mailbox content to a model. `fixtures/agent/consulting_checker.anthill` is the
+-- control that loads. What the pipeline's own shape confines is narrower: a checker
+-- holding a SPEC-typed `Llm` is refused by `undeclared effect: ?E`, the carrier row
+-- `Checker.check` has no slot for — the effect row, not the prompt.
 -- ================================================================
 sort guardians.LiveLlm
   import anthill.prelude.{String, Error, External, Permission}
-  import guardians.{Llm, Prompt, Text, LlmOutput}
+  import guardians.{Llm, Prompt, Text}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity live_llm(endpoint: String, model: String)
@@ -112,14 +123,14 @@ sort guardians.LiveLlm
     effects {Permission[LiveLlm]} =
       live_llm(endpoint: endpoint, model: "frontier")
 
-  operation complete(self: LiveLlm, p: Prompt) -> LlmOutput
+  operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Error}
   provides Llm[E = {External}]
 end
 
 sort guardians.FakeLlm
   import anthill.prelude.{String, Error, Permission}
-  import guardians.{Llm, Prompt, Text, LlmOutput}
+  import guardians.{Llm, Prompt, Text}
   import guardians.TrustLevel.{Untrusted}
 
   internal entity fake_llm(fixture: String)
@@ -131,7 +142,7 @@ sort guardians.FakeLlm
   operation open(fixture: String) -> FakeLlm
     effects {Permission[Llm]} = fake_llm(fixture: fixture)
 
-  operation complete(self: FakeLlm, p: Prompt) -> LlmOutput
+  operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
     effects {Error}
   provides Llm[E = {}]
 end
@@ -139,17 +150,31 @@ end
 namespace guardians
   import anthill.prelude.{String, List}
   import guardians.{Text, Prompt, LiveLlm, FakeLlm}
-  import guardians.TrustLevel.{Public}
+  import guardians.TrustLevel.{Trusted}
 
-  -- THE LATTICE JOIN, and the one place a label is DECIDED. `Public` is bottom,
-  -- so `Public ⊔ ?t = ?t` and the variable carries the answer with no ordering
+  -- THE LATTICE JOIN, and the one place a label is DECIDED. `Trusted` is bottom,
+  -- so `Trusted ⊔ ?t = ?t` and the variable carries the answer with no ordering
   -- machinery. An n-point lattice would need the general join; variance IS
   -- declarable and would give it (measured: docs/design/measured.md C4).
-  operation prompt_with(instruction : Text[Public],
+  operation prompt_with(instruction : Text[Trusted],
                         content     : Text[?t]) -> Prompt[?t]
 
-  -- Concatenation preserves the label of its parts.
-  operation join_texts(parts: List[T = Text[?t]]) -> Text[?t]
+  -- CONCATENATION IS UNTRUSTED-ONLY, AND IT USED TO BE LABEL-POLYMORPHIC
+  -- (`List[T = Text[?t]] -> Text[?t]`, "preserves the label of its parts"). That
+  -- was correct for every non-empty list and WRONG at `nil`: with no parts there is
+  -- no label to preserve, so preservation is vacuous the way `all([])` is true, `?t`
+  -- instantiates to whatever the sink asks, and `join_texts(nil)` was a
+  -- `Text[Trusted]` obtained with neither `Permission[Vouch]` nor the `approved`
+  -- obligation. Measured: it reached `Email.send`'s body, and the PREVIOUS design
+  -- refused it — `requires releasable(body)` on the sink caught the term — so moving
+  -- the content tier to the mint (WI-20260829-MCKTE) lost a check until this line.
+  --
+  -- THE NARROWING COSTS NOTHING because every caller joins mailbox content:
+  -- `summarize` (tasks.anthill) and the generation attack in
+  -- rejected/generate_from_content.anthill are the only ones. A trusted-text
+  -- concatenation is a reasonable operation and can come back the day something
+  -- needs it — with a caller, and with the `nil` case decided rather than inferred.
+  operation join_texts(parts: List[T = Text[Untrusted]]) -> Text[Untrusted]
 
   -- ONE host function for the whole model surface, keyed per carrier.
   provides LiveLlm language rust

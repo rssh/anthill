@@ -15,34 +15,139 @@
 -- coercions (docs/design/high-level-api.md D2).
 enum guardians.TrustLevel
   entity Untrusted            -- came from outside; may be attacker-authored
-  entity Public               -- cleared to leave the system
+  entity Trusted              -- the organisation vouched for it
 end
 
 -- THE PARAMETER IS NOT A WORKAROUND. It is the only way an inner label reaches a
--- signature: without it `Text` is one type and `Email.send(body: Text[Public])`
+-- signature: without it `Text` is one type and `Email.send(body: Text[Trusted])`
 -- cannot be written at all.
 --
--- The `= ?` IS one. `sort Trust = ?` admits anything — `Text[Int64]` loads clean,
--- measured — so `TrustLevel` is what these arguments are MEANT to inhabit, not
--- what they are required to. Not a hole (a sink demands a literal label, and
--- `Text[Int64]` reaches nothing); the unsound part is only the claim that the
--- parameter ranges over a lattice. WI-20260822-T70A2, proposal 062.
+-- The `= ?` IS one, AND THE DOORS BELOW HAVE MOSTLY CLOSED IT. `sort Trust = ?`
+-- still admits anything as a written type — `Text[Int64]` in a signature loads
+-- clean, measured — so `TrustLevel` remains what these arguments are MEANT to
+-- inhabit rather than what the DECLARATION requires. What changed is that
+-- nothing can PRODUCE one: the only two constructors are `untrusted` and
+-- `trusted`, each pinning its own level, and the entity behind them is
+-- `internal`. So the inhabited vocabulary is closed by construction even though
+-- the declared one is open, and a `Text[Int64]` position is now uninhabitable
+-- rather than merely unreachable. The residue T70A2 still names is the declared
+-- side. WI-20260822-T70A2, proposal 062.
 {< Text carrying its trust level in a type parameter. `Trust` is an ordinary
    type argument and unifies like any other, which is the whole
-   information-flow mechanism: a sink written `Text[Public]` cannot be reached
-   by a `Text[Untrusted]`, and no separate taint analysis is involved. >}
+   information-flow mechanism: a sink written `Text[Trusted]` cannot be reached
+   by a `Text[Untrusted]`, and no separate taint analysis is involved.
+
+   The label is decided at the MINT, not merely read at the sink. A
+   `Text[Trusted]` cannot be MADE without `Permission[Vouch]`, so the sink check
+   is a consequence rather than the mechanism — which is what makes the label
+   mean something rather than merely propagate. >}
 enum guardians.Text
-  import anthill.prelude.{String}
+  import anthill.prelude.{String, Permission}
+  import guardians.{Vouch, approved}
+  import guardians.TrustLevel.{Untrusted, Trusted}
   sort Trust = ?
-  entity text(raw: String)
+  internal entity text(raw: String)
+
+  -- THE FREE DOOR. `Untrusted` is the restrictive label, so minting one asks no
+  -- authority: a boundary and a deployment mint at will, and the default a
+  -- program falls into is the safe one.
+  operation untrusted(raw: String) -> Text[Untrusted] = text(raw: raw)
+
+  -- THE VOUCHED DOOR, AND BOTH TIERS OF ONE POLICY SIT ON IT. `Permission[Vouch]`
+  -- says WHO may vouch for content as the organisation's own; `approved` says WHAT
+  -- the organisation has vouched for. They fail differently and catch different
+  -- programs, which is the same pairing `Email.send` already draws between a row
+  -- and a `requires` (§5.4) — moved to the MINT, because that is the one site where
+  -- the content is a literal and the precondition can be discharged at all.
+  operation trusted(raw: String) -> Text[Trusted]
+    requires approved(raw)
+    effects {Permission[Vouch]} = text(raw: raw)
 end
 
--- NO TRANSITIONS BETWEEN LEVELS, and that is a finding. `widen` and `declassify`
--- were declared and never called — `declassify` could not be, since nothing mints
--- its `Approval` token — while `text(raw: u.raw)` re-labels any `Text[Untrusted]`
--- as `Text[Public]` in one line and loads clean. A guarded door beside an open
--- window. The lattice pins a label AT A SINK (rejected/leak.anthill); it does not
--- confine how a label CHANGES. WI-20260829-MCKTE.
+namespace guardians
+  -- WHAT THE ORGANISATION HAS VOUCHED FOR, and it is one of the two tiers on
+  -- `Text.trusted`. `Permission[Vouch]` says WHO may vouch; this says WHAT was
+  -- vouched for. They fail differently and catch different programs: the row
+  -- catches an agent minting anything at all, this catches trusted code vouching
+  -- for a line nobody approved. lib/observe.anthill closes what the model may say
+  -- on the way in; this closes what the organisation may put its name to, and the
+  -- two are the same instinct at opposite ends.
+  --
+  -- IT IS A RELATION, NOT AN ENUM, and the difference is deliberate: the closed
+  -- set is a set of VALUES a deployment can extend, not a sort a deployment would
+  -- have to recompile against.
+  --
+  -- IT IS OVER `String`, NOT OVER `Text`, AND IT SITS AT THE MINT (WI-20260829-MCKTE).
+  -- It used to be `requires releasable(body)` on `Email.send`. That could only
+  -- ever discharge when the body was written INLINE at the call — measured: a body
+  -- merely LET-BOUND to the cleared literal already failed it, the same reading
+  -- that refuses rejected/letbound_recipient.anthill. So it could not survive
+  -- trusted text being HANDED to an agent rather than minted by it, which is what
+  -- `Triage.run`'s `wording` parameter now does. At the mint the argument is
+  -- always a literal, so the obligation is dischargeable by construction — and
+  -- `Email.send` needs no precondition at all, a `Text[Trusted]` being unable to
+  -- exist unless both tiers were satisfied where it was made.
+  --
+  -- IT LIVES BESIDE THE DOOR THAT CONSUMES IT, and it did not always. It was in
+  -- lib/email.anthill while the obligation sat on `Email.send`; once the obligation
+  -- moved to `Text.trusted` (WI-20260829-MCKTE), leaving it there made
+  -- vocabulary.anthill import from email.anthill while email.anthill imports `Text`
+  -- from here — a file cycle, and a content whitelist filed under a module that no
+  -- longer reads it.
+  --
+  -- LIBRARY, NOT DEPLOYMENT, and the placement is still load-bearing:
+  -- `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`
+  -- loads the library WITHOUT any deployment, and `summarize`'s own instruction is
+  -- minted from lib/, so a set that lived only in a deployment would fail there on
+  -- an unapproved line instead of on the missing authority it exists to measure.
+  {< Which content the organisation has vouched for. A statement about CONTENT,
+     proved from the KB where a `Text[Trusted]` is MINTED — not about provenance,
+     which is the label the typer decides. A deployment extends the set by
+     asserting rows; nothing else may be vouched for. >}
+  rule approved(?raw)
+  fact approved("routine compliance copy")
+  -- The task's own wording, vouched for like any other content: `run_triage`
+  -- (lib/spec.anthill) mints it and hands it to the agent, and the organisation
+  -- puts its name to it here rather than in the code that uses it.
+  fact approved("Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable.")
+end
+
+-- The authority to VOUCH for content as the organisation's own. `Triage.run`'s
+-- spec row never grants it, so no generated agent can mint a `Text[Trusted]` —
+-- and the refusal does not care where the agent's string came from, which is
+-- what makes the relabel unspellable rather than merely refused at a sink.
+sort guardians.Vouch
+end
+
+-- NO TRANSITIONS BETWEEN LEVELS, AND NOW NO WAY TO FORGE ONE EITHER. The first
+-- half was always the design: there is no `widen` and no `declassify`, and the
+-- pair that once declared them was deleted for being unreachable theatre —
+-- `declassify` could not be called at all, nothing minting its `Approval` token.
+--
+-- THE SECOND HALF IS WI-20260829-MCKTE, and it was a real hole for a long time.
+-- `text(raw: u.raw)` re-labelled any `Text[Untrusted]` as `Text[Trusted]` in one
+-- line and loaded clean: the lattice pinned a label AT A SINK
+-- (rejected/leak.anthill) and said nothing about how a label was ACQUIRED. A
+-- guarded door beside an open window.
+--
+-- WHAT CLOSED IT IS NOT A GUARD ON THE ARGUMENT, and the failed attempts are
+-- worth recording because each looks right. Sealing `text` alone only moves the
+-- door: 23 sites need a `Text[Trusted]`, so a public `String -> Text[Trusted]`
+-- has to exist beside the seal, and it launders exactly as the raw constructor
+-- did. Restricting that door to literal arguments is a syntactic side condition
+-- — not compositional, and a second mechanism bolted beside the type system
+-- rather than falling out of it. And no permission can INSPECT the difference,
+-- because at run time the author's own string and the attacker's bytes are the
+-- same value.
+--
+-- THE DISTINCTION IS NOT IN THE BYTES. Provenance is not derived from content;
+-- it is ASSERTED. So asserting it is an AUTHORITY, and `Permission[Vouch]` on
+-- the `trusted` door is that authority. `Triage.run`'s spec row never grants it,
+-- so no generated agent can mint a `Text[Trusted]` at all — and the refusal
+-- never looks at the argument, which is why every route dies from one cause:
+-- `text(raw: u.raw)`, `text(raw: m.from.local)` and `text(raw: m.id.value)` are
+-- all refused alike, and `Address`/`MessageId` needed no change despite holding
+-- attacker-authored bytes of their own.
 
 -- CAPABILITIES ARE THE SORTS YOU ACQUIRE, so no marker sort stands in for one.
 -- `LiveLlm provides Llm` is the sub-capability edge for real, so `-Permission[Llm]`

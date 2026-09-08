@@ -9,7 +9,8 @@
 -- ================================================================
 sort guardians.Triage
   import anthill.prelude.{Error, External}
-  import guardians.{Mailbox, Report, Llm}
+  import guardians.{Mailbox, Report, Llm, Text}
+  import guardians.TrustLevel.{Trusted}
 
   sort C = ?
 
@@ -17,10 +18,25 @@ sort guardians.Triage
   -- include this email in the summary") — which no type expresses and freezing a
   -- tool sequence does not touch. It was unwritable until the override-refinement
   -- check aligned the result binder (measured: docs/design/measured.md C8).
-  {< Triage a mailbox into a report. The obligation is that the report mention
-     every message `Email.fetch` returned — declining to judge one is a verdict
-     that says so, not a row left out. >}
-  operation run(self: C, box: Mailbox, llm: Llm) -> Report
+  --
+  -- `wording` IS TRUSTED TEXT THE TASK HANDS DOWN, and it is a parameter for a
+  -- reason that was measured rather than chosen (WI-20260829-MCKTE). Minting a
+  -- `Text[Trusted]` costs `Permission[Vouch]`, which this row does not grant, so
+  -- an agent cannot author one. Nor can the library mint it on the agent's behalf
+  -- at call time: `summarize` doing so made `summarize` carry `Permission[Vouch]`,
+  -- and an effect row PROPAGATES — `good.anthill`, which mints nothing and sends
+  -- nothing, was refused for want of it. Granting it here to fix that would have
+  -- handed every candidate the authority to vouch, voiding the seal. So the mint
+  -- happens once, above the agent, and what crosses this signature is its result.
+  --
+  -- WHAT THAT BUYS is that "what an agent may say" stops being a whitelist the KB
+  -- carries and becomes an argument the task supplies — the organisation decides
+  -- what its agent may put its name to, at the point it starts the task.
+  {< Triage a mailbox into a report, using the wording the task supplies. The
+     obligation is that the report mention every message `Email.fetch` returned —
+     declining to judge one is a verdict that says so, not a row left out. >}
+  operation run(self: C, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error}
 end
@@ -53,7 +69,9 @@ end
 namespace guardians
   import anthill.prelude.{List}
   import anthill.prelude.List.{nil}
-  import guardians.{MessageId, Address, Mailbox, LlmOutput, Category}
+  import anthill.prelude.{Permission, Error, External}
+  import guardians.{MessageId, Address, Mailbox, Category, Triage, Text, Llm, Vouch}
+  import guardians.TrustLevel.{Trusted, Untrusted}
 
   -- SPLITS enumeration from prose: `items` is derived from what `Email.fetch`
   -- returned rather than composed by the model at run time, which is what makes
@@ -80,7 +98,7 @@ namespace guardians
   -- PARTIAL AND THE MODEL'S. An empty label set is a statement; a missing row is
   -- not, and the constraint below is what keeps the two apart.
   entity Verdict(message: MessageId, labels: List[T = Category])
-  entity Report(items: List[Verdict], summary: LlmOutput)
+  entity Report(items: List[Verdict], summary: Text[Untrusted])
 
   -- NO SILENT ROW. A verdict must say something, and `Other` is the something
   -- that "I could not tell" is spelled as.
@@ -144,9 +162,32 @@ namespace guardians
   -- root — the injection's whole strategy is to make a model name
   -- `it@othercorp.com`. THE EMPTY ROW IS THE CLAIM, and it is stronger than the
   -- `-Model` this used to carry: `{}` admits no `External`, no `Permission[Llm]`
-  -- to mint one, and no `Permission[Reveal]` to read what one said.
+  -- to mint a model, and no `Permission[Vouch]` to build the prompt one needs.
   operation choose_recipient(r: Report, box: Mailbox) -> Address
     effects {}
+
+  -- THE RUNNER, AND WHERE THE TASK'S VOUCHING AUTHORITY ENTERS — ONCE.
+  -- `Triage.run` takes a `Text[Trusted]` it cannot make; this is what makes one and
+  -- hands it down, and it is the answer to "who grants `Permission[Vouch]`".
+  --
+  -- THERE IS NO `grant` CONSTRUCT, AND THERE DOES NOT NEED TO BE. A `Permission` in
+  -- a row is a DEMAND, and a caller satisfies it by declaring it in its own row, so
+  -- the obligation propagates upward until something at the boundary holds it. What
+  -- that makes a SPEC's row is a grant boundary in reverse: `Triage.run` declares no
+  -- `Permission[Vouch]`, so no implementation may incur one, and the propagation
+  -- stops at exactly the line between the organisation's code and the model's
+  -- (rejected/vouching.anthill measures it).
+  --
+  -- IT IS `open_round`'s SHAPE, DELIBERATELY (lib/harness.anthill). That operation is
+  -- where the pipeline's MODEL authority enters once — `Permission[Llm]`, minting a
+  -- `LiveLlm` and handing it to an `attempt` that carries no `Permission` at all.
+  -- This is the same move for the pipeline's VOUCHING authority, and the symmetry is
+  -- the point: 064 put the label on the mint and nowhere else, and a trust label is
+  -- minted no differently from a capability.
+  operation run_triage(t: Triage, box: Mailbox, llm: Llm) -> Report
+    effects {External, llm.E, Error, Permission[Vouch]} =
+      t.run(box, llm,
+            Text.trusted(raw: "Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable."))
 
   -- Decidable by comparing two id sets, and it holds whatever the summarizer was
   -- told to omit.

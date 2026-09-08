@@ -6,7 +6,7 @@
 -- "forbid data flow from fetch_email's result to the body parameter of
 -- send_email WITH AN EXTERNAL EMAIL ADDRESS AS THE TARGET". `leak.anthill`
 -- catches the FLOW half with the `Text[Trust]` label. This one isolates the
--- TARGET half: the body it mails is a literal `Public` string, so no label is
+-- TARGET half: the body it mails is the `Text[Trusted]` the task handed it, so no label is
 -- violated and nothing flows from the mailbox into the message at all — and it
 -- is still refused, because the recipient is outside the organisation.
 --
@@ -23,18 +23,19 @@ sort guardians.agent.OutboxTriage
   import anthill.prelude.{List, Error, External}
   import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
                     Verdict, categories_of}
-  import guardians.TrustLevel.{Public}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: OutboxTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: OutboxTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "it", domain: "othercorp.com"),
-                            body: text(raw: "routine compliance copy"))
+                            body: wording)
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = OutboxTriage]
 end

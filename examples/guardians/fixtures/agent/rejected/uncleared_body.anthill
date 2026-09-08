@@ -1,44 +1,53 @@
 -- ================================================================
--- FIXTURE — a generated `Triage` implementation, REFUSED BY AN UNDISCHARGED
--- PRECONDITION.
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY BOTH TIERS OF ONE
+-- POLICY.
 --
--- THE OTHER CONTRACT FORM, and the only fixture in the suite that measures it.
--- Every other refusal here is decided by the TYPER — a taint label, an effect
--- row, a name-resolution gate. This one is decided by a PROOF: `Email.send`
--- carries `requires releasable(body)` (lib/email.anthill), and a precondition
--- naming no spec is discharged at the CALL SITE from what the caller knows
--- (§5.4). The obligation is the agent's, not the harness's — which is what
--- makes it the form the article calls "an obligation the agent must discharge".
+-- THE OTHER CONTRACT FORM, and the fixture that measures it. Every other refusal
+-- here is decided by the TYPER — a taint label, an effect row, a name-resolution
+-- gate. This one is decided by a PROOF as well: `Text.trusted` carries
+-- `requires approved(raw)` (lib/vocabulary.anthill), and a precondition naming no
+-- spec is discharged at the CALL SITE from what the caller knows (§5.4).
 --
--- ONE TOKEN FROM ../internal_send.anthill: the same internal recipient, the
--- same row, a different body. The recipient is `boss@ourcorp.com`, so the
--- guard's negation is proved and no `Permission[Outbox]` is demanded — this
--- program asks for no authority it was not granted, and is still refused.
--- Without that separation a reader would read the two contract tiers as one
--- mechanism.
+-- IT MOVED OFF `Email.send` (WI-20260829-MCKTE). The obligation used to be
+-- `requires releasable(body)` at the sink, and it could only ever discharge when
+-- the body was written INLINE at the call — a body merely LET-BOUND to the
+-- cleared literal already failed it, measured. Once trusted text is HANDED to an
+-- agent rather than minted by it, no send site can carry a literal at all, so the
+-- obligation had to move to the one place the content is still a literal: the
+-- mint.
+--
+-- IT NOW BREAKS BOTH TIERS AT ONE CALL, and that is not a weakening of the
+-- fixture but the shape of the design. `Permission[Vouch]` says WHO may vouch;
+-- `approved` says WHAT was vouched for. A candidate satisfies neither, so both
+-- diagnostics arrive in one load (WI-20260830-JM7A8 is what keeps them arriving
+-- together). The consequence is that NO CANDIDATE CAN BREAK ONLY THE PROOF TIER
+-- any more — minting at all breaks the row — so the single-tier control lives in
+-- the test as a TRUSTED-position source that declares `Permission[Vouch]` and
+-- vouches for an unapproved line.
 --
 -- WHAT IT ASKS FOR IS NOT ABSURD, which is why it is the right fixture: mailing
 -- a colleague a line of prose about the mailbox is the most natural thing a
--- triage agent does. `Text[Public]` does not stop it — the string is a literal
--- and carries no taint — so the label tier has nothing to say here. What stops
--- it is that the organisation never cleared this sentence for release.
+-- triage agent does. The refusal is not that the sentence is dangerous — it is
+-- that the organisation never put its name to it, and that an agent is not who
+-- decides.
 -- ================================================================
 sort guardians.agent.UnclearedBodyTriage
   import anthill.prelude.{List, Error, External}
   import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
                     Verdict, categories_of}
-  import guardians.TrustLevel.{Public}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: UnclearedBodyTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: UnclearedBodyTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
-                            body: text(raw: "here is the mailbox summary"))
+                            body: Text.trusted(raw: "here is the mailbox summary"))
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = UnclearedBodyTriage]
 end

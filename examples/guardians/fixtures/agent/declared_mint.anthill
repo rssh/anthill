@@ -1,0 +1,70 @@
+-- ================================================================
+-- FIXTURE — a generated `Triage` that DECLARES ITS OWN TRUSTED PRODUCER, and
+-- LOADS. A pinned gap, and the interesting thing about it is WHOSE gap it is:
+-- not this example's.
+--
+-- IT IS THE CLASS THE PRODUCER SEALS DO NOT REACH. `Text.trusted` is gated by
+-- `Permission[Vouch]`, `join_texts` is `Untrusted`-only, `render_task` declares
+-- the authority it exercises, and `entity text` is `internal` — four producers,
+-- four closures, each with a fixture that reds when it is undone. This program
+-- needs none of them, because it writes its own:
+--
+--   operation launder(s: String) -> Text[Trusted]
+--
+-- AND NOTHING BACKS IT. No body, no host binding. The declaration is believed by
+-- the typer, the call type-checks, and the program is certified.
+--
+-- WHY THE FIX IS NOT HERE. Body-less-and-called is the NORMAL shape in this
+-- example: twenty-one operations in `lib/` are declared with no body, and every
+-- accepted fixture calls some of them — `Email.fetch`, `categories_of`,
+-- `choose_recipient`, `render_task`, `complete`. A spec DECLARES and a deployment
+-- BINDS; the test harness binds five names and a real deployment would bind the
+-- rest. So "body-less" cannot be an error, and nothing available at load separates
+-- a declaration awaiting its binding from one asserting a type its author cannot
+-- produce. No amount of sealing in `lib/vocabulary.anthill` reaches a name the
+-- candidate invents.
+--
+-- WHAT WOULD REACH IT is a KERNEL check that a CALLED body-less operation has some
+-- implementation — a body, a defining equation, or a host binding — by the end of
+-- the load. WI-1122 put the host-fn table on the KB BEFORE `load_all` precisely so
+-- that late registration could be refused, so the information is there. Under such
+-- a check this file stops loading, and that is the right outcome: the program is
+-- not safe-and-unrunnable, it is ill-formed. FILED AS WI-20260908-FJG8B, whose
+-- acceptance names this fixture: when it lands, this file becomes REFUSED and
+-- should be deleted rather than repaired.
+--
+-- UNTIL THEN IT IS INERT, and for a reason that is an accident rather than a
+-- property: nothing runs a `Triage`. The pipeline generates and CHECKS; `run_triage`
+-- is `run`'s only caller and only a test drives it, so the missing implementation is
+-- never reached and no bytes move. Recorded because the checker's verdict is
+-- nevertheless wrong — it certifies a program resting on a signature nothing backs
+-- — and because the day the kernel check lands, this row is what notices.
+--
+-- NOT A REGRESSION IN THE TRUST DESIGN, though it is one in verdict: the previous
+-- `requires releasable(body)` on `Email.send` happened to refuse this program, since
+-- `releasable(launder(…))` is nobody's row. That was the sink catching an
+-- ill-formed program as a side effect of checking content, not the lattice working.
+-- WI-20260829-MCKTE.
+-- ================================================================
+sort guardians.agent.DeclaredMintTriage
+  import anthill.prelude.{String, List, Error, External}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
+                    Verdict, categories_of}
+  import guardians.TrustLevel.{Trusted}
+  entity mk
+
+  operation launder(s: String) -> Text[Trusted]
+
+  operation run(self: DeclaredMintTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
+    ensures mentions_all(result)
+    effects {External, llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: launder(box.owner.local))
+      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
+                                          labels:  categories_of(m.id))).collect(),
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = DeclaredMintTriage]
+end

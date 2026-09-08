@@ -19,18 +19,19 @@ sort guardians.agent.InternalSendTriage
   import anthill.prelude.{List, Error, External}
   import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
                     Verdict, categories_of}
-  import guardians.TrustLevel.{Public}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: InternalSendTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: InternalSendTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
-                            body: text(raw: "routine compliance copy"))
+                            body: wording)
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = InternalSendTriage]
 end

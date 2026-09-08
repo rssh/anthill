@@ -317,6 +317,24 @@ so moving the label downstream fails it.
 hypothetical: it is what this example permitted before 064, since construction
 carried no effect at all.
 
+> **SUPERSEDED IN PART, 2026-09-07 (WI-20260829-MCKTE).** `LlmOutput` and its
+> `Permission[Reveal]` are gone; `Llm.complete` returns an ordinary
+> `Text[Untrusted]`. The reasoning below is kept because it is how the `-Model`
+> question was settled, and its CONCLUSION still holds — consulting a model is
+> confined without a label of its own. What changed is the mechanism. Sealing
+> `Text`'s constructor and its `raw` projection made NO text's content reachable
+> as a `String`, which is the property the wrapper had been providing for one
+> sort only; and minting a `Text[Trusted]` now costs `Permission[Vouch]`.
+>
+> NOTE WHAT THAT DOES NOT BUY, since a first draft of this note claimed it did: a
+> checker CAN still consult a model. Building a prompt takes no authority —
+> `entity prompt(body: Text[Trust])` is label-preserving — and `complete` takes an
+> unparameterized `Prompt` deliberately, because `summarize` sends untrusted
+> content to a model. Consulting stays harmless for the ORIGINAL reason, now
+> general rather than per-sort: the reply is a `Text` whose content nothing can
+> read. `text_of` had no caller outside a refused fixture, which is the test this
+> example applies to any guarded door.
+
 > **SUPERSEDED IN ONE ROW, 2026-08-29 — and the measurements above are kept
 > because they are what identified the defect.** The `bad_checker` row is gone:
 > `Llm.complete` now returns `LlmOutput[Text[Untrusted]]`, sealed with an
@@ -418,9 +436,11 @@ glance.
 **Scenario.** Skip generation entirely: mint the candidate program yourself, out
 of the mailbox.
 
-**Flow.** `rejected/forged_source.anthill` writes
-`source(text: join_texts(msgs.map(lambda m -> m.body).collect()).raw)` and returns
-it where `generate`'s result would go. No model is acquired and none is called.
+**Flow.** `rejected/forged_source.anthill` writes `source(text: box.owner.local)`
+and returns it where `generate`'s result would go. No model is acquired and none is
+called. The argument is a `String` reached by pure projection from a parameter,
+chosen so that this file has exactly ONE cause: `m.body` would need the sealed
+`.raw`, and `msgs.head` would incur an undeclared `Error[T = EmptyStream]`.
 
 **Fires** — `'source' is internal to 'guardians.Source' and cannot be referenced
 from scope 'guardians.agent.ForgingGenerator.build'`. D3's mechanism exactly, at a
@@ -450,7 +470,7 @@ and that row alone; the fixture loaded clean before the fix
 `try_resolve_symbol` + `Value::Entity`, which §8.6 does not gate — one of them
 standing in for `generate`, so it must not. And it is one of three independent
 holes on the generation path; the other two (a relabel through `text(raw: …)`,
-and `render_task` returning `Prompt[Public]` from `feedback: List[String]`) are
+and `render_task` returning `Prompt[Trusted]` from `feedback: List[T = String]`) are
 open under the same work item.
 
 ## D4 · A permission can be CONDITIONAL, and the article's policy is one
@@ -470,9 +490,10 @@ program.
 `effects {External, Error, (Permission[Outbox] :- external_addr(to))}` —
 proposal 048's conditional effects on 064's label. At a call the argument is
 substituted into the guard, and the label is dropped when the guard's negation is
-constructively proved (§5.5). `rejected/outbox.anthill` mails a LITERAL `Public`
-string to `it@othercorp.com`: nothing flows out of the mailbox, no label is
-violated, and it is refused anyway.
+constructively proved (§5.5). `rejected/outbox.anthill` mails the
+`Text[Trusted]` the task handed it to `it@othercorp.com`: nothing flows out of the
+mailbox, no label is violated, no authority to vouch is used, and it is refused
+anyway.
 
 **Fires** — `run.effects (op-effects): expected declared: [External, Model,
 Error], got undeclared effect: Permission[T = Outbox]`.
@@ -902,17 +923,20 @@ reads declarations, not the body) still fires. Making `deliverable` total by
 negation — `deliverable(?a) :- not(blocked_addr(?a))` — does not help: NAF over an
 opaque term flounders, and a floundered obligation is unsatisfied.
 
-**Consequence, and it is the reason `releasable` is on `body`.** A value
-precondition and a value-guarded effect over the SAME argument fail together on
-the same programs, and the precondition wins the diagnostic. Over DIFFERENT
-arguments they compose: `requires releasable(body)` beside
-`Permission[Outbox] :- external_addr(to)` leaves every existing refusal's
-substring untouched and adds one fixture of its own
-(`rejected/uncleared_body.anthill`). The second constraint on the choice is that
-the precondition must be dischargeable from `lib/` ALONE — otherwise
+**Consequence, and it is why the content tier is on a DIFFERENT OPERATION now.**
+A value precondition and a value-guarded effect over the SAME argument fail
+together on the same programs, and the precondition wins the diagnostic. Over
+different arguments they compose. The content tier used to be
+`requires releasable(body)` on `Email.send`, chosen over a `deliverable(to)` for
+exactly that reason; WI-20260829-MCKTE moved it to `Text.trusted`'s
+`requires approved(raw)`, where it composes with `Permission[Vouch]` on the same
+call and still leaves every existing refusal's substring untouched. The second
+constraint survives the move unchanged: the obligation must be dischargeable from
+`lib/` ALONE — otherwise
 `the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`,
-which loads the library with no deployment, fails on the precondition instead of
-on the missing authority.
+which loads the library with no deployment, fails on an unapproved line instead of
+on the missing authority. `summarize`'s own instruction is minted from `lib/`, so
+that constraint now bites harder than it did.
 
 **The article's `deliverable(to)` is therefore a placeholder that does not
 survive contact with this suite**, and the reason is worth stating: the argument a
@@ -943,24 +967,27 @@ type mismatch in run.effects (op-effects):
   got undeclared effect: Permission[T = Outbox]
 ```
 
-**The argument choice below is unchanged, and the reason it survives the fix is
-the second constraint, not the first.** `releasable` stays on `body` because the
-precondition must be dischargeable from `lib/` ALONE
-(`the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed`
-loads the library with no deployment), and because a precondition on `to` would
-duplicate what the guard already decides. What the fix removed is the COLLISION:
-the two tiers over the same argument no longer cost a measurement.
+**What the fix removed is the COLLISION:** two tiers over the same argument no
+longer cost a measurement. That is what makes the current placement possible at
+all — `Text.trusted` carries `requires approved(raw)` AND
+`effects {Permission[Vouch]}`, both keyed on the same call, and both are reported.
 
-**And the property has its own fixture now**, so it is kept rather than argued:
-`rejected/uncleared_external.anthill` breaks both tiers at one call — an external
-recipient and an uncleared body — and
-`both_contract_tiers_report_at_one_call` asserts both diagnostics, against the
-two single-tier neighbours which each assert a count of ONE.
+**And the property has its own fixture**, so it is kept rather than argued:
+`rejected/uncleared_external.anthill` breaks THREE tiers at one call — an external
+recipient, an unapproved body, and no authority to vouch — and
+`both_contract_tiers_report_at_one_call` asserts they arrive together.
+
+**Its single-tier control could no longer be a candidate**, and that is a
+consequence of WI-20260829-MCKTE rather than a gap: no candidate program can break
+only the proof tier, because minting at all breaks the row as well. The control in
+`an_uncleared_body_is_refused_by_the_send_precondition` is therefore a
+TRUSTED-position source that declares `Permission[Vouch]` and vouches for an
+unapproved line, and asserts a count of ONE.
 
 ## C3 · A rule body cannot destructure a type argument
 
 **Scenario.** Let policy rules read the label —
-`releasable(?x) :- ?x: Text[L = ?l], flows_to(?l, Public)`.
+`approved(?x) :- ?x: Text[L = ?l], flows_to(?l, Trusted)`.
 
 **Syntax error** — `docs/measurements/guardians/d2h_ruleside.anthill`, at `?x:`. This is WI-742,
 explicitly unimplemented in proposal 060.

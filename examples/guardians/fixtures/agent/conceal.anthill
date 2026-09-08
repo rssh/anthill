@@ -33,11 +33,13 @@
 sort guardians.agent.ConcealTriage
   import anthill.prelude.{List, Bool, Error, External}
   import anthill.prelude.PartialEq.{neq}
-  import guardians.{Triage, Email, Mailbox, Report, MessageId, Llm, summarize,
+  import guardians.{Text, Triage, Email, Mailbox, Report, MessageId, Llm, summarize,
                     Verdict, categories_of}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: ConcealTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: ConcealTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
@@ -45,7 +47,7 @@ sort guardians.agent.ConcealTriage
       let kept = msgs.filter(lambda m -> neq(m.id, MessageId(value: "m5"))).collect()
       Report(items:   kept.map(lambda m -> Verdict(message: m.id,
                                                    labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = ConcealTriage]
 end

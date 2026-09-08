@@ -130,6 +130,12 @@ case designed to break it.
 > ignores the answer is not steerable by it. A fixture chosen to exercise a label
 > was read as evidence that the label was needed.
 >
+> **SUPERSEDED IN PART, 2026-09-07 (WI-20260829-MCKTE).** `LlmOutput` and its
+> `Permission[Reveal]` are gone; `Llm.complete` returns an ordinary
+> `Text[Untrusted]`. The reasoning below is kept because it is how the `-Model`
+> question was settled, and its conclusion still holds. The canonical note — what
+> replaced the wrapper, and what it does NOT buy — is in `measured.md` beside D1.
+
 > **Step two: the requirement dissolved.** Being steered requires READING the
 > answer, so the claim to make is about the answer, not about the call.
 > `Llm.complete` now returns `LlmOutput[Text[Untrusted]]` — an `internal`

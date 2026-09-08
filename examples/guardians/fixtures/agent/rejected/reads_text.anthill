@@ -1,0 +1,40 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` that READS a model's reply, REFUSED.
+--
+-- THE OTHER HALF OF THE SEAL, and the twin of `relabel.anthill`. That one drives
+-- the CONSTRUCTOR: no program may choose a label for bytes it did not author.
+-- This one drives the PROJECTION: no program may take a text's content OUT of the
+-- lattice at all. §8.6 hides both with one `internal`, and each needs its own
+-- program or half the gate is untested.
+--
+-- WHY A CHECKER, AND WHY DIAGNOSTICS. `Rejected(diagnostics: List[T = String])`
+-- is the example's only `String` sink that a candidate can reach and a human
+-- reads, so it is where extracted content would actually go. Consulting a model
+-- is permitted and harmless (../consulting_checker.anthill loads); what is not
+-- permitted is turning the reply into a `String`.
+--
+-- IT IS THE SUCCESSOR TO THE OLD `steering_checker`, whose refusal was
+-- `Permission[Reveal]` on a sealed `LlmOutput`'s `text_of`. Both are gone
+-- (WI-20260829-MCKTE) — the wrapper restated for one sort what the general seal
+-- now gives every `Text`, and its `text_of` had no caller outside a refused
+-- program. The REFUSAL survived the simplification; only its name changed, and
+-- this file is what keeps that claim honest rather than asserted in prose.
+--
+-- BACKING IT OUT: drop `internal` from `entity text` (lib/vocabulary.anthill) and
+-- this row goes red together with `relabel.anthill`, and nothing else.
+-- ================================================================
+sort guardians.agent.ReadingChecker
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
+  import guardians.{Checker, Source, CheckResult, FakeLlm, Text, Prompt}
+  import guardians.CheckResult.{Rejected}
+  entity mk(oracle: FakeLlm)
+
+  operation check(self: ReadingChecker, src: Source, spec: Symbol) -> CheckResult
+    effects {External, Error, -Permission[Llm]} =
+      let answer = self.oracle.complete(prompt(body: Text.untrusted(raw: "is this fine?")))
+      Rejected(diagnostics: cons(head: answer.raw, tail: nil))
+
+  provides Checker[C = ReadingChecker]
+end

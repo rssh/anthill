@@ -22,15 +22,16 @@
 --
 -- The checker's row answers "who guards the guard": a verifier that could itself
 -- be steered is as manipulable as the thing it verifies. ONE DENIAL, WHERE THERE
--- USED TO BE TWO — being handed a model is now harmless, since reading its answer
--- needs `Permission[Reveal]` (llm.anthill), so only ACQUISITION is worth denying
--- (rejected/minting_checker.anthill, rejected/steering_checker.anthill).
+-- USED TO BE TWO — being handed a model is harmless, since its reply is a `Text`
+-- whose content nothing can read (vocabulary.anthill), so only ACQUISITION is
+-- worth denying explicitly (rejected/minting_checker.anthill; the permitted half
+-- is the control at fixtures/agent/consulting_checker.anthill).
 -- ================================================================
 
 -- A candidate program: opaque and unverified, and the only thing to do with one
 -- is submit it to a `Checker`. It carries NO trust label, deliberately — taint
 -- asks whether attacker data influenced a value, and for a program generated from
--- a Public prompt the answer is no. Unverified-ness is a different axis, carried
+-- a Trusted prompt the answer is no. Unverified-ness is a different axis, carried
 -- by the type being opaque.
 --
 -- OPAQUE MEANS `internal`, AND IT DID NOT USED TO. Both sentences above are
@@ -42,15 +43,15 @@
 -- `rejected/forged_source.anthill` is the program that measured it
 -- (WI-20260829-MCKTE).
 --
--- WHAT IT DOES NOT REST ON is `Prompt[Public]`. That claim is itself conditional
+-- WHAT IT DOES NOT REST ON is `Prompt[Trusted]`. That claim is itself conditional
 -- today — `render_task` below takes `feedback: List[T = String]` and returns
--- `Prompt[Public]` unconditionally, so mailbox bytes reach a Public prompt
+-- `Prompt[Trusted]` unconditionally, so mailbox bytes reach a Trusted prompt
 -- without touching a `Source` at all (WI-20260829-MCKTE item 3, measured). The
 -- two are independent holes on one path, and this seal closes only its own.
 --
 -- NO ANTHILL INTRODUCTION AT ALL, WHICH IS THE DESIGN AND NOT AN OVERSIGHT.
 -- `generate` is the sole introduction and is body-less with a host binding, so
--- unlike `LlmOutput` (paired with `text_of`) and `LiveLlm` (paired with `open`)
+-- unlike `LiveLlm` (paired with `open`) and `Text` (paired with its two doors)
 -- this sort has no sibling that mints. A pure-anthill `Harness` carrier is
 -- therefore unwritable, which costs this example nothing — every carrier here
 -- declares and the host implements — but it is a real narrowing and is why the
@@ -93,12 +94,13 @@ end
 sort guardians.Harness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Prompt, Source, Llm}
-  import guardians.TrustLevel.{Public}
+  import anthill.prelude.{Permission}
+  import guardians.{Prompt, Source, Llm, Vouch}
+  import guardians.TrustLevel.{Trusted}
 
   sort C = ?
 
-  -- Build the generator's prompt FROM THE TRUSTED DECLARATIONS. `Public` is
+  -- Build the generator's prompt FROM THE TRUSTED DECLARATIONS. `Trusted` is
   -- the claim that generation is blind to content, stated as a type rather
   -- than as prose: no message can reach a prompt built out of declarations.
   --
@@ -106,15 +108,15 @@ sort guardians.Harness
   -- prompt goes stale against a changed signature SILENTLY, and the model then
   -- codes against an interface the checker will not accept.
   operation render_task(self: C, spec: Symbol, tools: List[T = String],
-                        feedback: List[T = String]) -> Prompt[Public]
-    effects {Error}
+                        feedback: List[T = String]) -> Prompt[Trusted]
+    effects {Error, Permission[Vouch]}
 
   -- CODE GENERATION MAY ONLY PROCEED FROM A CONTENT-FREE PROMPT, and this
   -- signature is the whole of that claim.
   --
-  -- `Prompt[Public]` is not decoration. It is the ONLY consumer of the label
+  -- `Prompt[Trusted]` is not decoration. It is the ONLY consumer of the label
   -- on a prompt, and without it the label would be produced and never read —
-  -- `render_task` would return `Prompt[Public]` and nothing would check it.
+  -- `render_task` would return `Prompt[Trusted]` and nothing would check it.
   -- With it, a generation prompt built from mailbox text is `Prompt[Untrusted]`
   -- and does not type here: an agent whose CODE was written under the influence
   -- of an injected email cannot be produced at all.
@@ -122,11 +124,13 @@ sort guardians.Harness
   -- THAT LAST SENTENCE IS TRUE OF `tools` AND FALSE OF `feedback`, and it is
   -- written down rather than fixed because the fix is a signature change with a
   -- decision behind it (WI-20260829-MCKTE item 3). `render_task` above returns
-  -- `Prompt[Public]` UNCONDITIONALLY, so mailbox bytes handed to it as
-  -- `feedback: List[T = String]` arrive here Public and this signature admits
+  -- `Prompt[Trusted]` UNCONDITIONALLY, so mailbox bytes handed to it as
+  -- `feedback: List[T = String]` arrive here Trusted and this signature admits
   -- them — measured, 0 errors. The repair loop is the channel: `Rejected`'s
-  -- diagnostics ARE next round's feedback, and a checker may put a model's
-  -- answer in them (rejected/steering_checker.anthill). The repair is to make
+  -- diagnostics ARE next round's feedback. NOTE THE CHANNEL IS CURRENTLY UNSPELLED
+  -- in the example: diagnostics are `List[String]` and no text's content reaches a
+  -- `String` any more, so no fixture demonstrates the flow — it is a property of
+  -- the SIGNATURES, not of a program here. The repair is to make
   -- `render_task` JOIN its inputs' labels the way `prompt_with` does.
   --
   -- That is the difference between generation and every other model call in
@@ -154,7 +158,7 @@ sort guardians.Harness
   -- `a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external`
   -- (`rustland/anthill-core/tests/guardians_test.rs`), including that the same row at
   -- `FakeLlm`'s `E = {}` still loads: 054 excludes the CO-OCCURRENCE, not `Branch`.
-  operation generate(self: C, llm: Llm, p: Prompt[Public]) -> Source
+  operation generate(self: C, llm: Llm, p: Prompt[Trusted]) -> Source
     effects {llm.E, Error}
 end
 
@@ -177,7 +181,7 @@ end
 namespace guardians
   import anthill.prelude.{String, List, Error, External, Permission}
   import anthill.reflect.{Symbol}
-  import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult}
+  import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult, Vouch}
 
   -- ONE ROUND: render, complete, check. The repair loop is the caller's —
   -- `Rejected`'s diagnostics are what `render_task` takes as `feedback` next
@@ -187,7 +191,7 @@ namespace guardians
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: Symbol, tools: List[T = String],
                     feedback: List[T = String]) -> CheckResult
-    effects {External, llm.E, Error} =
+    effects {External, llm.E, Error, Permission[Vouch]} =
       let p = h.render_task(spec, tools, feedback)
       chk.check(h.generate(llm, p), spec)
 
@@ -208,7 +212,7 @@ namespace guardians
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
                        feedback: List[T = String]) -> CheckResult
-    effects {Permission[Llm], External, Error} =
+    effects {Permission[Llm], Permission[Vouch], External, Error} =
       let llm = LiveLlm.open(endpoint, model)
       attempt(h, llm, chk, spec, tools, feedback)
 end
@@ -217,13 +221,14 @@ end
 sort guardians.FileHarness
   import anthill.prelude.{String, List, Error}
   import anthill.reflect.{Symbol}
-  import guardians.{Harness, Prompt, Source, Llm}
-  import guardians.TrustLevel.{Public}
+  import anthill.prelude.{Permission}
+  import guardians.{Harness, Prompt, Source, Llm, Vouch}
+  import guardians.TrustLevel.{Trusted}
   entity file_harness
   operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
-                        feedback: List[T = String]) -> Prompt[Public]
-    effects {Error}
-  operation generate(self: FileHarness, llm: Llm, p: Prompt[Public]) -> Source
+                        feedback: List[T = String]) -> Prompt[Trusted]
+    effects {Error, Permission[Vouch]}
+  operation generate(self: FileHarness, llm: Llm, p: Prompt[Trusted]) -> Source
     effects {llm.E, Error}
   provides Harness
 end

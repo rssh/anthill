@@ -567,6 +567,12 @@ means the injected email's entire strategy — persuade a model to name
 usefully be handed one — and what a model returns is a sealed `LlmOutput` that
 nothing here could read anyway.)*
 
+> **SUPERSEDED IN PART, 2026-09-07 (WI-20260829-MCKTE).** `LlmOutput` and its
+> `Permission[Reveal]` are gone; `Llm.complete` returns an ordinary
+> `Text[Untrusted]`. The reasoning below is kept because it is how the `-Model`
+> question was settled, and its conclusion still holds. The canonical note — what
+> replaced the wrapper, and what it does NOT buy — is in `measured.md` beside D1.
+
 That is three independent refusals for one attack. A design that rested on any
 single one would be a design with a single point of failure.
 

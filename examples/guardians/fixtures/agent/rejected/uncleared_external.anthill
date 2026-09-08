@@ -1,40 +1,49 @@
 -- ================================================================
--- FIXTURE — a generated `Triage` implementation, REFUSED BY BOTH CONTRACT TIERS
--- AT ONE CALL.
+-- FIXTURE — a generated `Triage` implementation, REFUSED BY THREE TIERS IN ONE
+-- LOAD.
 --
--- THE TWO TIERS ARE INDEPENDENT, AND THIS IS WHERE THAT IS MEASURED. `Email.send`
--- carries both (lib/email.anthill): a `requires releasable(body)` proved from the
--- KB at the call site, and a `Permission[Outbox]` guarded on the recipient and
--- decided by the typer. `rejected/outbox.anthill` breaks the row tier alone — an
--- external recipient, a cleared body. `rejected/uncleared_body.anthill` breaks the
--- proof tier alone — an internal recipient, a body the organisation never cleared.
--- This one is the single token from each: an external recipient AND an uncleared
--- body, at the SAME call, and BOTH refusals must appear in ONE load.
+-- THE TIERS ARE INDEPENDENT, AND THIS IS WHERE THAT IS MEASURED. Since
+-- WI-20260829-MCKTE they no longer sit on one operation. `Email.send` carries the
+-- row tier, `Permission[Outbox]` guarded on the recipient. `Text.trusted`
+-- (lib/vocabulary.anthill) carries the other two: `Permission[Vouch]`, deciding WHO
+-- may vouch, and `requires approved(raw)`, proved from the KB and deciding WHAT was
+-- vouched for. `rejected/outbox.anthill` breaks the row tier alone — an external
+-- recipient, mailing the `Text[Trusted]` the task handed it rather than minting one.
+-- This file breaks all three at once: an external recipient AND a body it vouches
+-- for itself AND content nobody approved, and every refusal must appear in ONE load.
 --
--- WHY IT IS A FIXTURE AND NOT A FOOTNOTE. Until WI-20260830-JM7A8 they did not.
--- An unsatisfied precondition aborted the call's typing before its effect row was
--- built, so the effect was never attributed and the `Permission[Outbox]` line
--- simply vanished — leaving one diagnostic that read as the complete account of
--- what was wrong with the program. A reader who repaired the body would then be
--- told about the recipient, one load later. measured.md C2a is the measurement
--- that found the suppression; this file is what keeps it from coming back.
+-- NO CANDIDATE BREAKS THE PROOF TIER ALONE any more — minting at all breaks the
+-- row — so that single-tier control is not a fixture but a TRUSTED-position source
+-- inside `an_uncleared_body_is_refused_by_the_send_precondition`, which declares
+-- `Permission[Vouch]` and vouches for an unapproved line.
+--
+-- WHY IT IS A FIXTURE AND NOT A FOOTNOTE. Until WI-20260830-JM7A8 they did not
+-- all arrive. An unsatisfied precondition aborted the call's typing before its
+-- effect row was built, so the effect was never attributed and the
+-- `Permission[Outbox]` line simply vanished — leaving one diagnostic that read as
+-- the complete account of what was wrong with the program. A reader who repaired
+-- the body would then be told about the recipient, one load later. measured.md C2a
+-- is the measurement that found the suppression; this file is what keeps it from
+-- coming back, and it now guards a precondition and a row on the SAME call
+-- (`Text.trusted`) as well as across two.
 -- ================================================================
 sort guardians.agent.UnclearedExternalTriage
   import anthill.prelude.{List, Error, External}
   import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
                     Verdict, categories_of}
-  import guardians.TrustLevel.{Public}
+  import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: UnclearedExternalTriage, box: Mailbox, llm: Llm) -> Report
+  operation run(self: UnclearedExternalTriage, box: Mailbox, llm: Llm,
+                wording: Text[Trusted]) -> Report
     ensures mentions_all(result)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "it", domain: "othercorp.com"),
-                            body: text(raw: "here is the mailbox summary"))
+                            body: Text.trusted(raw: "here is the mailbox summary"))
       Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
                                           labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, msgs.map(lambda m -> m.body).collect()))
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = UnclearedExternalTriage]
 end

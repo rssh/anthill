@@ -4,18 +4,30 @@
 -- THE MODEL IS NOT IN THE LOOP AT ALL. `rejected/generate_from_content.anthill`
 -- is the attack that builds the generation PROMPT out of the mailbox; this is
 -- the shorter one that skips generation entirely and returns the mailbox AS the
--- candidate program. Whatever `Prompt[Public]` guarantees about what a model was
+-- candidate program. Whatever `Prompt[Trusted]` guarantees about what a model was
 -- asked is irrelevant to a `Source` no model ever wrote.
 --
 -- WHAT `Source`'s TYPE ASSERTS is that its text came from `generate`, which is
 -- what its own header claims: "the only thing to do with one is submit it to a
--- `Checker`", and "for a program generated from a Public prompt" attacker data
+-- `Checker`", and "for a program generated from a Trusted prompt" attacker data
 -- did not influence it. Neither holds of a value anyone may mint from a `String`.
 -- This is `forged_llm.anthill`'s finding at a second carrier — a capability-ish
 -- type whose constructor was public, so the property its type asserts was
 -- ADVISORY — and it is closed the same way, by `internal` (§8.6).
 --
--- MEASURED BEFORE THE FIX: this exact file loaded clean (WI-20260829-MCKTE).
+-- IT BUILDS THE PROGRAM FROM AN ADDRESS, AND FROM THE BOX'S OWN, and both halves
+-- of that are forced. `m.body` would need `.raw`, whose seal is a SECOND refusal
+-- (driven by `reads_text.anthill`); and reaching a message at all through
+-- `msgs.head` incurs `Error[T = EmptyStream]`, which this row does not declare —
+-- a THIRD. Either would stop this file being a single-cause probe for the `Source`
+-- seal, which is the only thing it exists to measure. `box.owner.local` is a
+-- `String` reached by pure projection from an argument: no effect, no seal, and
+-- still not something a candidate may turn into a program.
+--
+-- MEASURED: backing `internal` out of `entity source` (lib/harness.anthill) reds
+-- this row and nothing else. The earlier form of this file — built from
+-- `join_texts(...).raw` while `text` was still public — loaded clean before either
+-- seal existed (WI-20260829-MCKTE).
 -- Note what does NOT refuse it. The taint labels do not: `Source` carries no
 -- label by design. The rows do not: `{External, Error}` is honest, no model is
 -- acquired and none is called. The refusal is a NAME RESOLUTION failure, so it
@@ -33,11 +45,11 @@
 -- ================================================================
 sort guardians.agent.ForgingGenerator
   import anthill.prelude.{List, Error, External}
-  import guardians.{Email, Mailbox, Source, join_texts}
+  import guardians.{Email, Mailbox, Source}
   entity mk
 
   operation build(self: ForgingGenerator, box: Mailbox) -> Source
     effects {External, Error} =
       let msgs = Email.fetch(box)
-      source(text: join_texts(msgs.map(lambda m -> m.body).collect()).raw)
+      source(text: box.owner.local)
 end

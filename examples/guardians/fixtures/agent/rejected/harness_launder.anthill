@@ -1,0 +1,50 @@
+-- ================================================================
+-- FIXTURE — a generated `Checker` that LAUNDERS THROUGH THE HARNESS, REFUSED BY
+-- THE ROW.
+--
+-- THE THIRD ROUTE TO A `Text[Trusted]`, and the one that survived two rounds of
+-- closing the other two. `Text.trusted` is gated and `join_texts` was narrowed to
+-- `Untrusted`, but `render_task` returns a `Prompt[Trusted]` and
+-- `entity prompt(body: Text[Trust])`'s projection is public — so
+-- `h.render_task(spec, nil, nil).body` was a `Text[Trusted]` obtained with neither
+-- tier, and `Email.send` took it. Measured loading clean before the fix.
+--
+-- WORSE THAN IT LOOKS, because the content is caller-chosen: `render_task` takes
+-- `feedback: List[T = String]`, and a `String` carries no label — `m.from.local`
+-- is one, and it is the attacker's. So this was a declared `String -> Text[Trusted]`
+-- path, which is exactly what the audit line in lib/vocabulary.anthill forbids, in
+-- the library itself and one indirection away.
+--
+-- WHAT CLOSES IT IS AN HONEST ROW, NOT A SEAL. `render_task` really does vouch:
+-- it mints a trusted prompt out of unlabelled strings. So it declares
+-- `Permission[Vouch]`, and the authority propagates — `attempt` declares it,
+-- `open_round` declares it beside `Permission[Llm]`, and the two authorities of
+-- the whole pipeline enter at that one point. A candidate's row grants neither.
+--
+-- NOTE WHAT IS NOT SEALED. `entity file_harness` stays public and this candidate
+-- still HOLDS a harness; what it cannot do is use the operation that vouches. The
+-- alternative was `internal entity file_harness` — the `forged_source` treatment —
+-- and it would have worked, but it hides a door instead of declaring what is behind
+-- it, and it would have said nothing about `render_task` minting trusted text.
+--
+-- BACKING IT OUT: drop `Permission[Vouch]` from `Harness.render_task`
+-- (lib/harness.anthill) and this row goes green.
+-- ================================================================
+sort guardians.agent.HarnessLaunderer
+  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.List.{nil, cons}
+  import anthill.reflect.{Symbol}
+  import guardians.{Checker, Source, CheckResult, Text, Address, Email, FileHarness}
+  import guardians.CheckResult.{Rejected}
+  entity mk
+
+  operation check(self: HarnessLaunderer, src: Source, spec: Symbol) -> CheckResult
+    effects {External, Error, -Permission[Llm]} =
+      let h = file_harness
+      let laundered = h.render_task(spec, nil, nil).body
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: laundered)
+      Rejected(diagnostics: cons(head: "laundered", tail: nil))
+
+  provides Checker[C = HarnessLaunderer]
+end

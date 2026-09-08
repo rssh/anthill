@@ -7,10 +7,12 @@
 -- model of any kind, so `-Permission[Llm]` is satisfiable and this one honours
 -- it by having nothing in scope that could mint.
 --
--- THERE USED TO BE A THIRD, and its disappearance is the point of `LlmOutput`.
--- `bad_checker` was handed an `Llm` in its own carrier and consulted it; `-Model`
--- refused it. What a model returns is now sealed, so that checker obtains a token
--- it cannot read, learns nothing, and is ACCEPTED.
+-- THERE USED TO BE A THIRD, and it is still ACCEPTED. `bad_checker` was handed an
+-- `Llm` in its own carrier and consulted it; `-Model` refused it, then `-Model`
+-- went away and a sealed `LlmOutput` made consulting harmless. The wrapper is gone
+-- too, and the verdict did not move: the reply is a `Text` whose content nothing
+-- can read, so the call still teaches nothing. Its successor is
+-- `consulting_checker.anthill`, which is a control rather than a refusal.
 --
 -- ITS VERDICT IS `Rejected`, AND THAT IS THE HONEST ONE: this fixture performs no
 -- check. What it is a control for is that the ROW is satisfiable, and `Accepted`
