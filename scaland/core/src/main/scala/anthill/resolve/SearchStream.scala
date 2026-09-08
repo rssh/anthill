@@ -270,7 +270,16 @@ class SearchStream private (
     kb: KnowledgeBase, goal: TermId, depth: Int, delayMode: DelayMode
   ): Option[StepResult] =
     val frame = stack.last
-    val innerGoal = Builtins.firstArg(kb, goal)
+    // WI-20260902-EQG4F item 2 — NO NEGAND, NO PROOF. A nullary `not` goal (`:- not`,
+    // `:- anthill.kernel.not`) carries nothing to negate, so the frame FAILS — rustland's
+    // `step_naf` pops its frame on the same `None`. Before this the negand fell back to
+    // the `not` goal ITSELF and the sub-stream below re-entered here at depth 0, so both
+    // spellings died `StackOverflowError` rather than answering.
+    val innerGoal = Builtins.firstArg(kb, goal) match
+      case Some(inner) => inner
+      case None =>
+        stack.remove(stack.length - 1)
+        return Some(StepResult.Continue)
     val reified = kb.reify(innerGoal, frame.subst)
 
     Builtins.isGround(kb, reified, Substitution()) match

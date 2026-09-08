@@ -49,10 +49,34 @@ object Builtins:
       case Term.Ident(sym)        => Some(sym)
       case _                      => None
 
-  def firstArg(kb: KnowledgeBase, goal: TermId): TermId =
+  /** The first POSITIONAL argument of a 1-ary builtin goal, or `None` when the goal has
+    * no positional argument at all.
+    *
+    * "NO POSITIONAL ARGUMENT" IS WIDER THAN "NULLARY", and deliberately: a goal carrying
+    * only NAMED arguments (`ground(x: ?y)`) answers `None` here too, so `nonvar`/`ground`
+    * FAIL where the old fallback walked the whole goal and answered `Delay`. That is
+    * rustland's answer as well — its `pos_arg` reads `pos_args` alone, so the same shape
+    * reaches `builtin_ground`'s `None => BuiltinResult::Failure`. These builtins are
+    * positional; a named-arg spelling of one names no argument they can read.
+    *
+    * WI-20260902-EQG4F item 2 — IT USED TO FALL BACK TO THE GOAL ITSELF, and that made a
+    * NULLARY `not` goal recurse forever. WI-20260902-CZJ2N stores a nullary goal as
+    * `Term.Ref`, and [[KnowledgeBase.getBuiltin]] reads it through `headFunctorOf`, so
+    * `rule r(1) :- not` (and its dotted spelling `:- anthill.kernel.not`) now REACHES
+    * [[SearchStream.stepNaf]]. With the old fallback the negand WAS the `not` goal, the
+    * sub-stream re-entered `stepNaf` on it at depth 0 — so `maxDepth` never bit — and
+    * BOTH spellings died `StackOverflowError`. Measured; the applied spelling
+    * `anthill.kernel.not(un(999))` answered 1 either way and is the control.
+    *
+    * `None` IS THE ANSWER RUSTLAND GIVES, at all three of this function's readers:
+    * `builtin_nonvar` / `builtin_ground` return `BuiltinResult::Failure` on a missing
+    * `pos_arg(0)` and `step_naf` pops the frame. An argument-less builtin goal is
+    * malformed, and neither implementation refuses it at LOAD — it fails at resolve, in
+    * both, which is a shared limit rather than a scaland one. */
+  def firstArg(kb: KnowledgeBase, goal: TermId): Option[TermId] =
     kb.getTerm(goal) match
-      case fn: Term.Fn if fn.posArgs.length >= 1 => fn.posArgs(0)
-      case _ => goal
+      case fn: Term.Fn if fn.posArgs.length >= 1 => Some(fn.posArgs(0))
+      case _ => None
 
   def isGround(kb: KnowledgeBase, term: TermId, subst: Substitution): GroundCheck =
     val walked = kb.walk(term, subst)
@@ -94,15 +118,20 @@ object Builtins:
         else BuiltinResult.Failure
 
   private def executeNonVar(kb: KnowledgeBase, goal: TermId, subst: Substitution): BuiltinResult =
-    val walked = kb.walk(firstArg(kb, goal), subst)
-    kb.getTerm(walked) match
-      case Term.Var(_) => BuiltinResult.Delay
-      case _ => BuiltinResult.Success
+    firstArg(kb, goal) match
+      case None => BuiltinResult.Failure // arity-less goal — rustland's `builtin_nonvar`
+      case Some(arg) =>
+        kb.getTerm(kb.walk(arg, subst)) match
+          case Term.Var(_) => BuiltinResult.Delay
+          case _ => BuiltinResult.Success
 
   private def executeGround(kb: KnowledgeBase, goal: TermId, subst: Substitution): BuiltinResult =
-    isGround(kb, firstArg(kb, goal), subst) match
-      case GroundCheck.Ground => BuiltinResult.Success
-      case GroundCheck.HasVar => BuiltinResult.Delay
+    firstArg(kb, goal) match
+      case None => BuiltinResult.Failure // arity-less goal — rustland's `builtin_ground`
+      case Some(arg) =>
+        isGround(kb, arg, subst) match
+          case GroundCheck.Ground => BuiltinResult.Success
+          case GroundCheck.HasVar => BuiltinResult.Delay
 
   /** Unified handler for qualified_name and short_name builtins. */
   private def executeSymbolName(kb: KnowledgeBase, goal: TermId, subst: Substitution, qualifiedName: Boolean): BuiltinResult =

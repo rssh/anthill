@@ -6,6 +6,7 @@
 mod common;
 
 mod assumptions_test;
+mod eqg4f_obligation_result_var_test;
 mod comm_delay_test;
 mod cross_namespace_inline_test;
 mod inductive_test;

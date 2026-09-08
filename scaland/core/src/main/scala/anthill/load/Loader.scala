@@ -2159,7 +2159,7 @@ object Loader:
     // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
     // citation written there is the NAME. Only the top level, and that is a
     // MEASUREMENT rather than an omission — see `reallocTerm`'s `Term.Fn` arm, and
-    // the row `negation in a rule body does not reach NAF, for any spelling`.
+    // the row `a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling`.
     // §6.1 — a top-level `true` is ERASED, so the body stays EMPTY. That is what makes
     // `rule H :- true` the exact spelling of `fact H`: the same clause, with the same
     // empty body, reached by the two syntaxes §6.1 says mean one thing. It is NOT what

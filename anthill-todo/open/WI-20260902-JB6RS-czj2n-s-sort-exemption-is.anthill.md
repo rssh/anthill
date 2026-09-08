@@ -68,3 +68,49 @@ decisive new row must go through the DISCRIMINATION TREE — a `provides Spec[T 
 wildcard beside a concrete `Fn{S}` instance, retrieved by a ground goal — because that is
 the reader the existing coverage does not use.
 
+## Changes
+
+### 2026-09-08T19:39:47Z — feedback — user
+
+TWO MORE CONSUMERS, MEASURED — inherited from WI-20260902-EQG4F items 1 and 5, which are
+this ticket's question asked twice and are dropped there. Neither changes the decision;
+both widen the population it has to cover, and one of them is a SCALAND face this ticket
+did not have.
+
+A. SCALAND CONTRADICTS ITSELF, where rustland merely widens. rustland's readers agree with
+   each other (`views_structurally_equal(Ref(S), Fn{S})` is TRUE, per this ticket's own
+   table). Scaland's do NOT: `discrim/SubstTree.insertWalk` keys `Term.Ref(sym)` as
+   `Functor(sym)/Arity(0)` — byte-identical to `Fn(sym,[],[])`'s key — while
+   `subst/Substitution.unifyMatch` refuses the pair outright ("Head-kind mismatch (incl.
+   Const-vs-Ref etc.) has no shared structure"). And `kb/KnowledgeBase.alloc` keeps the
+   same `SymbolKind.Sort` exemption rustland has. So whichever way this ticket decides,
+   scaland needs BOTH sites moved, and today its tree retrieves a candidate its unifier
+   then rejects. Confirmed by reading all three sites; the decisive row this ticket already
+   demands (a wildcard beside a concrete instance, retrieved by a ground goal THROUGH the
+   tree) is the row that would tell whether the rejection saves it.
+
+B. THE REIFY ROUND TRIP IS A CONSUMER THAT DECIDES, and it loses the exemption. Measured on
+   the delivered tree, `test.eqg4f5.Shape` a `SymbolKind::Sort`:
+
+     Fn{Shape,[],[]}  = TermId(14)        <- canon-EXEMPT, as intended
+     Ref(Shape)       = TermId(24)
+     reify(TermId(14)) = RefRepr(Shape)
+     reflect(RefRepr)  = TermId(24)       <- the concrete spec identity became the wildcard
+
+   CONTROLS: an entity constructor (`Shape.Circle`) and a rule predicate (`plain`) are
+   canonicalized, so `Fn` and `Ref` are ONE TermId for them and their round trips are
+   STABLE. The loss is at exactly the one shape the exemption exists to protect.
+   WHERE IT IS: `reader::reflect_walk`'s `ReflectShape::Ref(sym) => CoreTerm::Ref(sym)`,
+   reached from BOTH realizations (`KbBridge::reflect` and the interpreter's `kb_reflect`).
+   NOT persistence — `persistence::print` reads the raw `Term::Fn` and never routes through
+   `reify_walk`, exactly as CZJ2N's comment says. That comment censused the repr's READERS
+   (`gate.anthill`) and the printer, and its "the move is invisible to it" holds for both;
+   what it did not census is the INVERSE walk, which is where a `RefRepr` becomes a term
+   again. Nothing in the corpus calls `KB.reflect` yet, so this is latent — but it is a
+   published surface operation on both realizations, not dead code.
+
+SO THE ACCEPTANCE GROWS BY TWO ROWS, whichever reading wins: if the exemption is real, the
+reify round trip must PRESERVE `Fn{S,[],[]}` and scaland's tree must stop keying it as
+`Ref(S)`; if it is not, `alloc`'s gate goes in BOTH implementations and `unifyMatch` must
+stop refusing the pair — otherwise scaland keeps a retrieval its unifier undoes.
+

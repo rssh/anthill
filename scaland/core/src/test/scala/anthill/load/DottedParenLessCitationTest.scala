@@ -46,7 +46,7 @@ import anthill.resolve.SearchStream
   *
   * Every back-out leaves the PARENS arm of each pair untouched, which is what makes each
   * pair a measurement of the SPELLING. `a data slot still stores the chain on both sides
-  * of a match` and `negation in a rule body does not reach NAF, for any spelling` pass
+  * of a match` and `a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling` pass
   * under ALL FOUR by design — they are what the change must not move.
   */
 class DottedParenLessCitationTest extends munit.FunSuite:
@@ -166,13 +166,19 @@ class DottedParenLessCitationTest extends munit.FunSuite:
 
   /** THE BOUNDARY THIS PORT DOES NOT CROSS, MEASURED rather than assumed. rustland routes
     * `not`'s NEGAND as a goal of its own (`goal_arg_slots`), so its dotted citation
-    * collapses there too; scaland does not, and the twin could never be driven — a
-    * rule-body `not(…)` does not reach NAF here AT ALL. This row is the measurement that
-    * says so: an EMPTY predicate's negation answers 0, where NAF would answer 1, and it
-    * does so for EVERY spelling — applied, one-segment, and dotted alike. So there is no
-    * negand position to route yet; when one appears, `reallocTerm`'s `Term.Fn` arm is
-    * where the descent goes, and the comment there says it. */
-  test("negation in a rule body does not reach NAF, for any spelling") {
+    * collapses there too; scaland does not, and the twin could never be driven from HERE.
+    * This row is the measurement that says so: an EMPTY predicate's negation answers 0,
+    * where NAF would answer 1, for every NEGAND spelling — applied, one-segment, and
+    * dotted alike. So there is no negand position to route yet; when one appears,
+    * `reallocTerm`'s `Term.Fn` arm is where the descent goes, and the comment there says it.
+    *
+    * WHAT VARIES HERE IS THE NEGAND, NOT `not` ITSELF, and the difference is load-bearing
+    * (WI-20260902-EQG4F item 2). Every row below writes the ONE-SEGMENT `not`, which lands
+    * on a symbol that is not `anthill.kernel.not` — which is why they all answer 0. Written
+    * DOTTED, `anthill.kernel.not(unA(999))` DOES reach NAF and answers 1; the earlier
+    * reading of this comment — that a rule-body `not(…)` never reaches NAF here — was too
+    * strong. `NullaryBuiltinGoalTest` holds both spellings side by side. */
+  test("a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling") {
     val kb = LoadFixture.loaded(
       """fact b719(1)
         |namespace zz719Nf

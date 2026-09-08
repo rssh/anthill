@@ -119,6 +119,26 @@ pub fn emit_obligation_with(
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.collect_rule(&obligation.rule_qn)?;
+    if emitter.result_var.is_empty() {
+        // AN OBLIGATION IS `<rule>(?result) <= bound`, so a head that binds no result
+        // variable has nothing to bound. `render_upper_bound_with` interpolates
+        // `result_var` unguarded and emitted `(assert (not (<=  5.0)))` — invalid SMT-LIB
+        // returned as `Ok`, which a solver runner then reports as "not unsat" rather than
+        // as an error. Measured on all three head shapes that leave it empty: a nullary
+        // head (`Bottom` since WI-20260902-CZJ2N gave `classify_head` its `Term::Ref` arm),
+        // a named-arg-only `Term::Fn` head (`Bottom`, and the shape that says the hole
+        // predates that arm), and an entity-headed rule (`Predicate`).
+        //
+        // Keyed on the empty `result_var` rather than on a head shape, because that is
+        // what the renderer actually depends on. scaland's `emitObligationWith` carries
+        // the same guard and the same message shape (WI-20260902-EQG4F) — found there by
+        // /code-review, and measured here rather than assumed.
+        return Err(SmtGenError::new(format!(
+            "obligation on '{}': its head binds no result variable (only a function-like \
+             head `rule f(?r) :- …` can carry an upper bound)",
+            obligation.rule_qn
+        )));
+    }
     emitter.collect_facts_for_referenced_entities()?;
     Ok(emitter.render_upper_bound_with(obligation, config))
 }

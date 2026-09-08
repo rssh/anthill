@@ -65,6 +65,22 @@ object SmtGen:
     val emitter = Emitter(kb)
     emitter.collectRule(obligation.ruleQn) match
       case Left(err) => Left(err)
+      case Right(_) if emitter.resultVar.isEmpty =>
+        // AN OBLIGATION IS `<rule>(?result) <= bound`, so a head with no result variable
+        // has nothing to bound. `renderUpperBoundWith` interpolates `resultVar` unguarded
+        // and emitted `(assert (not (<=  5.0)))` — invalid SMT-LIB returned as `Right`,
+        // which `Z3Runner` then reports as "not unsat" rather than as an error.
+        //
+        // THE HOLE IS OLDER THAN THE ARM THAT FOUND IT (/code-review on
+        // WI-20260902-EQG4F item 3, measured both ways). `HeadShape.Predicate` — an
+        // entity- or comparison-headed rule — has always left `resultVar` empty and
+        // always produced that document; widening `classifyHead` to read a nullary head
+        // as `Bottom` merely added a second way in. Refusing on the empty `resultVar`
+        // rather than on a head shape covers both, and is the condition the renderer
+        // actually depends on.
+        Left(SmtGenError(
+          s"obligation on '${obligation.ruleQn}': its head binds no result variable " +
+            "(only a function-like head `rule f(?r) :- …` can carry an upper bound)"))
       case Right(_) =>
         emitter.collectFactsForReferencedEntities()
         Right(emitter.renderUpperBoundWith(obligation, config))
@@ -325,23 +341,38 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
         k += 1
     Right(())
 
+  /** A goal's or head's FUNCTOR and its argument lists, in either nullary spelling.
+    *
+    * WI-20260902-CZJ2N stores `f` and `f()` as ONE term, `Term.Ref(f)` — so a `Term.Fn`-only
+    * read stopped seeing a nullary head or goal at all. This is rustland's `occ_as_fn`: its
+    * body goals are `NodeOccurrence`s whose nullary `Expr::Apply` already answers with empty
+    * argument lists, which is why only scaland needed a reader (WI-20260902-EQG4F item 3).
+    * `Term.Ident` rides along for the same reason `classifyHead` takes it — an unresolved
+    * name is still a 0-ary application, and refusing it here would name the CARRIER where
+    * the caller's own "unhandled body goal functor" names the SYMBOL. */
+  private def goalAsFn(goal: TermId): Option[(TermSymbol, IArray[TermId], IArray[(TermSymbol, TermId)])] =
+    kb.getTerm(goal) match
+      case Term.Fn(functor, posArgs, namedArgs) => Some((functor, posArgs, namedArgs))
+      case Term.Ref(sym)                        => Some((sym, IArray.empty, IArray.empty))
+      case Term.Ident(sym)                      => Some((sym, IArray.empty, IArray.empty))
+      case _                                    => None
+
   /** Process one rule-body goal. */
   def processBodyGoal(
     goal: TermId,
     bindings: TreeMap[String, String]
   ): Either[SmtGenError, Unit] =
-    val term = kb.getTerm(goal)
-    val fn: Term.Fn = term match
-      case f: Term.Fn => f
-      case other => return Left(SmtGenError(s"non-Fn body goal: $other"))
-    val qn = kb.qualifiedNameOf(fn.functor)
+    val (functor, posArgs, namedArgs) = goalAsFn(goal) match
+      case Some(t) => t
+      case None => return Left(SmtGenError(s"non-Fn body goal: ${kb.getTerm(goal)}"))
+    val qn = kb.qualifiedNameOf(functor)
 
     // Equation goal: `?var = <expr>`.
-    if SmtGen.isEqFunctor(kb, fn.functor) then
-      if fn.posArgs.length != 2 then
-        return Left(SmtGenError(s"= goal: expected 2 pos_args, got ${fn.posArgs.length}"))
-      val lhsTerm = kb.getTerm(fn.posArgs(0))
-      translateExpr(fn.posArgs(1), bindings) match
+    if SmtGen.isEqFunctor(kb, functor) then
+      if posArgs.length != 2 then
+        return Left(SmtGenError(s"= goal: expected 2 pos_args, got ${posArgs.length}"))
+      val lhsTerm = kb.getTerm(posArgs(0))
+      translateExpr(posArgs(1), bindings) match
         case Left(e) => return Left(e)
         case Right(rhsSmt) =>
           lhsTerm match
@@ -349,7 +380,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
               bindings(syntheticVarName(vid.varId.id)) = rhsSmt
               return Right(())
             case _ =>
-              translateExpr(fn.posArgs(0), bindings) match
+              translateExpr(posArgs(0), bindings) match
                 case Left(e) => return Left(e)
                 case Right(lhsSmt) =>
                   assertions += s"(= $lhsSmt $rhsSmt)"
@@ -358,23 +389,64 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     // Inequality body goals: lte/lt/gte/gt(a, b).
     SmtGen.mapInequalityOp(qn) match
       case Some(smtOp) =>
-        if fn.posArgs.length != 2 then
-          return Left(SmtGenError(s"$qn: expected 2 pos_args, got ${fn.posArgs.length}"))
-        for
-          a <- translateExpr(fn.posArgs(0), bindings)
-          b <- translateExpr(fn.posArgs(1), bindings)
+        if posArgs.length != 2 then
+          return Left(SmtGenError(s"$qn: expected 2 pos_args, got ${posArgs.length}"))
+        // RETURN THE `Either`, DO NOT DISCARD IT (/code-review, WI-20260902-EQG4F). This
+        // used to compute the `for` and then `return Right(())` regardless: a
+        // `translateExpr` failure swallowed its error AND skipped the `assertions +=`, so
+        // the premise vanished from the document and the caller was told it was encoded.
+        // Measured: `lte(?b, weirdo(1.0))` emitted a document with no `<=` at all. Same
+        // antecedent-weakening class as the entity guard two arms below — a lift renders
+        // the body as an implication's antecedent, so a dropped premise makes the spliced
+        // lemma stronger than what was proved (rustland's WI-897 note).
+        return for
+          a <- translateExpr(posArgs(0), bindings)
+          b <- translateExpr(posArgs(1), bindings)
         yield
           assertions += s"($smtOp $a $b)"
           ()
-        return Right(())
       case None => ()
 
     // Entity-destructure goal.
-    if isKnownEntity(fn.functor) then
+    if isKnownEntity(functor) then
+      // A CITATION THAT DESTRUCTURES NOTHING IS REFUSED, NOT DROPPED (/code-review on
+      // WI-20260902-EQG4F item 3). Reading a nullary carrier here newly let a BARE entity
+      // premise — `:- Params` — reach this arm, where the loop below has no slot to walk
+      // and the `Right(())` said "encoded". Measured: the premise vanished from the
+      // document with no trace. A lift renders a body as an implication's antecedent, so
+      // a dropped premise WEAKENS it and the lemma spliced into the consumer is stronger
+      // than anything proved — the unsoundness WI-897 named in rustland's own
+      // `process_body_goal`. `Params()` is refused identically, because CZJ2N made the two
+      // spellings ONE term. NOT FIXED HERE, and a relative of the same gap: a destructure
+      // whose slots are all literals (`Params(base: 2.0)`) also binds nothing, and this
+      // arm still accepts it.
+      // THE POSITIONAL CHECK COMES FIRST so each message describes its own case. Written
+      // the other way round (/code-review), `Params(?b)` — positional-only — took the
+      // "binds no field by name" branch and the carefully worded positional message only
+      // ever fired for a MIXED citation, a drift the test could not see because it
+      // accepted either string.
+      if posArgs.nonEmpty then
+        // A POSITIONAL SLOT IS WORSE THAN A MISSING ONE. The loop below walks `namedArgs`
+        // only, so `Params(?b)` passed a guard written as "no arguments at all" and bound
+        // nothing — measured, `?b` stayed a FREE var in the encoding and the premise was
+        // gone, which under-constrains rather than merely omits.
+        return Left(SmtGenError(
+          s"v0: entity premise '$qn' has ${posArgs.length} positional slot(s); an entity " +
+            "destructure binds by field name"))
+      // A FIELDLESS ENTITY IS NOT A FAILED DESTRUCTURE. `entity heavy_variant` registers
+      // with an EMPTY field list, so `isKnownEntity` is true and a blanket
+      // `namedArgs.isEmpty` refusal told its author to "write the fields it binds" — advice
+      // for fields that cannot exist (/code-review). It falls through to the loop, which
+      // walks nothing and registers the entity as REFERENCED, exactly as rustland's arm
+      // does: the premise carries no arithmetic, and the fact harvest is what checks it.
+      // The refusal below is for a FIELDED entity cited with none of its fields.
+      if namedArgs.isEmpty && kb.entityFieldNames(functor).exists(_.nonEmpty) then
+        return Left(SmtGenError(
+          s"v0: entity premise '$qn' binds no field by name — write the fields it binds"))
       referencedEntities += qn
       var i = 0
-      while i < fn.namedArgs.length do
-        val (fieldSym, valTerm) = fn.namedArgs(i)
+      while i < namedArgs.length do
+        val (fieldSym, valTerm) = namedArgs(i)
         kb.getTerm(valTerm) match
           case Term.Var(vid) =>
             val fieldName = kb.resolveSym(fieldSym)
@@ -386,16 +458,34 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       return Right(())
 
     // Abstract mode: don't chase rule calls.
-    if abstractMode then
+    //
+    // A RULE CALL IS THE ONLY THING THIS MAY SKIP, and the gate is what says so
+    // (/code-review, WI-20260902-EQG4F; rustland's `process_body_goal` gates its twin on
+    // `program_clauses_by_functor` for the same WI-897 reason). Ungated, this arm dropped
+    // whatever reached it — and reading a nullary carrier newly routed a 0-ary premise
+    // here, so `:- flag4` went from a loud `non-Fn body goal` to silently gone.
+    //
+    // ANY CLAUSE, FACTS INCLUDED — rustland's predicate verbatim, and NOT the `hasBody`
+    // one the rule-call arm below uses. A first draft asked for a bodied clause and made
+    // this TWO rows stricter instead of one (/code-review): measured, a fact-defined
+    // premise (`rule limit(3.0)`) went from skipped-and-`Right` to `unhandled body goal
+    // functor`, where rustland still returns `Ok`.
+    //
+    // THE ONE DELIBERATE DIVERGENCE IS ARITY. Skipping a call is safe because its vars
+    // stay FREE and an ambient cited-rule lift re-states it; a 0-ary premise has no vars
+    // to leave free and nothing restates it, so it is excluded here even though it names a
+    // clause. rustland's gate admits the nullary case its own safety argument does not
+    // cover; this is that one row stricter, and no other.
+    if abstractMode && posArgs.nonEmpty && kb.byFunctor(functor).nonEmpty then
       visitedRules += qn
       return Right(())
 
     // Rule call (`<ruleQn>(?result)` — single-arg shorthand).
-    if fn.posArgs.length == 1 && fn.namedArgs.isEmpty then
-      val candidates = kb.byFunctor(fn.functor)
+    if posArgs.length == 1 && namedArgs.isEmpty then
+      val candidates = kb.byFunctor(functor)
       val hasBody = candidates.exists(rid => kb.ruleBody(rid).nonEmpty)
       if hasBody then
-        val bindIdx = kb.getTerm(fn.posArgs(0)) match
+        val bindIdx = kb.getTerm(posArgs(0)) match
           case Term.Var(vid) => vid.varId.id
           case other => return Left(SmtGenError(
             s"v0: rule call's pos arg must be a Var, got $other"))
@@ -484,29 +574,49 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
   def isKnownEntity(sym: TermSymbol): Boolean =
     kb.entityFieldNames(sym).isDefined
 
-  /** Classify the rule's head shape. Mirrors rustland's `classify_head`. */
+  /** Classify the rule's head shape. Mirrors rustland's `classify_head`.
+    *
+    * WI-20260902-EQG4F item 3 — READ THE NULLARY HEAD THROUGH [[goalAsFn]]. Since
+    * WI-20260902-CZJ2N a nullary head is stored `Term.Ref`, so the `Term.Fn`-only match
+    * sent BOTH spellings — `rule flag :- …` and `rule flag() :- …` — to `Unsupported`,
+    * which the caller turns into a hard `SmtGenError`; the 0-arg arm below became dead
+    * code at the same moment. rustland took this arm in CZJ2N itself; scaland did not,
+    * and that is the whole of the gap. */
   def classifyHead(rid: RuleId): HeadShape =
-    kb.getTerm(kb.ruleHead(rid)) match
+    val head = kb.ruleHead(rid)
+    kb.getTerm(head) match
       case Term.Bottom => HeadShape.Bottom
-      case f: Term.Fn =>
-        val qn = kb.qualifiedNameOf(f.functor)
-        if SmtGen.isEqFunctor(kb, f.functor)
-          || SmtGen.mapInequalityOp(qn).isDefined
-          || isKnownEntity(f.functor)
-        then HeadShape.Predicate
-        else if f.posArgs.length == 1 then
-          kb.getTerm(f.posArgs(0)) match
-            case Term.Var(vid) => HeadShape.FunctionLike(vid.varId.id)
-            case other => HeadShape.Unsupported(
-              s"v0: function-like rule head's pos_arg must be Var, got $other")
-        else if f.posArgs.isEmpty then
-          // Synthesized 0-arg label-functor for transitional multi-head
-          // labeled rules (or for denials whose head was synthesized).
-          // Behaves like `Term::Bottom` — empty conclusion path.
-          HeadShape.Bottom
-        else HeadShape.Unsupported(
-          s"v0: rule head shape not supported (functor=$qn, pos_args=${f.posArgs.length})")
-      case other => HeadShape.Unsupported(s"rule head must be Fn or Bottom, got $other")
+      // AN `Ident` HEAD IS REFUSED HERE, though [[goalAsFn]] admits it. Since
+      // WI-20260902-CZJ2N `Term.Ident` means exactly "a name nothing in scope answers"
+      // (`Loader.reallocTerm`). `processBodyGoal` may read one because it has a loud tail
+      // that names the symbol; this has none, so routing it through would classify an
+      // unresolved head as `Bottom` and emit a document with the conclusion silently
+      // omitted — a new hole of the class this ticket closes (/code-review).
+      case Term.Ident(sym) =>
+        HeadShape.Unsupported(
+          s"rule head `${kb.qualifiedNameOf(sym)}` names nothing in scope")
+      case _ =>
+        goalAsFn(head) match
+          case None =>
+            HeadShape.Unsupported(s"rule head must be Fn or Bottom, got ${kb.getTerm(head)}")
+          case Some((functor, posArgs, _)) =>
+            val qn = kb.qualifiedNameOf(functor)
+            if SmtGen.isEqFunctor(kb, functor)
+              || SmtGen.mapInequalityOp(qn).isDefined
+              || isKnownEntity(functor)
+            then HeadShape.Predicate
+            else if posArgs.length == 1 then
+              kb.getTerm(posArgs(0)) match
+                case Term.Var(vid) => HeadShape.FunctionLike(vid.varId.id)
+                case other => HeadShape.Unsupported(
+                  s"v0: function-like rule head's pos_arg must be Var, got $other")
+            else if posArgs.isEmpty then
+              // 0-arg predicate head (`rule status_ok :- …`, either spelling), and the
+              // synthesized label-functor of a transitional multi-head labeled rule or a
+              // denial. Behaves like `Term.Bottom` — empty conclusion path.
+              HeadShape.Bottom
+            else HeadShape.Unsupported(
+              s"v0: rule head shape not supported (functor=$qn, pos_args=${posArgs.length})")
 
   /** For each entity referenced in the rule body, find its (single)
     * ground fact and resolve every field to a Real value.
