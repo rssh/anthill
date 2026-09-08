@@ -2382,18 +2382,49 @@ execution duties, not a different meaning for the annotation.
 The equivalent **introducer** spelling binds the type variable in the head and
 states the bound as a guard — `keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]`
 — which the loader **folds out of the body**, so the rule is still an equation.
-It is enforced at exactly **one** site — the resolver, firing a directional
-rewrite — so it is legal today only on a `[simp]`/`[unfold]` equational rule (an
-equation being bodyless, §8.3) and **refused at load** anywhere else, naming the
-rule. A body goal that is *not* a folded `Spec[T]` guard therefore disqualifies
-it: the rule is no longer an equation, nothing fires it as a rewrite, and the
-bound would have no reader. That refusal includes a `[simp]` **dot rule** — a
-sort-scoped law written against the method-call form, `rule dr:
+The bound is read by whichever of the annotation's two readers the rule has, so
+an introducer is equally at home on a **relational** head: `rule g[A](?a: A, ?b)
+:- src(?a, ?b), Summable[A]` is an ordinary bounded clause, its bound read by the
+generated `domain` goal above. What is **refused at load**, naming the rule, is
+the shape with NEITHER reader. For an **equational** head that is TWO conditions
+and either alone loses it. The head must carry `[simp]` or `[unfold]`, the
+resolver firing no other rewrite — so an **untagged** equation's bound is refused
+however it is written. And its body must fold empty, so a body goal that is *not*
+a folded `Spec[T]` guard disqualifies it too: the rule is then no longer an
+equation, nothing fires it as a rewrite, and the bound would have no reader. The
+refusal also includes a `[simp]` **dot rule** — a sort-scoped law written against the
+method-call form, `rule dr:
 dot_apply(?receiver, member, ?x) = … [simp]`: such a rule is fired by the typer,
 which enforces typed bounds nowhere, so the bound could only be ignored — write
 the law as an operation-headed equation instead. The refusal is exactly as wide
 as that firing: an `[unfold]` dot rule, which only the resolver fires, keeps its
 bound.
+
+**An introduced type variable may be written ANYWHERE inside a bound, not only
+as the whole bound** (WI-20260908-PW9A0). `?x: List[T = A]` is "a list whose
+element type is the bounded `A`", and it means what putting `A`'s bound in place
+of `A` means — `?x: List[T = Summable]`. That is the substitution the bare form
+already was (`?x: A` ≡ `?x: Summable`), applied at depth, and it is a fact about
+what the NAME denotes rather than a rule about type SHAPES: no shape is singled
+out, so a type argument, a nested one, a tuple element, an arrow parameter, and
+an application's own head (`?x: A[T = Int64]` ≡ `?x: Summable[T = Int64]`) all
+substitute alike. Whether the resulting bound then DECIDES is the separate
+question every bound faces — `Int64`, `Summable`, `List[T = Int64]` and
+`Summable[T = Int64]` decide; an arrow or tuple bound has no nominal head and
+therefore SUSPENDS, leaving its rows conditional — and it is answered the same
+way with a substituted variable in the bound as with a concrete type in the same
+place. Both spellings of the head take it: `g[A](a: List[T = A], …)` is the same
+clause as `g[A](?a: List[T = A], …)`. A name the head introduced is never
+reported as an **unresolved name** — that message's repair, declare or import
+`A`, is wrong for a variable the same head binds; an introducer with no bounding
+guard is one fault, reported once, naming the variable and the `:- Spec[A]`
+clause it wants.
+
+Because the variable shadows at every depth, an introducer whose name **already
+resolves** in scope is **refused**: `g[Bool](?a: List[T = Bool], …)` could be
+read as the bounded variable or as the sort `Bool`, and nothing in the program
+says which. (Measured before the refusal: it kept opposite rows under the two
+readings, loading clean under both.) The repair is to rename the type variable.
 
 **Bounded quantification over a collection (WI-027).** A rule-body goal may quantify over the elements of a list:
 

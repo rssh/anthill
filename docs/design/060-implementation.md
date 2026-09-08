@@ -221,15 +221,25 @@ The proposal's four steps map to one new decision in the loader's head conversio
 - **Bare `p(x, y)` is NOT an error, and must not become one** — see §10's third
   acceptance-row correction. It is a symbolic constant, which is a supported idiom, so
   this form's typo reads as a constant column rather than as a dead clause.
-- **A head carrying a `ParseAux` child is DECLINED, not filtered.** The rule-level
-  `[A]` type-variable introducer rides as one, and filtering it would silently drop the
-  bracket the author wrote; handing the head back to the ordinary path restores exactly
-  the pre-existing behaviour. MEASURED before the decline: `rule g[A](a: List[T = A], …)`
-  PANICKED on `convert_term`'s `unreachable!`. Both spellings now give the same loud
-  `unresolved name 'A'` — combining the `[T]` introducer with a parameterized bound is
-  unsupported in the SIGIL spelling too — WI-582 scoped the introducer to a BARE bound —
-  so it is not §2.1's question. **WI-20260908-PW9A0** owns both lifting this decline and
-  the misdirecting `unresolved name` the sigil spelling reports meanwhile.
+- **A `ParseAux` NAMED child is FILTERED**, with the same predicate the generic head
+  conversion filters by (`visible_named`), so a head carrying the rule-level `[A]`
+  type-variable introducer is reclassified like any other. Handing one to `convert_term`
+  unfiltered reaches its `unreachable!` — MEASURED as a PANIC. A POSITIONAL `ParseAux`
+  still declines, because the generic walk does not filter those either, so there is no
+  pre-existing behaviour to match.
+
+  **This replaces a blanket DECLINE** (WI-20260908-PW9A0), which was justified here as
+  "filtering would silently drop the bracket the author wrote". It does not: the bracket
+  is read by `collect_rule_tvar_names` BEFORE the head is converted, which marks the node
+  consumed, and a bracket nothing consumes is still reported by the WI-839 sweep. The
+  decline's own cost was the silent one: `rule g[A](a: A, …) :- one(a, …), Summable[A]`
+  kept `a: A` a named argument and its body's `a` a constant, so it LOADED CLEAN and
+  answered **0** where its sigil twin `?a: A` answered **1** — a dead clause, with no
+  diagnostic anywhere, which is exactly what §2.1's "both spellings, one answer" exists
+  to prevent. The decline's other premise — that a `[T]` introducer inside a
+  parameterized bound is unsupported in the sigil spelling too — no longer holds either;
+  see `kernel-language.md` §5.3, *An introduced type variable may be written anywhere
+  inside a bound*.
 - **The written type takes three spellings** — bare (`c: Colour`), qualified
   (`c: lib.Colour`) and applied (`xs: List[T = Int64]`) — because the `?x: T` spelling
   accepts all three and the two lower to one internal form. Only the bare one was

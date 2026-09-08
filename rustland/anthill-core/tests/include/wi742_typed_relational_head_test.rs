@@ -25,7 +25,9 @@
 //!    admission rows fail at load; the three refusal rows pass either way BY DESIGN,
 //!    which is what makes them controls rather than duplicates.
 //!  * `convert_rule_head_with_params` (§2.1) — the four `parameter_form_*` rows fail;
-//!    every other row passes either way.
+//!    every other row passes either way. Its ParseAux FILTER is its own axis:
+//!    `a_head_carrying_a_type_var_introducer_is_reclassified_like_any_other` fails on the
+//!    sigil-free spelling and passes on the sigil control (WI-20260908-PW9A0).
 //!  * `load_rule`'s parameter-map clear wrapper —
 //!    `parameter_names_do_not_leak_past_their_rule` fails; every other row passes either
 //!    way, which is what makes it its own axis.
@@ -378,19 +380,24 @@ fn parameter_form_names_and_types_the_columns() {
 }
 
 #[test]
-fn a_head_carrying_a_type_var_introducer_is_left_to_the_ordinary_path() {
+fn a_head_carrying_a_type_var_introducer_is_reclassified_like_any_other() {
     // A `ParseAux` child — the rule-level `[A]` introducer rides as one — is a
     // parse-only payload the generic head conversion reads at its own build site and
-    // filters out of the argument walk. The reclassifier has neither the read nor the
-    // filter, so it DECLINES such a head rather than filtering (which would silently
-    // drop the bracket the author wrote).
+    // FILTERS out of the argument walk. The reclassifier borrows that same filter, so a
+    // head carrying a bracket is reclassified like any other; handing one to
+    // `convert_term` unfiltered would reach its `unreachable!` instead (MEASURED as a
+    // PANIC before the filter existed).
     //
-    // MEASURED BEFORE THE DECLINE: `rule g[A](a: List[T = A], …)` PANICKED on
-    // `convert_term`'s `unreachable!` — a panic, not a refusal. Now both spellings give
-    // the SAME loud error, which is the point: combining the `[T]` introducer with a
-    // parameterized bound is unsupported in the SIGIL spelling too (the control below),
-    // so it is not §2.1's question — it is WI-20260908-PW9A0, which owns both lifting
-    // this decline and the misdirecting `unresolved name` reported meanwhile.
+    // THE FILTER REPLACED A BLANKET DECLINE (WI-20260908-PW9A0, which owns the change
+    // and its full matrix in `wi_pw9a0_rule_tvar_in_bound_test`). The decline was here
+    // because `List[T = A]` was unsupported in the SIGIL spelling too, so both spellings
+    // agreed on a loud `unresolved name 'A'` — but they did NOT agree once the bracket's
+    // bound was bare: `rule g[A](a: A, …)` declined, kept `a: A` a named argument, and
+    // LOADED CLEAN answering 0 where `?a: A` answered 1.
+    //
+    // WHAT THIS ROW IS §2.1's OWN QUESTION ABOUT: that the reclassifier RUNS on such a
+    // head — `a` becomes a clause variable the body reads, which is what the answer
+    // below measures and what the decline denied.
     const PROG: &str = r#"
 namespace test.wi742.introducer
   import anthill.prelude.{Int64, List}
@@ -402,16 +409,13 @@ namespace test.wi742.introducer
   rule g[A](@a: List[T = A], @b: Int64) :- src(@a, @b), Summable[A]
 end
 "#;
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(&PROG.replace('@', "")),
-        &["unresolved name 'A'"],
-    );
-    // THE CONTROL, and it is what makes the row above a decline rather than a
-    // regression: the SIGIL spelling of the identical program answers the same way.
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(&PROG.replace('@', "?")),
-        &["unresolved name 'A'"],
-    );
+    let mut kb = crate::common::load_kb_with(&PROG.replace('@', ""));
+    assert_eq!(answers(&mut kb, "test.wi742.introducer.g(?a, ?b)"), 1);
+    // THE CONTROL, and it is what makes the row above an agreement rather than a
+    // coincidence: the SIGIL spelling of the identical program answers the same way, and
+    // it does so with this filter backed out.
+    let mut kb = crate::common::load_kb_with(&PROG.replace('@', "?"));
+    assert_eq!(answers(&mut kb, "test.wi742.introducer.g(?a, ?b)"), 1);
 }
 
 #[test]

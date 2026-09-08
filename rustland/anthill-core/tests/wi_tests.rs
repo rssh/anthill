@@ -1644,3 +1644,6 @@ mod wi_wbxgx_collection_literal_element_join_test;
 
 #[path = "include/wi_0qv5a_match_arm_guard_test.rs"]
 mod wi_0qv5a_match_arm_guard_test;
+
+#[path = "include/wi_pw9a0_rule_tvar_in_bound_test.rs"]
+mod wi_pw9a0_rule_tvar_in_bound_test;

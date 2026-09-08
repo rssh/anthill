@@ -18258,6 +18258,21 @@ enum DotFieldPass<'n> {
     RulePrefix(&'n str),
 }
 
+/// WI-582 / WI-20260908-PW9A0 — a type variable a rule head INTRODUCED (`g[A](…)`), as
+/// [`Loader::rule_head_tvar`] answers for it. The two cases are one enum because the
+/// misdirection this closes had both halves: a name the head introduced must never be
+/// reported as unresolved, whether or not a guard bounded it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RuleTvar {
+    /// A body guard `:- Spec[A]` bounds it. Inside a rule-head bound the variable
+    /// DENOTES `Spec` — WI-582's own desugaring, now at any depth.
+    Bounded(Symbol),
+    /// The head declared it and no guard bounds it. `load_rule` has already reported
+    /// that by name; this case exists so the SECOND, wrong-repair rendering of the same
+    /// fault (`unresolved name 'A'`) is not also emitted.
+    Unbounded,
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -18438,9 +18453,23 @@ struct Loader<'a> {
     // `keep[T](?x: T, ?y) = ?x :- Spec[T]` is the verbose spelling of the inline
     // `keep(?x: Spec, ?y) = ?x`. Before converting the head, `load_rule` maps each
     // head-introduced type-var (`[T]`) to the bound its body guard `Spec[T]`
-    // gives it; the `typed_var` strip then resolves `?x: T` to that bound. Keyed
-    // by the introducer's short name; empty for the inline form and untyped rules.
-    rule_tvar_bounds: HashMap<String, TermId>,
+    // gives it; a rule-head bound then resolves `T` to that bound
+    // ([`Loader::rule_head_tvar`]). Keyed by the introducer's short name; empty for
+    // the inline form and untyped rules.
+    //
+    // WI-20260908-PW9A0 — EVERY introducer the head declared is a key, bounded or
+    // not (`None` = declared, no `:- Spec[T]` guard), and the value is the bound's
+    // SYMBOL rather than its sort-ref term. One map answering both questions, because
+    // both readers need the same population: "is `T` this head's own type variable"
+    // decides whether an unresolved name is a typo, and "what does it denote" is only
+    // askable of the bounded half.
+    rule_tvar_bounds: HashMap<String, Option<Symbol>>,
+    // WI-20260908-PW9A0: are we lowering a rule-head TYPE BOUND (`?x: T` / the §2.1
+    // `x: T` parameter form)? That is the one position where a head-introduced type
+    // variable DENOTES its guard-given bound — see [`Loader::rule_head_tvar`], which is
+    // where the reasoning lives. Everywhere else in the same rule (a body goal, a data
+    // slot) the name means what it always meant.
+    in_rule_head_bound: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -18747,6 +18776,7 @@ impl<'a> Loader<'a> {
             rule_head_type_bounds: Vec::new(),
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
+            in_rule_head_bound: false,
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
@@ -19306,11 +19336,123 @@ impl<'a> Loader<'a> {
         self.kb.goal_position_boolean(sym, arity).unwrap_or(sym)
     }
 
+    /// WI-582 / WI-20260908-PW9A0 — what a name means when it is a type variable the
+    /// enclosing rule head INTRODUCED (`g[A](…)`), asked of a rule-head BOUND.
+    ///
+    /// THE RULE, in one sentence: inside a rule-head type bound, a head-introduced type
+    /// variable DENOTES the sort its body guard `:- Spec[A]` bounds it with. That is not
+    /// new semantics — it is exactly WI-582's own desugaring (`?x: T` MEANS
+    /// `conforms(typeof(?x), Spec)`, `docs/kernel-language.md` §5.3) — but WI-582
+    /// implemented it only for a bound that IS the bare variable, by special-casing a
+    /// one-segment `TypeExpr::Simple` at the `typed_var` strip. Written one level in
+    /// (`?x: List[T = A]`) the name reached ordinary resolution and the load reported
+    /// `unresolved name 'A'` about a variable the same head introduced three tokens
+    /// earlier, advising the author to declare or import it — the WRONG repair.
+    ///
+    /// ASKED AT THE RESOLUTION, NOT BY A SHAPE WALK, which is what makes the answer the
+    /// same at every depth and in both spellings. A bound reaches a name through FOUR
+    /// doors and each consults this — the first three via [`Self::rule_head_bound_alias`]:
+    ///  * [`Self::remap_name`] — a `TypeExpr`'s names, i.e. the `?x: T` sigil form, whole
+    ///    bound and every nested position alike;
+    ///  * [`Self::remap_symbol_strict`] — a parse `Term::Ref`, which is what a TYPE
+    ///    ARGUMENT inside the §2.1 parameter form's applied bound (`x: List[T = A]`) is;
+    ///  * [`Self::remap_name_str_inner`] — a parse `Term::Ident`, the other name shape in
+    ///    that same walk;
+    ///  * [`Self::parse_arg_sort_symbol`] — the parameter form's BARE-name classification,
+    ///    which asks this directly because it must answer before any conversion happens.
+    ///
+    /// So NO `TypeExpr` shape is singled out: `List[T = A]`, `Set[E = List[T = A]]`,
+    /// `A[T = Int64]`, a tuple element and an arrow parameter all substitute alike.
+    ///
+    /// A door that FORGETS to ask fails LOUDLY rather than silently — the name resolves
+    /// to nothing and the load reports it — which is why the list above is a list and not
+    /// a checked invariant. That holds ONLY because `load_rule` refuses an introducer
+    /// whose name already resolves in scope: without that refusal a forgotten door would
+    /// resolve a colliding name silently to the WRONG symbol, and the argument for
+    /// leaving the doors unchecked would be false. The two are one design, not two.
+    /// Whether the RESULTING bound can then be DECIDED is a separate question about bound
+    /// SHAPES that this substitution does not touch, and it is owned by
+    /// `typing::type_bound_verdict` — MEASURED there with concrete types and no
+    /// introducer anywhere. A substituted variable in a bound behaves exactly as a
+    /// concrete type written in the same place; that is the claim this file makes, and
+    /// the verdict rule itself is stated where it lives rather than restated here.
+    ///
+    /// [`RuleTvar::Unbounded`] is the OTHER half of the same misdirection and the reason
+    /// this answers for the unbounded introducers too — see its own doc.
+    ///
+    /// `None` for every name that is not this head's own type variable, which is every
+    /// name in every rule outside the `[T]` form: the map is cleared per rule and stays
+    /// empty unless a head writes a bracket.
+    fn rule_head_tvar(&self, name: &str) -> Option<RuleTvar> {
+        match self.rule_tvar_bounds.get(name) {
+            Some(Some(sym)) => Some(RuleTvar::Bounded(*sym)),
+            Some(None) => Some(RuleTvar::Unbounded),
+            None => None,
+        }
+    }
+
+    /// WI-20260908-PW9A0 — [`Self::rule_head_tvar`] at a resolution funnel, for the three
+    /// funnels a rule-head bound's names travel through (listed there). `Some(sym)` means
+    /// this name is an introducer and the funnel must return `sym` INSTEAD of resolving;
+    /// `None` means carry on.
+    ///
+    /// Gated on [`Self::in_rule_head_bound`] so the substitution reaches a bound and
+    /// nothing else. In the SAME rule, `A` written in a body goal or a data slot still
+    /// means what it always meant (nothing, loudly) — a type variable denotes a type,
+    /// and only a bound is a type position.
+    ///
+    /// ASKED BEFORE `resolve_in_scope`, so an introducer SHADOWS a same-spelled sort in
+    /// scope. That is the pre-existing behaviour, not a new rule: WI-582's bare arm was
+    /// keyed on `rule_tvar_bounds` alone and never consulted the symbol table either,
+    /// and it is the same order [`Self::rule_param_vars`] is read in at the `Term::Ident`
+    /// arm ("FIRST, so the parameter SHADOWS a same-named symbol in scope").
+    fn rule_head_bound_alias(&mut self, name: &str) -> Option<Symbol> {
+        if !self.in_rule_head_bound {
+            return None;
+        }
+        match self.rule_head_tvar(name)? {
+            RuleTvar::Bounded(sym) => Some(sym),
+            // NO `unresolved name` HERE, AND NO SECOND ERROR EITHER. An unbounded
+            // introducer is a fault `load_rule` has ALREADY reported, by name and with
+            // the repair ("expected a `:- Spec[A]` clause to bound it"), before this head
+            // was converted — so the load fails whatever this returns. What this arm
+            // removes is the second, MISDIRECTING rendering of that one fault: the
+            // unresolved-name message, whose repair is to declare or import `A`.
+            // MEASURED: `rule g[A](?a: A, ?b: Int64) :- one(?a, ?b)` reported both, the
+            // wrong one last.
+            //
+            // THE COUPLING IS UNENFORCED AND SO IS ASSERTED. What comes back is a bare
+            // unresolved symbol, which `type_expr_to_child_inner` will then mint a sort
+            // ref from — harmless only because the load has ALREADY failed at
+            // `load_rule`'s unbounded-introducer report, ~30 lines above the seed that
+            // put this `None` in the map. Every `None` there has been reported, by that
+            // loop, unconditionally; if a future change makes that report conditional,
+            // an unresolved bare symbol would flow into an installed bound instead. The
+            // assert is on the necessary condition rather than on the message, so
+            // rewording the diagnostic cannot trip it.
+            RuleTvar::Unbounded => {
+                debug_assert!(
+                    !self.errors.is_empty(),
+                    "an unbounded rule type-variable reached a bound with no error \
+                     recorded: `load_rule`'s unbounded-introducer report is what makes \
+                     suppressing the unresolved-name message safe",
+                );
+                Some(self.kb.symbols.intern(name))
+            }
+        }
+    }
+
     /// `remap_name_str` without the op-body boolean redirect (the resolution itself).
     /// WI-745: `span` is the source location of the reference being resolved, so
     /// an `AmbiguousSymbol` / `ForbiddenInternalAccess` raised here points at the
     /// use site instead of `Span::default()` (byte 0).
     fn remap_name_str_inner(&mut self, name: &str, span: Span) -> Symbol {
+        // WI-20260908-PW9A0: the TERM door into a rule-head bound — the §2.1 parameter
+        // form lowers an applied bound (`x: List[T = A]`) with `convert_term`, so the
+        // introducer arrives here as an ordinary `Term::Ident`.
+        if let Some(sym) = self.rule_head_bound_alias(name) {
+            return sym;
+        }
         if let Some(local) = self.lookup_local_name(name) {
             return local;
         }
@@ -19454,6 +19596,13 @@ impl<'a> Loader<'a> {
     /// here points at the use site instead of `Span::default()` (byte 0).
     fn remap_symbol_strict(&mut self, sym: Symbol, span: Span) -> Symbol {
         let name = self.parsed.symbols.local_name(sym);
+        // WI-20260908-PW9A0: the REFERENCE door into a rule-head bound. A type argument
+        // inside an applied bound (`x: List[T = A]`) is a parse `Term::Ref`, so the §2.1
+        // parameter form's `convert_term` reaches the introducer HERE and not through
+        // the `Term::Ident` arm's `remap_symbol`.
+        if let Some(alias) = self.rule_head_bound_alias(name) {
+            return alias;
+        }
         let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
@@ -19492,6 +19641,13 @@ impl<'a> Loader<'a> {
         } else {
             join_segments(&self.parsed.symbols, &name.segments)
         };
+        // WI-20260908-PW9A0: the TYPE door into a rule-head bound — the `?x: T` sigil
+        // form lowers its annotation as a `TypeExpr`, whose every name (the whole bound,
+        // a type argument, a tuple element, an arrow parameter) resolves here. A dotted
+        // name simply misses: an introducer's name has one segment.
+        if let Some(sym) = self.rule_head_bound_alias(&lookup_name) {
+            return sym;
+        }
         let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
             ResolveResult::Found(resolved) => resolved,
@@ -19820,26 +19976,36 @@ impl<'a> Loader<'a> {
         if !self.head_functor_defines_a_predicate(head_sym) {
             return None;
         }
-        // (2a) DECLINE A HEAD THIS BUILDER DOES NOT FULLY UNDERSTAND. A `ParseAux`
-        // child is a parse-only payload the generic `convert_term_inner` reads at its
-        // own build site and filters out of the argument walk (`visible_named`); this
-        // builder has neither the read nor the filter, so passing one to `convert_term`
-        // reaches its `unreachable!` — MEASURED as a PANIC, not a refusal, on
-        // `rule f[A](a: List[T = A], b: Int64) :- …`, where the rule-level `[A]`
-        // introducer rides as `ParseAux::SortBindings`.
+        // (2a) A `ParseAux` NAMED child is a parse-only payload read at its own build
+        // site and FILTERED out of the argument walk. The predicate is
+        // [`Self::named_child_survives_walk`] — the SAME function
+        // `convert_term_inner`'s generic `visible_named` filters by, not a second copy
+        // of it, so a future aux the generic walk keeps is kept here too. Handing one to
+        // `convert_term` reaches its `unreachable!` instead.
         //
-        // DECLINING rather than filtering, deliberately: filtering would silently DROP
-        // the bracket the author wrote. Handing the head back to `convert_subject_term`
-        // restores exactly the pre-existing behaviour, which for that shape is a LOUD
-        // `unresolved name 'A'` — the same answer its SIGIL spelling gives, so the two
-        // spellings still agree. Combining the `[T]` introducer with a parameterized
-        // bound is unsupported in BOTH — WI-582 scoped the introducer to a BARE bound —
-        // so it is not 060 §2.1's question. It is **WI-20260908-PW9A0**, which owns both
-        // lifting this decline and the misdirecting `unresolved name` the sigil spelling
-        // reports meanwhile.
-        if pos_args.iter().any(|&a| self.is_parse_aux(a))
-            || named_args.iter().any(|&(_, a)| self.is_parse_aux(a))
-        {
+        // WI-20260908-PW9A0 — FILTERED, NOT DECLINED, and the decline it replaces was
+        // the ticket's own subject. A rule-level `[A]` introducer rides here as
+        // `ParseAux::SortBindings`, so `rule g[A](a: List[T = A], …)` was handed back
+        // whole to `convert_subject_term` — WHICH LEFT `a: List[T = A]` A NAMED ARGUMENT
+        // AND `a` IN THE BODY A CONSTANT. Filtering does not drop the bracket the author
+        // wrote: `collect_rule_tvar_names` reads it BEFORE the head is converted and
+        // marks the node consumed, and a bracket it does not consume is still reported by
+        // the WI-839 sweep. MEASURED on the two spellings of one program: the sigil
+        // `rule g[A](?a: A, ?b: Int64) :- one(?a, ?b), Summable[A]` answered 1 while this
+        // spelling of it LOADED CLEAN AND ANSWERED 0 — a dead clause, silently, which is
+        // the outcome §2.1's "both spellings, one answer" exists to prevent.
+        //
+        // A POSITIONAL aux still declines: the generic walk does not filter those either
+        // (it maps every positional child through `convert_arg_value`), so there is no
+        // pre-existing behaviour for this builder to match.
+        if pos_args.iter().any(|&a| self.is_parse_aux(a)) {
+            return None;
+        }
+        let named_args: SmallVec<[(Symbol, TermId); 2]> = named_args
+            .into_iter()
+            .filter(|&(_, id)| self.named_child_survives_walk(id))
+            .collect();
+        if named_args.is_empty() {
             return None;
         }
         // (2b) which named args are the parameter form. Resolved BEFORE anything is
@@ -19873,6 +20039,13 @@ impl<'a> Loader<'a> {
             // sort ref would silently widen the guard — so an APPLICATION is converted
             // as the term it is, and only a bare / dotted NAME is re-minted as a sort
             // ref (which `convert_term` would otherwise read as an ordinary reference).
+            //
+            // WI-20260908-PW9A0: both arms lower a rule-head BOUND, so both run under
+            // the flag that makes a head-introduced type variable denote its guard-given
+            // bound ([`Self::rule_head_bound_alias`]) — the applied arm through
+            // `convert_term`'s name resolution at any depth, the bare arm through the
+            // shared [`Self::parse_arg_sort_symbol`].
+            let saved_bound_ctx = std::mem::replace(&mut self.in_rule_head_bound, true);
             let bound = if self.parse_arg_type_is_applied(value) {
                 self.convert_term(value)
             } else {
@@ -19882,21 +20055,12 @@ impl<'a> Loader<'a> {
                 let name = self
                     .parse_arg_type_name(value)
                     .expect("parse_arg_names_a_sort admitted a non-name");
-                let bound_sym = match if name.contains('.') {
-                    resolve_dotted_in_kb(
-                        self.kb,
-                        &name,
-                        self.current_scope,
-                        DottedVisibility::VisibleOnly,
-                    )
-                } else {
-                    resolve_name_in_kb(self.kb, &name, self.current_scope)
-                } {
-                    ResolveResult::Found(sym) => sym,
-                    _ => unreachable!("parse_arg_names_a_sort resolved this name to a sort"),
-                };
+                let bound_sym = self
+                    .parse_arg_sort_symbol(&name)
+                    .expect("parse_arg_names_a_sort resolved this name to a sort");
                 self.kb.make_sort_ref(bound_sym)
             };
+            self.in_rule_head_bound = saved_bound_ctx;
             self.rule_head_type_bounds.push((vid, bound));
             new_pos.push(self.kb.alloc(Term::Var(Var::Global(vid))));
         }
@@ -19956,15 +20120,45 @@ impl<'a> Loader<'a> {
     /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
     /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&self, value: TermId) -> bool {
-        let Some(name) = self.parse_arg_type_name(value) else {
-            return false;
-        };
+        self.parse_arg_type_name(value)
+            .and_then(|name| self.parse_arg_sort_symbol(&name))
+            .is_some()
+    }
+
+    /// WI-742 §2.1 — the SORT SYMBOL a rule-head parameter's written type name denotes,
+    /// or `None` when the name denotes no sort (so the argument is not the parameter
+    /// form at all: `rule f(from: ?a)`, `fact palette(c: red())`).
+    ///
+    /// ONE ANSWER FOR THE TWO READERS THAT MUST AGREE — [`Self::parse_arg_names_a_sort`]
+    /// (is this argument a parameter?) and the bound mint in
+    /// [`Self::convert_rule_head_with_params`] (what does it resolve to?). They were two
+    /// copies of the resolution with an `unreachable!` between them asserting they could
+    /// not disagree; the copy is what made that assertion a live panic risk the moment
+    /// either side grew a case, and WI-20260908-PW9A0 grew one.
+    ///
+    /// THAT CASE IS THE INTRODUCER, and it is asked FIRST: a type variable this rule's
+    /// head introduced (`g[A](a: A, …)`) denotes the sort its `:- Spec[A]` guard bounds
+    /// it with — [`Self::rule_head_tvar`] owns the rule and the reasoning. An UNBOUNDED
+    /// introducer answers `None` on purpose: it denotes nothing, `load_rule` has already
+    /// said so by name, and the argument keeps whatever reading it would have had.
+    fn parse_arg_sort_symbol(&self, name: &str) -> Option<Symbol> {
+        if let Some(RuleTvar::Bounded(sym)) = self.rule_head_tvar(name) {
+            return Some(sym);
+        }
         let answer = if name.contains('.') {
-            resolve_dotted_in_kb(self.kb, &name, self.current_scope, DottedVisibility::VisibleOnly)
+            resolve_dotted_in_kb(
+                self.kb,
+                name,
+                self.current_scope,
+                DottedVisibility::VisibleOnly,
+            )
         } else {
-            resolve_name_in_kb(self.kb, &name, self.current_scope)
+            resolve_name_in_kb(self.kb, name, self.current_scope)
         };
-        matches!(answer, ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort))
+        match answer {
+            ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort) => Some(r),
+            _ => None,
+        }
     }
 
     fn convert_subject_term(&mut self, parse_id: TermId) -> TermId {
@@ -20138,20 +20332,21 @@ impl<'a> Loader<'a> {
                     let bound = match ty_expr_opt {
                         // WI-582 `[T]`-form: `?x: T` where `T` is a head-introduced
                         // type-var. Its effective bound is the one its `:- Spec[T]`
-                        // guard gave it (recorded in `rule_tvar_bounds` by
-                        // `load_rule`), not `T` itself — `T` has no nominal sort and
+                        // guard gave it, not `T` itself — `T` has no nominal sort and
                         // would never fire. The guard goal is dropped (folded here).
-                        Some(crate::parse::ir::TypeExpr::Simple(ref n))
-                            if n.segments.len() == 1
-                                && self.rule_tvar_bounds.contains_key(
-                                    self.parsed.symbols.local_name(n.segments[0]),
-                                ) =>
-                        {
-                            let nm = self.parsed.symbols.local_name(n.segments[0]);
-                            *self.rule_tvar_bounds.get(nm).unwrap()
-                        }
+                        //
+                        // WI-20260908-PW9A0 — NO ARM OF ITS OWN ANY MORE. This used to
+                        // be a `TypeExpr::Simple` special case ahead of the ordinary
+                        // lowering, which is exactly why the same variable one level in
+                        // (`?x: List[T = A]`) fell through it and was reported as an
+                        // unresolved name. The substitution now happens at the
+                        // resolution ([`Self::rule_head_bound_alias`]), so the ORDINARY
+                        // lowering below covers the bare form and every nesting of it
+                        // with one rule.
                         Some(ty_expr) => {
+                            let saved = std::mem::replace(&mut self.in_rule_head_bound, true);
                             let value = self.type_expr_to_value(&ty_expr);
+                            self.in_rule_head_bound = saved;
                             match node_occurrence::value_to_term(&mut self.kb, &value) {
                                 Ok(t) => t,
                                 Err(e) => {
@@ -20438,7 +20633,7 @@ impl<'a> Loader<'a> {
                 // term-position binding value the ParseAux arm lowers in place.
                 let visible_named: SmallVec<[(Symbol, TermId); 2]> = named_args
                     .iter()
-                    .filter(|&&(_, id)| !self.is_parse_aux(id) || self.is_effect_row_aux(id))
+                    .filter(|&&(_, id)| self.named_child_survives_walk(id))
                     .copied()
                     .collect();
                 // WI-20260902-2SZ88 — WHICH PARSE CHILD PRODUCED EACH NAMED SLOT.
@@ -22834,6 +23029,25 @@ impl<'a> Loader<'a> {
     /// sites via `read_parse_*` helpers.
     fn is_parse_aux(&self, id: TermId) -> bool {
         matches!(self.parsed.terms.get(id), Term::ParseAux(_))
+    }
+
+    /// WI-271 / WI-366 B1 — does this NAMED child of a call survive the argument walk?
+    ///
+    /// A `ParseAux` named arg is a parse-only payload consumed at its own build site
+    /// (`let_expr`'s `type_name`, an apply's `type_args`) and dropped here, because
+    /// handing one to `convert_term` reaches its `unreachable!`. A WRITTEN effect row
+    /// (`fact Spec[E = {}]`) is the exception: it is a real term-position binding value
+    /// that `convert_term`'s own `ParseAux` arm lowers in place, so it is KEPT.
+    ///
+    /// WI-20260908-PW9A0 — ONE PREDICATE, and it has TWO readers that must agree:
+    /// `convert_term_inner`'s generic `visible_named`, and
+    /// [`Self::convert_rule_head_with_params`]'s §2.1 reclassification of the same
+    /// arguments. It was written out twice; a new aux kind added to one keep-list would
+    /// then be silently dropped by the other — which is the shape of defect the
+    /// reclassifier's own comment claims immunity from, so the claim has to be true
+    /// rather than asserted.
+    fn named_child_survives_walk(&self, id: TermId) -> bool {
+        !self.is_parse_aux(id) || self.is_effect_row_aux(id)
     }
 
     /// WI-366 B1: is the parse term at `id` a WRITTEN effect-row binding value
@@ -28772,11 +28986,65 @@ impl<'a> Loader<'a> {
                 }
             }
             if !introducers.is_empty() {
+                // WI-20260908-PW9A0 — AN INTRODUCER MAY NOT SHADOW A NAME IN SCOPE.
+                //
+                // A head-introduced type variable DENOTES its guard-given bound inside
+                // every bound of this head ([`Self::rule_head_tvar`]), so if its name
+                // also resolves, one written annotation has two readings and nothing in
+                // the program says which. MEASURED on `rule g[Bool](?a: List[T = Bool],
+                // ?b: Int64) :- src(?a, ?b), Summable[Bool]` over a table of a
+                // `List[T = Int64]` and a `List[T = Bool]`: it kept the SECOND row
+                // before this ticket (the written `Bool` read as the sort) and the FIRST
+                // after (read as the variable), loading clean both times.
+                //
+                // NOT a new asymmetry — the WHOLE-BOUND position `?x: Bool` shadowed
+                // already, measured identically before and after — but this ticket makes
+                // the shadowing reach EVERY depth, and a silent change of meaning is not
+                // a repair. Refusing the collision is what makes the substitution
+                // unambiguous rather than merely uniform: with it, no program can be read
+                // two ways, and the repair is to rename the variable.
+                //
+                // COST, MEASURED: the whole `anthill-core` suite (stdlib and every
+                // fixture, 5827 tests) hits this ZERO times, while the two colliding rows
+                // above hit it and three non-colliding controls do not — so it is a real
+                // zero and not a dead guard.
+                //
+                // The predicate is the BOUND'S OWN resolution — `resolve_in_scope` at
+                // this rule's scope, which is the rung `remap_name` takes for the
+                // one-segment name an introducer is, and asked with the same
+                // `current_scope` the bound's lowering will use. `Ambiguous` counts as
+                // resolving: it names several things, which is still not nothing.
+                for tv in &introducers {
+                    if !matches!(
+                        self.kb.symbols.resolve_in_scope(tv, self.current_scope),
+                        ResolveResult::NotFound
+                    ) {
+                        self.errors.push(LoadError::Other {
+                            message: format!(
+                                "WI-582: rule type-variable `{tv}` also names something \
+                                 in scope. A head-introduced type variable shadows that \
+                                 name inside EVERY bound of this head (`?x: {tv}` and \
+                                 `?x: List[T = {tv}]` alike), so the annotation would \
+                                 have two readings and nothing would say which. Rename \
+                                 the type variable"
+                            ),
+                        });
+                    }
+                }
+                // EVERY introducer is a key from here on, bounded or not — see the
+                // field's doc. Seeded before the guard scan so a name the head declared
+                // is answerable as this head's own type variable even when no guard turns
+                // up, which is what keeps the unbounded case off the unresolved-name
+                // path. A COLLIDING introducer is seeded too, deliberately: the load has
+                // already failed above, and shadowing it keeps the rest of this rule's
+                // diagnostics about the fault the author has rather than about a cascade
+                // of names that stopped resolving.
+                self.rule_tvar_bounds = introducers.iter().map(|tv| (tv.clone(), None)).collect();
                 if let Some(body) = r.body.as_ref() {
                     for &gtid in body {
                         if let Some((tvar, spec_sym)) = self.try_body_tvar_guard(gtid, &introducers)
                         {
-                            if self.rule_tvar_bounds.contains_key(&tvar) {
+                            if matches!(self.rule_head_tvar(&tvar), Some(RuleTvar::Bounded(_))) {
                                 // A type-variable's bound must be declared once; a
                                 // second `Spec[T]` guard would be silently lost
                                 // (overwrite + drop). Reject loudly. Still fold it
@@ -28793,8 +29061,7 @@ impl<'a> Loader<'a> {
                                 continue;
                             }
                             let kb_sym = self.remap_symbol(spec_sym, self.parsed.terms.span(gtid));
-                            let bound = self.kb.make_sort_ref(kb_sym);
-                            self.rule_tvar_bounds.insert(tvar, bound);
+                            self.rule_tvar_bounds.insert(tvar, Some(kb_sym));
                             folded_guard_ids.insert(gtid.raw());
                         }
                     }
@@ -28804,7 +29071,7 @@ impl<'a> Loader<'a> {
                 // silently load a rule that can never apply.
                 let unbounded: Vec<String> = introducers
                     .iter()
-                    .filter(|tv| !self.rule_tvar_bounds.contains_key(*tv))
+                    .filter(|tv| self.rule_head_tvar(tv) == Some(RuleTvar::Unbounded))
                     .cloned()
                     .collect();
                 for tv in unbounded {

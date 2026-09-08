@@ -3,9 +3,9 @@
 - id: WI-20260908-PW9A0-bug-diagnostic-feature-a-rule
 - created: 2026-09-08T10:45:39Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-08T10:45:39Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-09-08T12:03:38Z
 
 - acceptance: cargo-test
 
