@@ -101,3 +101,19 @@ WHAT IS ACTUALLY BLOCKED, and it is one thing: `anthill.reflect` exposes no decl
 ACCEPTANCE: either a reflect operation that renders a declaration, with `render_task` built on it and `feedback` spliced into the prompt -- or, if that is too large for now, `render_task` narrowed to the parameters it actually uses, so the signature stops promising what the body does not do. The second is cheap and honest; the first is the real fix. Do not leave dead parameters in a signature the article prints.
 
 DOWNSTREAM (PART D). The article describes the DESIGN -- the prompt read back out of the knowledge base -- and its section 7.5 ledger now records the renderer as specified-and-not-built, beside the typing witness and the tool-algebra theorem.
+## Changes
+
+### 2026-09-08T14:38:36Z — feedback — user
+
+NARROWED TO PARTS A AND D. Measured against the tree at 2026-09-08; the other two parts are settled in opposite directions and the ticket must not be read as still asking for either.
+
+PART B IS DELIVERED IN THE EXAMPLE. `lib/vocabulary.anthill` now reads `entity Untrusted` / `entity Trusted` — one axis, PROVENANCE, which is the choice this part left open. Its own objection was recorded and overruled by what shipped: it argued `Trusted` reads oddly at the sink because 'what the sink wants is text CLEARED FOR RELEASE, not text of good provenance', and `Email.send(to: Address, body: Text[Trusted])` is what the example carries today. Nothing left to do here.
+
+PART C IS DEAD, AND IMPLEMENTING IT WOULD REVERT A SEAL. Its premise was `LlmOutput` with a `Permission[Reveal]`-gated `text_of`; WI-20260829-MCKTE deleted all three, so `generate` cannot declare a permission that no longer exists and the acceptance ('generate and attempt carry `Permission[Reveal]`') is unwritable. The second half INVERTED rather than expired: this part argued `Source` could go because 'confinement was never coming from the wrapper', and MCKTE then made a PUBLIC CONSTRUCTOR the measured defect — `source(text: <mailbox bytes>)` mints a candidate program no model ever wrote, driven by `rejected/forged_source.anthill` — and sealed it `internal`. The wrapper is doing work now, so 'sort Source deleted' would remove a measured seal. Do not implement Part C.
+
+PARTS A AND D STAND, UNCHANGED AND INDEPENDENT.
+ * A — `is_minted` is still `find` + `match` discarding the witness (lib/gate.anthill:59-62), with `Iterable.exists` implemented and right there.
+ * D — `guardians_render_task` is still registered at arity 4 and reads `args[1]` alone (`guardians_test.rs:384`), so `tools` and `feedback` are accepted and dropped, and the repair loop cannot converge because every round renders the identical prompt.
+
+THE DIVERGENCE INVERTED, WHICH IS THIS TICKET'S FRAME AND NO LONGER HOLDS FOR B AND C. It is written as 'the example diverges from the article'; the example has since moved PAST the article. `draft-article-full.tex` (last touched 2026-08-31, before MCKTE) still carries `Permission[Reveal]` x4, `LlmOutput` x7, `Text[Public]` x4 / `Prompt[Public]` x2 / `entity Public` / `send(body: Text[Public])`, and shows NO `Source`. One more, from a different ticket: it already uses `AgentGenerator` and `AgentChecker`, and WI-20260908-K5HVE DELETES `Checker` outright — so `AgentChecker` names a sort the agreed design removes. The article sync is real work and is NOT this ticket's; it is recorded here so whoever reads the DOWNSTREAM notes in parts B, C and D does not act on them as written.
+
