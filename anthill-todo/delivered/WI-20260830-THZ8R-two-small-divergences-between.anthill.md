@@ -3,9 +3,9 @@
 - id: WI-20260830-THZ8R-two-small-divergences-between
 - created: 2026-08-30T14:32:28Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-30T14:32:28Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-08T14:47:17Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -101,6 +101,7 @@ WHAT IS ACTUALLY BLOCKED, and it is one thing: `anthill.reflect` exposes no decl
 ACCEPTANCE: either a reflect operation that renders a declaration, with `render_task` built on it and `feedback` spliced into the prompt -- or, if that is too large for now, `render_task` narrowed to the parameters it actually uses, so the signature stops promising what the body does not do. The second is cheap and honest; the first is the real fix. Do not leave dead parameters in a signature the article prints.
 
 DOWNSTREAM (PART D). The article describes the DESIGN -- the prompt read back out of the knowledge base -- and its section 7.5 ledger now records the renderer as specified-and-not-built, beside the typing witness and the tool-algebra theorem.
+
 ## Changes
 
 ### 2026-09-08T14:38:36Z — feedback — user
@@ -116,4 +117,15 @@ PARTS A AND D STAND, UNCHANGED AND INDEPENDENT.
  * D — `guardians_render_task` is still registered at arity 4 and reads `args[1]` alone (`guardians_test.rs:384`), so `tools` and `feedback` are accepted and dropped, and the repair loop cannot converge because every round renders the identical prompt.
 
 THE DIVERGENCE INVERTED, WHICH IS THIS TICKET'S FRAME AND NO LONGER HOLDS FOR B AND C. It is written as 'the example diverges from the article'; the example has since moved PAST the article. `draft-article-full.tex` (last touched 2026-08-31, before MCKTE) still carries `Permission[Reveal]` x4, `LlmOutput` x7, `Text[Public]` x4 / `Prompt[Public]` x2 / `entity Public` / `send(body: Text[Public])`, and shows NO `Source`. One more, from a different ticket: it already uses `AgentGenerator` and `AgentChecker`, and WI-20260908-K5HVE DELETES `Checker` outright — so `AgentChecker` names a sort the agreed design removes. The article sync is real work and is NOT this ticket's; it is recorded here so whoever reads the DOWNSTREAM notes in parts B, C and D does not act on them as written.
+
+### 2026-09-08T14:47:05Z — feedback — user
+
+CLOSED — ALL FOUR PARTS ARE SETTLED, IN FOUR DIFFERENT WAYS.
+
+ * A — DONE INLINE. `is_minted` now reads `exists(layer_symbols(layer), lambda ls -> and(ls.minted, ls.symbol === s))`. Its two follow-on bullets are answered rather than deferred: `provision_carrier` genuinely needs its witness (it RETURNS `carrier_of_row(row)`) and stays `find`; `is_own_provision` has no `find` in it at all, so there was nothing there to look at. One line against three paragraphs of description — this project's own test for what should not be a ticket. guardians_test 60 passed, 0 failed; the three E-group rows this part names all exist and are green.
+ * B — DELIVERED IN THE EXAMPLE, and the open question it left was decided against its own suggestion: `TrustLevel` is `Untrusted`/`Trusted`, the PROVENANCE axis, and `Email.send(to: Address, body: Text[Trusted])` is what shipped despite this part arguing a release sink reads better as `Public`.
+ * C — DEAD, AND IMPLEMENTING IT WOULD REVERT A SEAL. `LlmOutput`, `Permission[Reveal]` and `text_of` were deleted by WI-20260829-MCKTE, so the acceptance is unwritable; and the `Source` half inverted — MCKTE made a public `source` constructor the measured defect (`rejected/forged_source.anthill`) and sealed it `internal`, so the wrapper this part proposed deleting is now doing work.
+ * D — SPLIT TO WI-20260908-H2GDZ, with its 'blocked' finding CORRECTED. It said a faithful `render_task` cannot be written until reflect exposes a declaration-printer. Measured, the pieces are there — `KB.operations` (reflect.anthill:512), `OperationInfo` (:797), `term_to_string` (:276) and `qualified_name` (:211) — and nothing needs SOURCE TEXT, only a readable signature. More to the point, the half that matters needs none of them: `feedback` arrives as `List[T = String]` and is dropped, so the convergence fix is a string join.
+
+THE FRAME IS RETIRED. This ticket is 'two small divergences between `examples/guardians` and the ICTERI-2026 article'. The article is finished, and its next version may diverge from the API deliberately — so example-vs-article is no longer a defect class, and the DOWNSTREAM notes in parts B, C and D should not be acted on by anyone reading them later.
 

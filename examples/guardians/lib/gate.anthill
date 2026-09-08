@@ -26,7 +26,7 @@ namespace guardians
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.String.{startsWith, concat}
   import anthill.prelude.Bool.{and, not}
-  import anthill.prelude.Iterable.{find}
+  import anthill.prelude.Iterable.{find, exists}
   import anthill.reflect.{Symbol, Term, TermRepr, LayerSymbol, LayerClause, KB,
                           SortProvidesInfo, qualified_name, term_to_string, term_field}
   import anthill.reflect.TermRepr.{FnRepr, RefRepr}
@@ -56,10 +56,12 @@ namespace guardians
   -- the typer had no way to ground it before hinting the lambda. The projection then
   -- survived the typer and died at eval as `unhandled Expr variant: DotApply`. The
   -- hint now reads that provision, so this is the ordinary spelling again.
+  -- `exists`, NOT `find` DISCARDING ITS WITNESS. The question is existential and this
+  -- is the file a reviewer reads to satisfy themselves the gate does nothing clever,
+  -- so the spelling that states the question outright is the one it should carry.
+  -- `provision_carrier` below stays `find` and must: it RETURNS the row it found.
   operation is_minted(layer: KB, s: Symbol) -> Bool =
-    match find(layer_symbols(layer), lambda ls -> and(ls.minted, ls.symbol === s))
-      case some(_) -> true
-      case none() -> false
+    exists(layer_symbols(layer), lambda ls -> and(ls.minted, ls.symbol === s))
 
   -- ---- G2: CLAUSE CONTAINMENT ----
   --
