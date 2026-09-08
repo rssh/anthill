@@ -17,7 +17,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | not started — §7 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
-| §3 anchor (typed-head half) | `?x: T` grounds the spec | WI-742 | **NOT delivered** — §8 |
+| §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **not started** — §8 |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 
@@ -221,6 +221,15 @@ The proposal's four steps map to one new decision in the loader's head conversio
 - **Bare `p(x, y)` is NOT an error, and must not become one** — see §10's third
   acceptance-row correction. It is a symbolic constant, which is a supported idiom, so
   this form's typo reads as a constant column rather than as a dead clause.
+- **A head carrying a `ParseAux` child is DECLINED, not filtered.** The rule-level
+  `[A]` type-variable introducer rides as one, and filtering it would silently drop the
+  bracket the author wrote; handing the head back to the ordinary path restores exactly
+  the pre-existing behaviour. MEASURED before the decline: `rule g[A](a: List[T = A], …)`
+  PANICKED on `convert_term`'s `unreachable!`. Both spellings now give the same loud
+  `unresolved name 'A'` — combining the `[T]` introducer with a parameterized bound is
+  unsupported in the SIGIL spelling too — WI-582 scoped the introducer to a BARE bound —
+  so it is not §2.1's question. **WI-20260908-PW9A0** owns both lifting this decline and
+  the misdirecting `unresolved name` the sigil spelling reports meanwhile.
 - **The written type takes three spellings** — bare (`c: Colour`), qualified
   (`c: lib.Colour`) and applied (`xs: List[T = Int64]`) — because the `?x: T` spelling
   accepts all three and the two lower to one internal form. Only the bare one was
@@ -241,9 +250,13 @@ for a sort with no `domain`.
 
 ## 8. §3 — the typed head as the second anchor — NOT DELIVERED
 
-`requirement-channel.md` §"The anchor rule" names both anchors and names WI-742 as the
-second one's owner. WI-742 lifted the FIRST of that shape's two refusals (a typed
-relational head now loads); the anchor itself is still refused.
+**Owner: WI-20260908-VVM1R**, split out of WI-742 once the rest landed — 060's
+work is partitioned by section, and this was the one section that would otherwise have
+had no owner.
+
+`requirement-channel.md` §"The anchor rule" names both anchors and, when it was written,
+named WI-742 as the second one's owner. WI-742 lifted the FIRST of that shape's two
+refusals (a typed relational head now loads); the anchor itself is still refused.
 
 MEASURED 2026-09-08, after the rest of this work landed:
 

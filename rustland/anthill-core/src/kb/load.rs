@@ -1546,9 +1546,10 @@ pub enum LoadError {
     ///
     /// A named import is deliberately outside this variant: it is a local alias, not a
     /// parent edge, and explicitly opts into this predicate.  An enclosing declaration
-    /// is outside it too.  WI-742 will add the third admitted case at the producer: a
-    /// relational typed head whose generated `domain` goal selects its carrier.  The
-    /// unguarded refusal remains.
+    /// is outside it too.  WI-742 added the third: a relational typed head whose
+    /// generated `domain` goal selects its own enclosing sort — see
+    /// [`typed_head_guards_its_own_carrier`], which states that as a predicate rather
+    /// than as "the head is annotated".  The unguarded refusal remains.
     UnguardedNonEnclosingPredicateJoin {
         /// The short functor written at the joining head.
         name: String,
@@ -19819,7 +19820,29 @@ impl<'a> Loader<'a> {
         if !self.head_functor_defines_a_predicate(head_sym) {
             return None;
         }
-        // (2) which named args are the parameter form. Resolved BEFORE anything is
+        // (2a) DECLINE A HEAD THIS BUILDER DOES NOT FULLY UNDERSTAND. A `ParseAux`
+        // child is a parse-only payload the generic `convert_term_inner` reads at its
+        // own build site and filters out of the argument walk (`visible_named`); this
+        // builder has neither the read nor the filter, so passing one to `convert_term`
+        // reaches its `unreachable!` — MEASURED as a PANIC, not a refusal, on
+        // `rule f[A](a: List[T = A], b: Int64) :- …`, where the rule-level `[A]`
+        // introducer rides as `ParseAux::SortBindings`.
+        //
+        // DECLINING rather than filtering, deliberately: filtering would silently DROP
+        // the bracket the author wrote. Handing the head back to `convert_subject_term`
+        // restores exactly the pre-existing behaviour, which for that shape is a LOUD
+        // `unresolved name 'A'` — the same answer its SIGIL spelling gives, so the two
+        // spellings still agree. Combining the `[T]` introducer with a parameterized
+        // bound is unsupported in BOTH — WI-582 scoped the introducer to a BARE bound —
+        // so it is not 060 §2.1's question. It is **WI-20260908-PW9A0**, which owns both
+        // lifting this decline and the misdirecting `unresolved name` the sigil spelling
+        // reports meanwhile.
+        if pos_args.iter().any(|&a| self.is_parse_aux(a))
+            || named_args.iter().any(|&(_, a)| self.is_parse_aux(a))
+        {
+            return None;
+        }
+        // (2b) which named args are the parameter form. Resolved BEFORE anything is
         // built, so a head with none is left untouched rather than rebuilt identically.
         let params: Vec<(Symbol, TermId)> = named_args
             .iter()

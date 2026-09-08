@@ -278,9 +278,13 @@ binding with no new machinery. The encoding, settled (2026-08-07):
 **The anchor rule.** The record is compiled from an **anchor** that grounds the
 spec's params: a covered body call (the witness — the guard tier's existing
 requirement) or a typed pattern binding (`?x: T` — WI-582 on equational heads;
-WI-742 extends it to relational heads, where the annotation compiles to a
+WI-742 extended it to relational heads, where the annotation compiles to a
 `domain(?x, T)` goal whose carried-type read is exactly the projection source —
-proposal 060 §3). `?d = require[Eq[T]]` with neither — no body call covered by
+proposal 060 §3). THAT SECOND ANCHOR IS NOT YET READ HERE: WI-742 made the typed
+relational head load and stopped there, and WI-20260908-VVM1R owns making this
+rule accept it. `docs/design/060-implementation.md` §8 measures why it is a second
+grounding path rather than one added disjunct — every consumer below
+`find_dictionary` is keyed on the witness OP FUNCTOR, and a typed head has no op. `?d = require[Eq[T]]` with neither — no body call covered by
 `Eq`, no typed binding of `T` — has nothing to compile a projection path from and
 is **refused at typing** (the guard tier's "cannot be grounded" hard error,
 extended to the named form), never left to delay forever.

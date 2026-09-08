@@ -2172,8 +2172,8 @@ clause substitution.
 This is the requirement-binding half of proposal 060. Its typed-head half is
 delivered separately, below. What remains unimplemented there is the ANCHOR
 combination: a `require[X]` in a clause whose only grounding is a typed head
-binding is still refused for want of a covered body call. WI-742 owns that
-residue; WI-743 owns finite/user-defined domain generation. Do not confuse
+binding is still refused for want of a covered body call. WI-20260908-VVM1R
+owns that residue; WI-743 owns finite/user-defined domain generation. Do not confuse
 proposal 060 with the unrelated work item WI-060.
 
 **A type annotation on a relational rule head (proposal 060 §2, WI-742).** A

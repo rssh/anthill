@@ -378,6 +378,43 @@ fn parameter_form_names_and_types_the_columns() {
 }
 
 #[test]
+fn a_head_carrying_a_type_var_introducer_is_left_to_the_ordinary_path() {
+    // A `ParseAux` child — the rule-level `[A]` introducer rides as one — is a
+    // parse-only payload the generic head conversion reads at its own build site and
+    // filters out of the argument walk. The reclassifier has neither the read nor the
+    // filter, so it DECLINES such a head rather than filtering (which would silently
+    // drop the bracket the author wrote).
+    //
+    // MEASURED BEFORE THE DECLINE: `rule g[A](a: List[T = A], …)` PANICKED on
+    // `convert_term`'s `unreachable!` — a panic, not a refusal. Now both spellings give
+    // the SAME loud error, which is the point: combining the `[T]` introducer with a
+    // parameterized bound is unsupported in the SIGIL spelling too (the control below),
+    // so it is not §2.1's question — it is WI-20260908-PW9A0, which owns both lifting
+    // this decline and the misdirecting `unresolved name` reported meanwhile.
+    const PROG: &str = r#"
+namespace test.wi742.introducer
+  import anthill.prelude.{Int64, List}
+  sort Summable
+    sort T = ?
+  end
+  fact Summable[T = Int64]
+  fact src([1, 2], 7)
+  rule g[A](@a: List[T = A], @b: Int64) :- src(@a, @b), Summable[A]
+end
+"#;
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(&PROG.replace('@', "")),
+        &["unresolved name 'A'"],
+    );
+    // THE CONTROL, and it is what makes the row above a decline rather than a
+    // regression: the SIGIL spelling of the identical program answers the same way.
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(&PROG.replace('@', "?")),
+        &["unresolved name 'A'"],
+    );
+}
+
+#[test]
 fn parameter_form_leaves_entity_constructor_heads_alone() {
     // THE DISCRIMINATOR IS THE RESOLVED CATEGORY, NEVER THE CASE: `palette` is
     // lowercase and an entity constructor, so its named argument stays a named
