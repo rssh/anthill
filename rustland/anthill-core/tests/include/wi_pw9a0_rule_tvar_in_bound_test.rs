@@ -38,8 +38,14 @@
 //!    [`an_introducer_may_not_shadow_a_name_in_scope`]. Its own axis, and separate from
 //!    the relocation on purpose — the relocation is what makes the shadowing reach depth,
 //!    the refusal is what stops that being a silent change of meaning.
+//!  * **`typing::type_bound_verdict`'s predicate** (variable → nominal, the pre-ticket
+//!    form). **3 fail**, and none of them mentions an introducer in its own right:
+//!    [`a_concrete_bound_with_no_nominal_head_restricts`],
+//!    [`and_it_holds_where_the_value_does_conform`] and
+//!    [`so_does_one_with_an_introducer_substituted_into_it`] — the last is where this
+//!    axis and the RELOCATION meet, which is why the first two carry no introducer at all.
 //!
-//! [`the_control_a_bare_introducer_drives`] passes under ALL FOUR back-outs BY DESIGN —
+//! [`the_control_a_bare_introducer_drives`] passes under ALL FIVE back-outs BY DESIGN —
 //! it writes no introducer inside a bound and its bound is nominal. It is the yardstick
 //! the rows above are read against, not a duplicate of them.
 
@@ -479,6 +485,161 @@ fn an_unbounded_introducer_reports_one_fault_not_two() {
     }
 }
 
+/// `domain` RESTRICTS — a bound with no nominal head is DECIDED, not suspended.
+///
+/// This row is about `typing::type_bound_verdict`, not about the introducer, and it is
+/// the second thing this ticket changed. That predicate withheld a verdict whenever
+/// either side was not a NOMINAL sort, which is a much wider set than "not determined":
+/// an arrow and a tuple are fully determined types that `types_compatible` has arms for.
+/// MEASURED before, on ground data with nothing undetermined anywhere — `?a` bound to a
+/// concrete `[1, 2]`, its carried type `List[T = Int64]`, the bound written out — the
+/// clause returned BOTH rows as conditional answers rather than rejecting either. Now it
+/// rejects both, which is what a guard is for.
+///
+/// NO INTRODUCER APPEARS HERE: this is the CONCRETE spelling, so it isolates the
+/// verdict change from everything else in this file.
+#[test]
+fn a_concrete_bound_with_no_nominal_head_restricts() {
+    for (ns, rule) in [
+        (
+            "arrow_concrete",
+            "rule g(?a: (Int64) -> Int64, ?b: Int64) :- src(?a, ?b)",
+        ),
+        (
+            "tuple_concrete",
+            "rule g(?a: (x: Int64), ?b: Int64) :- src(?a, ?b)",
+        ),
+    ] {
+        let mut kb = crate::common::load_kb_with(&list_src(ns, rule));
+        assert_eq!(
+            answers(&mut kb, &format!("test.pw9a0.{ns}.ungated(?a, ?b)")),
+            2,
+            "{ns}: the FACTS admit both rows"
+        );
+        assert_eq!(
+            answers(&mut kb, &format!("test.pw9a0.{ns}.g(?a, ?b)")),
+            0,
+            "{ns}: neither list is a function or a tuple — the guard must reject both, \
+             where it used to hand both back as residuals"
+        );
+    }
+}
 
+/// THE OTHER HALF OF THAT PREDICATE, and the reason the row above cannot stand alone: a
+/// fixture that can only REFUTE cannot tell a working guard from one that rejects
+/// everything. A `(x: Int64)` bound over a table of TUPLES keeps its own row by value,
+/// drops one whose FIELD type differs, and drops a non-tuple — three outcomes from one
+/// bound, all of them previously a single suspended non-answer.
+#[test]
+fn and_it_holds_where_the_value_does_conform() {
+    let mut kb = crate::common::load_kb_with(&table_src(
+        "tuple_holds",
+        "(x: 1)",
+        "(x: true)",
+        "rule g(?a: (x: Int64), ?b: Int64) :- src(?a, ?b)",
+    ));
+    assert_eq!(
+        answers(&mut kb, "test.pw9a0.tuple_holds.ungated(?a, ?b)"),
+        2
+    );
+    assert_eq!(
+        answers(&mut kb, "test.pw9a0.tuple_holds.g(?a, 7)"),
+        1,
+        "`(x: 1)` conforms to `(x: Int64)` — HOLDS, which the old verdict never said"
+    );
+    assert_eq!(
+        answers(&mut kb, "test.pw9a0.tuple_holds.g(?a, 8)"),
+        0,
+        "`(x: true)` differs in its FIELD type — refuted at depth, not at the head"
+    );
+}
 
+/// A VARIABLE ONE LEVEL IN IS STILL A VARIABLE — and this row's NOMINAL half is the one
+/// that was giving a WRONG ANSWER on mainline before any of this ticket's work.
+///
+/// `types_compatible`'s `type_var` arm is a WILDCARD returning `true`, so a bound
+/// compared against a carried type whose CHILD is unknown succeeded on the wildcard and
+/// the guard admitted a row it exists to reject. MEASURED on mainline, with a plain
+/// nominal bound and nothing from this ticket in play: `rule nf(?x: List[T = Int64])`
+/// queried as `nf([?y])` answered **2 DEFINITE** — both the `[1]` row and the `[true]`
+/// row — where `nf(?x)` answers 1. The more general query returned MORE definite rows
+/// than the ground one, which is not a missed suspension but a wrong answer.
+///
+/// It is fixed by asking the question DEEPLY rather than at the head: a type variable is
+/// a perfectly GROUND term (`KnowledgeBase::value_is_ground` answers `true` for
+/// `named_tuple(x: <type var>)`), so groundness is the wrong owner and the walk is its
+/// own. The guard then DELAYS rather than deciding, rotation lets the body goal ground
+/// the value, and it decides correctly — so the answer is definite and right, not a
+/// residual.
+///
+/// Backing out `type_term_has_variable` gives 2 definite on BOTH halves; backing out the
+/// whole verdict predicate gives 2 residuals on the tuple half and leaves the nominal
+/// half at its mainline 2-definite. The nominal half therefore fails under a back-out of
+/// this row's fix ALONE, which is what makes it evidence for the deep walk rather than
+/// for anything else in this file.
+#[test]
+fn a_variable_one_level_in_is_still_a_variable() {
+    const SRC: &str = r#"
+namespace test.pw9a0.nested
+  import anthill.prelude.{Int64, Bool, List}
 
+  fact item((x: 1))
+  fact item((x: true))
+  fact lst([1])
+  fact lst([true])
+
+  rule f(?x: (x: Int64))        :- item(?x)
+  rule nf(?x: List[T = Int64])  :- lst(?x)
+  rule untyped(?x)              :- item(?x)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(SRC);
+    // CONTROL: the facts admit both rows under no annotation.
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.untyped(?x)"), 2);
+
+    // The STRUCTURAL bound — this ticket's widening.
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.f(?x)"), 1);
+    assert_eq!(
+        answers(&mut kb, "test.pw9a0.nested.f((x: ?y))"),
+        1,
+        "a partially-instantiated argument must not buy MORE rows than a bare variable \
+         does: the guard delays on the unknown child and decides once it is ground"
+    );
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.f((x: true))"), 0);
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.f((x: 1))"), 1);
+
+    // The NOMINAL bound — untouched by the widening, and wrong on mainline.
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.nf(?x)"), 1);
+    assert_eq!(
+        answers(&mut kb, "test.pw9a0.nested.nf([?y])"),
+        1,
+        "MAINLINE ANSWERED 2 HERE, including the `[true]` row — the wildcard admitted a \
+         binding the bound rejects"
+    );
+    assert_eq!(answers(&mut kb, "test.pw9a0.nested.nf([true])"), 0);
+}
+
+/// THE INTRODUCER ARM of the row above: substituting a bounded type variable into an
+/// arrow or a tuple gives the same verdict as writing a concrete type there. Two axes
+/// meet in this row — back out the substitution and it fails at load with
+/// `unresolved name 'A'`; back out the verdict predicate and it answers 2 residuals.
+#[test]
+fn so_does_one_with_an_introducer_substituted_into_it() {
+    for (ns, rule) in [
+        (
+            "arrow_tvar",
+            "rule g[A](?a: (A) -> Int64, ?b: Int64) :- src(?a, ?b), Summable[A]",
+        ),
+        (
+            "tuple_tvar",
+            "rule g[A](?a: (x: A), ?b: Int64) :- src(?a, ?b), Summable[A]",
+        ),
+    ] {
+        let mut kb = crate::common::load_kb_with(&list_src(ns, rule));
+        assert_eq!(
+            answers(&mut kb, &format!("test.pw9a0.{ns}.ungated(?a, ?b)")),
+            2
+        );
+        assert_eq!(answers(&mut kb, &format!("test.pw9a0.{ns}.g(?a, ?b)")), 0);
+    }
+}

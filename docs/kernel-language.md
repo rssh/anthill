@@ -2186,8 +2186,12 @@ is ordinary — it delays on an unbound operand, wakes by rotation, and
 participates like any other — and at run time it only READS the value's carried
 type. It is three-valued exactly as the equational form is: it holds where the
 carried type conforms, fails that binding where it is refuted, and SUSPENDS
-where the carried type is under-determined or the variable is still unbound,
-never deciding an undecided guard by negation-as-failure. A guard still
+where the variable is still unbound or either side is a type VARIABLE, never
+deciding an undecided guard by negation-as-failure. **Only a variable withholds
+a verdict** (WI-20260908-PW9A0): the goal RESTRICTS, so a bound with no nominal
+head — an arrow, a tuple — is decided like any other determined type rather than
+suspended. It used to suspend on those, which handed back as conditional answers
+exactly the rows the guard exists to reject. A guard still
 undischarged when the search ends leaves its answer CONDITIONAL; it is never
 presented as a definite row.
 
@@ -2409,11 +2413,11 @@ what the NAME denotes rather than a rule about type SHAPES: no shape is singled
 out, so a type argument, a nested one, a tuple element, an arrow parameter, and
 an application's own head (`?x: A[T = Int64]` ≡ `?x: Summable[T = Int64]`) all
 substitute alike. Whether the resulting bound then DECIDES is the separate
-question every bound faces — `Int64`, `Summable`, `List[T = Int64]` and
-`Summable[T = Int64]` decide; an arrow or tuple bound has no nominal head and
-therefore SUSPENDS, leaving its rows conditional — and it is answered the same
-way with a substituted variable in the bound as with a concrete type in the same
-place. Both spellings of the head take it: `g[A](a: List[T = A], …)` is the same
+question every bound faces, and it is answered the same way with a substituted
+variable in the bound as with a concrete type in the same place: every DETERMINED
+bound decides (`Int64`, `Summable`, `List[T = Int64]`, `Summable[T = Int64]`, and
+an arrow or tuple alike — a `(x: Int64)` bound keeps a `(x: 1)` row and drops a
+`(x: true)` one), and only a bound that IS a variable withholds a verdict. Both spellings of the head take it: `g[A](a: List[T = A], …)` is the same
 clause as `g[A](?a: List[T = A], …)`. A name the head introduced is never
 reported as an **unresolved name** — that message's repair, declare or import
 `A`, is wrong for a variable the same head binds; an introducer with no bounding

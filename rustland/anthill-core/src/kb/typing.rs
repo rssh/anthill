@@ -64406,7 +64406,13 @@ pub(crate) fn dictionary_of_tree(
 /// `value_type_term` already answers in the term carrier for every type it
 /// computes structurally; the fallback re-mints the nominal head for a type that
 /// arrived on another carrier, which is exactly the granularity the guard decided
-/// on. `None` for a headless type — the guard would have suspended on it.
+/// on. `None` for a headless type — its caller (`witness_sort_goal`) skips such a
+/// binding for its own reasons.
+///
+/// WI-20260908-PW9A0: this used to read "the guard would have suspended on it", which
+/// tied the `None` to [`type_bound_verdict`]'s old non-nominal test. That test is gone
+/// and the two were never the same question anyway — this one is about a CARRIER, that
+/// one about a type's determinacy.
 fn type_value_as_term(kb: &mut KnowledgeBase, ty: &Value) -> Option<TermId> {
     match ty {
         Value::Term { id, .. } => Some(*id),
@@ -64420,9 +64426,8 @@ fn type_value_as_term(kb: &mut KnowledgeBase, ty: &Value) -> Option<TermId> {
 /// (`fresh[db_index]`) directly to the redex child it matched, so the bound for
 /// DeBruijn slot `db_index` is checked against `msubst[fresh[db_index]]` (its
 /// CARRIED type via `value_type_term`, WI-578) — no synthetic-`u32::MAX - n`
-/// decode. Three-valued (WI-067): an under-determined carried type or a
-/// non-nominal bound suspends (don't fire); a refuted conformance skips; empty
-/// bounds (an untyped rule) trivially hold.
+/// decode. Three-valued (WI-067): a VARIABLE on either side suspends (don't fire);
+/// a refuted conformance skips; empty bounds (an untyped rule) trivially hold.
 pub(crate) fn typed_pattern_bounds_hold(
     kb: &mut KnowledgeBase,
     rid: crate::kb::RuleId,
@@ -64443,7 +64448,7 @@ pub(crate) fn typed_pattern_bounds_hold(
         // COLLAPSE, deliberately: a rewrite has two outcomes, so `Suspend` and
         // `Refuted` are both "don't fire" here. The goal reader (WI-742) keeps
         // them apart — that is the whole reason the decision is factored out.
-        if type_bound_verdict(kb, &matched, bound_tid) != TypeBoundVerdict::Holds {
+        if type_bound_verdict(kb, msubst, &matched, bound_tid) != TypeBoundVerdict::Holds {
             return false;
         }
     }
@@ -64466,9 +64471,15 @@ pub(crate) enum TypeBoundVerdict {
     Holds,
     /// The carried type is determined and does NOT conform — fail this binding.
     Refuted,
-    /// Undecidable HERE, not false: the carried type is under-determined, or the
-    /// bound is not nominal. Never NAF-decided (WI-067) — the rewrite reader
-    /// declines to fire, the goal reader suspends and is re-asked by rotation.
+    /// Undecidable HERE, not false: one of the two sides is a VARIABLE, so the
+    /// relation would answer about everything rather than about this pair. Never
+    /// NAF-decided (WI-067) — the rewrite reader declines to fire, the goal reader
+    /// suspends and is re-asked by rotation.
+    ///
+    /// It used to mean "or the bound is not nominal" as well, which is a much wider
+    /// set and the wrong one: an arrow or a tuple is a fully determined type that
+    /// [`types_compatible`] has an arm for, so withholding on it left rows the guard
+    /// exists to reject standing as conditional answers. See [`type_bound_verdict`].
     Suspend,
 }
 
@@ -64479,22 +64490,141 @@ pub(crate) enum TypeBoundVerdict {
 /// [`types_compatible`], which is subsort for a nominal sort bound and `provides`
 /// for a spec bound; both read load-built relations, so this performs no typing
 /// operation in the staging sense (proposal 060's rule).
+///
+/// WI-20260908-PW9A0 — `domain` RESTRICTS, so the only thing that withholds a verdict
+/// is an under-determined SIDE, never a merely non-nominal one. Both guards used to ask
+/// `sort_functor_of_view(..).is_none()`, inherited from WI-582 where this returned
+/// `bool` for a rewrite and both were `return false` — "don't fire", the safe answer for
+/// anything undecided, which loses nothing in a rewrite. WI-742 relabelled them
+/// `Suspend` without re-deriving them, and as a GOAL verdict that is a different and
+/// stronger claim. MEASURED on a ground fixture with nothing undetermined anywhere: a
+/// clause `g(?a: (Int64) -> Int64, ?b)` over two rows of concrete lists returned BOTH as
+/// conditional answers — value bound, its type known, the bound known, and no verdict —
+/// where the arrow arm of [`types_compatible`] refutes both outright. The `named_tuple`
+/// arm is the same story, and its holding direction now works too: a `(x: Int64)` bound
+/// keeps a `(x: 1)` row, drops a `(x: true)` one, and drops a list.
+///
+/// BOTH SIDES, not just the bound. Narrowing only the bound would fix the refutations
+/// and leave the one case that should HOLD still suspended: the value side's guard
+/// demands a nominal CARRIED type, so an actual function value against an arrow bound
+/// would never be admitted.
 pub(crate) fn type_bound_verdict(
     kb: &mut KnowledgeBase,
+    subst: &Substitution,
     value: &Value,
     bound_tid: TermId,
 ) -> TypeBoundVerdict {
-    let ty = value_type_term(kb, &Substitution::new(), value);
-    if sort_functor_of_view(kb, &ty).is_none() {
-        return TypeBoundVerdict::Suspend; // under-determined carried type (WI-067)
-    }
-    if sort_functor_of_view(kb, &Value::term(bound_tid)).is_none() {
-        return TypeBoundVerdict::Suspend; // non-nominal bound — nothing to decide against
+    let ty = value_type_term(kb, subst, value);
+    // WI-20260908-PW9A0 — SUSPEND IS FOR AN UNDER-DETERMINED SIDE, NOT FOR A NON-NOMINAL
+    // ONE, and either side may be the undetermined one. `domain` RESTRICTS: where both
+    // sides are determined types there is a verdict, and withholding one leaves a row
+    // the guard was written to reject standing as a conditional answer.
+    if type_is_undetermined(kb, &ty) || type_is_undetermined(kb, &Value::term(bound_tid)) {
+        return TypeBoundVerdict::Suspend; // WI-067 — never NAF-decide an open variable
     }
     if types_compatible(kb, &mut Substitution::new(), &ty, &TermIdView(bound_tid)) {
         TypeBoundVerdict::Holds
     } else {
         TypeBoundVerdict::Refuted
+    }
+}
+
+/// WI-20260908-PW9A0 — is this type a VARIABLE, the one thing
+/// [`type_bound_verdict`] must withhold judgment on?
+///
+/// The predicate borrows [`types_compatible`]'s own: its `type_var` arm is a WILDCARD
+/// returning `true`, so a variable on either side makes the relation say "compatible"
+/// about everything, which is not a verdict. `FlexVar` is an open inference variable and
+/// means the same; `Skolem` is included conservatively — a rigid variable has no arm
+/// either, so deciding it would rest on the `_ => false` catch-all rather than on a rule.
+///
+/// EVERY OTHER SHAPE IS DETERMINED and gets a real answer: `arrow` and `named_tuple` have
+/// their own subtyping arms, and a shape with no arm falls to `false`, which for a bound
+/// the value does not satisfy is the RIGHT answer — the guard restricts.
+fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
+    if !type_head_is_decidable(kb, ty) {
+        return true;
+    }
+    match ty {
+        Value::Term { id, .. } => type_term_has_variable(kb, *id),
+        // A `Value::Node` carrier is a value-in-type occurrence; its own head was
+        // tested above and its children are occurrences rather than type terms, so
+        // there is nothing further to walk here.
+        _ => false,
+    }
+}
+
+/// WI-20260908-PW9A0 — does this type's HEAD have a decision procedure in
+/// [`types_compatible`] that means something for a `domain` guard?
+///
+/// AN ALLOWLIST, NOT A DENYLIST, and that is the whole design. The obvious spelling is
+/// "withhold on the shapes that cannot be judged", which requires enumerating them —
+/// and every shape left off that list silently acquires a VERDICT it never had. There
+/// are seven such shapes here, `/code-review` found them one at a time, and each is a
+/// different wrong answer: `nothing` is a subtype of everything, so it would HOLD
+/// against every bound and fire every typed pattern on a value that cannot exist;
+/// `expr_carried` / `rigid_type_projection` are rigid unknowns that `expr_carried_zeta`
+/// actively REFUSES against a concrete type, silently dropping rows that should have
+/// floundered loudly; `poly_type` is named in `type_dispatch_name_view` precisely so it
+/// "must never MATCH `arrow`" — a deliberate non-answer, not a claim of non-conformance;
+/// and `Error` is reserved for malformed user input (WI-391), where a quiet "does not
+/// conform" is the silent skip this repo's rules forbid.
+///
+/// So the question is asked the other way round. The four shapes below are the ones a
+/// bound is written in and `types_compatible` genuinely relates — nominal (`bare_sort_
+/// compatible`, `parameterized_compatible_view`) and structural (`arrow_compatible_view`,
+/// `named_tuple_compatible`). EVERYTHING ELSE SUSPENDS, which is exactly what it did
+/// before this ticket, so the widening is confined to the two structural shapes it is
+/// FOR — and those two have driven rows either way (hold, refute, and refute on a nested
+/// field). A shape added to `TypeHead` later withholds by default and has to be admitted
+/// deliberately, rather than picking up a verdict by omission.
+fn type_head_is_decidable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(
+        type_head(kb, ty),
+        TypeHead::SortRef(_)
+            | TypeHead::Parameterized { .. }
+            | TypeHead::Arrow
+            | TypeHead::NamedTuple
+    )
+}
+
+/// WI-20260908-PW9A0 — [`type_is_undetermined`]'s recursion over a hash-consed type
+/// term's ARGUMENTS.
+///
+/// NOT `KnowledgeBase::value_is_ground`, and the difference is the whole point:
+/// groundness is a question about the TERM, determinacy is a question about the TYPE,
+/// and a type variable is a perfectly GROUND term that denotes an unknown type.
+/// MEASURED — for `f((x: ?y))` against a `(x: Int64)` bound the carried type is
+/// `named_tuple(x: <type var>)`, and `value_is_ground` answers `true` for it, so routing
+/// this question through that owner admitted exactly the row it was meant to withhold.
+///
+/// A type's arguments are its `Term::Fn` children on both spellings — a parameterized
+/// type IS `Fn{base, named bindings}` (WI-361, there is no `parameterized(..)` wrapper),
+/// a `named_tuple`'s fields and an `arrow`'s parts ride the same way — so one child walk
+/// covers every shape rather than a per-shape list that a new form could fall out of.
+fn type_term_has_variable(kb: &KnowledgeBase, t: TermId) -> bool {
+    // [`is_type_variable`], NOT [`type_head_is_decidable`] — the two ask different
+    // questions and this walk wants the second-order one. MEASURED by trying the
+    // allowlist here: an ARROW's children include its EFFECTS ROW, which is not a shape
+    // a bound is written in and so is not on the allowlist, so every arrow bound
+    // withheld and the two rows this ticket exists to fix went back to suspending. What
+    // a child must not be is a WILDCARD — the thing that makes `types_compatible` answer
+    // `true` about everything — and that is a variable.
+    if is_type_variable(kb, &TermIdView(t)) {
+        return true;
+    }
+    match kb.get_term(t) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            pos_args.iter().any(|&a| type_term_has_variable(kb, a))
+                || named_args
+                    .iter()
+                    .any(|&(_, a)| type_term_has_variable(kb, a))
+        }
+        _ => false,
     }
 }
 
@@ -69253,6 +69383,36 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         if kb.is_directional_equation(rid) {
             continue;
         }
+        // WI-20260908-PW9A0 — THE POPULATION ABOVE IS A COUPLING, SO ASSERT IT.
+        //
+        // The doc says "everything else with a bound is a RELATIONAL head", and that is
+        // true only because `load_rule`'s typed-pattern refusal declines every other
+        // shape. It is a documented coupling and was an UNENFORCED one: this pass's own
+        // test is `is_directional_equation`, which reads "not a directional equation ⇒
+        // relational" — a false dichotomy, since a GUARDED equation is neither.
+        //
+        // MEASURED, by breaking the coupling on purpose: narrowing that refusal so a
+        // guarded equation could keep its bound made this pass prepend a `domain(?x, T)`
+        // goal to a clause nothing evaluates (WI-20260820-8RJK8: every firing site gates
+        // on `is_equation`, whose first clause is an EMPTY BODY, and nothing anywhere
+        // runs a matched equation's body). The bound installed, the body grew a goal, and
+        // an UNSATISFIABLE bound was byte-identical to no bound at all — the mechanism
+        // running looked exactly like the effect happening. Nothing here complained.
+        //
+        // A BACKSTOP, NOT A VERDICT, in `RuleHeadOwnedByNoScope`'s sense: unreachable
+        // while the refusal stands, and its whole value is that a future change which
+        // widens the refusal fails HERE and loudly, instead of silently generating a goal
+        // that cannot fire. When 8RJK8 lands and a guarded equation does fire, this is
+        // one of the sites that has to be revisited rather than deleted.
+        debug_assert!(
+            !kb.rule_head_value(rid)
+                .head(kb)
+                .functor_sym()
+                .is_some_and(|f| kb.is_equality_connective_functor(f)),
+            "install_typed_head_domain_goals reached an EQUATIONAL head: the loader's \
+             typed-pattern refusal admitted a bound whose generated goal cannot run, \
+             because nothing evaluates a matched equation's body (WI-20260820-8RJK8)",
+        );
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
         // IDEMPOTENT by provenance: a second run finds its own stamp and stops. The
         // typer is not guaranteed to run once per KB, and generating twice would make

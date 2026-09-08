@@ -4931,7 +4931,11 @@ impl KnowledgeBase {
     /// | unbound | `Delay` — rotation re-asks once a later goal binds it (WI-743 enumerates instead) |
     /// | bound, carried type conforms | `Success` — keep the binding |
     /// | bound, refuted | `Failure` — this binding only; the clause's other rows stand |
-    /// | bound, carried type under-determined | `Delay` — never NAF-decide (WI-067) |
+    /// | bound, either side a VARIABLE | `Delay` — never NAF-decide (WI-067) |
+    ///
+    /// The last row is a variable, NOT merely a non-nominal type: an arrow or tuple
+    /// bound is determined and gets a real verdict (WI-20260908-PW9A0, and see
+    /// [`super::typing::type_bound_verdict`] for what that replaced).
     ///
     /// A still-unbound `?x` at the end is NOT decided here: the delayed goal
     /// residualizes and the WI-737 route raises `Error[RelationFloundered]` when the
@@ -4981,7 +4985,7 @@ impl KnowledgeBase {
             );
             return BuiltinResult::Failure;
         };
-        match super::typing::type_bound_verdict(self, &value, bound_tid) {
+        match super::typing::type_bound_verdict(self, subst, &value, bound_tid) {
             super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
             super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
             super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),
