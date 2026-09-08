@@ -1297,7 +1297,13 @@ private class AnthillParserImpl(
   private def typedVarArg[$: P]: P[TermId] =
     P(located(Tokens.variableToken) ~ ":" ~/ typeExpr).map { case (varName, span, ty) =>
       val varTid = varTermAt(varName, span)
-      terms.allocAt(Term.Fn(intern("typed_var"), IArray(varTid),
+      // MINTED, so the loader can ask PROVENANCE rather than spelling. `type` is an
+      // ordinary identifier in this grammar — nothing reserves it — so a hand-written
+      // `typed_var(?x, type: Foo)` matches the marker's name AND its exact shape, and a
+      // reader keyed on those alone cannot tell it from this desugar. rustland's
+      // `is_typed_column` asks `parse_terms.is_minted` for that reason; this is the
+      // provenance it asks. See `Loader.isTypedVarMarker`.
+      terms.allocMintedAt(Term.Fn(intern("typed_var"), IArray(varTid),
         IArray((intern("type"), typeExprToRef(ty, span)))), span)
     }
 

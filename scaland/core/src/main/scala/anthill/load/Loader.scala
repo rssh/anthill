@@ -94,6 +94,19 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(DefinePass(kb, file.symbols), file.items)
 
+    // Post-pass: auto-import prelude sort contents into global scope. BEFORE PASS 1b,
+    // not merely before pass 3, and the earlier position is what makes pass 1b's mint
+    // guard answerable: that guard asks whether a head's name ALREADY denotes, so every
+    // name the prelude provides must be visible before it is asked. Measured with the
+    // auto-import after pass 1b: `namespace hp { rule ite(?a, ?b, ?c) }` minted a local
+    // `ite` that shadowed the prelude's operation for the whole scope, because nothing
+    // the guard could see yet named it.
+    //
+    // AHEAD OF PASS 2 IS THE RIGHT PRECEDENCE ANYWAY, independent of that: `addImport`
+    // moves a repeated name to last, so a user's own `import` of a prelude name now
+    // arrives after the auto-import and wins, where before it was overridden by it.
+    autoImportPrelude(kb)
+
     // Pass 1b (proposal 061): the PREDICATES body-less rules declare. A separate walk,
     // after every other name in every file exists — see [[DeclarePredicatePass]] for why
     // scaland cannot interleave it the way rustland does.
@@ -111,15 +124,6 @@ object Loader:
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
-
-    // Post-pass: auto-import prelude sort contents into global scope. BEFORE pass 3,
-    // and that ordering is load-bearing: pass 3's mint guard asks whether a head's
-    // name ALREADY denotes, so every name a declaration provides must be visible
-    // first. Otherwise `rule eq_refl: eq(?a, ?a) <=> true` (stdlib `eq.anthill`,
-    // where `eq` is PartialEq's declared operation reached through the requires
-    // chain) mints a SECOND `eq` and makes the real one ambiguous. rustland reaches
-    // the same state by registering the prelude before `scan_definitions` runs.
-    autoImportPrelude(kb)
 
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898), in
     // THREE phases — collect, freeze, mint. WI-20260821-SBZ2A ports WI-980 / 059 R6 and
@@ -557,7 +561,45 @@ object Loader:
         // defect this pairing exists to make impossible. Raised rather than skipped.
         ruleIntroducedFunctor(rule, fileSym, fileTerms) match
           case Some((name, kind)) =>
-            defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
+            // A DECLARATION MAY NOT SHADOW A NAME THE LADDER REACHES AS SOMETHING A RULE
+            // CANNOT DECLARE. [[refuseDeclarationThatCannotStand]] makes exactly this
+            // refusal from the scope's OWN locals — `operation has(x) -> Bool` beside
+            // `rule has(?x)` — and says at its site that the ladder is the wrong
+            // instrument for it, which is right for a name of a DECLARABLE kind and
+            // wrong for one of any other. Asked there it also cannot fire: pass 1b's
+            // mint is in `locals` by then, so the lookup finds the fresh `Goal` and the
+            // construct it displaced is already invisible. So it is asked HERE, before
+            // the mint, and only about the kinds that were never a rule's to declare.
+            //
+            // MEASURED WITHOUT IT: `namespace hp { rule ite(?a, ?b, ?c) }` minted a
+            // local `Goal` that shadowed the prelude's OPERATION for the whole scope —
+            // `resolveRecursive` reads `locals` before `imports` and before any parent —
+            // and nothing said so. `headNameCollisions` could not: the head DENOTES once
+            // minted, so it filters out.
+            //
+            // A DECLARABLE KIND IS LEFT ALONE, and that is 061's rule rather than a
+            // concession: a sort body may declare a predicate its namespace also
+            // declares, and the two are separate predicates BECAUSE BOTH ARE WRITTEN
+            // (`845G7 channel 1`'s `body5` arm drives it). Refusing on the ladder
+            // outright collapsed that pair into one predicate — measured, that arm reds.
+            // AN AMBIGUOUS ANSWER IS LEFT TO ITS OWN DIAGNOSTIC. This refusal is about
+            // one name a rule may not take over; a contested set is a different defect
+            // and reporting it here would name only whichever candidate came first.
+            val shadowed = kb.symbols.resolveInScope(name, scope) match
+              case ResolveResult.Found(sym) => kb.symbols.get(sym) match
+                case SymbolDef.Resolved(_, _, k, _) if !DeclarableByARule.contains(k) => Some(k)
+                case _ => None
+              case _ => None
+            shadowed match
+              case Some(k) =>
+                errors += LoadError.Other(
+                  s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
+                    s"names something this scope reaches (kind: $k), which a rule cannot " +
+                    "declare — the declaration would shadow it for the whole scope. " +
+                    "Rename the predicate, or drop the line if the head meant to cite it",
+                  rule.span)
+              case None =>
+                defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
           case None =>
             throw AssertionError(
               "internal: a Declaration reading must name the predicate it declares")
@@ -1398,16 +1440,22 @@ object Loader:
     * user may write (WI-948's *a name, not a verdict*).
     *
     * THE HEAD'S OWN FUNCTOR IS NOT ASKED: the grammar puts a typed column only in an
-    * ARGUMENT position, so a marker can never be the head. */
+    * ARGUMENT position, so a marker can never be the head.
+    *
+    * RECURSIVE, mirroring rustland's `declaration_clause_carrier`, which walks the
+    * whole head rather than its top row. A direct-arguments-only walk accepted `rule
+    * p(f(?x: T))` — the same ascription one level down — where rustland refuses it, so
+    * the two loaders disagreed about a program neither should admit. The nesting is
+    * reachable: the grammar allows a typed column in any argument position, not only a
+    * top-level one. */
   private def headCarriesTypedColumn(
     fileSym: SymbolTable, fileTerms: SimpleTermStore, tid: TermId
   ): Boolean =
     fileTerms.get(tid) match
       case fn: Term.Fn =>
         (fn.posArgs.iterator ++ fn.namedArgs.iterator.map(_._2)).exists { a =>
-          fileTerms.get(a) match
-            case af: Term.Fn => isTypedVarMarker(af, fileSym)
-            case _           => false
+          isTypedVarMarker(fileTerms, a, fileSym) ||
+            headCarriesTypedColumn(fileSym, fileTerms, a)
         }
       case _ => false
 
@@ -2122,6 +2170,29 @@ object Loader:
       reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm, atGoal = true))).getOrElse(IndexedSeq.empty)
 
     if hasBottom then
+      // A DENIAL WITH AN EMPTY BODY IS AN UNCONDITIONAL CONTRADICTION, and 061's `true`
+      // strip is what newly makes one reachable: before it, `rule ⊥ :- true` kept an
+      // unresolvable `true` goal and the clause was dead, so nothing said anything and
+      // nothing fired. Stripped, the body is `IndexedSeq.empty` and the clause asserts
+      // "false", unconditionally — a program that says nothing can be true, loaded in
+      // silence. It is also miscounted downstream: every reader that reads body-
+      // emptiness as fact-ness (`KnowledgeBase.factCount`, the fact-first sort) counts
+      // this denial among the facts.
+      //
+      // REFUSED, MATCHING THE BODY-LESS SPELLING. `rule ⊥` is already refused
+      // ([[bodylessDeclaresNothingDetail]]), and §6.1 makes `:- true` the SAME empty
+      // body — so admitting one spelling and refusing the other is the disagreement
+      // this delivery exists to remove. The strip's purpose is `fact H` / `rule H :-
+      // true` equivalence for POSITIVE heads; a denial has no `fact` spelling to be
+      // equivalent to.
+      if kbBody.isEmpty then
+        errors += LoadError.Other(
+          "a `⊥` denial with an empty body is an unconditional contradiction: it asserts " +
+            "that nothing can be true. `:- true` is the empty body (§6.1), so this is the " +
+            "same rule as the body-less `rule ⊥`, which is refused too. Give the denial " +
+            "the goals it should fire on, or delete the line",
+          rule.span)
+        return
       val botTerm = kb.alloc(Term.Bottom)
       kb.assertRule(botTerm, kbBody, sortSort, scope)
     else
@@ -2237,17 +2308,30 @@ object Loader:
 
   // ── Term reallocation ─────────────────────────────────────────
 
-  /** WI-582: whether `fn` is the parser-emitted typed-pattern marker
-    * `typed_var(?x, type: T)` — matched by functor name AND its exact shape
-    * (exactly one positional arg plus a `type` named arg). Mirrors rustland's
-    * three-condition guard (`load.rs`): matching by name ALONE would crash on a
-    * user functor `typed_var()` (`posArgs(0)` out of bounds) and silently strip
-    * `typed_var(a, b)` to `a`. A non-marker `typed_var` falls through to normal
-    * loading. */
-  private def isTypedVarMarker(fn: Term.Fn, fileSym: SymbolTable): Boolean =
-    fileSym.name(fn.functor) == "typed_var" &&
-      fn.posArgs.length == 1 &&
-      fn.namedArgs.exists { case (k, _) => fileSym.name(k) == "type" }
+  /** WI-582: whether the node at `tid` is the parser-emitted typed-pattern marker
+    * `typed_var(?x, type: T)`.
+    *
+    * PROVENANCE FIRST, and it is not redundant with the name and shape tests below —
+    * the same pairing [[dottedCitationName]] states at its own gate. `type` is an
+    * ordinary identifier in scaland's grammar (nothing reserves it; the parser interns
+    * it only as a named-arg key), so a hand-written `rule p(typed_var(?x, type: Foo))`
+    * satisfies the name AND the exact shape. Keyed on those alone, the loader read a
+    * user's own functor as this desugar: [[headCarriesTypedColumn]] then refused the
+    * program naming a typed column the source does not contain, and [[reallocTerm]]
+    * stripped the node to its first argument. `allocMintedAt` in `typedVarArg` is the
+    * provenance this asks; rustland's `is_typed_column` asks `parse_terms.is_minted`
+    * for the same measured reason.
+    *
+    * The name and shape tests stay, because minted-ness alone does not say WHICH
+    * desugar wrote the node, and `posArgs(0)` below would be out of bounds for another.
+    * A non-marker `typed_var` falls through to normal loading. */
+  private def isTypedVarMarker(fileTerms: SimpleTermStore, tid: TermId, fileSym: SymbolTable): Boolean =
+    fileTerms.isMinted(tid) && (fileTerms.get(tid) match
+      case fn: Term.Fn =>
+        fileSym.name(fn.functor) == "typed_var" &&
+          fn.posArgs.length == 1 &&
+          fn.namedArgs.exists { case (k, _) => fileSym.name(k) == "type" }
+      case _ => false)
 
   /** WI-20260901-719FJ (rustland's twin, same ticket) — the dotted NAME a PAREN-LESS
     * citation spells, or `None` when this node is not one.
@@ -2379,7 +2463,7 @@ object Loader:
           kb.freshVar(kbSym)
         })
         kb.alloc(Term.Var(Var.Global(kbVid)))
-      case fn: Term.Fn if isTypedVarMarker(fn, fileSym) =>
+      case fn: Term.Fn if isTypedVarMarker(fileTerms, termId, fileSym) =>
         // WI-582: strip the typed-pattern marker `typed_var(?x, type: T)` back to
         // the bare `?x`. The parser wraps a `?x: T` rule-LHS arg as this marker;
         // rustland installs T as a per-DeBruijn `Type` bound and keeps the head

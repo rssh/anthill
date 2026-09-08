@@ -846,3 +846,94 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     assertEquals(clauses(kb, "sbz.law.S.gte"), Some(1),
       "the law is a clause OF the declared operation — no second symbol was minted")
   }
+
+  // ── THE THREE REGRESSIONS THIS DELIVERY INTRODUCED, AND THEIR FIXES ─────────
+  //
+  // Found by review after the port was measured green, so none of them broke a row that
+  // existed: each is a program that LOADED CLEAN (or was refused) and should not have
+  // been. Each row below names the back-out that reds it.
+
+  test("061: a declaration may not shadow a LADDER-reached non-declarable name") {
+    // BACK-OUT: drop the `shadowed` arm in `DeclarePredicatePass.declare` — the first
+    // block reds. Move `autoImportPrelude` back after pass 1b and it reds too, for the
+    // same reason: the question is only answerable once the enclosing names are visible.
+    //
+    // `refuseDeclarationThatCannotStand` already refuses this pair from the scope's OWN
+    // locals (`061: a declaration of a name another construct owns is refused`). One
+    // scope out it was silent: the inner `rule op(?x)` minted a local `Goal` that
+    // shadowed the operation for the whole sort body, because `resolveRecursive` reads
+    // `locals` before any parent. Neither new refusal could see it — the head DENOTES
+    // once minted, so `headNameCollisions` filters it out, and the locals lookup finds
+    // the fresh `Goal` rather than what it displaced.
+    refused("which a rule cannot declare",
+      "sh.anthill" ->
+        """namespace sbz.shadow
+          |  operation zzop(a: Int64) -> Bool
+          |  sort Inner
+          |    entity inner(n: Int64)
+          |    rule zzop(?x)
+          |  end
+          |end""".stripMargin)
+
+    // TWO CONTROLS, and the second is the one that matters: this must refuse a SHADOW,
+    // not every inherited name. A name nothing provides still declares, AND a name the
+    // ladder reaches as a PREDICATE still declares — that pair is 061's own rule, since
+    // both declarations are written (`845G7 channel 1`'s `body5` arm drives the split).
+    val fresh = loaded("fr.anthill" -> "namespace sbz.fresh\n  rule zzq(?a, ?b, ?c)\nend")
+    assert(fresh.hasQualifiedName("sbz.fresh.zzq"),
+      "a name nothing else provides is still DECLARED by its body-less rule")
+
+    val inherited = loaded("inh.anthill" ->
+      """namespace sbz.inh
+        |  rule zzp(?x)
+        |  sort Inner
+        |    entity inner(n: Int64)
+        |    rule zzp(?x)
+        |  end
+        |end""".stripMargin)
+    assert(inherited.hasQualifiedName("sbz.inh.Inner.zzp"),
+      "a ladder-reached PREDICATE is declarable by a rule, so the written inner " +
+        "declaration still introduces its own")
+  }
+
+  test("061: `rule ⊥ :- true` is refused, as the body-less `rule ⊥` already was") {
+    // BACK-OUT: drop the `if kbBody.isEmpty` arm under `hasBottom` in `loadRule`.
+    //
+    // The `true` strip is what made this reachable. Before it the clause kept an
+    // unresolvable `true` goal and was dead; stripped, it asserts `⊥` with an EMPTY
+    // body — "nothing can be true" — and every reader that reads body-emptiness as
+    // fact-ness counts the denial among the facts. §6.1 makes `:- true` the same empty
+    // body as no body at all, so the two spellings must get one verdict.
+    refused("unconditional contradiction",
+      "b.anthill" -> "namespace sbz.bot\n  rule ⊥ :- true\nend")
+
+    // BOTH CONTROLS. A denial with real goals still loads, and the body-less spelling
+    // still takes its own (different) refusal — so this row cannot pass by refusing
+    // every `⊥`.
+    val kb = loaded("ok.anthill" ->
+      "namespace sbz.botok\n  rule base(9) :- true\n  rule ⊥ :- base(9)\nend")
+    assertEquals(clauses(kb, "sbz.botok.base"), Some(1), "the denial's goal is a real clause")
+    refused("names no predicate",
+      "bl.anthill" -> "namespace sbz.botless\n  rule ⊥\nend")
+  }
+
+  test("061: a typed column is decided by PROVENANCE, not by spelling") {
+    // BACK-OUT: drop `fileTerms.isMinted(tid)` from `isTypedVarMarker` (and the
+    // `allocMintedAt` in `AnthillParser.typedVarArg` that answers it) — the first
+    // assertion reds. Drop the recursion in `headCarriesTypedColumn` — the second does.
+    //
+    // `type` is an ordinary identifier here: nothing reserves it, and the parser interns
+    // it only as a named-arg key. So a hand-written `typed_var(?x, type: Foo)` matches
+    // the marker's name AND its exact shape, and a reader keyed on those alone refused
+    // this program naming a typed column the source does not contain.
+    val kb = loaded("tv.anthill" ->
+      "namespace sbz.tv\n  rule pa(typed_var(?x, type: Foo))\nend")
+    assert(kb.hasQualifiedName("sbz.tv.pa"),
+      "a user's own `typed_var` is a functor application, so the rule DECLARES `pa`")
+
+    // AND THE REAL MARKER IS STILL REFUSED, one level down — rustland's
+    // `declaration_clause_carrier` walks the whole head, and a direct-arguments-only
+    // walk accepted this.
+    refused("typed column",
+      "nest.anthill" -> "namespace sbz.tvn\n  rule pb(f(?x: Foo))\nend")
+  }
