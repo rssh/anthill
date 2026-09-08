@@ -2094,9 +2094,11 @@ it — §8.6) or spell it as a `fact`. A **label, a `[…]` tag, a `[t]` type-va
 introducer or a typed column `?x: T`** on a declaration is refused for the same reason: a
 declaration stores no clause, so there is nothing for a citation handle to cite, nothing
 for a tag to govern, no body goal to bound a `[t]` (§5.3's `:- Spec[t]`), and no rewrite
-for a typed-pattern bound to be enforced on. 060's reading of a body-less head's `?x: T`
-as the **column's type** is the intended future of that last one (WI-742); it is not
-delivered, so the ascription is refused rather than accepted and ignored.
+and no clause body for a typed-pattern bound to be enforced in. That last one is
+narrower than it was: WI-742 gave `?x: T` a reader on a relational CLAUSE, so `:- true`
+turns this refusal into a working guard. What stays refused is the DECLARATION reading —
+the annotation as the column's type with nothing to enforce it — which is undelivered,
+so the ascription is refused rather than accepted and ignored.
 
 **A description block is not on that list**, and the difference is what the block names.
 The others need a *clause*; a description names a **declaration symbol**, and a
@@ -2167,13 +2169,74 @@ Both forms lower before resolution to the existing `find_dictionary` relation
 with an output slot, and the dictionary is an ordinary structural value in the
 clause substitution.
 
-This is deliberately only the delivered requirement-binding half of proposal
-060. Typed head syntax is **partially** implemented: the typed-pattern form on
-a `[simp]`/`[unfold]` equation is implemented below, while accepting the same
-annotation on a plain relational rule (including the parameter spelling
-`p(x: T)`) is not. WI-742 owns that relational `domain(x, T)` lowering, and
-WI-743 owns finite/user-defined domain generation. Do not confuse proposal 060
-with the unrelated work item WI-060.
+This is the requirement-binding half of proposal 060. Its typed-head half is
+delivered separately, below. What remains unimplemented there is the ANCHOR
+combination: a `require[X]` in a clause whose only grounding is a typed head
+binding is still refused for want of a covered body call. WI-742 owns that
+residue; WI-743 owns finite/user-defined domain generation. Do not confuse
+proposal 060 with the unrelated work item WI-060.
+
+**A type annotation on a relational rule head (proposal 060 §2, WI-742).** A
+variable in the head of a rule with a body may carry a type bound, and it means
+what the equational form means — "the value's carried type conforms to `T`" —
+reached by a different route: the head is stored structurally BARE (so the
+discrimination tree indexes it identically) and the annotation compiles, at
+typing time, to a `domain(?x, T)` goal PREPENDED to the clause body. That goal
+is ordinary — it delays on an unbound operand, wakes by rotation, and
+participates like any other — and at run time it only READS the value's carried
+type. It is three-valued exactly as the equational form is: it holds where the
+carried type conforms, fails that binding where it is refuted, and SUSPENDS
+where the carried type is under-determined or the variable is still unbound,
+never deciding an undecided guard by negation-as-failure. A guard still
+undischarged when the search ends leaves its answer CONDITIONAL; it is never
+presented as a definite row.
+
+Two consequences follow, and both are the point of running the goal rather than
+recording the bound. The relation's declared column type (052) becomes true BY
+CONSTRUCTION — the relation only ever yields conforming rows — rather than an
+assertion nothing checks. And a clause so guarded satisfies C666A's join rule:
+see that entry below.
+
+`rule p(?x: T) :- true` is included, `true` being the empty conjunction (§6.1):
+the clause is a clause, and the generated guard becomes its whole body. What
+keeps its loud rejection is the **untagged equational** head, which has neither
+reader — no rewrite fires it, and it is not a relational clause.
+
+**The parameter form (proposal 060 §2.1).** In the head of the predicate a rule
+DEFINES, `name: Type` introduces a typed clause variable with no `?` sigil:
+
+```
+rule adult(name: String, age: Int64) :- person(name: name, age: age), gte(age, 18)
+```
+
+which is the same rule as `rule adult(?name: String, ?age: Int64) :- …`. This is
+the notation the language already uses at its other declaration site —
+`operation f(a: Int, b: Int) = a + b` introduces `a` and `b` sigil-free — and 052
+says a rule IS such an operation, so a rule head's parameter list is that same
+form rather than a new convention. The introduced names are clause-scoped and
+referenced bare in the body, and they SHADOW a same-named symbol in scope. The
+schema follows the parameter list: `adult : Relation[(name: String, age: Int64)]`,
+names and types alike.
+
+The reclassification is decided by the head's RESOLVED CATEGORY, never by case:
+an ENTITY-CONSTRUCTOR head keeps its named arguments untouched (`fact
+palette(c: red())` is unchanged, and entities are commonly lowercase). It also
+requires the argument to actually be `name: Type` — a named argument whose value
+is a variable or a datum (`rule reaches(from: ?a, to: ?b)`) stays a named
+argument. Everywhere outside such a head, `name: Type` stays a named argument:
+a sort is a legal argument VALUE (055), so `f(kind: Int64)` passes the type as
+data.
+
+An unresolved bare name in a head stays what it has always been — a **symbolic
+constant**, not an implicit variable and not an error. `fact q(alpha, beta)`
+beside `rule p(alpha, ?y) :- q(alpha, ?y)` works because both spellings of
+`alpha` denote one unresolved name and unify. So this form's typo — a parameter
+written without its type — reads as a constant column rather than as a variable:
+a different meaning, not a dead clause.
+
+The written type may be a bare name, a qualified path, or a parameterized
+application (`c: Colour`, `c: lib.Colour`, `xs: List[T = Int64]`) — the same
+three the `?x: T` spelling accepts, since the two lower to one internal form.
 
 **Forms:**
 
@@ -2214,7 +2277,7 @@ rule lower_bound: gte(?d, ?d_min)
 
 **A rule head functor is resolved, not declared (WI-896).** Whether a head *defines* a new predicate or *concludes about* an existing one is decided by **name resolution**, exactly as in any other position: the functor runs the ordinary ladder — enclosing scope, imports, then the implicit prelude — and the rule contributes a clause to whatever it lands on. Only when the ladder finds **nothing** does the rule introduce the name, scoped where it is written (above). So `rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` is a lemma about `PartialOrd.gte` because `gte` *resolves*, and its unlabeled twin is the same lemma for the same reason. To introduce a name that already resolves, **declare** it — a local `operation gte(…)` is found before the fallback tier, and the rule then binds to that declaration. That route is open for **every** name since WI-20260825-KD9SW: a free-standing `operation gte(…)` used to be refused (§5.1 *One spec operation, one symbol*, now withdrawn) because it would shadow the tier a minted `>=` resolved through, and a minted operator carries its own address now, so it shadows nothing. Note the consequence for THIS paragraph's example: with the tier gone, a bare `gte` reaches `PartialOrd.gte` only where an **import** puts it in scope — so whether such a rule is a lemma about the spec operation or introduces a new predicate is now the import's answer, not the tier's.
 
-**An unguarded predicate head may not join through a whole-scope non-enclosing edge (C666A).** Resolution still decides which predicate a head denotes, but reaching a declared `Goal` *only* through `requires`, a conversion-style `provides`, or a wildcard import does not opt this clause into that predicate: the loader refuses the head and names both its writing scope and the qualified target. A local declaration, a predicate imported **by name** (`import lib.{p}` / its plain-name equivalent), or the lexical enclosing chain is an explicit owner and remains admissible. An ordinary source body is not the missing guard. The admissible non-enclosing form is proposal 060's generated, carrier-selecting `domain(?x, T)` guard; until WI-742 installs that guard on plain relational heads, every such join is refused. WI-742 must admit its guarded form at this boundary without removing the unguarded refusal.
+**An unguarded predicate head may not join through a whole-scope non-enclosing edge (C666A).** Resolution still decides which predicate a head denotes, but reaching a declared `Goal` *only* through `requires`, a conversion-style `provides`, or a wildcard import does not opt this clause into that predicate: the loader refuses the head and names both its writing scope and the qualified target. A local declaration, a predicate imported **by name** (`import lib.{p}` / its plain-name equivalent), or the lexical enclosing chain is an explicit owner and remains admissible. An ordinary source body is not the missing guard. The admissible non-enclosing form is proposal 060's generated, carrier-selecting `domain(?x, T)` guard (WI-742): a head written inside `sort A` whose annotation names `A` — the sort whose edge exposed the predicate — may join, because the guard keeps that clause to `A`-carried values. The admission is that predicate and not "the head is annotated": an annotation naming some other sort selects nothing about `A` and stays refused, and a wildcard-import join stays refused however it is annotated, a namespace being no carrier at all.
 
 **And an undeclared head declares AT THE SCOPE IT IS WRITTEN IN (WI-20260822-845G7).** "Only when the ladder finds nothing" once needed a *when*, because this was the one position whose own answers changed the table it reads: every other name is defined before any name is resolved (the WI-321 cross-file invariant), while a rule head was *introduced* during the same pass that decided it. Asked against the scanned prefix, textual order decided the program — measured, `rule p(1)` beside `sort Rec { rule p(2) }` loaded as **one** predicate with two clauses when the namespace-level rule was written first and as **two** predicates when it was written second, and the same pair across two files split on whichever file the loader reached first. WI-980 closed that by asking whether some scope this one can *see* already introduces the name, resolved through a non-monotone fixpoint over the finished program. 061 then made a predicate **declared** rather than discovered, and 845G7 measured what was left for the fixpoint to do: over the whole corpus and every test fixture, **234,078** head decisions, of which **233,917** were "introduce here", **161** were "join another scope's head" — every one of those in a fixture written to exercise the fixpoint — and **zero** in the shipped corpus. It computed a constant, so it is gone, and the *when* dissolves with it:
 
@@ -2301,17 +2364,20 @@ Because the reader is a macro, and a macro is expanded at compile time by the `[
 
 The head's arity is **not** checked against the operation's declaration — `[simp]` matching is structural, and a head that matches nothing simply never fires. In practice the two faces appear **together**: the operation declares `...args: R` so that `r.rename(who: r.name)` is a well-formed call at all, and its `[simp]` rule captures the same residue as syntax **first** — the typer fires `[simp]` at an application before it matches arguments to parameters, so the two captures cannot both run on one call. An **empty** capture is a record with no components, not a failure (056 §3 OQ #6).
 
-**Typed rule patterns (`?x: T`) are currently a directional-rewrite feature
-(WI-582, WI-903).** A variable in a rule's LHS pattern may carry a type bound —
+**Typed rule patterns (`?x: T`) on an EQUATION are a directional-rewrite
+feature (WI-582, WI-903).** (The relational reading is above; the two spellings
+share one decision about what the annotation MEANS, and differ only in what
+reads it.) A variable in a rule's LHS pattern may carry a type bound —
 `rule keep_id: keep(?x: Summable, ?y) <=> ?x [simp]` — read as the guard "the
 matched value's carried type conforms to `T`". The annotation is **stripped from
 the head**, so the indexed pattern is the untyped one, and the bound is
 three-valued: it fires where the carried type conforms, and neither fires nor
 refutes where that type is under-determined. This bound-mode meaning is the
-compatibility contract for proposal 060's plain-relational form: WI-742's
-generated `domain(?x, T)` goal must make the same carried-type decision when
-`?x` is bound. Its body-goal placement, column typing, and future output mode
-are different execution duties, not a different meaning for the annotation.
+compatibility contract for proposal 060's plain-relational form, and the two
+now share ONE predicate rather than agreeing by inspection: the rewrite reader
+collapses its three outcomes to fire/don't-fire, which is all a rewrite has.
+Body-goal placement, column typing, and the future output mode are different
+execution duties, not a different meaning for the annotation.
 
 The equivalent **introducer** spelling binds the type variable in the head and
 states the bound as a guard — `keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]`

@@ -4770,7 +4770,10 @@ impl KnowledgeBase {
     /// `tuple(...)` wrapper. A body that is not a tuple is treated as a single
     /// goal (the loader wraps every body, so this is defensive) — returned as-is
     /// rather than dropped, so no goal escapes the walk (loud over silent).
-    fn tuple_goal_views<'a>(&'a self, item: term_view::ViewItem<'a>) -> Vec<term_view::ViewItem<'a>> {
+    fn tuple_goal_views<'a>(
+        &'a self,
+        item: term_view::ViewItem<'a>,
+    ) -> Vec<term_view::ViewItem<'a>> {
         if let term_view::ViewHead::Functor {
             functor: Some(f),
             pos_arity,
@@ -6191,6 +6194,45 @@ impl KnowledgeBase {
              gate is not maintained here)",
         );
         self.rules[id.index()].body_nodes = body_nodes;
+    }
+
+    /// WI-742 (proposal 060 §2) — PREPEND generated goals to a clause body,
+    /// maintaining the WI-812 `has_bodied_rule` gate when the clause was body-less.
+    ///
+    /// SEPARATE FROM [`Self::set_rule_body_nodes`], which is a 1:1 atom rewrite and
+    /// asserts that fact-ness cannot flip. This one is the case that assertion was
+    /// written to catch, handled rather than forbidden: `rule p(?x: T) :- true` folds
+    /// to an EMPTY body (§6.1 — `true` is the empty conjunction), and the typed head's
+    /// generated `domain(?x, T)` guard is what turns it back into a rule. Keeping the
+    /// two methods apart is what stops the existing caller's guarantee from being
+    /// weakened by this one's need.
+    ///
+    /// ONLY THE GATE NEEDS MAINTAINING, measured rather than assumed: `fact_dedup` /
+    /// `value_fact_dedup` are filled by `assert_fact*`, not by
+    /// `push_value_head_entry`, so a loader-asserted body-less RULE is in neither; and
+    /// the resolver's raw-bind fact fast-path is gated on GROUND arity-0, which a
+    /// var-headed clause is not. `bodied_rule_counts` is the one index keyed on
+    /// fact-ness at assert time.
+    pub(crate) fn prepend_generated_body_goals(
+        &mut self,
+        id: RuleId,
+        goals: Vec<Rc<NodeOccurrence>>,
+    ) {
+        if goals.is_empty() {
+            return;
+        }
+        let was_fact = self.rules[id.index()].body_nodes.is_empty();
+        let mut body = goals;
+        body.append(&mut self.rules[id.index()].body_nodes);
+        self.rules[id.index()].body_nodes = body;
+        if was_fact {
+            // The clause has just become bodied; the gate counts indexed bodied rules
+            // per head functor, so bump it exactly where the assert would have.
+            let head = self.rules[id.index()].head.clone();
+            if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
+                self.inc_bodied_rule_count(f);
+            }
+        }
     }
 
     /// Which syntactic form produced this clause — see [`ClauseKind`] (WI-922).
@@ -7911,10 +7953,8 @@ impl KnowledgeBase {
                     v
                 };
                 let pos: SmallVec<[Value; 4]> = pos_args.iter().map(|&a| sub(self, a)).collect();
-                let named: SmallVec<[(Symbol, Value); 2]> = named_args
-                    .iter()
-                    .map(|&(s, a)| (s, sub(self, a)))
-                    .collect();
+                let named: SmallVec<[(Symbol, Value); 2]> =
+                    named_args.iter().map(|&(s, a)| (s, sub(self, a))).collect();
                 if changed {
                     Value::Entity {
                         functor,
@@ -8339,9 +8379,7 @@ impl KnowledgeBase {
                 // (?a → f(?b), ?b → g(?a)). Pure opened links can't cycle
                 // (a rule head has no query vars), so the check rides the
                 // rename branch only.
-                if !body_rename.is_empty()
-                    && self.occurs_in_value(ts_vid, &linked, &answer_links)
-                {
+                if !body_rename.is_empty() && self.occurs_in_value(ts_vid, &linked, &answer_links) {
                     answer_links.contradiction = true;
                     break;
                 }
@@ -10115,6 +10153,12 @@ impl KnowledgeBase {
             crate::parse::desugar_target::qualified(crate::parse::desugar_target::FIND_DICTIONARY),
             BuiltinTag::FindDictionary,
         );
+        // WI-742 (proposal 060 §2) — the generated typed-head guard. NOT a
+        // `desugar_target`: the converter never mints it, so it is not part of the
+        // set `desugar_target::ALL` obliges a reader to cover. The TYPER mints it
+        // (`typing::install_typed_head_domain_goals`) from the type bound the loader
+        // already installed, which is why the name is looked up rather than written.
+        self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GOAL, BuiltinTag::TypeDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
@@ -12368,7 +12412,7 @@ mod tests {
         let seven = kb.alloc(Term::Const(Literal::Int(7)));
         let mut s = subst::Substitution::new();
         s.bind_value(&kb, q, Value::Var(Var::Global(f))); // the answer link
-        // Unbound end: the var comes back on the link's own carrier.
+                                                          // Unbound end: the var comes back on the link's own carrier.
         assert!(matches!(kb.walk_view(q_term, &s), Value::Var(Var::Global(w)) if w == f));
         assert!(kb.chase_var(f, &s).is_none());
         s.bind_value(&kb, f, Value::term(seven)); // the body binds the fresh var

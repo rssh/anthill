@@ -253,6 +253,20 @@ pub enum BuiltinTag {
     /// fails if a ground carrier has no provider; SUSPENDS as residual (Delay) when
     /// a carrier type is under-determined (never NAF-decide; WI-519 / WI-067).
     FindDictionary,
+    /// WI-742 (proposal 060 §2) — `anthill.kernel.domain(?x, T)`: the generated
+    /// guard a `?x: T` annotation on a RELATIONAL rule head compiles to. GENERATED
+    /// ONLY (`typing::install_typed_head_domain_goals`); it has no surface spelling
+    /// that reaches it bare, exactly as [`Self::FindDictionary`] has none, because
+    /// `anthill.kernel` is not implicitly imported.
+    ///
+    /// Reads the value's CARRIED type (`value_type_term`, WI-578 — the full stored
+    /// term, never collapsed to a head symbol) and answers three-valued:
+    /// conforms → succeed, refuted → fail this binding, under-determined → suspend
+    /// (WI-067). An UNBOUND `?x` suspends too, and rotation re-asks it once a later
+    /// goal binds it; WI-743 replaces that arm with enumeration over the domain a
+    /// sort defines. Performs no typing operation: `types_compatible` reads the
+    /// load-built sort relations (proposal 060's staging rule).
+    TypeDomain,
 }
 
 /// Result of executing a builtin.
@@ -4461,6 +4475,7 @@ impl KnowledgeBase {
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
+            BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
         }
     }
 
@@ -4898,6 +4913,78 @@ impl KnowledgeBase {
             BuiltinResult::Success
         } else {
             BuiltinResult::Failure
+        }
+    }
+
+    /// WI-742 (proposal 060 §2) — `domain(?x, T)`: the generated guard behind a
+    /// `?x: T` annotation on a relational rule head.
+    ///
+    /// THE SAME DECISION THE REWRITE GUARD MAKES, kept apart from it only in how
+    /// many outcomes survive. `typed_pattern_bounds_hold` (WI-582) collapses
+    /// [`TypeBoundVerdict`] to fire/don't-fire because a rewrite has two outcomes;
+    /// a goal has three, so this arm reads the verdict directly. One predicate,
+    /// two readers — `kernel-language.md` §5.3 requires the two readings of the
+    /// annotation to agree on what it MEANS.
+    ///
+    /// | `?x` at the read | here |
+    /// |---|---|
+    /// | unbound | `Delay` — rotation re-asks once a later goal binds it (WI-743 enumerates instead) |
+    /// | bound, carried type conforms | `Success` — keep the binding |
+    /// | bound, refuted | `Failure` — this binding only; the clause's other rows stand |
+    /// | bound, carried type under-determined | `Delay` — never NAF-decide (WI-067) |
+    ///
+    /// A still-unbound `?x` at the end is NOT decided here: the delayed goal
+    /// residualizes and the WI-737 route raises `Error[RelationFloundered]` when the
+    /// relation is drained. That is the loud flounder proposal 060 §2 requires, and
+    /// it is reached precisely BECAUSE this goal is ordinary.
+    ///
+    /// REORDERABLE (`builtin_is_reorderable`, WI-739), by the `neq` argument and not
+    /// by the default: `domain(?x, T)` denotes a property of the VALUE, so "suspend
+    /// now, re-ask after rotation" is equivalent to "ask now". It must NOT join the
+    /// `nonvar`/`ground` family, whose members would vacuously succeed after
+    /// rotation — this one answers about the value, never about the caller's
+    /// instantiation state. Getting that wrong is measurable in WI-739's own way:
+    /// a non-reorderable classification delays the whole rule before its own
+    /// generator can bind `?x`, collapsing `f(?x: Colour) :- palette(c: ?x)` to one
+    /// floundered residual.
+    fn builtin_type_domain<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
+        let (Some(value), Some(bound)) = (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) else {
+            // A generated goal always has both operands; a missing one means the
+            // generator and this reader disagree about the shape. Loud in debug,
+            // and a failure rather than a silent success in release.
+            debug_assert!(false, "domain(?x, T): generated goal is missing an operand");
+            return BuiltinResult::Failure;
+        };
+        if self.value_is_unbound_var(&value) {
+            return BuiltinResult::delay();
+        }
+        // The bound rides as the interned type term the loader resolved
+        // (`install_rule_type_bounds`), spliced into the generated goal as an
+        // `Expr::Spliced` leaf. `walk_arg` hands back the NODE carrier for it, so
+        // cancel the wrapper (`Value::carried`, WI-1025) before reading the term —
+        // MEASURED: without this the operand arrives as `Value::Node`, the arm below
+        // fires, and every typed head panics on its first row. Anything still not a
+        // type term is the generator having changed shape — say so rather than
+        // quietly admitting every value.
+        let Value::Term { id: bound_tid, .. } = *bound.carried() else {
+            debug_assert!(
+                false,
+                "domain(?x, T): the bound operand is not a type term — the generator \
+                 and `install_rule_type_bounds` have diverged",
+            );
+            return BuiltinResult::Failure;
+        };
+        match super::typing::type_bound_verdict(self, &value, bound_tid) {
+            super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
+            super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
+            super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),
         }
     }
 
@@ -9649,12 +9736,7 @@ impl KnowledgeBase {
     /// `Value::Entity` spine over `Value::Var` leaves (N20EZ), and its leaves
     /// count exactly as the rebuilt term's did; a `Node` descends through the
     /// occurrence walker; a scalar carries none.
-    fn collect_unbound_vars_value(
-        &self,
-        v: &Value,
-        subst: &Substitution,
-        out: &mut Vec<VarId>,
-    ) {
+    fn collect_unbound_vars_value(&self, v: &Value, subst: &Substitution, out: &mut Vec<VarId>) {
         let push = |out: &mut Vec<VarId>, w: VarId| {
             if !out.contains(&w) {
                 out.push(w);
@@ -9822,6 +9904,21 @@ impl KnowledgeBase {
     /// `Not` / `PushChoice` / `Unify` are reorderable too, and are already
     /// skipped wholesale above (NAF delays via rotation; `PushChoice` fires
     /// immediately; `<=>`'s bare-var operand is the var the goal exists to BIND).
+    ///
+    /// ADDING A TAG IS A DECISION, not a default. The predicate is a NEGATED
+    /// `matches!`, so a new variant is classified REORDERABLE in silence — which is
+    /// the wrong shape for a question with a soundness answer. Each new tag says
+    /// here which side it is on and why:
+    ///
+    /// - [`BuiltinTag::TypeDomain`] (WI-742) — REORDERABLE, on `neq`'s argument:
+    ///   `domain(?x, T)` denotes a property of the VALUE `?x` eventually takes, so
+    ///   re-asking it after rotation asks the same question. It is not the
+    ///   `nonvar`/`ground` shape (it never reads the caller's instantiation state)
+    ///   and not the `ho_apply` shape (it suspends rather than hard-failing).
+    ///   MEASURED as the classification that matters: with the wholesale delay
+    ///   imposed, `rule f(?x: Colour) :- palette(c: ?x)` returns one floundered
+    ///   residual instead of its rows, because the rule delays before its own
+    ///   generator runs.
     fn builtin_is_reorderable(tag: BuiltinTag) -> bool {
         !matches!(
             tag,
@@ -14525,14 +14622,24 @@ mod tests {
             );
         };
         // Solution 0: nat(zero()) → ?x = zero()
-        expect(&mut kb, &solutions[0], zero_term, "first solution should be zero()");
+        expect(
+            &mut kb,
+            &solutions[0],
+            zero_term,
+            "first solution should be zero()",
+        );
         // Solution 1: nat(succ(zero())) → ?x = succ(zero())
         let succ_zero = kb.alloc(Term::Fn {
             functor: succ_sym,
             pos_args: SmallVec::from_elem(zero_term, 1),
             named_args: SmallVec::new(),
         });
-        expect(&mut kb, &solutions[1], succ_zero, "second solution should be succ(zero())");
+        expect(
+            &mut kb,
+            &solutions[1],
+            succ_zero,
+            "second solution should be succ(zero())",
+        );
         // Solution 2: nat(succ(succ(zero()))) → ?x = succ(succ(zero()))
         let succ_succ_zero = kb.alloc(Term::Fn {
             functor: succ_sym,

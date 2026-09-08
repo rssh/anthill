@@ -5314,9 +5314,9 @@ fn rewrite_type_occ_deep(
                 changed = true;
                 Some(NodeKind::Type(TypeNode::NamedTuple { fields: walked }))
             }
-            TypeNode::Denoted { .. }
-            | TypeNode::ExprCarried { .. }
-            | TypeNode::PolyType { .. } => None,
+            TypeNode::Denoted { .. } | TypeNode::ExprCarried { .. } | TypeNode::PolyType { .. } => {
+                None
+            }
         },
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
@@ -5943,73 +5943,73 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
                 return rendered;
             }
             match kb.local_name_of(f) {
-            // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
-            // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
-            "Arrow" => {
-                let p = named_child_display(kb, v, "param");
-                let r = named_child_display(kb, v, "result");
-                // WI-791: an arity-1 tuple param is ONE parameter, not a list.
-                let arity = named_child(kb, v, "arity")
-                    .and_then(|c| c.literal_int64(kb))
-                    .and_then(|n| usize::try_from(n).ok());
-                let param_is_tuple = named_child(kb, v, "param")
-                    .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
-                format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
-            }
-            "TypeVar" => named_child(kb, v, "name")
-                .and_then(|c| view_ref_symbol(kb, &c))
-                .map(|s| format!("?{}", kb.local_name_of(s)))
-                .unwrap_or_else(|| "?".to_string()),
-            // `(f: T, n: U)`. WI-361: the fields ride as a `List[TypeField]` on BOTH
-            // carriers, and [`list_records_to_pairs`] already decodes either.
-            // ELEMENT-WISE, NOT VIA `list_records_to_pairs`, and the difference is a
-            // SILENT DROP. That decoder skips a cell whose record is missing `name` or
-            // `type` and walks on, so `(a: A, <malformed>)` would render `(a: A)` — a
-            // component vanishing without trace. The term renderer emitted `?: ?` there,
-            // which is the louder answer and the one kept; reading each field's children
-            // through the same walk keeps both carriers on it.
-            "NamedTuple" => {
-                let parts: Vec<String> = named_child(kb, v, "fields")
-                    .map(|fs| value_list_elements(kb, &fs))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|f| {
-                        format!(
-                            "{}: {}",
-                            named_child_display(kb, &f, "name"),
-                            named_child_display(kb, &f, "type")
-                        )
-                    })
-                    .collect();
-                format!("({})", parts.join(", "))
-            }
-            // WI-CZJ2N — `Nothing` is a NULLARY constructor, and a nullary functor IS the
-            // bare reference, so the two spellings the term renderer needed two arms for
-            // are one arm here.
-            "Nothing" => "nothing".to_string(),
-            // WI-400 / WI-397: a projection renders `receiver.member`, not the generic
-            // `ExprCarried[value = …]`, so a neutral-projection type error reads legibly.
-            "ExprCarried" => format!(
-                "{}.{}",
-                named_child_display(kb, v, "value"),
-                named_child_display(kb, v, "member")
-            ),
-            // WI-428: a rigid type-receiver projection — `P.Key` / `MemStore.Key`.
-            "RigidTypeProjection" => format!(
-                "{}.{}",
-                named_child_display(kb, v, "var"),
-                named_child_display(kb, v, "member")
-            ),
-            // WI-302: value-in-type — render the carried value directly (`Modify[c]`
-            // shows `c`, not `denoted[value = c]`).
-            "Denoted" => named_child_display(kb, v, "value"),
-            // WI-320: EffectExpression-in-Type — row braces around the wrapped
-            // expression, whose atoms are the arms just below.
-            "EffectsRows" => format!("{{{}}}", named_child_display(kb, v, "effects_expr")),
-            // A plain application: a parameterized type `S[p = v, …]` (WI-860: the same
-            // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
-            // or an `Expr::Apply` read off a matched fact's carrier binding), and the
-            // raw-term fallback for everything that is not one of the forms above.
+                // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
+                // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
+                "Arrow" => {
+                    let p = named_child_display(kb, v, "param");
+                    let r = named_child_display(kb, v, "result");
+                    // WI-791: an arity-1 tuple param is ONE parameter, not a list.
+                    let arity = named_child(kb, v, "arity")
+                        .and_then(|c| c.literal_int64(kb))
+                        .and_then(|n| usize::try_from(n).ok());
+                    let param_is_tuple = named_child(kb, v, "param")
+                        .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
+                    format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
+                }
+                "TypeVar" => named_child(kb, v, "name")
+                    .and_then(|c| view_ref_symbol(kb, &c))
+                    .map(|s| format!("?{}", kb.local_name_of(s)))
+                    .unwrap_or_else(|| "?".to_string()),
+                // `(f: T, n: U)`. WI-361: the fields ride as a `List[TypeField]` on BOTH
+                // carriers, and [`list_records_to_pairs`] already decodes either.
+                // ELEMENT-WISE, NOT VIA `list_records_to_pairs`, and the difference is a
+                // SILENT DROP. That decoder skips a cell whose record is missing `name` or
+                // `type` and walks on, so `(a: A, <malformed>)` would render `(a: A)` — a
+                // component vanishing without trace. The term renderer emitted `?: ?` there,
+                // which is the louder answer and the one kept; reading each field's children
+                // through the same walk keeps both carriers on it.
+                "NamedTuple" => {
+                    let parts: Vec<String> = named_child(kb, v, "fields")
+                        .map(|fs| value_list_elements(kb, &fs))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|f| {
+                            format!(
+                                "{}: {}",
+                                named_child_display(kb, &f, "name"),
+                                named_child_display(kb, &f, "type")
+                            )
+                        })
+                        .collect();
+                    format!("({})", parts.join(", "))
+                }
+                // WI-CZJ2N — `Nothing` is a NULLARY constructor, and a nullary functor IS the
+                // bare reference, so the two spellings the term renderer needed two arms for
+                // are one arm here.
+                "Nothing" => "nothing".to_string(),
+                // WI-400 / WI-397: a projection renders `receiver.member`, not the generic
+                // `ExprCarried[value = …]`, so a neutral-projection type error reads legibly.
+                "ExprCarried" => format!(
+                    "{}.{}",
+                    named_child_display(kb, v, "value"),
+                    named_child_display(kb, v, "member")
+                ),
+                // WI-428: a rigid type-receiver projection — `P.Key` / `MemStore.Key`.
+                "RigidTypeProjection" => format!(
+                    "{}.{}",
+                    named_child_display(kb, v, "var"),
+                    named_child_display(kb, v, "member")
+                ),
+                // WI-302: value-in-type — render the carried value directly (`Modify[c]`
+                // shows `c`, not `denoted[value = c]`).
+                "Denoted" => named_child_display(kb, v, "value"),
+                // WI-320: EffectExpression-in-Type — row braces around the wrapped
+                // expression, whose atoms are the arms just below.
+                "EffectsRows" => format!("{{{}}}", named_child_display(kb, v, "effects_expr")),
+                // A plain application: a parameterized type `S[p = v, …]` (WI-860: the same
+                // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
+                // or an `Expr::Apply` read off a matched fact's carrier binding), and the
+                // raw-term fallback for everything that is not one of the forms above.
                 _ => type_application_display(kb, v, f, pos_arity),
             }
         }
@@ -58646,11 +58646,7 @@ fn combine_binding(kb: &mut KnowledgeBase, dir: LatticeDir, a: Value, b: Value) 
 /// WI-464: the parameterized LUB of two same-base parameterized types — the
 /// `Lub` instance of [`combine_parameterized_same_base`]. `join(Option[T = Cat],
 /// Option[T = Dog]) = Option[T = Animal]`.
-fn join_parameterized_same_base(
-    kb: &mut KnowledgeBase,
-    a: &Value,
-    b: &Value,
-) -> SameBaseCombine {
+fn join_parameterized_same_base(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> SameBaseCombine {
     combine_parameterized_same_base(kb, LatticeDir::Lub, a, b)
 }
 
@@ -64444,18 +64440,62 @@ pub(crate) fn typed_pattern_bounds_hold(
         let Some(matched) = msubst.bindings.get(&gvid).cloned() else {
             return false; // the bound var did not match → cannot decide
         };
-        let ty = value_type_term(kb, &Substitution::new(), &matched);
-        if sort_functor_of_view(kb, &ty).is_none() {
-            return false; // under-determined carried type → suspend (WI-067)
-        }
-        if sort_functor_of_view(kb, &Value::term(bound_tid)).is_none() {
-            return false; // non-nominal bound → don't fire
-        }
-        if !types_compatible(kb, &mut Substitution::new(), &ty, &TermIdView(bound_tid)) {
-            return false; // refuted → don't fire
+        // COLLAPSE, deliberately: a rewrite has two outcomes, so `Suspend` and
+        // `Refuted` are both "don't fire" here. The goal reader (WI-742) keeps
+        // them apart — that is the whole reason the decision is factored out.
+        if type_bound_verdict(kb, &matched, bound_tid) != TypeBoundVerdict::Holds {
+            return false;
         }
     }
     true
+}
+
+/// WI-742 — the three-valued answer to "does this value's CARRIED type satisfy
+/// this declared bound", the one decision behind both readings of a `?x: T`
+/// annotation: WI-582's rewrite guard ([`typed_pattern_bounds_hold`], which
+/// collapses it to a bool) and proposal 060 §2's generated `domain(?x, T)` body
+/// goal (which needs all three).
+///
+/// ONE PREDICATE, TWO READERS — not two implementations. The equational and
+/// relational readings of the annotation must agree on what it MEANS
+/// (`kernel-language.md` §5.3: "the same carried-type decision when `?x` is
+/// bound"); a second copy of these four steps is a copy that drifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypeBoundVerdict {
+    /// The carried type conforms — keep the binding / fire.
+    Holds,
+    /// The carried type is determined and does NOT conform — fail this binding.
+    Refuted,
+    /// Undecidable HERE, not false: the carried type is under-determined, or the
+    /// bound is not nominal. Never NAF-decided (WI-067) — the rewrite reader
+    /// declines to fire, the goal reader suspends and is re-asked by rotation.
+    Suspend,
+}
+
+/// [`TypeBoundVerdict`] for one `(value, declared bound)` pair.
+///
+/// The carried type is [`value_type_term`] (WI-578) — the value's full stored
+/// type term, never collapsed to a head symbol. Conformance is the ordinary
+/// [`types_compatible`], which is subsort for a nominal sort bound and `provides`
+/// for a spec bound; both read load-built relations, so this performs no typing
+/// operation in the staging sense (proposal 060's rule).
+pub(crate) fn type_bound_verdict(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    bound_tid: TermId,
+) -> TypeBoundVerdict {
+    let ty = value_type_term(kb, &Substitution::new(), value);
+    if sort_functor_of_view(kb, &ty).is_none() {
+        return TypeBoundVerdict::Suspend; // under-determined carried type (WI-067)
+    }
+    if sort_functor_of_view(kb, &Value::term(bound_tid)).is_none() {
+        return TypeBoundVerdict::Suspend; // non-nominal bound — nothing to decide against
+    }
+    if types_compatible(kb, &mut Substitution::new(), &ty, &TermIdView(bound_tid)) {
+        TypeBoundVerdict::Holds
+    } else {
+        TypeBoundVerdict::Refuted
+    }
 }
 
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])
@@ -64805,6 +64845,14 @@ fn type_check_sorts_collect(
     // op-call witnesses ground spec X. Runs AFTER dot-dispatch so a `?x.eq(?y)`
     // witness is already an `Apply`, and after signature checks so the spec-op
     // metadata the grounding reads is settled.
+    // WI-742 (proposal 060 §2): compile every `?x: T` on a RELATIONAL head into a
+    // prepended `domain(?x, T)` body goal. BEFORE the requirement sweep below, so the
+    // typed binding is visible as the SECOND ANCHOR a `require[Spec[T]]` may ground on
+    // (proposal 060 §3); after `type_rule_bodies`, so the bodies it extends are settled
+    // and `collect_rule_var_types` has already read the body the AUTHOR wrote — the
+    // generated goal must not feed the inference whose output it exists to enforce.
+    install_typed_head_domain_goals(kb);
+
     errors.extend(record_find_dictionary_grounding(kb));
 
     // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
@@ -69128,6 +69176,141 @@ fn type_rule_bodies(
                 stamp_rule_body_var_types(node, &var_types);
             }
         }
+    }
+}
+
+/// WI-742 (proposal 060 §2) — the qualified name of the GENERATED typed-head guard,
+/// `domain(?x, T)`.
+///
+/// NOT a [`crate::parse::desugar_target`]: the converter never mints it, so it is
+/// outside the set `desugar_target::ALL` obliges its readers to cover. It is looked
+/// up rather than written for the same reason `find_dictionary` is — `anthill.kernel`
+/// is not implicitly imported, so no source `domain(…)` reaches this symbol unless the
+/// author names the namespace, which is what makes WI-743's user-defined `domain`
+/// member a DIFFERENT name rather than a capture of this one.
+pub(crate) const TYPE_DOMAIN_GOAL: &str = "anthill.kernel.domain";
+
+/// The synthesizing pass that owns every generated [`TYPE_DOMAIN_GOAL`] node — the
+/// provenance stamp, and with it the IDEMPOTENCE test for
+/// [`install_typed_head_domain_goals`].
+///
+/// Keyed on provenance, not on the functor, and that is the point: an author who
+/// imports `anthill.kernel` and writes their own `domain(?x, T)` beside a typed head
+/// must not suppress the generated guard. A functor-presence test would do exactly
+/// that, and silently.
+fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
+    kb.register_pass("anthill.kb.passes.typed_head_domain")
+}
+
+/// WI-742 (proposal 060 §2) — compile every `?x: T` annotation on a RELATIONAL rule
+/// head into a `domain(?x, T)` goal PREPENDED to that clause's body.
+///
+/// This is proposal 060's rule at its third instance: a type-level declaration written
+/// in a rule clause becomes a generated body goal, which at run time only READS the
+/// value's carried type. The head itself stays structurally bare — the annotation was
+/// already stripped at load (WI-582's `typed_var` marker) — so the discrimination tree
+/// indexes a typed head exactly as it indexes the untyped one.
+///
+/// WHY THE TYPER AND NOT THE LOADER OR THE CONVERTER. The converter has only an
+/// unresolved parse-level `T`, and the bound's own resolution happens in the loader —
+/// generating there would make the goal's `T` and the bound's `T` two resolutions of
+/// one annotation. The loader could do it, but its body nodes are pre-`type_rule_bodies`,
+/// so a generated goal would be walked by dot-dispatch and type-collection as if the
+/// author had written it. Here, `rule_type_bounds` is installed, `rule_globals` fixes
+/// the DeBruijn frame, and [`KnowledgeBase::set_rule_body_nodes`] is the supported edit —
+/// the same one `record_find_dictionary_grounding` makes.
+///
+/// PREPENDED, not appended. In mode (in) that prunes at the earliest point the binding
+/// exists; in mode (out) the goal suspends and rotation carries it to wherever it can
+/// decide, so the placement costs nothing there. (`docs/design/060-implementation.md` §3.)
+///
+/// THE POPULATION IS EXACTLY THE CLAUSES THE LOADER LET KEEP A BOUND, and the loader's
+/// refusal is what makes that list right:
+///   * a DIRECTIONAL EQUATION keeps WI-582's match-time reader (`apply_eq_rules`) and is
+///     skipped here — two routes, one syntax, as proposal 060 §2 and WI-742 both say;
+///   * everything else with a bound is a RELATIONAL head — this feature — INCLUDING a
+///     body-less one. `rule p(?x: T) :- true` folds to an empty body (§6.1) and is still
+///     a CLAUSE: measured, it answers `p(5)` where a bare declaration `rule p(?x)` does
+///     not, the latter never reaching an assert at all. So the guard has something to
+///     guard, and [`KnowledgeBase::prepend_generated_body_goals`] — not
+///     `set_rule_body_nodes`, whose assertion forbids exactly this — maintains the
+///     WI-812 bodied-rule gate across the fact-ness flip.
+fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
+    let Some(dom_sym) = kb.try_resolve_symbol(TYPE_DOMAIN_GOAL) else {
+        return; // builtin not registered — nothing to generate against
+    };
+    let pass = typed_head_domain_pass(kb);
+    for rid in kb.live_rule_ids() {
+        if kb.rule_type_bounds(rid).is_empty() {
+            continue;
+        }
+        // A directional equation already has a reader (`apply_eq_rules`, WI-582) —
+        // the loader's own classification, re-asked here in its own terms rather than
+        // restated in this pass's vocabulary. Everything else the loader let keep a
+        // bound is a relational head, INCLUDING a body-less one: `rule p(?x: T) :- true`
+        // folds to an empty body (§6.1) and is still a clause that answers, so the
+        // guard has something to guard.
+        if kb.is_directional_equation(rid) {
+            continue;
+        }
+        let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // IDEMPOTENT by provenance: a second run finds its own stamp and stops. The
+        // typer is not guaranteed to run once per KB, and generating twice would make
+        // the same guard delay twice on one unbound variable.
+        if body.iter().any(|n| n.synthesized_by() == Some(pass)) {
+            continue;
+        }
+        // The provenance anchor is the clause's first body goal where it has one; a
+        // body-less clause (`:- true`) has none, so its head span stands in. Both are
+        // this clause's own location, which is all the anchor is for.
+        let anchor = match (body.first(), kb.rule_head_span(rid)) {
+            (Some(n), _) => Rc::clone(n),
+            (None, Some(span)) => {
+                NodeOccurrence::new_expr(Expr::Bottom, span, Some(kb.rule_domain(rid)))
+            }
+            (None, None) => {
+                // A body-less clause the loader never wrote (no head span means no
+                // source head). Nothing here can locate the guard it would generate,
+                // and a bound on such a clause is not something this pass produced —
+                // say so rather than emit an unlocatable goal.
+                debug_assert!(
+                    false,
+                    "a type bound on a body-less clause with no source head span",
+                );
+                continue;
+            }
+        };
+        let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
+        let owner = anchor.owner;
+        let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(bounds.len());
+        for (db_index, bound_tid) in bounds {
+            // `?x` rides as the SAME DeBruijn index the bound is keyed by
+            // (`install_rule_type_bounds` stores `len - 1 - position`, which is
+            // `node_to_debruijn`'s own convention), so the goal names the head
+            // variable itself — no new slot is allocated and the rule's arity is
+            // unchanged.
+            let var =
+                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
+            // The bound rides as the interned type term the loader resolved. A
+            // `Spliced` leaf is the Value carrier for exactly this (`load.rs`'s
+            // `Expr::Spliced(Value::term(row))` is the precedent); the resolver arm
+            // cancels the wrapper with `Value::carried`.
+            let ty =
+                NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound_tid)), anchor.span, owner);
+            new_body.push(NodeOccurrence::synthesized_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: dom_sym,
+                    pos_args: vec![var, ty],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                Rc::clone(&anchor),
+                pass,
+                owner,
+            ));
+        }
+        kb.prepend_generated_body_goals(rid, new_body);
     }
 }
 

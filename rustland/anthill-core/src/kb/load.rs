@@ -9491,6 +9491,19 @@ struct RuleHeadSite<'f> {
     introduced_by: RuleIntroduction,
     /// The rule's own span, for [`LoadError::RuleHeadOwnedByNoScope`].
     span: Span,
+    /// WI-742 — the TYPE NAMES this head's `?x: T` annotations write, dotted, in
+    /// written order. Empty for an untyped head.
+    ///
+    /// COLLECTED HERE BECAUSE THE ONLY OTHER SOURCE DOES NOT EXIST YET. The C666A
+    /// admission below needs to know whether a generated `domain` guard will select
+    /// the contributing carrier, and the settled answer to that is
+    /// `KnowledgeBase::rule_type_bounds` — which is installed at the ASSERT, three
+    /// sub-passes after this scan. So the annotation is read off the parse head, where
+    /// it is already in hand, and RESOLVED at the check (which sets `asking_file` and
+    /// so reads the same imports the author wrote).
+    ///
+    /// A `String` rather than a borrow: the segments are joined, and the scan is cold.
+    type_annotations: Vec<String>,
 }
 
 /// ONE NAME INTRODUCED AT TWO SCOPES THAT CAN SEE EACH OTHER — the whole of what used to
@@ -9834,6 +9847,12 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
                 name,
                 introduced_by,
                 span: r.span,
+                type_annotations: match head {
+                    crate::parse::ir::RuleHead::Term(tid) => {
+                        head_type_annotation_names(parse_sym, parse_terms, *tid)
+                    }
+                    _ => Vec::new(),
+                },
             });
         }
     }
@@ -17250,12 +17269,12 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
         // because `NotFound` is what sends every caller to its ABSENCE handling: the
         // false "no rule, fact, or declaration is in scope for it".
         .or_else(|| resolve_dotted_in_kb(kb, name, scope, DottedVisibility::VisibleOnly))
-        // WI-909 — THERE IS NO RUNG BELOW THIS ONE. A `.or_else` here used to consult
-        // the implicit prelude (`resolve_implicit`), which is why a bare `cons` or
-        // `SortInfo` once answered in a query pattern with no import. That table was
-        // emptied and then deleted, so the dotted ladder above is the last rung: a short
-        // name that no scope defines and no `-i` supplied denotes NOTHING here, and the
-        // caller's WI-476 bare intern is the answer.
+    // WI-909 — THERE IS NO RUNG BELOW THIS ONE. A `.or_else` here used to consult
+    // the implicit prelude (`resolve_implicit`), which is why a bare `cons` or
+    // `SortInfo` once answered in a query pattern with no import. That table was
+    // emptied and then deleted, so the dotted ladder above is the last rung: a short
+    // name that no scope defines and no `-i` supplied denotes NOTHING here, and the
+    // caller's WI-476 bare intern is the answer.
 }
 
 /// WI-20260821-D0EXD — the equation subject's half of the head ladder: what this
@@ -17435,6 +17454,139 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
     resolve_name_in_kb(kb, name, scope)
 }
 
+/// WI-742 — the TYPE NAMES a rule head's `?x: T` annotations write, dotted, in written
+/// order. Reads the PARSE head, at the head-collection scan, because
+/// `KnowledgeBase::rule_type_bounds` — the settled answer — is installed three
+/// sub-passes later, at the assert.
+///
+/// PAIRED WITH `is_minted`, exactly as the loader's own strip is (WI-AK2AJ): `typed_var`
+/// is an ordinary identifier a user may write, so the name alone cannot recognise the
+/// converter's marker. A written `p(typed_var(?x, type: Int64))` must contribute NO
+/// annotation here — otherwise it would buy a C666A admission it did not ask for.
+///
+/// TOP-LEVEL ARGUMENTS ONLY, positional and named alike. A nested annotation is not a
+/// column of this head, so it cannot be what a generated guard selects on.
+///
+/// BOTH SPELLINGS, and the second is not optional. §2.1's parameter form (`p(x: A)`)
+/// arrives as an ordinary NAMED ARG whose value is a name — no `typed_var` marker — so
+/// reading only the marker made the two spellings of one internal form diverge at THIS
+/// boundary: in otherwise identical programs `rule p(?x: A)` loaded and `rule p(x: A)`
+/// was refused. Found by `/code-review`.
+///
+/// A named arg contributes only when its value SPELLS A NAME, which `?x: T` also
+/// requires; `f(from: ?a)` and `palette(c: red())` contribute nothing. Whether that name
+/// is a sort, and whether it is the contributing carrier, is decided at the check — this
+/// is a candidate list, not a verdict.
+fn head_type_annotation_names(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    head: TermId,
+) -> Vec<String> {
+    let (pos_args, named_args) = match parse_terms.get(head) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args.clone(), named_args.clone()),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut visit = |arg: TermId| {
+        if !parse_terms.is_minted(arg) {
+            return;
+        }
+        let Term::Fn {
+            functor,
+            named_args: marker_named,
+            ..
+        } = parse_terms.get(arg)
+        else {
+            return;
+        };
+        if parse_sym.local_name(*functor) != "typed_var" {
+            return;
+        }
+        let Some(key) = parse_sym.lookup("type") else {
+            return;
+        };
+        for &(k, aux_tid) in marker_named.iter() {
+            if k != key {
+                continue;
+            }
+            if let Term::ParseAux(aux) = parse_terms.get(aux_tid) {
+                if let crate::parse::ir::ParseAux::TypeExpr(ty) = aux.as_ref() {
+                    if let Some(n) = type_expr_head_name(parse_sym, ty) {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+    };
+    for &a in pos_args.iter() {
+        visit(a);
+    }
+    for &(_, a) in named_args.iter() {
+        visit(a);
+    }
+    // §2.1's parameter form: the TYPE is the named arg's VALUE. A second loop, because
+    // `visit` holds `out` mutably for the length of the first.
+    for &(_, a) in named_args.iter() {
+        if let Some(n) = parse_arg_type_name_of(parse_sym, parse_terms, a) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// WI-742 §2.1 — the NAME a parse argument spells, in the three shapes a written type
+/// takes: a bare identifier (`Colour`), a DOTTED path (`test.zzq.Colour`, which the
+/// converter folds into a minted `field_access` chain), or an APPLICATION's head
+/// (`List[T = Int64]`). `None` for a variable, a literal, or anything else naming
+/// nothing.
+///
+/// THE DOTTED CHAIN IS ASKED BEFORE THE FUNCTOR, and it must be: a minted
+/// `field_access(test.zzq, Colour)` IS a `Term::Fn`, so reading its functor answers
+/// `field_access`. MEASURED with the arms the other way round — the dotted spelling
+/// stopped resolving and its clause went back to answering nothing, the very defect the
+/// dotted arm was added for.
+///
+/// A FREE FUNCTION, so the head-collection scan (which holds no `Loader`) and
+/// `Loader::parse_arg_type_name` read ONE definition rather than two that can drift.
+fn parse_arg_type_name_of(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    value: TermId,
+) -> Option<String> {
+    match parse_terms.get(value) {
+        Term::Ref(s) | Term::Ident(s) => Some(parse_sym.local_name(*s).to_owned()),
+        Term::Fn { functor, .. } => dotted_citation_name(parse_sym, parse_terms, value)
+            .or_else(|| Some(parse_sym.local_name(*functor).to_owned())),
+        _ => None,
+    }
+}
+
+/// The dotted NAME at the head of a type expression, for
+/// [`head_type_annotation_names`]. `None` for a shape with no nominal head — a type
+/// variable, a tuple, an arrow — none of which names a carrier a guard could select.
+fn type_expr_head_name(
+    parse_sym: &crate::intern::SymbolTable,
+    ty: &crate::parse::ir::TypeExpr,
+) -> Option<String> {
+    use crate::parse::ir::TypeExpr;
+    let name = match ty {
+        TypeExpr::Simple(n) => n,
+        TypeExpr::Parameterized { name, .. } => name,
+        _ => return None,
+    };
+    Some(
+        name.segments
+            .iter()
+            .map(|&s| parse_sym.local_name(s))
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+}
+
 /// C666A — the predicate an UNGUARDED relational head would join solely because a
 /// whole-scope, non-enclosing parent exposed it.
 ///
@@ -17449,14 +17601,65 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
 /// are not clauses of a `Goal`.  Ambiguity is likewise left to the ordinary head
 /// resolver, which reports its candidate set at this same site.
 ///
-/// WI-742 extends the admission at THIS boundary: once a relational typed head has a
-/// generated `domain` guard proven to select the contributing carrier, it bypasses this
-/// unguarded check.  Do not delete the path classification when adding that case.
+/// WI-742 ADMITS ONE MORE CASE HERE, and states it as a predicate rather than as "has
+/// an annotation": the head's generated `domain(?x, T)` guard must select the
+/// CONTRIBUTING CARRIER — the sort whose `requires` / `provides` edge exposed the
+/// predicate, which is the head's own enclosing sort.  A `rule p(?x: Int64)` written
+/// inside `sort A requires Spec` selects nothing about `A` and stays refused, and so
+/// does every wildcard-import join: a namespace is not a carrier, so there is no
+/// carrier for a guard to select and the implicit whole-scope extension C666A exists
+/// to stop is exactly what would be admitted.
+/// WI-742 — does this head's generated `domain(?x, T)` guard select the CARRIER that
+/// contributes the non-enclosing edge?
+///
+/// The contributing carrier is the head's own enclosing SORT: `sort A requires Spec` /
+/// `sort A provides Spec` is what put `Spec.p` in view at a head written inside `A`, so
+/// a guard naming `A` is a guard that keeps `A`'s clauses to `A`-carried values — which
+/// is what makes the join safe, and is the whole content of C666A's "unguarded".
+///
+/// TWO CONDITIONS, and dropping either re-opens the silent append:
+///   * the head's scope owner is a SORT.  A namespace owner is the wildcard-import
+///     case, which has no carrier at all;
+///   * an annotation on this head resolves, IN THIS SCOPE, to that same owner.  Not
+///     "any annotation" — `?x: Int64` inside `sort A` guards nothing about `A`.
+///
+/// Resolved through the ordinary ladder (`resolve_name_in_kb` for a bare name,
+/// `resolve_dotted_in_kb` for a written path), so the annotation means here exactly
+/// what it will mean at the assert; a name that resolves to nothing contributes
+/// nothing, and the unresolved-name error is reported at its own site.
+fn typed_head_guards_its_own_carrier(kb: &KnowledgeBase, head: &RuleHeadSite<'_>) -> bool {
+    if head.type_annotations.is_empty() {
+        return false;
+    }
+    let carrier = head.scope.owner();
+    if !kb.has_kind(carrier, SymbolKind::Sort) {
+        return false;
+    }
+    head.type_annotations.iter().any(|n| {
+        let answer = if n.contains('.') {
+            resolve_dotted_in_kb(kb, n, head.scope, DottedVisibility::VisibleOnly)
+        } else {
+            resolve_name_in_kb(kb, n, head.scope)
+        };
+        // FOUND ONLY. An `Ambiguous` annotation names no single carrier, so it cannot
+        // be evidence that the guard selects this one; its own diagnostic is reported
+        // at the reference.
+        let resolved = match answer {
+            ResolveResult::Found(sym) => Some(sym),
+            _ => None,
+        };
+        resolved.is_some_and(|s| kb.canonical_sym(s) == kb.canonical_sym(carrier))
+    })
+}
+
 fn unguarded_non_enclosing_predicate_join_target(
     kb: &KnowledgeBase,
     head: &RuleHeadSite<'_>,
 ) -> Option<Symbol> {
     if head.introduced_by != RuleIntroduction::Predicate {
+        return None;
+    }
+    if typed_head_guards_its_own_carrier(kb, head) {
         return None;
     }
     let ResolveResult::Found(target) = kb.symbols.resolve_in_scope(head.name, head.scope) else {
@@ -18220,6 +18423,16 @@ struct Loader<'a> {
     // each head, mapped to DeBruijn indices, and installed on the RuleEntry as
     // per-variable `Type` bounds (the typed-rule-pattern firing guard).
     rule_head_type_bounds: Vec<(VarId, TermId)>,
+    // WI-742 (proposal 060 §2.1) — the SIGIL-FREE typed clause variables this rule's
+    // head introduces: `rule adult(p: Person, age: Int) :- person(p), …`. Name → the
+    // KB variable it denotes, for the clause's lifetime.
+    //
+    // A NAME MAP, not a `var_map` entry, because there is no parse variable to key on:
+    // the surface wrote an identifier, and `var_map` keys on the parser's own `VarId`.
+    // The two Ident arms (`convert_term_inner`, `build_body_atom_occurrence_inner`)
+    // consult it FIRST, so a clause parameter SHADOWS a same-named symbol in scope —
+    // which is what makes it a parameter rather than a reference that happens to work.
+    rule_param_vars: HashMap<String, VarId>,
     // WI-582: the `[T]` type-variable-introducer form's desugar table. A rule
     // `keep[T](?x: T, ?y) = ?x :- Spec[T]` is the verbose spelling of the inline
     // `keep(?x: Spec, ?y) = ?x`. Before converting the head, `load_rule` maps each
@@ -18531,6 +18744,7 @@ impl<'a> Loader<'a> {
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
+            rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
             expr_syms,
             expr_work: Vec::with_capacity(64),
@@ -19535,6 +19749,201 @@ impl<'a> Loader<'a> {
     /// rule ("a term's spelling is its identity; normalizing one side of a match is
     /// never a repair", WI-756). Collapsing one walk's data slots and not the other's is
     /// exactly how that breaks, so every position asks this only of its SUBJECT.
+    /// WI-742 (proposal 060 §2.1) — THE PARAMETER FORM. In the head of the predicate a
+    /// rule DEFINES, `name: Type` introduces a typed clause variable with no `?` sigil:
+    ///
+    /// ```anthill
+    /// rule adult(p: Person, age: Int64) :- person(p), age_of(p, age), gte(age, 18)
+    /// ```
+    ///
+    /// which is the same rule as `rule adult(?p: Person, ?age: Int64) :- …`. This is the
+    /// notation the language already uses at its other declaration site — `operation
+    /// f(a: Int, b: Int) = a + b` introduces `a` and `b` sigil-free — and 052 says a rule
+    /// IS such an operation, so the head parameter list is that same form rather than a
+    /// new convention.
+    ///
+    /// Returns `Some(head)` when it reclassified at least one argument; `None` leaves the
+    /// head entirely to [`Self::convert_subject_term`], which is every head in today's
+    /// corpus (see the census below).
+    ///
+    /// THE DISCRIMINATOR HAS TWO PARTS, and only the first was ever at risk of being
+    /// decided by CASE:
+    ///
+    ///   1. **The head must introduce this rule's own PREDICATE.** An ENTITY-CONSTRUCTOR
+    ///      head keeps its named arguments untouched — `fact palette(c: red())` is
+    ///      unchanged — and entities are commonly lowercase (`palette`, `parent`), so
+    ///      spelling could never have been the test. Asked as `RuleIntroduction` plus a
+    ///      constructor check, i.e. of the RESOLVED category.
+    ///   2. **The argument must actually be `name: Type`.** A named argument whose value
+    ///      is a variable or a datum (`rule f(from: ?a)`) is not the parameter form at
+    ///      all and stays a named argument — reclassifying it would silently turn a
+    ///      written argument into a variable named after its own label. So the value
+    ///      must be a bare name resolving to a SORT.
+    ///
+    /// Everywhere else `name: Type` stays a named argument, because a sort is a legal
+    /// argument VALUE (055): `f(kind: Int64)` at a call site passes the type as data.
+    ///
+    /// CENSUS, MEASURED 2026-09-08 at the source and re-measurable here: a depth-aware
+    /// scan of `stdlib/`, `examples/`, `anthill-todo/` and `anthill-stl/` finds 87
+    /// rule/fact heads carrying a top-level `name: …` argument, and all 87 resolve to an
+    /// entity constructor. THE RECLASSIFIED POPULATION IS EMPTY — this function returns
+    /// `None` for every head in the shipped corpus, which is why the corpus is not
+    /// evidence that it works and the wi742 fixtures are.
+    ///
+    /// THERE IS NO ACCOMPANYING "UNRESOLVED BARE NAME IN A HEAD" REFUSAL, and the
+    /// absence is a MEASURED decision rather than an omission. WI-742's acceptance says
+    /// such a name "remains a loud unresolved-name error"; it never was one, and it must
+    /// not become one, because an unresolved bare name in a clause head is a SYMBOLIC
+    /// CONSTANT — a supported idiom. `fact q(alpha, beta)` beside `rule p(alpha, ?y) :-
+    /// q(alpha, ?y)` works precisely because both spellings of `alpha` intern to one
+    /// unresolved `Ident` and UNIFY. The refusal was built and measured breaking it:
+    /// three `parse_test` rows fell on `fact WorkItem(…, status: Open)`, where `Open` is
+    /// a `WorkStatus` variant the standalone fixture never declares and the matching
+    /// query spells identically. Separating the typo from the idiom needs a whole-program
+    /// "nothing ever matches this constant" analysis, which a load check is not. So this
+    /// form's typo — a parameter written without its type — reads as a CONSTANT COLUMN
+    /// rather than as a variable: a different meaning, not a dead clause.
+    fn convert_rule_head_with_params(&mut self, parse_id: TermId) -> Option<TermId> {
+        let (functor, pos_args, named_args) = match self.parsed.terms.get(parse_id) {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if !named_args.is_empty() => (*functor, pos_args.clone(), named_args.clone()),
+            _ => return None,
+        };
+        // (1) the head's own category. A qualified head REFERENCES and introduces
+        // nothing, so `remap_symbol`'s answer is what decides: a resolved CONSTRUCTOR is
+        // an entity head and keeps its named args.
+        let head_sym = self.remap_symbol(functor, self.parsed.terms.span(parse_id));
+        if !self.head_functor_defines_a_predicate(head_sym) {
+            return None;
+        }
+        // (2) which named args are the parameter form. Resolved BEFORE anything is
+        // built, so a head with none is left untouched rather than rebuilt identically.
+        let params: Vec<(Symbol, TermId)> = named_args
+            .iter()
+            .filter(|&&(_, v)| self.parse_arg_names_a_sort(v))
+            .copied()
+            .collect();
+        if params.is_empty() {
+            return None;
+        }
+        let mut new_pos: SmallVec<[TermId; 4]> =
+            pos_args.iter().map(|&a| self.convert_term(a)).collect();
+        let mut new_named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for &(key, value) in named_args.iter() {
+            if !params.iter().any(|&(k, v)| k == key && v == value) {
+                new_named.push((key, self.convert_term(value)));
+                continue;
+            }
+            let name = self.reintern(key);
+            let vid = self.kb.fresh_var(name);
+            self.rule_param_vars
+                .insert(self.parsed.symbols.local_name(key).to_owned(), vid);
+            // The bound goes through the SAME channel the `?x: T` form uses
+            // (`rule_head_type_bounds` → `install_rule_type_bounds` → the typer's
+            // generated `domain` goal), so the two spellings are one internal form and
+            // cannot acquire different behaviour.
+            // THE BOUND IS THE WHOLE WRITTEN TYPE. A parameterized one
+            // (`List[T = Int64]`) must keep its arguments — dropping them to the bare
+            // sort ref would silently widen the guard — so an APPLICATION is converted
+            // as the term it is, and only a bare / dotted NAME is re-minted as a sort
+            // ref (which `convert_term` would otherwise read as an ordinary reference).
+            let bound = if self.parse_arg_type_is_applied(value) {
+                self.convert_term(value)
+            } else {
+                // Read through the SAME name reader the discriminator used — one
+                // spelling of the question, so a shape it admits cannot be one this
+                // cannot resolve.
+                let name = self
+                    .parse_arg_type_name(value)
+                    .expect("parse_arg_names_a_sort admitted a non-name");
+                let bound_sym = match if name.contains('.') {
+                    resolve_dotted_in_kb(
+                        self.kb,
+                        &name,
+                        self.current_scope,
+                        DottedVisibility::VisibleOnly,
+                    )
+                } else {
+                    resolve_name_in_kb(self.kb, &name, self.current_scope)
+                } {
+                    ResolveResult::Found(sym) => sym,
+                    _ => unreachable!("parse_arg_names_a_sort resolved this name to a sort"),
+                };
+                self.kb.make_sort_ref(bound_sym)
+            };
+            self.rule_head_type_bounds.push((vid, bound));
+            new_pos.push(self.kb.alloc(Term::Var(Var::Global(vid))));
+        }
+        let head = self.kb.alloc(Term::Fn {
+            functor: head_sym,
+            pos_args: new_pos,
+            named_args: new_named,
+        });
+        self.term_map.insert(parse_id.raw(), head);
+        Some(head)
+    }
+
+    /// WI-742 §2.1 — is this resolved head functor the PREDICATE a rule defines, rather
+    /// than an entity constructor or a sort?
+    ///
+    /// The first half of the §2.1 discriminator, shared by the two readers that must
+    /// agree on it: [`Self::convert_rule_head_with_params`] (which reclassifies named
+    /// arguments only here). An ENTITY-CONSTRUCTOR head's arguments are DATA — `fact
+    /// palette(c: red())`, and `rule EffectMapping(effect: "Widen", receiver: MutRef, …)
+    /// :- Toggle(on: true)` whose named-arg VALUE is an unresolved name riding as a
+    /// symbolic constant (`wi774_resolved_effect_test`, measured) — so neither is
+    /// reclassified.
+    ///
+    /// An UNRESOLVED functor counts as defining one: proposal 061 auto-declares a
+    /// predicate at the head's own scope, so a head naming nothing yet is still a
+    /// predicate head.
+    fn head_functor_defines_a_predicate(&self, head_sym: Symbol) -> bool {
+        !self.kb.symbols.is_resolved(head_sym)
+            || !(self.kb.is_constructor_symbol(head_sym)
+                || self.kb.has_kind(head_sym, SymbolKind::Sort))
+    }
+
+    /// WI-742 §2.1 — the NAME this parse argument spells: [`parse_arg_type_name_of`],
+    /// which is where the three shapes and their ordering are documented. A bare
+    /// identifier (`Colour`), a DOTTED path (`test.zzq.Colour`, folded into a minted
+    /// `field_access` chain), or an APPLICATION's head (`List[T = Int64]`).
+    ///
+    /// THE DOTTED ARM IS NOT A CONVENIENCE. Without it `rule pick(c: test.zzq.Colour)
+    /// :- item(c)` was NOT reclassified, so `c` introduced no variable while the body
+    /// read it as one, and the clause LOADED CLEAN and answered NOTHING against the
+    /// bare-name spelling's 1 — a genuinely dead clause, not the symbolic-constant
+    /// reading, because a named arg's LABEL is not a term the body can match. Found by
+    /// `/code-review`.
+    fn parse_arg_type_name(&self, value: TermId) -> Option<String> {
+        parse_arg_type_name_of(&self.parsed.symbols, &self.parsed.terms, value)
+    }
+
+    /// WI-742 §2.1 — is this parameter's written type a PARAMETERIZED application
+    /// (`List[T = Int64]`) rather than a name? Its bound is the whole converted term,
+    /// where a name's is a re-minted sort ref. A DOTTED path is a name, however it
+    /// parses — asked through [`dotted_citation_name`], the one owner of that question.
+    fn parse_arg_type_is_applied(&self, value: TermId) -> bool {
+        matches!(self.parsed.terms.get(value), Term::Fn { .. })
+            && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, value).is_none()
+    }
+
+    /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
+    /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
+    fn parse_arg_names_a_sort(&self, value: TermId) -> bool {
+        let Some(name) = self.parse_arg_type_name(value) else {
+            return false;
+        };
+        let answer = if name.contains('.') {
+            resolve_dotted_in_kb(self.kb, &name, self.current_scope, DottedVisibility::VisibleOnly)
+        } else {
+            resolve_name_in_kb(self.kb, &name, self.current_scope)
+        };
+        matches!(answer, ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort))
+    }
+
     fn convert_subject_term(&mut self, parse_id: TermId) -> TermId {
         let Some(sym) = self.dotted_subject_symbol(parse_id) else {
             let tid = self.convert_term(parse_id);
@@ -20285,12 +20694,21 @@ impl<'a> Loader<'a> {
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
-                let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
-                // Promote to Ref if the symbol resolved to a defined name
-                if self.kb.symbols.is_resolved(new_sym) {
-                    Term::Ref(new_sym)
+                // WI-742 §2.1: a sigil-free clause parameter the head introduced.
+                // FIRST, so the parameter SHADOWS a same-named symbol in scope.
+                if let Some(&vid) = self
+                    .rule_param_vars
+                    .get(self.parsed.symbols.local_name(sym))
+                {
+                    Term::Var(Var::Global(vid))
                 } else {
-                    Term::Ident(new_sym)
+                    let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
+                    // Promote to Ref if the symbol resolved to a defined name
+                    if self.kb.symbols.is_resolved(new_sym) {
+                        Term::Ref(new_sym)
+                    } else {
+                        Term::Ident(new_sym)
+                    }
                 }
             }
             Term::ParseAux(aux) => {
@@ -23672,6 +24090,21 @@ impl<'a> Loader<'a> {
                 self.nullary_op_call_or_ref(s, parse_id)
             }
             Term::Ident(sym) => {
+                // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
+                // sigil-free clause parameter, consulted FIRST so it shadows. Both
+                // arms are needed because a rule's HEAD rides the term path and its
+                // BODY rides this one; covering only one would make `adult(p: Person)`
+                // introduce a variable the body could not read.
+                if let Some(&vid) = self
+                    .rule_param_vars
+                    .get(self.parsed.symbols.local_name(sym))
+                {
+                    return NodeOccurrence::new_expr(
+                        Expr::Var(Var::Global(vid)),
+                        span,
+                        self.current_owner,
+                    );
+                }
                 let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
@@ -23940,11 +24373,14 @@ impl<'a> Loader<'a> {
                         && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
                     {
                         let declared = self.kb.type_params_of_sort(new_functor);
-                        let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
-                        if let Err(problem) =
-                            self.kb
-                                .check_sort_type_args(new_functor, &declared, &named_syms, pos.len())
-                        {
+                        let named_syms: SmallVec<[Symbol; 2]> =
+                            named.iter().map(|(s, _)| *s).collect();
+                        if let Err(problem) = self.kb.check_sort_type_args(
+                            new_functor,
+                            &declared,
+                            &named_syms,
+                            pos.len(),
+                        ) {
                             let detail = problem.describe(&self.kb, new_functor);
                             self.errors.push(LoadError::InvalidTypeArgument {
                                 detail,
@@ -25748,7 +26184,9 @@ impl<'a> Loader<'a> {
                 self.in_effect_absence = saved_absence;
                 match inner_child {
                     node_occurrence::TypeChild::Interned(t) => {
-                        node_occurrence::TypeChild::Interned(self.kb.make_effect_expression_absent(t))
+                        node_occurrence::TypeChild::Interned(
+                            self.kb.make_effect_expression_absent(t),
+                        )
                     }
                     node_occurrence::TypeChild::Node(n) => node_occurrence::TypeChild::Node(
                         self.kb
@@ -28085,12 +28523,33 @@ impl<'a> Loader<'a> {
         }
         head_carries_typed_column(&self.parsed.symbols, &self.parsed.terms, head).then_some(
             "A typed column `?x: T` has exactly one enforcer, a rewrite's typed-pattern \
-             bound (WI-903), which a predicate declaration is not; 060's declaration \
-             reading of the same syntax is WI-742 and undelivered.",
+             bound (WI-903), or — on a relational CLAUSE — the generated `domain(?x, T)` \
+             goal prepended to its body (WI-742); a DECLARATION is neither, storing no \
+             clause for either to run in. `:- true` makes it a clause and the guard then \
+             applies. The declaration reading, where the annotation is the column's type \
+             with nothing to enforce it, is undelivered.",
         )
     }
 
+    /// WI-742 §2.1 — the clause-parameter map's LIFETIME, made structural.
+    ///
+    /// `rule_param_vars` is loader state that SHADOWS resolved symbols (that is what
+    /// makes a parameter a parameter), so a name left in it after the rule is loaded
+    /// silently turns a later item's identically-spelled datum into this rule's
+    /// variable. MEASURED, and found by `/code-review`: with `rule adult(name: String,
+    /// …)` above it, `fact seen(name)` asserted a FREE VARIABLE, and `later("zzz")`
+    /// answered 1 where the `?name` spelling of the same rule answers 0.
+    ///
+    /// A WRAPPER, not a clear at the top: `load_rule_inner` has eight early returns, so
+    /// any single clear site is one a refusal path can skip. Cleared on ENTRY as well as
+    /// exit so a leak from anywhere else cannot reach this rule either.
     fn load_rule(&mut self, r: &Rule, domain: Symbol) {
+        self.rule_param_vars.clear();
+        self.load_rule_inner(r, domain);
+        self.rule_param_vars.clear();
+    }
+
+    fn load_rule_inner(&mut self, r: &Rule, domain: Symbol) {
         let rule_sort = ClauseKind::Rule;
         // WI-1075: the same refusal the fact path makes, for the same reason — see
         // [`Self::refuse_unresolvable_absolute_head`]. Applied to every head, since a
@@ -28389,6 +28848,13 @@ impl<'a> Loader<'a> {
                     // would otherwise ride as an inert, never-matching pattern.
                     self.check_bare_arrow_typo(*tid, "a rule head", &arrow_bound);
                     self.rule_head_type_bounds.clear();
+                    // WI-742 §2.1 — THE BOUNDS ARE PER HEAD, THE PARAMETERS ARE PER
+                    // RULE, and the asymmetry is the shape of a multi-head rule: each
+                    // head fans out into its own `RuleEntry` (so each carries only its
+                    // own bounds), but the heads share ONE body, converted once after
+                    // this loop. Clearing the parameter map here would leave that body
+                    // able to read only the LAST head's names. `load_rule`'s wrapper
+                    // owns the clear, once per rule.
                     self.in_rule_head = true;
                     // WI-716: a rule head is a VALUE the rule DERIVES — an
                     // entity-constructor head with an omitted optional field must
@@ -28400,7 +28866,17 @@ impl<'a> Loader<'a> {
                     // WI-20260901-719FJ: a rule head is a LOGICAL SUBJECT, so a dotted
                     // paren-less head is the NAME it spells and not a projection — see
                     // [`Self::convert_subject_term`].
-                    let head = self.convert_subject_term(*tid);
+                    //
+                    // WI-742 §2.1 first: a head whose named arguments are the SIGIL-FREE
+                    // PARAMETER FORM (`adult(p: Person, age: Int64)`) is built by the
+                    // reclassifier, which introduces one clause variable per parameter
+                    // and files its bound through the same channel `?x: T` uses. It
+                    // declines (`None`) for every other head, which today is every head
+                    // in the shipped corpus.
+                    let head = match self.convert_rule_head_with_params(*tid) {
+                        Some(h) => h,
+                        None => self.convert_subject_term(*tid),
+                    };
                     self.in_value_position = false;
                     self.in_rule_head = false;
                     positive_head_parse_ids.push(*tid);
@@ -28628,11 +29104,34 @@ impl<'a> Loader<'a> {
             // could read it — the same silent-ignore as the dot case.
             if let Some(bounds) = head_type_bounds.get(head_idx) {
                 if !bounds.is_empty() {
-                    let refusal = if !self.kb.is_directional_equation(rid) {
+                    let refusal = if self.kb.is_directional_equation(rid) {
+                        // The rewrite route (WI-582), unchanged. The DOT-rule test is
+                        // NESTED inside it, not beside it: `is_typer_fired_dot_rule` is
+                        // a narrowing of the same population (dot rule ⊆ simp equation ⊆
+                        // directional equation), and it names the one member of it the
+                        // resolver never fires, so the bound would be ignored (WI-903).
+                        if super::simp_rewrite::is_typer_fired_dot_rule(self.kb, rid) {
+                            Some(TypedPatternRefusal::DotRule)
+                        } else {
+                            None
+                        }
+                    } else if is_equational_head(self.kb, kb_head) {
+                        // An UNTAGGED EQUATION. Not a directional rewrite (nothing
+                        // fires it as one) and not a relational head either, so
+                        // neither reader exists — the WI-582 refusal, unchanged.
                         Some(TypedPatternRefusal::NotARewrite)
-                    } else if super::simp_rewrite::is_typer_fired_dot_rule(self.kb, rid) {
-                        Some(TypedPatternRefusal::DotRule)
                     } else {
+                        // WI-742 (proposal 060 §2): a RELATIONAL head. The bound is
+                        // installed and the typer compiles it into a prepended
+                        // `domain(?x, T)` goal (`typing::install_typed_head_domain_goals`),
+                        // so it has a reader.
+                        //
+                        // INCLUDING A BODY-LESS ONE. `rule p(?x: T) :- true` folds to an
+                        // empty body (§6.1) and is a CLAUSE — MEASURED, it answers
+                        // `p(5)` where the bare declaration `rule p(?x)` does not, the
+                        // latter never reaching an assert at all. So the guard has a
+                        // clause to guard, and `prepend_generated_body_goals` makes it
+                        // bodied again.
                         None
                     };
                     if let Some(reason) = refusal {

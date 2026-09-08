@@ -869,6 +869,25 @@ impl NodeOccurrence {
         })
     }
 
+    /// The [`PassId`] that SYNTHESIZED this occurrence, or `None` for a source
+    /// (or rebuilt-from-source) node.
+    ///
+    /// WI-742 — provenance read as a first-class question rather than by matching
+    /// `NodeKind::Expr { origin, .. }` at the asking site. A generated body goal is
+    /// idempotent exactly when its producer can recognise its own output, and the
+    /// recognisable thing has to be the PASS: a functor-presence test would let an
+    /// author who writes the generated goal's functor by hand suppress the generation,
+    /// silently.
+    pub fn synthesized_by(&self) -> Option<PassId> {
+        match &self.kind {
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { by, .. },
+                ..
+            } => Some(*by),
+            _ => None,
+        }
+    }
+
     /// Build a rule-head occurrence.
     pub fn new_rule_head(
         functor: Symbol,
@@ -1711,7 +1730,6 @@ pub enum TypeChild {
     Interned(TermId),
     Node(Rc<NodeOccurrence>),
 }
-
 
 /// WI-20260904-02ERR: WIDEN a type occurrence back to a `Value`, restoring the
 /// VALUE-POSITION spelling of a variable.
@@ -2934,12 +2952,7 @@ trait TypeChildRewrite {
     /// LEAF, which is right for every rewriter that carries no bindings — only σ overrides
     /// it. That default is also why adding this hook could not silently change behaviour
     /// for the other implementors.
-    fn var(
-        &self,
-        _kb: &mut KnowledgeBase,
-        _v: Var,
-        occ: &Rc<NodeOccurrence>,
-    ) -> (TypeChild, bool) {
+    fn var(&self, _kb: &mut KnowledgeBase, _v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
         (TypeChild::Node(Rc::clone(occ)), false)
     }
 }
@@ -3487,9 +3500,12 @@ fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // type — it needs no guard here, because its children are field accesses and the
         // recursion refuses them, which is a structural answer rather than a flag to keep in
         // step.
-        Expr::Constructor { name, pos_args, named_args, .. }
-            if kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL)) == Some(*name) =>
-        {
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        } if kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL)) == Some(*name) => {
             tuple_type_denoted(kb, pos_args, named_args)
         }
         // NO `Expr::Ref(s) if kind_of(s) == Sort` ARM, and that is a decision rather than an
@@ -5562,15 +5578,13 @@ pub fn substitute_occurrence(
                 None => (None, false),
             };
             (c1 || c2 || c3 || c4).then(|| {
-                occ.rebuilt_expr(
-                    Expr::Apply {
-                        recv_type: rt,
-                        functor: *functor,
-                        pos_args: pos,
-                        named_args: named,
-                        type_args: ta,
-                    },
-                )
+                occ.rebuilt_expr(Expr::Apply {
+                    recv_type: rt,
+                    functor: *functor,
+                    pos_args: pos,
+                    named_args: named,
+                    type_args: ta,
+                })
             })
         }
         Expr::Constructor {
@@ -5582,14 +5596,12 @@ pub fn substitute_occurrence(
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
-                occ.rebuilt_expr(
-                    Expr::Constructor {
-                        name: *name,
-                        pos_args: pos,
-                        named_args: named,
-                        from_projection: *from_projection,
-                    },
-                )
+                occ.rebuilt_expr(Expr::Constructor {
+                    name: *name,
+                    pos_args: pos,
+                    named_args: named,
+                    from_projection: *from_projection,
+                })
             })
         }
         Expr::Instantiation {
@@ -5600,13 +5612,11 @@ pub fn substitute_occurrence(
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             (c1 || c2).then(|| {
-                occ.rebuilt_expr(
-                    Expr::Instantiation {
-                        name: *name,
-                        pos_args: pos,
-                        named_args: named,
-                    },
-                )
+                occ.rebuilt_expr(Expr::Instantiation {
+                    name: *name,
+                    pos_args: pos,
+                    named_args: named,
+                })
             })
         }
         Expr::HoApply { predicate, args } => {
@@ -5614,12 +5624,10 @@ pub fn substitute_occurrence(
             let (a, c2) = subst_vec(kb, args, subst);
             let c1 = !Rc::ptr_eq(&p, predicate);
             (c1 || c2).then(|| {
-                occ.rebuilt_expr(
-                    Expr::HoApply {
-                        predicate: p,
-                        args: a,
-                    },
-                )
+                occ.rebuilt_expr(Expr::HoApply {
+                    predicate: p,
+                    args: a,
+                })
             })
         }
         // WI-819: no explicit `Expr::Let` arm — it existed only to σ-apply the
@@ -5641,15 +5649,13 @@ pub fn substitute_occurrence(
             let (reqs, c3) = subst_vec(kb, requirements, subst);
             let (ta, c4) = subst_type_args(kb, type_args, subst);
             (c1 || c2 || c3 || c4).then(|| {
-                occ.rebuilt_expr(
-                    Expr::ApplyWithin {
-                        functor: *functor,
-                        args: a,
-                        named_args: named,
-                        requirements: reqs,
-                        type_args: ta,
-                    },
-                )
+                occ.rebuilt_expr(Expr::ApplyWithin {
+                    functor: *functor,
+                    args: a,
+                    named_args: named,
+                    requirements: reqs,
+                    type_args: ta,
+                })
             })
         }
         // WI-296: a *child-bearing* control-flow / post-elaboration form CAN
@@ -8857,7 +8863,9 @@ mod tests {
         let out = substitute_occurrence(&mut kb, &ty, &subst);
         let (bg, bn) = param_bindings(&out);
         match bg {
-            TypeChild::Interned(t) => assert_eq!(t, seven, "vg in a ground type child rewrites to 7"),
+            TypeChild::Interned(t) => {
+                assert_eq!(t, seven, "vg in a ground type child rewrites to 7")
+            }
             other => panic!("expected Ground, got {other:?}"),
         }
         match bn {
