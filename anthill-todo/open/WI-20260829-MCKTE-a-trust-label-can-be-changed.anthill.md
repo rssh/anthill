@@ -290,3 +290,44 @@ mailbox facts plus `lib/email.anthill`'s `releasable` row must still load. A tes
 that only asserts the marker is declared measures nothing — the nested-fact probe
 above is the one that would have caught this coverage gap.
 
+### 2026-09-08T07:53:41Z — feedback — user
+
+ITEM (3) IS NOT A HOLE, AND WAS NOT ONE BY THE TIME IT SHIPPED. Correcting my own
+earlier entries, which listed `render_task` returning `Prompt[Trusted]` from
+`feedback: List[T = String]` as a standing route from the mailbox into generation.
+
+WHY I THOUGHT SO, and it was true WHEN WRITTEN: `.raw` was public, so a checker
+could read a model's reply into `Rejected(diagnostics: List[String])`, and
+`render_task` demanded no authority, so anything could call it. Model output ->
+diagnostics -> feedback -> `Prompt[Trusted]` was a real path.
+
+BOTH ENDS CLOSED and I did not re-examine the claim:
+  - `internal entity text` seals the `.raw` projection, so no text's content
+    reaches a `String` at all (rejected/reads_text.anthill measures it). The only
+    strings a diagnostic can carry now are the loader's own text and literals a
+    checker writes.
+  - `render_task` declares `Permission[Vouch]`, which `Triage.run`'s row does not
+    grant (rejected/harness_launder.anthill). And the callers that DO hold it,
+    `attempt` and `open_round`, take no `Mailbox`.
+
+MEASURED 2026-09-08: a Triage that fetches mail and calls
+`h.render_task(spec, nil, msgs.map(lambda m -> m.from.local).collect())` is refused
+`undeclared effect: Permission[T = Vouch]`. There is no path from the mailbox to
+`feedback`.
+
+THE ONE REAL ASYMMETRY, recorded so it is not rediscovered as a hole: `Text.trusted`
+carries both tiers and `render_task` carries only the authority, because `approved`
+matches literals and `render_task`'s content is assembled at run time. The party
+that could exploit the difference is the holder of `Permission[Vouch]` — the
+organisation, which owns the whitelist and may extend it. A list you may edit is
+not a boundary against yourself.
+
+STALE PROSE REMOVED from lib/harness.anthill and measured.md D3a, which both still
+described the channel as open.
+
+WHAT REMAINS OPEN ON THIS TICKET: nothing about feedback, and nothing about
+`Prompt[Trusted]` versus `Text[Trusted]`. The pinned gap is
+`fixtures/agent/declared_mint.anthill` — a candidate may DECLARE its own
+`operation launder(s: String) -> Text[Trusted]` and call it — which no seal in a
+vocabulary can reach and which is filed as the kernel check WI-20260908-FJG8B.
+

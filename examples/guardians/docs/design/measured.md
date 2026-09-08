@@ -468,10 +468,16 @@ and that row alone; the fixture loaded clean before the fix
 **What it does NOT close.** The seal is against anthill, not against the host:
 `guardians_test.rs` builds a `Source` at three sites through
 `try_resolve_symbol` + `Value::Entity`, which §8.6 does not gate — one of them
-standing in for `generate`, so it must not. And it is one of three independent
-holes on the generation path; the other two (a relabel through `text(raw: …)`,
-and `render_task` returning `Prompt[Trusted]` from `feedback: List[T = String]`) are
-open under the same work item.
+standing in for `generate`, so it must not.
+
+**The other routes to the generation path are closed too**, under the same work
+item: the relabel through `text(raw: …)` by `internal entity text` plus the two
+doors (`rejected/relabel.anthill`), and `render_task`'s unconditional
+`Prompt[Trusted]` by making it declare the `Permission[Vouch]` it exercises
+(`rejected/harness_launder.anthill`). An earlier draft of this section listed
+`render_task`'s `feedback: List[T = String]` as a standing hole on the ground that
+mailbox bytes could reach a trusted prompt through it. They cannot: the authority
+is what backs the label, and no caller holding it takes a `Mailbox` — measured.
 
 ## D4 · A permission can be CONDITIONAL, and the article's policy is one
 

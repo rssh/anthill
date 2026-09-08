@@ -43,11 +43,9 @@
 -- `rejected/forged_source.anthill` is the program that measured it
 -- (WI-20260829-MCKTE).
 --
--- WHAT IT DOES NOT REST ON is `Prompt[Trusted]`. That claim is itself conditional
--- today — `render_task` below takes `feedback: List[T = String]` and returns
--- `Prompt[Trusted]` unconditionally, so mailbox bytes reach a Trusted prompt
--- without touching a `Source` at all (WI-20260829-MCKTE item 3, measured). The
--- two are independent holes on one path, and this seal closes only its own.
+-- WHAT IT DOES NOT REST ON is `Prompt[Trusted]`, and the two seals are
+-- independent: this one is about who may MINT a candidate program, and the label
+-- on a prompt is about what may reach `generate`. Each closes its own route.
 --
 -- NO ANTHILL INTRODUCTION AT ALL, WHICH IS THE DESIGN AND NOT AN OVERSIGHT.
 -- `generate` is the sole introduction and is body-less with a host binding, so
@@ -121,17 +119,30 @@ sort guardians.Harness
   -- and does not type here: an agent whose CODE was written under the influence
   -- of an injected email cannot be produced at all.
   --
-  -- THAT LAST SENTENCE IS TRUE OF `tools` AND FALSE OF `feedback`, and it is
-  -- written down rather than fixed because the fix is a signature change with a
-  -- decision behind it (WI-20260829-MCKTE item 3). `render_task` above returns
-  -- `Prompt[Trusted]` UNCONDITIONALLY, so mailbox bytes handed to it as
-  -- `feedback: List[T = String]` arrive here Trusted and this signature admits
-  -- them — measured, 0 errors. The repair loop is the channel: `Rejected`'s
-  -- diagnostics ARE next round's feedback. NOTE THE CHANNEL IS CURRENTLY UNSPELLED
-  -- in the example: diagnostics are `List[String]` and no text's content reaches a
-  -- `String` any more, so no fixture demonstrates the flow — it is a property of
-  -- the SIGNATURES, not of a program here. The repair is to make
-  -- `render_task` JOIN its inputs' labels the way `prompt_with` does.
+  -- `render_task`'s `List[T = String]` INPUTS DO NOT WEAKEN IT, though they look
+  -- as if they should, and the reasoning is worth keeping because a draft of this
+  -- file got it wrong for several rounds. The prompt's `Trusted` is not computed
+  -- from those strings — it is VOUCHED FOR, `render_task` carrying
+  -- `Permission[Vouch]` like any other mint (WI-20260829-MCKTE). So the question is
+  -- not what the strings are but WHO may pass them, and the answer is: only a
+  -- caller declaring that authority. `Triage.run`'s row does not, so no agent can
+  -- reach this operation at all — measured, `rejected/harness_launder.anthill` —
+  -- and `attempt`/`open_round`, which do, take no `Mailbox`. There is no path from
+  -- the mailbox to `feedback`.
+  --
+  -- NOR FROM THE MODEL. The repair loop feeds `Rejected`'s diagnostics back as next
+  -- round's `feedback`, and those used to be able to carry a model's words — a
+  -- checker reading `text_of(...).raw` into `List[String]`. Sealing `Text`'s
+  -- projection closed that (`rejected/reads_text.anthill`), so the only strings
+  -- reaching a diagnostic now are the loader's own text and literals a checker
+  -- writes.
+  --
+  -- WHAT `approved` DOES NOT COVER HERE is real but not a hole: `Text.trusted`
+  -- checks the content whitelist and this does not, because a whitelist matches
+  -- literals and these strings are assembled at run time. The party that could
+  -- exploit the difference is the holder of `Permission[Vouch]` — the organisation,
+  -- which owns the whitelist and can extend it. A list you may edit is not a
+  -- boundary against yourself.
   --
   -- That is the difference between generation and every other model call in
   -- this pipeline. `summarize` may read untrusted content — its OUTPUT is
