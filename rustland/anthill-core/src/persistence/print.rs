@@ -740,6 +740,15 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 for b in branches.iter() {
                     // WI-318: b.pattern is a Pattern-kind occurrence.
                     self.write_pattern(&b.pattern, buf);
+                    // WI-20260907-0QV5A: the GUARD is rendered too. It decides at run
+                    // time whether the arm is entered
+                    // (`eval/eval.rs::scan_match_arms`), so dropping it rendered a
+                    // guarded arm and an unguarded one as the same text — and this
+                    // writer is what the load diagnostics quoting a body use.
+                    if let Some(g) = &b.guard {
+                        buf.push_str(" | ");
+                        self.write_occurrence(g, buf);
+                    }
                     buf.push_str(" => ");
                     self.write_occurrence(&b.body, buf);
                     buf.push_str("; ");

@@ -57,6 +57,33 @@ pub enum AwaitState {
         branches: Vec<MatchBranch>,
         scrutinee_occ: Rc<NodeOccurrence>,
     },
+    /// WI-20260907-0QV5A: a guarded arm whose PATTERN matched is waiting for its
+    /// GUARD's value. Its own state rather than a flag on
+    /// [`AwaitState::MatchDispatch`] because a guard is an arbitrary expression —
+    /// it may call an operation, raise, or suspend — so the arm scan cannot stay
+    /// synchronous once it reaches one.
+    ///
+    /// On delivery (`eval.rs`, `AwaitState::MatchGuard`): a `true` guard installs
+    /// `bindings` on the frame and reduces `body`; a `false` one resumes the scan
+    /// at `rest` — the arms AFTER the guarded one — against `scrutinee`, with
+    /// `bindings` dropped unread. They can be dropped rather than unwound because
+    /// they were never installed on this frame: the guard reads them through the
+    /// CHILD frame's locals, which the delivery pops. That is what keeps a false
+    /// guard's bindings out of a later arm's environment.
+    ///
+    /// `scrutinee` is the already-computed match subject, carried so a fallthrough
+    /// does not re-evaluate the scrutinee expression, and `scrutinee_occ` is kept
+    /// for the same reason `MatchDispatch` keeps it — an exhausted scan raises
+    /// `Error[MatchFailed]` anchored at the source (WI-610), and running out of
+    /// arms because every guard was false is exhaustion just as much as running
+    /// out because no pattern fit.
+    MatchGuard {
+        bindings: crate::eval::pattern::Bindings,
+        body: Rc<NodeOccurrence>,
+        rest: Vec<MatchBranch>,
+        scrutinee: Value,
+        scrutinee_occ: Rc<NodeOccurrence>,
+    },
     /// An apply node is collecting arg values one at a time. `remaining`
     /// holds the argument occurrences still to evaluate (in order).
     /// `type_args` carries the typer-resolved operation type

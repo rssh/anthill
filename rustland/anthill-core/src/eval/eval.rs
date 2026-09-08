@@ -3258,6 +3258,91 @@ impl Interpreter {
         Ok(StepOutcome::Continue)
     }
 
+    /// WI-20260907-0QV5A — the ARM SCAN of a `match`, shared by the two states
+    /// that enter it: [`AwaitState::MatchDispatch`], when the scrutinee has just
+    /// been computed, and [`AwaitState::MatchGuard`], when a guarded arm's guard
+    /// answered `false` and the scan must resume at the arms AFTER it. One
+    /// function rather than two because a fallthrough is the same scan over a
+    /// shorter list — written twice, the resumed half would be free to drift from
+    /// the first on the pre-filter, on the binding install, and on where the
+    /// `MatchFailed` anchor comes from.
+    ///
+    /// `branches` is CONSUMED: the arm that matches is taken out of it and the
+    /// arms after it become the `rest` a guard's fallthrough resumes at, so the
+    /// resumed scan cannot re-offer an arm that already declined.
+    ///
+    /// Callers must have already popped the frame that delivered `scrutinee`, so
+    /// `self.stack.top()` is the frame owning the `match`.
+    fn scan_match_arms(
+        &mut self,
+        mut branches: Vec<MatchBranch>,
+        scrutinee_occ: Rc<NodeOccurrence>,
+        scrutinee: Value,
+    ) -> Result<StepOutcome, EvalError> {
+        let scrutinee_functor = value_functor(&self.kb, &scrutinee);
+        for i in 0..branches.len() {
+            // WI-511: branch.pattern is a Pattern-kind occurrence, read directly
+            // by `match_pattern` / `constructor_pattern_name` — no
+            // `pattern_to_term` bridge. Cheap pre-filter: a constructor-pattern
+            // functor mismatch skips the full match attempt. `functor_matches`
+            // collapses short vs. qualified — `wis(_, _)` patterns compare equal
+            // to host-built `…FileBasedWorkitemStore.wis` values.
+            if let (Some(pat_name), Some(scr_name)) = (
+                constructor_pattern_name(&branches[i].pattern),
+                scrutinee_functor,
+            ) {
+                if !super::pattern::functor_matches(&self.kb, pat_name, scr_name) {
+                    continue;
+                }
+            }
+            let Some(bindings) = match_pattern(self, &branches[i].pattern, &scrutinee) else {
+                continue;
+            };
+            // The tail is split only on the GUARDED path, which is the only one
+            // that reads it. Splitting unconditionally would MOVE every remaining
+            // arm into a fresh `Vec` on the ordinary path that never looks at it,
+            // and `match` is this interpreter's hot form — `case some(x) -> …
+            // case none -> …` takes a non-final arm on every call.
+            let Some(guard) = branches[i].guard.take() else {
+                let body = Rc::clone(&branches[i].body);
+                let top = self.stack.top_mut().unwrap();
+                for (sym, val) in bindings {
+                    top.locals.push((sym, val));
+                }
+                top.expr = body;
+                return Ok(StepOutcome::Continue);
+            };
+            let rest = branches.split_off(i + 1);
+            let body = branches
+                .pop()
+                .expect("split_off(i + 1) leaves arm i last")
+                .body;
+            // The guard runs in a CHILD frame whose locals are this frame's plus
+            // the arm's own pattern bindings — they are what a guard reads
+            // (`case x | eq(x, 1)` reads `x`) — and putting them ONLY on the child
+            // is what makes a false guard's fallthrough discard them for free:
+            // delivery pops that frame, and the arms in `rest` are then scanned
+            // against a frame that never saw `x`.
+            let mut ctx = self.stack.top().unwrap().child_context();
+            ctx.locals.extend(bindings.iter().cloned());
+            let top = self.stack.top_mut().unwrap();
+            top.awaiting = Some(AwaitState::MatchGuard {
+                bindings,
+                body,
+                rest,
+                scrutinee,
+                scrutinee_occ,
+            });
+            self.stack.push(child_frame(ctx, guard))?;
+            return Ok(StepOutcome::Continue);
+        }
+        // WI-610: no arm matched — route through the Error handler with the
+        // scrutinee occurrence and the failing value. Reached both when no
+        // PATTERN fit and when every arm that fit was guarded and declined, which
+        // is the same exhaustion and must not quietly fall into the last arm.
+        Err(self.raise_match_failed(scrutinee_occ, scrutinee))
+    }
+
     /// Deliver a computed value to the frame beneath `top` (or finish the
     /// computation if the stack empties). Loops internally to cascade
     /// through `OperationResult` pass-throughs and through builtin
@@ -3330,41 +3415,60 @@ impl Interpreter {
                     branches,
                     scrutinee_occ,
                 } => {
-                    let scrutinee_functor = value_functor(&self.kb, &v);
-                    let mut picked: Option<(Rc<NodeOccurrence>, super::pattern::Bindings)> = None;
-                    for branch in &branches {
-                        // WI-511: branch.pattern is a Pattern-kind occurrence,
-                        // read directly by `match_pattern` / `constructor_
-                        // pattern_name` — no `pattern_to_term` bridge.
-                        // Cheap pre-filter: constructor-pattern functor
-                        // mismatch can skip the full match attempt.
-                        // `functor_matches` collapses short vs. qualified
-                        // — `wis(_, _)` patterns compare equal to host-
-                        // built `…FileBasedWorkitemStore.wis` values.
-                        if let (Some(pat_name), Some(scr_name)) =
-                            (constructor_pattern_name(&branch.pattern), scrutinee_functor)
-                        {
-                            if !super::pattern::functor_matches(&self.kb, pat_name, scr_name) {
-                                continue;
-                            }
-                        }
-                        if let Some(bindings) = match_pattern(self, &branch.pattern, &v) {
-                            picked = Some((branch.body.clone(), bindings));
-                            break;
-                        }
-                    }
-                    // WI-610: no arm matched — route through the Error handler
-                    // with the scrutinee occurrence and the failing value.
-                    let (body, bindings) = match picked {
-                        Some(x) => x,
-                        None => return Err(self.raise_match_failed(scrutinee_occ, v.clone())),
+                    return self.scan_match_arms(branches, scrutinee_occ, v);
+                }
+                // WI-20260907-0QV5A: the guard of an arm whose pattern already
+                // matched has answered. See [`AwaitState::MatchGuard`].
+                AwaitState::MatchGuard {
+                    bindings,
+                    body,
+                    rest,
+                    scrutinee,
+                    scrutinee_occ,
+                } => {
+                    // Read for WHAT IT DENOTES, not which carrier holds it — the
+                    // same `literal_bool` the `if` condition uses two arms up, and
+                    // for the same reason (WI-20260827-3ZNBC): a guard whose value
+                    // arrived on a handle denotes a `Bool` as plainly as a
+                    // `Value::Bool` does.
+                    let held = {
+                        use crate::kb::term_view::TermView;
+                        v.literal_bool(&self.kb)
                     };
-                    let top = self.stack.top_mut().unwrap();
-                    for (sym, val) in bindings {
-                        top.locals.push((sym, val));
+                    match held {
+                        Some(true) => {
+                            let top = self.stack.top_mut().unwrap();
+                            for (sym, val) in bindings {
+                                top.locals.push((sym, val));
+                            }
+                            top.expr = body;
+                            return Ok(StepOutcome::Continue);
+                        }
+                        // FALLTHROUGH: this arm declined after its pattern fit, so
+                        // the scan resumes at the NEXT arm — and `bindings` are
+                        // dropped here rather than installed, which is what keeps
+                        // them out of a later arm's environment. Running out of
+                        // arms raises `MatchFailed` inside `scan_match_arms`, the
+                        // same exhaustion an unmatched scrutinee gets.
+                        Some(false) => return self.scan_match_arms(rest, scrutinee_occ, scrutinee),
+                        // A non-`Bool` guard is a LOAD error for a source `match`
+                        // since WI-20260824-Q0093 (`typing.rs`'s
+                        // `boolean_position_error` checks the guard's destination
+                        // through the predicate an argument gets). Reported as the
+                        // user-facing mismatch the `if` condition gets rather than
+                        // as an `Internal`, because not every match that reaches
+                        // eval came through that check: `term_to_occurrence`
+                        // rebuilds an `Expr::Match` from a reflect `Term`
+                        // (`node_occurrence.rs`'s `BuildFrame::Match`), and a rule
+                        // body lowered by `convert_term` never visits the
+                        // operation-expression typing path at all.
+                        None => {
+                            return Err(EvalError::TypeMismatch {
+                                expected: "Bool",
+                                got: v.type_name().to_string(),
+                            })
+                        }
                     }
-                    top.expr = body;
-                    return Ok(StepOutcome::Continue);
                 }
                 AwaitState::ApplyArgs {
                     target,

@@ -127,6 +127,17 @@ pub(crate) fn folded_call_match(
     // never producing a wrong definite answer.
     let mut seen: Vec<Symbol> = Vec::with_capacity(branches.len());
     for b in branches {
+        // WI-20260907-0QV5A: a GUARDED arm is not an unconditional alternative.
+        // `UnfoldArm` carries a pattern and a body and nothing else, so enumerating
+        // one would assert the arm holds whenever its constructor does — which
+        // stopped being true the moment eval began consulting guards
+        // (`eval/eval.rs::scan_match_arms`), and would make the relational reading of
+        // a call contradict its evaluated one. Decline the whole unfold, exactly as
+        // [`select_arm`] declines rather than picking past a guard, and for the same
+        // stated reason: never a wrong definite answer.
+        if b.guard.is_some() {
+            return None;
+        }
         match b.pattern.as_pattern() {
             Some(Pattern::Constructor { name, .. }) if !seen.contains(name) => seen.push(*name),
             _ => return None,

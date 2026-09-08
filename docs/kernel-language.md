@@ -950,6 +950,27 @@ the surrounding declaration/body delimiter ends the last arm.  A guard after
 `|` is checked only for that arm.  Patterns bind lexically in their arm or
 continuation; a repeated source name at a later binder is a distinct binding.
 
+**A guard runs, and a false one falls through to the next arm.** An arm is taken
+when its pattern matches *and* its guard holds; the guard is evaluated after the
+pattern matches and before the body is entered, under the arm's own pattern
+bindings — which are what a guard reads, and which are discarded when it declines,
+so they never reach a later arm.  A false guard resumes the scan at the **next**
+arm; running out of arms because every guard declined is the same exhaustion as no
+pattern matching and raises the same `Error[MatchFailed]`, never a silent fall
+into the last arm.  Because the guard decides at run time, a guarded arm **covers
+nothing** for exhaustiveness — the same reading a written `: T` annotation gets —
+so `case red | g -> …  case green -> …` over an `enum` of the two is refused as
+non-exhaustive, naming `red`.  The guard's effect
+row is part of the match's, so a guard that raises does so *as* the match.
+(WI-20260907-0QV5A — before it the evaluator never read a guard at all: it selected
+the first arm whose PATTERN matched, so `match n case x | eq(x, 1) -> "one" case _
+-> "other"` answered `"one"` for every `n`, on a program that loaded clean.  Three
+readers agreed with that and are now aligned instead: the SLD case split
+(`folded_call_match`) declines a guarded match rather than enumerating the arm
+unconditionally, the exhaustiveness check is the rule stated above, and the
+cpp17-stl backend **refuses** a guarded arm rather than emitting its tag check
+alone.)
+
 `let p: T = value continuation` gives `value` the expected type `T` and makes
 the pattern's bindings available only in `continuation`.  The annotation is one
 slot: a type on the whole pattern and a type on that same single binder may not

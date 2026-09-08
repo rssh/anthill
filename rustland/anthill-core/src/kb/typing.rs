@@ -14687,13 +14687,26 @@ fn build_type(
                 // `pattern_to_term` bridge. WI-20260827-EJ5F5: and it reads the REWRITTEN
                 // one, so a resolved bare name reaches the `Constructor` arm rather than
                 // being resolved a second time here.
-                collect_covered_entities(
-                    kb,
-                    &pattern,
-                    &scrutinee_ctors,
-                    &mut covered_entities,
-                    &mut has_wildcard,
-                );
+                // WI-20260907-0QV5A: a GUARDED arm covers NOTHING — neither its
+                // constructor nor, for a binder, the whole scrutinee. Its guard decides
+                // at RUN TIME whether the arm is entered, so counting its pattern here
+                // would let `case red | g -> …  case green -> …` pass exhaustiveness and
+                // then raise `MatchFailed` on a `red` whose guard was false. The count
+                // was RIGHT until that ticket — eval entered a guarded arm
+                // unconditionally, so a guarded arm really did cover — and this is the
+                // load-time twin of `eval/eval.rs::scan_match_arms`' fallthrough into
+                // `raise_match_failed`. Same reading a written `: T` annotation already
+                // gets (spec §"Nullary only, and at every depth": an annotated arm covers
+                // nothing), for the same reason: what runs decides what covers.
+                if branch.guard.is_none() {
+                    collect_covered_entities(
+                        kb,
+                        &pattern,
+                        &scrutinee_ctors,
+                        &mut covered_entities,
+                        &mut has_wildcard,
+                    );
+                }
                 branch_patterns.push(pattern);
                 // The rewrite removed those binders, so the arm's own text has to stop
                 // naming them. Done HERE, before the guard is checked and before the body

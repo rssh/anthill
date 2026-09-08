@@ -63,12 +63,16 @@
 //!     [`a_collection_literal_element_type_is_checked_for_every_element_alike`] — the
 //!     family has a negative destination, and it names what the element denotes.
 //!
-//! (b) THE INTERPRETER NEVER EVALUATES A `match` ARM GUARD, so the guard family's RUNTIME
-//!     half cannot be driven by anyone. `MatchDispatch` picks the first arm whose PATTERN
-//!     matches, and `match n case x | eq(x, 1) -> "one" case _ -> "other"` answers `"one"`
-//!     for every `n` — no type value anywhere in that fixture, which is the control. The
-//!     guard's type value is driven at LOAD instead; both halves are in
-//!     [`a_match_arm_guards_type_value_is_classified_and_validated_at_load`].
+//! (b) THE INTERPRETER NEVER EVALUATED A `match` ARM GUARD, so the guard family's RUNTIME
+//!     half could not be driven by anyone. `MatchDispatch` picked the first arm whose
+//!     PATTERN matched, and `match n case x | eq(x, 1) -> "one" case _ -> "other"` answered
+//!     `"one"` for every `n` — no type value anywhere in that fixture, which was the
+//!     control saying this was a missing arm in eval and not a proposal-055 question.
+//!     THE PIN DID ITS JOB: WI-20260907-0QV5A taught eval to evaluate guards, the control
+//!     failed naming its own doc, and
+//!     [`a_match_arm_guards_type_value_is_classified_and_validated_at_load`] now drives the
+//!     family at EVAL as well as at load — a type value written in a guard reaches its
+//!     callee and the answer picks the arm.
 //!
 //! ── WHICH ROWS FAIL ON A BACK-OUT, MEASURED — one back-out at a time, `wi_tests` filtered
 //! to this file, 24 rows; every count below is a run ──
@@ -112,10 +116,13 @@
 //! [`a_match_arm_guards_type_value_is_classified_and_validated_at_load`] do not go through
 //! the operation-expression path at all: a metadata block and a rule body are lowered by
 //! `convert_term`, whose own `is_type_app` gate (WI-927) classified them before this
-//! umbrella existed, and the guard row's load-time refusal is the type-ARGUMENT check on
-//! that same substrate. They are pinned here because Q0093's family list names those
-//! families; what they measure is the boundary umbrella B (WI-20260823-53W12) owns, and
-//! that is why neutralizing umbrella A's record leaves them standing.
+//! umbrella existed, and the guard row's refusal is the type-ARGUMENT check on that same
+//! substrate. They are pinned here because Q0093's family list names those families; what
+//! they measure is the boundary umbrella B (WI-20260823-53W12) owns, and that is why
+//! neutralizing umbrella A's record leaves them standing. RE-MEASURED after
+//! WI-20260907-0QV5A added the guard row's eval half — still 15 fail / 9 pass, which is why
+//! that half writes both of its type values APPLIED: a BARE one would be classified by
+//! `bare_name_denotes_type` and would move the row into the failing group.
 
 use anthill_core::eval::Value;
 use anthill_core::intern::SymbolKind;
@@ -244,7 +251,9 @@ fn a_call_argument_denotes_positionally_and_by_name() {
         ("arg_named_applied", true),
     ] {
         let qn = format!("test.q0093.{op}");
-        let v = interp.call(&qn, &[]).unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let v = interp
+            .call(&qn, &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         if applied {
             assert_applied_cell(interp.kb(), &v, op);
         } else {
@@ -314,24 +323,37 @@ fn a_match_scrutinee_and_a_branch_body_denote() {
     assert_bare_cell(interp.kb(), &miss, "the wildcard arm's body");
 }
 
-/// MATCHING, THE ARM GUARD — DRIVEN AT LOAD, BECAUSE NOTHING CAN DRIVE IT AT EVAL.
+/// MATCHING, THE ARM GUARD — DRIVEN AT LOAD, AND (SINCE WI-20260907-0QV5A) AT EVAL.
 ///
-/// THE SECOND HALF FIRST, since it decides what this row can claim: THE INTERPRETER NEVER
-/// EVALUATES A GUARD. `Interpreter`'s `MatchDispatch` clones `branch.guard` into its await
-/// state and then picks the first arm whose PATTERN matches, so
-/// `match n case x | eq(x, 1) -> "one" case _ -> "other"` answers `"one"` for EVERY `n` —
-/// asserted below, on a fixture with no type value anywhere in it, which is the control
-/// that says this is not a proposal-055 question but a missing arm in eval. Reported in
-/// this ticket's delivery note; until it is repaired the guard family's RUNTIME half
-/// cannot be driven by this file or by anything else.
+/// THE LOAD HALF: the guard's own type value, through a load-time check only a CLASSIFIED
+/// one can reach. `Cell[W = Int64]` written inside a guard is refused naming the parameter
+/// `Cell` actually declares — the WI-709 type-argument fit check, which runs on the
+/// classified node — while `Cell[V = Int64]` in the same slot loads. An unclassified guard
+/// would report an unresolved name instead, and an unvisited guard would report nothing at
+/// all, so the pair separates all three outcomes. The guard's own `Bool` destination is the
+/// row [`a_boolean_position_refuses_a_type_value_and_says_which_slot`].
 ///
-/// WHAT IS DRIVEN, then: the guard's own type value, through a load-time check only a
-/// CLASSIFIED one can reach. `Cell[W = Int64]` written inside a guard is refused naming
-/// the parameter `Cell` actually declares — the WI-709 type-argument fit check, which runs
-/// on the classified node — while `Cell[V = Int64]` in the same slot loads. An unclassified
-/// guard would report an unresolved name instead, and an unvisited guard would report
-/// nothing at all, so the pair separates all three outcomes. The guard's own `Bool`
-/// destination is the row [`a_boolean_position_refuses_a_type_value_and_says_which_slot`].
+/// THE EVAL HALF WAS UNDRIVABLE, AND THE PIN THAT SAID SO DID ITS JOB. This row used to
+/// carry the OPPOSITE assertion — `match n case x | eq(x, 1) -> "one" case _ -> "other"`
+/// answered `"one"` for EVERY `n`, because `MatchDispatch` cloned `branch.guard` into its
+/// await state and then picked the first arm whose PATTERN matched — with a comment saying
+/// that when eval learned to consult guards the assertion would fail and had to be replaced
+/// by driving the family at eval. WI-20260907-0QV5A taught it, that control failed naming
+/// this doc, and this is the replacement.
+///
+/// WHAT IT DRIVES: a type value written in a guard reaches the callee at run time, and the
+/// answer decides which arm runs. Both directions over ONE program —
+/// `is_modifiable(List[T = Int64])` is false and `is_modifiable(Cell[V = Int64])` is true
+/// (`Modifiable` is asserted for `Cell` and not for `List`, the same table
+/// [`a_bounded_quantifier_collection_of_type_values_drives`] rests on) — so the first
+/// guarded arm must DECLINE with its type value and the second must be TAKEN with its own.
+/// BOTH are written APPLIED on purpose: a BARE name is classified by umbrella A's own
+/// `bare_name_denotes_type`, so a bare one here would move this row out of the
+/// "survives the first back-out" group the file header lists it in (re-measured: still
+/// 15 fail / 9 pass).
+/// The guard mechanism itself is `wi_0qv5a_match_arm_guard_test`'s subject; what is this
+/// row's is that the value crossing it is a classified type value and not an unresolved
+/// name.
 #[test]
 fn a_match_arm_guards_type_value_is_classified_and_validated_at_load() {
     let program = |guard: &str, ns: &str| {
@@ -363,30 +385,30 @@ end
          the parameter the sort declares; got {errs:?}",
     );
 
-    // THE CONTROL FOR THE EVAL HALF — no type value in sight, and the guard is still
-    // ignored. When the evaluator learns to consult a guard, this assertion fails and
-    // names this row's doc.
+    // THE EVAL HALF. Two guarded arms whose patterns both match every scrutinee, so only
+    // the guards decide: the `List[T = Int64]` one must decline and the `Cell[V = Int64]`
+    // one must be taken.
     let src = r#"
 namespace test.q0093gr
-  import anthill.prelude.{Bool, Int64, String}
-  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.{Bool, Cell, Int64, List, String, Type}
+  import anthill.reflect.{is_modifiable}
 
-  operation pick(n: Int64) -> String =
+  operation which(n: Int64) -> String =
     match n
-      case x | eq(x, 1) -> "one"
-      case _ -> "other"
+      case x | is_modifiable(List[T = Int64]) -> "list"
+      case y | is_modifiable(Cell[V = Int64]) -> "cell"
+      case _ -> "neither"
 end
 "#;
     let mut interp = interp_for(src);
     let v = interp
-        .call("test.q0093gr.pick", &[Value::Int(7)])
-        .unwrap_or_else(|e| panic!("pick(7): {e:?}"));
+        .call("test.q0093gr.which", &[Value::Int(7)])
+        .unwrap_or_else(|e| panic!("which(7): {e:?}"));
     assert!(
-        matches!(&v, Value::Str(s) if s == "one"),
-        "MEASURED: eval ignores the arm guard, so `pick(7)` takes the guarded arm. If this \
-         now answers \"other\", the evaluator has been taught to consult guards — delete \
-         this control and drive the guard family at eval, which is what this row wants. \
-         Got {v:?}",
+        matches!(&v, Value::Str(s) if s == "cell"),
+        "the guard's type value must reach `is_modifiable` at EVAL and its answer must \
+         pick the arm: \"list\" means the first guard was not consulted (or answered \
+         wrong), \"neither\" means the second one was not. Got {v:?}",
     );
 }
 
@@ -464,7 +486,9 @@ fn a_parenthesized_expression_and_infix_operands_denote() {
 
     for (op, want) in [("infix_same_face", true), ("infix_two_faces", false)] {
         let qn = format!("test.q0093.{op}");
-        let v = interp.call(&qn, &[]).unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let v = interp
+            .call(&qn, &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(
             matches!(v, Value::Bool(b) if b == want),
             "{op}: both operands must denote, and the two faces must not compare equal — \
@@ -776,8 +800,9 @@ end
         Ok(_) => panic!("a relation-valued condition must be refused at LOAD — it fails at eval"),
     };
     assert!(
-        errs.iter()
-            .any(|e| e.contains("if.condition") && e.contains("expected Bool") && e.contains("Relation")),
+        errs.iter().any(|e| e.contains("if.condition")
+            && e.contains("expected Bool")
+            && e.contains("Relation")),
         "the load-time refusal must say what the RUNTIME said (`expected Bool, got \
          Relation`), one phase earlier and with a span; got {errs:?}",
     );
@@ -1015,7 +1040,11 @@ end
     let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("info record");
     let v = anthill_core::kb::load::meta_value(&kb, rec.meta, "Cell")
         .expect("the entry is still keyed by the name `Cell`");
-    assert_bare_cell(&kb, &Value::term(v), "the metadata value under the `Cell` key");
+    assert_bare_cell(
+        &kb,
+        &Value::term(v),
+        "the metadata value under the `Cell` key",
+    );
 }
 
 /// `TypeExpr` CHILD — a genuine type annotation is not a value position and must not be
@@ -1037,7 +1066,11 @@ end
         .call("test.q0093ann.f", &[])
         .unwrap_or_else(|e| panic!("f: {e:?}"));
     match &v {
-        Value::Entity { functor, pos, named } => {
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
             assert_eq!(interp.kb().local_name_of(*functor), "some");
             let payload = pos
                 .first()
@@ -1081,7 +1114,11 @@ end
     let plain = "sort Box\n    sort V = ?\n    entity mk(x: V)\n  end";
 
     for (what, decls, ns) in [
-        ("a sort beside a namespace of the same name", namespace_first, "a"),
+        (
+            "a sort beside a namespace of the same name",
+            namespace_first,
+            "a",
+        ),
         ("CONTROL: a plain sort", plain, "b"),
     ] {
         let errs = match try_load_kb_with(&program(
@@ -1195,8 +1232,7 @@ end
     };
     let namespace_first =
         "namespace Box\n  end\n  sort Box\n    sort V = ?\n    entity mk(x: V)\n  end";
-    let sort_first =
-        "sort Box\n    sort V = ?\n    entity mk(x: V)\n  end\n  namespace Box\n  end";
+    let sort_first = "sort Box\n    sort V = ?\n    entity mk(x: V)\n  end\n  namespace Box\n  end";
 
     for (what, decls, ns) in [
         ("namespace first", namespace_first, "a"),

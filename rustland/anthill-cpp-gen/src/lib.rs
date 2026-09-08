@@ -3690,9 +3690,19 @@ fn node_references_name(
             branches,
         } => {
             node_references_name(kb, scrutinee, target)
-                || branches
-                    .iter()
-                    .any(|b| node_references_name(kb, &b.body, target))
+                || branches.iter().any(|b| {
+                    node_references_name(kb, &b.body, target)
+                        // WI-20260907-0QV5A: the GUARD is scanned too. This walk decides
+                        // whether an anonymous lambda references its own binder, and a
+                        // guard is a body position like any other — a `case p | f(x) -> …`
+                        // inside `let f = lambda …` is self-recursion. Blind to it, the
+                        // check passed and the accurate "recursive anonymous lambda"
+                        // diagnostic was replaced by whatever the lowering said next.
+                        // /code-review found this.
+                        || b.guard
+                            .as_ref()
+                            .is_some_and(|g| node_references_name(kb, g, target))
+                })
         }
         Expr::Lambda { body, .. } => node_references_name(kb, body, target),
         Expr::ListLit(es) | Expr::SetLit(es) => {
@@ -4466,6 +4476,36 @@ fn lower_match_branches_node(
     }
     let mut compiled: Vec<Compiled> = Vec::with_capacity(branches.len());
     for branch in branches {
+        // WI-20260907-0QV5A — REFUSED, not lowered without its guard. Until that
+        // ticket the interpreter ignored an arm guard too, so emitting the tag check
+        // alone AGREED with what the program did; now `eval/eval.rs::scan_match_arms`
+        // evaluates the guard and falls through to the next arm when it is false, and
+        // a tag-only ternary would take the arm the interpreter declines — generated
+        // C++ silently computing a different answer than the same source evaluated.
+        //
+        // A refusal rather than a lowering because the chain below has nowhere to fall
+        // OUT of: its LAST branch is the unconditional catch-all, so an all-guarded
+        // match needs a `MatchFailed` escape this backend has no form for, and the
+        // exhaustiveness check cannot supply the missing coverage either (it only
+        // diagnoses ENUM scrutinees). `(tag && guard) ? …` for the non-final arms
+        // would be half a feature.
+        //
+        // WI-891's CAPABILITY GAP, not a bare error: "the profile has not implemented
+        // this shape yet" is exactly what that channel is for, and it degrades the ONE
+        // method to a build-breaking `static_assert` instead of aborting the whole
+        // header. A bare `CppCodegenError` is FATAL by default and would emit no C++ at
+        // all for any other operation or sort in the KB (`CodegenContext::capability_gap`
+        // states the contract; `Expr::Bottom` and the higher-order variants beside it use
+        // the same channel for the same reason). /code-review found this.
+        if branch.guard.is_some() {
+            return Err(ctx.capability_gap(
+                "match: an arm GUARD (`case p | g -> …`) is not supported by \
+                 the cpp17-stl profile — a guarded arm is conditional at run \
+                 time and this lowering has no fallthrough for one; rewrite \
+                 the arm as `case p -> if g then … else …` over an unguarded \
+                 remainder",
+            ));
+        }
         // WI-318: branch.pattern is a Pattern-kind occurrence.
         let info = analyse_pattern_occ(kb, &branch.pattern, scrutinee)?;
         // Bindings frame: `?w` in the body refers to the local
