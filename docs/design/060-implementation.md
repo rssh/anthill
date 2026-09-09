@@ -447,6 +447,32 @@ So a call two dictionaries both claim is REFUSED, and carrier direction — whic
 picked one — was implemented and REMOVED when backing it out failed zero rows: a covered
 call that names a carrier and is not itself a witness does not exist in this design.
 
+### What is refused — and why the SORT is the wrong key
+
+Refused: two **equal** `require`s; a pair where one side is grounded by a body call rather
+than an anchor; two anchors the bracket cannot separate — a bare `require[Desc]`, two
+bounds of the SAME sort (`?x: Leaf, ?y: Leaf`), an APPLIED bracket whose arguments the
+match discards, a parameterized data sort at two instantiations; and a call two
+dictionaries both claim.
+
+**`?x: Leaf, ?y: Leaf` is the one the ticket had claimed, and it is not a gap in the
+implementation — it is the key being wrong.** The bound sort cannot identify the carrier:
+if `Leaf` is itself parameterized, `?x` and `?y` may be `Leaf[A]` and `Leaf[B]`, so `x.T`
+and `y.T` differ. No sort-based selector separates them, however it is written.
+
+The identity that does is the **projection root** — different expressions (different =
+not δ-equal) have different roots; δ-equal expressions are compatible. That is
+`path-dependent-types.md` §4's rule ("equality is definitional conversion"), already
+implemented and owned by `unify_types`.
+
+MEASURED 2026-09-09: the requirement channel is the ONLY type position that cannot
+resolve a projection — `operation h(x: Leaf, e: x.E)` loads while `requires
+Desc[T = x.E]` in the same signature reports `unresolved name 'x.E'` — and `p.E` PARSES
+in a `require` bracket, because §2.1's sigil-free head variable is a bare name and the
+projection is the form signatures already take. (The parse error is on `?x.E`, the sigil
+form.) **WI-20260909-S8CBV** owns it, and it REMOVES the selector above and lifts the
+anchored gate rather than adding to them.
+
 ## 8.6 The un-strip — DELIVERED by WI-20260909-51W18 (channel §10 item 1)
 
 MEASURED 2026-09-09 by making `strip_spec_type_args` the identity:

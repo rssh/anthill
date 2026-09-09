@@ -297,7 +297,10 @@ Two anchors are TWO dictionaries (the implicit-parameter reading), and WI-202609
 **delivered** that: each `require`'s written bracket chooses which head binding it names.
 What is still refused is a pair the bracket cannot separate — a bare `require[Spec]`, two
 bounds of the same sort, an applied bracket whose arguments the match discards, or any
-pair where one side is grounded by a body call instead of an anchor. The reason a
+pair where one side is grounded by a body call instead of an anchor. **Two bounds of the
+same sort are refused because the SORT is the wrong key**: if that sort is itself
+parameterized, `?x: Leaf` and `?y: Leaf` may be `Leaf[A]` and `Leaf[B]`. The key that
+separates them is the PROJECTION ROOT, with δ/σ-conversion as equality — WI-20260909-S8CBV. The reason a
 load-time COLLAPSE of two anchors into one remains wrong is unchanged: one goal per anchor needs the carrier-directed
 accumulating weave, and every load-time attempt to collapse two into one was measured
 wrong — a parameterized data sort's conditional sub-dictionary differs at two
