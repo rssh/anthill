@@ -20322,6 +20322,350 @@ impl<'a> Loader<'a> {
             && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, value).is_none()
     }
 
+    /// WI-20260909-51W18 — lower a `require[Spec[…]]` / `requires(Spec[…])` goal's SPEC
+    /// INSTANCE, which is a TYPE and not a value.
+    ///
+    /// This is `requirement-channel.md` §10 item 1's answer, and the answer is that
+    /// NEITHER channel the item offered is new. It asked whether the `[T…]` decoration
+    /// should ride the application type-args channel (WI-272/383) or a type-kind
+    /// occurrence child; it rides NEITHER — the names resolve through
+    /// [`Self::require_spec_binding_sort`], i.e. [`Self::parse_arg_sort_symbol`], the
+    /// SAME owner the §2.1 parameter form's bound reads, which already answers the
+    /// introducer rung (so `require[Desc[T = A]]` under `rule p[A](?x: A) :- Desc[A]`
+    /// substitutes `A` exactly as the head bound does) and the dotted rung, and which
+    /// answers `None` rather than reporting.
+    ///
+    /// TWO WALKS, AND BOTH NEED THIS ARM — corrected, and the correction is the lesson.
+    ///
+    /// S1 wrote the TERM-side twin (`convert_term_inner`'s `Term::Fn` arm), then DELETED
+    /// it on this argument: "the whole 4345-test binary passes with that arm disabled,
+    /// and the reason is structural — a rule BODY is stored as occurrences (WI-246) and
+    /// `require[…]` is legal ONLY as a body goal, so the term walk cannot meet one."
+    ///
+    /// THE GREEN SUITE PROVED NOTHING. A rule body is occurrences, but a CONSTRAINT body,
+    /// an operation's `ensures` body and an AGGREGATION-CONSTRAINT condition are all
+    /// stored as TERMS, and every one of them may carry a `requires(…)` or a
+    /// `?d = require[…]`. The corpus simply has no BRACKETED one — so the binary could
+    /// not have measured the arm it was cited as evidence about. `/code-review` drove all
+    /// four surfaces: `constraint c :- requires(Eq[T])`, the canonical stdlib typeclass
+    /// spelling, reported `unresolved name 'T'` where it loaded before this ticket.
+    ///
+    /// The doc even PREDICTED the failure — "IF a future position ever routes a
+    /// `find_dictionary` term through `convert_term_inner`, a free type parameter reports
+    /// `unresolved name`" — and filed it as a future cost rather than checking whether the
+    /// position already existed. It did, in three places.
+    /// `wi_51w18…::a_bracketed_requires_loads_in_every_term_surface` is the reader.
+    ///
+    /// A BINDING NAMING THE SPEC'S OWN DECLARED PARAMETER IS DROPPED, NOT REPORTED, and
+    /// that is what makes this change STRICTLY ADDITIVE rather than a new refusal. The
+    /// rule was first written as "a value that denotes no sort", which is too wide by
+    /// exactly the set [`Self::report_dropped_spec_binding`] now reports. `requires(Eq[T])`
+    /// in a free rule is the canonical typeclass spelling and its whole point is that
+    /// `T` is UNCONSTRAINED; dropping the binding leaves the goal as the old convert-time
+    /// strip produced it, so `witness_sort_goal`'s WI-20260830-X9PB4 loop synthesizes the
+    /// same wildcard it always did. MEASURED: 33 of 4338 `wi_tests` fail if such a name
+    /// is reported instead, all one cause, and ZERO shipped programs are affected — the
+    /// whole corpus writes no rule-body `requires(…)` / `require[…]` at all.
+    ///
+    /// A typo is therefore silent HERE, a deliberate boundary: telling `Desc[T = Zork]`
+    /// from `Desc[T]` needs a rule about which names an author may leave open, and
+    /// inventing one at this site would refuse the spelling the stdlib idiom depends on.
+    ///
+    /// The result is an ordinary `Expr::Apply` on the spec base, NOT a `Spliced` type
+    /// term: `typing::occ_head_symbol` — which `rewrite_find_dictionary_goal` uses to
+    /// read the spec base out of this very slot — recognizes `Apply`/`Constructor`/
+    /// `Instantiation`/`Ref`/`Ident` and not `Spliced`, so splicing here would have made
+    /// the rewrite report "an argument with no nominal spec head" for every goal.
+    fn build_require_spec_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+        let raw_span = self.parsed.terms.span(parse_id);
+        let span = SourceSpan::from_span(self.source_id, raw_span);
+        // NOT AN APPLICATION — a bare `Desc`, or a DOTTED base `ns.Desc`, both of which
+        // are NAMES. `parse_arg_type_is_applied` is the established discriminator and it
+        // asks `dotted_citation_name` FIRST, which is what keeps a dotted base out of the
+        // application path: read as a `Term::Fn` it is the converter's minted
+        // `field_access` chain, and the grounding scan then reported "a body call to one
+        // of `field_access`'s operations". A bare name is left to the ordinary walk,
+        // whose reading of it is what the whole corpus already exercises.
+        if !self.parse_arg_type_is_applied(parse_id) {
+            // THE TWO `_` CASES, MEASURED RATHER THAN ASSUMED. `/code-review` predicted
+            // both are wrong; one is not, and the other is a boundary with a cost.
+            //
+            //   * `(true, None)` — a DOTTED base naming no sort, `requires(a.b.Zork[T =
+            //     Leaf])`. Predicted to become a `field_access` chain and be reported as
+            //     "a body call to one of `field_access`'s operations". IT DOES NOT: the
+            //     ordinary walk reports `unresolved name 'a.b.Zork'` and the grounding
+            //     error names `a.b.Zork` too. Loud, and pointing at the right token.
+            //   * `(false, Some)` — a BARE introducer, `require[A]` under `rule p[A](?x:
+            //     A) :- Desc[A]`. This one IS a divergence: the name resolves through
+            //     `parse_arg_sort_symbol` one level in (`require[Desc[T = A]]` loads and
+            //     threads) and not at the top level, where the ordinary walk reports
+            //     `unresolved name 'A'`. Routing it to `Ref(sym)` would fix the spelling
+            //     and would also change the bare-name path for EVERY `require[Spec]` in
+            //     the corpus — a real blast radius for a spelling the documented form
+            //     already covers. Left as a boundary, with the measurement, rather than
+            //     widened on a guess.
+            return match (
+                matches!(self.parsed.terms.get(parse_id), Term::Fn { .. }),
+                self.require_spec_binding_sort(parse_id),
+            ) {
+                (true, Some(sym)) => {
+                    NodeOccurrence::new_expr(Expr::Ref(sym), span, self.current_owner)
+                }
+                _ => self.build_body_atom_occurrence(parse_id),
+            };
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id).clone()
+        else {
+            unreachable!("`parse_arg_type_is_applied` admitted a non-`Fn`")
+        };
+        // The base through the SAME ladder the bindings use, falling back to the
+        // reporting resolver. Both halves matter: the ladder answers for a
+        // head-introduced type variable at a NESTED head (`require[Desc[T = A[U = …]]]`),
+        // which `remap_symbol_strict` cannot — its `rule_head_bound_alias` is gated on
+        // `in_rule_head_bound`, false in a body — while the fallback keeps an
+        // unresolvable base (`require[Zork]`) LOUD, which is right at every depth.
+        let base = self
+            .require_spec_binding_sort(parse_id)
+            .unwrap_or_else(|| self.remap_symbol_strict(functor, raw_span));
+        // POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED PARAMS BY INDEX, and then ride
+        // as NAMED bindings. That is the language's own rule for a positional type
+        // argument — `canonicalize_fact_binding_value` maps `pos_val` onto
+        // `params.get(positional_index)`, and `op_requires_entry_carrier_map` "pairs
+        // positionally against the spec's declared params" — applied here rather than
+        // re-derived.
+        //
+        // IT IS ALSO WHAT MAKES THE DROP SOUND, and that is the reason it is not left to
+        // the reader (S2). Keeping positionals AS POSITIONALS meant a dropped one
+        // silently RE-INDEXED the rest: `requires(Desc[Zork, Leaf])` stored `Leaf` — the
+        // SECOND argument — at slot `#0`, attributing it to the first type parameter,
+        // with a clean load and no diagnostic. Found by `/code-review`, driven, and fixed
+        // by paying attribution up front: a named binding cannot shift.
+        let declared = self.kb.type_params_of_sort(base);
+        // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY
+        // BOUND BY NAME — the language's own rule, at `type_expr_to_child_inner`'s
+        // `positional_index` loop and in `check_sort_type_args`'s `free` count. Pairing
+        // by raw index instead paired the positional in `requires(Desc[T = Leaf, Leaf])`
+        // with `T`, which the named arg already claims, and the load was REFUSED as
+        // "binds 'T' more than once" — a VALID program rejected, with the diagnostic
+        // blaming the author. Found by `/code-review`, driven against the identical
+        // spelling in an ordinary type position, which loads clean.
+        // EVERY DECLARED PARAMETER A WRITTEN ARGUMENT CLAIMS, whether or not its value
+        // survived the drop. This is what the arity / param-name check must see: keying
+        // it off the SURVIVORS let a dropped argument make an over-application invisible
+        // (`Desc[Zork, Leaf]` on a one-parameter spec loaded clean, and `Desc[Bogus =
+        // Zork]` erased the bogus name before the check could reject it), so one mistake
+        // got two verdicts decided by an unrelated property of its value. Found by
+        // `/code-review`, driven over five spellings.
+        let mut claimed: Vec<Symbol> = Vec::new();
+        let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+        // Claimed BY NAME only — the skip loop below must not treat a slot an earlier
+        // POSITIONAL took as name-claimed, since positionals are consumed in order.
+        let mut claimed_by_name: Vec<String> = Vec::new();
+        for &(k, v) in named_args.iter() {
+            let key = self.reintern(k);
+            claimed.push(key);
+            claimed_by_name.push(self.kb.local_name_of(key).to_owned());
+            // A WRITTEN EFFECT ROW (`Spec[E = {}]`) is a `ParseAux` the ordinary named-arg
+            // loop lowers in place (WI-366 B1); `require_spec_binding_occurrence` answers
+            // `None` for it, so without this it vanished with no diagnostic — a different
+            // carrier, not "a name that denotes no sort", and so outside the drop rule.
+            if let Some(child) = self.lower_effect_row_aux_occ(v) {
+                named.push((key, child));
+                continue;
+            }
+            if let Some(o) = self.require_spec_binding_occurrence(v) {
+                named.push((key, o));
+                continue;
+            }
+            // THE NAMED LOOP DROPS LOUDLY TOO. It used to drop with no diagnostic and
+            // without recording the claim, so the skip loop below read the slot as free
+            // and `Desc[T = Zork, Leaf]` re-indexed `Leaf` onto `T` — the same defect
+            // this ticket fixed for positionals, arriving from the other side. A rule
+            // written twice is an asymmetry waiting.
+            self.report_dropped_spec_binding(base, &declared, v, span.span);
+        }
+        let mut pos: Vec<Rc<NodeOccurrence>> = Vec::new();
+        let mut overflow = 0usize;
+        let mut next_free = 0usize;
+        for &v in pos_args.iter() {
+            // THE SLOT IS CLAIMED BEFORE THE VALUE IS JUDGED, and that ordering is the
+            // whole correctness of the drop. A positional's parameter is decided by WHERE
+            // THE AUTHOR WROTE IT; deciding it after the drop let a dropped argument yield
+            // its slot to the next one, so `Desc[Zork, Leaf]` bound `Leaf` — written
+            // SECOND — to `T`.
+            //
+            // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY
+            // BOUND BY NAME — the language's own rule, at `type_expr_to_child_inner`'s
+            // `positional_index` loop and in `check_sort_type_args`'s `free` count.
+            // Pairing by raw index instead paired the positional in `requires(Desc[T =
+            // Leaf, Leaf])` with `T`, which the named arg already claims, and the load was
+            // REFUSED as "binds 'T' more than once" — a VALID program rejected.
+            while declared
+                .get(next_free)
+                .is_some_and(|n| claimed_by_name.iter().any(|c| c == n))
+            {
+                next_free += 1;
+            }
+            let slot = declared.get(next_free).cloned();
+            if slot.is_some() {
+                next_free += 1;
+            }
+            // The effect-row arm belongs on BOTH loops. It was on the named one only, so
+            // `requires(Walk[Src, {}])` dropped the row while `requires(Walk[C = Src, E =
+            // {}])` kept it, and `sort_goal_with_wildcards` skips effect-row params so
+            // nothing re-supplied it. The sibling occurrence walk has it on both.
+            let lowered = self
+                .lower_effect_row_aux_occ(v)
+                .or_else(|| self.require_spec_binding_occurrence(v));
+            let Some(child) = lowered else {
+                self.report_dropped_spec_binding(base, &declared, v, span.span);
+                match slot {
+                    Some(n) => claimed.push(self.kb.intern(&n)),
+                    None => overflow += 1,
+                }
+                continue;
+            };
+            match slot {
+                Some(n) => {
+                    // ONE KEY SPELLING FOR BOTH SURFACES. The named loop interns the
+                    // written short name, so a positional must too — keying it by the
+                    // spec-qualified symbol left `Desc[Leaf]` and `Desc[T = Leaf]` under
+                    // two different `Symbol`s for one slot, latent only while every reader
+                    // compares by local name. WI-1016's rule, one carrier over.
+                    let key = self.kb.intern(&n);
+                    claimed.push(key);
+                    named.push((key, child));
+                }
+                // Past the declared params there is no parameter to name. Kept POSITIONAL
+                // so the arity check below sees it and says so.
+                None => pos.push(child),
+            }
+        }
+        // THE SAME ARITY / PARAM-NAME CHECK THE SIBLING WALK RUNS on a nested sort
+        // application (`build_body_atom_occurrence_inner`'s `check_sort_type_args`). This
+        // slot bypassed it, so `requires(Desc[Bogus = Leaf])` and a three-argument
+        // application of a one-parameter spec both loaded clean and stored the bogus
+        // binding — harmless only while nothing read the bracket, which is precisely what
+        // this ticket ends. No new RULE, just the shared one applied at a site that was
+        // missing it — and fed the WRITTEN arguments, not the surviving ones.
+        if let Err(problem) =
+            self.kb
+                .check_sort_type_args(base, &declared, &claimed, pos.len() + overflow)
+        {
+            let detail = problem.describe(&self.kb, base);
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail,
+                span: Some(span.span),
+            });
+        }
+        NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: base,
+                pos_args: pos,
+                named_args: named,
+                type_args: Vec::new(),
+            },
+            span,
+            self.current_owner,
+        )
+    }
+
+    /// One binding VALUE inside a `require[…]` spec instance: its occurrence, or `None`
+    /// when it denotes no sort (see [`Self::build_require_spec_occurrence`] for why
+    /// `None` drops rather than reports).
+    ///
+    /// A NESTED APPLICATION recurses — `require[FiniteCollection[C = List[T = String]]]`
+    /// is the shape §10 item 1 names as saying "nothing the witness did not" — and only
+    /// once its OWN head denotes a sort, so a nested application on an unresolvable head
+    /// drops whole rather than reporting a name its caller has just decided to tolerate.
+    /// The recursion's own base resolves through this same ladder, which is what makes
+    /// that true at every depth: an earlier version let it fall to `remap_symbol_strict`,
+    /// and a nested head-introduced type variable was then reported `unresolved name`
+    /// — two resolvers answering one question, found by `/code-review`.
+    fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        let sym = self.require_spec_binding_sort(parse_id)?;
+        if self.parse_arg_type_is_applied(parse_id) {
+            return Some(self.build_require_spec_occurrence(parse_id));
+        }
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
+        Some(NodeOccurrence::new_expr(
+            Expr::Ref(sym),
+            span,
+            self.current_owner,
+        ))
+    }
+
+    /// WI-20260909-51W18 — THE RULE the require-spec lowering asks: does this binding
+    /// value name a sort? [`Self::parse_arg_sort_symbol`] is the one owner of it —
+    /// the same one the §2.1 parameter form's bound reads — so the introducer rung
+    /// (`require[Desc[T = A]]` under `rule p[A](?x: A) :- Desc[A]`) and the dotted rung
+    /// come for free and cannot answer differently here than they do there.
+    /// WI-20260909-51W18 — a bracket binding whose value this slot cannot lower: is it
+    /// the WILDCARD the drop rule admits, or an author mistake that must be reported?
+    ///
+    /// THE RULE IS ABOUT NAMES, and stating it that way is the fix. `require[Spec[T]]`
+    /// where `T` is the spec's OWN declared parameter is how a caller says "any
+    /// instantiation" — WI-20260830-X9PB4's wildcard, and the reason un-stripping the
+    /// bracket could be strictly additive. But the drop was applied to every carrier the
+    /// loop met, so a literal (`Desc[T = 3]`), an entity constructor (`Desc[T = leaf]`), a
+    /// rule name, a logical variable in type position (`Desc[T = ?v]`) and a tuple type
+    /// all vanished with no diagnostic — and, before the pairing fix above, silently
+    /// re-indexed their neighbours. Driven by `/code-review` over all five.
+    ///
+    /// A CENSUS SAYS THE NARROW RULE COSTS NOTHING: every free-name binding in the corpus
+    /// spells the spec's own declared parameter — `Eq[T]` ×24, `Desc[T]` ×23,
+    /// `PartialEq[T]` ×15, plus `WeakOrd[T]`, `Ord[T]`, `Relatable[T]`, `Spec[T]`,
+    /// `Spec[C]`, `Walk[C]`, `Bag[E]`, `Desc[T = T]`. Anything else was already a mistake;
+    /// it just could not say so.
+    fn report_dropped_spec_binding(
+        &mut self,
+        base: Symbol,
+        declared: &[String],
+        value: TermId,
+        span: crate::span::Span,
+    ) {
+        let written = parse_arg_type_name_of(&self.parsed.symbols, &self.parsed.terms, value);
+        if written
+            .as_deref()
+            .is_some_and(|n| declared.iter().any(|d| d == n))
+        {
+            return; // the spec's own parameter name — an open binding, not a mistake.
+        }
+        let detail = match written {
+            Some(n) => format!(
+                "`{}` has a type parameter list, and `{}` in it names neither a sort nor \
+                 one of `{}`'s own type parameters ({})",
+                self.kb.local_name_of(base),
+                n,
+                self.kb.local_name_of(base),
+                if declared.is_empty() {
+                    "it declares none".to_owned()
+                } else {
+                    declared.join(", ")
+                },
+            ),
+            None => format!(
+                "`{}`'s type parameter list takes sorts and its own type parameter names; \
+                 this argument is neither",
+                self.kb.local_name_of(base),
+            ),
+        };
+        self.errors.push(LoadError::InvalidTypeArgument {
+            detail,
+            span: Some(span),
+        });
+    }
+
+    fn require_spec_binding_sort(&self, parse_id: TermId) -> Option<Symbol> {
+        let name = self.parse_arg_type_name(parse_id)?;
+        self.parse_arg_sort_symbol(&name)
+    }
+
     /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
     /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&self, value: TermId) -> bool {
@@ -20802,10 +21146,50 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
+                // WI-20260909-51W18 — THE SPEC-INSTANCE SLOT, from the TERM walk.
+                //
+                // Slot 0 of a `find_dictionary` goal is a TYPE, and the two walks must
+                // lower it the same way or one spelling of one relation gets two
+                // readings. The occurrence walk got this arm first, and the term walk was
+                // left without it on the argument that "`require[…]` is legal ONLY as a
+                // body goal, so the term walk cannot meet one" — evidenced by the whole
+                // test binary passing with the arm disabled.
+                //
+                // THAT WAS A GREEN-SUITE ARGUMENT AND IT WAS WRONG. Constraint bodies,
+                // operation `ensures` bodies and aggregation-constraint conditions are
+                // all stored as TERMS, and every one of them may carry a `requires(…)` or
+                // a `?d = require[…]`. The corpus simply has no BRACKETED one — so the
+                // binary could not have measured it, and un-stripping the bracket turned
+                // `constraint c :- requires(Eq[T])`, the canonical stdlib typeclass
+                // spelling, into `unresolved name 'T'`. Found by `/code-review`, driven
+                // over five surfaces. A test in each is now the reader.
+                let spec_instance_slot =
+                    self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
                 let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .enumerate()
                     .map(|(i, &id)| {
+                        if spec_instance_slot && i == 0 {
+                            let occ = self.build_require_spec_occurrence(id);
+                            return match node_occurrence::value_to_term(
+                                &mut self.kb,
+                                &Value::Node(occ),
+                            ) {
+                                Ok(t) => t,
+                                // Loud, not a silent `Bottom`: a spec instance that
+                                // cannot be written as a term would ground nothing and
+                                // the clause would fail for a reason no message names.
+                                Err(e) => {
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "a `require`/`requires` spec instance is not \
+                                             term-representable: {e:?}"
+                                        ),
+                                    });
+                                    self.kb.alloc(Term::Bottom)
+                                }
+                            };
+                        }
                         // WI-342: field types are carrier-agnostic; the
                         // conversion hint only wants a ground `TermId` (a
                         // denoted-bearing field is no literal-typing hint → None).
@@ -24770,8 +25154,21 @@ impl<'a> Loader<'a> {
                     } else {
                         smallvec::SmallVec::new()
                     };
+                    // WI-20260909-51W18 — the OCCURRENCE twin of `convert_term_inner`'s
+                    // `find_dictionary` arm, and it is needed for the same reason WI-742
+                    // §2.1 needed two arms: a rule's HEAD rides the term path and its BODY
+                    // rides this one. MEASURED, by writing only the term arm first: an
+                    // un-stripped `require[Desc[T]]` still reported `unresolved name 'T'`,
+                    // raised HERE — this walk resolves the same names again, so a rule
+                    // written on one walk alone is a rule that does not hold.
+                    let spec_instance_slot =
+                        self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
                     let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
                     for (i, &pid) in pos_args.iter().enumerate() {
+                        if spec_instance_slot && i == 0 {
+                            pos.push(self.build_require_spec_occurrence(pid));
+                            continue;
+                        }
                         if let Some(child) = self.lower_effect_row_aux_occ(pid) {
                             pos.push(child);
                             continue;

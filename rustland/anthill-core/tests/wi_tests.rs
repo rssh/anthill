@@ -1656,3 +1656,9 @@ mod wi_pw9a0_rule_tvar_in_bound_test;
 
 #[path = "include/wi_8rjk8_guarded_equation_fires_test.rs"]
 mod wi_8rjk8_guarded_equation_fires_test;
+
+#[path = "include/wi_51w18_require_spec_type_args_test.rs"]
+mod wi_51w18_require_spec_type_args_test;
+
+#[path = "include/wi_qmfc5_typed_head_anchor_test.rs"]
+mod wi_qmfc5_typed_head_anchor_test;

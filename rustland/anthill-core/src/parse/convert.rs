@@ -3376,9 +3376,10 @@ impl<'a> Converter<'a> {
     /// `anthill.kernel.find_dictionary`, which `require[X]` reads with an OUTPUT:
     ///
     /// ```text
-    ///     require[Eq[T]]         ⇒  find_dictionary(Eq, out: ?<fresh>)
-    ///     ?d = require[Eq[T]]    ⇒  find_dictionary(Eq, out: ?d)
-    ///     requires(Eq[T])        ⇒  find_dictionary(Eq)              (unchanged)
+    ///     require[Eq[T = Int64]]      ⇒  find_dictionary(Eq[T = Int64], out: ?<fresh>)
+    ///     ?d = require[Eq[T = Int64]] ⇒  find_dictionary(Eq[T = Int64], out: ?d)
+    ///     requires(Eq[T = Int64])     ⇒  find_dictionary(Eq[T = Int64])
+    ///     requires(Eq[T])             ⇒  find_dictionary(Eq)   -- `T` denotes no sort
     /// ```
     ///
     /// `out` is a NAMED arg on purpose (the settled encoding, channel doc §5): the
@@ -3392,11 +3393,13 @@ impl<'a> Converter<'a> {
     /// minting it as an ordinary body existential (exactly what `?` mints) means the
     /// sweep only ever COPIES an occurrence that already exists.
     ///
-    /// The spec's type-args are stripped for the SAME reason the guard strips them
-    /// ([`Self::strip_spec_type_args`]): a bare `T` in term position would reach
-    /// scope resolution with no binding in a free rule. Un-stripping them — so
-    /// WI-613 attribution sees full specs — needs a type-position channel and is
-    /// `requirement-channel.md` §10 item 1, still open.
+    /// The spec's type-args RIDE WHOLE (WI-20260909-51W18, closing
+    /// `requirement-channel.md` §10 item 1). They used to be stripped here because a
+    /// bare `T` in term position reaches scope resolution with no binding in a free
+    /// rule; the loader now lowers this argument as a TYPE
+    /// ([`crate::kb::load::Loader::build_require_spec_occurrence`]), where a name that denotes
+    /// no sort is DROPPED rather than reported — which reproduces the stripped reading
+    /// exactly for the free-parameter spelling and retains a written concrete binding.
     ///
     /// `require` is matched BY NAME with a bracketed (type-application) shape, the
     /// same way `requires` / `unify` / `eq` are matched by name here. A parenthesised
@@ -3475,7 +3478,8 @@ impl<'a> Converter<'a> {
         let spec_arg = self
             .require_spec_arg(require_tid)
             .expect("lower_require called on a non-`require[…]` term");
-        let base = self.strip_spec_type_args(spec_arg);
+        // WHOLE, not stripped — see the doc above and `rewrite_requires_goal`'s twin.
+        let base = spec_arg;
         // The address, not the short name — see `desugar_target`. The other producer
         // of this functor is `rewrite_requires_goal` below.
         let functor = self.intern(dt::FIND_DICTIONARY);
@@ -3648,47 +3652,20 @@ impl<'a> Converter<'a> {
             }
             _ => return tid,
         };
-        // Guard tier: only the spec's BASE matters — the body's own call to one of
-        // the spec's operations grounds its type-parameters (the typer sweep). So
-        // drop any `[…]` type-argument decoration on the spec instance: it keeps
-        // `requires(Eq[T])` equivalent to `requires(Eq)` here, and, crucially, keeps
-        // the bare type-parameter name `T` out of scope resolution (it has no
-        // binding in a free rule). Threading `[T = ?x]` bindings is a Tier-B nicety.
-        let base = self.strip_spec_type_args(spec_arg);
+        // The spec instance rides WHOLE, exactly as `lower_require`'s does — one
+        // spelling of one relation, so the check tier and the bind tier cannot acquire
+        // different readings of the same bracket. This used to strip the `[…]`
+        // decoration to keep a bare `T` out of scope resolution; the loader now lowers
+        // this argument as a TYPE (`Loader::build_require_spec_occurrence`), which is where that
+        // question belongs and where a name denoting no sort is dropped rather than
+        // reported. See `docs/design/060-implementation.md` §8.6.
+        let base = spec_arg;
         let mut args: SmallVec<[TermId; 4]> = SmallVec::new();
         args.push(base);
         // The address, as at `lower_require` (the `require[X]` producer): the typer
         // asks for this relation by qualified name, so the address is what the two
         // ends were agreeing on through a table in the middle.
         self.alloc_fn_term(dt::FIND_DICTIONARY, args, span)
-    }
-
-    /// The spec instance with any `[…]` type-argument bindings removed. A
-    /// parameterized spec instance (`Eq[T]`) converts to a `Fn` carrying its
-    /// type-parameters as arguments (`Eq[T]` → `Fn(Eq, [Ref(T)])`, `Eq[T = X]` →
-    /// a `type_args` named-arg); return a bare nullary `Fn` on the same base
-    /// functor so no type-parameter name reaches scope resolution. A bare `Eq`
-    /// (already argument-free — `Ref`/`Ident`) is returned unchanged.
-    fn strip_spec_type_args(&mut self, tid: TermId) -> TermId {
-        match self.terms.get(tid) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } if !pos_args.is_empty() || !named_args.is_empty() => {
-                let functor = *functor;
-                let span = self.terms.span(tid);
-                self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::new(),
-                    },
-                    span,
-                )
-            }
-            _ => tid,
-        }
     }
 
     // ── Namespace ───────────────────────────────────────────────

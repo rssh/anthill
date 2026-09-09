@@ -17,7 +17,10 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | not started — §7 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
-| §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **not started** — §8 |
+| §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
+| channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
+| §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
+| channel §10 item 3 | op→rule dictionary channel (polytypes) | **WI-20260909-NAR1X** | **settled, not built** — §8.10 |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 
@@ -258,7 +261,7 @@ The seam is one branch in §4's builtin. What WI-742 must NOT do is make the unb
 un-answered later. Delay is the honest placeholder, and it is also the final behaviour
 for a sort with no `domain`.
 
-## 8. §3 — the typed head as the second anchor — NOT DELIVERED
+## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 
 **Owner: WI-20260908-VVM1R**, split out of WI-742 once the rest landed — 060's
 work is partitioned by section, and this was the one section that would otherwise have
@@ -296,33 +299,379 @@ in (the choice must not change the answer), what fills its CONTENT parameter pos
 (passing the carrier there would bind content params to the carrier's type), and how
 WI-860's supplied-vs-derived agreement reads against a dictionary derived that way.
 
-**And the surface has already thrown away what would replace the op.** The author writes
-`require[Desc[T = Colour]]` — which NAMES the binding — but the converter strips a
-spec's type arguments at the guard tier (`record_find_dictionary_grounding`'s own note:
-"the guard tier strips the spec's type-args at convert time, so it cannot attribute WHICH
-type-parameter each `requires` names", which is why two `requires` on one spec base are
-refused). So the parameter-attribution the op supplies is not recoverable from the
-surface either.
+**The surface throws away what would replace the op — and that is what this ticket
+removes.** The author writes `require[Desc[T = Colour]]`, which NAMES the binding, but
+both producers (`lower_require`, `rewrite_requires_goal`) call `strip_spec_type_args`
+(`convert.rs:3672`), which rebuilds the spec instance as a bare nullary `Fn`. Measured:
+`require[Desc]` and `require[Desc[T = Leaf]]` are byte-identical after convert.
 
-That note calls the repair "Tier B (WI-613)", and the CITATION IS STALE: WI-613 is
-Delivered and the strip and its refusal are both still in place — so retaining the
-bracket has no live owner. Whoever takes the anchor should re-read that comment rather
-than trust its ticket number.
+`record_find_dictionary_grounding`'s note calls the repair "Tier B (WI-613)", and the
+CITATION IS STALE: WI-613 is Delivered. The live owner is `requirement-channel.md`
+§10 item 1, and it is **taken by this ticket** (see "The un-strip" below).
 
-**The shape of the fix, for whoever takes it.** The grounding is STATIC: the bound is a
-`TermId` at load, so `sort_provides(bound_sort, spec_sort)` is decidable at typing —
-which is proposal 060's own rule (selection happens in the typing pass) and is a
-stronger position than the witness path, not a weaker one. What is needed beside it is a
-carrier-to-parameter map that does not come from an op: WI-596's two shapes answer it
-differently (a self-representing spec names its carrier by the SORT, so the bound maps
-straight onto it; a carrier-parameter typeclass names it by a type-parameter, which is
-what the stripped bracket would have said). Deliver the type-argument retention first,
-or restrict the first cut to the self-representing shape and say so.
+## 8.1 MEASURED 2026-09-09 — the surfaces, before any change
 
-**Acceptance, when it is taken.** `p(?x: T, ?y) :- ?d = require[Eq[T]], f(?x, ?y, ?d)`
-loads and threads; the UNTYPED twin stays refused (the control that says the annotation
-is what grounds it); and a typed head whose bound does NOT provide the spec stays
-refused.
+`Desc` is a carrier-PARAMETER spec (`describe(x: T)`, no parameter typed `Desc`), `Leaf
+provides Desc[T = Leaf]` supplying `7` against the default `1`.
+
+| # | clause | today |
+|---|---|---|
+| a | `rule anchored(?x: Leaf, ?d) :- ?d = require[Desc[T = Leaf]], seed(?x)` | refused — "no body call to one of `Desc`'s operations" |
+| b | the UNTYPED twin | refused, **identical message** |
+| c | (a) + `Desc.describe(?x, ?r)` | loads, **7** — the witness path |
+| d | `rule anchored[A](?x: A, ?d) :- ?d = require[Desc[T = A]], …` | refused TWICE — `WI-582: type-variable A has no bounding guard` **and** the grounding refusal |
+| e | (d) + `Desc[A]` as the bounding guard | refused ONCE — grounding only |
+| f | `rule anchored(?x: Leaf) :- requires(Desc[T = Leaf]), seed(?x)` | refused, same message — the CHECK tier needs the anchor too |
+| i | `?x: Plain` (does not provide) + `require[Desc[T = Plain]]` | refused with the SAME message — right verdict, WRONG reason |
+| j | `?d = require[Desc]` + typed head | refused, byte-identical to (a) |
+| k | `rule anchored[A](?x: A) :- Desc[A], seed(?x)` then `Desc.describe(?x, ?r)` | **loads, 7** — dispatch already works with NO `require` |
+| m | `rule anchored[A](?x: A) :- Sp[C = A], seed(?x)` | refused — `try_body_tvar_guard` takes only a single POSITIONAL arg |
+
+Row (k) is the one to keep in view: a covered call under a typed head already
+value-dispatches correctly with no dictionary anywhere. C666A is delivered and driven
+(`wi742…::a_typed_head_may_join_the_predicate_its_carrier_exposes`), so §9's "both must
+lift for the ticket's acceptance" was WI-742's own and is not inherited here.
+
+## 8.2 The attribution is NOT missing — it has an owner
+
+The paragraph this replaces said a carrier-to-parameter map "does not come from an op"
+and had to be invented. **It exists.** `spec_carrier_param_or_sole` (`typing.rs:34990`,
+WI-1102 over WI-1076's `spec_carrier_param`) answers WHICH type parameter of a spec the
+carrier goes in, op-independently, on two rungs: the param some declared operation
+*receives on* (first in the sort's declared order), else a SOLE parameter gated on
+not-self-representing. Memoized; measured over stdlib + host bindings at its own site.
+
+It is a DIFFERENT question from `param_is_spec_carrier` (WI-596), which classifies a
+call's ARGUMENTS and answers a SET — `set(target: T, value: V)` says both. The anchor
+needs the first.
+
+**A new consumer owes the second gate**, and the predicate's own doc says so: it answers
+"which parameter an operation takes", which is not by itself "which parameter names the
+carrier" (measured there: `touch(c: Spec, x: P)` answers `P`, the accepted argument;
+XZMGC's reader needed `composed_self_reference` beside it). The gate here is agreement
+with the bound's own provision row — used as a CHECK, never as the producer, which would
+be circular.
+
+**Two rungs remain genuinely absent**: a self-representing spec (no param to pin — the
+carrier is the sort, and `witness_sort_goal`'s self-representing branch already builds
+`GoalCarrier` from the value's type and args), and a multi-parameter spec with no
+receiving operation (`None` ⇒ located refusal).
+
+## 8.3 The bound is TWO different things, and that is the discriminator
+
+- **Concrete** (`?x: Leaf`, row a) — the bound IS the carrier. Test `sort_provides(bound,
+  spec)`. This is also the C666A shape, `rule p(?x: A)` inside `sort A requires Spec`.
+- **Introducer** (`rule p[A](?x: A) :- Desc[A]`, row e) — after WI-582's substitution the
+  recorded bound IS THE SPEC (`load.rs:20262-20268`: `rule_head_bound_alias` returns the
+  bound symbol, then `make_sort_ref`). Test `bound == spec`.
+
+Opposite staging, one channel (`rule_type_bounds`), and the two tests do not overlap.
+
+## 8.4 The transform — a compiled PROJECTION, not a compile-time dictionary
+
+At `record_find_dictionary_grounding`, for a clause with a non-empty `rule_type_bounds`
+whose witness scans all miss:
+
+1. `p = spec_carrier_param_or_sole(kb, spec)` + the §8.2 gate. `None` + self-representing
+   ⇒ no param to pin; `None` otherwise ⇒ located refusal.
+2. Pick the anchoring head variable from `rule_type_bounds` by §8.3's test. ZERO ⇒ a
+   located refusal naming sort, spec and the missing `provides` — row (i) is refused for
+   the WRONG reason today, so the acceptance control does not discriminate until this
+   exists.
+3. Emit `find_dictionary(spec_base, ⟨carrier⟩, ?x, out: ?d)` — the carrier slot replacing
+   `op_functor`.
+4. Run time reads `typeof(?x)` through the same `value_type_term` the witness path uses,
+   pins `p ↦ that type`, and X9PB4's wildcard loop fills the rest. `simp_guard_holds_core`
+   collapses to a direct `sort_provides` — there are no op params to consult, so the
+   op-keyed consumer is BYPASSED rather than generalized.
+
+This is §2.1 exactly: the PROJECTION is compiled, the FETCH reads a carried type.
+
+**THE BOUND IS NOT THE CARRIER, and step 4 reads `typeof(?x)` for that reason.** The
+bound is an UPPER bound — `bare_sort_compatible` admits the sort, its
+`sort_sym_compatible` relatives, and any sort that PROVIDES it — so the bound picks WHICH
+head variable anchors the spec (step 2) and never stands in for the carrier value.
+MEASURED, per shape:
+
+- **spec bound** (the introducer form) — row (k): the recorded bound is `Desc`, the
+  runtime carrier is `Leaf`. Different BY DESIGN; the clause is polymorphic over every
+  `Desc` provider, and only a carried-type read names the one in hand.
+- **data-sort bound** (`?x: Leaf`) — the gap is structurally closed, and loudly: a
+  `provides` onto a constructor-declaring sort is refused — *"'Base' declares
+  constructors, which makes it a DATA sort, and nothing is-a a data sort — a provision
+  would let 'Sub' widen to it"*. So nothing can be narrower than the bound here.
+- a bare PARAMETERIZED bound (`?x: List`) admits every instantiation, and a conditional
+  provision follows the instantiation.
+
+So a compile-time *dictionary* — splicing a constant instead of reading — is sound only
+when ALL THREE hold: the bound is a data sort, fully applied, and its provision
+unconditional. Narrow enough that it is recorded here as a boundary rather than planned
+as an optimization; taking it would also have to answer WI-860 (the agreement check lives
+in `read_dictionary_into`, which a spliced constant never reaches).
+
+NOT monomorphization — specializing the clause per provider. Conditional provisions make
+the family unbounded (`Pair provides Eq[Pair] :- Eq[A], Eq[B]`) and it changes the clause
+population the discrimination tree indexes.
+
+## 8.5 Two anchors are TWO dictionaries — the implicit-parameter reading
+
+The annotated head variables ARE the implicit parameters: one dictionary per (spec,
+anchor), each bound to its own variable, threaded into the calls that need THAT carrier.
+This is the channel doc's own sentence — "the call site drives it; `require[X]` is only
+the explicit form", which "simply pre-binds one of those variables" — with the anchor as
+the slot source. So a clause with two typed head vars both providing one spec is NOT
+refused; only attributing a WRITTEN `require` between them needs the bracket.
+
+**The weave is single-dictionary BY CONSTRUCTION and must change.**
+`weave_covered_call` (`typing.rs:71084`) emits `requirements: vec![out]` — one element,
+REPLACING the list — and finds its target by `Rc::ptr_eq`. Two dictionaries never collide
+today only because `collect_covered_calls` filters on the spec, so a call node is covered
+by at most one spec, and same-spec duplicates are refused upstream by `has_duplicate_spec`.
+Under this reading both consequences bite: the weave must be CARRIER-DIRECTED (pair each
+covered call with the dictionary whose anchor matches that call's carrier argument), and
+the second weave over an already-rebuilt node cannot find its target by `Rc::ptr_eq`, so
+it silently does not weave and trips the `debug_assert!(wove, …)` at `typing.rs:71207`.
+One accumulating pass, not two replacing ones. `apply_within` needs nothing —
+`requirements` is already a list.
+
+## 8.6 The un-strip — DELIVERED by WI-20260909-51W18 (channel §10 item 1)
+
+MEASURED 2026-09-09 by making `strip_spec_type_args` the identity:
+
+| bracket | stripped (HEAD) | un-stripped |
+|---|---|---|
+| `require[Desc[T = Leaf]]` | loads, 7 | **loads, 7** |
+| `require[Desc[Leaf]]` | loads, 7 | **loads, 7** |
+| `require[Desc[T = T]]` | loads, 7 | `unresolved name 'T'` |
+| `require[Desc[T]]` | loads, 7 | `unresolved name 'T'` |
+| `requires(Desc[T])` | loads, 7 | `unresolved name 'T'` |
+| `require[Desc]` | loads, 7 | loads, 7 |
+
+**The split is CONCRETE vs VARIABLE, not named vs positional** — the named form breaks
+too, so the `type_args` ParseAux channel is not already carrying it. A concrete bound
+already survives un-stripping in BOTH spellings, which is the whole of what §8.3's
+concrete arm needs.
+
+**Blast radius: 33 of 4338 `wi_tests`, ZERO shipped programs.** `grep -rn 'requires(\|require\['`
+over stdlib + examples + anthill-todo returns one hit, a rule NAMED `sort_requires`. All
+33 are one cause — the free-tvar bracket — reported either as the raw `unresolved name`
+or as the fixture's own expectation string (`wi642:116` `requires(Relatable[T])`,
+`wi625:324` and `wi625:648` `requires(Eq[T])`).
+
+**AS BUILT — and two predictions in this section were wrong, corrected here rather than
+deleted.**
+
+The channel is `Loader::build_require_spec_occurrence`, which resolves each binding value
+through **`parse_arg_sort_symbol`** — the one owner of "does this name denote a sort", the
+same one the §2.1 parameter form's bound reads. It is NOT `type_expr_to_child`'s
+`TypeExpr::Simple` arm, which this section named: that arm takes a `TypeExpr`, and a
+require bracket is a parse `Term::Fn` whose binding values are plain `Term::Ref` names
+(measured: `Desc[T = Leaf]` → `Fn(Desc, named:[(T, Ref(Leaf))])`; `Desc[Leaf]` →
+`Fn(Desc, pos:[Ref(Leaf)])`; `Desc` → `Ref(Desc)`).
+
+**The head-introduced tvar rung needed no gate widening.** This section predicted it as
+"the widening with the largest blast radius in this ticket", because
+`rule_head_bound_alias` is gated on `in_rule_head_bound` and WI-20260908-PW9A0 narrowed
+that deliberately. `parse_arg_sort_symbol` asks `rule_head_tvar` **unconditionally** — it
+"must answer before any conversion happens" — so the rung came for free, and
+`in_rule_head_bound` was not touched.
+
+**A name denoting no sort is DROPPED, not lowered to a wildcard.** Equivalent in effect
+and simpler: the binding is absent from the stored goal, which is byte-identical to what
+the convert-time strip produced, so `witness_sort_goal`'s X9PB4 loop synthesizes the same
+wildcard it always did. Nothing new constructs one. `requires(Eq[T])` — the canonical
+typeclass spelling, whose whole point is that `T` is unconstrained — stays writable, and
+the change is STRICTLY ADDITIVE.
+
+**But the drop is sound only because POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED
+PARAMS FIRST**, and that equivalence is exactly where a first cut was wrong. Keeping
+positionals positional made a dropped one silently RE-INDEX the rest:
+`requires(Desc[Zork, Leaf])` stored `Leaf` — the SECOND argument — at slot `#0`,
+attributing it to the first type parameter, on a clean load with no diagnostic, in the
+slot S2 is specified to read. Found by `/code-review`, driven, and fixed by paying the
+attribution up front (`canonicalize_fact_binding_value`'s rule, applied not re-derived);
+a named binding cannot shift. Pinned by
+`a_dropped_positional_does_not_re_index_the_others`, whose control writes two sorts so
+the SHIFT is what moves and not the count.
+
+**Three more things `/code-review` found and this ticket fixed rather than deferred**: a
+nested application whose head is a head-introduced type variable reported `unresolved
+name` (the recursion's base fell to `remap_symbol_strict`, whose alias is gated on
+`in_rule_head_bound` — two resolvers answering one question, now one); a written effect
+row `Spec[E = {}]` was silently dropped (a `ParseAux` carrier, not a name, so the drop
+rule never covered it — `lower_effect_row_aux_occ`, as the ordinary loop does); and this
+slot bypassed the `check_sort_type_args` its sibling walk runs, so `Desc[Bogus = Leaf]`
+and an over-application both loaded clean and stored the bogus binding.
+
+**ONE WALK, NOT TWO.** A first cut also wrote the term-side lowering
+(`convert_term_inner`'s `Term::Fn` arm), on WI-742 §2.1's precedent that a head rides one
+walk and a body the other. MEASURED: the whole binary passes with that arm disabled,
+because a rule BODY is stored as occurrences (WI-246 — "the term body is gone") and
+`require[…]` is legal only as a body goal. It was deleted rather than kept undrivable.
+
+**The rewrite carries the instance too.** `make_witness` used to re-mint slot 0 as a bare
+`Expr::Ref(spec_base)`, which would have erased the retention one phase later — the two
+spellings would still produce identical stored goals. It now pushes the instance whole;
+every reader of that slot asks for the HEAD and an `Apply` answers it (`occ_head_symbol`,
+and the resolver's `head_symbol` over `ViewHead::Functor`).
+
+**Delivered controls**, measured by mutating each site: RETENTION 3 rows, THE DROP 3 rows
+here + **33 elsewhere** (`wi1040` 9, `wi625` 7, `wi_x9pb4` 6, `wi1045` 5,
+`kernel_mint_address` 3, `wi1098` 2, `wi642` 1), THE WHOLE ARM 4 rows — and notably NOT
+the retention rows, because once the converter stops stripping the ordinary walk lowers a
+CONCRETE binding correctly on its own. The arm's job is exactly the names that do not
+resolve as values. Driven by
+`anthill-core/tests/include/wi_51w18_require_spec_type_args_test.rs`.
+
+Once a written binding exists, `witness_sort_goal` has two sources for one slot. Written
+beats a synthesized wildcard; written against a DERIVED CONCRETE type that disagrees is a
+new refusal (WI-860's shape, one tier down). ~~Nothing decides that today because nothing
+can.~~ **DELIVERED for the anchor path by WI-20260909-QMFC5**, and it is the retention's
+first real reader: `anchor_grounding` holds both the written bracket and the bound its
+anchor selected, so `?x: Leaf` under `require[Desc[T = Other]]` — which loaded clean and
+answered `7`, `Leaf`'s dictionary, ignoring the author's explicit `T = Other` — is now a
+located refusal naming both. Only a CONCRETE disagreement refuses; a binding naming a type
+variable was already dropped as a wildcard upstream.
+
+STILL UNDECIDED ON THE WITNESS PATH, and the reason is a signature rather than a rule:
+`fetch_dictionary` takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0, so
+`witness_sort_goal` still replaces a written binding with a synthesized wildcard. That is
+what makes a self-representing spec whose provider pins a sibling concretely DELAY
+(`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`) — the author
+wrote `Cap[P = Int64]`, the provider binds `P = Int64`, and they never meet.
+
+`try_body_tvar_guard`'s two limits (drops the guard's parameter position; refuses
+`Sp[C = A]` — row m) become cosmetic once §8.2 supplies the attribution: they restrict
+which SURFACES row (e) accepts, not whether the mechanism works.
+
+## 8.7 Acceptance
+
+The old acceptance spelled it `p(?x: T, ?y) :- ?d = require[Eq[T]], f(?x, ?y, ?d)`. **That
+clause does not load, for a reason unrelated to this ticket** — row (d), `T` has no
+bounding guard. Use the introducer form.
+
+Row (e) LOADS and THREADS, and row (a) with it: the covered call dispatches through the
+dictionary the annotation grounded, asserted BY VALUE. Controls, each stated at its site:
+
+- the UNTYPED twin (row b) stays refused — what says the ANNOTATION is what grounds it;
+- a bound that does NOT provide (row i) is refused with its OWN located message, not the
+  grounding one;
+- a clause with BOTH a typed head and a covered witness call answers exactly as today (row
+  c/h: `7`) — the witness path is not displaced.
+
+**The fixture must use a spec op that is COVERED but cannot be a WITNESS**
+(`op_has_spec_carrier_param` false — a nullary / all-content op). Rows (c) and (h) show a
+bodied `Desc.describe` call is simultaneously witness and covered call, so the obvious
+fixture passes entirely on the existing witness path and never exercises the anchor.
+
+## 8.8 The check tier — the anchor reaches it, and it emits the same goal
+
+**`requires(X)` under a typed-head anchor gets the anchor** (user's call, 2026-09-09) and
+is lowered to the **same runtime goal the bind tier emits, minus `out:`**.
+
+### The first draft resolved it at LOAD, and that was wrong — three measurements
+
+This section used to say the tier was "decided at LOAD, not lowered to a runtime goal",
+on the argument that there is no residual runtime question in either shape: a data-sort
+bound cannot be widened so the carrier IS the bound, and a spec bound has the
+annotation's own `domain(?x, Spec)` goal. Both clauses are true. **The conclusion does not
+follow**, and `/code-review` drove three counterexamples, each a program where the
+load-time verdict said SATISFIED and the identical clause one spelling apart left a
+residual:
+
+| hole | fixture | check tier said | bind tier said |
+|---|---|---|---|
+| **conditional provision** | `Wrap provides Sh[T = Wrap] :- Sh[A]`, carrier `wrap(bad())` | `?r = 1`, definite | residual |
+| **`sort_refines`** | `sort Sub { requires Leaf }`, provides nothing | `?r = 1`, 1 solution | no solutions |
+| **witness-supplied provision** | `sort Rival provides Desc[T = Leaf]` | — | the anchor REFUSED at load |
+
+The first two are the same mistake in two channels: `sort_provides` is a *base-level*,
+*type-argument-blind* answer, and the bound is an UPPER bound on a sort HEAD. A structural
+argument that reaches the head covers only the head — `Wrap[A = Good]` and `Wrap[A = Bad]`
+are both `Wrap` and provide differently, and `sort_refines` is an edge
+`bare_sort_compatible` walks that `sort_provides` never does.
+
+**Each of the three has a different single-site repair, and every one leaves the other two
+open.** That is the tell that the load-time verdict was the wrong SHAPE, not that its
+predicate needed widening. The runtime goal gets all three right because it asks where the
+carrier's actual type is known.
+
+### And the arm could empty a rule body
+
+`rule fe: f(?x: Leaf) <=> 1 :- requires(Desc[T = Leaf]) [simp]` has that goal as its ONLY
+body atom. Dropping it left `new_body == []` and tripped `set_rule_body_nodes`'s fact-ness
+assert; with `debug_assertions` off the assert vanishes, `is_equation` flips false→true,
+and **a guarded rewrite silently becomes an unconditional law**. Every anchored fixture in
+the test file was relational — and a relational typed head gets a prepended `domain(?x,
+Leaf)` goal that keeps the body non-empty — so the whole suite shipped green over it.
+
+### The stated objection was also wrong
+
+"Emitting a goal would make the clause DELAY on something already decided" — the bind tier
+emits this same goal in this same body position and resolves it by rotation. There was
+never a delay to avoid.
+
+### What emitting it buys
+
+`requires(X)` IS the no-`out` case of one relation (WI-1040's "one form, one owner"). One
+producer and one consumer is what makes the two spellings *unable* to disagree; a
+load-time twin of the runtime verdict is a second implementation of the same predicate,
+and it drifted from the original in three places before anyone read it. It also makes
+`find_dictionary_guard`'s anchor branch reachable — under the load-time verdict no
+anchor-form goal without `out` was ever stored, so that branch was dead code.
+
+## 8.9 There is no "anchor with no `require`" — the real question
+
+This section asked "automatic per anchor, or written-only?". **That dichotomy was wrong**
+(user, 2026-09-09). Every dictionary need traces to a WRITTEN requirement; the only
+question is WHERE it was written:
+
+  (i) **in the rule body** — `require[X]` / `requires(X)`. This is what §8.4 grounds.
+  (ii) **on an enclosing or callee declaration** — `sort S requires Desc[…]`, `operation
+       f(…) requires Desc[T]`. A body call needing it is a USE of a requirement the
+       author already wrote; nothing is being invented.
+
+MEASURED 2026-09-09 for the ENCLOSING half:
+
+| | clause | answers |
+|---|---|---|
+| I1 | a rule INSIDE `sort Holder { requires Desc[T = Plain] }`, body calls `Desc.describe(plain(), ?r)` | `1` — the spec DEFAULT |
+| I2 | the same call with `requires(Desc[T = Plain])` written IN THE BODY | `[]` — the guard `DontFire`s, `Plain` provides no `Desc` |
+| I3 | the same call, NOTHING declared anywhere | `1` |
+
+**I1 ≡ I3**: the enclosing sort's `requires` has no effect on the clause. That is
+`check_rule_body_requirements`' own documented rule — *"A Horn rule does NOT inherit its
+enclosing sort's `requires` chain (that gates `[simp]`/`[unfold]` equations, not clause
+bodies), so the in-body goal is the only declaration site"* — and I1 vs I2 is what it
+costs: the correct spelling refuses to fire, the declared-on-the-sort spelling folds the
+spec default and answers. Silently, and in the direction that produces a value.
+
+The CALLEE half is the channel doc's *"the call site drives it; `require[X]` is only the
+explicit form … the transformation reads the callee's dictionary chain
+(`provider_dict_entries` / `synth_req_names`) and synthesizes one `find_dictionary` goal
+per slot"*. NOT measured here — I1/I3's callee sort declares no `requires`, so that
+fixture says nothing about it, and a claim either way would be unfounded.
+
+**So the open question is: does a rule USE the requirement written on its enclosing (or
+callee's) declaration?** It is a semantics change against a documented boundary, not a
+gap to fill in passing, and it is DELIBERATELY not one of the filed stages — it needs a
+decision first. Row (k) — a covered call under a typed head already answering `7` by
+value-dispatch — is not an argument against it: value-direction happens to reach the same
+answer at ONE supplier, and REFUSES at two (058 §4.9, WI-1040's two-supplier fixture),
+which is exactly where inheriting would decide.
+
+## 8.10 Build sequence — filed 2026-09-09, VVM1R as umbrella
+
+| stage | ticket | what | depends |
+|---|---|---|---|
+| S1 | WI-20260909-51W18 | un-strip the spec's type-args (§8.6) — **delivered** | VVM1R |
+| S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) | S1 |
+| S4 | WI-20260909-96ZTM | two dictionaries per spec + carrier-directed accumulating weave (§8.5) | S2 |
+| S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
+
+Tagged `vvm1r`. S3 (the check tier) is FOLDED INTO S2 rather than filed: it is a
+load-time verdict riding on S2's steps 1–2, smaller than its own ticket would be. §8.9's
+question has no stage — see above.
 
 ## 9. C666A — the guarded join
 

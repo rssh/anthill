@@ -5881,7 +5881,15 @@ impl KnowledgeBase {
             .any(|(child_qn, &child_sym)| {
                 child_qn.starts_with(&prefix)
                 && !child_qn[prefix.len()..].contains('.')   // direct child only
-                && matches!(self.kind_of(child_sym), Some(SymbolKind::Entity))
+                // `has_kind`, NOT `kind_of` — symbol categories are a SET and `kind_of`
+                // reports only the FIRST-DECLARED one (`intern.rs`'s `add_kind` is
+                // documented order-preserving). A sort whose `entity red` is preceded by
+                // an `operation red()` or a `namespace red` answered `Some(Operation)`
+                // here and the sort stopped being a DATA sort — which flipped
+                // `ProvidesNamesDataSort`, the "nothing is-a a data sort" refusal that
+                // several soundness arguments in the typer cite. `/code-review` drove it:
+                // declaration ORDER as the only varied axis moved the verdict.
+                && self.has_kind(child_sym, SymbolKind::Entity)
             })
     }
 

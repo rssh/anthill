@@ -280,11 +280,26 @@ spec's params: a covered body call (the witness — the guard tier's existing
 requirement) or a typed pattern binding (`?x: T` — WI-582 on equational heads;
 WI-742 extended it to relational heads, where the annotation compiles to a
 `domain(?x, T)` goal whose carried-type read is exactly the projection source —
-proposal 060 §3). THAT SECOND ANCHOR IS NOT YET READ HERE: WI-742 made the typed
-relational head load and stopped there, and WI-20260908-VVM1R owns making this
-rule accept it. `docs/design/060-implementation.md` §8 measures why it is a second
-grounding path rather than one added disjunct — every consumer below
-`find_dictionary` is keyed on the witness OP FUNCTOR, and a typed head has no op. `?d = require[Eq[T]]` with neither — no body call covered by
+proposal 060 §3). **THE SECOND ANCHOR IS READ HERE NOW** — WI-20260909-QMFC5, in
+BOTH tiers: `require[X]` and `requires(X)` emit one goal shape, differing only in
+whether `out:` is present. `docs/design/060-implementation.md` §8 measures why it is a
+second grounding path rather than one added disjunct — every consumer below
+`find_dictionary` is keyed on the witness OP FUNCTOR, and a typed head has no op, so
+the anchor form puts the SPEC BASE in that slot and the resolver tells the two apart
+by asking whether that symbol is a sort. The carrier PARAMETER comes from
+`spec_carrier_param_or_sole` (gated on agreement with the bound's own provision row),
+the carrier VALUE from the annotated head variable, and its provision is asked through
+`carrier_provides_spec` — BOTH channels, at the load site and the runtime guard
+together, because widening one alone was measured to turn a loud refusal into a silent
+no-answer.
+
+Two anchors are TWO dictionaries (the implicit-parameter reading) and are **refused for
+now**, by WI-20260909-96ZTM's leave: one goal per anchor needs the carrier-directed
+accumulating weave, and every load-time attempt to collapse two into one was measured
+wrong — a parameterized data sort's conditional sub-dictionary differs at two
+instantiations, and even two byte-identical bounds diverge under a conditional
+provision, decided by which head variable was written first. The predicate a collapse
+would need is "the carriers are equal AT RUN TIME", which a bound cannot answer. `?d = require[Eq[T]]` with neither — no body call covered by
 `Eq`, no typed binding of `T` — has nothing to compile a projection path from and
 is **refused at typing** (the guard tier's "cannot be grounded" hard error,
 extended to the named form), never left to delay forever.
@@ -498,22 +513,60 @@ real when a dictionary can reach σ from somewhere other than a fetch — i.e. w
 
 ## 10. Open
 
-Items 2 and 5 are **settled and delivered** (item 2's eval half by WI-1045);
-1, 3 and 4 are untouched.
+Items 1, 2 and 5 are **settled and delivered** (item 2's eval half by WI-1045, item 1
+by WI-20260909-51W18); 3 and 4 are untouched — 3 is owned by WI-20260909-NAR1X.
 
-1. **[OPEN] The type-position channel for the un-stripped spec** (§5 — the rest of
-   the encoding is settled there): which concrete channel carries the `[T…]`
-   decoration past scope resolution (the application's type-args channel,
-   WI-272/383, vs a type-kind occurrence child), so WI-613 attribution sees full
-   specs. The constraint is fixed — a bare name there is a type Var (WI-849),
-   never a scope-resolved ref; only the carrier is to pick. `require[X]` strips its
-   type-args at convert exactly as `requires(X)` does, for the same stated reason,
-   so the duplicate-spec-base hard error still stands. WI-20260830-X9PB4 removed one
-   CONSEQUENCE of the stripping without closing the item: a spec parameter the witness
-   call does not name is now emitted as a wildcard rather than omitted (§5), so the
-   goal is well-formed for the matcher — but the bracket's own values are still not
-   read, and writing `require[FiniteCollection[C = List[T = String], Element = String]]`
-   still says nothing the witness did not.
+1. **[DELIVERED by WI-20260909-51W18] The type-position channel for the un-stripped
+   spec** (§5 — the rest of the encoding is settled there).
+   The item asked which concrete channel carries the `[T…]` decoration past scope
+   resolution (the application's type-args channel, WI-272/383, vs a type-kind
+   occurrence child), the constraint being that a bare name there is a type Var
+   (WI-849), never a scope-resolved ref.
+
+   **Answered: neither is new.** The goal's spec argument is lowered by
+   `Loader::build_require_spec_occurrence`, which resolves each binding value through
+   `parse_arg_sort_symbol` — the one owner of "does this name denote a sort", shared with
+   the §2.1 parameter form's bound, and which already answers the head-introduced
+   type-variable rung and the dotted rung and returns `None` rather than reporting. MEASURED (2026-09-09, `strip_spec_type_args` made the identity): a CONCRETE
+   bound already survives un-stripping in both the named and positional spellings — the
+   split is concrete-vs-variable, NOT named-vs-positional — and only a free
+   type-variable name refuses (`unresolved name 'T'`). Blast radius 33 of 4338
+   `wi_tests`, all one cause, and ZERO shipped programs: the whole corpus (stdlib,
+   examples, anthill-todo) contains no rule-body `requires(…)` / `require[…]` at all.
+   A name that is one of the SPEC'S OWN DECLARED PARAMETERS is DROPPED — the binding
+   simply is not there, which is byte-identical to the stripped goal, so
+   `witness_sort_goal`'s X9PB4 loop synthesizes the same wildcard it always did and
+   nothing new constructs one. (An earlier draft of this item said "settled as a
+   WILDCARD"; drop and wildcard are the same thing one producer over, and 060 §8.6 is
+   the settlement.)
+
+   **THE RULE IS ABOUT NAMES, and stating it as "a name resolving to nothing" was too
+   wide** — as first shipped the drop was applied to every carrier the loop met, so a
+   literal (`Desc[T = 3]`), an entity constructor, a rule name, a logical variable in
+   type position (`Desc[T = ?v]`) and a tuple type all vanished with no diagnostic, and
+   a typo (`Desc[T = Zork]`) was indistinguishable from the idiom. `/code-review` drove
+   all five. Anything that is not the spec's own parameter name and denotes no sort is
+   now REPORTED. A corpus census says the narrow rule costs nothing: every free-name
+   binding that ships spells the spec's own declared parameter — `Eq[T]` ×24,
+   `Desc[T]` ×23, `PartialEq[T]` ×15, plus `WeakOrd[T]`, `Ord[T]`, `Relatable[T]`,
+   `Spec[T]`, `Spec[C]`, `Walk[C]`, `Bag[E]`, `Desc[T = T]`. That keeps `requires(Eq[T])` — whose
+   whole point is an unconstrained `T` — writable, and makes un-stripping strictly
+   additive. POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED PARAMS FIRST, so a dropped
+   binding cannot re-index the ones after it: that is what makes the drop sound rather
+   than merely convenient, and it was a real defect until `/code-review` drove it —
+   THREE TIMES, from three sides. A positional's slot is claimed before its value is
+   judged; a dropped NAMED key records its claim too (or the skip loop reads the slot as
+   free and `Desc[T = Zork, Leaf]` re-indexes from the other direction); and
+   `check_sort_type_args` is fed what the AUTHOR WROTE rather than what survived, or the
+   very drop it polices makes an over-application invisible.
+
+   A binding whose value denotes no sort is DROPPED, which reproduces the stripped goal
+   exactly; the retained instance now rides whole into the REWRITTEN goal too
+   (`make_witness`), so `require[Desc[T = Leaf]]` and `require[Desc]` are finally
+   distinguishable on the stored form. The duplicate-spec-base hard error still stands —
+   it is the retained bracket's first READER, and it belongs to the anchor
+   (WI-20260909-QMFC5), not here. Full write-up, including two predictions this item made
+   that measurement corrected: `060-implementation.md` §8.6.
 2. **[SETTLED — one representation, no conversion] The dictionary carrier.** The
    item offered two settlements ("both carriers key alike" or "one converts at
    entry"). **Neither: there is one representation.** §9 is the rule — one functor,

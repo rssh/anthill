@@ -64071,6 +64071,18 @@ pub(crate) fn find_dictionary_guard(
     arg_vals: &[Value],
 ) -> FindDictOutcome {
     let arg_types = witness_arg_types(kb, subst, arg_vals);
+    // THE ANCHOR FORM'S NO-`out` PATH — and it is the CHECK TIER's only consumer.
+    //
+    // `/code-review` found this branch unreachable and it was: the anchor emitted
+    // `goal: None` for the no-`out` case, so no anchor-form goal without `out` was ever
+    // stored, and every one with `out` routed through `read_dictionary_into`. It is
+    // reachable now because the check tier emits its goal like the bind tier does —
+    // which is what makes `requires(X)` and `require[X]` one relation instead of two.
+    // Driven by `wi_qmfc5…::the_check_tier_emits_the_same_goal_the_bind_tier_does` and
+    // the three soundness rows beside it.
+    if is_anchor_form(kb, spec_sort, op_functor) {
+        return anchor_guard(kb, spec_sort, &arg_types);
+    }
     guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
 }
 
@@ -64107,6 +64119,124 @@ fn guard_over_arg_types(
     simp_guard_holds_core(kb, op_functor, spec_sort, |i| {
         arg_sorts.get(i).copied().flatten()
     })
+}
+
+/// WI-20260909-QMFC5 — is this rewritten goal the TYPED-HEAD ANCHOR form rather than the
+/// witness one?
+///
+/// The two forms share one relation and one argument layout: slot 1 holds the WITNESS OP
+/// in one and the SPEC BASE in the other. Asking whether that symbol is a SORT is the
+/// discriminator the shapes already carry — a spec op is an `Operation`, so the two can
+/// never be confused and no kernel symbol had to be minted to tell them apart. The
+/// equality is belt to that brace: the anchor emitter writes the spec base into BOTH
+/// slots, so a sort there that is not this goal's own spec is a shape nothing produces.
+///
+/// `has_kind`, NOT `kind_of`. Symbol categories are a SET and `kind_of` reports only the
+/// FIRST-DECLARED one — its own doc says to ask `has_kind` "whenever the question is 'can
+/// this name serve as an X'", which is exactly this question. MEASURED with `kind_of`: a
+/// program declaring `namespace test.Desc` before `sort Desc` answered `Namespace` here,
+/// so an anchored goal was routed down the WITNESS path with a sort in the op slot, found
+/// no signature, and the clause SILENTLY answered nothing where the same program without
+/// that namespace answered `7`. The same desync WI-20260824-Q0093 found once already.
+fn is_anchor_form(kb: &KnowledgeBase, spec_sort: Symbol, slot1: Symbol) -> bool {
+    slot1 == spec_sort && kb.has_kind(slot1, crate::kb::SymbolKind::Sort)
+}
+
+/// WI-20260909-QMFC5 — the anchor form's guard: does the carrier VALUE's carried type
+/// provide the spec?
+///
+/// [`simp_guard_holds_core`] is BYPASSED rather than generalized, and that is the point
+/// of the second path: its whole job is reading an op's params to learn which arguments
+/// carry the spec (WI-596's two shapes), and the anchor has one argument which IS the
+/// carrier by construction. So the question collapses to one [`sort_provides`] — the same
+/// oracle the witness path reaches through the shared core, asked directly.
+///
+/// Three-valued exactly as the witness path is: a headless carried type SUSPENDS and is
+/// never NAF-decided (WI-067), because the head variable may simply not be bound yet.
+fn anchor_guard(kb: &KnowledgeBase, spec_sort: Symbol, arg_types: &[Value]) -> FindDictOutcome {
+    let Some(ty) = arg_types.first() else {
+        // No carrier argument at all. The emitter always writes one, so this is a
+        // malformed goal rather than an undecided one — don't fire.
+        return FindDictOutcome::DontFire;
+    };
+    match sort_functor_of_view(kb, ty) {
+        // BOTH CHANNELS, and the pairing with the load site is the point.
+        // [`carrier_provides_spec`] is the documented owner of "does this carrier supply
+        // this spec" — a sort's own out-edges PLUS a provision another sort declares FOR
+        // it (`sort Rival provides Desc[T = Leaf]`, WI-1043). A bare [`sort_provides`]
+        // here is blind to the second, and `/code-review` drove both faces of that:
+        // asking only `sort_provides` at the LOAD site refuses a witness-supplied carrier
+        // outright, while asking only it HERE lets the clause load and then answer
+        // nothing. Widening one end alone just moves which face you get, so the two move
+        // together — that is why this line and `anchor_grounding`'s selection cite each
+        // other rather than each carrying its own copy of the predicate.
+        Some(carrier) if carrier_provides_spec(kb, carrier, spec_sort) => FindDictOutcome::Fire,
+        Some(_) => FindDictOutcome::DontFire,
+        None => FindDictOutcome::Suspend,
+    }
+}
+
+/// WI-1016 — THE ONE KEY SPELLING every producer of a spec-parameter binding must use:
+/// the bare short-name symbol when one is registered, else the spec-qualified parameter.
+///
+/// Written out at three sites (the anchor's pinned binding, `witness_sort_goal`'s pinned
+/// loop, and the shared wildcard tail), which is two too many for a rule whose whole
+/// content is "both carriers key alike" — a producer that spelled it differently put one
+/// slot under two `Symbol`s, latent for exactly as long as every reader compared by local
+/// name. `/code-review` asked for one owner; this is it.
+///
+/// `fallback` is what stands in when the spec-qualified name does not resolve. It differs
+/// per caller and is therefore passed rather than chosen here: the pinned producers fall
+/// back to the parameter symbol they already hold, while the wildcard tail declines to
+/// synthesize at all and never reaches this function.
+fn spec_param_key(kb: &KnowledgeBase, spec_qn: &str, short: &str, fallback: Symbol) -> Symbol {
+    let qualified = kb
+        .try_resolve_symbol(&format!("{spec_qn}.{short}"))
+        .unwrap_or(fallback);
+    kb.try_resolve_symbol(short).unwrap_or(qualified)
+}
+
+/// WI-20260909-QMFC5 — the anchor form's [`SortGoal`]: the carrier's carried type pinned
+/// at the spec's carrier PARAMETER, with the rest wildcarded by the shared tail.
+///
+/// WHICH PARAMETER, WITHOUT AN OP. [`spec_carrier_param_or_sole`] (WI-1102 over WI-1076)
+/// is the op-INDEPENDENT owner of that question — the param some declared operation
+/// receives on, else a sole parameter gated on not-self-representing. It answers `None`
+/// for a SELF-REPRESENTING spec, which needs no parameter at all: there the carrier is
+/// the SORT, and the goal's [`SortGoal::carrier`] discriminant takes it, exactly as
+/// [`witness_sort_goal`]'s self-representing branch does from the same value.
+///
+/// THE SECOND GATE THAT PREDICATE'S DOC DEMANDS is at the LOAD site
+/// ([`anchor_grounding`]), not here: it answers "which parameter an operation takes",
+/// which "is not by itself which parameter names the carrier", and the load-time check
+/// can name the sort and the spec in a located refusal where this one could only delay.
+fn anchor_sort_goal(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    arg_types: &[Value],
+) -> Option<WitnessGoal> {
+    let carrier_ty = arg_types.first()?.clone();
+    if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort)) {
+        let carrier = sort_functor_of_view(kb, &carrier_ty).map(|sort| GoalCarrier {
+            sort,
+            args: receiver_type_args(kb, &carrier_ty),
+        });
+        return Some(sort_goal_with_wildcards(
+            kb,
+            spec_sort,
+            SmallVec::new(),
+            carrier,
+        ));
+    }
+    let param = spec_carrier_param_or_sole(kb, spec_sort)?;
+    let tid = type_value_as_term(kb, &carrier_ty)?;
+    // One key spelling for every producer — see [`spec_param_key`].
+    let short = kb.local_name_of(param).to_string();
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let key = spec_param_key(kb, &spec_qn, &short, param);
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    bindings.push((key, tid));
+    Some(sort_goal_with_wildcards(kb, spec_sort, bindings, None))
 }
 
 /// WI-1040 — the outcome of READING a rule-body requirement for its VALUE, the
@@ -64170,20 +64300,44 @@ pub(crate) fn fetch_dictionary(
     arg_vals: &[Value],
 ) -> FindDictFetch {
     let arg_types = witness_arg_types(kb, subst, arg_vals);
-    match guard_over_arg_types(kb, spec_sort, op_functor, &arg_types) {
+    // WI-20260909-QMFC5 — one relation, two grounding paths. The guard and the goal are
+    // chosen together from the same discriminant, so an anchored goal can never be
+    // guarded one way and fetched the other.
+    let anchored = is_anchor_form(kb, spec_sort, op_functor);
+    let verdict = if anchored {
+        anchor_guard(kb, spec_sort, &arg_types)
+    } else {
+        guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
+    };
+    match verdict {
         FindDictOutcome::Fire => {}
         other => return FindDictFetch::Guard(other),
     }
-    let Some(WitnessGoal { goal, synthesized }) =
+    let built = if anchored {
+        anchor_sort_goal(kb, spec_sort, &arg_types)
+    } else {
         witness_sort_goal(kb, spec_sort, op_functor, &arg_types)
-    else {
+    };
+    let Some(WitnessGoal { goal, synthesized }) = built else {
+        // TWO PATHS, TWO SENTENCES. The witness form's failure IS a missing op signature;
+        // the anchor form has no op at all, and on it `op_functor == spec_sort`, so the
+        // shared message told the author that `Desc` "has no recorded signature" —
+        // pointing them at an operation that does not exist.
         return FindDictFetch::Undecided {
-            detail: format!(
-                "`{}` has no recorded signature, so the witness arguments' carried types \
-                 cannot say which of `{}`'s parameters they bind",
-                kb.qualified_name_of(op_functor),
-                kb.qualified_name_of(spec_sort),
-            ),
+            detail: if anchored {
+                format!(
+                    "the typed head binding's carried type cannot be read as a term, so \
+                     it cannot say which of `{}`'s parameters the carrier fills",
+                    kb.qualified_name_of(spec_sort),
+                )
+            } else {
+                format!(
+                    "`{}` has no recorded signature, so the witness arguments' carried \
+                     types cannot say which of `{}`'s parameters they bind",
+                    kb.qualified_name_of(op_functor),
+                    kb.qualified_name_of(spec_sort),
+                )
+            },
         };
     };
     let scope = ResolutionScope {
@@ -64305,7 +64459,10 @@ fn witness_sort_goal(
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     let mut carrier: Option<GoalCarrier> = None;
-    let mut synthesized = false;
+    // NO `synthesized` LOCAL: the flag is owned by [`sort_goal_with_wildcards`], which is
+    // the only thing that can set it (it is what mints the wildcards). One left behind
+    // here would tell a reader this function still tracks the value that decides
+    // Defect-vs-Undecided when the callee does.
     for (i, (_pname, pty)) in rec.params.iter().enumerate() {
         if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
             continue;
@@ -64333,13 +64490,8 @@ fn witness_sort_goal(
             continue;
         };
         let short = kb.local_name_of(param_sym).to_string();
-        // The key spelling `resolve` matches provider heads against — the same
-        // preference `sort_goal_from_subst` applies: the bare short-name symbol when
-        // one is registered, else the spec-qualified parameter symbol.
-        let qualified = kb
-            .try_resolve_symbol(&format!("{spec_qn}.{short}"))
-            .unwrap_or(param_sym);
-        let key = kb.try_resolve_symbol(&short).unwrap_or(qualified);
+        // The key spelling `resolve` matches provider heads against — [`spec_param_key`].
+        let key = spec_param_key(kb, &spec_qn, &short, param_sym);
         let Some(tid) = type_value_as_term(kb, &arg_ty) else {
             continue;
         };
@@ -64368,9 +64520,22 @@ fn witness_sort_goal(
     // implies via the provider's `provides` fact". That is this goal, one producer over:
     // the carrier is concrete and the sibling is not. `goal_from_requires_entry` gets the
     // same shape for free — a written `requires Iterable[C = C, Element = Element, E = E]`
-    // spells every element — and this producer, which rebuilds the goal from the witness
-    // call because [`crate::parse::convert`]'s `lower_require` strips the bracket's type
-    // arguments, is the one that had to synthesize them.
+    // spells every element — and this producer, which rebuilds the goal from the WITNESS
+    // CALL rather than from the written bracket, is the one that has to synthesize them.
+    //
+    // THE OLD REASON IS GONE, AND SAYING SO MATTERS. This used to read "because
+    // `lower_require` STRIPS the bracket's type arguments" — WI-20260909-51W18 deleted
+    // that strip, and the bracket now rides whole on the goal's slot 0. The synthesis is
+    // still right HERE, because a witness-grounded goal is built from the call's argument
+    // types and the author may not have written a bracket at all. But a reader who
+    // trusted the old sentence would conclude the bracket is UNAVAILABLE at this site and
+    // stop looking — and it is exactly what
+    // `a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays` records
+    // as an open boundary: the author writes `Cap[P = Int64]`, the provider binds
+    // `P = Int64`, and the clause still delays because the written binding is replaced by
+    // a wildcard here. Closing that means READING slot 0, which is a `fetch_dictionary`
+    // signature change (it takes `spec_sort`, `op_functor`, `arg_vals`) and so is not
+    // this ticket's.
     //
     // NOT A WEAKER MATCH: a wildcard is refused against a CONCRETE candidate binding
     // (`fact Eq[T = Int64]` at a wildcard `T` still fails `dispatch_values_match`), so
@@ -64394,6 +64559,25 @@ fn witness_sort_goal(
     // measurement rather than an un-drivable fixture.
     // `wi_x9pb4_require_dictionary_element_test::an_effect_row_element_is_left_to_its_
     // own_owner` drives both arms.
+    Some(sort_goal_with_wildcards(kb, spec_sort, bindings, carrier))
+}
+
+/// WI-20260909-QMFC5 — the SHARED tail of every [`SortGoal`] this tier builds: fill the
+/// spec's remaining elements with wildcards and assemble.
+///
+/// Extracted from [`witness_sort_goal`] verbatim when the typed-head anchor became a
+/// SECOND producer of the pinned set. The wildcard rule and its `synthesized` flag are
+/// subtle enough (see below, and [`WitnessGoal`]) that a copy is a copy that drifts —
+/// and the flag decides whether a resolution TIE reads as a defect or as "cannot decide",
+/// which is a verdict neither producer may answer differently.
+fn sort_goal_with_wildcards(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    mut bindings: SmallVec<[(Symbol, TermId); 2]>,
+    carrier: Option<GoalCarrier>,
+) -> WitnessGoal {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut synthesized = false;
     for short in kb.type_params_of_sort(spec_sort) {
         if sort_param_is_effect_row(kb, spec_sort, &short) {
             continue;
@@ -64413,11 +64597,10 @@ fn witness_sort_goal(
         let Some(qualified) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
             continue;
         };
-        // The KEY spelling is the one the pinned loop above uses — the bare short-name
-        // symbol when one is registered, else the spec-qualified parameter — so a
-        // wildcard and a pinned binding are keyed alike and `goal_binding_value` reads
-        // both by local name.
-        let key = kb.try_resolve_symbol(&short).unwrap_or(qualified);
+        // The same key spelling the pinned loop uses, so a wildcard and a pinned binding
+        // are keyed alike — [`spec_param_key`], reached with the qualified symbol this
+        // arm has already proved resolves.
+        let key = spec_param_key(kb, &spec_qn, &short, qualified);
         // The spec's OWN parameter symbol as the value — `is_type_param_value`'s
         // wildcard, the same term a written `requires Spec[Element = Element]` clause
         // carries for an element its author did not pin.
@@ -64425,14 +64608,14 @@ fn witness_sort_goal(
         bindings.push((key, wildcard));
         synthesized = true;
     }
-    Some(WitnessGoal {
+    WitnessGoal {
         goal: SortGoal {
             spec_sort,
             bindings,
             carrier,
         },
         synthesized,
-    })
+    }
 }
 
 /// WI-20260830-X9PB4 — [`witness_sort_goal`]'s answer, and WHETHER IT HAD TO INVENT
@@ -69638,8 +69821,12 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
 ///   * Only TOP-LEVEL rule-body goals are swept. A `requires` nested inside a
 ///     `not` / implication / bounded quantifier is not rewritten here and, as
 ///     before this feature, fails as an ordinary goal (never a false positive).
-///   * At most one `requires` per spec base per rule (the type-args are stripped,
-///     so two on one spec can't be attributed — rejected loudly above).
+///   * At most one `requires` per spec base per rule — rejected loudly above. The
+///     stated reason USED to be that the type-args were stripped; since
+///     WI-20260909-51W18 they are not, so the bracket CAN now attribute two `requires`
+///     on one spec base and this refusal is a boundary waiting on its READER, not an
+///     impossibility. Lifting it belongs to the anchor (WI-20260909-QMFC5), the
+///     retained bracket's first consumer.
 ///   * The requirement is CHECKED, not yet threaded as a dictionary the body ops
 ///     dispatch through (Tier B, deferred).
 fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
@@ -69665,16 +69852,33 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             continue;
         }
         let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // WI-20260909-QMFC5 — the clause's TYPED HEAD BINDINGS, proposal 060 §3's second
+        // anchor. Read here (not inside the rewrite) because this is the loop that holds
+        // the `RuleId`; empty for every untyped clause, which is what keeps the anchor
+        // scan off every rule that has no annotation to ground anything with.
+        let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
         let rule_sym = match kb.rule_head_value(rid).clone() {
             Value::Term { id, .. } => head_functor_sym(kb, id),
             _ => None,
         };
-        // The guard tier strips the spec's type-args at convert time, so it cannot
-        // attribute WHICH type-parameter each `requires` names. Two `requires` on
-        // the SAME spec base in one rule would therefore both select the same
-        // witness and check the same carrier — silently discharging the second
-        // against the wrong type. Reject that loudly rather than fire unsoundly;
-        // sound same-spec / different-param attribution is Tier B (WI-613).
+        // Two `requires` on the SAME spec base in one rule both select the same witness
+        // and check the same carrier — silently discharging the second against the wrong
+        // type. Reject that loudly rather than fire unsoundly.
+        //
+        // THE STATED REASON HAS CHANGED, and the old one is recorded because
+        // `060-implementation.md` §8 told the next reader to distrust it. This comment
+        // used to say the guard tier "strips the spec's type-args at convert time, so it
+        // cannot attribute WHICH type-parameter each `requires` names", and cited the
+        // repair as "Tier B (WI-613)" — a ticket long since Delivered.
+        // WI-20260909-51W18 removed the strip: the written bracket rides whole onto this
+        // goal, positionals paired with the spec's declared params, so every retained
+        // binding is NAMED. The attribution is therefore recoverable here, and this
+        // refusal is now a boundary waiting on its READER rather than an impossibility.
+        // THAT READER IS WI-20260909-96ZTM, NOT THIS TICKET: two `requires` on one spec
+        // are two DICTIONARIES, and threading two needs the carrier-directed accumulating
+        // weave — the same lift the `>1 typed head anchors` refusal waits on, for the same
+        // reason. An earlier draft of this comment named QMFC5, which performs no such
+        // lift; `060-implementation.md`'s owner table is the authority.
         let mut seen_bases: Vec<Symbol> = Vec::new();
         let mut has_duplicate_spec = false;
         for node in &body_nodes {
@@ -69696,8 +69900,14 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                         name: rule_sym.unwrap_or(fd_sym),
                         field: RuleField::Body,
                     },
-                    expected: format!("at most one `requires` on spec `{}` per rule", kb.local_name_of(base)),
-                    actual: "multiple `requires` on the same spec base — type-parameter attribution is not yet supported (guard tier; Tier B)".into(),
+                    expected: format!(
+                        "at most one `requires` on spec `{}` per rule",
+                        kb.local_name_of(base)
+                    ),
+                    actual: "multiple `requires` on the same spec base — two of them are two \
+                             dictionaries, which needs the carrier-directed weave \
+                             (WI-20260909-96ZTM)"
+                        .into(),
                 });
                 has_duplicate_spec = true;
                 break;
@@ -69717,7 +69927,7 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 new_body.push(node.clone());
                 continue;
             }
-            match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym) {
+            match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym, &bounds) {
                 Ok(found) => {
                     // WI-1040 — step 2 of the transformation: the call this
                     // dictionary covers is rewritten to carry it. Only when the goal
@@ -69730,7 +69940,13 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                             weaves.push((Rc::clone(call), *call_fn, Rc::clone(&out)));
                         }
                     }
-                    new_body.push(found.goal);
+                    // `None` — the requirement was decided at LOAD (the check tier under
+                    // a typed-head anchor), so the clause keeps no goal for it. `changed`
+                    // is still set: the body shrank, which is as much a rewrite as a
+                    // substitution is.
+                    if let Some(goal) = found.goal {
+                        new_body.push(goal);
+                    }
                     changed = true;
                 }
                 Err(e) => {
@@ -71277,8 +71493,12 @@ fn collect_covered_calls(
 
 /// WI-1040 — one rewritten requirement goal plus the call it was grounded on.
 struct GroundedRequirement {
-    /// The rewritten `find_dictionary(spec_base, op, args…[, out: ?d])` goal.
-    goal: Rc<NodeOccurrence>,
+    /// The rewritten `find_dictionary(spec_base, op, args…[, out: ?d])` goal, or `None`
+    /// when the requirement was RESOLVED AT LOAD and no goal is left to run —
+    /// WI-20260909-QMFC5's check tier under a typed-head anchor. Dropping it rather than
+    /// emitting an inert one matters: an anchor goal SUSPENDS while its carrier is
+    /// unbound, so keeping it would make a clause DELAY on a question already answered.
+    goal: Option<Rc<NodeOccurrence>>,
     /// EVERY call this dictionary covers — each call to an operation of the spec
     /// itself, whose dispatch the dictionary decides. A `Vec`, not the witness
     /// alone: a clause may call the spec op more than once, and weaving only the
@@ -71300,6 +71520,7 @@ fn rewrite_find_dictionary_goal(
     body_nodes: &[Rc<NodeOccurrence>],
     fd_sym: Symbol,
     rule_sym: Option<Symbol>,
+    bounds: &[(u32, TermId)],
 ) -> Result<GroundedRequirement, TypeError> {
     let span = goal.span;
     let owner = goal.owner;
@@ -71359,7 +71580,19 @@ fn rewrite_find_dictionary_goal(
         let rec = super::op_info::lookup_operation_info(kb, functor)?;
         let args_in_order = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
         let mut new_pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(2 + args_in_order.len());
-        new_pos.push(NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner));
+        // WI-20260909-51W18 — THE SPEC INSTANCE RIDES WHOLE, not re-minted as a bare
+        // `Expr::Ref(spec_base)`. Retaining the bracket at convert (§8.6) buys nothing if
+        // the rewrite erases it one phase later: `require[Desc[T = Leaf]]` and
+        // `require[Desc]` would still produce identical stored goals, which is exactly
+        // the information loss this work exists to undo.
+        //
+        // TRANSPARENT TO EVERY READER OF THIS SLOT, because all of them ask for the HEAD
+        // and an `Apply` answers it: `occ_head_symbol` (used by
+        // `collect_find_dictionary_bases` and by this function's own caller) matches the
+        // `Apply` arm, and the resolver's `builtin_find_dictionary` walks the argument and
+        // takes `ViewHead::Functor { functor: Some(_) }`. A bare `require[Desc]` still
+        // arrives here as the `Ref` it always was.
+        new_pos.push(Rc::clone(spec_arg));
         new_pos.push(NodeOccurrence::new_expr(Expr::Ref(functor), span, owner));
         new_pos.extend(args_in_order);
         Some(NodeOccurrence::new_expr(
@@ -71414,7 +71647,7 @@ fn rewrite_find_dictionary_goal(
             }
             if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
                 return Some(GroundedRequirement {
-                    goal,
+                    goal: Some(goal),
                     covered_calls: if covers {
                         collect_covered_calls(kb, body_nodes, spec_canon)
                     } else {
@@ -71457,7 +71690,7 @@ fn rewrite_find_dictionary_goal(
             // A call to X's OWN operation is both the witness AND a call this
             // dictionary covers: its dispatch is exactly what the dictionary decides.
             return Ok(GroundedRequirement {
-                goal,
+                goal: Some(goal),
                 covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
             });
         }
@@ -71533,6 +71766,17 @@ fn rewrite_find_dictionary_goal(
         return Ok(found);
     }
 
+    // THE SECOND ANCHOR — a TYPED HEAD BINDING (proposal 060 §3, WI-20260909-QMFC5).
+    // Reached only when every witness scan above found nothing, so no clause that loads
+    // today can change which witness it picks; and skipped entirely when the clause has
+    // no bound, which is what keeps the UNTYPED twin refused exactly as before.
+    if let Some(anchored) = anchor_grounding(
+        kb, spec_arg, spec_base, spec_canon, bounds, span, owner, fd_sym, &out_arg, body_nodes,
+        &err,
+    ) {
+        return anchored;
+    }
+
     Err(err(
         format!(
             "a body call to one of `{}`'s operations (or to an operation that \
@@ -71541,6 +71785,398 @@ fn rewrite_find_dictionary_goal(
         ),
         "no such call in the rule body".into(),
     ))
+}
+
+/// WI-20260909-QMFC5 — proposal 060 §3's SECOND ANCHOR: ground a clause's requirement
+/// from a TYPED HEAD BINDING instead of from a covered body call.
+///
+/// `None` when the clause carries no bound at all — the caller then falls through to its
+/// "no such call in the rule body" error, which is what keeps the UNTYPED twin refused and
+/// makes that refusal the control saying the ANNOTATION is what grounds an anchored one.
+/// `Some(Err(..))` for a clause that HAS bounds but none that anchors: a located refusal
+/// of its own, because reporting the witness error there would say the author must add a
+/// call when what they must fix is the bound.
+///
+/// # Why this is a second grounding PATH and not one added disjunct
+///
+/// The rewritten witness goal is `find_dictionary(spec, op_functor, witness_args…)`, and
+/// every consumer below it is keyed on that `op_functor`: [`simp_guard_holds_core`] reads
+/// the op's params to learn which arguments carry the spec (WI-596's two shapes), and
+/// [`witness_sort_goal`] reads the same signature to learn which spec PARAMETER each
+/// argument's carried type binds. A typed head has no op. So the emitted goal puts the
+/// SPEC BASE where the op functor sits — a SORT, which is how the resolver tells the two
+/// forms apart — and the carrier VALUE in the argument slot.
+///
+/// # The bound is TWO different things, and that is the discriminator
+///
+///   * a CONCRETE bound (`?x: Leaf`) records the CARRIER: test `sort_provides`;
+///   * an INTRODUCER bound (`rule p[A](?x: A) :- Desc[A]`) records THE SPEC, because
+///     `Loader::rule_head_bound_alias` substitutes `A` → `Desc` before `make_sort_ref`:
+///     test `bound == spec`.
+///
+/// Two non-overlapping tests over one channel (`rule_type_bounds`).
+///
+/// # The bound is not the carrier VALUE
+///
+/// It is an UPPER bound — `bare_sort_compatible` admits the sort, its
+/// `sort_sym_compatible` relatives, and anything that PROVIDES it — so it decides WHICH
+/// head variable anchors the spec and never stands in for the carrier. A spec bound
+/// differs from the carrier by design (the clause is polymorphic over the spec's
+/// providers). That is why the emitted goal carries the VARIABLE and the carried type is
+/// read at run time, exactly as the witness path reads its arguments'.
+#[allow(clippy::too_many_arguments)]
+fn anchor_grounding(
+    kb: &KnowledgeBase,
+    spec_arg: &Rc<NodeOccurrence>,
+    spec_base: Symbol,
+    spec_canon: Symbol,
+    bounds: &[(u32, TermId)],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+    fd_sym: Symbol,
+    out_arg: &Option<(Symbol, Rc<NodeOccurrence>)>,
+    body_nodes: &[Rc<NodeOccurrence>],
+    err: &dyn Fn(String, String) -> TypeError,
+) -> Option<Result<GroundedRequirement, TypeError>> {
+    if bounds.is_empty() {
+        return None;
+    }
+    // WHICH head variable anchors this spec. The bound's own head symbol is read through
+    // the shared `TermIdView` reader, so an APPLIED bound (`?x: List[T = Int64]`) answers
+    // by its base exactly as a bare one does.
+    let mut anchors: Vec<(u32, Symbol)> = Vec::new();
+    let mut seen_bounds: Vec<Symbol> = Vec::new();
+    for &(db_index, bound_tid) in bounds {
+        let Some(bound_head) = sort_functor_of_view(kb, &TermIdView(bound_tid)) else {
+            continue;
+        };
+        if !seen_bounds.contains(&bound_head) {
+            seen_bounds.push(bound_head);
+        }
+        // `carrier_provides_spec`, not a bare `sort_provides` — see the twin gate in
+        // [`anchor_guard`], which this must agree with or the clause loads and then
+        // answers nothing (measured by `/code-review`, both directions).
+        if kb.canonical_sort_sym(bound_head) == spec_canon
+            || carrier_provides_spec(kb, bound_head, spec_canon)
+        {
+            anchors.push((db_index, bound_head));
+        }
+    }
+    let names = |syms: &[Symbol]| {
+        syms.iter()
+            .map(|s| kb.local_name_of(*s).to_owned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // ZERO. The clause annotated its head and the annotation does not reach this spec —
+    // a fault in the BOUND, so say that rather than ask for a body call. Before this
+    // existed the row was refused by the witness error, which is why the acceptance
+    // control "a bound that does not provide stays refused" did not discriminate.
+    if anchors.is_empty() {
+        return Some(Err(err(
+            format!(
+                "a typed head binding whose bound provides `{}` (or is `{}` itself), \
+                 or a body call to one of its operations",
+                kb.local_name_of(spec_base),
+                kb.local_name_of(spec_base),
+            ),
+            if seen_bounds.is_empty() {
+                // Every bound term had no readable sort head (a tuple, an arrow, a bare
+                // variable). `bounds` is non-empty — so this is not the untyped twin —
+                // but there is no NAME to print, and "head bound(s) —  — provide no
+                // `Desc`" is a sentence with a hole in it.
+                format!(
+                    "no head bound of this clause names a sort, so none can provide `{}`",
+                    kb.local_name_of(spec_base),
+                )
+            } else {
+                format!(
+                    "this clause's head bound(s) — {} — provide no `{}`",
+                    names(&seen_bounds),
+                    kb.local_name_of(spec_base),
+                )
+            },
+        )));
+    }
+    // MORE THAN ONE. Two anchors are TWO dictionaries (the implicit-parameter reading,
+    // `060-implementation.md` §8.5), and choosing between them needs the written
+    // bracket's attribution plus a carrier-directed weave. Refused loudly here rather
+    // than picked, because picking would silently thread one carrier's dictionary into
+    // the other's call. Owned by WI-20260909-96ZTM (S4).
+    // NOT COLLAPSED — NOT EVEN FOR TWO BOUNDS THAT ARE BYTE-IDENTICAL. An earlier fix
+    // in this ticket collapsed two anchors of one DATA sort into one dictionary, on the
+    // argument that nothing can widen to a constructor-declaring sort so both carriers
+    // ARE that sort at run time and select the same row. The first clause is true and the
+    // second does not follow, and `/code-review` drove three separate counterexamples:
+    //
+    //   * a PARAMETERIZED data sort — `?x: Box[E = Leaf], ?y: Box[E = Other]` — collapses
+    //     on the head symbol alone (`sort_functor_of_view` discards the arguments), and
+    //     the conditional provision's sub-dictionary differs. The surviving `?d` is then
+    //     woven into BOTH calls. This shape SHIPS: `pair`, `list` and `option` all have
+    //     it;
+    //   * two BARE, byte-identical `Wrap` bounds still diverge when the provision is
+    //     conditional (`Wrap provides Sh[T = Wrap] :- Sh[A]`) — measured `?r = 7` one way
+    //     and a residual the other, decided by nothing but which head variable was
+    //     written first. So comparing the full bound TERMS does not rescue the collapse
+    //     either: the predicate it needs is "the carriers are equal AT RUN TIME", which a
+    //     load-time bound cannot answer;
+    //   * the gate itself was source-order-dependent — `sort_has_constructors` reads
+    //     `kind_of`, the FIRST-DECLARED category, so a `Leaf` with an `operation leaf()`
+    //     declared above its `entity leaf` stopped being a data sort and the same clause
+    //     was refused again. (That read is fixed below, but it is not what makes the
+    //     collapse wrong.)
+    //
+    // SO THE REFUSAL STANDS, and `rule p(?x: Leaf, ?y: Leaf)` is refused with it. That is
+    // a real cost and it is the right side to err on: a refusal is loud and names its
+    // owner, where the collapse silently threaded one carrier's dictionary into the
+    // other's call. Two anchors are TWO dictionaries (the implicit-parameter reading,
+    // `060-implementation.md` §8.5) and the honest repair is one goal per anchor plus a
+    // carrier-directed weave — which is exactly WI-20260909-96ZTM (S4), already filed.
+    if anchors.len() > 1 {
+        return Some(Err(err(
+            format!(
+                "one typed head binding anchoring `{}`",
+                kb.local_name_of(spec_base)
+            ),
+            format!(
+                "{} of them do — {} — and two anchors are two dictionaries, which needs \
+                 the carrier-directed weave (WI-20260909-96ZTM)",
+                anchors.len(),
+                names(&anchors.iter().map(|(_, s)| *s).collect::<Vec<_>>()),
+            ),
+        )));
+    }
+    let (db_index, anchor_bound) = anchors[0];
+    let spec_self_rep = spec_is_self_representing(kb, spec_canon);
+    // WHICH PARAMETER THE CARRIER FILLS must be answerable, or the goal this would emit
+    // could pin nothing and would delay for a reason no diagnostic names.
+    // [`spec_carrier_param_or_sole`] answers `None` for exactly two shapes, and only one
+    // of them is a fault: a SELF-REPRESENTING spec needs no parameter (the carrier is the
+    // sort, and the goal's own carrier discriminant takes it), while a multi-parameter
+    // spec with no receiving operation has no non-arbitrary answer at all. Told apart by
+    // the same [`spec_is_self_representing`] reader that predicate's second rung is gated
+    // on, so the two cannot drift.
+    if !spec_self_rep && spec_carrier_param_or_sole(kb, spec_canon).is_none() {
+        return Some(Err(err(
+            format!(
+                "a spec whose carrier parameter is identifiable — `{}` must declare an \
+                 operation that receives on one of its type parameters, or have exactly one",
+                kb.local_name_of(spec_base),
+            ),
+            format!(
+                "`{}` declares neither, so a typed head binding cannot say which of its \
+                 parameters the carrier fills",
+                kb.local_name_of(spec_base),
+            ),
+        )));
+    }
+    // BRANCH ORDER MIRRORS THE EMITTER'S, and that is not a detail. [`anchor_sort_goal`]
+    // asks `spec_is_self_representing` FIRST and only reaches
+    // [`spec_carrier_param_or_sole`] in the other arm — so a self-representing spec pins
+    // NO parameter no matter what that predicate would answer for it. Asking it here
+    // unconditionally made the two gates disagree, and the first thing it did was refuse
+    // `a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`, a shape
+    // the emitter handles by the carrier discriminant. The condition is written the same
+    // way round in both places so a future edit to one is visible against the other.
+    let carrier_param = if spec_self_rep {
+        None
+    } else {
+        spec_carrier_param_or_sole(kb, spec_canon)
+    };
+    let bound_is_the_spec = kb.canonical_sort_sym(anchor_bound) == spec_canon;
+    // ── THE SECOND GATE [`spec_carrier_param_or_sole`]'s OWN DOC DEMANDS ──────────────
+    //
+    // That predicate answers "which parameter an operation RECEIVES on", and its doc says
+    // in as many words that this "is not by itself which parameter names the carrier" —
+    // its own counterexample is `touch(c: Spec, x: P)`, which answers `P`. Until now this
+    // site performed only a PRESENCE test (is the answer `Some`?) and never compared it
+    // against anything, and I had recorded "no independent second gate" as a stated
+    // boundary on the argument that the shape the doc warns about takes the
+    // self-representing branch. `/code-review` falsified that by driving it:
+    //
+    //   sort Sp { sort C = ?; sort P = ?; operation touch(x: P) -> Int64; operation tag() }
+    //   sort Leaf provides Sp[C = Leaf, P = Int64]
+    //
+    // `Sp` is NOT self-representing, so it sails past the presence test; the answer is
+    // `P`, the received parameter, while the provisions carry the carrier in `C`. The
+    // emitted goal pinned `P |-> Leaf`, matched no provider row, and the clause loaded
+    // clean and answered a residual — where VVM1R's acceptance says such a spec "must
+    // produce a LOCATED refusal naming the shape, never a silent non-grounding".
+    //
+    // THE CHECK IS AGAINST THE BOUND'S OWN PROVISION ROW, used as a CHECK and never as a
+    // producer — deriving the parameter FROM the row would be circular, since the row is
+    // what the emitted goal is meant to select. A provider binds the carrier parameter to
+    // ITSELF (`Leaf provides Desc[T = Leaf]`), so the gate is "does the row bind the
+    // parameter we are about to pin to the provider we are about to pin it for".
+    //
+    // SKIPPED IN TWO SHAPES, both because there is no row to read: a SELF-REPRESENTING
+    // spec pins no parameter at all, and an INTRODUCER bound IS the spec (`?x: A` under
+    // `:- Desc[A]`), which no sort declares a provision for.
+    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
+        let row = provisions_of_spec(kb, spec_canon).find(|(provider, _, _)| {
+            kb.canonical_sort_sym(*provider) == kb.canonical_sort_sym(anchor_bound)
+        });
+        if let Some((_, _, bindings)) = row {
+            let pins_the_carrier = bindings.iter().any(|(k, v)| {
+                same_label(kb, *k, p)
+                    && sort_functor_of_view(kb, &TermIdView(*v)).is_some_and(|h| {
+                        kb.canonical_sort_sym(h) == kb.canonical_sort_sym(anchor_bound)
+                    })
+            });
+            if !pins_the_carrier {
+                let bound_to = bindings
+                    .iter()
+                    .find(|(k, _)| same_label(kb, *k, p))
+                    .and_then(|(_, v)| sort_functor_of_view(kb, &TermIdView(*v)))
+                    .map(|h| kb.local_name_of(h).to_owned())
+                    .unwrap_or_else(|| "nothing".to_owned());
+                return Some(Err(err(
+                    format!(
+                        "a spec whose carrier parameter is identifiable — `{}` must receive \
+                         its carrier on the parameter its providers bind to themselves",
+                        kb.local_name_of(spec_base),
+                    ),
+                    format!(
+                        "`{}` receives on `{}`, but `{} provides {}[...]` binds `{}` to `{}` \
+                         — so a typed head binding cannot say which of `{}`'s parameters the \
+                         carrier fills",
+                        kb.local_name_of(spec_base),
+                        kb.local_name_of(p),
+                        kb.local_name_of(anchor_bound),
+                        kb.local_name_of(spec_base),
+                        kb.local_name_of(p),
+                        bound_to,
+                        kb.local_name_of(spec_base),
+                    ),
+                )));
+            }
+        }
+    }
+    // ── THE WRITTEN BRACKET MUST AGREE WITH THE BOUND THE ANCHOR SELECTED ─────────────
+    //
+    // `rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Other]], ...` loaded clean and
+    // answered `7` — `Leaf`'s dictionary — silently ignoring the author's explicit
+    // `T = Other`. `060-implementation.md` §8.6 said "nothing decides that today because
+    // nothing can"; S1's retention is what makes it possible, and this is the retention's
+    // first real reader on the anchor path.
+    //
+    // ONLY A CONCRETE DISAGREEMENT IS REFUSED. A binding that named a type VARIABLE was
+    // already dropped upstream as a wildcard (S1's rule), so anything still standing here
+    // names a real sort; and a binding that AGREES is the ordinary spelling
+    // (`require[Desc[T = Leaf]]` under `?x: Leaf`), which every acceptance row uses.
+    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
+        if let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() {
+            for (k, v) in named_args.iter() {
+                if !same_label(kb, *k, p) {
+                    continue;
+                }
+                let written = match v.as_expr() {
+                    Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => *s,
+                    _ => continue,
+                };
+                if kb.canonical_sort_sym(written) != kb.canonical_sort_sym(anchor_bound) {
+                    return Some(Err(err(
+                        format!(
+                            "the written `{}[{} = ...]` to name the same carrier the head \
+                             binding anchors — `{}`",
+                            kb.local_name_of(spec_base),
+                            kb.local_name_of(p),
+                            kb.local_name_of(anchor_bound),
+                        ),
+                        format!(
+                            "it names `{}`, but this clause's head binding anchors `{}`, and \
+                             the dictionary would be `{}`'s",
+                            kb.local_name_of(written),
+                            kb.local_name_of(anchor_bound),
+                            kb.local_name_of(anchor_bound),
+                        ),
+                    )));
+                }
+            }
+        }
+    }
+    // THE CHECK TIER EMITS THE SAME GOAL THE BIND TIER DOES — no `out:`, nothing else
+    // different. `requires(X)` IS the no-`out` case of one relation (WI-1040), and the
+    // cheapest way to keep the two spellings from answering differently is to give them
+    // one producer and one consumer rather than a load-time twin of the runtime verdict.
+    //
+    // AN EARLIER DRAFT RESOLVED THIS TIER AT LOAD and returned `goal: None`, on the
+    // argument that the anchor selection had already established the requirement so no
+    // runtime question was left. `/code-review` falsified that argument three separate
+    // ways, each measured on a program where the load-time verdict said SATISFIED and the
+    // bind tier — the identical clause, one spelling apart — left a residual:
+    //
+    //   * a CONDITIONAL provision (`Wrap provides Sh[T = Wrap] :- Sh[A]`) is not decided
+    //     by the bound: `Wrap[A = Bad]` provides nothing, and `sort_provides` is
+    //     type-argument-blind, so the check tier answered the spec DEFAULT where the bind
+    //     tier correctly declined;
+    //   * `sort_refines` (the `requires` chain) admits a carrier through
+    //     `bare_sort_compatible` that `sort_provides` never walks, so a refining sort that
+    //     provides nothing discharged the requirement;
+    //   * a WITNESS-SUPPLIED provision (`sort Rival provides Desc[T = Leaf]`) travels the
+    //     `carrier_provided_by_witness` channel, which the bare `sort_provides` here is
+    //     blind to.
+    //
+    // Each of the three has a different single-site repair and every one of them leaves
+    // the other two open — which is the tell that the load-time verdict was the wrong
+    // shape, not that its predicate needed widening. The runtime goal gets all three
+    // right because it asks the question where the carrier's ACTUAL type is known.
+    //
+    // AND THE ARM COULD EMPTY A RULE BODY. `rule fe: f(?x: Leaf) <=> 1 :- requires(...)
+    // [simp]` has that goal as its ONLY body atom, so dropping it left `new_body == []`
+    // and tripped `set_rule_body_nodes`'s fact-ness assert; with `debug_assertions` off
+    // the rule silently became an UNCONDITIONAL law. No anchored equation-headed row
+    // existed to catch it — `equation_headed_anchor_keeps_its_body` is now that row.
+    //
+    // THE STATED OBJECTION WAS ALSO WRONG. "Emitting a goal would make the clause DELAY
+    // on something already decided" — the bind tier emits this same goal in this same
+    // body position and resolves it by rotation, so there was never a delay to avoid.
+    // THE EMITTED GOAL: `find_dictionary(spec_instance, spec_base, ?x[, out: ?d])`. Slot 1
+    // holds the SPEC BASE where the witness form holds an OP FUNCTOR, and the resolver
+    // tells the forms apart by asking whether that symbol is a SORT — a spec op is an
+    // operation, so the two can never be confused, and no new kernel symbol is minted for
+    // a discriminator the shapes already carry.
+    let carrier = NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), span, owner);
+    let goal = NodeOccurrence::new_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: fd_sym,
+            pos_args: vec![
+                // THE WRITTEN INSTANCE, not a re-minted `Expr::Ref(spec_base)`. Slot 0 is
+                // where the retained bracket lives (WI-20260909-51W18), and re-minting it
+                // here would erase it for every anchored clause — the same defect that
+                // ticket had to fix in `make_witness`, one emitter over. Caught by
+                // `wi_51w18…::a_head_introduced_type_variable_resolves_inside_the_bracket`
+                // going from `[("T", "Desc")]` to `[]`.
+                Rc::clone(spec_arg),
+                // Slot 1 is the discriminant: a SORT here means the anchor form.
+                NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner),
+                carrier,
+            ],
+            named_args: out_arg.iter().map(|(n, v)| (*n, Rc::clone(v))).collect(),
+            type_args: Vec::new(),
+        },
+        span,
+        owner,
+    );
+    Some(Ok(GroundedRequirement {
+        goal: Some(goal),
+        // The dictionary this anchor grounds decides the dispatch of every call to the
+        // spec's own operations in the clause — the same population the DIRECT witness
+        // scan covers, and for the same reason.
+        //
+        // CARRIER-BLIND, AND THAT IS AN OPEN AXIS RATHER THAN A SETTLED ONE.
+        // `collect_covered_calls` filters on the functor's parent spec, arity and
+        // `classified_apply_target` — never on WHICH carrier the call names. So a clause
+        // with one anchored bound and a second, UNBOUND variable of another provider
+        // would weave the anchor's dictionary into that variable's call too, and the
+        // `>1 anchors` refusal cannot see it because it counts BOUNDS. `/code-review`
+        // could not drive it to a wrong value — the anchor path is only reachable when no
+        // witness call exists, and the shapes left name no carrier to differ on — so it
+        // is recorded here rather than claimed as fixed or as impossible. The
+        // carrier-directed weave (WI-20260909-96ZTM) is what closes it.
+        covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
+    }))
 }
 
 /// WI-1040 — is `functor` an operation of spec `spec_canon` that carries a DEFAULT
