@@ -665,13 +665,17 @@ which is exactly where inheriting would decide.
 | stage | ticket | what | depends |
 |---|---|---|---|
 | S1 | WI-20260909-51W18 | un-strip the spec's type-args (§8.6) — **delivered** | VVM1R |
-| S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) | S1 |
-| S4 | WI-20260909-96ZTM | two dictionaries per spec + carrier-directed accumulating weave (§8.5) | S2 |
+| S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) — **delivered** | S1 |
+| S4 | WI-20260909-96ZTM | two dictionaries per spec + carrier-directed accumulating weave (§8.5) — **unblocked** | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
 
-Tagged `vvm1r`. S3 (the check tier) is FOLDED INTO S2 rather than filed: it is a
-load-time verdict riding on S2's steps 1–2, smaller than its own ticket would be. §8.9's
-question has no stage — see above.
+Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
+delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict
+riding on S2's steps 1–2, smaller than its own ticket"; **that reason is stale and the
+fold is now better justified than it was**. The check tier is not a load-time verdict at
+all (§8.8): it emits the same goal the bind tier does, so it is not a stage riding on S2 —
+it is the SAME code path with `out:` absent, and giving it its own ticket would have
+meant two owners for one relation. §8.9's question has no stage — see above.
 
 ## 9. C666A — the guarded join
 
