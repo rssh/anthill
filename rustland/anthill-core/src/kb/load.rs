@@ -18693,8 +18693,9 @@ struct Loader<'a> {
     // where the reasoning lives. Everywhere else in the same rule (a body goal, a data
     // slot) the name means what it always meant.
     in_rule_head_bound: bool,
-    // WI-20260909-S8CBV: are we lowering an operation's `requires` / `ensures` CONTRACT
-    // clause? A spec bracket binding there is a TYPE position — `requires Desc[T = x.E]`
+    // WI-20260909-S8CBV: are we lowering an operation's `requires` clause? (`requires`
+    // ALONE — see the set site for why `ensures` is not a type position.)
+    // A spec bracket binding there is a TYPE position — `requires Desc[T = x.E]`
     // names the same projection that `e: x.E` names one line up in the same signature —
     // but the clause rides the ordinary TERM walk, whose dotted-name arm has no
     // projection rung. Measured (2026-09-09): `operation h(x: Leaf, e: x.E)` LOADS and
@@ -21540,12 +21541,19 @@ impl<'a> Loader<'a> {
                 // value-place head" cannot mean one thing in a parameter type and
                 // another in a `requires`.
                 //
-                // ONLY WHERE IT WOULD OTHERWISE FAIL. The rung runs before resolution,
-                // but its classifier returns `None` for every head that is not a VALUE
-                // PLACE — a namespace, a sort, an unresolved name — so a dotted name
-                // that denotes something today still reaches `remap_symbol_strict` and
-                // resolves exactly as it did. What changes is confined to names that
-                // are a load error at HEAD.
+                // ONLY WHERE IT WOULD OTHERWISE FAIL, and that is enforced rather than
+                // assumed. The classifier is asked with the WI-428 rigid-type-projection
+                // route DISABLED (its `allow_rigid_type_projection: false`), so every
+                // head that is not a VALUE PLACE — a namespace, a sort, a type parameter,
+                // an unresolved name — answers `None` and falls to `remap_symbol_strict`
+                // exactly as before. What changes is confined to names that are a load
+                // error at HEAD.
+                //
+                // An earlier draft of this comment CLAIMED that without disabling the
+                // route, and `/code-review` measured the claim false: the shared
+                // classifier routes a two-segment non-value head into
+                // `try_rigid_type_projection`, which mints terms and pushes load errors.
+                // The flag is what makes the sentence above true.
                 if self.in_op_contract_clause {
                     if let Some(child) = self.try_contract_projection(sym, span) {
                         self.term_map.insert(parse_id.raw(), child);
@@ -25813,7 +25821,8 @@ impl<'a> Loader<'a> {
             .iter()
             .map(|s| self.parsed.symbols.local_name(*s).to_owned())
             .collect();
-        self.try_expr_carried_projection_segments(&segs, span, owner)
+        // The TYPE ladder: the rigid route is this caller's own, unchanged.
+        self.try_expr_carried_projection_segments(&segs, span, owner, true)
     }
 
     /// WI-20260909-S8CBV — a contract clause's dotted name as a TYPE PROJECTION, or
@@ -25835,7 +25844,7 @@ impl<'a> Loader<'a> {
         }
         let segs: Vec<String> = name.split('.').map(|s| s.to_owned()).collect();
         let source_span = SourceSpan::from_span(self.source_id, span);
-        match self.try_expr_carried_projection_segments(&segs, source_span, self.current_owner)? {
+        match self.try_expr_carried_projection_segments(&segs, source_span, self.current_owner, false)? {
             node_occurrence::TypeChild::Interned(tid) => Some(tid),
             node_occurrence::TypeChild::Node(_) => {
                 // SPANNED, and through the same variant the sibling rule-body walk uses
@@ -25865,6 +25874,18 @@ impl<'a> Loader<'a> {
         segs: &[String],
         span: SourceSpan,
         owner: Option<Symbol>,
+        // WI-20260909-S8CBV — may a NON-VALUE head take the WI-428 rigid-type-projection
+        // route? `true` for the type ladder, which has always taken it. `false` for the
+        // contract-clause rung, and the difference is deliberate: that route does not
+        // merely CLASSIFY, it mints `RigidTypeProjection` terms, resolves qualified
+        // children, and PUSHES load errors (`push_forbidden_internal`,
+        // `push_ambiguous_symbol`). The rung's whole safety argument is that it changes
+        // only names that are a load error today, and admitting a route that reports
+        // would break it — `/code-review` drove the gap between the comment and the code.
+        // A `requires Foo[T = P.Key]` therefore still resolves exactly as it did, through
+        // `remap_symbol_strict`; widening the rung to type-headed projections is a
+        // separate change with its own rows to write.
+        allow_rigid_type_projection: bool,
     ) -> Option<node_occurrence::TypeChild> {
         // `span` / `owner` are unused by the single-ref ground path but carried into
         // the compound-receiver occurrence (WI-397) below.
@@ -25906,7 +25927,7 @@ impl<'a> Loader<'a> {
                 // (`MemStore.Key`) — classifies as a `RigidTypeProjection`, the
                 // type-keyed sibling of `ExprCarried` (design §5.3). Two-segment only;
                 // anything else stays on the `remap_name` path.
-                if segs.len() == 2 {
+                if allow_rigid_type_projection && segs.len() == 2 {
                     if let Some(child) =
                         self.try_rigid_type_projection(resolved, &head_name, &member_name, span)
                     {
@@ -30730,8 +30751,15 @@ impl<'a> Loader<'a> {
         // declaration's conversion must not inherit or erase the outer flag.
         let prev_contract = std::mem::replace(&mut self.in_op_contract_clause, true);
         let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
-        let ensures_list = self.convert_clause_list(&o.ensures);
+        // `ensures` IS NOT COVERED, and the asymmetry is the point. A `requires` clause
+        // that names a SPEC carries a type bracket (`Desc[T = x.E]`); an `ensures` clause
+        // is a predicate over VALUES (`ensures eq(?result, Variant1)`), whose dotted
+        // arguments with an uppercase tail are entity and constructor names, not
+        // projections. Covering both would route those through the type ladder — which
+        // does not merely classify, it MINTS terms and pushes visibility / ambiguity
+        // errors of its own. Found by `/code-review`; the flag was set across both.
         self.in_op_contract_clause = prev_contract;
+        let ensures_list = self.convert_clause_list(&o.ensures);
 
         // WI-840 (058 §4.2 / §4.7): the operation's type parameters against the OTHER
         // things one bracket key can name, and the NAMED requirement slots the

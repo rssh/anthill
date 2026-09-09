@@ -17476,7 +17476,18 @@ fn check_apply_iter(
         // projection-bearing PARAMETER (the branch just below). A requires-only projection
         // must not move that branch — the parameters are ordinary and must unify as they
         // always did.
-        let requires_have_projection = op.requires.iter().any(|r| value_contains_projection(kb, r));
+        // READ OFF THE NORMALIZED CHAIN, not `op.requires`, because the CONSUMER does.
+        // `build_op_scoped_dicts` δ-grounds `op_dict_entries(...).op_entries()`, whose
+        // spec is the normalized form; asking the DECLARED clause list here let the two
+        // disagree, and the disagreement is not symmetric — a projection present only in
+        // the normalized entry leaves this map EMPTY, δ is skipped, the projection
+        // survives, and the new refusal fires on a program that should load. One list,
+        // both readers: the WI-1033 discipline `build_op_scoped_dicts`' own header cites.
+        // Found by `/code-review`.
+        let requires_have_projection = op_dict_entries(kb, fn_sym)
+            .op_entries()
+            .iter()
+            .any(|e| value_contains_projection(kb, &e.spec));
         let needs_param_arg_types = op_has_projection || requires_have_projection;
         // WI-714 / WI-727: does the RETURN type write a type constructor (`Concat`,
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
@@ -19433,7 +19444,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
-                            }),
+                                }),
                         )?;
                     }
                 }
@@ -19848,7 +19859,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
-                            }),
+                                }),
                         )?;
                         return Ok(TypeResult {
                             ty: resolved_ret.clone(),
@@ -20222,7 +20233,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
-                            }),
+                                }),
                         )?;
                     }
                 }
@@ -23745,6 +23756,10 @@ fn build_concrete_dispatch_dict(
 /// [`op_body_reads_op_requirement_slot`] in [`report_unsuppliable_requirements`], so a
 /// body that never reads still runs. See [`unprovided_provision`] for the three
 /// conditions and [`OpSlotParkSite`] for the two the caller supplies.
+// WI-20260909-S8CBV added the 8th parameter (`param_arg_types`). Allowed rather than
+// bundled: the seven that were here are each a distinct call-site fact this function
+// reads once, and a struct around them would be a carrier invented for a lint.
+#[allow(clippy::too_many_arguments)]
 fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -23797,6 +23812,7 @@ fn build_op_scoped_dicts(
         // RECEIVER's type, which no substitution over type VARIABLES can reach: `x` is a
         // parameter, not a tvar, so `substitute_spec_via_subst` walks straight past the
         // `ExprCarried` and the dep stays un-pinned.
+        let mut delta_error: Option<String> = None;
         let projected = if param_arg_types.is_empty() || !value_contains_projection(kb, &entry.spec)
         {
             entry.spec.clone()
@@ -23805,8 +23821,24 @@ fn build_op_scoped_dicts(
                 op_name: callee_op,
                 surface: None,
             };
-            eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None)
-                .unwrap_or_else(|_| entry.spec.clone())
+            // `arg_syms` IS `None`, and that is measured rather than assumed. WI-459's
+            // re-key exists for a neutral that stays keyed to the callee's formal, and it
+            // is not what makes the comparison below work: the argument's OWN type
+            // already carries the caller's projection (`b : Box[E = outer.b.E]`), so δ
+            // GROUNDS the member to `outer.b.E` and never reaches the neutral arm.
+            // MEASURED by passing the map and backing it out — ZERO rows moved, and the
+            // `projected` spec read `outer.b` either way. A branch that cannot be driven
+            // is not in the diff.
+            match eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None) {
+                Ok(v) => v,
+                Err(e) => {
+                    // KEPT, not swallowed — see [`delta_failure_text`]. The spec still
+                    // rides on un-eliminated, so the verdict is unchanged; what changes is
+                    // that the refusal says δ FAILED rather than blaming the receiver.
+                    delta_error = Some(delta_failure_text(&e));
+                    entry.spec.clone()
+                }
+            }
         };
         // A PROJECTION THAT SURVIVED δ CANNOT BE SUPPLIED FROM HERE, and this call site is
         // the only place that can say so before the program runs.
@@ -23828,37 +23860,56 @@ fn build_op_scoped_dicts(
         // carried requirement at this same spec base", not "did δ fail" — measured in
         // both directions, one row each.
         //
-        // THE COMPARISON IS DELIBERATELY COARSE — spec base plus "also a projection" —
-        // and that is a stated bound, not an oversight. Matching the two projections
-        // properly means comparing the callee's `pick.x` neutral against the caller's
-        // `outer.b` one, which needs WI-459's receiver RE-KEYING before the ζ identity
-        // check can answer; until that exists a finer test could only be wrong in the
-        // strict direction, refusing the program that works. Coarse here means: some
-        // caller requirements will be accepted as covering when they do not, and those
-        // land on the same eval-time read this refusal exists to make rarer, not on a
-        // wrong answer.
-        if value_contains_projection(kb, &projected) {
-            // `Some` REQUIRED, not merely equal: `spec_base_functor` answers `None` for a
-            // spec whose head this decoder cannot read, and `None == None` would make two
-            // unreadable bases "the same spec" — a coverage claim resting on the absence
-            // of an answer on both sides.
-            let base = spec_base_functor(kb, &projected);
-            let caller_covers = base.is_some()
-                && caller_requires.iter().any(|ar| {
-                    spec_base_functor(kb, &ar.spec) == base
-                        && value_contains_projection(kb, &ar.spec)
-                });
+        // THE COMPARISON IS EXACT — the whole re-keyed spec against the caller's own,
+        // through `views_structurally_equal`, the codebase's one structural compare.
+        //
+        // A COARSER GATE ADMITS A WRONG ANSWER, measured: matching on the spec BASE plus
+        // "the caller also writes a projection" let `operation outer(b: Box, c: Box)
+        // requires Desc[T = c.E] = pick(b)` load, and it answered **9** — `c`'s
+        // dictionary — where `b`'s `7` is the only correct answer. The caller holds ONE
+        // `__req_desc` slot and the callee reads it whatever receiver it was declared at,
+        // so a gate that cannot tell `b.E` from `c.E` is not merely incomplete: it is the
+        // silent class this whole channel exists to avoid.
+        //
+        // NOT a hand-rolled key. S4 wrote one for the same question and `/code-review`
+        // found it wrong twice — a head-only SHORT name made `Box[E = Leaf]` and `Box[E =
+        // Other]` compare equal. `views_structurally_equal` compares deeply and
+        // carrier-blind, which is what the re-keyed neutrals need: both sides are now
+        // `ExprCarried(Ref(<caller's own binder>), M)`, so equal receivers compare equal
+        // and different ones do not.
+        // THE NARROW PREDICATE — see [`value_contains_expr_carried`]. A pre-existing
+        // `RigidTypeProjection` chain entry must reach the ordinary unpinnable path, not
+        // this refusal, or widening the chain takes away a supply that used to work.
+        if value_contains_expr_carried(kb, &projected) {
+            let caller_covers = caller_requires
+                .iter()
+                .any(|ar| views_structurally_equal(kb, &projected, &ar.spec));
             if !caller_covers {
                 kb.unsuppliable_requirements.truncate(parked_mark);
+                // RENDERED FROM THE RE-KEYED SPEC, not from `entry`. The author reads this
+                // message at THEIR call site, where the receiver is their own binder
+                // (`outer.b`); printing the callee's formal (`pick.x`) would name a
+                // parameter of a different declaration and read as an internal detail.
+                let shown = RequiresEntry {
+                    required_sort: entry.required_sort,
+                    spec: projected.clone(),
+                    supply: entry.supply,
+                };
                 return Err(Box::new(RequirementRefusal {
-                    dep_text: render_requires_entry(kb, entry),
+                    dep_text: render_requires_entry(kb, &shown),
                     unconstrained: Vec::new(),
                     refused_covers: Vec::new(),
-                    construction: "its carrier is a projection this call does not \
-                         ground, and the caller declares no matching `requires` to \
-                         forward — annotate the caller with the same requirement, or \
-                         pass a receiver whose member is known here"
-                        .to_owned(),
+                    construction: match &delta_error {
+                        Some(d) => format!(
+                            "its carrier is a projection that could not be eliminated \
+                             here: {d}"
+                        ),
+                        None => "its carrier is a projection this call does not ground, \
+                                 and no `requires` of the caller names that same receiver \
+                                 — annotate the caller with this exact requirement, or \
+                                 pass a receiver whose member is known here"
+                            .to_owned(),
+                    },
                     pinned: None,
                     unprovided: None,
                 }));
@@ -25456,6 +25507,14 @@ pub(crate) fn resolve_bridge_requirements(
         // UN-eliminated spec rides on, so the outcome is whatever this slot's ordinary
         // unpinnable path already gives (the sort half's `all_pinned` gate, the op half's
         // skip) rather than a dictionary built from a guess.
+        // WI-20260909-S8CBV — THE δ ERROR IS KEPT, not swallowed. An elimination that
+        // FAILS (a member the receiver's sort does not declare) and one that leaves a
+        // NEUTRAL (an abstract receiver) both arrive below as "still a projection", and
+        // reporting them with one sentence tells the author the arguments are at fault
+        // when the requirement itself may be. `/code-review` drove it. The un-eliminated
+        // spec still rides on — the outcome is unchanged — but the message now says which
+        // of the two happened.
+        let mut delta_error: Option<String> = None;
         let projected_spec =
             if param_arg_types.is_empty() || !value_contains_projection(kb, &entry.spec) {
                 entry.spec.clone()
@@ -25464,8 +25523,14 @@ pub(crate) fn resolve_bridge_requirements(
                     op_name: op,
                     surface: None,
                 };
-                eliminate_type_projections(kb, &entry.spec, &param_arg_types, None, &ctx, None)
-                    .unwrap_or_else(|_| entry.spec.clone())
+                match eliminate_type_projections(kb, &entry.spec, &param_arg_types, None, &ctx, None)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        delta_error = Some(delta_failure_text(&e));
+                        entry.spec.clone()
+                    }
+                }
             };
         let concrete_spec = substitute_spec_via_subst(kb, &projected_spec, &subst);
         // WI-20260909-S8CBV — A PROJECTION THAT DID NOT GROUND IS A DELAY, NOT A SKIP.
@@ -25495,12 +25560,25 @@ pub(crate) fn resolve_bridge_requirements(
         // NARROW BY CONSTRUCTION: the gate asks whether a projection SURVIVED δ, so it
         // can only fire on a chain entry that carried one — a shape no program could
         // even write before this ticket.
-        if value_contains_projection(kb, &concrete_spec) {
+        // NARROW, and gated to the `ExprCarried` half for the reason
+        // [`value_contains_expr_carried`] gives: this `return` abandons the WHOLE call,
+        // including the SORT half, which the WI-822 LEG 1 note above forbids a widening
+        // of this chain from doing. That is acceptable ONLY because the shape it fires on
+        // could not be written before this ticket — an argument that is false for a
+        // `RigidTypeProjection`, and `/code-review` drove it.
+        if value_contains_expr_carried(kb, &concrete_spec) {
             return BridgeRequirements::Unresolvable {
                 detail: format!(
-                    "`{}`'s `requires {}` names a projection these arguments do not                      ground; forwarding a projection-carried dictionary from the                      caller's own requirement is not yet supported",
+                    "`{}`'s `requires {}` names a projection these arguments do not \
+                     ground{}",
                     kb.qualified_name_of(op),
                     render_requires_entry(kb, entry),
+                    match &delta_error {
+                        Some(d) => format!(" — projecting it failed: {d}"),
+                        None => "; forwarding a projection-carried dictionary from the \
+                                 caller's own requirement is not yet supported"
+                            .to_owned(),
+                    },
                 ),
             };
         }
@@ -48966,6 +49044,30 @@ fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
 /// projection) and to DETECT a projection nested inside a denoted-bearing `Value::Node`
 /// — which the Node-carrier rewrite does not yet handle, so it is a loud error rather
 /// than a silent leak.
+/// WI-20260909-S8CBV — does this type carry an EXPRESSION-CARRIED projection (`x.E`)
+/// specifically, as opposed to any projection?
+///
+/// [`value_contains_projection`] answers `true` for a `RigidTypeProjection` too (`P.Key`,
+/// WI-428) — a TYPE-headed projection that has been writable in a `requires` chain since
+/// long before this ticket. The two refusals this ticket adds must not fire on it: each
+/// justifies itself as "narrow by construction, a shape no program could write before",
+/// and that argument is only true of the `ExprCarried` half. `/code-review` found the
+/// wider predicate under both, where it would have taken away a sort-half supply that
+/// used to work. So the REFUSALS ask this and the δ eliminations ask the wide one — they
+/// are different questions and the narrow one belongs only to the new verdicts.
+fn value_contains_expr_carried(kb: &KnowledgeBase, ty: &Value) -> bool {
+    match extract_type(kb, ty) {
+        TypeExtractor::ExprCarried { .. } => true,
+        TypeExtractor::Parameterized { bindings, .. } => bindings
+            .iter()
+            .any(|(_, v)| value_contains_expr_carried(kb, v)),
+        TypeExtractor::NamedTuple(fields) => fields
+            .iter()
+            .any(|(_, v)| value_contains_expr_carried(kb, v)),
+        _ => false,
+    }
+}
+
 fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
     match extract_type(kb, ty) {
         TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
@@ -51063,6 +51165,23 @@ fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol>
 /// WI-510: `#[track_caller]` so the `here()` origin threads through to the real
 /// call site rather than collapsing all 10+ callers to this helper's own line.
 #[track_caller]
+/// WI-20260909-S8CBV — the sentence a FAILED δ contributes to a requirement refusal.
+///
+/// Both projection-carrying sites (the bridge and [`build_op_scoped_dicts`]) let an
+/// un-eliminable spec ride on, so a δ FAILURE and a δ NEUTRAL reach the same "still a
+/// projection" verdict below. They are different faults — a member the receiver's sort
+/// does not declare, versus a receiver this call leaves abstract — and reporting them
+/// with one sentence told the author their ARGUMENTS were wrong when the REQUIREMENT
+/// was. `/code-review` drove it. Every projection failure is raised through
+/// [`projection_type_error`], whose `actual` is the sentence; anything else renders
+/// generically rather than silently as nothing.
+fn delta_failure_text(e: &TypeError) -> String {
+    match e {
+        TypeError::Other { actual, .. } => actual.clone(),
+        _ => "the projection could not be eliminated at this call".to_owned(),
+    }
+}
+
 fn projection_type_error(ctx: &TypeErrorContext, span: Option<Span>, msg: &str) -> TypeError {
     TypeError::Other {
         site: TypeError::here(),

@@ -24,54 +24,66 @@
 //! against `requires Desc[T = Red]` and gets 7 and 7. Same body, same calls, same spec
 //! op; only the bracket differs, and only the projection tracks the argument.
 //!
-//! ## The five halves, and what fails when each is backed out
+//! ## The seven halves, and what fails when each is backed out
 //!
 //! MEASURED with the tree restored between runs and every back-out patched by a script
 //! that ASSERTS its pattern matched exactly once — a back-out that silently no-ops
 //! reports "no failures", which is indistinguishable from a control that measures
 //! nothing.
 //!
-//!   * **The `Term::Ref` projection rung** (`Loader::try_contract_projection`, gated on
-//!     `Loader::in_op_contract_clause`) — resolves `x.E` in a contract clause through the
-//!     type ladder's own classifier. Backed out, no fixture here LOADS at all
-//!     (`unresolved name 'x.E'`): **4 rows**.
-//!   * **The `ExprCarried` stop in `wrap_places_as_var_ref`** — WI-552 canonicalizes a
-//!     contract goal's parameter refs to `var_ref`, and it was descending INTO the
-//!     projection, so the requires copy stored `ExprCarried(var_ref(pick.x), E)` where
-//!     the parameter-type copy one line up stored `ExprCarried(Ref(pick.x), E)`. The
-//!     eliminator keys on the `Ref`, so the requires copy eliminated to itself. **2
-//!     rows**, both to `None` — eval never sees a dictionary.
-//!   * **The δ-grounding in `resolve_bridge_requirements`** (`requirement-channel.md`
-//!     §10 item 4's site) — **2 rows**.
-//!   * **The δ-grounding in `build_op_scoped_dicts`** — **1 row**:
-//!     [`a_call_that_grounds_the_projection_itself_needs_no_caller_requirement`], which
-//!     is REFUSED without it. Note what that row is for: this δ is not a second SUPPLIER
-//!     (the bridge answers first on every path reachable from a query, so backing it out
-//!     alone moved nothing until that row existed) — it is what lets the refusal below
-//!     tell a projection that GROUNDS HERE from one that cannot.
-//!   * **The `caller_covers` refusal in `build_op_scoped_dicts`** — **1 row**:
-//!     [`a_projection_the_caller_cannot_ground_is_refused_at_load_not_at_eval`].
-//!   * **The `Unresolvable` guard in `resolve_bridge_requirements`** — **1 row**:
-//!     [`a_projection_requirement_forwards_when_the_caller_declares_it`], which does not
-//!     merely fail, it PANICS.
+//! | backed out | rows |
+//! |---|---|
+//! | the `Term::Ref` projection rung (`Loader::try_contract_projection`) | **7** |
+//! | the `ExprCarried` stop in `wrap_places_as_var_ref` | **6** |
+//! | δ-grounding in `resolve_bridge_requirements` | **3** |
+//! | δ-grounding in `build_op_scoped_dicts` | **3** |
+//! | the `caller_covers` refusal | **2** |
+//! | the EXACT comparison (reverted to spec-base + "has a projection") | **1** |
+//! | the bridge's `Unresolvable` guard | **2**, both PANICS |
+//!
+//!   * **The rung** resolves `x.E` in a `requires` clause through the type ladder's own
+//!     classifier — asked with the WI-428 rigid-type-projection route DISABLED, so every
+//!     non-value head still falls to `remap_symbol_strict` exactly as before. Backed out,
+//!     no fixture here LOADS (`unresolved name 'x.E'`).
+//!   * **The `ExprCarried` stop**: WI-552 canonicalizes a contract goal's parameter refs
+//!     to `var_ref` and was descending INTO the projection, so the requires copy stored
+//!     `ExprCarried(var_ref(pick.x), E)` where the parameter-type copy one line up stored
+//!     `ExprCarried(Ref(pick.x), E)`. The eliminator keys on the `Ref`.
+//!   * **The two δs** are the same rule at two readers — the bridge (a rule body calling
+//!     an operation, `requirement-channel.md` §10 item 4) and the typed call site. δ runs
+//!     BEFORE σ at both: `x` is a parameter, not a type variable, so a substitution walks
+//!     straight past the projection.
+//!   * **`caller_covers` + the EXACT comparison** are one guard measured twice, because
+//!     the coarse version of it is not merely weaker — it is WRONG. See
+//!     [`a_caller_requirement_at_a_different_receiver_does_not_cover_this_call`].
 //!
 //! [`a_constant_requirement_does_not_track_the_argument`],
 //! [`without_the_requirement_the_body_has_no_dictionary_at_all`] and
-//! [`a_dotted_name_whose_head_is_no_value_place_is_still_unresolved`] pass under ALL SIX
+//! [`a_dotted_name_whose_head_is_no_value_place_is_still_unresolved`] pass under ALL SEVEN
 //! by design — the first two describe the fixture (they are what the acceptance's numbers
 //! are read against) and the third is the arm the rung declines.
 //!
+//! ## Two narrowings whose control is the CORPUS, not a row here
+//!
+//! Both restore prior behaviour rather than add any, so the thing that measures them is
+//! the 6754-test suite, and a row here could only restate it:
+//!
+//!   * `in_op_contract_clause` covers `requires` and NOT `ensures` — an `ensures` goal is
+//!     a predicate over values, whose dotted uppercase-tailed arguments are entity names,
+//!     not projections;
+//!   * the two REFUSALS ask `value_contains_expr_carried`, not `value_contains_projection`
+//!     — the latter is also true of a `RigidTypeProjection` (`P.Key`), writable in a
+//!     `requires` chain since WI-428, and each refusal justifies itself as "a shape no
+//!     program could write before this ticket".
+//!
 //! ## What this ticket does NOT deliver
 //!
-//! FORWARDING A PROJECTION-CARRIED DICTIONARY THROUGH A CALLER THAT DOES NOT DECLARE IT.
-//! The caller must repeat the requirement (`operation outer(b: Box) requires Desc[T =
-//! b.E]`); without it the call is refused, loudly and at load. Making it inferable means
-//! matching the callee's `pick.x` neutral against the caller's `outer.b` one, which needs
-//! WI-459's receiver RE-KEYING before the ζ identity check can answer — see the
-//! `caller_covers` comment for why the gate is deliberately coarse until then.
+//! INFERRING the caller's requirement. A caller that forwards must declare the same
+//! requirement at the same receiver; one that declares nothing, or declares it at a
+//! DIFFERENT receiver, is refused at load. Both are rows below.
 //!
 //! THE RULE-BODY `require[Desc[T = p.E]]` BRACKET. Still refused, by WI-20260909-51W18's
-//! drop rule ("`p.E` … names neither a sort nor one of `Desc`'s own type parameters") —
+//! drop rule (`p.E` "names neither a sort nor one of `Desc`'s own type parameters") —
 //! that is S8CBV's gate (1), and the attribution-by-projection-root work it feeds.
 
 use anthill_core::eval::Value;
@@ -281,7 +293,7 @@ fn a_projection_the_caller_cannot_ground_is_refused_at_load_not_at_eval() {
     let errs = refusal(&fixture("test.s8cbv.bare", BARE));
     assert!(
         errs.contains("a projection this call does not ground")
-            && errs.contains("declares no matching `requires` to forward"),
+            && errs.contains("no `requires` of the caller names that same receiver"),
         "got:\n{errs}"
     );
 }
@@ -304,5 +316,50 @@ fn a_call_that_grounds_the_projection_itself_needs_no_caller_requirement() {
     assert_eq!(
         answer("test.s8cbv.grounded", GROUNDED, "outer(?r)"),
         Some(7),
+    );
+}
+
+#[test]
+fn a_caller_requirement_at_a_different_receiver_does_not_cover_this_call() {
+    // THE SILENT-WRONG-ANSWER ROW, and the reason the coverage test compares the WHOLE
+    // re-keyed spec rather than the spec base.
+    //
+    // `outer` declares the requirement at `c` and calls `pick(b)`. The caller holds ONE
+    // `__req_desc` slot and the callee reads whatever is in it, so a gate that cannot
+    // tell `b.E` from `c.E` hands `b`'s call `c`'s dictionary. MEASURED with a
+    // base-only gate: this program LOADED and answered **9** — `c` is a `Box` of `Blue`
+    // — where `b` is a `Box` of `Red` and `7` is the only correct answer. A clean load
+    // and a definite wrong answer.
+    //
+    // BACK-OUT of the re-key (`arg_syms` → `None` in `build_op_scoped_dicts`' δ): the
+    // two sides are neutrals keyed to different scopes, nothing compares equal, and
+    // [`a_projection_requirement_forwards_when_the_caller_declares_it`] — the program
+    // that SHOULD forward — is refused instead. The re-key is what makes the comparison
+    // mean anything in either direction.
+    const CROSS: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+                         operation outer(b: Box, c: Box) -> Int64 requires Desc[T = c.E] = pick(b)\n";
+    let errs = refusal(&fixture("test.s8cbv.cross", CROSS));
+    assert!(
+        errs.contains("no `requires` of the caller names that same receiver"),
+        "got:\n{errs}"
+    );
+}
+
+#[test]
+fn the_same_call_with_the_requirement_at_the_matching_receiver_answers() {
+    // THE CONTROL FOR THE ROW ABOVE, one character apart: `c.E` becomes `b.E` and the
+    // identical two-parameter clause loads and answers `7` — `b`'s instance, not `c`'s.
+    // Same shape, same arity, same call; only the receiver in the caller's bracket
+    // differs, and that is exactly what the exact comparison reads.
+    const MATCHED: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+                           operation outer(b: Box, c: Box) -> Int64 requires Desc[T = b.E] = pick(b)\n";
+    assert_eq!(
+        answer(
+            "test.s8cbv.matched",
+            MATCHED,
+            "outer(box(v: red()), box(v: blue()), ?r)"
+        ),
+        Some(7),
+        "`b` is a `Box` of `Red`; `c`'s `Blue` must not be what answers",
     );
 }
