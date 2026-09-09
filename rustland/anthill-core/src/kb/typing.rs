@@ -19967,6 +19967,60 @@ fn check_apply_iter(
                                     continue;
                                 }
                             };
+                            // A spec type parameter the CALLED OPERATION's signature
+                            // never mentions cannot be what any dispatch turns on: no
+                            // argument carries it, no return exposes it, no effect row
+                            // names it. No witness could supply it and no `requires` could
+                            // cover it, so demanding one refuses a well-typed program.
+                            //
+                            // MEASURED: `reify[Rho, X, T1](body: () -> X @ {Error[T1],
+                            // Rho}) -> Result[E = T1, T = X]`, declared inside
+                            // `sort Error { sort T = ? }`, names the sort's `T` NOWHERE —
+                            // `T1` is the payload and is inferred from the body. Without
+                            // this filter the sort's `T` is flagged abstract and the call
+                            // refused, but only OUTSIDE `anthill.*`, because
+                            // `spec_warrants_abstract_check`'s namespace leg is what turns
+                            // the flag into a diagnostic. One program's verdict therefore
+                            // depended on the namespace it was declared in.
+                            //
+                            // `type_mentions_spec_param` and NOT `occurs_in_view` on the
+                            // alias var: a declared parameter type names the spec param by
+                            // SYMBOL (`Ref(MySpec.T)`) as readily as by variable, and the
+                            // var-only test missed the symbol spelling — measured, it let
+                            // `MySpec.same(a: T, b: T)` through on an abstract `T`, which
+                            // is precisely the WI-325 case that must still be refused.
+                            let spec_param_syms = [short_qn_sym];
+                            let spec_param_vars = [vid];
+                            let signature_mentions = op.params.iter().any(|(_, t)| {
+                                type_mentions_spec_param(kb, t, &spec_param_syms, &spec_param_vars)
+                            }) || type_mentions_spec_param(
+                                kb,
+                                &op.return_type,
+                                &spec_param_syms,
+                                &spec_param_vars,
+                            ) || op.effects.iter().any(|e| {
+                                type_mentions_spec_param(kb, e, &spec_param_syms, &spec_param_vars)
+                            });
+                            // ...AND ONLY WHEN THE CALL HAS NO RECEIVER. A RECEIVER carries
+                            // the spec's parameters even when the signature never writes
+                            // them: `render(w: Widget)` on `sort Widget { sort T = ? }`
+                            // names `Widget.T` nowhere, yet the witness that supplies
+                            // `render` is selected per carrier, so `T` IS part of the
+                            // instantiation being sought. MEASURED — without this
+                            // conjunct, `wi325_missing_requires_test::
+                            // user_defined_self_receiver_spec_without_providers_errors_on_abstract_call`
+                            // goes green-to-red: a wholly-unimplemented self-receiver spec
+                            // loaded clean instead of being caught at type-check.
+                            //
+                            // The same pair `self_recv_spec.is_none() && carrier_param_
+                            // info.is_none()` is what `enclosing_requires_clause` tests
+                            // above, for the same reason: it is this file's spelling of
+                            // "this call dispatches on nothing".
+                            let has_receiver =
+                                self_recv_spec.is_some() || carrier_param_info.is_some();
+                            if !signature_mentions && !has_receiver {
+                                continue;
+                            }
                             let is_abstract = match subst.resolve_as_value(vid) {
                                 None => true,
                                 // WI-1059: a NEUTRAL is abstract too, and it is the form a
@@ -45164,6 +45218,46 @@ fn validate_callback_effect_row(
         .iter()
         .zip(declared_places.iter().copied())
         .filter_map(|(a, e)| a.map(|a| (a, e)))
+        .collect();
+    // WI-20260908-9WVT7 — RESOLVE EACH LABEL THROUGH σ BEFORE COMPARING IT.
+    // `labels_match_aligned` decides by structural equality after
+    // `walk_value_to_resolved`, which chases a TOP-LEVEL variable chain and does NOT
+    // descend into an `Fn`'s arguments. So a declared `Error[T = ?P]` was compared
+    // UNRESOLVED against an actual `Error[T = Boom]` and reported as "a closed row …
+    // does not admit" — even though argument unification had already bound
+    // `?P := Boom` (measured by instrumenting the comparison: the label's `T` child
+    // chased to the actual's `Boom` TermId while the label itself did not). Not
+    // `Error`-specific: any parameterized label whose argument is a call-site-bound
+    // type parameter was affected, and `Permission[C]` is the second witness.
+    //
+    // ALL THREE LISTS, and `e_absent` is not optional. It feeds the SAME comparator
+    // below, so resolving only the present ones would leave the `-Label[Arg]`
+    // lacks-constraint reject dead exactly when the denied label's argument resolves
+    // through σ — including WI-CBRSW's `-Permission[X]`, whose whole purpose is to
+    // deny privilege escalation. It also keeps the reject's message coherent: `viol`
+    // and `la` are printed in one sentence and would otherwise be two spellings of
+    // one σ.
+    //
+    // PLACED HERE, BELOW THE BAILS, NOT AT EACH `decompose_effect_row`. Three `?`
+    // exits and the pure-actual early return sit above, and `walk_type_deep_value`
+    // reaches `TermStore::alloc`, which increments a refcount on a hash-cons HIT that
+    // nothing here releases. MEASURED over stdlib + three example corpora: of the
+    // 31 / 19 / 80 / 19 invocations that reached the old (higher) site, ZERO reached
+    // this loop — every one left at the pure-actual bail, so the walk was pure cost
+    // and pure leak. `walk_type_deep_value` and not its grounding sibling
+    // `resolve_type_deep_value`: this is a CHECK, so it propagates σ and must not
+    // δ-ground a concrete-subject projection on the way.
+    let e_present: Vec<Value> = e_present
+        .iter()
+        .map(|l| walk_type_deep_value(kb, subst, l))
+        .collect();
+    let e_absent: Vec<Value> = e_absent
+        .iter()
+        .map(|l| walk_type_deep_value(kb, subst, l))
+        .collect();
+    let a_present: Vec<Value> = a_present
+        .iter()
+        .map(|l| walk_type_deep_value(kb, subst, l))
         .collect();
     for la in &a_present {
         if e_present
