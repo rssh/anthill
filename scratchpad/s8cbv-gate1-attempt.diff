@@ -1,0 +1,443 @@
+diff --git a/rustland/anthill-core/src/kb/load.rs b/rustland/anthill-core/src/kb/load.rs
+index 240725af..c1c25b50 100644
+--- a/rustland/anthill-core/src/kb/load.rs
++++ b/rustland/anthill-core/src/kb/load.rs
+@@ -20618,6 +20618,13 @@ impl<'a> Loader<'a> {
+     /// and a nested head-introduced type variable was then reported `unresolved name`
+     /// — two resolvers answering one question, found by `/code-review`.
+     fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
++        // WI-20260909-S8CBV gate (1) — A PROJECTION IS A THIRD KIND. Asked FIRST, because
++        // the two rungs below are about NAMES (does this spell a sort? is it the spec's
++        // own parameter?) and `p.E` is neither, so the drop rule read it as a typo:
++        // "`p.E` names neither a sort nor one of `Desc`'s own type parameters".
++        if let Some(occ) = self.try_require_spec_projection(parse_id) {
++            return Some(occ);
++        }
+         let sym = self.require_spec_binding_sort(parse_id)?;
+         if self.parse_arg_type_is_applied(parse_id) {
+             return Some(self.build_require_spec_occurrence(parse_id));
+@@ -20691,6 +20698,87 @@ impl<'a> Loader<'a> {
+         });
+     }
+ 
++    /// WI-20260909-S8CBV gate (1) — a `require` bracket binding written as a PATH
++    /// PROJECTION off one of this clause's own head parameters (`require[Desc[T = p.E]]`
++    /// under `rule r(p: Box, …)`), or `None` for everything else.
++    ///
++    /// THE RECEIVER IS A LOGIC VARIABLE, and that is what makes this a different lowering
++    /// from the operation-signature one. §2.1's sigil-free head parameter is bound to a
++    /// fresh `VarId` in [`Self::rule_param_vars`] and every body occurrence of the bare
++    /// name lowers to that variable; so the projection's receiver is `Var(vid)`, not the
++    /// `Ref(param)` an operation's `x.E` carries. `path-dependent-types.md` §4 names this
++    /// case directly — "a flexible projection … arises only where a receiver is a logic
++    /// variable, i.e. in rule bodies, never in operation signatures".
++    ///
++    /// THE ROOT MUST BE A HEAD PARAMETER OF THIS CLAUSE. That is the ticket's own rule
++    /// ("a projection whose root is not a head binding of this clause is REFUSED"), and
++    /// answering `None` for anything else is what keeps it: an unknown root falls to the
++    /// two name rungs and is reported by the drop rule exactly as it is today.
++    ///
++    /// A CAPITALIZED LAST SEGMENT, the same discriminator
++    /// [`Self::try_expr_carried_projection_segments`] applies — types are Capitalized and
++    /// value fields are not (`type-parameter-scoping.md` §1). Read here rather than
++    /// shared with that function because the two differ in the half that matters: this
++    /// one resolves its receiver in `rule_param_vars`, which the type ladder never
++    /// consults, and admits no other head at all.
++    fn try_require_spec_projection(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
++        let name = self.parse_arg_type_name(parse_id)?;
++        let (root, member) = name.rsplit_once('.')?;
++        // ONE segment before the dot: `p.E`. A compound receiver (`p.f.E`) would need the
++        // receiver to be a field-access occurrence over a variable, which nothing
++        // downstream reads — left to the drop rule, which reports it by name.
++        if root.contains('.') {
++            return None;
++        }
++        if !member.chars().next().is_some_and(|c| c.is_uppercase()) {
++            return None;
++        }
++        let vid = *self.rule_param_vars.get(root)?;
++        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
++        let member_sym = self.kb.intern(member);
++        // AN OCCURRENCE TREE, NOT AN INTERNED TERM, AND THE REASON IS DE BRUIJN.
++        //
++        // The obvious lowering — `make_expr_carried(Var(Global(vid)), M)` wrapped in an
++        // `Expr::Spliced` — loads and is WRONG. A rule's body occurrences are closed to
++        // De Bruijn at the assert (`node_to_debruijn`), and that walk does not descend
++        // into a `Spliced` `Value`: MEASURED, the receiver was still
++        // `Var(Global(VarId { id: 1386, name: p }))` when the typer read it, so at firing
++        // — where each De Bruijn index opens to a FRESH variable — the projection would
++        // have named a stale global that nothing binds. A clean load and a requirement
++        // that can never ground.
++        //
++        // Built as an `Expr::Apply` over the same functor and the same two keys
++        // `KnowledgeBase::make_expr_carried` uses, the receiver is an ordinary
++        // `Expr::Var` CHILD, which the closing walk sees and rewrites like any other. The
++        // two carriers read identically through `TermView` (`extract_type` keys on the
++        // functor and the `value` / `member` labels, never on the carrier), which is what
++        // lets the type readers take this shape unchanged.
++        //
++        // A `NodeKind::Type` occurrence was tried first and PANICS here — "type/effect
++        // occurrence in for_each_child var walk". This slot is an EXPRESSION position
++        // that happens to hold a type, exactly as the concrete binding `Desc[T = Leaf]`
++        // holds `Expr::Ref(Leaf)` rather than a type node.
++        let ec_sym = self
++            .kb
++            .try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried")?;
++        let value_key = self.kb.intern("value");
++        let member_key = self.kb.intern("member");
++        let recv = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, self.current_owner);
++        let member_occ =
++            NodeOccurrence::new_expr(Expr::Ref(member_sym), span, self.current_owner);
++        Some(NodeOccurrence::new_expr(
++            Expr::Apply {
++                recv_type: None,
++                functor: ec_sym,
++                pos_args: Vec::new(),
++                named_args: vec![(value_key, recv), (member_key, member_occ)],
++                type_args: Vec::new(),
++            },
++            span,
++            self.current_owner,
++        ))
++    }
++
+     fn require_spec_binding_sort(&self, parse_id: TermId) -> Option<Symbol> {
+         let name = self.parse_arg_type_name(parse_id)?;
+         self.parse_arg_sort_symbol(&name)
+diff --git a/rustland/anthill-core/src/kb/resolve.rs b/rustland/anthill-core/src/kb/resolve.rs
+index 99a5bb83..392480b4 100644
+--- a/rustland/anthill-core/src/kb/resolve.rs
++++ b/rustland/anthill-core/src/kb/resolve.rs
+@@ -6419,6 +6419,13 @@ impl KnowledgeBase {
+             Some(s) => s,
+             None => return BuiltinResult::Failure,
+         };
++        // WI-20260909-S8CBV gate (1) — the MEMBER a projected carrier names, read off the
++        // stored instance in slot 0. Slot 2 holds the projection's ROOT (the head
++        // variable), because that is the value whose type is about to be read; the member
++        // is what says which of that type's parameters the carrier actually is.
++        let project = self
++            .walk_arg(goal.pos_arg(self, 0), subst)
++            .and_then(|v| super::typing::requirement_projection_member(self, &v));
+         let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
+         for i in 2..pos_arity {
+             match self.walk_arg(goal.pos_arg(self, i), subst) {
+@@ -6443,7 +6450,7 @@ impl KnowledgeBase {
+             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
+         let Some(out_sym) = out_sym else {
+             return match super::typing::find_dictionary_guard(
+-                self, subst, spec_sort, op_functor, &arg_vals,
++                self, subst, spec_sort, op_functor, &arg_vals, project,
+             ) {
+                 super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
+                 super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
+@@ -6460,7 +6467,9 @@ impl KnowledgeBase {
+         // what makes it the σ-VALUE rather than the variable leaf.
+         let out_slot = goal.named_arg(self, out_sym);
+         match self.walk_arg(out_slot, subst) {
+-            Some(out) => self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out),
++            Some(out) => {
++                self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out, project)
++            }
+             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
+         }
+     }
+@@ -6487,6 +6496,7 @@ impl KnowledgeBase {
+     /// identity was `(arena, raw)`, so two scratch interpreters gave one dictionary
+     /// two identities and this site had to WARN that `raw()` must not be read; the
+     /// second identity is gone, not documented.
++    #[allow(clippy::too_many_arguments)]
+     fn read_dictionary_into(
+         &mut self,
+         subst: &Substitution,
+@@ -6494,10 +6504,15 @@ impl KnowledgeBase {
+         op_functor: Symbol,
+         arg_vals: &[Value],
+         out: Value,
++        // WI-20260909-S8CBV gate (1): the projected member, passed through from the goal's
++        // slot 0 so the FETCH sees the same carrier type the GUARD did.
++        project: Option<Symbol>,
+     ) -> BuiltinResult {
+         use super::typing::{FindDictFetch, FindDictOutcome};
+         let dict =
+-            match super::typing::fetch_dictionary(self, subst, spec_sort, op_functor, arg_vals) {
++            match super::typing::fetch_dictionary(
++                self, subst, spec_sort, op_functor, arg_vals, project,
++            ) {
+                 FindDictFetch::Fetched(dict) => dict,
+                 FindDictFetch::Guard(FindDictOutcome::Fire) => {
+                     unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
+diff --git a/rustland/anthill-core/src/kb/typing.rs b/rustland/anthill-core/src/kb/typing.rs
+index e529a257..f1ad3475 100644
+--- a/rustland/anthill-core/src/kb/typing.rs
++++ b/rustland/anthill-core/src/kb/typing.rs
+@@ -64367,8 +64367,14 @@ pub(crate) fn find_dictionary_guard(
+     spec_sort: Symbol,
+     op_functor: Symbol,
+     arg_vals: &[Value],
++    // WI-20260909-S8CBV gate (1): the member a projected carrier names
++    // ([`requirement_projection_member`]), `None` for every direct bracket.
++    project: Option<Symbol>,
+ ) -> FindDictOutcome {
+-    let arg_types = witness_arg_types(kb, subst, arg_vals);
++    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
++        Ok(t) => t,
++        Err(outcome) => return outcome,
++    };
+     // THE ANCHOR FORM'S NO-`out` PATH — and it is the CHECK TIER's only consumer.
+     //
+     // `/code-review` found this branch unreachable and it was: the anchor emitted
+@@ -64390,6 +64396,40 @@ pub(crate) fn find_dictionary_guard(
+ /// what a sub-dictionary fetch needs, so collapsing to the head here would throw
+ /// away half of what [`fetch_dictionary`] must pass on. Needs `&mut kb` (it may
+ /// intern sort refs), so it runs before any immutable-`kb` walk.
++/// WI-20260909-S8CBV gate (1) — [`witness_arg_types`], with δ applied to the CARRIER
++/// when the bracket projected one. `Err` carries the three-valued verdict the caller must
++/// return unchanged.
++///
++/// ONE PLACE, because the guard and the fetch must see the SAME carrier type or a goal
++/// could be guarded on the receiver and fetched on its member. That pairing is the same
++/// one [`fetch_dictionary`] already states for `is_anchor_form`, one question over.
++///
++/// A CARRIER THAT DOES NOT YET BIND THE MEMBER SUSPENDS, never `DontFire`. The rule body
++/// may be entered before the head variable is bound, and deciding the guard false there
++/// would silently drop a clause that is merely not ready — WI-067's discipline, which
++/// [`anchor_guard`] applies to a headless carrier for the identical reason.
++fn projected_arg_types(
++    kb: &mut KnowledgeBase,
++    subst: &Substitution,
++    arg_vals: &[Value],
++    project: Option<Symbol>,
++) -> Result<Vec<Value>, FindDictOutcome> {
++    let mut arg_types = witness_arg_types(kb, subst, arg_vals);
++    let Some(member) = project else {
++        return Ok(arg_types);
++    };
++    let Some(first) = arg_types.first() else {
++        return Err(FindDictOutcome::DontFire);
++    };
++    match project_carried_member(kb, first, member) {
++        Some(projected) => {
++            arg_types[0] = projected;
++            Ok(arg_types)
++        }
++        None => Err(FindDictOutcome::Suspend),
++    }
++}
++
+ fn witness_arg_types(
+     kb: &mut KnowledgeBase,
+     subst: &Substitution,
+@@ -64436,6 +64476,53 @@ fn guard_over_arg_types(
+ /// so an anchored goal was routed down the WITNESS path with a sort in the op slot, found
+ /// no signature, and the clause SILENTLY answered nothing where the same program without
+ /// that namespace answered `7`. The same desync WI-20260824-Q0093 found once already.
++/// WI-20260909-S8CBV gate (1) — the MEMBER a `require` bracket's carrier projects, read
++/// off the stored spec instance (`Desc[T = p.E]` ⟹ `E`), or `None` for every bracket
++/// that names a type directly.
++///
++/// READ AT THE RESOLVER, because that is where the instance is. The emitted goal carries
++/// the instance whole in slot 0 (WI-20260909-51W18's retention) and the carrier VARIABLE
++/// in slot 2; the member is the one piece of the projection that cannot ride slot 2,
++/// since that slot holds the value whose type is about to be read.
++///
++/// CARRIER-BLIND, through `extract_type`: the instance reaches here as a σ-walked
++/// `Value`, which may be a term or an occurrence depending on the path that stored it.
++pub(crate) fn requirement_projection_member(kb: &KnowledgeBase, instance: &Value) -> Option<Symbol> {
++    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, instance) else {
++        return None;
++    };
++    bindings.iter().find_map(|(_, v)| {
++        match extract_type(kb, v) {
++            TypeExtractor::ExprCarried { member, .. } => Some(member),
++            _ => None,
++        }
++    })
++}
++
++/// WI-20260909-S8CBV gate (1) — δ AT FIRE TIME: project `member` off the carrier's
++/// CARRIED TYPE (`Box[E = Red]` at `E` ⟹ `Red`).
++///
++/// THIS IS THE `fetch` ROW OF `requirement-channel.md` §2.1's table, not a typing
++/// operation — the invariant that "run time performs no typing operations" is about
++/// inference, unification and selection, and this is a member read off a type that has
++/// already been read. `x.E` names WHICH carried type the fetch should look at; the fetch
++/// itself is unchanged.
++///
++/// `None` when the type does not bind that member — an unbound or headless carrier, or a
++/// member the receiver's sort does not declare. The caller must SUSPEND on it rather than
++/// decide the guard false: at the moment a rule body is entered the head variable may
++/// simply not be bound yet, which is the same three-valued discipline
++/// [`anchor_guard`] already applies to a headless carrier (WI-067).
++fn project_carried_member(kb: &KnowledgeBase, ty: &Value, member: Symbol) -> Option<Value> {
++    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
++        return None;
++    };
++    bindings
++        .iter()
++        .find(|(k, _)| same_label(kb, *k, member))
++        .map(|(_, v)| v.clone())
++}
++
+ fn is_anchor_form(kb: &KnowledgeBase, spec_sort: Symbol, slot1: Symbol) -> bool {
+     slot1 == spec_sort && kb.has_kind(slot1, crate::kb::SymbolKind::Sort)
+ }
+@@ -64596,8 +64683,13 @@ pub(crate) fn fetch_dictionary(
+     spec_sort: Symbol,
+     op_functor: Symbol,
+     arg_vals: &[Value],
++    // WI-20260909-S8CBV gate (1) — see [`find_dictionary_guard`].
++    project: Option<Symbol>,
+ ) -> FindDictFetch {
+-    let arg_types = witness_arg_types(kb, subst, arg_vals);
++    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
++        Ok(t) => t,
++        Err(outcome) => return FindDictFetch::Guard(outcome),
++    };
+     // WI-20260909-QMFC5 — one relation, two grounding paths. The guard and the goal are
+     // chosen together from the same discriminant, so an anchored goal can never be
+     // guarded one way and fetched the other.
+@@ -72232,6 +72324,69 @@ fn rewrite_find_dictionary_goal(
+ /// differs from the carrier by design (the clause is polymorphic over the spec's
+ /// providers). That is why the emitted goal carries the VARIABLE and the carried type is
+ /// read at run time, exactly as the witness path reads its arguments'.
++#[allow(clippy::too_many_arguments)]
++/// WI-20260909-S8CBV gate (1) — the De Bruijn index of the head binding a `require`
++/// bracket's carrier PROJECTS OFF (`require[Desc[T = p.E]]` ⟹ `p`'s index), plus the
++/// member it projects. `None` when the bracket names no projection, which is every
++/// spelling that existed before this ticket.
++///
++/// THE ROOT IS THE ANCHOR, AND IT IS NOT TESTED FOR `provides`. That is the whole
++/// difference from the concrete path and it is forced by what the two brackets MEAN:
++/// `require[Desc[T = Box]]` says the carrier IS `Box`, so `Box` must provide `Desc`;
++/// `require[Desc[T = p.E]]` says the carrier is `p`'s ELEMENT, about which the bound
++/// `Box` says nothing at all. Asking `carrier_provides_spec(Box, Desc)` here is what
++/// refused the shape before this ticket, with a message naming the wrong sort.
++///
++/// THE INDEX IS READ OFF A CLOSED OCCURRENCE. The loader lowers the projection as an
++/// `Expr::Apply` over `ExprCarried` whose `value` child is an ordinary `Expr::Var`, so
++/// the rule's own De Bruijn closing rewrites it; the index it leaves is directly
++/// comparable with [`KnowledgeBase::rule_type_bounds`]' keys, which are produced by the
++/// same reversal. A receiver that is still `Var(Global)` means the closing did not see
++/// it — a loader bug, not a shape to tolerate — so it answers `None` and the clause
++/// falls to the ordinary refusal rather than grounding on a variable nothing binds.
++fn written_projection_anchor(
++    kb: &KnowledgeBase,
++    spec_arg: &Rc<NodeOccurrence>,
++    carrier_param: Symbol,
++) -> Option<(u32, Symbol)> {
++    let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() else {
++        return None;
++    };
++    let binding = named_args
++        .iter()
++        .find(|(k, _)| same_label(kb, *k, carrier_param))
++        .map(|(_, v)| v)?;
++    let Some(Expr::Apply {
++        functor,
++        named_args: proj_args,
++        ..
++    }) = binding.as_expr()
++    else {
++        return None;
++    };
++    if kb.qualified_name_of(*functor) != "anthill.prelude.TypeExtractor.ExprCarried" {
++        return None;
++    }
++    let mut root = None;
++    let mut member = None;
++    for (k, v) in proj_args.iter() {
++        match kb.local_name_of(*k) {
++            "value" => {
++                if let Some(Expr::Var(Var::DeBruijn(i))) = v.as_expr() {
++                    root = Some(*i);
++                }
++            }
++            "member" => {
++                if let Some(Expr::Ref(m)) | Some(Expr::Ident(m)) = v.as_expr() {
++                    member = Some(*m);
++                }
++            }
++            _ => {}
++        }
++    }
++    Some((root?, member?))
++}
++
+ #[allow(clippy::too_many_arguments)]
+ fn anchor_grounding(
+     kb: &KnowledgeBase,
+@@ -72261,6 +72416,12 @@ fn anchor_grounding(
+     } else {
+         spec_carrier_param_or_sole(kb, spec_canon)
+     };
++    // WI-20260909-S8CBV gate (1) — THE PROJECTION ROUTE, taken before the `provides`
++    // scan below because it asks a different question. See
++    // [`written_projection_anchor`]: a projected carrier anchors on its ROOT, and the
++    // root's own bound is not required to provide the spec.
++    let projection_anchor =
++        carrier_param.and_then(|p| written_projection_anchor(kb, spec_arg, p));
+     let mut anchors: Vec<(u32, Symbol)> = Vec::new();
+     let mut seen_bounds: Vec<Symbol> = Vec::new();
+     for &(db_index, bound_tid) in bounds {
+@@ -72285,6 +72446,37 @@ fn anchor_grounding(
+             .collect::<Vec<_>>()
+             .join(", ")
+     };
++    // THE PROJECTION'S ROOT REPLACES THE WHOLE SELECTION. Not merged into `anchors`:
++    // that list is "bounds that provide the spec", and a projection root belongs to it
++    // for no such reason — folding it in would make the >1 refusal below count it
++    // against bounds chosen by a different rule.
++    if let Some((root_index, _member)) = projection_anchor {
++        let Some(&(db_index, _)) = bounds.iter().find(|(i, _)| *i == root_index) else {
++            // The projection's receiver is a variable this clause's HEAD does not bind
++            // with a type. The loader admits a projection only off a name in
++            // `rule_param_vars`, so reaching here means the parameter carries no
++            // annotation — and without one there is no type to project a member from.
++            return Some(Err(err(
++                format!(
++                    "the `{}` this `require` projects off to be a TYPED head binding of \
++                     this clause",
++                    kb.local_name_of(spec_base),
++                ),
++                "its projection root is a clause parameter with no type annotation, so \
++                 there is no type whose member could be read"
++                    .to_owned(),
++            )));
++        };
++        // The REAL bound is kept, not a sentinel: the two checks below that compare it
++        // against the spec are switched off by `projection_anchor` explicitly, so nothing
++        // depends on what this symbol happens to be.
++        let bound_head = bounds
++            .iter()
++            .find(|(i, _)| *i == root_index)
++            .and_then(|(_, t)| sort_functor_of_view(kb, &TermIdView(*t)))
++            .unwrap_or(spec_base);
++        anchors = vec![(db_index, bound_head)];
++    }
+     // ZERO. The clause annotated its head and the annotation does not reach this spec —
+     // a fault in the BOUND, so say that rather than ask for a body call. Before this
+     // existed the row was refused by the witness error, which is why the acceptance
+@@ -72502,7 +72694,12 @@ fn anchor_grounding(
+     // SKIPPED IN TWO SHAPES, both because there is no row to read: a SELF-REPRESENTING
+     // spec pins no parameter at all, and an INTRODUCER bound IS the spec (`?x: A` under
+     // `:- Desc[A]`), which no sort declares a provision for.
+-    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
++    // THE CARRIER-PARAMETER AGREEMENT CHECKS BELOW DO NOT APPLY TO A PROJECTION, and
++    // switching them off explicitly is what keeps the anchor list honest. Both compare
++    // the WRITTEN carrier against the anchor's BOUND as sorts; a projected carrier is
++    // neither — it is a member of that bound, and the two are equal only by accident.
++    let sort_carrier_checks = projection_anchor.is_none();
++    if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
+         let row = provisions_of_spec(kb, spec_canon).find(|(provider, _, _)| {
+             kb.canonical_sort_sym(*provider) == kb.canonical_sort_sym(anchor_bound)
+         });
+@@ -72554,7 +72751,7 @@ fn anchor_grounding(
+     // already dropped upstream as a wildcard (S1's rule), so anything still standing here
+     // names a real sort; and a binding that AGREES is the ordinary spelling
+     // (`require[Desc[T = Leaf]]` under `?x: Leaf`), which every acceptance row uses.
+-    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
++    if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
+         if let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() {
+             for (k, v) in named_args.iter() {
+                 if !same_label(kb, *k, p) {
