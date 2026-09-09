@@ -422,17 +422,30 @@ the explicit form", which "simply pre-binds one of those variables" — with the
 the slot source. So a clause with two typed head vars both providing one spec is NOT
 refused; only attributing a WRITTEN `require` between them needs the bracket.
 
-**The weave is single-dictionary BY CONSTRUCTION and must change.**
-`weave_covered_call` (`typing.rs:71084`) emits `requirements: vec![out]` — one element,
-REPLACING the list — and finds its target by `Rc::ptr_eq`. Two dictionaries never collide
-today only because `collect_covered_calls` filters on the spec, so a call node is covered
-by at most one spec, and same-spec duplicates are refused upstream by `has_duplicate_spec`.
-Under this reading both consequences bite: the weave must be CARRIER-DIRECTED (pair each
-covered call with the dictionary whose anchor matches that call's carrier argument), and
-the second weave over an already-rebuilt node cannot find its target by `Rc::ptr_eq`, so
-it silently does not weave and trips the `debug_assert!(wove, …)` at `typing.rs:71207`.
-One accumulating pass, not two replacing ones. `apply_within` needs nothing —
-`requirements` is already a list.
+**DELIVERED by WI-20260909-96ZTM, and NOT by changing the weave.** Two `require`s on one
+spec bind two dictionaries, each attributed by its own written bracket, ADMITTED where
+every one of them is grounded by a TYPED HEAD ANCHOR — the only place the bracket is read.
+Where one is grounded by a body call instead, the old refusal stands: a witness is chosen
+by scan ORDER, so nothing there can say which dictionary a `require` names.
+
+**The weave was NOT rewritten, and that reverses this section's earlier plan.** An attempt
+that made `weave_covered_call` a single accumulating pass so one call could carry two
+dictionaries was measured wrong twice over: it broke NESTED covered calls on a SINGLE
+`require` (a panic in debug, the spec default in release), and the shape it enabled has no
+reader — `dictionary_dispatch_target` destructures a one-element slice and eval rejects
+more, because `requirements` answers "which instance does THIS CALL dispatch on" and one
+call dispatches on one instance. The claim that "`apply_within` needs nothing — the list is
+already a list" was false: the list exists, its consumers do not.
+
+N dictionaries AT A CALL SITE already work, through a different channel: a callee's own
+`requires` travel the SLOT-indexed `op_dicts` (`op_dict_entries` →
+`build_op_scoped_dicts` → `push_op_scoped_slots`, WI-822), which is N-ary and has a
+reader. Two `requires` on one sort already ship (`prelude/field.anthill`). That is a
+different question and needs nothing from here.
+
+So a call two dictionaries both claim is REFUSED, and carrier direction — which would have
+picked one — was implemented and REMOVED when backing it out failed zero rows: a covered
+call that names a carrier and is not itself a witness does not exist in this design.
 
 ## 8.6 The un-strip — DELIVERED by WI-20260909-51W18 (channel §10 item 1)
 

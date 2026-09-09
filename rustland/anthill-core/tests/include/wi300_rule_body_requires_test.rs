@@ -211,11 +211,23 @@ fn ungroundable_requires_is_a_loud_error() {
 }
 
 #[test]
-fn two_requires_on_same_spec_is_a_loud_error() {
-    // The guard tier strips the spec's type-args, so it cannot attribute which
-    // type-parameter each `requires` names. Two `requires` on the SAME spec base
-    // in one rule would both check the same witness/carrier — an unsound silent
-    // discharge. It must fail loudly instead (attribution is Tier B).
+fn two_equal_requires_on_same_spec_is_a_loud_error() {
+    // TWO `requires` ON ONE SPEC ARE NO LONGER AN ERROR BY THEMSELVES —
+    // WI-20260909-96ZTM binds one dictionary per `require`, attributed by its own written
+    // bracket (`wi_96ztm…::the_two_dictionaries_are_attributed_to_their_own_carriers`).
+    // The old reason — "the guard tier strips the spec's type-args, so it cannot
+    // attribute which type-parameter each `requires` names" — went with
+    // WI-20260909-51W18's un-strip.
+    //
+    // WHAT IS STILL REFUSED IS TWO **EQUAL** ONES, and this fixture is one: `A` and `B`
+    // here are FREE names, not head-introduced type variables, so neither denotes
+    // anything, both requires lower to a bare `PartialEq`, and nothing distinguishes
+    // them.
+    //
+    // AND THE FIXTURE SAYS SO OUT LOUD NOW. The two leading errors are
+    // WI-20260909-51W18's: a bracket binding naming neither a sort nor one of the spec's
+    // own type parameters is REPORTED rather than silently dropped — which is what makes
+    // visible that this clause's `[A]`/`[B]` never distinguished anything.
     let src = r#"
         namespace test.wi300.dup
           import anthill.prelude.{Int64, PartialEq, Eq}
@@ -233,8 +245,15 @@ fn two_requires_on_same_spec_is_a_loud_error() {
         .err()
         .expect("two requires on the same spec must fail to load");
     assert!(
+        errs.iter().any(|e| e.contains("name a different instance")),
+        "expected an equal-requires refusal, got: {errs:?}"
+    );
+    assert!(
         errs.iter()
-            .any(|e| e.contains("at most one `requires` on spec")),
-        "expected a same-spec duplication error, got: {errs:?}"
+            .any(|e| e.contains("`A` in it names neither a sort"))
+            && errs
+                .iter()
+                .any(|e| e.contains("`B` in it names neither a sort")),
+        "expected both free names to be reported in their own right, got: {errs:?}"
     );
 }

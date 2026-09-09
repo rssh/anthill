@@ -1662,3 +1662,6 @@ mod wi_51w18_require_spec_type_args_test;
 
 #[path = "include/wi_qmfc5_typed_head_anchor_test.rs"]
 mod wi_qmfc5_typed_head_anchor_test;
+
+#[path = "include/wi_96ztm_two_dictionaries_test.rs"]
+mod wi_96ztm_two_dictionaries_test;

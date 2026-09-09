@@ -69821,14 +69821,14 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
 ///   * Only TOP-LEVEL rule-body goals are swept. A `requires` nested inside a
 ///     `not` / implication / bounded quantifier is not rewritten here and, as
 ///     before this feature, fails as an ordinary goal (never a false positive).
-///   * At most one `requires` per spec base per rule — rejected loudly above. The
-///     stated reason USED to be that the type-args were stripped; since
-///     WI-20260909-51W18 they are not, so the bracket CAN now attribute two `requires`
-///     on one spec base and this refusal is a boundary waiting on its READER, not an
-///     impossibility. Lifting it belongs to the anchor (WI-20260909-QMFC5), the
-///     retained bracket's first consumer.
-///   * The requirement is CHECKED, not yet threaded as a dictionary the body ops
-///     dispatch through (Tier B, deferred).
+///   * Two `require`s on one spec base are ADMITTED where EVERY one of them is grounded
+///     by a TYPED HEAD BINDING — WI-20260909-96ZTM, reading the written bracket
+///     WI-20260909-51W18 retained to choose which binding each names. Two EQUAL ones,
+///     and any pair where one is grounded by a body call instead, are rejected loudly
+///     above: a witness is chosen by scan ORDER, so the bracket cannot attribute there.
+///   * The requirement IS threaded as a dictionary the body ops dispatch through
+///     (WI-1040) — the older "CHECKED, not yet threaded (Tier B, deferred)" reading is
+///     retired.
 fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     let Some(fd_sym) = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
@@ -69861,25 +69861,23 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             Value::Term { id, .. } => head_functor_sym(kb, id),
             _ => None,
         };
-        // Two `requires` on the SAME spec base in one rule both select the same witness
-        // and check the same carrier — silently discharging the second against the wrong
-        // type. Reject that loudly rather than fire unsoundly.
+        // TWO `require`s ON ONE SPEC ARE TWO DICTIONARIES (WI-20260909-96ZTM), each bound
+        // to its own variable and each attributed by its own WRITTEN BRACKET. The old
+        // refusal — "at most one `requires` on spec X per rule" — rested on the guard tier
+        // stripping the type arguments, which WI-20260909-51W18's un-strip removed.
         //
-        // THE STATED REASON HAS CHANGED, and the old one is recorded because
-        // `060-implementation.md` §8 told the next reader to distrust it. This comment
-        // used to say the guard tier "strips the spec's type-args at convert time, so it
-        // cannot attribute WHICH type-parameter each `requires` names", and cited the
-        // repair as "Tier B (WI-613)" — a ticket long since Delivered.
-        // WI-20260909-51W18 removed the strip: the written bracket rides whole onto this
-        // goal, positionals paired with the spec's declared params, so every retained
-        // binding is NAMED. The attribution is therefore recoverable here, and this
-        // refusal is now a boundary waiting on its READER rather than an impossibility.
-        // THAT READER IS WI-20260909-96ZTM, NOT THIS TICKET: two `requires` on one spec
-        // are two DICTIONARIES, and threading two needs the carrier-directed accumulating
-        // weave — the same lift the `>1 typed head anchors` refusal waits on, for the same
-        // reason. An earlier draft of this comment named QMFC5, which performs no such
-        // lift; `060-implementation.md`'s owner table is the authority.
-        let mut seen_bases: Vec<Symbol> = Vec::new();
+        // WHAT IS STILL REFUSED IS TWO **EQUAL** ONES. If the author wrote the same
+        // require twice, nothing distinguishes them: there is no answer to which
+        // dictionary is which, and admitting them would be the tool inventing a
+        // distinction the source does not make.
+        //
+        // EQUALITY IS `views_structurally_equal`, the codebase's own route for spec-value
+        // equality — NOT a hand-rolled key. An earlier attempt compared the base
+        // canonically but each binding VALUE by its head's SHORT name, so
+        // `Desc[T = Box[E = Leaf]]` and `Desc[T = Box[E = Other]]` both keyed
+        // `("T", "Box")`, compared EQUAL, and a valid program was refused — the very
+        // parameterized shape §8.8 measured as REQUIRING two dictionaries.
+        let mut seen_specs: Vec<Rc<NodeOccurrence>> = Vec::new();
         let mut has_duplicate_spec = false;
         for node in &body_nodes {
             if !is_unrewritten(node) {
@@ -69891,8 +69889,11 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             let Some(base) = occ_head_symbol(&pos_args[0]) else {
                 continue;
             };
-            let canon = kb.canonical_sort_sym(base);
-            if seen_bases.contains(&canon) {
+            let inst = &pos_args[0];
+            if seen_specs
+                .iter()
+                .any(|prev| views_structurally_equal(kb, prev, inst))
+            {
                 errors.push(TypeError::Other {
                     site: TypeError::here(),
                     span: Some(node.span.span),
@@ -69901,18 +69902,18 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                         field: RuleField::Body,
                     },
                     expected: format!(
-                        "at most one `requires` on spec `{}` per rule",
+                        "each `require` on spec `{}` to name a different instance",
                         kb.local_name_of(base)
                     ),
-                    actual: "multiple `requires` on the same spec base — two of them are two \
-                             dictionaries, which needs the carrier-directed weave \
-                             (WI-20260909-96ZTM)"
+                    actual: "this clause writes the same one twice, and two identical \
+                             `require`s name no two carriers to tell their dictionaries \
+                             apart"
                         .into(),
                 });
                 has_duplicate_spec = true;
                 break;
             }
-            seen_bases.push(canon);
+            seen_specs.push(Rc::clone(inst));
         }
         if has_duplicate_spec {
             continue; // leave the rule un-rewritten; the load fails on the error above
@@ -69922,6 +69923,9 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // WI-1040 — `(covered call, its functor, the dictionary variable)` per
         // `require[X]` in this clause, applied once the goal rewrites are done.
         let mut weaves: Vec<(Rc<NodeOccurrence>, Symbol, Rc<NodeOccurrence>)> = Vec::new();
+        // `(spec, was it ANCHOR-grounded)` per `require` seen in this clause — see the
+        // gate below.
+        let mut spec_groundings: Vec<(Symbol, bool)> = Vec::new();
         for node in &body_nodes {
             if !is_unrewritten(node) {
                 new_body.push(node.clone());
@@ -69929,6 +69933,50 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             }
             match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym, &bounds) {
                 Ok(found) => {
+                    // TWO `require`s ON ONE SPEC ARE ADMITTED ONLY WHERE EVERY ONE OF
+                    // THEM IS ANCHORED — where the written bracket chose the head
+                    // binding, which is the only place it is READ.
+                    //
+                    // The equality pre-pass above lifted the old blanket refusal for
+                    // EVERY grounding path, but the replacement attribution exists on
+                    // one. `/code-review` drove the cost: a body-less spec op is never a
+                    // covered call (`collect_covered_calls` gates on
+                    // `functional_relation_arity`), so `weaves` stays empty, the
+                    // one-dictionary-per-call refusal never fires, and
+                    // `?d1 = require[PartialEq[T = Thing]], ?d2 = require[PartialEq[T =
+                    // Gadget]], eq(?a, ?b)` LOADS CLEAN with both bound to `Thing`'s
+                    // dictionary. Five shapes, all of them "HEAD refused loudly, this
+                    // answers wrongly" — the worst direction to move in.
+                    if let Some(base) = goal_pos0(node).and_then(|i| occ_head_symbol(&i)) {
+                        let canon = kb.canonical_sort_sym(base);
+                        if let Some((_, prev_anchored)) =
+                            spec_groundings.iter().find(|(s, _)| *s == canon)
+                        {
+                            if !found.anchored || !*prev_anchored {
+                                errors.push(TypeError::Other {
+                                    site: TypeError::here(),
+                                    span: Some(node.span.span),
+                                    context: TypeErrorContext::Rule {
+                                        name: rule_sym.unwrap_or(fd_sym),
+                                        field: RuleField::Body,
+                                    },
+                                    expected: format!(
+                                        "at most one `require` on spec `{}` per rule, \
+                                         unless every one of them is grounded by a TYPED \
+                                         HEAD BINDING",
+                                        kb.local_name_of(base)
+                                    ),
+                                    actual: "one of them is grounded by a body call \
+                                             instead, and a witness is chosen by scan \
+                                             order — so the written bracket cannot say \
+                                             which dictionary this is"
+                                        .into(),
+                                });
+                                continue;
+                            }
+                        }
+                        spec_groundings.push((canon, found.anchored));
+                    }
                     // WI-1040 — step 2 of the transformation: the call this
                     // dictionary covers is rewritten to carry it. Only when the goal
                     // actually THREADS a dictionary (`out` present, i.e. the author
@@ -69958,6 +70006,45 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // Weave AFTER the goal rewrites, over the rebuilt body: a covered call may sit
         // anywhere in the clause (including nested inside another goal), so it is
         // reached by identity through a rewriting walk rather than by position.
+        // A CALL CARRIES AT MOST ONE DICTIONARY, and that is the channel's MEANING rather
+        // than a limit to widen: `requirements` on an `ApplyWithin` answers "which
+        // instance does THIS CALL dispatch on", and one call dispatches on one instance —
+        // `dictionary_dispatch_target` destructures a one-element slice and eval rejects
+        // more. So a call that two dictionaries both claim is REFUSED here, loudly,
+        // rather than woven twice (which silently kept the last, and tripped the
+        // `debug_assert` below when the first weave had already rebuilt the node).
+        //
+        // N dictionaries AT A CALL SITE are not what this is: a callee's own `requires`
+        // travel the SLOT-indexed `op_dicts` channel (WI-822), which is N-ary, has a
+        // reader, and needs nothing from here.
+        let mut ambiguous: Option<crate::span::SourceSpan> = None;
+        for (i, (call, _, _)) in weaves.iter().enumerate() {
+            if weaves[..i].iter().any(|(c, _, _)| Rc::ptr_eq(c, call)) {
+                ambiguous = Some(call.span);
+                break;
+            }
+        }
+        if let Some(span) = ambiguous {
+            errors.push(TypeError::Other {
+                site: TypeError::here(),
+                span: Some(span.span),
+                context: TypeErrorContext::Rule {
+                    name: rule_sym.unwrap_or(fd_sym),
+                    field: RuleField::Body,
+                },
+                expected: "each call to dispatch through ONE dictionary".into(),
+                // SAY WHAT IS CHECKED. An earlier wording claimed "this call names no
+                // carrier that tells them apart" — but nothing here reads the call's
+                // carrier: `collect_covered_calls` is spec-keyed and carrier-blind and
+                // returns the identical set for both `require`s. The message told an
+                // author to add a carrier that was often already there.
+                actual: "this clause binds two dictionaries for the spec, and every call \
+                         to one of its operations is covered by both — nothing decides \
+                         which instance this one dispatches on"
+                    .into(),
+            });
+            continue; // leave the rule un-rewritten; the load fails on the error above
+        }
         for (call, call_fn, out) in weaves {
             let mut wove = false;
             new_body = new_body
@@ -71411,6 +71498,19 @@ fn weave_covered_call(
     super::simp_rewrite::reassemble(node, &new_children)
 }
 
+/// The spec-instance slot of a `find_dictionary` goal occurrence, or `None` when the
+/// occurrence is not one.
+///
+/// `Option`, not a fallback to the node itself: answering with the GOAL where the
+/// INSTANCE was asked for is a wrong value, and every caller here is deciding whether two
+/// `require`s name one spec — a question a wrong answer decides silently.
+fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
+    match node.as_expr() {
+        Some(Expr::Apply { pos_args, .. }) if !pos_args.is_empty() => Some(Rc::clone(&pos_args[0])),
+        _ => None,
+    }
+}
+
 /// WI-1040 — every call in `body_nodes` this spec's dictionary COVERS and CAN be
 /// threaded into. Whole-body DFS, so a nested call is reached too.
 ///
@@ -71511,6 +71611,14 @@ struct GroundedRequirement {
     /// through a DIFFERENT spec's carrier and so name no call this dictionary can be
     /// threaded into (see [`weave_covered_call`]).
     covered_calls: Vec<(Rc<NodeOccurrence>, Symbol)>,
+    /// WI-20260909-96ZTM — did a TYPED HEAD ANCHOR ground this requirement?
+    ///
+    /// Two `require`s on one spec are admitted ONLY where every one of them is anchored,
+    /// because the anchor path is the only place the written bracket is READ: it is what
+    /// chose the head binding. On a witness path the bracket is never consulted — the
+    /// witness is picked by scan order — so two requires there would bind whatever the
+    /// scan reached first, which is why that case keeps the old refusal.
+    anchored: bool,
 }
 
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
@@ -71648,6 +71756,7 @@ fn rewrite_find_dictionary_goal(
             if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
                 return Some(GroundedRequirement {
                     goal: Some(goal),
+                    anchored: false,
                     covered_calls: if covers {
                         collect_covered_calls(kb, body_nodes, spec_canon)
                     } else {
@@ -71691,6 +71800,7 @@ fn rewrite_find_dictionary_goal(
             // dictionary covers: its dispatch is exactly what the dictionary decides.
             return Ok(GroundedRequirement {
                 goal: Some(goal),
+                anchored: false,
                 covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
             });
         }
@@ -71844,6 +71954,15 @@ fn anchor_grounding(
     // WHICH head variable anchors this spec. The bound's own head symbol is read through
     // the shared `TermIdView` reader, so an APPLIED bound (`?x: List[T = Int64]`) answers
     // by its base exactly as a bare one does.
+    // The spec's SHAPE facts, read before the anchor selection because the selection needs
+    // the carrier parameter to read the written bracket. Branch order mirrors
+    // `anchor_sort_goal`'s — self-representing FIRST — see the gate below.
+    let spec_self_rep = spec_is_self_representing(kb, spec_canon);
+    let carrier_param = if spec_self_rep {
+        None
+    } else {
+        spec_carrier_param_or_sole(kb, spec_canon)
+    };
     let mut anchors: Vec<(u32, Symbol)> = Vec::new();
     let mut seen_bounds: Vec<Symbol> = Vec::new();
     for &(db_index, bound_tid) in bounds {
@@ -71932,6 +72051,85 @@ fn anchor_grounding(
     // other's call. Two anchors are TWO dictionaries (the implicit-parameter reading,
     // `060-implementation.md` §8.5) and the honest repair is one goal per anchor plus a
     // carrier-directed weave — which is exactly WI-20260909-96ZTM (S4), already filed.
+    // MORE THAN ONE ANCHOR: THE WRITTEN BRACKET SAYS WHICH ONE THIS `require` MEANS.
+    // `rule p(?x: Leaf, ?y: Other) :- ?d = require[Desc[T = Leaf]]` names `Leaf`, so `?x`
+    // anchors and `?y` does not — the ticket's own "a written `require[Spec[P = <one of
+    // the two bounds>]]` pre-binds the matching one", with S1's retention as the reader.
+    //
+    // MATCHED ON THE BOUND'S HEAD SYMBOL, and that is a real limit rather than an
+    // oversight: two bounds of one parameterized sort at different instantiations
+    // (`?x: Box[E = Leaf], ?y: Box[E = Other]`) both answer `Box`, so the bracket cannot
+    // separate them and the refusal below still fires. Recorded, with its own row.
+    if anchors.len() > 1 {
+        if let Some(p) = carrier_param {
+            if let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() {
+                let written = named_args.iter().find_map(|(k, v)| {
+                    if !same_label(kb, *k, p) {
+                        return None;
+                    }
+                    match v.as_expr() {
+                        // A BARE NAME ONLY. An APPLIED binding (`T = Box[E = Other]`) has
+                        // arguments that decide which instance it means, and matching on
+                        // its HEAD would discard them — `Box[E = Other]` would select an
+                        // `?x: Box[E = Leaf]` anchor, silently. `/code-review` drove that.
+                        // Declining here falls to the refusal below, which is the honest
+                        // answer until the match compares applied brackets structurally.
+                        Some(Expr::Ref(w)) | Some(Expr::Ident(w)) => Some(*w),
+                        _ => None,
+                    }
+                });
+                let written = written.filter(|w| {
+                    // A SORT, and not the SPEC ITSELF. `rule_type_bounds` records a
+                    // head-introduced tvar by its substituted bound, so an introducer
+                    // `?x: A` under `:- Desc[A]` is stored as `Desc` — and a written
+                    // `require[Desc[T = Desc]]` would then "match" it by accidental symbol
+                    // collision and silently pick the polymorphic head variable over the
+                    // concrete one. Driven by `/code-review`: it answered the OTHER
+                    // carrier's value on a clean load, where every neighbouring spelling
+                    // is refused.
+                    kb.has_kind(*w, crate::intern::SymbolKind::Sort)
+                        && kb.canonical_sort_sym(*w) != spec_canon
+                });
+                if let Some(w) = written {
+                    let wc = kb.canonical_sort_sym(w);
+                    let matched: Vec<(u32, Symbol)> = anchors
+                        .iter()
+                        .copied()
+                        .filter(|(_, b)| kb.canonical_sort_sym(*b) == wc)
+                        .collect();
+                    match matched.len() {
+                        1 => anchors = matched,
+                        // ZERO. The bracket names a sort that anchors NOTHING in this
+                        // clause — a typo, almost always. Say that, rather than falling
+                        // through to a refusal about the head-binding COUNT which never
+                        // mentions the name the author got wrong.
+                        0 => {
+                            return Some(Err(err(
+                                format!(
+                                    "the written `{}[{} = ...]` to name one of this \
+                                     clause's head bindings",
+                                    kb.local_name_of(spec_base),
+                                    kb.local_name_of(p),
+                                ),
+                                format!(
+                                    "it names `{}`, which none of them binds — they bind {}",
+                                    kb.local_name_of(w),
+                                    names(&anchors.iter().map(|(_, s)| *s).collect::<Vec<_>>()),
+                                ),
+                            )));
+                        }
+                        // MORE THAN ONE anchor of the same sort — genuinely ambiguous,
+                        // and the refusal below says so.
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    // STILL more than one, so the bracket did not choose — it named nothing, named
+    // something both bounds share, or named a head-introduced type VARIABLE, which
+    // `rule_type_bounds` records by its BOUND and so cannot be matched back to a head
+    // variable. That last one is the stated boundary; the others are genuine ambiguity.
     if anchors.len() > 1 {
         return Some(Err(err(
             format!(
@@ -71939,15 +72137,14 @@ fn anchor_grounding(
                 kb.local_name_of(spec_base)
             ),
             format!(
-                "{} of them do — {} — and two anchors are two dictionaries, which needs \
-                 the carrier-directed weave (WI-20260909-96ZTM)",
+                "{} of them do — {} — and the written bracket names no one of them, so \
+                 nothing says which dictionary this `require` is",
                 anchors.len(),
                 names(&anchors.iter().map(|(_, s)| *s).collect::<Vec<_>>()),
             ),
         )));
     }
     let (db_index, anchor_bound) = anchors[0];
-    let spec_self_rep = spec_is_self_representing(kb, spec_canon);
     // WHICH PARAMETER THE CARRIER FILLS must be answerable, or the goal this would emit
     // could pin nothing and would delay for a reason no diagnostic names.
     // [`spec_carrier_param_or_sole`] answers `None` for exactly two shapes, and only one
@@ -71978,11 +72175,6 @@ fn anchor_grounding(
     // `a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`, a shape
     // the emitter handles by the carrier discriminant. The condition is written the same
     // way round in both places so a future edit to one is visible against the other.
-    let carrier_param = if spec_self_rep {
-        None
-    } else {
-        spec_carrier_param_or_sole(kb, spec_canon)
-    };
     let bound_is_the_spec = kb.canonical_sort_sym(anchor_bound) == spec_canon;
     // ── THE SECOND GATE [`spec_carrier_param_or_sole`]'s OWN DOC DEMANDS ──────────────
     //
@@ -72176,6 +72368,7 @@ fn anchor_grounding(
         // is recorded here rather than claimed as fixed or as impossible. The
         // carrier-directed weave (WI-20260909-96ZTM) is what closes it.
         covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
+        anchored: true,
     }))
 }
 

@@ -27,7 +27,11 @@
 //! failed — a count written from a prediction and never re-run. `/code-review` caught it.
 //!
 //!  * **The anchor scan** (`anchor_grounding` returning `None` unconditionally — the
-//!    pre-ticket code). **19 rows**, 18 here and
+//!    pre-ticket code). **19 rows AS OF WI-20260909-QMFC5**; WI-20260909-96ZTM added two
+//!    rows here that also need it, so the count is now higher and is NOT re-measured in
+//!    this header — the owning file (`wi_96ztm…`) carries its own ledger. Stated rather
+//!    than silently left stale: a count written once and not re-run is exactly the defect
+//!    lines 25-27 below record being caught already. 18 of the original here and
 //!    [`wi_51w18…::a_head_introduced_type_variable_resolves_inside_the_bracket`], which
 //!    lives in S1's file and fails under S2's back-out because S2 is what lifted its
 //!    second half.
@@ -62,8 +66,10 @@
 //!    [`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`]. The
 //!    written bracket would decide it and S1 retains it, but slot 0 does not reach
 //!    `fetch_dictionary`, so closing it is a resolver signature change.
-//!  * TWO anchors are refused rather than threaded. WI-20260909-96ZTM owns the lift, and
-//!    the two rows above say what the interim refusal costs.
+//!  * TWO anchors are no longer refused outright — WI-20260909-96ZTM delivered the lift,
+//!    and [`the_written_bracket_chooses_between_two_anchors`] is it. What is still
+//!    refused is a pair the written bracket cannot separate: a bare `require[Spec]`, two
+//!    bounds of the same sort, or an applied bracket whose arguments the match discards.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::Expr;
@@ -450,18 +456,43 @@ fn a_bound_that_does_not_provide_is_refused_by_its_own_message() {
 }
 
 #[test]
-fn two_anchors_for_one_spec_are_refused() {
-    // TWO ANCHORS ARE TWO DICTIONARIES (§8.5), not a tie to break. Picking one would
-    // silently thread `Leaf`'s dictionary into a call whose carrier is `Other`, or the
-    // reverse — a clean load and a wrong answer. Refused loudly until the carrier-directed
-    // weave exists; the message names its owner so the next reader is not left guessing.
+fn the_written_bracket_chooses_between_two_anchors() {
+    // S2 REFUSED THIS SHAPE OUTRIGHT; WI-20260909-96ZTM lifts it the way the design
+    // always said it would — the WRITTEN BRACKET says which anchor this `require` means,
+    // with S1's retention as the reader. `Desc[T = Leaf]` names `Leaf`, so `?x` anchors.
+    //
+    // BY VALUE, and the pair is the point: one word apart, the answer moves from `Leaf`'s
+    // `7` to `Other`'s `9`. That is what says the BRACKET decides and not anchor order.
+    // `tag()` is nullary, so neither number is reachable without a dictionary.
+    assert_eq!(
+        answer(&program(
+            "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
+             rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), seedo(?y), Desc.tag(?r)\n"
+        )),
+        7,
+    );
+    assert_eq!(
+        answer(&program(
+            "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
+             rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc[T = Other]], seed(?x), seedo(?y), Desc.tag(?r)\n"
+        )),
+        9,
+    );
+}
+
+#[test]
+fn two_anchors_the_bracket_cannot_choose_between_are_still_refused() {
+    // THE CHOICE MUST BE THE AUTHOR'S. A bare `require[Desc]` names no carrier, so with
+    // two anchors there is nothing to select on — refused, not guessed. The control for
+    // the pair above.
     let errs = refusal(&program(
         "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-         rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), seedo(?y), Desc.tag(?r)\n",
+         rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc], seed(?x), seedo(?y), Desc.tag(?r)\n",
     ));
     assert!(
-        errs.contains("2 of them do — Leaf, Other") && errs.contains("96ZTM"),
-        "the refusal must name both anchors and its owner; got:\n{errs}",
+        errs.contains("2 of them do — Leaf, Other")
+            && errs.contains("the written bracket names no one of them"),
+        "got:\n{errs}",
     );
 }
 
@@ -670,7 +701,10 @@ fn two_head_variables_of_one_data_sort_are_still_two_dictionaries() {
         "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
          rule anchored(?x: Leaf, ?y: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), seed(?y), Desc.tag(?r)\n"
     ));
-    assert!(errs.contains("96ZTM"), "got:\n{errs}");
+    assert!(
+        errs.contains("the written bracket names no one of them"),
+        "got:\n{errs}"
+    );
 }
 
 #[test]
@@ -684,7 +718,10 @@ fn a_parameterized_data_sort_at_two_instantiations_is_refused() {
         "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
          rule anchored(?x: Box[E = Leaf], ?y: Box[E = Other], ?r) :- ?d = require[Desc[T = Box]], seedbl(?x), seedbo(?y), Desc.tag(?r)\n"
     ));
-    assert!(errs.contains("96ZTM"), "got:\n{errs}");
+    assert!(
+        errs.contains("the written bracket names no one of them"),
+        "got:\n{errs}"
+    );
 }
 
 #[test]
@@ -747,7 +784,10 @@ fn two_variables_bounded_by_the_spec_are_still_two_dictionaries() {
         "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
          rule anchored[A](?x: A, ?y: A, ?r) :- Desc[A], ?d = require[Desc[T = A]], seed(?x), seedo(?y), Desc.tag(?r)\n",
     ));
-    assert!(errs.contains("96ZTM"), "got:\n{errs}");
+    assert!(
+        errs.contains("the written bracket names no one of them"),
+        "got:\n{errs}"
+    );
 }
 
 #[test]

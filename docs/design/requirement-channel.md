@@ -293,8 +293,12 @@ the carrier VALUE from the annotated head variable, and its provision is asked t
 together, because widening one alone was measured to turn a loud refusal into a silent
 no-answer.
 
-Two anchors are TWO dictionaries (the implicit-parameter reading) and are **refused for
-now**, by WI-20260909-96ZTM's leave: one goal per anchor needs the carrier-directed
+Two anchors are TWO dictionaries (the implicit-parameter reading), and WI-20260909-96ZTM
+**delivered** that: each `require`'s written bracket chooses which head binding it names.
+What is still refused is a pair the bracket cannot separate — a bare `require[Spec]`, two
+bounds of the same sort, an applied bracket whose arguments the match discards, or any
+pair where one side is grounded by a body call instead of an anchor. The reason a
+load-time COLLAPSE of two anchors into one remains wrong is unchanged: one goal per anchor needs the carrier-directed
 accumulating weave, and every load-time attempt to collapse two into one was measured
 wrong — a parameterized data sort's conditional sub-dictionary differs at two
 instantiations, and even two byte-identical bounds diverge under a conditional
@@ -563,7 +567,8 @@ by WI-20260909-51W18); 3 and 4 are untouched — 3 is owned by WI-20260909-NAR1X
    A binding whose value denotes no sort is DROPPED, which reproduces the stripped goal
    exactly; the retained instance now rides whole into the REWRITTEN goal too
    (`make_witness`), so `require[Desc[T = Leaf]]` and `require[Desc]` are finally
-   distinguishable on the stored form. The duplicate-spec-base hard error still stands —
+   distinguishable on the stored form. The duplicate-spec-base hard error now stands only
+   for two EQUAL requires, or where one is not anchor-grounded (WI-20260909-96ZTM) —
    it is the retained bracket's first READER, and it belongs to the anchor
    (WI-20260909-QMFC5), not here. Full write-up, including two predictions this item made
    that measurement corrected: `060-implementation.md` §8.6.
