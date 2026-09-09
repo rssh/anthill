@@ -97,11 +97,21 @@ None of these is a typing operation. Three consequences:
 - **No runtime sub-search over `provides`** — a table fetch cannot truncate, so the
   WI-628 truncation discipline does not apply here.
 
-One existing deviation to reconcile: `resolve_bridge_requirements`
-(`typing.rs:14667`) runs `unify_types` at dispatch time. The declared side is
-static, so the same projection-path compilation applies there; until it is
-applied, the bridge is the one grandfathered exception — say so at the site
-(§10).
+One existing deviation to reconcile: `resolve_bridge_requirements` runs
+`unify_types` at dispatch time. The declared side is static, so the same
+projection-path compilation applies there; until it is applied, the bridge is the one
+grandfathered exception — say so at the site (§10 item 4, where WI-20260909-S8CBV
+records which half is now closed).
+
+**A PATH PROJECTION IS NOT A COUNTEREXAMPLE TO THIS INVARIANT, and it is worth saying
+why rather than leaving the next reader to re-derive it.** `requires Desc[T = x.E]`
+appears to type at run time: the instance is not known until the argument arrives. It
+is not — the δ that turns `x.E` into `Red` is the **fetch** row of the table above,
+one step further in. `x.E` names a member of the argument's CARRIED TYPE, which §2.1
+already admits reading; projecting a member off a term that has been read is the same
+table lookup by another name, and the selection it feeds still happens where it always
+did. What run time gains is not inference but one more way to say WHICH carried type
+the fetch should read.
 
 ---
 
@@ -596,9 +606,34 @@ by WI-20260909-51W18); 3 and 4 are untouched — 3 is owned by WI-20260909-NAR1X
    closed ground test with no dictionary parameter; specify the channel (a
    signature extension vs a `ResolveConfig` overlay à la `assumed_facts`) and the
    caller-name → spec attribution at the boundary.
-4. **[OPEN] The bridge deviation** (§2.1): compile `resolve_bridge_requirements`'s
-   dispatch-time `unify_types` into projection paths, or grandfather it
-   explicitly at the site.
+4. **[PARTLY DELIVERED by WI-20260909-S8CBV] The bridge deviation** (§2.1).
+   `resolve_bridge_requirements` now δ-grounds a requirement written at a PATH
+   PROJECTION before it substitutes: a `requires Desc[T = x.E]` reads the member off
+   the type of the argument bound to `x` at this call, through
+   `eliminate_type_projections` — the same eliminator the return / effect / parameter
+   positions use, at its second reader. σ still cannot reach a projection (`x` is a
+   parameter, not a type variable), so **δ runs before σ** at both readers.
+
+   The dispatch-time `unify_types` this item names is UNCHANGED and still the
+   grandfathered exception; what closed is only the projection half, which was the
+   reason the item was filed. The remaining half is FORWARDING: where the receiver is
+   the caller's own abstract parameter, δ grounds nothing and the dictionary can only
+   come from the caller's slot. That needs the callee's neutral RE-KEYED to the
+   caller's argument (WI-459's `arg_syms`) before the ζ identity check of
+   `path-dependent-types.md` §4.1 can match them. Until it exists, a caller that
+   REPEATS the requirement supplies it and one that does not is refused at load
+   (`build_op_scoped_dicts`' `caller_covers` gate) — never left to die at eval on an
+   unbound frame slot.
+
+   **The surface half is in the LOADER, not here.** A `requires` bracket binding
+   reaches the converter as one dotted symbol on the ordinary TERM walk, which has no
+   projection rung; `Loader::try_contract_projection` adds one, asking the type
+   ladder's own classifier so `x.E` cannot mean one thing in a parameter type and
+   another in a `requires`. Two traps are recorded at their sites: WI-552's
+   `wrap_places_as_var_ref` must NOT descend into an `ExprCarried` (a projection is a
+   TYPE, and rewriting its receiver to a `var_ref` left the eliminator — which keys on
+   a `Ref` — unable to see it), and a COMPOUND receiver (`x.f.E`) needs a Node carrier
+   a term slot cannot hold, so it is refused by name.
 5. **[SETTLED — the witness IS the covered call] Attribution.** The item asked
    whether WI-613's σ-class matcher (`find_requires_slot` /
    `find_requires_location`) could be reused wholesale. It is not needed at this

@@ -9810,6 +9810,12 @@ fn eta_op_scoped_dicts(
         // today's behaviour (eval's own `not bound` raise) rather than refusing a
         // program on a read that may never happen — the bound is stated, not assumed.
         None,
+        // WI-20260909-S8CBV: an ETA has NO ARGUMENTS, so there is no receiver whose type
+        // could ground a projection — `?f = List.member` names the operation, it does not
+        // call it. An empty map makes the δ a no-op here, and the refusal above cannot fire
+        // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
+        // is for every other dep this path cannot pin.
+        &HashMap::new(),
     )
     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
         span,
@@ -15376,6 +15382,7 @@ pub(crate) fn classify_pin_or_apply_within(
                 Some(occ.span.span),
                 occ.span.source,
             ),
+            ctx.param_arg_types,
         )
         .map_err(|refusal| TypeError::UnsatisfiableRequirement {
             span: Some(occ.span.span),
@@ -15470,6 +15477,12 @@ pub(crate) struct OpSupplyCtx<'a> {
     /// The caller's operation — recorded on the classification so eval can name the
     /// caller's op slots when a forward reads one.
     pub(crate) enclosing_op: Option<Symbol>,
+    /// WI-20260909-S8CBV — each callee PARAMETER symbol → the type of the argument this
+    /// call binds to it. [`build_op_scoped_dicts`] δ-grounds a projection-carried
+    /// requirement against it, and the answer decides a REFUSAL: a projection that
+    /// grounds here needs nothing further, one that does not can only be forwarded, and
+    /// forwarding is what this ticket does not build.
+    pub(crate) param_arg_types: &'a HashMap<Symbol, Value>,
 }
 
 /// WI-606: the carrier's GENUINE self-receiver override of the spec op
@@ -17451,6 +17464,20 @@ fn check_apply_iter(
         let op_has_projection = params_have_projection
             || value_contains_projection(kb, &op.return_type)
             || op.effects.iter().any(|e| value_contains_projection(kb, e));
+        // WI-20260909-S8CBV — the REQUIRES chain is a fourth projection-bearing position,
+        // and it was not in the gate above. `operation pick(x: Box) requires Desc[T = x.E]`
+        // carries no projection in a param, the return or an effect, so `op_has_projection`
+        // is FALSE for it and `param_to_arg_type` stayed EMPTY — leaving
+        // [`build_op_scoped_dicts`] unable to tell a projection that GROUNDS at this call
+        // from one that does not, which is the whole of the verdict it now makes.
+        //
+        // A SEPARATE FLAG, not a widening of `op_has_projection`, because that one gates a
+        // SECOND thing: it SKIPS the ordinary argument/parameter unification for a
+        // projection-bearing PARAMETER (the branch just below). A requires-only projection
+        // must not move that branch — the parameters are ordinary and must unify as they
+        // always did.
+        let requires_have_projection = op.requires.iter().any(|r| value_contains_projection(kb, r));
+        let needs_param_arg_types = op_has_projection || requires_have_projection;
         // WI-714 / WI-727: does the RETURN type write a type constructor (`Concat`,
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
         // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
@@ -17525,7 +17552,7 @@ fn check_apply_iter(
                         // than merely where a `defer` would have run.
                         report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
                     }
-                    if op_has_projection {
+                    if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                     // WI-329: the (declared, actual) pairs the discharge inference reads
@@ -17582,7 +17609,7 @@ fn check_apply_iter(
                         // than merely where a `defer` would have run.
                         report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
                     }
-                    if op_has_projection {
+                    if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                     // WI-329 — see the positional loop.
@@ -19137,6 +19164,7 @@ fn check_apply_iter(
                             param_rigids: env.param_rigids(),
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
+                            param_arg_types: &param_to_arg_type,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -19256,6 +19284,7 @@ fn check_apply_iter(
                             param_rigids: env.param_rigids(),
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
+                            param_arg_types: &param_to_arg_type,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -19403,6 +19432,7 @@ fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
+                                param_arg_types: &param_to_arg_type,
                             }),
                         )?;
                     }
@@ -19817,6 +19847,7 @@ fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
+                                param_arg_types: &param_to_arg_type,
                             }),
                         )?;
                         return Ok(TypeResult {
@@ -20190,6 +20221,7 @@ fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
+                                param_arg_types: &param_to_arg_type,
                             }),
                         )?;
                     }
@@ -20442,6 +20474,7 @@ fn check_apply_iter(
                             span,
                             occ.span.source,
                         ),
+                        &param_to_arg_type,
                     )
                     // WI-1091: a TIE in the op half is a load refusal, as the sort half's
                     // is one line above — see `build_op_scoped_dicts`.
@@ -23722,6 +23755,10 @@ fn build_op_scoped_dicts(
     // WI-1102: the call's location, `Some` exactly when this call site may PARK a
     // fully-pinned-carrier refusal — see [`OpSlotParkSite`].
     park: Option<OpSlotParkSite>,
+    // WI-20260909-S8CBV: the call's param→argument-type map, for δ-grounding a
+    // requirement written at a projection. Empty for every callee whose chain carries
+    // none, which is all of them but this ticket's shape.
+    param_arg_types: &HashMap<Symbol, Value>,
 ) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
@@ -23755,9 +23792,81 @@ fn build_op_scoped_dicts(
         // constructs it; one left abstract stays open for a Strategy-1/2 forward
         // out of the caller's own chain — which, WI-822, now includes the
         // CALLER's op slots, so an op-scoped requirement relays hop to hop.
+        // WI-20260909-S8CBV — δ BEFORE σ, and the order is the point. A requirement
+        // written at a PROJECTION (`requires Desc[T = x.E]`) names a member of the
+        // RECEIVER's type, which no substitution over type VARIABLES can reach: `x` is a
+        // parameter, not a tvar, so `substitute_spec_via_subst` walks straight past the
+        // `ExprCarried` and the dep stays un-pinned.
+        let projected = if param_arg_types.is_empty() || !value_contains_projection(kb, &entry.spec)
+        {
+            entry.spec.clone()
+        } else {
+            let ctx = TypeErrorContext::OperationReturn {
+                op_name: callee_op,
+                surface: None,
+            };
+            eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None)
+                .unwrap_or_else(|_| entry.spec.clone())
+        };
+        // A PROJECTION THAT SURVIVED δ CANNOT BE SUPPLIED FROM HERE, and this call site is
+        // the only place that can say so before the program runs.
+        //
+        // δ grounds `x.E` when THIS call names a receiver whose element type is known
+        // (`pick(box(v: red()))` ⟹ `Red`). It cannot when the caller passed its OWN
+        // abstract parameter (`operation outer(b: Box) = pick(b)`): the receiver is still
+        // a variable, so the slot pins nothing and is skipped — and `pick`'s body reads it
+        // immediately. MEASURED: that program LOADED CLEAN and then died
+        // `DeferToRequirement: __req_desc not bound in caller frame`, raised as
+        // `EvalError::Internal`, which trips `bridge_op_to_eval`'s `debug_assert` and
+        // ABORTS a debug build. Loading clean and aborting is the worst of the outcomes
+        // available here, so it is refused where it is written.
+        //
+        // UNLESS THE CALLER CARRIES THE REQUIREMENT ITSELF, which is the case that WORKS
+        // and must not be refused with it: `operation outer(b: Box) requires Desc[T = b.E]
+        // = pick(b)` answers `7`, because the caller's own slot supplies what this call
+        // cannot ground. The gate is therefore "does the caller declare a projection-
+        // carried requirement at this same spec base", not "did δ fail" — measured in
+        // both directions, one row each.
+        //
+        // THE COMPARISON IS DELIBERATELY COARSE — spec base plus "also a projection" —
+        // and that is a stated bound, not an oversight. Matching the two projections
+        // properly means comparing the callee's `pick.x` neutral against the caller's
+        // `outer.b` one, which needs WI-459's receiver RE-KEYING before the ζ identity
+        // check can answer; until that exists a finer test could only be wrong in the
+        // strict direction, refusing the program that works. Coarse here means: some
+        // caller requirements will be accepted as covering when they do not, and those
+        // land on the same eval-time read this refusal exists to make rarer, not on a
+        // wrong answer.
+        if value_contains_projection(kb, &projected) {
+            // `Some` REQUIRED, not merely equal: `spec_base_functor` answers `None` for a
+            // spec whose head this decoder cannot read, and `None == None` would make two
+            // unreadable bases "the same spec" — a coverage claim resting on the absence
+            // of an answer on both sides.
+            let base = spec_base_functor(kb, &projected);
+            let caller_covers = base.is_some()
+                && caller_requires.iter().any(|ar| {
+                    spec_base_functor(kb, &ar.spec) == base
+                        && value_contains_projection(kb, &ar.spec)
+                });
+            if !caller_covers {
+                kb.unsuppliable_requirements.truncate(parked_mark);
+                return Err(Box::new(RequirementRefusal {
+                    dep_text: render_requires_entry(kb, entry),
+                    unconstrained: Vec::new(),
+                    refused_covers: Vec::new(),
+                    construction: "its carrier is a projection this call does not \
+                         ground, and the caller declares no matching `requires` to \
+                         forward — annotate the caller with the same requirement, or \
+                         pass a receiver whose member is known here"
+                        .to_owned(),
+                    pinned: None,
+                    unprovided: None,
+                }));
+            }
+        }
         let dep = RequiresEntry {
             required_sort: entry.required_sort,
-            spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+            spec: substitute_spec_via_subst(kb, &projected, subst),
             supply: entry.supply,
         };
         // WI-1091: ask the search for its terminal outcome, so the tie below is the one
@@ -25267,9 +25376,25 @@ pub(crate) fn resolve_bridge_requirements(
     let params = rec.params;
     let mut subst = Substitution::new();
     let empty = Substitution::new();
-    for (i, (_pname, ptype)) in params.iter().enumerate() {
+    // WI-20260909-S8CBV — each parameter's ARGUMENT TYPE, kept alongside the unification,
+    // so a requirement written at a PROJECTION off a parameter (`requires Desc[T = x.E]`)
+    // can be δ-grounded below. This is `requirement-channel.md` §10 item 4's site: the
+    // bridge does its own dispatch-time `unify_types` and never saw a projection path.
+    //
+    // THE SAME RULE AS THE TYPED CALL SITE, at its second reader.
+    // [`build_op_scoped_dicts`] δ-grounds the identical entry from `check_apply_iter`'s
+    // `param_to_arg_type`; this route — a rule body calling an operation, which reaches
+    // no call-site classification at all — has to build the map itself, from the very
+    // types the pinning loop already computes. Two readers of one rule; a second spelling
+    // of the discharge would drift from it.
+    let mut param_arg_types: HashMap<Symbol, Value> = HashMap::new();
+    let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
+    for (i, (pname, ptype)) in params.iter().enumerate() {
         let Some(arg) = args.get(i) else { continue };
         let arg_ty = value_type_term(kb, &empty, arg);
+        if entries_have_projection {
+            param_arg_types.insert(*pname, arg_ty.clone());
+        }
         unify_types(kb, &mut subst, &arg_ty, ptype);
     }
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
@@ -25324,7 +25449,61 @@ pub(crate) fn resolve_bridge_requirements(
             ));
             continue;
         }
-        let concrete_spec = substitute_spec_via_subst(kb, &entry.spec, &subst);
+        // WI-20260909-S8CBV — δ BEFORE σ, the same order and the same fallback as
+        // [`build_op_scoped_dicts`]: a projection names a member of the RECEIVER's type,
+        // which a substitution over type VARIABLES cannot reach, so σ alone leaves the
+        // dep un-pinned and the slot silently absent. On a failed elimination the
+        // UN-eliminated spec rides on, so the outcome is whatever this slot's ordinary
+        // unpinnable path already gives (the sort half's `all_pinned` gate, the op half's
+        // skip) rather than a dictionary built from a guess.
+        let projected_spec =
+            if param_arg_types.is_empty() || !value_contains_projection(kb, &entry.spec) {
+                entry.spec.clone()
+            } else {
+                let ctx = TypeErrorContext::OperationReturn {
+                    op_name: op,
+                    surface: None,
+                };
+                eliminate_type_projections(kb, &entry.spec, &param_arg_types, None, &ctx, None)
+                    .unwrap_or_else(|_| entry.spec.clone())
+            };
+        let concrete_spec = substitute_spec_via_subst(kb, &projected_spec, &subst);
+        // WI-20260909-S8CBV — A PROJECTION THAT DID NOT GROUND IS A DELAY, NOT A SKIP.
+        //
+        // δ above turns `Desc[T = x.E]` into the argument's actual member when the
+        // receiver's type is known at this call. When it is NOT — the caller handed
+        // `pick` its own abstract parameter, so the receiver is still a variable — the
+        // spec rides on with the projection intact and pins nothing.
+        //
+        // THE OP HALF'S ORDINARY ANSWER TO AN UNPINNED SLOT IS TO SKIP IT (see the
+        // `op_half` arms below), and that is right for a slot the callee's BODY may never
+        // read. It is WRONG here, and the difference is measured: `operation outer(b: Box)
+        // requires Desc[T = b.E] = pick(b)` LOADS, skips the slot, and the body's very
+        // first act is to read it — `DeferToRequirement: __req_desc not bound in caller
+        // frame`, which is raised as `EvalError::Internal` and trips
+        // `bridge_op_to_eval`'s `debug_assert`. A program that loads clean and aborts a
+        // debug build is the worst of the three outcomes available here.
+        //
+        // SO IT IS `Unresolvable`, which the bridge turns into a named SUSPEND and then a
+        // residual — the same answer every other requirement this call cannot pin gets,
+        // and it NAMES the projection instead of dying about a frame binding. FORWARDING
+        // such a dictionary from the caller's own slot is the genuine follow-on (it needs
+        // the callee's neutral RE-KEYED to the caller's argument — WI-459's `arg_syms`,
+        // which the ζ identity check compares); this refusal is what keeps that gap loud
+        // and located rather than latent.
+        //
+        // NARROW BY CONSTRUCTION: the gate asks whether a projection SURVIVED δ, so it
+        // can only fire on a chain entry that carried one — a shape no program could
+        // even write before this ticket.
+        if value_contains_projection(kb, &concrete_spec) {
+            return BridgeRequirements::Unresolvable {
+                detail: format!(
+                    "`{}`'s `requires {}` names a projection these arguments do not                      ground; forwarding a projection-carried dictionary from the                      caller's own requirement is not yet supported",
+                    kb.qualified_name_of(op),
+                    render_requires_entry(kb, entry),
+                ),
+            };
+        }
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
             spec: concrete_spec,

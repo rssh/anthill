@@ -465,13 +465,35 @@ not δ-equal) have different roots; δ-equal expressions are compatible. That is
 `path-dependent-types.md` §4's rule ("equality is definitional conversion"), already
 implemented and owned by `unify_types`.
 
-MEASURED 2026-09-09: the requirement channel is the ONLY type position that cannot
+MEASURED 2026-09-09: the requirement channel was the ONLY type position that could not
 resolve a projection — `operation h(x: Leaf, e: x.E)` loads while `requires
-Desc[T = x.E]` in the same signature reports `unresolved name 'x.E'` — and `p.E` PARSES
+Desc[T = x.E]` in the same signature reported `unresolved name 'x.E'` — and `p.E` PARSES
 in a `require` bracket, because §2.1's sigil-free head variable is a bare name and the
 projection is the form signatures already take. (The parse error is on `?x.E`, the sigil
 form.) **WI-20260909-S8CBV** owns it, and it REMOVES the selector above and lifts the
 anchored gate rather than adding to them.
+
+**S8CBV's OPERATION half is delivered; its RULE half is not.** The two gates it names are
+independent and only the second was ever about this umbrella:
+
+  * the **operation** requirement channel now resolves and drives a projection —
+    `operation pick(x: Box) requires Desc[T = x.E]` answers a different `Desc` instance
+    per call site, measured `7` and `9` where a concrete bracket answers `7` and `7`.
+    Design and the traps: `requirement-channel.md` §10 item 4; the surface rule:
+    `kernel-language.md` §5.2 (*Operation-level `requires` over a spec*). Nothing in it touches this section's selector, because the
+    operation channel never had one — a `requires` names one dictionary per clause;
+  * the **rule-body** `require[Desc[T = p.E]]` bracket is STILL REFUSED, by S1's drop rule
+    (`p.E` "names neither a sort nor one of `Desc`'s own type parameters"). That gate must
+    learn that a projection is a third kind, and it is the one that feeds the
+    attribution-by-root work this section describes — the selector above stands until it
+    lands.
+
+One boundary the operation half found and did not close, recorded because it is the same
+question the root attribution asks: where a call cannot GROUND the projection (the caller
+passed its own abstract parameter), the dictionary can only be FORWARDED, and matching the
+callee's neutral against the caller's needs the receiver re-keying `path-dependent-types.md`
+§4.1 defers (WI-459's `arg_syms`). Until then the caller must repeat the requirement, and a
+caller that does not is refused at load rather than left to raise at eval.
 
 ## 8.6 The un-strip — DELIVERED by WI-20260909-51W18 (channel §10 item 1)
 
@@ -707,7 +729,7 @@ which is exactly where inheriting would decide.
 | S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) — **delivered** | S1 |
 | S4 | WI-20260909-96ZTM | two `require`s bind two dictionaries, attributed by the written bracket (§8.5) — **delivered**; the weave is NOT changed | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
-| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate | S4 |
+| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Gate (2), the OPERATION channel, is delivered** (§8.5's note); gate (1) — the rule-body bracket — and the attribution itself are not | S4 |
 
 Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
 delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict

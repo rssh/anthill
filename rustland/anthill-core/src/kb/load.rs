@@ -16805,14 +16805,32 @@ fn wrap_places_as_var_ref(
     term: TermId,
     places: &HashSet<Symbol>,
     var_ref_sym: Symbol,
+    // WI-20260909-S8CBV: `anthill.prelude.TypeExtractor.ExprCarried`, resolved ONCE by
+    // the caller rather than per node. `None` on a KB where the form is not registered,
+    // which matches no functor and leaves the walk exactly as it was.
+    expr_carried_sym: Option<Symbol>,
 ) -> TermId {
     match kb.get_term(term).clone() {
         Term::Ref(s) | Term::Ident(s) if places.contains(&s) || is_callback_place(kb, s) => {
             kb.make_var_ref_term(s)
         }
         Term::Fn { functor, .. } if functor == var_ref_sym => term,
+        // WI-20260909-S8CBV — AN `ExprCarried` IS A TYPE, NOT A PLACE. Its `value` child
+        // NAMES the receiver; it does not read it, and there is no runtime value to bind
+        // there — `x.E` is the member of `x`'s TYPE, decided by the argument's type at
+        // the call and never by the argument itself.
+        //
+        // WHY IT MATTERS, and it was measured rather than reasoned: with the descent, a
+        // `requires Desc[T = x.E]` stored `ExprCarried(var_ref(pick.x), E)` while the
+        // very same projection one line up (`e: x.E`, a parameter type) stored
+        // `ExprCarried(Ref(pick.x), E)`. `eliminate_expr_carried_projection` reads the
+        // receiver as a `Ref` and keys the per-call argument-type map by that symbol, so
+        // the requires copy silently eliminated to itself, the slot was never pinned, and
+        // eval died `__req_desc not bound in caller frame`. One projection, two spellings,
+        // and only one of them had a reader.
+        Term::Fn { functor, .. } if Some(functor) == expr_carried_sym => term,
         Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
-            wrap_places_as_var_ref(kb, child, places, var_ref_sym)
+            wrap_places_as_var_ref(kb, child, places, var_ref_sym, expr_carried_sym)
         }),
         _ => term,
     }
@@ -18675,6 +18693,16 @@ struct Loader<'a> {
     // where the reasoning lives. Everywhere else in the same rule (a body goal, a data
     // slot) the name means what it always meant.
     in_rule_head_bound: bool,
+    // WI-20260909-S8CBV: are we lowering an operation's `requires` / `ensures` CONTRACT
+    // clause? A spec bracket binding there is a TYPE position — `requires Desc[T = x.E]`
+    // names the same projection that `e: x.E` names one line up in the same signature —
+    // but the clause rides the ordinary TERM walk, whose dotted-name arm has no
+    // projection rung. Measured (2026-09-09): `operation h(x: Leaf, e: x.E)` LOADS and
+    // `operation k(x: Leaf) requires Desc[T = x.E]` reports `unresolved name 'x.E'`;
+    // the requirement channel was the ONLY type position that could not resolve one.
+    // The flag scopes the rung to the contract clauses rather than widening the whole
+    // term walk, where a dotted name is an ordinary reference and must stay one.
+    in_op_contract_clause: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // ── Occurrence tracking ─────────────────────────────────────
@@ -18982,6 +19010,7 @@ impl<'a> Loader<'a> {
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
             in_rule_head_bound: false,
+            in_op_contract_clause: false,
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
@@ -21496,6 +21525,33 @@ impl<'a> Loader<'a> {
             }
             Term::Ref(sym) => {
                 let span = self.parsed.terms.span(parse_id);
+                // WI-20260909-S8CBV — THE PROJECTION RUNG IN A CONTRACT CLAUSE.
+                //
+                // `requires Desc[T = x.E]` reaches here as ONE dotted symbol (`"x.E"`),
+                // and `remap_symbol_strict` below has no reading for it: measured, it
+                // reported `unresolved name 'x.E'` while `operation h(x: Leaf, e: x.E)`
+                // — the same projection, the same signature, one position over — loaded
+                // clean. A `requires` bracket binding is a TYPE position, so it must
+                // answer as the type positions do.
+                //
+                // ASKED THROUGH THE TYPE LADDER'S OWN CLASSIFIER, not a second copy of
+                // its rule: [`Self::try_expr_carried_projection_segments`] is the body
+                // `type_expr_to_child_inner` calls, so "uppercase last segment off a
+                // value-place head" cannot mean one thing in a parameter type and
+                // another in a `requires`.
+                //
+                // ONLY WHERE IT WOULD OTHERWISE FAIL. The rung runs before resolution,
+                // but its classifier returns `None` for every head that is not a VALUE
+                // PLACE — a namespace, a sort, an unresolved name — so a dotted name
+                // that denotes something today still reaches `remap_symbol_strict` and
+                // resolves exactly as it did. What changes is confined to names that
+                // are a load error at HEAD.
+                if self.in_op_contract_clause {
+                    if let Some(child) = self.try_contract_projection(sym, span) {
+                        self.term_map.insert(parse_id.raw(), child);
+                        return child;
+                    }
+                }
                 let new_sym = self.remap_symbol_strict(sym, span);
                 Term::Ref(new_sym)
             }
@@ -25752,9 +25808,69 @@ impl<'a> Loader<'a> {
         span: SourceSpan,
         owner: Option<Symbol>,
     ) -> Option<node_occurrence::TypeChild> {
+        let segs: Vec<String> = name
+            .segments
+            .iter()
+            .map(|s| self.parsed.symbols.local_name(*s).to_owned())
+            .collect();
+        self.try_expr_carried_projection_segments(&segs, span, owner)
+    }
+
+    /// WI-20260909-S8CBV — a contract clause's dotted name as a TYPE PROJECTION, or
+    /// `None` when it is not one (every case that reaches the ordinary resolver).
+    ///
+    /// The name arrives as ONE symbol whose local name carries the dots (`"x.E"`) — the
+    /// converter never segmented it, because in term position a dotted name is a single
+    /// reference. Split it and ask the type ladder's own classifier.
+    ///
+    /// A COMPOUND receiver (`x.f.E`) answers a `TypeChild::Node`, which has no `TermId`
+    /// to put in a term slot. Reported LOUDLY rather than dropped to the resolver, which
+    /// would blame the name: the shape is recognized and the carrier is what is missing,
+    /// and a silent fall-through would hand the author `unresolved name 'x.f.E'` about a
+    /// projection this position understood perfectly well.
+    fn try_contract_projection(&mut self, sym: Symbol, span: crate::span::Span) -> Option<TermId> {
+        let name = self.parsed.symbols.local_name(sym).to_owned();
+        if !name.contains('.') {
+            return None;
+        }
+        let segs: Vec<String> = name.split('.').map(|s| s.to_owned()).collect();
+        let source_span = SourceSpan::from_span(self.source_id, span);
+        match self.try_expr_carried_projection_segments(&segs, source_span, self.current_owner)? {
+            node_occurrence::TypeChild::Interned(tid) => Some(tid),
+            node_occurrence::TypeChild::Node(_) => {
+                // SPANNED, and through the same variant the sibling rule-body walk uses
+                // for a binding it cannot lower (`report_dropped_spec_binding`) — the
+                // author's mistake is in a type argument and the message should point at
+                // the token, not at the file.
+                self.errors.push(LoadError::InvalidTypeArgument {
+                    detail: format!(
+                        "`{name}` projects off a COMPOUND receiver; a contract clause \
+                         carries only a single-reference receiver (`x.M`)"
+                    ),
+                    span: Some(span),
+                });
+                Some(self.kb.alloc(Term::Bottom))
+            }
+        }
+    }
+
+    /// [`Self::try_expr_carried_projection`]'s body, over the segment NAMES rather than
+    /// a parse [`Name`] — so the second position that must ask this question
+    /// (WI-20260909-S8CBV: a `requires` bracket binding, which reaches the converter as
+    /// ONE dotted symbol, not a segmented `Name`) asks the SAME one. Two copies of the
+    /// uppercase-member / value-head discriminator would drift, and the drift would be
+    /// silent: each copy would still answer *something* for every name.
+    fn try_expr_carried_projection_segments(
+        &mut self,
+        segs: &[String],
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Option<node_occurrence::TypeChild> {
         // `span` / `owner` are unused by the single-ref ground path but carried into
         // the compound-receiver occurrence (WI-397) below.
-        let segs = &name.segments;
+        if segs.len() < 2 {
+            return None;
+        }
         // The MEMBER (last segment) of a TYPE projection is Capitalized — a type member
         // (`T`, `Sort`, `E`), per the value-vs-type case rule (type-parameter-scoping.md
         // §1: types/sort-params are Capitalized, value fields lowercase). A lowercase
@@ -25762,15 +25878,11 @@ impl<'a> Loader<'a> {
         // NOT a type projection — leave it to the denoted / sort-ref path (`None`). This
         // is the discriminator that keeps the per-result-component effect syntax
         // (`Modify[result.a]`, WI-261) lowering to a denoted place, not an ExprCarried.
-        let member_name = self
-            .parsed
-            .symbols
-            .local_name(*segs.last().unwrap())
-            .to_owned();
+        let member_name = segs.last().unwrap().clone();
         if !member_name.chars().next().is_some_and(|c| c.is_uppercase()) {
             return None;
         }
-        let head_name = self.parsed.symbols.local_name(segs[0]).to_owned();
+        let head_name = segs[0].clone();
         // WI-400 increment C: a let / lambda / match LOCAL is a value head too — consult
         // the local-name scope stack first (mirrors `remap_symbol`), so a projection off a
         // let-bound receiver (`let y = …; … : y.K`) resolves its head. A local binding is
@@ -25823,9 +25935,8 @@ impl<'a> Loader<'a> {
             // form) the projection cannot hash-cons. The eliminator resolves the path's
             // static type at the call site.
             let mut receiver = NodeOccurrence::new_expr(Expr::Ref(head_sym), span, owner);
-            for &field_seg in &segs[1..segs.len() - 1] {
-                let field_name = self.parsed.symbols.local_name(field_seg).to_owned();
-                let field_sym = self.kb.intern(&field_name);
+            for field_name in &segs[1..segs.len() - 1] {
+                let field_sym = self.kb.intern(field_name);
                 receiver = NodeOccurrence::new_expr(
                     Expr::DotApply {
                         receiver,
@@ -30613,8 +30724,14 @@ impl<'a> Loader<'a> {
                 named_args: SmallVec::from_slice(&[(*member, *var)]),
             }));
         }
+        // WI-20260909-S8CBV: the contract clauses are the one term position whose spec
+        // bracket is a TYPE position — see [`Loader::in_op_contract_clause`]. Save and
+        // restore rather than set/clear: an operation declared inside another
+        // declaration's conversion must not inherit or erase the outer flag.
+        let prev_contract = std::mem::replace(&mut self.in_op_contract_clause, true);
         let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
         let ensures_list = self.convert_clause_list(&o.ensures);
+        self.in_op_contract_clause = prev_contract;
 
         // WI-840 (058 §4.2 / §4.7): the operation's type parameters against the OTHER
         // things one bracket key can name, and the NAMED requirement slots the
@@ -32670,7 +32787,10 @@ impl<'a> Loader<'a> {
         }
         let places: HashSet<Symbol> = self.signature_place_types.keys().copied().collect();
         let var_ref_sym = self.kb.resolve_symbol("anthill.reflect.Expr.var_ref");
-        wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym)
+        let expr_carried_sym = self
+            .kb
+            .try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried");
+        wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym, expr_carried_sym)
     }
 
     fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> TermId {

@@ -1665,3 +1665,6 @@ mod wi_qmfc5_typed_head_anchor_test;
 
 #[path = "include/wi_96ztm_two_dictionaries_test.rs"]
 mod wi_96ztm_two_dictionaries_test;
+
+#[path = "include/wi_s8cbv_projection_requirement_test.rs"]
+mod wi_s8cbv_projection_requirement_test;
