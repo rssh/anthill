@@ -12802,6 +12802,14 @@ fn load_phase_inner(
     // Its OWN bucket: this is a full sort-ops pass, and folding it into the derivation's
     // mark would attribute the table build to the classification.
     mark!("build_sort_ops_table (derived-provision delta)");
+    // WI-879 — the RESOLVER's builtin registry, derived from the `operation_map` facts.
+    // HERE and not beside `build_host_op_mappings`: the derivation reads DIRECT provision
+    // rows, and `Int64 provides Divisible` / `EuclideanDomain` exists only once
+    // `derive_forwarded_provisions` above has materialized the forwarded row and the
+    // sort-ops delta on the line above has inherited the spec's operations onto it. Still
+    // ABOVE the typer, whose `is_builtin` readers must see the derived tags.
+    all_errors.extend(derive_carrier_builtin_tags(kb));
+    mark!("derive_carrier_builtin_tags");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -14786,6 +14794,180 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         });
     }
     kb.set_host_op_mappings(out);
+    errors
+}
+
+/// WI-879 — MIRROR each spec op's [`BuiltinTag`] onto the CARRIER MEMBERS a binding
+/// block gave a host implementation, so the resolver's builtin registry is FACT-DRIVEN:
+/// adding `operation_map { lt: … }` to a new carrier's binding block is enough, with no
+/// Rust edit.
+///
+/// This is the half of WI-876 that could not move then. `register_builtin_tags` runs
+/// BEFORE `load_all` — there are no facts yet — and WI-876 and WI-880 therefore hand-wrote
+/// a carrier array (sixteen comparisons, nine arithmetic entries) plus two lines beside it
+/// for `Int64.div` / `Int64.mod`, all of it hand-synced with four `.anthill` files in
+/// another crate. This pass replaces the twenty-seven with thirty derived rows — the three
+/// extra being the gap the hand-written list silently had. "It runs before `load_all`" was only ever a reason for THAT function
+/// not to read facts, never a reason for the list to be written by hand: the mappings
+/// are cached by [`build_host_op_mappings`], a post-load pass over the same
+/// `anthill.realization.OperationMapping` facts the evaluator's registration reads, and
+/// [`KnowledgeBase::register_builtin_tag_sym`] is a `&mut self` method.
+///
+/// THE DERIVATION, and why it is a mirror rather than a list. A carrier member reaches
+/// SLD as a goal in its own right — a bare `gt(?a, 0)` written in a rule inside
+/// `sort Int64` resolves to `Int64.gt`, not to `PartialOrd.gt` — so without a tag of its
+/// own it stops computing, silently, which is WI-863's shape. What the tag must be is
+/// not a free choice: the member OVERRIDES a spec op that already has one, and the
+/// resolver's implementation behind that tag is carrier-POLYMORPHIC (one `builtin_cmp`
+/// for `Int64`/`BigInt`/`String`/`Float`, one `builtin_arith` for the three numeric
+/// carriers). So the member's tag IS the spec op's, and mirroring it is self-maintaining
+/// where the array was not.
+///
+/// FOUR CONDITIONS, each load-bearing:
+///   1. **The member is HOST-MAPPED.** The `operation_map` entry is the enablement. A
+///      carrier member with an anthill BODY must NOT be tagged — a tag would make the
+///      resolver's builtin SHADOW the body it was written to run. Measured shape:
+///      WI-1036's `Point.gt`, an `operation gt(…) = false` on a carrier that provides
+///      `PartialOrd`, must keep answering `false`.
+///   2. **LANGUAGE-AGNOSTIC**, matching [`KnowledgeBase::is_host_mapped_op`] and unlike
+///      the evaluator's `INTERPRETER_LANG` filter. The question here is about the
+///      PROGRAM — "is this member's implementation the host's rather than an anthill
+///      body?" — and the answer that follows is about the RESOLVER, whose comparison
+///      and arithmetic are its own Rust code either way. A cpp-only carrier whose
+///      values are literals still needs its rule-body goals to compute.
+///   3. **The spec op is REACHED THROUGH A SPEC THE CARRIER PROVIDES**, never by a
+///      short-name match on the tag table. `anthill.kernel.not` carries
+///      `BuiltinTag::Not` — negation-as-failure — and `Bool`'s binding block maps a
+///      member called `not`; a short-name mirror would hand `Bool.not` the NAF tag.
+///      Every free-operation tag (`not`, `unify`, `struct_eq`, `field_access`, the whole
+///      reflect surface) is declared in a NAMESPACE, so no `SortProvidesInfo` row can
+///      lead to it and this one condition skips them wholesale.
+///   4. **The member must be the carrier's OWN**, via
+///      [`super::typing::carrier_own_op`] — not the spec op it merely inherits, and not
+///      a different spec's same-short-name default the carrier also inherits.
+///
+/// AN UNTAGGED SPEC OP DERIVES NOTHING, which is the rule doing its job rather than a
+/// gap: `Ordered.compare` has no tag (the resolver has no `compare` primitive), so
+/// `Int64.compare` — mapped to `ordered_compare` like its four neighbours — correctly
+/// gets none.
+///
+/// WHAT CONDITION 1 DOES *NOT* CHECK, stated because /code-review named it and because the
+/// argument for the mirror is incomplete without it: that the resolver's primitive computes
+/// what the MAPPED HOST FUNCTION computes. The condition asks whether an implementation is
+/// the host's, not whether the two agree. A carrier mapping `lt: "ordered_gt"` — a
+/// deliberately reversed order — would be tagged `Lt`, and SLD would then answer
+/// `builtin_cmp`'s order while eval called the host function: the exact two-engine
+/// divergence this ticket exists to remove.
+///
+/// NOT DRIVABLE TODAY, and the two measurements are why rather than a hope. (a) Such a
+/// carrier must accept operands `builtin_cmp` reads as ordered LITERALS, and the typer
+/// refuses a literal at a distinct carrier's declared parameter type — measured on exactly
+/// this fixture: `Gauge.lt(1, 2, ?r)` over `operation lt(a: Gauge, b: Gauge)` is
+/// *"type mismatch in lt.a (op-arg): expected Gauge, got Int64"*. (b) The carriers whose
+/// values ARE ordered literals are the five literal sorts themselves, and their mapped
+/// functions agree with `builtin_cmp` by construction: `ordered_*` (the total literal order)
+/// for `Int64`/`String`/`BigInt`, `float_*` (IEEE) for `Float` — which is what
+/// `builtin_cmp` does — and `Bool` maps no comparison at all. `TotalFloat`, the one carrier
+/// in the tree that WOULD want a float order differing from `builtin_cmp`'s, has no binding
+/// block, no `operation_map`, and is an entity carrier, so it reaches the no-order arm
+/// rather than a wrong order.
+///
+/// THE FIFTH CONDITION THAT WOULD CLOSE IT is a different KEY, not another filter: mirror
+/// from the mapped `host_fn` rather than from the spec op, against a table of the functions
+/// this runtime's own primitives reproduce (`ordered_lt ↦ Lt`, `int_add ↦ Add`, …). That is
+/// a claim the crate holding `builtin_cmp` can actually make, it is checkable, and it would
+/// give a reversed mapping no tag. It is not taken here because it swaps this hole for a
+/// narrower one — `ordered_lt` is `total_cmp` while `builtin_cmp` is IEEE, so a FLOAT-valued
+/// carrier mapping `ordered_lt` would diverge the other way — and neither hole has a program
+/// that reaches it. Whoever needs either: this paragraph is the comparison.
+///
+/// WHERE IT RUNS is a decision, and it is AFTER `derive_forwarded_provisions` +
+/// the second `build_sort_ops_table`, not next to `build_host_op_mappings`. Condition 3
+/// reads DIRECT provision rows, and the tower `Int64 provides EuclideanDomain[T = Int64]`
+/// → `EuclideanDomain provides Divisible[T = T]` only reaches `Int64 provides Divisible`
+/// once WI-1109's pass has materialized it. Placed at the mappings instead, `Int64.div`
+/// and `Int64.mod` — two of the entries this pass must reproduce — would derive nothing.
+/// Still BEFORE the typer, because [`KnowledgeBase::is_builtin`] is a typer-side reader
+/// (`check_one_spec_op_requirement`'s builtin skip, `op_backed`).
+#[must_use = "an ambiguous mirror is load-blocking and must be merged"]
+pub fn derive_carrier_builtin_tags(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    // Snapshot: the registration below takes `&mut kb`, while the walk borrows the
+    // mapping cache and the provides / sort-ops tables.
+    let mapped: Vec<Symbol> = kb.host_op_mappings().iter().filter_map(|m| m.op).collect();
+    let mut errors: Vec<LoadError> = Vec::new();
+    // Keyed by the member, so the SAME tag reached through two of the carrier's specs
+    // collapses instead of registering twice — the common case, not an edge one:
+    // `Int64 provides Numeric` and `Int64 provides Additive` both lead to `Additive.add`,
+    // because pass 2 of `build_sort_ops_table` inherits the spec op onto `Numeric` too.
+    let mut derived: HashMap<Symbol, BuiltinTag> = HashMap::new();
+    for op in mapped {
+        // The DECLARING sort. `impl_parent_of_op` splits the operation's own canonical
+        // qualified name, so this is the carrier whose binding block wrote the
+        // `operation_map` clause, whatever the mapping's `carrier` STRING said.
+        let Some(carrier) = super::typing::impl_parent_of_op(kb, op) else {
+            continue;
+        };
+        let short = intern_op_short(kb, op);
+        for spec in super::typing::directly_provided_specs(kb, carrier) {
+            // The spec's own member for this short name, and the tag it carries.
+            // `sort_ops_lookup` on the SPEC answers with the spec op itself (pass 1 of
+            // `build_sort_ops_table` records `Spec.n ↦ Spec.n`).
+            let Some(spec_op) = kb.sort_ops_lookup(spec, short) else {
+                continue;
+            };
+            let Some(tag) = kb.builtin_of(spec_op) else {
+                continue;
+            };
+            // Condition 4: `op` must be the carrier's OWN member of this spec op — not
+            // the spec op it merely inherits, and not another spec's same-short-name
+            // default the carrier also inherits.
+            //
+            // Its LIVE content is the case where `carrier` is itself a SPEC: a mapping may
+            // be written on a spec's OWN member (§10a — the polymorphic host
+            // implementation, `Store.retract` and its two neighbours), and then the walk
+            // above is over what THAT spec provides. The check is what stops the mirror
+            // reaching down a provision chain and tagging a spec op that has nothing to do
+            // with the mapped member.
+            //
+            // CANONICAL identity, not raw: one qualified name can be interned under
+            // several `Symbol`s, and a raw `!=` here would SKIP a genuine override whose
+            // sort-ops entry happens to carry the other spelling — a silent drop, in a
+            // pass whose whole point is that nothing goes untagged in silence.
+            match super::typing::carrier_own_op(kb, carrier, spec_op, short) {
+                Some(own) if kb.canonical_sym(own) == kb.canonical_sym(op) => {}
+                _ => continue,
+            }
+            // TWO DIFFERENT PRIMITIVES FOR ONE MEMBER is refused, not resolved by
+            // iteration order. It takes a carrier providing two specs that both declare
+            // the short name and whose spec ops carry DIFFERENT tags, which nothing in
+            // the tree does today — refused anyway, for `build_eq_dispatch_index`'s
+            // reason (WI-837): nothing downstream can complain about it, and picking one
+            // silently decides which primitive the goal runs.
+            match derived.entry(op) {
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(tag);
+                }
+                std::collections::hash_map::Entry::Occupied(o) if *o.get() != tag => {
+                    let qn = kb.qualified_name_of(op).to_string();
+                    errors.push(LoadError::Other {
+                        message: format!(
+                            "`{qn}` is host-mapped and overrides two spec operations \
+                             backed by DIFFERENT resolver primitives ({:?} and {tag:?}); \
+                             the `operation_map` entry cannot say which one a rule-body \
+                             goal on `{qn}` should run",
+                            o.get()
+                        ),
+                    });
+                }
+                // The same tag through a second spec of the carrier's: `Int64 provides
+                // Numeric` and `Int64 provides Additive` both lead to `Additive.add`.
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
+        }
+    }
+    for (op, tag) in derived {
+        kb.register_builtin_tag_sym(op, tag);
+    }
     errors
 }
 

@@ -1210,6 +1210,9 @@ mod wi_apxss_clause_landing_test;
 #[path = "include/wi1001_secondary_entry_rule_test.rs"]
 mod wi1001_secondary_entry_rule_test;
 
+#[path = "include/wi879_fact_driven_resolver_builtins_test.rs"]
+mod wi879_fact_driven_resolver_builtins_test;
+
 #[path = "include/wi1036_builtin_defaulted_dispatch_test.rs"]
 mod wi1036_builtin_defaulted_dispatch_test;
 #[path = "include/wi1040_require_clause_dictionary_test.rs"]

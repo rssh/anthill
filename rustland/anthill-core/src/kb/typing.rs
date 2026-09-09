@@ -39797,7 +39797,18 @@ fn apply_witness_instantiation(
 /// from its carrier-keyed `SortProvidesInfo` facts. The transitive-provision
 /// hop set for [`transitive_carrier_for_param`] (a single carrier-keyed scan,
 /// mirroring the edge extraction in [`sort_provides`]).
-fn directly_provided_specs(kb: &KnowledgeBase, carrier_sym: Symbol) -> SmallVec<[Symbol; 4]> {
+///
+/// DIRECT rows only, and its second reader — WI-879's
+/// [`super::load::derive_carrier_builtin_tags`] — is why that word now matters to
+/// somebody. A `provides` TOWER (`Int64 provides EuclideanDomain`, `EuclideanDomain
+/// provides Divisible[T = T]`) reaches this set only once WI-1109's
+/// [`derive_forwarded_provisions`] has materialized the forwarded row, so a caller that
+/// needs the closure must run below that pass rather than reach for a transitive walk
+/// here.
+pub(crate) fn directly_provided_specs(
+    kb: &KnowledgeBase,
+    carrier_sym: Symbol,
+) -> SmallVec<[Symbol; 4]> {
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
     // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
     // `canonical_sort_sym` filter below is the exact match for both.
@@ -70149,12 +70160,27 @@ fn check_one_spec_op_requirement(
     // A spec op registered as a resolver BUILTIN never fails for a *missing spec
     // instance*, so it is not this pass's concern — skip it. Two disjoint reasons,
     // both `is_builtin`:
-    //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default `Eq`
-    //     instance (kernel-language.md §equality / proposal 051 / WI-616: "a carrier
-    //     with no override keeps the structural compare — structural equality *is*
-    //     its instance"), so EVERY carrier already satisfies `Eq`; a carrier wanting
-    //     non-structural equality *overrides* it (`Set.eq`/`Map.eq`), and the
-    //     explicitly structural test is `===`/`struct_eq`. Never a missing requirement.
+    //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default
+    //     `PartialEq` instance (kernel-language.md §equality / proposal 051 / WI-616: "a
+    //     carrier with no override keeps the structural compare — structural equality
+    //     *is* its instance"), so EVERY carrier already satisfies `PartialEq`; a carrier
+    //     wanting non-structural equality *overrides* it (`Set.eq`/`Map.eq`, `Float`'s
+    //     IEEE `eq`), and the explicitly structural test is `===`/`struct_eq`. Never a
+    //     missing requirement.
+    //
+    //     `PartialEq`, NOT `Eq`, AND THE DIFFERENCE IS NOT PEDANTRY. This sentence said
+    //     "EVERY carrier already satisfies `Eq`" until WI-879, and that is FALSE — the
+    //     tree ENFORCES that it is false. `Float` provides `PartialEq`, `PartialOrd` and
+    //     `NonEq` and deliberately not `Eq` (WI-644 / proposal 004), to the point that
+    //     WI-658 makes a user's `provides Eq[Float]` a LOAD ERROR; and WI-664 derives
+    //     `NonEq` for every COMPOSITE carrying a `Float` field, so a plain
+    //     `Point(x: Float, y: Float)` is one too. A class, not one carrier. The claim
+    //     this early return NEEDS is the one about the partial BASE, which is total and
+    //     which `PartialEq.eq` is the operation of — so the return was always safe and
+    //     only its reason was wrong. A WI-644 leftover: the citation is WI-616, which
+    //     predates the split that the registration site states two lines above ("eq/neq
+    //     live on PartialEq, gt/lt/gte/lte on PartialOrd (the partial bases); Eq/Ord are
+    //     the lawful/total markers").
     //   * `Ord.gt`/`lt`/`gte`/`lte`, `Numeric.add`/`sub`/`mul` — numeric-constant
     //     builtins (`builtin_cmp` / arithmetic) that NEVER consult an `Ord`/
     //     `Numeric` instance, so a `requires Ord[…]` could not even fix them; a

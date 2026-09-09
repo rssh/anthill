@@ -210,6 +210,11 @@ fn own_gt_answer(tail: &str) -> String {
     rows.iter()
         .map(|(v, definite)| match v {
             Value::Bool(b) if *definite => b.to_string(),
+            // WI-879 — a WITHHELD answer renders as one stable word. The `Debug` this arm
+            // used to print carries a `TermId`, which is fine for a row that never
+            // occurred and useless for one that now does: `builtin_cmp`'s `NoOrder` arm
+            // residualizes, leaving `?r` unbound and the row non-definite.
+            _ if !*definite => "UNDECIDED".to_string(),
             other => format!("{other:?} (definite = {definite})"),
         })
         .collect::<Vec<_>>()
@@ -224,15 +229,28 @@ fn own_gt_answer(tail: &str) -> String {
 /// without it the goal answers `[]`. The call IS classified now and the pin IS stamped
 /// (`PartialOrd.gt -> wi1036.own.Point.gt`, observed at `classify_pin_or_apply_within`) —
 /// and never read, because a goal takes `BuiltinTag::Gt` off its SPELLED functor and no
-/// goal-position reader consults a pin; `builtin_cmp` then fails silently on two
-/// entities. **WI-879 owns that** — its acceptance is that such a comparison "either
-/// answers correctly or raises, never silently fails".
+/// goal-position reader consults a pin; `builtin_cmp` then had no order for two entities.
+///
+/// WI-879 LANDED HALF OF WHAT THIS DOC USED TO PREDICT, and the assertion below is updated
+/// to what it MEASURES rather than to what was hoped. The rule-body goal no longer answers
+/// `[]` — a definite refutation of a comparison that never happened, which a NAF or
+/// constraint guard reading emptiness as falsity would then decide from. It now
+/// RESIDUALIZES: one row, `definite = false`, plus a trace naming the operand pair. That
+/// is WI-879's acceptance ("either answers correctly or raises, never silently fails") met
+/// on the "never silently" clause.
+///
+/// WHAT IS STILL OPEN IS THE `false`, AND IT IS RE-OWNED: reaching the carrier's supplied
+/// `gt` from GOAL position needs ORDERING DISPATCH — the analogue of `sem_eq_dispatch`,
+/// which routes a carrier's own `eq` from a goal — and WI-879 did not build it.
+/// **WI-20260909-SM910 owns it now**, and this assertion is the one to update again when
+/// it lands: the answer becomes `false`, the operation body's. So this test keeps naming a
+/// position gap; only its shape changed, from a wrong answer to a withheld one.
 ///
 /// CONTROL: the operation-body arm fails if the WI-444 supplied-override pin regresses.
-/// The rule-body arm fails when WI-879 lands, which is the intended flip and the reason
-/// it is named here. The OPERAND-position sibling above is the contrast that makes this a
-/// position gap rather than a rule-body one: same carrier, same override, same rule — and
-/// in operand position the pin IS read.
+/// The rule-body arm fails if `builtin_cmp`'s `NoOrder` arm goes back to
+/// `BuiltinResult::Failure` (the row returns to `[]`). The OPERAND-position sibling above
+/// is the contrast that makes this a position gap rather than a rule-body one: same
+/// carrier, same override, same rule — and in operand position the pin IS read.
 #[test]
 fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_body_goal() {
     let from_op_body = own_gt_answer(
@@ -248,12 +266,11 @@ fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_bo
     let from_rule_goal =
         own_gt_answer("  rule answer(?r) :- PartialOrd.gt(pt(2, 1), pt(1, 9), ?r)\n");
     assert_eq!(
-        from_rule_goal, "[]",
-        "PINNED DEFECT, owner WI-879: the same call as a rule-body GOAL answers nothing — \
-         the goal takes `BuiltinTag::Gt` off the spelled functor and `builtin_cmp` fails \
-         silently on two entities. Deleting `!is_builtin` did NOT change this (measured): \
-         the pin is stamped and no goal-position reader consults it. When WI-879 makes \
-         this answer `false`, or raise, this assertion is the one to update",
+        from_rule_goal, "UNDECIDED",
+        "WI-879: the same call as a rule-body GOAL is now UNDECIDED rather than an \
+         indistinguishable `[]` — `builtin_cmp` has no order for two entities and says so \
+         instead of claiming `not greater`. The remaining gap is that it does not reach \
+         the carrier's supplied `gt` either; that needs ordering dispatch, WI-20260909-SM910",
     );
 }
 

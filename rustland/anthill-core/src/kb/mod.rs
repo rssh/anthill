@@ -10126,6 +10126,29 @@ impl KnowledgeBase {
         self.builtins.insert(sym, tag);
     }
 
+    /// WI-879 — bind an ALREADY-RESOLVED operation symbol to a [`BuiltinTag`], for the
+    /// POST-LOAD derivation ([`load::derive_carrier_builtin_tags`]) that reads the
+    /// `operation_map` facts. [`Self::register_builtin_tag`] cannot serve it: that one
+    /// starts from a qualified-name STRING and MINTS a symbol when the name is unknown,
+    /// which is right for bootstrap (the stdlib op it names may not be loaded yet) and
+    /// wrong here — the derivation only ever tags an operation the loader already
+    /// resolved and kind-checked, so a mint would mean the derivation had invented a name.
+    ///
+    /// UNDER BOTH SPELLINGS, matching what `eval`'s `build_host_op_registrations` does
+    /// with the same mappings and for the same reason: one qualified name can be interned
+    /// under several `Symbol`s, and the resolver's builtin lookup ([`Self::builtin_of`])
+    /// is a RAW map hit, so whichever spelling reaches a goal must find the tag. This is
+    /// the post-load peer of what [`Self::resolve_builtins`] does for the pre-load
+    /// registrations — and it cannot rely on that pass, which ran long before the facts
+    /// this derivation reads existed.
+    pub(crate) fn register_builtin_tag_sym(&mut self, sym: Symbol, tag: BuiltinTag) {
+        let canon = self.canonical_sym(sym);
+        if canon != sym {
+            self.builtins.insert(canon, tag);
+        }
+        self.builtins.insert(sym, tag);
+    }
+
     /// Register the builtin TAGS — each entry binds a fully-qualified stdlib
     /// operation name to the [`BuiltinTag`] the resolver dispatches on. No host
     /// code is bound here.
@@ -10217,74 +10240,37 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
         self.register_builtin_tag("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
         self.register_builtin_tag("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
-        // WI-876 — the same four, keyed to each SCALAR CARRIER that now declares them
-        // as its own operations. A bare `gt(?a, 0)` in a rule inside `sort Int64`
-        // resolves to `Int64.gt`, not to the spec op, so without these entries the
-        // resolver would lose a comparison it has always had. `builtin_cmp` is the
-        // same numeric comparator for all of them.
+        // WI-879 — THE FOUR ABOVE STAY, AND NOTHING PER-CARRIER JOINS THEM. The spec-op
+        // entries are load-bearing and are not a leftover: a bare `gt(?x, 5)` written in
+        // any namespace but a scalar carrier's own resolves to `PartialOrd.gt`, so
+        // deleting them would take the comparison off every generic caller. What went is
+        // the CARRIER half — the `&'static str` array WI-876 and WI-880 spelled out here
+        // (`Int64.gt`, `String.lte`, `Float.add`: sixteen comparisons and nine arithmetic
+        // entries) and the two `Int64.div` / `Int64.mod` lines that sat below it. Those
+        // twenty-seven rows are now DERIVED by [`load::derive_carrier_builtin_tags`] from the
+        // `operation_map` facts their binding blocks emit — the same facts the evaluator's
+        // registration reads. This function keeps only what is genuinely BOOTSTRAP: the
+        // SPEC ops and the kernel primitives, whose names the resolver knows a priori.
         //
-        // WHAT THIS REGISTRY IS NOT: the evaluator's, which WI-876 made read the
-        // `operation_map` facts. Two things stayed here that should not have, and
-        // both are WI-879 — stated plainly because a half-migration reads as a
-        // finished one:
+        // A CARRIER MEMBER'S TAG IS NEVER A FREE CHOICE, which is what makes the mirror
+        // sound rather than merely convenient: the member OVERRIDES a spec op that already
+        // has one, and the primitive behind that tag is carrier-POLYMORPHIC (one
+        // `builtin_cmp` for all four ordered carriers, one `builtin_arith` for the three
+        // numeric ones). What the hand-written array added was a sync with four `.anthill`
+        // files in another crate — and one gap it silently carried: `BigInt.div`,
+        // `Float.div` and `BigInt.mod` were MISSING, so a rule-body `Float.div(?x, 2.0,
+        // ?r)` stopped computing while `Int64.div` answered. That is WI-863's shape, and it
+        // is the class of defect a hand-written list keeps producing.
         //
-        //   * THE FOUR SPEC-OP ENTRIES ABOVE ARE STILL LIVE. WI-876 ADDED the carrier
-        //     entries beside them; it did not delete them, because a bare `gt(?x, 5)`
-        //     in any other namespace still resolves to `PartialOrd.gt`. So at SLD the
-        //     ticket's own defect stands: MEASURED, `PartialOrd.gt("b", "a")` as a
-        //     rule-body goal yields NO SOLUTIONS — `builtin_cmp` reads NUMERIC
-        //     operands only and returns `Failure` on a string pair — while the same
-        //     comparison in eval answers `true`. The new `String.gt` entry inherits
-        //     that, claiming no more and no less than the spec op did.
-        //   * THE LIST IS STILL HARDCODED, and "it runs before `load_all`" is why
-        //     THIS function cannot read the facts — not why the list must be written
-        //     by hand. `load::build_host_op_mappings` is a post-load pass holding
-        //     `&mut KnowledgeBase`, and `register_builtin_tag` is a `&mut self` method,
-        //     so the derivation site exists. Until it is taken, this array must be
-        //     hand-synced with four `.anthill` files in another crate.
-        // Spelled out rather than built with `format!`: this runs once per KB and the
-        // suite builds thousands, and a `&'static str` costs nothing.
-        for (qn, tag) in [
-            ("anthill.prelude.Int64.gt", BuiltinTag::Gt),
-            ("anthill.prelude.Int64.lt", BuiltinTag::Lt),
-            ("anthill.prelude.Int64.gte", BuiltinTag::Gte),
-            ("anthill.prelude.Int64.lte", BuiltinTag::Lte),
-            ("anthill.prelude.BigInt.gt", BuiltinTag::Gt),
-            ("anthill.prelude.BigInt.lt", BuiltinTag::Lt),
-            ("anthill.prelude.BigInt.gte", BuiltinTag::Gte),
-            ("anthill.prelude.BigInt.lte", BuiltinTag::Lte),
-            ("anthill.prelude.String.gt", BuiltinTag::Gt),
-            ("anthill.prelude.String.lt", BuiltinTag::Lt),
-            ("anthill.prelude.String.gte", BuiltinTag::Gte),
-            ("anthill.prelude.String.lte", BuiltinTag::Lte),
-            ("anthill.prelude.Float.gt", BuiltinTag::Gt),
-            ("anthill.prelude.Float.lt", BuiltinTag::Lt),
-            ("anthill.prelude.Float.gte", BuiltinTag::Gte),
-            ("anthill.prelude.Float.lte", BuiltinTag::Lte),
-            // WI-880 — the ARITHMETIC, for the same reason and with the same shape.
-            // `Int64` / `Float` / `BigInt` each declare their own `add` / `sub` / `mul`
-            // now (the host implementation had to have a carrier to be keyed to), so a
-            // bare `add(?n, 1)` in a rule inside `sort Int64` means `Int64.add` and
-            // would otherwise stop computing in a rule-body query — WI-863's shape, and
-            // `int64.anthill`'s `induction` rule writes exactly that goal.
-            //
-            // `builtin_arith` is CARRIER-POLYMORPHIC and only these keys are not: one
-            // `BuiltinTag::Add` fills the Int, BigInt and Float slots. So the SLD engine
-            // will answer a float addition under `Int64.add`, which is the looseness
-            // `Int64.div` already carries three lines down and which WI-879 owns — these
-            // entries claim exactly what the spec-op entries below claim, no more.
-            ("anthill.prelude.Int64.add", BuiltinTag::Add),
-            ("anthill.prelude.Int64.sub", BuiltinTag::Sub),
-            ("anthill.prelude.Int64.mul", BuiltinTag::Mul),
-            ("anthill.prelude.BigInt.add", BuiltinTag::Add),
-            ("anthill.prelude.BigInt.sub", BuiltinTag::Sub),
-            ("anthill.prelude.BigInt.mul", BuiltinTag::Mul),
-            ("anthill.prelude.Float.add", BuiltinTag::Add),
-            ("anthill.prelude.Float.sub", BuiltinTag::Sub),
-            ("anthill.prelude.Float.mul", BuiltinTag::Mul),
-        ] {
-            self.register_builtin_tag(qn, tag);
-        }
+        // "IT RUNS BEFORE `load_all`" was only ever a reason for THIS function not to read
+        // facts, never a reason for the list to be written by hand.
+        //
+        // WHAT WI-879 ALSO FIXED, because it is the other half of the same claim: the four
+        // tags above said the resolver can compare, and on a STRING pair it could not —
+        // `builtin_cmp` read numeric operands only and returned `Failure`, so a rule-body
+        // `PartialOrd.gt("b", "a")` yielded no solutions while eval answered `true`. It now
+        // reads every ORDERED LITERAL (kb/resolve.rs `value_ord`), and an operand pair it
+        // still cannot compare is undecided-and-loud rather than a silent false.
         // WI-20260825-1WBZT — `add` / `sub` / `mul` are SPEC operations on their OPERATOR'S
         // OWN CATEGORY (`Additive`, `Multiplicative` —
         // `stdlib/anthill/prelude/arithmetic.anthill`), and the category op is what `+`
@@ -10307,16 +10293,21 @@ impl KnowledgeBase {
         // declare. Keyed on `Int64.div` the resolver would answer a FLOAT division under
         // a name the typer had just refused for float operands.
         //
-        // THE CARRIER ENTRIES STAY BESIDE THEM, and are not redundant: a QUALIFIED
-        // `Int64.div(a, b)` written by hand never goes through the tier, so it needs its
-        // own tag or it stops computing in a query. `divExact` is an Int64-only alias (a
-        // stdlib rule rewrites it to `div`) and is deliberately kept out of
+        // A QUALIFIED `Int64.div(a, b)` written by hand never goes through the operator
+        // tier, so the carrier member needs a tag of its own or it stops computing in a
+        // query — and WI-879 DERIVES those (`Int64.div`, `BigInt.div`, `Float.div`,
+        // `Int64.mod`, `BigInt.mod`) from `Divisible.div` / `EuclideanDomain.mod` below,
+        // through each carrier's own `operation_map` entry. The two lines that used to
+        // spell `Int64.div` / `Int64.mod` here are gone with the rest of the carrier list.
+        //
+        // `divExact` STAYS, and is the one that says why the derivation is a mirror and
+        // not a sweep of the `operation_map`: it is an Int64-only ALIAS (a stdlib rule
+        // rewrites it to `div`) declared by no spec, so there is no spec-op tag to mirror
+        // and the derivation correctly gives it none. It is also deliberately kept out of
         // `PRELUDE_QUALIFIED` — no operator mints a bare `divExact`.
         self.register_builtin_tag("anthill.prelude.Divisible.div", BuiltinTag::Div);
         self.register_builtin_tag("anthill.prelude.EuclideanDomain.mod", BuiltinTag::Mod);
-        self.register_builtin_tag("anthill.prelude.Int64.div", BuiltinTag::Div);
         self.register_builtin_tag("anthill.prelude.Int64.divExact", BuiltinTag::Div);
-        self.register_builtin_tag("anthill.prelude.Int64.mod", BuiltinTag::Mod);
         // Conversions
         self.register_builtin_tag("anthill.prelude.BigInt.to_bigint", BuiltinTag::ToBigInt);
         self.register_builtin_tag("anthill.prelude.BigInt.to_int", BuiltinTag::ToInt);

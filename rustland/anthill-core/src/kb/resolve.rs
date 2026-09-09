@@ -276,10 +276,22 @@ enum BuiltinResult {
     /// Builtin succeeded and produced new variable bindings to merge.
     SuccessWithBindings(Substitution),
     /// Builtin cannot evaluate yet; delay this goal. WI-628 — `truncated` marks a
-    /// delay whose undecidedness came from a depth-TRUNCATED sub-search (a carrier
-    /// `eq`/`neq` closed sub-proof that hit `sem_eq_sub_depth`, or the eval
-    /// bridge's re-entry cap), as opposed to an ordinary flex-var flounder
-    /// (`truncated: false`, the common case — see [`BuiltinResult::delay`]). The
+    /// delay an EAGER consumer must not decide from, as opposed to an ordinary flex-var
+    /// flounder (`truncated: false`, the common case — see [`BuiltinResult::delay`]).
+    ///
+    /// TWO PRODUCERS SET IT, and the second is why this doc no longer says "depth-truncated"
+    /// as the definition rather than as an instance. (1) A depth-TRUNCATED sub-search — a
+    /// carrier `eq`/`neq` closed sub-proof that hit `sem_eq_sub_depth`, or the eval bridge's
+    /// re-entry cap. (2) WI-879 — a comparison with NO ORDER for its operands
+    /// ([`KnowledgeBase::builtin_cmp`]'s `NoOrder` / `SortMismatch` arms), where nothing was
+    /// cut short and there is simply no verdict to give. What the two share is the only thing
+    /// the readers use the flag for: THIS ANSWER SET IS INCOMPLETE, so emptiness is not
+    /// refutation. Reading it as "a branch was cut at the depth cap" is what left the eager
+    /// guards deciding from a comparison that never ran; the message they print still says
+    /// "within depth budget", which is imprecise for producer (2) and is why that arm also
+    /// traces its own cause.
+    ///
+    /// The
     /// step loop folds a truncated delay onto the outer [`SearchStream::truncated`]
     /// flag so an eager NAF/guard consumer (which reads an empty result as
     /// refutation) sees the incomplete search instead of silently deciding. A
@@ -289,6 +301,33 @@ enum BuiltinResult {
     Delay { truncated: bool },
     /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
     Failure,
+}
+
+/// WI-879 — the outcomes of asking two operands for their ORDER
+/// ([`KnowledgeBase::value_ord`]), kept apart because two of them are ANSWERS and two are
+/// the absence of one. Collapsing the four is exactly what `builtin_cmp` used to do, and it
+/// is what turned "I have no order for these" into the same silent `Failure` as "these are
+/// not in that order".
+///
+/// THE TWO NON-ANSWERS ARE ALSO NOT ONE CASE, and the first draft of this enum merged them
+/// — which produced a diagnostic that blamed the wrong thing. They have different causes and
+/// different repairs, so they say so separately.
+#[derive(Clone, Copy)]
+enum OrdVerdict {
+    /// The pair is ordered; this is where they sit.
+    Ordered(std::cmp::Ordering),
+    /// IEEE says the pair is UNORDERED — a NaN Float operand. AN ANSWER: every partial
+    /// comparison over it is false, which is what eval's `float_gt`/… and the C++ `>` also
+    /// give. It rides beside `Ordered` rather than short-circuiting, because the RESULT
+    /// COLUMN must be bound with `false` here exactly as it is for an ordinary false.
+    Unordered,
+    /// The resolver has no order for this CARRIER — a non-literal operand. NOT an answer:
+    /// the goal is undecided, and what it wants is ordering dispatch — WI-20260909-SM910.
+    NoOrder,
+    /// Two literals of DIFFERENT sorts (`gt("a", 1)`). Also not an answer, but the cause is
+    /// an ill-typed comparison rather than a missing implementation — eval refuses this pair
+    /// outright (`TypeMismatch`), and nothing about ordering dispatch would help.
+    SortMismatch,
 }
 
 impl BuiltinResult {
@@ -6817,13 +6856,39 @@ impl KnowledgeBase {
     }
 
     /// Generic comparison builtin for gt/lt/gte/lte.
-    /// Compares Int/BigInt/Float values; delays if unbound, fails on type mismatch.
+    /// Compares every ORDERED LITERAL carrier-neutrally ([`Self::value_ord`]); delays if
+    /// unbound, and delays LOUDLY on an operand pair it has no order for.
+    ///
+    /// WI-879 — IT READ `value_num` (Int / BigInt / Float) AND RETURNED `Failure` ON
+    /// EVERYTHING ELSE, which made a claim it could not back. MEASURED before the fix: the
+    /// rule-body goal `PartialOrd.gt("b", "a")` yielded NO SOLUTIONS while the same
+    /// comparison in an operation body answered `true` — one program, two engines, opposite
+    /// answers — and the resolver's "no" was indistinguishable from `"b" <= "a"`. WI-876's
+    /// new `String.gt` tag made the mis-claim explicit (the tag says the resolver can
+    /// compare strings) but did not create it: it was equally true of `PartialOrd.gt`,
+    /// which every generic caller resolves to.
+    ///
+    /// THE LITERAL SET IS EVAL'S, deliberately: `value_compare` (eval/builtins.rs) already
+    /// answered Int / BigInt / Float / Bool / String, and the two engines disagreeing about
+    /// which operands are comparable IS the defect. What is NOT shared is the Float
+    /// ordering — see [`Self::value_ord`].
     fn builtin_cmp<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
         pred: impl Fn(std::cmp::Ordering) -> bool,
     ) -> BuiltinResult {
+        // The head, read ONCE — `builtin_arith` opens the same way. Both the diagnostic
+        // below and the result-column decision at the end need it, and `head` on a
+        // hash-consed operand goes through the term store. A non-functor goal cannot reach
+        // a tag-dispatched builtin; it would fail on the operand reads two lines down
+        // anyway, so refusing here changes nothing but says which read decided.
+        let ViewHead::Functor {
+            functor, pos_arity, ..
+        } = goal.head(self)
+        else {
+            return BuiltinResult::Failure;
+        };
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -6845,32 +6910,217 @@ impl KnowledgeBase {
         {
             return BuiltinResult::delay();
         }
-        // WI-685: `value_num` reads a numeric literal carrier-neutrally through
-        // the view (Term or Node), so no collapse-to-Term step is needed.
-        let ord = match (self.value_num(&a), self.value_num(&b)) {
-            (Some(Num::Int(x)), Some(Num::Int(y))) => x.cmp(&y),
-            (Some(Num::Big(x)), Some(Num::Big(y))) => x.cmp(&y),
-            (Some(Num::Float(x)), Some(Num::Float(y))) => {
-                // WI-644 / proposal 004: the resolver's `PartialOrd.gt`/`lt`/`gte`/`lte`
-                // are IEEE — a NaN operand is UNORDERED, so the comparison is FALSE
-                // (`partial_cmp` = `None`), NOT `OrderedFloat`'s total_cmp where NaN
-                // ranks largest. This keeps rule-body comparisons agreeing with eval's
-                // `Float`-mapped `float_gt`/`float_lt`/… (WI-876 moved those off the
-                // spec op, where a `float_pair` test inside the SHARED comparison
-                // decided which carrier it was serving) and with the C++ codegen — the
-                // WI-645 acceptance: resolver == interpreter == codegen on Float.
-                match x.into_inner().partial_cmp(&y.into_inner()) {
-                    Some(o) => o,
-                    None => return BuiltinResult::Failure,
-                }
+        let verdict = match self.value_ord(&a, &b) {
+            OrdVerdict::Ordered(o) => pred(o),
+            // WI-644 / proposal 004: an IEEE-UNORDERED Float pair (a NaN operand) is a
+            // DEFINITE `false`, not the undecided arm below — IEEE says the comparison is
+            // false, so the resolver is not withholding an answer, it is giving IEEE's.
+            //
+            // IT FLOWS ON RATHER THAN RETURNING, and that is a fix to this ticket's own
+            // first draft: `return BuiltinResult::Failure` here jumped PAST the result
+            // column below, so `Float.gt(nan, 1.0, ?r)` answered NOTHING while
+            // `Float.gt(1.0, 2.0, ?r)` answered `false` and eval answered `false` for both.
+            // Two spellings of false, observably different, in the very form this ticket
+            // added — and the WI-645 acceptance (resolver == interpreter == codegen on
+            // Float) broken by the fix. Raised by /code-review.
+            OrdVerdict::Unordered => false,
+            no_order => {
+                // WI-879 — UNDECIDED AND LOUD, never a silent `Failure`. Two reasons it is
+                // not `Failure`: "not greater" is a CLAIM, and there is nothing here to
+                // make it with; and a NAF/guard consumer reading an empty result as
+                // refutation would then decide from a comparison that never happened.
+                // The same reasoning `sem_eq_dispatch` records for
+                // `PredicateProof::Undefined`, which is the eq family's version of this
+                // arm. Complete, hence NOT truncated: no branch was cut short, the order
+                // is absent.
+                //
+                // TRACED, because `BuiltinResult` has no error channel and neither does
+                // `StepResult` — the same constraint `gather_extent_rows` and WI-1091's
+                // unstamped-dispatch arm state at their own sites, and the same answer.
+                // The residual is the machine-readable half: the goal comes back in
+                // `Solution::residual` with `definite = false`, which is what a test can
+                // assert and what tells the two cases apart at a call site.
+                //
+                // TWO CAUSES REACH HERE, and the first draft of this arm asserted there
+                // was one — "a MISMATCHED literal pair does not reach here from a program
+                // that loads: `PartialOrd.lt(a: T, b: T)` cannot type it". MEASURED FALSE
+                // by /code-review: an operand bound from an UNDECLARED predicate has no
+                // stamped type, so `fact tag("a")` beside `rule answer(?r) :- tag(?x),
+                // PartialOrd.gt(?x, 1), unify(?r, 5)` loads with zero errors and lands
+                // here — and the message blamed ordering dispatch, which would not have
+                // helped. (The DIRECTLY written `PartialOrd.gt("a", 1, ?r)` IS refused,
+                // which is what made the claim look true; so is a carrier's own
+                // `Gauge.lt(1, 2, ?r)` — both measured.)
+                self.trace_no_order(no_order, functor, &a, &b);
+                // UNDECIDED, never a silent `Failure`: "not greater" is a CLAIM and there
+                // is nothing here to make it with, and a NAF/guard consumer reading an
+                // empty result as refutation would then decide from a comparison that
+                // never happened. Same reasoning `sem_eq_dispatch` records for
+                // `PredicateProof::Undefined`.
+                //
+                // `truncated: true`, AND THAT IS THE HALF THAT MAKES THE SENTENCE ABOVE
+                // TRUE. A plain `delay()` was this ticket's first draft and it protected
+                // only `step_naf`, whose sub-search yields residuals. The three EAGER
+                // guard consumers — `eval_negation_guard`, `eval_forall_guard` and the
+                // counting-quantifier config — all resolve with `definite_only: true`, so
+                // the residual never reaches them and `GuardStatus::from_emptiness` reads
+                // the empty result as a verdict unless `truncated` is set: a
+                // `constraint c :- negation(query(… gt(?a, ?b) …))` over a non-literal
+                // carrier still reported HOLDS. Raised by /code-review; the flag's own doc
+                // is widened at its declaration to say what it now covers.
+                return BuiltinResult::Delay { truncated: true };
             }
-            // unbound handled above; cross-type / non-numeric → fail
-            _ => return BuiltinResult::Failure,
         };
-        if pred(ord) {
+        // WI-879 — THE RESULT COLUMN IS READ, at 3 positional args, exactly as
+        // `builtin_arith` reads its own. It used to be IGNORED: `gt(3, 1, ?r)` answered ONE
+        // DEFINITE solution with `?r` still a free `Var` and `gt(1, 3, ?r)` answered
+        // nothing, so the pair read like a working 3-place relation while the result column
+        // meant nothing — WI-20260830-DQD5W's shape, MEASURED here on the spec op, which
+        // this ticket did not touch. It becomes reachable for a STRING pair the moment
+        // `value_ord` widens (the string 3-ary form used to fall in the silent-`Failure`
+        // arm), so leaving it would be shipping a wrong answer with the fix.
+        //
+        // At TWO args the goal stays a TEST — that is the spelling every stdlib guard and
+        // every operator desugaring writes, and `pred` is its whole content.
+        if pos_arity >= 3 {
+            let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
+            return self.finish_result_value(target, Value::Bool(verdict));
+        }
+        if verdict {
             BuiltinResult::Success
         } else {
             BuiltinResult::Failure
+        }
+    }
+
+    /// WI-879 — how to NAME an operand in a diagnostic: the LITERAL SORT it denotes, else
+    /// its head functor's short name, else the carrier label.
+    ///
+    /// [`Value::type_name`] alone is what eval's `value_compare` reports, and on the pairs
+    /// that reach [`Self::builtin_cmp`]'s no-order arms it says "Node and Node" — the
+    /// CARRIER of the operand, which is the one thing the reader already knows and cannot
+    /// act on. What they can act on is the entity they wrote (`tick`) or the sorts that
+    /// failed to match (`String` and `Int64`).
+    ///
+    /// THE LITERAL ARM IS NOT DECORATION: it is the ONLY label the `SortMismatch` case can
+    /// use, and the first draft omitted it while the doc claimed the function existed to
+    /// avoid exactly "Node and Node" — which is what that case then printed (measured by
+    /// /code-review). A rule-body literal rides as a `Value::Node` whose head is
+    /// `ViewHead::Const`, not `ViewHead::Functor`, so the functor arm never saw it.
+    ///
+    /// Kept LOCAL rather than pushed onto `Value`: a diagnostic label is not an identity,
+    /// and a shared helper spelled this way would be reached for as one.
+    fn operand_label(&self, v: &Value) -> String {
+        match v.head(self) {
+            ViewHead::Const(lit) => match lit {
+                Literal::Int(_) => "Int64",
+                Literal::BigInt(_) => "BigInt",
+                Literal::Float(_) => "Float",
+                Literal::Bool(_) => "Bool",
+                Literal::String(_) => "String",
+            }
+            .to_string(),
+            ViewHead::Functor {
+                functor: Some(f), ..
+            } => self.local_name_of(f).to_string(),
+            _ => v.type_name().to_string(),
+        }
+    }
+
+    /// WI-879 — say ONCE, per (comparison, operand-label pair), that a goal had no order to
+    /// answer with. The two causes get different text: a non-literal carrier wants ordering
+    /// dispatch, a cross-sort literal pair is ill-typed and dispatch would not help.
+    ///
+    /// TRACED, because `BuiltinResult` has no error channel and neither does `StepResult` —
+    /// the constraint `gather_extent_rows` and WI-1091's unstamped-dispatch arm state at
+    /// their own sites, and the same answer. The machine-readable half is the residual: the
+    /// goal comes back in `Solution::residual` with `definite = false`, which is what a test
+    /// asserts and what tells the two cases apart at a call site.
+    ///
+    /// DEDUPED, and that is not tidiness. The un-deduped first draft wrote **31 lines** for
+    /// a four-fact extent joined against itself (`has(?a), has(?b), gt(?a, ?b)`) — two per
+    /// candidate pair, one at the delay rotation and one at residualization — so the volume
+    /// is O(N²) in the extent, interleaved with the CLI's own output, for a fact the reader
+    /// needs once. Raised by /code-review, measured before and after: the same fixture now
+    /// writes ONE line.
+    ///
+    /// PROCESS-WIDE and thread-local, so the set is not per-query: the thing it identifies —
+    /// "this comparison has no order for this kind of operand" — is a property of the
+    /// program, not of one search, and a per-query set would restore the volume for a query
+    /// run in a loop. A `thread_local!` rather than KB state because a diagnostic's
+    /// once-ness is not part of the knowledge base, and because `builtin_cmp` holds `&mut
+    /// self` at the call.
+    fn trace_no_order(&self, cause: OrdVerdict, functor: Option<Symbol>, a: &Value, b: &Value) {
+        thread_local! {
+            static SEEN: std::cell::RefCell<HashSet<(Option<Symbol>, String, String)>> =
+                std::cell::RefCell::new(HashSet::new());
+        }
+        let (la, lb) = (self.operand_label(a), self.operand_label(b));
+        if !SEEN.with(|seen| seen.borrow_mut().insert((functor, la.clone(), lb.clone()))) {
+            return;
+        }
+        let name = functor.map_or("<comparison>", |f| self.qualified_name_of(f));
+        match cause {
+            OrdVerdict::SortMismatch => eprintln!(
+                "[wi879] `{name}` compares {la} against {lb} — two DIFFERENT literal \
+                 sorts, which have no common order, so the goal is UNDECIDED rather than \
+                 false. The typer refuses this pair wherever it can see the operand types; \
+                 it cannot when a rule variable is bound by a predicate that declares none."
+            ),
+            OrdVerdict::NoOrder => eprintln!(
+                "[wi879] `{name}` has no order for this operand pair ({la} and {lb}) — the \
+                 goal is UNDECIDED, not false. The resolver compares ordered LITERALS; a \
+                 carrier with its own comparison member needs ordering dispatch, which goal \
+                 position does not yet do (WI-20260909-SM910)."
+            ),
+            // Both ANSWERS, and both handled before the caller reaches this function. A
+            // catch-all would print the no-order text for them — announcing a missing
+            // implementation for a comparison that just succeeded — so they are named.
+            OrdVerdict::Ordered(_) | OrdVerdict::Unordered => unreachable!(
+                "trace_no_order: `{name}` had an ORDER ({la} and {lb}); `builtin_cmp` \
+                 handles both answer verdicts before it traces"
+            ),
+        }
+    }
+
+    /// WI-879 — the ORDER of two σ-walked operands, read carrier-neutrally through
+    /// [`TermView::as_literal`] so a native scalar, a hash-consed `Value::Term(Const)` and
+    /// a `Value::Node` literal occurrence all compare alike (WI-685's reason, widened to
+    /// every literal).
+    ///
+    /// THE LITERAL SET IS EVAL'S `value_compare`, and sharing it is the point: that
+    /// function answers Int / BigInt / Float / Bool / String, and the resolver answering a
+    /// SMALLER set is what made one program get opposite answers from the two engines.
+    ///
+    /// THE FLOAT ORDERING IS *NOT* EVAL'S, and the difference is deliberate. `value_compare`
+    /// uses `total_cmp` because it backs the TOTAL `Ordered.compare`, where NaN needs a
+    /// well-defined position or transitivity is lost. These four tags back the PARTIAL
+    /// surface — `PartialOrd.gt`/`lt`/`gte`/`lte` and `Float`'s own IEEE members — so a NaN
+    /// operand is [`OrdVerdict::Unordered`] and every comparison over it is false, which is
+    /// what eval's `float_gt`/`float_lt`/… and the C++ codegen both do (WI-644 / WI-645:
+    /// resolver == interpreter == codegen on Float).
+    ///
+    /// A MISMATCHED literal pair is [`OrdVerdict::SortMismatch`], NOT `Unordered` and not
+    /// `NoOrder`: eval refuses it (`TypeMismatch`), so it is an ill-typed comparison rather
+    /// than an IEEE-false one or a carrier awaiting dispatch. Splitting it out is what lets
+    /// the diagnostic name the real cause; the first draft folded it into `NoOrder` and told
+    /// the reader to reach for ordering dispatch.
+    fn value_ord(&self, a: &Value, b: &Value) -> OrdVerdict {
+        let (Some(la), Some(lb)) = (a.as_literal(self), b.as_literal(self)) else {
+            return OrdVerdict::NoOrder;
+        };
+        match (la, lb) {
+            (Literal::Int(x), Literal::Int(y)) => OrdVerdict::Ordered(x.cmp(&y)),
+            (Literal::BigInt(x), Literal::BigInt(y)) => OrdVerdict::Ordered(x.cmp(&y)),
+            (Literal::Float(x), Literal::Float(y)) => {
+                match x.into_inner().partial_cmp(&y.into_inner()) {
+                    Some(o) => OrdVerdict::Ordered(o),
+                    None => OrdVerdict::Unordered,
+                }
+            }
+            (Literal::Bool(x), Literal::Bool(y)) => OrdVerdict::Ordered(x.cmp(&y)),
+            (Literal::String(x), Literal::String(y)) => OrdVerdict::Ordered(x.cmp(&y)),
+            _ => OrdVerdict::SortMismatch,
         }
     }
 
