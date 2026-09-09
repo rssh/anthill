@@ -89,6 +89,16 @@ pub static SOURCES: &[(&str, &str)] = &[
         "anthill/prelude/option",
         include_str!("../../../stdlib/anthill/prelude/option.anthill"),
     ),
+    // Beside `option`, and after the `monad` both provide into. `Result` is the
+    // DENOTATION of the `Error` effect (proposal 027.4) — its `reflect` calls
+    // `Error.raise`, declared much further down in `effects`, which is fine:
+    // `scan_definitions` pass 1 defines every name across every file before any
+    // body is checked (WI-321). What DOES need to precede it is `monad`, which
+    // this file's `provides` dispatches into.
+    (
+        "anthill/prelude/result",
+        include_str!("../../../stdlib/anthill/prelude/result.anthill"),
+    ),
     (
         "anthill/prelude/list",
         include_str!("../../../stdlib/anthill/prelude/list.anthill"),

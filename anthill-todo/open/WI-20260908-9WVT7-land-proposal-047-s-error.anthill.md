@@ -146,3 +146,156 @@ unguarded `{Error[Boom], Rho}` callback row — which removes `Int64.div` and `S
 demonstrators; and a `{Error[Boom], Rho}` parameter ADMITS an `{Error[?]}` body, where the
 value-slot twin refuses, so an undecided payload satisfies a decided demand in row position
 only.
+
+### 2026-09-09T15:21:28Z — feedback — claude
+
+STEPS 2, 3 AND 5 DELIVERED; STEP 4 HALF. ANTHILL CAN NOW CATCH A RAISE. Measured with
+`anthill run`: `Error.reify(lambda () -> mayFail(0 - 1))` returns `err(boom("negative"))`
+and the payload destructures in anthill; the non-raising twin returns `ok(42)`.
+
+WHAT SHIPPED.
+ 2. `stdlib/anthill/prelude/result.anthill` — `sort E` (payload) / `sort T` (success, the
+    `Monad` carrier's member), `ok` / `err`, `resultPure` / `resultFlatMap` / `resultMap`,
+    `reflect`, and `provides Monad[M = Result[E = E], …]`. Placed beside `option` and
+    after the `monad` both provide into. The `Monad` provision is DRIVEN, not assumed:
+    `ok(3).map(+39) = 42`, `err(boom).map = nope`, `ok(3).flatMap(*2) = 6`,
+    `err(boom).flatMap = nope`, `reflect(ok(3)) = 3`, `reflect(err(boom))` raises.
+ 3. THE BOUNDARY. `AwaitState::ReifyBoundary` (`eval/frame.rs`) — the first LIVE state of
+    its kind, since `OperationResult` is set nowhere (TCO replaces every operation entry
+    in place). `enter_reify_boundary` suspends the dispatching frame on it and runs the
+    thunk ABOVE; normal delivery wraps `ok(v)` and cascades; `run()` catches
+    `EvalError::Raised`, unwinds to the innermost boundary AT OR ABOVE this run's floor,
+    and delivers `err(payload)` FROM it — so both exits end in the same last step, pop the
+    boundary and hand a `Result` to its parent. Keyed by SYMBOL: `ErrorLayerSymbols`
+    resolves `reify` / `ok` / `err` once at construction, beside `ReflectSymbols`, so the
+    per-dispatch test is one `Option<Symbol>` comparison.
+ 4a. `Error.reify` declared in `effects.anthill`, body-less on purpose.
+ 5. `wi_9wvt7_error_reify_test` (10 rows) + two `frame.rs` unit tests.
+
+THREE THINGS THE PROPOSAL'S SKETCH DID NOT SAY, each settled by writing it.
+ * The thunk is entered through a SHARED helper. `reify`'s argument is a callable VALUE
+   with no name bound to it, where an ordinary HOF's callback is a LOCAL. So
+   `dispatch_call_with_requirements_inner`'s two callable arms moved out to
+   `apply_callable_value`, which both callers now use — the `OpRef` half (eta spread,
+   captured dict, op-scoped slots) is not written twice. Its third arm is LOUD, and earns
+   it: at the HOF site a non-callable is unreachable (the local is pre-filtered), at a
+   `reify` argument it is not.
+ * A PLACEHOLDER frame, because entering is REPLACING. `enter_closure` /
+   `enter_operation` both TCO-rewrite the top frame, so the boundary pushes an
+   `Expr::Bottom` frame for them to rewrite. `Bottom` deliberately: it must never reduce,
+   and if some future arm ever entered by PUSHING, that surfaces as a loud `Internal`
+   rather than a boundary answering its own placeholder.
+ * THE FLOOR IS PINNED BY A UNIT TEST AND NOTHING ELSE. No anthill spelling reaches a
+   nested `run()` with a boundary beneath it: the operation that re-enters `run()` on a
+   live stack is reached from the RESOLVER, and a rule body's raise appears in no caller's
+   row, so a typed `reify` cannot wrap it. `frame.rs::the_boundary_scan_stops_at_the_floor`
+   drives `topmost_reify_boundary` directly — delete `floor` and nothing else goes red.
+   (Bounding the RAISE scan is what 027.4 owed. The SUCCESS path still rides `deliver`'s
+   pre-existing unbounded pop.)
+
+BACK-OUT, MEASURED. Disabling the dispatch arm: 8 failed, 2 passed. Every row that CALLS
+`reify` dies `OperationBodyMissing { name: "anthill.prelude.Error.reify" }`. The two that
+pass either way are `a_row_without_error_is_still_refused` (the TYPER's half — the
+discharge is in the SIGNATURE and needs no runtime) and `an_unreified_raise_still_escapes`
+(the layer did not turn every raise into a value). `a_non_raised_error_is_not_caught` fails
+under the back-out too, so it separates the boundary not from nothing but from a WIDER one:
+it reds the moment recovery accepts anything but `EvalError::Raised`.
+
+STEP 4's SECOND HALF — `KB.loaded` retype — NOT DONE, BLOCKED IN THE RUST BRIDGE, MEASURED.
+The row is what `anthill-stl/build.rs` generates `KB::loaded`'s host signature from, so
+`effects Error[LoadFailed]` makes it `Result<Box<dyn KB>, LoadFailed>` over a type the
+generated module does not contain — `emit_only` is a CLOSURE THE AUTHOR STATES (its own
+comment says exactly this, for `LayerSymbol` / `LayerClause`). Naming `LoadFailed` there
+gets one step further and hits two codegen defects: a duplicate `use crate::prelude::{List,
+String}` (E0252) and no `String` in the reflect prelude shim (E0432). Both live in the
+rust-gen import emitter. Backed out, with a note at the declaration saying so.
+CONSEQUENCE, and it is the typed `reify` being RIGHT rather than a gap: measured,
+`Error.reify(lambda () -> KB.loaded(cons(src, nil())))` is refused — "the lambda argument
+declares `Error`, which the closed row does not admit". A raiser that wants to be caught
+must say what it raises. The guardians `LoadChecker.check` rewrite waits on that codegen
+fix, not on this ticket.
+
+FOUND WHILE DRIVING, NOT IN SCOPE, NOT FILED.
+ * A HOST RAISE PUTS AN OFF-CHANNEL PAYLOAD IN A TYPED `err`. `raise_match_failed` raises
+   `Error[MatchFailed]` through the channel an operation declared as `Error[Boom]`, and
+   nothing puts that label in the row. A source `match` cannot reach it — a non-exhaustive
+   one is a LOAD error — but a GUARD-exhaustible one can: measured,
+   `match n case k | k > 0 -> k` inside a reify body returns
+   `err(match_failed(occurrence, scrutinee))` in a `Result[E = Boom]`, and the caller's
+   `case boom(w)` then fails at RUN time. The boundary is not what is wrong
+   (`Error[MatchFailed]` IS an `Error`); the upstream rule that a host raise need not
+   appear in the row it rides is. Pre-existing in kind; reify is the first thing that can
+   observe it.
+ * `interp.config_mut().depth_cap = Some(n)` AFTER construction changes the config and
+   nothing else — `with_config` sizes the `ActivationStack` once and the stack keeps its
+   own copy. Measured: a depth-cap control written that way ran to the 1,000,000-frame
+   default and took 60+ seconds to assert the same thing. Noted at the test site.
+\n
+### 2026-09-09T17:33:36Z — feedback — claude
+
+`/code-review` PASS: 15 findings, 8 FIXED HERE, 6 RECORDED IN 027.4's OPEN QUESTIONS, 1
+refuted. The two that mattered:
+
+ * A LOCAL NAMED `reify` CAPTURED A QUALIFIED `Error.reify(...)` CALL — a soundness hole,
+   not a wrong answer. `dispatch_call_with_requirements_inner`'s local lookup matches by
+   SHORT NAME, and the interception sat BELOW it, so a parameter called `reify` holding
+   anything callable won. The DISCHARGE had already been granted on the resolved
+   signature, so the raise then escaped an operation the typer certified effect-free.
+   The WI-455 name-capture class at a second site; fixed by hoisting the test above the
+   lookup, and DRIVEN — `a_local_named_reify_does_not_capture_the_boundary` reads
+   `ok` instead of `err` when the hoist is backed out (measured).
+ * `effects.anthill` NOW IMPORTS `Result`, AND SCALAND KEEPS ITS OWN PRELUDE LIST.
+   Measured against the compiled scaland: working tree `LOAD-ERRORS: 1 —
+   effects.anthill:130:38: unresolved name 'Result'`, control at HEAD `LOAD-ERRORS: 0`.
+   One line in `EmbeddedStdlib.scala`. (The "scaland has no typer, ignore the mirror"
+   rule is about TYPER work; a stdlib file list is not that.) It cost a second scaland
+   line too, found by RUNNING the suite rather than by the review: `BootstrapTest`
+   compiles `effects.anthill`'s emitted Scala against a HAND-LISTED closure, and
+   `Error.reify` now names `Result` in its return type, so `Error.scala:5: type Result is
+   not a member of anthill.prelude`. Two tests gained `preludeClosure("monad", "result")`
+   — which is what that hand-listed set is FOR: a signature that reaches a new file is a
+   line to add, not a silent shrink. `BootstrapTest` after: 111 total, 109 passed, 2
+   failed, BOTH the pre-existing `field.anthill` refusal that is not in `expectedRefusals`
+   (untouched by this change, committed by someone else earlier today, and the review
+   measured it reproducing on a HEAD control). `ParserIntegrationTest` re-run for the
+   13 no-load-error assertions the import would otherwise have broken.
+
+ALSO FIXED: the `Error` layer is all-or-nothing (`Option<ErrorLayer>` rather than three
+independent `Option<Symbol>`s — a half-resolved layer would have let the thunk RUN before
+anything checked, and the check discarded the `Raised` payload on the way out);
+`enter_reify_boundary` now decides EVERYTHING that can refuse the call before installing
+anything, so its own comment is true (`Error.reify(42)` loads — a row-polymorphic arrow
+slot does not refuse a non-callable — and used to reach the loud arm with the boundary
+already marked); it uses the existing `suspend_and_push` / `bottom_node` instead of
+hand-rolling them; `unwind_to_boundary` is `pub(crate)`, its precondition no longer being
+a `debug_assert` on a public surface; the profiler counts a boundary entry; the dropped
+`requirements` / `type_args` are documented as a DISCARD rather than left silent; and
+`resultFlatMap` / `resultPure` are now DRIVEN (only `resultMap` was).
+
+TWO DOC CLAIMS OF MINE WERE FALSE AND ARE CORRECTED. `result.anthill`'s header said the
+partially-applied carrier `Result[E = E]` "is what makes map/flatMap short-circuit" —
+measured, a `provides` carrier's written type arguments are INERT (a bare `Result`
+dispatches identically, and even `MyRes[E = Boom]` admits a receiver at another payload);
+the short-circuit is in the `match` bodies. And 027.4 said "a non-exhaustive match is a
+LOAD error" — true for an `enum`, FALSE for a `sort`, which is a second door into the
+off-channel-payload question below.
+
+RECORDED, NOT FIXED — all in 027.4's open questions with their measurements:
+ * THE BOUNDARY CATCHES ON THE CARRIER, NOT THE PAYLOAD'S SORT. The sharpest case is not
+   the host-raise one already noted: a body declaring `{Error[Boom], Error[DivisionByZero]}`
+   reified at `T1 = Boom` has the second label left in the CALLER's row BY THE TYPER, and
+   the boundary swallows it anyway. Narrowing needs `T1` at run time and a rule for a
+   payload that matches no boundary.
+ * `Error.reify` WORKS ONLY FROM AN OPERATION BODY. `rule direct(?r) :- Error.reify(…, ?r)`
+   answers NO SOLUTIONS. CONTROL MEASURED: an ordinary `operation nobody(n) -> Int64` with
+   no implementation answers NO SOLUTIONS from a rule body too — so this is WI-20260909-M8QWJ's
+   class, not a new hole. Not a two-line addition either: that entry pushes onto a LIVE
+   stack and `deliver` has no per-run floor. Noted at the declaration in `effects.anthill`.
+ * A USER-DECLARED effect layer's `reify` loads clean and traps at run time — the boundary
+   is keyed to one hard-coded name. Same class; and the same question 027.2 will ask when
+   `Branch.reify` wants a second field.
+ * `Result` has no host `TypeMapping` in any realization profile, where `Option` has one in
+   every profile. Codegen is out of scope by design, but WI-891's cpp degrade `static_assert`-fails.
+ * WHICH DELIMITER WINS — a registered `Error` handler is consulted BEFORE the default, so
+   it is dynamically outermost and a custom one can void a declared discharge. Invisible
+   with the stock handler (it Throws), and `interp_for` registers none.

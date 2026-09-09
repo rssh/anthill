@@ -3091,7 +3091,13 @@ class BootstrapTest extends munit.FunSuite:
     // — the four WI-1080 tests and the refusal-set list. The other 86 pass both ways by
     // design; they pin rules about what a single declaration emits, which is the same
     // question under either scope.
-    ScalaCompile.assertCompiles("effects.anthill's surviving nine", out.files)
+    // `Result` and `Monad` ride along because `Error.reify` NAMES `Result` in its
+    // return type (proposal 027.4 — the boundary hands back `Result[E = T1, T = X]`),
+    // and `Result` in turn provides `Monad`. The closure is a hand-listed set on
+    // purpose, so a signature that reaches a new file is a line to add here, not a
+    // silent shrink of what is being compiled.
+    ScalaCompile.assertCompiles("effects.anthill's surviving nine",
+      out.files ++ preludeClosure("monad", "result"))
   }
 
   test("WI-1080 CORPUS: `MutableCollection`'s Modifiable supertrait names an emitted type") {
@@ -3113,9 +3119,10 @@ class BootstrapTest extends munit.FunSuite:
     // FAILS WHEN BACKED OUT: `effects` is empty, `Modifiable.scala` is absent, and the
     // compile below reports `type Modifiable is not a member of anthill.prelude` — the
     // exact error on record at the ladder. The first assertion fails first.
+    // `monad` / `result`: see the test above — `Error.reify` names `Result` (027.4).
     ScalaCompile.assertCompiles("mutable_collection over a partially refused effects.anthill",
       effects ++ consumer ++ preludeClosure("iterable", "stream", "combinators",
-        "option", "pair", "list"))
+        "option", "pair", "list", "monad", "result"))
   }
 
   test("WI-1080: a same-file consumer of a refused type breaks at the CLOSURE COMPILE") {

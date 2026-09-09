@@ -303,6 +303,42 @@ pub(crate) enum FrameReqFailure {
     NoDictionarySort,
 }
 
+/// Proposal 027.4 — the `Error` monad layer's three symbols: the `reify`
+/// operation the dispatch arms intercept, and the two `Result` constructors its
+/// boundary delivers.
+///
+/// Resolved once at construction, like [`ReflectSymbols`], for both of the
+/// reasons that pattern exists: an operation's meaning is its `Symbol` and never
+/// its name (WI-897), and the dispatch test sits on the per-call path, where it
+/// must cost one comparison rather than a qualified-name lookup.
+///
+/// ALL THREE OR NONE — the whole struct rides an `Option`, and the fields inside
+/// it do not. A half-resolved layer would be a state where `reify` dispatches,
+/// the thunk RUNS (console output, cell writes, KB layers), and only at delivery
+/// does a missing `Result` constructor surface — discarding the `Raised` payload
+/// on the way out. That is the "prefer a loud error over a silent skip" rule read
+/// backwards: the check would fire long after the point of no return. Resolved
+/// together, the boundary is either armed or not present, and the dispatch test
+/// is the whole guard.
+pub(crate) struct ErrorLayer {
+    pub reify: Symbol,
+    pub result_ok: Symbol,
+    pub result_err: Symbol,
+}
+
+impl ErrorLayer {
+    /// `None` for a KB without the prelude — such a program declares no `reify`
+    /// to call, so the boundary is simply absent rather than broken.
+    fn resolve(kb: &KnowledgeBase) -> Option<Self> {
+        let r = |qn: &str| kb.try_resolve_symbol(qn);
+        Some(Self {
+            reify: r("anthill.prelude.Error.reify")?,
+            result_ok: r("anthill.prelude.Result.ok")?,
+            result_err: r("anthill.prelude.Result.err")?,
+        })
+    }
+}
+
 /// Top-level interpreter state. Owns the KB so builtins and effect handlers
 /// can mutate it; host code takes it back via `Interpreter::into_kb()` when
 /// evaluation is done.
@@ -311,6 +347,7 @@ pub struct Interpreter {
     pub(crate) stack: ActivationStack,
     pub(crate) builtins: HashMap<Symbol, BuiltinFn>,
     pub(crate) reflect: ReflectSymbols,
+    pub(crate) error_layer: Option<ErrorLayer>,
     pub(crate) fields: FieldSymbols,
     pub(crate) closures: ClosureArenaRef,
     pub(crate) streams: StreamArenaRef,
@@ -383,6 +420,7 @@ impl Interpreter {
 
     pub fn with_config(mut kb: KnowledgeBase, config: EvalConfig) -> Self {
         let reflect = ReflectSymbols::resolve(&kb);
+        let error_layer = ErrorLayer::resolve(&kb);
         let fields = FieldSymbols::resolve(&mut kb);
         let stack = match config.depth_cap {
             Some(cap) => ActivationStack::with_cap(cap),
@@ -393,6 +431,7 @@ impl Interpreter {
             stack,
             builtins: HashMap::new(),
             reflect,
+            error_layer,
             fields,
             closures: ClosureArenaRef::new(),
             streams: StreamArenaRef::new(),

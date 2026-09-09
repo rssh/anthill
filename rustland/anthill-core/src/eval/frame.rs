@@ -179,6 +179,27 @@ pub enum AwaitState {
     /// value is the apply's result — cascade it up without re-evaluating
     /// anything in this frame.
     OperationResult,
+    /// Proposal 027.4 — an `Error.reify` BOUNDARY: the frame that dispatched
+    /// `reify` is suspended here while the thunk runs in the frame above, and
+    /// this frame is the marker a raise unwinds to. 047 §4: *"`reset` is a
+    /// frame (a boundary marker on the stack)"*.
+    ///
+    /// Its own state rather than [`AwaitState::OperationResult`] — which
+    /// nothing sets, TCO having replaced every operation entry in place — for
+    /// two reasons that are the whole of the mechanism:
+    ///
+    ///  * `reify` is the ONE dispatch that must NOT be TCO'd. The extra frame
+    ///    is not overhead to be dropped; it is what
+    ///    [`ActivationStack::topmost_reify_boundary`] finds.
+    ///  * The two exits differ. A normal delivery wraps the thunk's value as
+    ///    `ok(v)`; the raise path truncates to this frame and delivers
+    ///    `err(payload)`. Both then pop it and hand the `Result` to its parent,
+    ///    so the boundary is answered exactly once either way.
+    ///
+    /// Only `EvalError::Raised` is caught here. `Internal`, `StepsExhausted`,
+    /// `UnhandledEffect` and the rest pass through: a reify boundary handles the
+    /// `Error` EFFECT, not interpreter faults.
+    ReifyBoundary,
 }
 
 /// A single activation.
@@ -305,6 +326,47 @@ impl ActivationStack {
     pub fn set_cap(&mut self, cap: usize) {
         self.depth_cap = cap;
     }
+
+    /// Proposal 027.4 — index of the innermost [`AwaitState::ReifyBoundary`] at
+    /// or above `floor`, or `None` if this run owns no boundary.
+    ///
+    /// `floor` is NOT decoration. `run()` drains until the stack is EMPTY and has
+    /// no per-run base, so a builtin's `interp.call` pushes its frames on top of
+    /// its caller's; a boundary BELOW the floor belongs to an outer `run()`, and
+    /// answering it from an inner one would hand that outer frame's `Result` back
+    /// as the inner call's value. (The wider defect — `deliver` popping past the
+    /// base — is pre-existing; bounding this scan is what 027.4 owes.)
+    pub fn topmost_reify_boundary(&self, floor: usize) -> Option<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .skip(floor)
+            .rev()
+            .find(|(_, f)| matches!(f.awaiting, Some(AwaitState::ReifyBoundary)))
+            .map(|(i, _)| i)
+    }
+
+    /// Discard every frame above `idx` and leave the boundary there no longer
+    /// awaiting — the raise it was waiting for has arrived, so the caller
+    /// delivers `err(payload)` FROM this frame, which pops it and cascades to
+    /// its parent exactly as the success path does.
+    ///
+    /// `idx` must come from [`Self::topmost_reify_boundary`] — hence `pub(crate)`
+    /// where the rest of this type is `pub`. `ActivationStack` is re-exported, so a
+    /// `pub` spelling would put a precondition nothing outside the crate can honour
+    /// on the public surface, guarded only by a `debug_assert` that is absent from
+    /// the shipped binary: out of range, the `truncate` is a no-op and the next line
+    /// is a raw index panic; in range but not a boundary, it silently clears an
+    /// unrelated frame's `awaiting` and surfaces one delivery later as
+    /// "deliver: parent frame had no awaiting state".
+    pub(crate) fn unwind_to_boundary(&mut self, idx: usize) {
+        debug_assert!(matches!(
+            self.frames.get(idx).map(|f| &f.awaiting),
+            Some(Some(AwaitState::ReifyBoundary))
+        ));
+        self.frames.truncate(idx + 1);
+        self.frames[idx].awaiting = None;
+    }
 }
 
 impl Default for ActivationStack {
@@ -398,5 +460,65 @@ mod tests {
             Some(AwaitState::MatchDispatch { branches, .. }) => assert_eq!(branches.len(), 1),
             other => panic!("expected a cloned MatchDispatch frame, got {other:?}"),
         }
+    }
+
+    /// Proposal 027.4 — THE FLOOR, driven directly. `run()` has no per-run base, so a
+    /// nested `run()` (a builtin's `interp.call`, the SLD bridge's `bridge_op_to_eval`)
+    /// pushes its frames on top of its caller's; the scan must stop at the frames THIS
+    /// run owns, or an inner run answers an outer run's boundary and truncates frames
+    /// the host still holds.
+    ///
+    /// Driven here rather than through a program because no anthill spelling reaches
+    /// that shape yet: the operation that re-enters `run()` on a live stack is reached
+    /// from the RESOLVER, and a rule body's raise appears in no caller's effect row, so
+    /// a typed `reify` cannot be wrapped around it. So this test is the ONLY thing in
+    /// the tree that pins the bound: delete `floor` and nothing else goes red, which is
+    /// precisely why it is written.
+    #[test]
+    fn the_boundary_scan_stops_at_the_floor() {
+        let boundary = || {
+            let mut f = dummy_frame();
+            f.awaiting = Some(AwaitState::ReifyBoundary);
+            f
+        };
+        let mut s = ActivationStack::new();
+        s.push(boundary()).unwrap(); // 0 — an OUTER run's boundary
+        s.push(dummy_frame()).unwrap(); // 1 — the outer run's own frame
+        s.push(boundary()).unwrap(); // 2 — this run's boundary
+        s.push(dummy_frame()).unwrap(); // 3 — the thunk
+
+        // A run whose floor is 2 sees only its own.
+        assert_eq!(s.topmost_reify_boundary(2), Some(2));
+        // A run entered ABOVE both must not reach down for one.
+        assert_eq!(
+            s.topmost_reify_boundary(3),
+            None,
+            "a nested run must not answer its caller's boundary"
+        );
+        // The outer run owns both, and takes the INNERMOST.
+        assert_eq!(s.topmost_reify_boundary(0), Some(2));
+    }
+
+    /// The unwind: everything above the boundary is discarded and the boundary itself
+    /// stops awaiting, so the caller delivers `err(payload)` FROM it — the same last
+    /// step the success path takes.
+    #[test]
+    fn unwinding_leaves_the_boundary_on_top_and_answered() {
+        let mut s = ActivationStack::new();
+        s.push(dummy_frame()).unwrap();
+        let mut b = dummy_frame();
+        b.awaiting = Some(AwaitState::ReifyBoundary);
+        s.push(b).unwrap();
+        s.push(dummy_frame()).unwrap();
+        s.push(dummy_frame()).unwrap();
+
+        let idx = s.topmost_reify_boundary(0).expect("the boundary is there");
+        s.unwind_to_boundary(idx);
+
+        assert_eq!(s.depth(), 2, "every frame above the boundary is discarded");
+        assert!(
+            s.top().expect("the boundary is now the top").awaiting.is_none(),
+            "the boundary is answered, so `deliver` may pop it to its parent"
+        );
     }
 }

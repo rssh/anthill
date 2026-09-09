@@ -78,6 +78,12 @@ impl Interpreter {
         // tick, so a no-reduction dispatch/deliver cascade (a self-redispatching
         // spec op) is bounded too, not just `step()`-driven loops.
         let mut pending: Option<Value> = None;
+        // Proposal 027.4 — THE FLOOR of this run: the index of the bottom frame
+        // it owns. A `reify` boundary below it belongs to an outer `run()` (a
+        // builtin's `interp.call` pushes onto the live stack), and answering that
+        // one from here would hand an outer frame's `Result` back as this call's
+        // value. See `ActivationStack::topmost_reify_boundary`.
+        let floor = self.stack.depth().saturating_sub(1);
         loop {
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
@@ -90,8 +96,8 @@ impl Interpreter {
             self.step_count = self.step_count.saturating_add(1);
             // WI-SPGBP — discard any scoped-KB layer whose last holder has gone.
             self.sweep_layers();
-            let outcome = match pending.take() {
-                Some(v) => self.deliver(v)?,
+            let stepped = match pending.take() {
+                Some(v) => self.deliver(v),
                 None => {
                     // Profiling attributes a reduction to the executing op —
                     // only `step()` iterations are reductions, deliveries aren't.
@@ -100,7 +106,18 @@ impl Interpreter {
                             OP_PROF.with(|p| p.borrow_mut().entry(op).or_insert((0, 0)).1 += 1);
                         }
                     }
-                    self.step()?
+                    self.step()
+                }
+            };
+            let outcome = match stepped {
+                Ok(o) => o,
+                // Proposal 027.4 — a raise looks for the innermost `Error.reify`
+                // boundary this run owns. Found, the stack unwinds to it and
+                // `err(payload)` is delivered FROM it; not found — or not a
+                // `Raised` at all — the error propagates untouched.
+                Err(e) => {
+                    pending = Some(self.recover_at_reify_boundary(e, floor)?);
+                    continue;
                 }
             };
             match outcome {
@@ -2289,6 +2306,21 @@ impl Interpreter {
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
+        // 0. Proposal 027.4 — THE REIFY BOUNDARY, ABOVE the lookup below, because
+        //    that lookup matches by SHORT NAME (`find_local`). Without this a local
+        //    or parameter merely NAMED `reify` and holding a callable captures a
+        //    qualified `Error.reify(...)` call and the boundary is never installed
+        //    — the WI-455 name-capture class, and here it is a soundness hole
+        //    rather than a wrong answer: MEASURED, the raise then escapes an
+        //    operation the typer certified effect-free, because the DISCHARGE was
+        //    granted on the resolved signature while the CALL went elsewhere.
+        //    (`dispatch_resolved_operation` keeps its own copy of this test — that
+        //    is the arm an `OpRef` denoting `reify` arrives at, which never passes
+        //    through here.)
+        if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
+            return self.enter_reify_boundary(arg_values);
+        }
+
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
         //    operation reference. Clone out the callable value (a handle/Symbol
         //    copy) so the `self.stack` borrow is released before dispatch.
@@ -2312,8 +2344,33 @@ impl Interpreter {
             Some(v @ Value::Node(_)) => Some(self.closure_of_applied_lambda_node(&v)),
             other => other,
         };
-        match local_callable {
-            Some(Value::Closure(handle)) => {
+        if let Some(callable) = local_callable {
+            return self.apply_callable_value(callable, arg_values, requirements, type_args);
+        }
+
+        self.dispatch_resolved_operation(target, arg_values, requirements, type_args)
+    }
+
+    /// Apply a CALLABLE VALUE — a closure or an `OpRef` — to `args`.
+    ///
+    /// Two callers, and they reach a callable by different routes: a name that
+    /// a LOCAL binds to one ([`Self::dispatch_call_with_requirements_inner`], an
+    /// ordinary HOF's `f(x)`), and an ARGUMENT that is one
+    /// ([`Self::enter_reify_boundary`], where the thunk arrives as a value and
+    /// no name binds it). Shared so the `OpRef` half — eta spread, captured
+    /// dictionary, op-scoped slots — is not written twice and cannot drift.
+    ///
+    /// Both arms ENTER A FRAME by replacing the top one (TCO), so the caller
+    /// must have made the frame it wants replaced the top of the stack.
+    fn apply_callable_value(
+        &mut self,
+        callable: Value,
+        args: Vec<Value>,
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+        type_args: FrameTypeArgs,
+    ) -> Result<StepOutcome, EvalError> {
+        match callable {
+            Value::Closure(handle) => {
                 // Closures override apply.requirements with their own
                 // (the HO-call exception). The caller's `requirements`
                 // here are discarded — see closure invocation in the design.
@@ -2323,20 +2380,20 @@ impl Interpreter {
                 // `docs/design/operation-call-model.md` §"Closures".
                 drop(requirements);
                 drop(type_args);
-                return self.enter_closure(handle, arg_values);
+                self.enter_closure(handle, args)
             }
-            Some(Value::OpRef {
+            Value::OpRef {
                 op,
                 dict,
                 named,
                 spread_labels,
                 op_reqs,
-            }) => {
+            } => {
                 // WI-275: applying an eta'd operation reference dispatches to the
                 // operation itself, spreading a single tuple argument across its
                 // parameters (`cmp((x, y))` ⇒ `op(x, y)`) — the runtime mirror of
                 // the typer's `Function[(A, B), R]` ⇒ `op(a, b)` eta convention.
-                let spread = self.spread_eta_args(op, arg_values, spread_labels.as_deref())?;
+                let spread = self.spread_eta_args(op, args, spread_labels.as_deref())?;
                 // WI-420: a `requires`-carrying op captured its dispatching dict
                 // at mint (evaluated in the eta-site frame). Install THAT into
                 // the callee frame — not the caller's (empty / wrong-scope)
@@ -2378,12 +2435,18 @@ impl Interpreter {
                 // to the one diagnostic that locates a runaway loop. The `_inner`
                 // tail needs no such call — the wrapper already noted its target.
                 self.note_dispatch(op);
-                return self.dispatch_resolved_operation(op, spread, requirements, type_args);
+                self.dispatch_resolved_operation(op, spread, requirements, type_args)
             }
-            _ => {}
+            // LOUD, not a fall-through. `dispatch_call_with_requirements_inner`
+            // pre-filters its local to the two callable carriers, so this is
+            // unreachable from there; `enter_reify_boundary` hands over an
+            // ARGUMENT, where a non-callable is a real (if typer-refused)
+            // possibility and must say so rather than evaluate to nothing.
+            other => Err(EvalError::TypeMismatch {
+                expected: "a callable value (a lambda or an operation reference)",
+                got: other.type_name().to_string(),
+            }),
         }
-
-        self.dispatch_resolved_operation(target, arg_values, requirements, type_args)
     }
 
     /// Dispatch to an operation Symbol that is already RESOLVED — one no local
@@ -2404,6 +2467,21 @@ impl Interpreter {
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
         type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
+        // 1b. Proposal 027.4 — THE REIFY BOUNDARY, ahead of every other route
+        // because `Error.reify` is none of them: it has no body (the prelude
+        // declares it and stops) and it cannot be a builtin, `BuiltinFn` being
+        // `Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>` — it
+        // returns a VALUE and has no way to enter a closure. Re-entering `run()`
+        // from a builtin is what 047 §4 rejects, and is unsafe here besides
+        // (`deliver` pops until the stack is EMPTY, with no per-run base).
+        //
+        // Keyed by SYMBOL, resolved once at construction (WI-897: an operation's
+        // meaning is its symbol, never its name), so this costs one
+        // `Option<Symbol>` comparison per dispatch.
+        if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
+            return self.enter_reify_boundary(arg_values);
+        }
+
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
             let result = if self.profiling {
@@ -3258,6 +3336,135 @@ impl Interpreter {
         Ok(StepOutcome::Continue)
     }
 
+    /// Proposal 027.4 — enter an `Error.reify` boundary: run `body` with a marker
+    /// beneath it that a raise unwinds to.
+    ///
+    /// THE FRAME IS THE MECHANISM (047 §4, *"`reset` is a frame"*). The frame on
+    /// top here is the one that collected this call's arguments, and it has
+    /// nothing left to reduce — which is exactly why [`Self::enter_operation`]
+    /// REPLACES it (TCO). `reify` is the one dispatch that must not: the frame is
+    /// suspended on [`AwaitState::ReifyBoundary`] instead, and the thunk runs
+    /// ABOVE it, so `run()` has something to find. What that costs is one ordinary
+    /// suspension — [`Self::suspend_and_push`], the same call five other await
+    /// states make — and no more: no activation-stack snapshot and no
+    /// continuation, because `Error` is 047 §5's degenerate fragment, abort or
+    /// return, never resume.
+    ///
+    /// The two exits meet again immediately. A normal delivery wraps the value as
+    /// `ok(v)` ([`Self::deliver`]'s `ReifyBoundary` arm); a raise truncates to
+    /// this frame and delivers `err(payload)` ([`Self::recover_at_reify_boundary`]).
+    /// Both then pop the boundary and hand a `Result` to its parent.
+    ///
+    /// WHAT IS DELIBERATELY DROPPED: the call's `requirements` and `type_args`.
+    /// The typer DOES write all three of `reify[Rho, X, T1]` into the type-arg
+    /// channel, so this is a discard and not an absence — but the channel is keyed
+    /// by `Error.reify`'s own op-scoped symbols, and the thunk is a separate
+    /// operation with its own, so forwarding it would install the wrong
+    /// parameters. Said here because it stops being harmless the day `reify` gains
+    /// a `requires`, or the day the boundary wants `T1` (see 027.4's open question
+    /// about a raise whose payload is not of the reified type).
+    fn enter_reify_boundary(&mut self, arg_values: Vec<Value>) -> Result<StepOutcome, EvalError> {
+        // EVERYTHING THAT CAN REFUSE THIS CALL RUNS BEFORE ANYTHING IS INSTALLED,
+        // so a bad call is a plain error over an untouched stack. Both refusals
+        // are reachable from source: a row-polymorphic arrow slot does not refuse
+        // a non-callable argument at load, so `Error.reify(42)` reaches here.
+        let [body] = arg_values.as_slice() else {
+            return Err(EvalError::ArityMismatch {
+                op: "Error.reify",
+                expected: 1,
+                got: arg_values.len(),
+            });
+        };
+        // WI-20260903-FC2X4 — a lambda the RESOLVER proved rides on the
+        // occurrence carrier; it becomes a closure where it is applied, as it
+        // does for an ordinary HOF argument.
+        let body = self.closure_of_applied_lambda_node(body);
+        if !matches!(body, Value::Closure(_) | Value::OpRef { .. }) {
+            return Err(EvalError::TypeMismatch {
+                expected: "a callable value (a lambda or an operation reference)",
+                got: body.type_name().to_string(),
+            });
+        }
+        // The profiler counts this the way `enter_operation` counts an ordinary
+        // entry; without it `Error.reify` appears in neither `ANTHILL_PROFILE`
+        // table, and the boundary and thunk frames carry the PARENT's `op`, so
+        // their reductions are attributed to the enclosing operation and the one
+        // tool for locating a boundary's cost cannot see it.
+        if self.profiling {
+            if let Some(layer) = self.error_layer.as_ref() {
+                let sym = layer.reify;
+                OP_PROF.with(|p| p.borrow_mut().entry(sym).or_insert((0, 0)).0 += 1);
+            }
+        }
+        // The pushed frame is a PLACEHOLDER the entry below REPLACES in place —
+        // both `enter_closure` and `enter_operation` rewrite the top frame — so
+        // the thunk's body ends up one frame above the boundary. `Expr::Bottom`
+        // because it must never reduce: if a future callable arm ever entered a
+        // frame by PUSHING instead of replacing, that surfaces as a loud
+        // `Internal` rather than as a boundary answering its own placeholder.
+        self.suspend_and_push(
+            AwaitState::ReifyBoundary,
+            crate::kb::node_occurrence::bottom_node(),
+        )?;
+        self.apply_callable_value(body, Vec::new(), SmallVec::new(), SmallVec::new())
+    }
+
+    /// Proposal 027.4 — build one arm of the `Result` a boundary delivers.
+    ///
+    /// Through [`Self::finish_constructor`], the same producer a source-written
+    /// `ok(x)` goes through, because an entity's SHAPE IS ITS IDENTITY
+    /// (WI-20260827-T2470): the positional→named desugar and the declared-field
+    /// canonicalization are what let `case ok(v)` destructure this value and what
+    /// make it hash-cons and discrim-match as the one the constructor syntax
+    /// builds. Rebuilding the `Value::Entity` here would be a second copy of that
+    /// rule, free to drift from it.
+    fn build_result_arm(&mut self, ctor: Symbol, v: Value) -> Result<Value, EvalError> {
+        match self.finish_constructor(ctor, false, vec![v], Vec::new())? {
+            StepOutcome::Deliver(value) => Ok(value),
+            _ => Err(EvalError::Internal(
+                "finish_constructor did not deliver a value for a Result arm".into(),
+            )),
+        }
+    }
+
+    /// Proposal 027.4 — the raise half of the boundary: catch `err` at the
+    /// innermost `reify` this `run()` owns, or hand the error back untouched.
+    ///
+    /// ONLY [`EvalError::Raised`] is caught. `Internal`, `StepsExhausted`,
+    /// `UnhandledEffect`, `UnsupportedHandlerAction` and the rest propagate — a
+    /// reify boundary handles the `Error` EFFECT, not interpreter faults.
+    ///
+    /// It catches on the error's CARRIER and not on the payload's SORT, which is
+    /// wider than the type says and is 027.4's open question, recorded there: a
+    /// body declaring `{Error[Boom], Error[DivisionByZero]}` reified at
+    /// `T1 = Boom` has the second label left in the CALLER's row by the typer, yet
+    /// this catches it too. Narrowing needs `T1` at run time and a rule for a
+    /// payload that matches no boundary; both are design, not a line.
+    ///
+    /// On success the boundary frame is left on TOP and no longer awaiting, so
+    /// the caller delivers the returned `err(payload)` FROM it: `deliver` pops
+    /// the boundary and cascades to its parent, which is the same last step the
+    /// success path takes.
+    fn recover_at_reify_boundary(
+        &mut self,
+        e: EvalError,
+        floor: usize,
+    ) -> Result<Value, EvalError> {
+        let EvalError::Raised { payload } = &e else {
+            return Err(e);
+        };
+        let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {
+            return Err(e);
+        };
+        let Some(idx) = self.stack.topmost_reify_boundary(floor) else {
+            return Err(e);
+        };
+        let payload = payload.clone();
+        let caught = self.build_result_arm(err_ctor, payload)?;
+        self.stack.unwind_to_boundary(idx);
+        Ok(caught)
+    }
+
     /// WI-20260907-0QV5A — the ARM SCAN of a `match`, shared by the two states
     /// that enter it: [`AwaitState::MatchDispatch`], when the scrutinee has just
     /// been computed, and [`AwaitState::MatchGuard`], when a guarded arm's guard
@@ -3347,7 +3554,7 @@ impl Interpreter {
     /// computation if the stack empties). Loops internally to cascade
     /// through `OperationResult` pass-throughs and through builtin
     /// dispatches that themselves produce values.
-    fn deliver(&mut self, v: Value) -> Result<StepOutcome, EvalError> {
+    fn deliver(&mut self, mut v: Value) -> Result<StepOutcome, EvalError> {
         loop {
             self.stack.pop();
             let Some(top) = self.stack.top_mut() else {
@@ -3637,6 +3844,26 @@ impl Interpreter {
                     // Body produced a value — that's this apply's result.
                     // Cascade: loop again to pop this frame and deliver `v`
                     // further.
+                    continue;
+                }
+                // Proposal 027.4 — the thunk returned WITHOUT raising, so the
+                // boundary's value is `ok(v)`. Then cascade exactly as
+                // `OperationResult` does: pop the boundary and hand the `Result`
+                // to its parent. The raise path
+                // ([`Self::recover_at_reify_boundary`]) rejoins at that same
+                // step with `err(payload)`, so the boundary is answered once and
+                // in one shape either way.
+                AwaitState::ReifyBoundary => {
+                    // The layer is all-or-nothing and `reify` could not have been
+                    // dispatched without it, so this frame cannot exist without an
+                    // `ok`. Loud rather than assumed, per the house rule.
+                    let ok_ctor = self.error_layer.as_ref().map(|l| l.result_ok).ok_or_else(|| {
+                        EvalError::Internal(
+                            "a reify boundary is on the stack but the Error layer is not resolved"
+                                .into(),
+                        )
+                    })?;
+                    v = self.build_result_arm(ok_ctor, v)?;
                     continue;
                 }
             }

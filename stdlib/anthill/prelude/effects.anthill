@@ -120,10 +120,47 @@ namespace anthill.prelude
     operation set(target: T, value: V) -> Unit effects Modify[target]
   end
 
+  -- Error[T]: failure carrying a payload of type T, and the boundary that
+  -- catches it. `raise` and `reify` are Filinski's pair at `M = Result`
+  -- (proposal 047 §3, 027.4): `raise(x)` REFLECTS `err(x)` into direct-style
+  -- code, `reify` REIFIES a computation back into a `Result`. `Result.reflect`
+  -- closes the loop the other way, which is what makes this a monad LAYER
+  -- rather than a try/catch — the caught value is ordinary data.
   sort Error
-    import anthill.prelude.{Nothing}
+    import anthill.prelude.{Nothing, Result}
     sort T = ?
     operation raise(error: T) -> Nothing effects Error[T]
+
+    -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
+    -- `err(payload)`, a normal return becomes `ok(value)`.
+    --
+    -- `Error[T1]` IN THE PARAMETER ROW IS THE DISCHARGE, not decoration. A
+    -- handler's whole type is "the label present on the body side, absent from
+    -- the result" (WI-329) — there is no `handle` keyword and no per-effect
+    -- typer rule, so deleting the label would let `Rho` absorb it and the effect
+    -- would escape to the caller. It is also the only occurrence that names the
+    -- payload, so `T1` — and hence `Result[E = T1]` — comes from nowhere else.
+    --
+    -- `T1`, an operation parameter, NOT the sort's `T`: the payload belongs to
+    -- this call and is inferred from the body's row, so a caller writes nothing.
+    -- (Naming it `T` would shadow the sort's and give `Error.reify[T = …]` two
+    -- targets — proposal 058 §4.2 rule 1.)
+    --
+    -- Body-less on purpose: the boundary is a FRAME, and the interpreter
+    -- installs it by symbol (`Interpreter::enter_reify_boundary`). It cannot be
+    -- a builtin — a builtin returns a value and cannot enter a closure.
+    --
+    -- CALL IT FROM AN OPERATION BODY. A rule body's `Error.reify(…, ?r)` answers
+    -- NO SOLUTIONS — the host-entry dispatch face has no boundary — which is the
+    -- same silence any unimplemented operation gets there (WI-20260909-M8QWJ),
+    -- not a rule about reify. A rule that calls a bodied operation which reifies
+    -- works: `rule r(?x) :- caught(?x)` answers.
+    --
+    -- The catch is on the RAISE, not on the payload's sort: a body declaring two
+    -- `Error` labels reified at one of them catches both. 027.4's open questions
+    -- carry the measurement.
+    operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
+      effects {Rho}
   end
 
   sort Suspension

@@ -46,6 +46,12 @@ object EmbeddedStdlib:
     // its position, but it precedes option for readability.
     "anthill.prelude.monad",
     "anthill.prelude.option",
+    // 027.4: `Result` is the `Error` effect's denotation, and `effects.anthill`
+    // IMPORTS it — so without this line every scaland stdlib load reports
+    // `unresolved name 'Result' in scope 'anthill.prelude'` (measured: 1 load
+    // error, BootstrapTest red at `StdlibFixture.kbWith`). Beside `option` and
+    // after the `monad` both provide into, matching the rust list's order.
+    "anthill.prelude.result",
     "anthill.prelude.pair",
     "anthill.prelude.function",
     // WI-20260824-VT8CF: `Divisible` / `EuclideanDomain` — the `/` and `%` tower.

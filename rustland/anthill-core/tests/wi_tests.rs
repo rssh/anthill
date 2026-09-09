@@ -350,6 +350,9 @@ mod wi325_missing_requires_test;
 #[path = "include/wi_9wvt7_reify_typing_test.rs"]
 mod wi_9wvt7_reify_typing_test;
 
+#[path = "include/wi_9wvt7_error_reify_test.rs"]
+mod wi_9wvt7_error_reify_test;
+
 #[path = "include/wi642_rule_body_requires_test.rs"]
 mod wi642_rule_body_requires_test;
 

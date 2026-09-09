@@ -7317,7 +7317,9 @@ pub(crate) fn empty_span() -> SourceSpan {
     SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0)
 }
 
-fn bottom_node() -> Rc<NodeOccurrence> {
+/// `pub(crate)` for `eval::eval`'s reify boundary, which pushes one as the frame
+/// the thunk's entry REPLACES — see `Interpreter::enter_reify_boundary`.
+pub(crate) fn bottom_node() -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None)
 }
 

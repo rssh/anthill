@@ -2895,13 +2895,24 @@ argument never performs is not an error — the handler simply has nothing to
 catch. Writing the tail out (`handle_Error[Rho = {Modify[c]}](...)`) yields the
 row inference derives, and a wrong explicit tail is refused.
 
-This is the **static** half only: it asserts that the program is well-typed, not
-that a handler is installed. The runtime handler — installation, `HandlerAction`,
+This is the **static** half: it asserts that the program is well-typed, not that a
+handler is installed. The runtime half — installation, `HandlerAction`,
 continuations — is [proposal
 027](proposals/027-effect-handlers-and-standard-effects.md)'s. Consequently a
 handler that actually *ran* its body would incur `{K, ρ}` against its own
 declared `{ρ}`; the type above describes the contract, and 027 supplies the
 machinery that realises it.
+
+**`Error` is the one label whose DISCHARGE has a runtime** (proposal 027.4). (The
+effect-handler *registry* is a different mechanism — it supplies an ambient capability
+for `Console` / `Modify` and removes no label from any row.)
+`anthill.prelude.Error.reify` IS the shape above at `K = Error[T1]`, and its runtime is
+a boundary FRAME the interpreter installs by symbol — not a registered handler, because
+`raise(error: T) -> Nothing` has no value to resume with and a short-circuit needs
+somewhere to short-circuit *to*. It returns `Result[E = T1, T = X]` rather than `X`,
+which is the difference between discharging a label and merely dropping it: the failure
+becomes a value the caller can match. §5.7 has the pair. `Suspend` and `Branch` have the
+typing and not the runtime; their boundaries need continuation capture.
 
 Users can define additional effect kinds; the kernel stores and propagates them but only interprets the well-known ones.
 
@@ -3194,9 +3205,29 @@ The monad provides primitive operations corresponding to each effect kind:
 | `Modify[S]` | `get_resource(S)` | `M_E(Term option)` |
 | `Modify[S]` | `put_resource(S, v)` | `M_E(Unit)` |
 | `Error[Err]` | `throw_error(err)` | `M_E(A)` for any `A` |
+| `Error[Err]` | `reify(body)` | `M_E'(Result[E = Err, T = A])` — run `body`, discharging `Error[Err]` |
 | `Suspend` | `suspend(k)` | `M_E(A)` — pause, resume via continuation `k` |
 | `Branch` | `choice(a, b)` | `M_E(A)` — nondeterministic choice |
 | `Branch` | `fail` | `M_E(A)` — no results (backtrack) |
+
+Each pair is Filinski's `reflect` / `reify`: an effect OPERATION injects a monadic value
+into direct-style code, and the boundary captures a direct-style computation as one.
+`Error` is the pair the surface language implements (proposal 027.4) —
+`anthill.prelude.Error.raise` and `anthill.prelude.Error.reify`, with
+`anthill.prelude.Result` as the denotation:
+
+```
+operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
+  effects {Rho}
+```
+
+There is no `handle` keyword and no per-effect typer rule: the DISCHARGE IS THE SIGNATURE
+— the label present on the body side, absent from the result — so the ordinary call-site
+row check does the whole of the typing. `Result.reflect` runs it the other way
+(`err(e)` becomes a raise), which is what makes the two an isomorphism rather than a
+one-way try/catch: the caught value is data, so it can be mapped, matched, passed on, or
+put back. `Suspend` and `Branch` need continuation capture and are not yet implemented in
+the surface language.
 
 Sequencing is monadic bind:
 

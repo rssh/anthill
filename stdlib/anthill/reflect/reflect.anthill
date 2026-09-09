@@ -484,6 +484,14 @@ namespace anthill.reflect
     --
     -- A source that does not parse, or does not load, RAISES: the diagnostics are the
     -- answer a checker is asking for, and the KB is left exactly as it was.
+    -- NOT YET `effects Error[LoadFailed]`, though it raises exactly that and nothing
+    -- else, and 027.4 asks for the retype so a `reify` site CHECKS the payload rather
+    -- than asserting it. MEASURED, the retype is blocked in the RUST BRIDGE, not here:
+    -- the row is what `anthill-stl/build.rs` generates `KB::loaded`'s signature from,
+    -- so `Error[LoadFailed]` makes it `Result<Box<dyn KB>, LoadFailed>` — and that
+    -- needs `LoadFailed` in the `emit_only` closure, whereupon the generator emits a
+    -- second `use crate::prelude::{List, String}` (duplicate `List`, and no `String`
+    -- in the reflect prelude shim). Two codegen-side defects, with their own owner.
     operation loaded(sources: List[T = String]) -> KB
       effects Error
 

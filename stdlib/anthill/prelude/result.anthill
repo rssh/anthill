@@ -1,0 +1,61 @@
+{< Result: a value that is either a success or an error payload.
+
+   THE DENOTATION OF THE `Error` EFFECT (proposal 047 §2, 027.4). `Error` and
+   `Result` are the two halves of one monad layer, related by Filinski's pair:
+   `Error.raise(x)` REFLECTS `err(x)` into direct-style code, and `Error.reify`
+   REIFIES a computation back into a `Result`. `Result.reflect` below is the
+   first half written out; it is what makes the two an isomorphism rather than
+   a one-way try/catch — reify a computation, manipulate the `Result` as
+   ordinary data, reflect it back into effectful code.
+
+   WHY NOT `Option`. `Option` drops the payload, and for an error the payload
+   IS the answer the caller wants: `KB.loaded` raises `load_failed(diagnostics)`
+   and a checker's whole job is to report those diagnostics.
+
+   PARAMETER NAMES ARE FIXED BY `Monad`, not chosen. `Monad[M[T]]` requires the
+   carrier's member to be `T`, so the SUCCESS type is `T` and the payload is
+   `E` — the spelling `monad.anthill`'s header already uses. `Result[E = E]` in
+   the `provides` writes down which member the carrier is partially applied at;
+   MEASURED, that argument is INERT at dispatch (the bare `Result` that
+   `option.anthill` writes dispatches identically, and even a genuinely fixed
+   `Result[E = Boom]` still admits a receiver at another payload), so it is
+   documentation of the reading, not an enforcement of it. The short-circuit is
+   in the `match` bodies below and nowhere else. >}
+enum anthill.prelude.Result
+  import anthill.prelude.{Monad, Error}
+
+  sort E = ?                                         -- the error payload type
+  sort T = ?                                         -- the success type — the Monad carrier's member
+
+  entity ok(value: T)                                -- success
+  entity err(error: E)                               -- failure, carrying the payload
+
+  -- Result is a Monad over its SUCCESS type. Op-value bindings (not a bare
+  -- `fact Monad[Result]`) for the same reason Option gives: `Monad.pure` is
+  -- result-determined — it has no Result argument to dispatch on — so each
+  -- witness op is named explicitly in the fact.
+  -- `P` is the payload throughout and `A` / `B` are the values, so each of these
+  -- reads against its `Monad` counterpart (`pure[A](a: A) -> M[A]`) with the one
+  -- extra parameter being the one the partially-applied carrier fixes.
+  operation resultPure[P, A](a: A) -> Result[E = P, T = A] = ok(a)
+
+  operation resultFlatMap[P, A, B, EffP](m: Result[E = P, T = A], f: (A) -> Result[E = P, T = B] @ {EffP}) -> Result[E = P, T = B] effects {EffP} =
+    match m
+      case ok(x)  -> f(x)
+      case err(e) -> err(e)
+
+  operation resultMap[P, A, B, EffP](m: Result[E = P, T = A], f: (A) -> B @ {EffP}) -> Result[E = P, T = B] effects {EffP} =
+    match m
+      case ok(x)  -> ok(f(x))
+      case err(e) -> err(e)
+
+  -- The reflect direction: put a Result BACK into the effect channel. `ok`
+  -- yields its value, `err` raises its payload — so the row gains `Error[P]`,
+  -- the payload type read off the Result itself rather than asserted.
+  operation reflect[P, A](r: Result[E = P, T = A]) -> A effects Error[P] =
+    match r
+      case ok(v)  -> v
+      case err(e) -> Error.raise(e)
+
+  provides Monad[M = Result[E = E], pure = resultPure, flatMap = resultFlatMap, map = resultMap]
+end
