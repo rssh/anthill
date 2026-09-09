@@ -322,6 +322,17 @@ struct RustCodegen<'a> {
     trait_sorts: HashSet<String>,
     config: &'a CodegenConfig,
     errors: Vec<CodegenError>,
+    /// Names already `use`d into THIS file, keyed by `(path, name)`.
+    ///
+    /// ANTHILL IMPORTS ARE PER-DECLARATION AND RUST `use` IS PER-MODULE, and this
+    /// is where the two currencies are reconciled. A generated file is one Rust
+    /// scope, so two declarations that both `import anthill.prelude.{List}` emit
+    /// two `use crate::prelude::{List};` and the file does not compile —
+    /// E0252, "the name `List` is defined multiple times". Measured on
+    /// `reflect.anthill` the moment `LoadFailed` joined the emitted set: its
+    /// `import anthill.prelude.{List, String}` collided with the `{List}` an
+    /// earlier declaration had already emitted.
+    imported: HashSet<(String, String)>,
 }
 
 impl<'a> RustCodegen<'a> {
@@ -339,6 +350,7 @@ impl<'a> RustCodegen<'a> {
             trait_sorts: global_traits.clone(),
             config,
             errors: Vec::new(),
+            imported: HashSet::new(),
         }
     }
 
@@ -1254,22 +1266,38 @@ impl<'a> RustCodegen<'a> {
             }
         }
 
+        // Drop what this file has already brought in — see `Self::imported`. The
+        // filter runs BEFORE the `#[allow(unused_imports)]` line so a fully
+        // redundant import emits nothing at all, attribute included.
+        let path = segments.join("::");
+        let names: Vec<String> = match &imp.kind {
+            // A whole-path or wildcard import names one thing for this purpose: the
+            // path itself. Repeating either is the same E0252 (or, for a wildcard,
+            // a harmless but noisy second glob), and keyed this way both dedup
+            // through the one table.
+            ImportKind::Plain | ImportKind::Wildcard => vec![String::new()],
+            ImportKind::Selective(names) => names.iter().map(|n| self.resolve(n)).collect(),
+        };
+        let fresh: Vec<String> = names
+            .into_iter()
+            .filter(|n| self.imported.insert((path.clone(), n.clone())))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+
         if self.config.emit_fn_bodies {
             self.line("#[allow(unused_imports)]");
         }
 
         match &imp.kind {
             ImportKind::Plain => {
-                let path = segments.join("::");
                 self.line(&format!("use {path};"));
             }
-            ImportKind::Selective(names) => {
-                let path = segments.join("::");
-                let selected: Vec<String> = names.iter().map(|n| self.resolve(n)).collect();
-                self.line(&format!("use {}::{{{}}};", path, selected.join(", ")));
+            ImportKind::Selective(_) => {
+                self.line(&format!("use {}::{{{}}};", path, fresh.join(", ")));
             }
             ImportKind::Wildcard => {
-                let path = segments.join("::");
                 self.line(&format!("use {path}::*;"));
             }
         }

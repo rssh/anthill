@@ -484,16 +484,20 @@ namespace anthill.reflect
     --
     -- A source that does not parse, or does not load, RAISES: the diagnostics are the
     -- answer a checker is asking for, and the KB is left exactly as it was.
-    -- NOT YET `effects Error[LoadFailed]`, though it raises exactly that and nothing
-    -- else, and 027.4 asks for the retype so a `reify` site CHECKS the payload rather
-    -- than asserting it. MEASURED, the retype is blocked in the RUST BRIDGE, not here:
-    -- the row is what `anthill-stl/build.rs` generates `KB::loaded`'s signature from,
-    -- so `Error[LoadFailed]` makes it `Result<Box<dyn KB>, LoadFailed>` — and that
-    -- needs `LoadFailed` in the `emit_only` closure, whereupon the generator emits a
-    -- second `use crate::prelude::{List, String}` (duplicate `List`, and no `String`
-    -- in the reflect prelude shim). Two codegen-side defects, with their own owner.
+    -- `Error[LoadFailed]`, not a bare `Error` (027.4): it raises exactly that and
+    -- nothing else, so the bare row understated what this operation knows. The point
+    -- of saying it is that a `reify` site then CHECKS the payload instead of asserting
+    -- it — which matters here specifically because those diagnostics are fed back to a
+    -- model as repair feedback, where a wrong payload type would surface as garbage
+    -- prose rather than as a type error. A typed `Error.reify` REFUSES a bare-`Error`
+    -- body, so this line is what makes `KB.loaded` catchable at all.
+    --
+    -- THE ROW IS ALSO THE HOST SIGNATURE. `anthill-stl/build.rs` generates
+    -- `KB::loaded` from it, so this reads `Result<Box<dyn KB>, LoadFailed>` in Rust,
+    -- and `LoadFailed` is named in that file's `emit_only` closure for the reason its
+    -- own comment gives about `LayerSymbol` / `LayerClause`.
     operation loaded(sources: List[T = String]) -> KB
-      effects Error
+      effects Error[LoadFailed]
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.

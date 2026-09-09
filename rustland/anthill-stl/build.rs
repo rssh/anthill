@@ -76,6 +76,12 @@ fn main() {
             // that do not exist.
             "LayerSymbol".into(),
             "LayerClause".into(),
+            // 027.4 — the payload `KB.loaded` raises, now that its row SAYS so
+            // (`effects Error[LoadFailed]`). Same reason as the two above: this
+            // list is a closure the author states, so retyping the row without
+            // naming the payload here generates `Result<Box<dyn KB>, LoadFailed>`
+            // over a type the module does not contain.
+            "LoadFailed".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),

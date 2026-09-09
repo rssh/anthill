@@ -44,6 +44,8 @@ namespace test.reify
   import anthill.prelude.Result
   import anthill.prelude.Result.{ok, err}
   import anthill.prelude.{Int64, String, Error, Result}
+  import anthill.prelude.List.{cons, nil, length}
+  import anthill.reflect.{KB, LoadFailed}
 
   sort Boom
     entity boom(why: String)
@@ -122,6 +124,21 @@ namespace test.reify
   -- reifying that again must return the same `err`.
   operation reifiedReflect() -> Result[E = Boom, T = Int64] =
     Error.reify(lambda () -> Result.reflect(caught()))
+
+  -- THE DRIVER 027.4 NAMES. `KB.loaded` loads candidate source into a discardable
+  -- layer and raises `load_failed(diagnostics)`; a checker's whole job is to catch
+  -- that and report them. It is the reason the effect is worth having, and it is
+  -- catchable only because its row was retyped from bare `Error` to
+  -- `Error[LoadFailed]` — a typed `reify` refuses a body that does not say what it
+  -- raises.
+  operation checkSource(src: String) -> Int64 =
+    match Error.reify(lambda () -> KB.loaded(cons(src, nil)))
+      case ok(_)  -> 0 - 1
+      case err(e) -> match e
+                       case load_failed(ds) -> length(ds)
+
+  operation goodSource() -> Int64 = checkSource("namespace ok.one end")
+  operation badSource() -> Int64 = checkSource("namespace broken.")
 
   -- NAME CAPTURE. A parameter merely NAMED `reify`, holding something callable.
   -- `dispatch_call_with_requirements_inner`'s local lookup matches by SHORT NAME,
@@ -324,6 +341,40 @@ fn reify_of_reflect_returns_the_same_result() {
         .call("test.reify.reifiedReflect", &[])
         .expect("reflect raises inside the boundary and is caught again");
     assert_eq!(err_why(&interp, &r), "negative");
+}
+
+/// THE DRIVER, END TO END, AND THE REASON THE LAYER EXISTS: a scoped load's
+/// diagnostics caught IN ANTHILL. `anthill.reflect.KB.loaded` raises
+/// `load_failed(diagnostics)`; before this, the guardians example's `LoadChecker.check`
+/// was host-bound Rust for exactly one irreducible reason — its
+/// `Err(e) => load_failure_to_rejected(interp, e)` arm — and this is that arm, written
+/// in anthill.
+///
+/// It is also what the `KB.loaded` RETYPE bought. With the row left as a bare `Error`,
+/// this program does not load at all: measured, "the lambda argument declares `Error`,
+/// which the closed row does not admit" — a typed `reify` refuses a body that does not
+/// say what it raises. So this row fails under a back-out of the retype at LOAD time,
+/// not at run time, which is the whole point of the retype.
+#[test]
+fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
+    let mut interp = interp();
+    let good = interp
+        .call("test.reify.goodSource", &[])
+        .expect("a source that loads takes the ok arm");
+    assert_eq!(
+        int_of(&interp, &good),
+        -1,
+        "a candidate that loads must reach `ok`, not `err`"
+    );
+
+    let bad = interp
+        .call("test.reify.badSource", &[])
+        .expect("a source that does NOT load is caught, not propagated");
+    assert_eq!(
+        int_of(&interp, &bad),
+        1,
+        "the raised `load_failed(diagnostics)` must arrive with its diagnostics intact"
+    );
 }
 
 /// A LOCAL NAMED `reify` DOES NOT CAPTURE `Error.reify`. The local lookup in

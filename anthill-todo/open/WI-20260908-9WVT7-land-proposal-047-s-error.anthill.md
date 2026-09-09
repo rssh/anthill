@@ -299,3 +299,44 @@ RECORDED, NOT FIXED — all in 027.4's open questions with their measurements:
  * WHICH DELIMITER WINS — a registered `Error` handler is consulted BEFORE the default, so
    it is dynamically outermost and a custom one can void a declared discharge. Invisible
    with the stock handler (it Throws), and `interp_for` registers none.
+\n
+### 2026-09-09T20:33:12Z — feedback — claude
+
+STEP 4's SECOND HALF DELIVERED — `KB.loaded` IS RETYPED AND THE DRIVER RUNS. The
+"blocked in the rust bridge" note in the previous entry was written from two error codes;
+reading the emitter turned three symptoms into ONE defect plus two one-line settings, and
+CLAUDE.md's rule then applies — a change smaller than its ticket description is inline
+work, so nothing was filed.
+
+WHAT IT ACTUALLY WAS.
+ 1. `LoadFailed` named in `anthill-stl/build.rs`'s `emit_only` — a CLOSURE THE AUTHOR
+    STATES, as its own comment already says for `LayerSymbol` / `LayerClause`. One line.
+ 2. `String` re-exported from the reflect prelude shim. NOT a defect: that file exists
+    for exactly this and documents it — `Type`, `TypeExtractor` and `FieldOf` are each
+    there because a generated `use crate::prelude::{…}` names them. One line.
+ 3. THE ONE REAL DEFECT — ANTHILL IMPORTS ARE PER-DECLARATION, RUST `use` IS PER-MODULE.
+    A generated file is one Rust scope, so two declarations that both
+    `import anthill.prelude.{List}` emitted two `use crate::prelude::{List};` — E0252.
+    Latent until now because no two emitted declarations of one file had shared an
+    import; `LoadFailed` joining the reflect subset was the first. `RustCodegen` carries
+    an `imported: HashSet<(path, name)>` and `emit_import` filters against it, dropping
+    REPEATS rather than whole imports — a second import's new names still arrive, which
+    is the assertion that stops the fix passing by emitting nothing.
+
+DRIVEN. `codegen_test::one_name_is_imported_once_per_file` and
+`a_repeated_plain_import_is_emitted_once`; measured under a back-out both read "got 2"
+while the other 37 codegen rows pass either way. The corpus witness is louder: with the
+filter off, `anthill-stl` does not compile at all.
+
+AND THE DRIVER ITSELF, which is what the whole ticket was for:
+`Error.reify(lambda () -> KB.loaded(cons(src, nil)))` on a candidate that does not parse
+returns `err(load_failed(diagnostics))` with the diagnostics intact — the arm that kept
+the guardians `LoadChecker.check` in host Rust (`Err(e) => load_failure_to_rejected`),
+now writable in anthill. `a_scoped_loads_diagnostics_are_caught_in_anthill` asserts both
+arms: a candidate that loads reaches `ok`, one that does not yields exactly one
+diagnostic. It fails under a back-out of the RETYPE at LOAD time, not at run time — a
+bare-`Error` body is refused by a typed `reify`, which is the point of retyping.
+
+The bridge's own `loaded` now returns `LoadFailed::LoadFailed { diagnostics }` rather
+than the generic `Error`. That is the retype's consequence, not a defect: the ROW is what
+generates the host signature, so a raiser that says what it raises types its bridge too.

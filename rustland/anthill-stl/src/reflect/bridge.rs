@@ -737,13 +737,21 @@ impl KB for KbBridge {
     /// say it with — the same choice `Stream::find` makes a few lines up. A host that
     /// wants a scoped load drives it through an `Interpreter`, where `KB.loaded` is a
     /// registered builtin.
-    fn loaded(_sources: Vec<String>) -> Result<Box<dyn KB>, Error> {
-        Err(Error(
-            "KB.loaded: no scoped load on the host bridge — a layer's lifetime is owned \
-             by an Interpreter's layer arena, which is what discards it; drive the load \
-             through an Interpreter instead"
-                .into(),
-        ))
+    ///
+    /// The error type is `LoadFailed` and not the generic `Error` because
+    /// `reflect.anthill` declares `effects Error[LoadFailed]` (027.4): the ROW is what
+    /// generates this signature, so a raiser that says what it raises types its host
+    /// bridge too. `diagnostics` is a `List[String]` and this refusal is one
+    /// diagnostic, which fits that shape exactly.
+    fn loaded(_sources: Vec<String>) -> Result<Box<dyn KB>, LoadFailed> {
+        Err(LoadFailed::LoadFailed {
+            diagnostics: vec![
+                "KB.loaded: no scoped load on the host bridge — a layer's lifetime is \
+                 owned by an Interpreter's layer arena, which is what discards it; drive \
+                 the load through an Interpreter instead"
+                    .into(),
+            ],
+        })
     }
 
     /// WI-5XBBQ — a layer DELTA has no meaning on the host bridge, for the reason

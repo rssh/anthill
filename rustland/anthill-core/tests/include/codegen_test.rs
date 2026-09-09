@@ -881,4 +881,78 @@ fn wi766_one_component_tuple_type_keeps_its_arity() {
     );
 }
 
+// ── Import dedup: anthill imports are per-DECLARATION, Rust `use` is per-MODULE ──
 
+/// A generated file is ONE Rust scope, so two declarations that import the same name
+/// must not each emit a `use` for it — that is E0252, "the name `List` is defined
+/// multiple times", and the file does not compile.
+///
+/// MEASURED, and this is how it surfaced: retyping `KB.loaded` to
+/// `effects Error[LoadFailed]` (proposal 027.4) put `LoadFailed` into the reflect
+/// bridge's emitted set, its `import anthill.prelude.{List, String}` met the `{List}`
+/// an earlier declaration had already emitted, and `anthill-stl` stopped compiling.
+///
+/// FAILS WHEN BACKED OUT: without the `imported` filter in `emit_import`, the second
+/// `use` is emitted verbatim and this assertion counts 2.
+#[test]
+fn one_name_is_imported_once_per_file() {
+    let out = gen(r#"namespace demo
+  sort A
+    import anthill.prelude.{List}
+    operation one(xs: List[T = Int64]) -> Int64
+  end
+
+  sort B
+    import anthill.prelude.{List, Option}
+    operation two(xs: List[T = Int64]) -> Int64
+  end
+end
+"#);
+    assert_eq!(
+        out.matches("List").filter(|_| true).count() > 0,
+        true,
+        "the fixture must actually mention List:
+{out}"
+    );
+    let list_imports = out
+        .lines()
+        .filter(|l| l.trim_start().starts_with("use ") && l.contains("List"))
+        .count();
+    assert_eq!(
+        list_imports, 1,
+        "`List` must be `use`d exactly once per file, got {list_imports}:
+{out}"
+    );
+    // AND THE SECOND DECLARATION'S NEW NAME SURVIVES — the filter drops repeats, not
+    // the whole import. Without this the fix would "pass" by emitting nothing.
+    assert!(
+        out.lines()
+            .any(|l| l.trim_start().starts_with("use ") && l.contains("Option")),
+        "the second import's NEW name must still be brought in:
+{out}"
+    );
+}
+
+/// The peer of the above for a whole-path import: repeating `import a.b.C` is the same
+/// E0252, and both kinds dedup through the one table.
+#[test]
+fn a_repeated_plain_import_is_emitted_once() {
+    let out = gen(r#"namespace demo
+  sort A
+    import anthill.prelude.Option
+    operation one(o: Option[T = Int64]) -> Int64
+  end
+
+  sort B
+    import anthill.prelude.Option
+    operation two(o: Option[T = Int64]) -> Int64
+  end
+end
+"#);
+    let n = out
+        .lines()
+        .filter(|l| l.trim_start().starts_with("use ") && l.contains("option"))
+        .count();
+    assert_eq!(n, 1, "a repeated plain import is emitted once, got {n}:
+{out}");
+}

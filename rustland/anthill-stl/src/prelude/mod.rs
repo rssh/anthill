@@ -6,6 +6,13 @@ use anthill_core::eval::Value;
 
 pub type List<T> = Vec<T>;
 pub use std::option::Option;
+/// The host `String`, re-exported so a generated `use crate::prelude::{…, String}`
+/// resolves — the same reason `Type` / `TypeExtractor` / `FieldOf` below exist. An
+/// anthill declaration may IMPORT `String` (`LoadFailed`'s `diagnostics` is a
+/// `List[T = String]`), and the emitter writes the import it was given; a scalar's
+/// HOST type is settled by the profile's `type_map`, and this line is where the two
+/// meet for the reflect subset.
+pub use std::string::String;
 pub type Bool = bool;
 pub type Int = i64;
 pub type Float = f64;
