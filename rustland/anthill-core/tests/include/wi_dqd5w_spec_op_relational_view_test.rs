@@ -57,10 +57,16 @@
 //!     the bridge suspends, so each `Box` comes back as an INDEFINITE solution. That
 //!     asymmetry is why the residual row exists: `definite_unary` alone cannot tell
 //!     "no clauses" from "suspended", and cause (2) turns the first into the second.
-//!   * back out (3) alone (drop the `Value::Term` materialization):
-//!     `a_constraint_guard_body_takes_the_relational_view` and
+//!   * back out (3) alone: `a_constraint_guard_body_takes_the_relational_view` and
 //!     `a_quantified_constraint_over_a_spec_op_holds_for_well_formed_rows` fail; the
 //!     four rule-body rows pass, which is what attributes it to the GUARD carrier.
+//!     WI-20260906-7YPGM MOVED WHAT "BACK OUT (3)" MEANS: the hook's operand is no
+//!     longer a `Value::Term` materialization but the carrier-neutral
+//!     `node_occurrence::value_as_occurrence`, because the resolver's goal walk now
+//!     keeps a σ-moved goal OFF the store and hands this hook a `Value::Entity`. The
+//!     back-out is narrowing that call back to a `Term`/`Node` match — measured, and
+//!     `a_constraint_guard_body_takes_the_relational_view` is still the row that goes
+//!     red alone.
 //!   * back out the arity gate (drop the `declared_arity == …` conjunct):
 //!     `an_arity_mismatched_bool_goal_takes_the_functional_relation_view` fails alone.
 //!

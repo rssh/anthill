@@ -1089,16 +1089,32 @@ impl SearchStream {
         self.stats.lazy_walk_calls += 1;
         // Walk goals[0] under σ to a `Value` goal (memoized back). A `Value::Node`
         // occurrence goal walks via `substitute_occurrence` (occurrence-native,
-        // no lowering); a `Value::Term` goal via the carrier-neutral `reify` —
-        // N20EZ: a var whose binding is a `Value::Var` alias or an `Entity` link
-        // must be substituted (the term-world `apply_subst` kept it as a WILDCARD
-        // at the match), and `reify` lowers an all-leaf result back to a
-        // hash-consed term, so the goal keeps the `Term` carrier the constraint
-        // guard / Bool hook / simp readers fold (a non-interning twin made every
-        // such goal an `Entity` and they went blind). Its one cost: an unbound
-        // linked leaf is interned at the walk (pinned in the N20EZ suite). The goal rides
-        // carrier-neutrally from here — the builtin handlers read it through
-        // `TermView`, reifying to a `TermId` only at genuine term boundaries.
+        // no lowering); a `Value::Term` goal via the carrier-neutral
+        // `reify_value_transient` — N20EZ: a var whose binding is a `Value::Var` alias or
+        // an `Entity` link must be substituted (the term-world `apply_subst` kept it
+        // as a WILDCARD at the match).
+        //
+        // TRANSIENT, NOT INTERNING (WI-20260906-7YPGM). A σ-APPLIED GOAL IS A
+        // TRANSIENT: it lives for this step, is memoized back into `goals[0]` for
+        // this frame's retries, and is then dropped — the category CLAUDE.md's
+        // representation note says NOT to hash-cons. Interning it was also a LEAK:
+        // `fn_value` lowers an all-leaf rebuild to a term and `lowers_to_leaf_term`
+        // accepts a `Value::Var`, so a linked leaf still UNBOUND at the walk became a
+        // `Term::Var(Global(fresh))` that can never dedup (`with_fresh_vars` mints a
+        // new `VarId` per clause opening) — MEASURED +2 per resolve of `[loose(?x,
+        // ?y), simple(?y)]`, for ever, under a store that is monotone by design
+        // (WI-SPGBP). Pinned flat by `wi_7ypgm_goal_walk_flatness_test::
+        // the_walk_is_flat_over_an_unbound_link`.
+        //
+        // WHAT IT COST was making `Value::Entity` a GOAL carrier, which four readers
+        // did not fold — the Bool relational view, the arity+1 functional view,
+        // `is_unreduced_builtin_call` and `op_call_as_occ`, each fixed with its own
+        // row in that file (and, for the first, in `wi_dqd5w_spec_op_relational_view_test`).
+        // An `Entity` and its interned twin read identically through `TermView`,
+        // index to the same `DiscrimKey`s and fingerprint to the same `GoalKey`, so
+        // nothing else has to change. The goal rides carrier-neutrally from here —
+        // the builtin handlers read it through `TermView`, reifying to a `TermId`
+        // only at genuine term boundaries.
         let goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
@@ -1106,13 +1122,7 @@ impl SearchStream {
             } else {
                 let subst = f.subst.clone();
                 let g0 = f.goals[0].clone();
-                let walked = match g0 {
-                    Value::Term { id: t, .. } => kb.reify(t, &subst),
-                    Value::Node(occ) => {
-                        Value::Node(node_occurrence::substitute_occurrence(kb, &occ, &subst))
-                    }
-                    other => other,
-                };
+                let walked = kb.reify_value_transient(&g0, &subst);
                 self.stack.last_mut().unwrap().goals[0] = walked.clone();
                 walked
             }
@@ -1681,21 +1691,25 @@ impl SearchStream {
                 // ticket's own control, which decides in a rule body — was equally inert
                 // there.
                 //
-                // `materialize_from_handle`, not a re-parse: the same call the arity+1
-                // hook uses, so one term reaches `reduce_op_value` one way.
+                // `value_as_occurrence`, not a re-parse: the same call the arity+1
+                // hook uses, so one occurrence reaches `reduce_op_value` one way.
                 //
-                // THE `Term` HALF ONLY, and the sibling is no different: its own carrier
-                // match maps `Node` through, materializes `Term`, and answers `None` for
-                // anything else — so an `Entity`-carried functor goal reaches no
-                // reduction on either hook. The outcome is the pre-existing one (no
-                // answer, never a wrong one) and no producer builds such a goal, so this
-                // says where the gap is rather than adding a branch nothing drives.
-                let operand = match &goal_val {
-                    Value::Term { id, .. } => {
-                        Value::Node(node_occurrence::materialize_from_handle(kb, *id))
-                    }
-                    other => other.clone(),
-                };
+                // EVERY CARRIER, through the one materializer. WI-20260906-7YPGM
+                // deleted the paragraph that used to stand here — "no producer builds
+                // an `Entity`-carried functor goal, so this says where the gap is
+                // rather than adding a branch nothing drives". The goal walk is now
+                // that producer: it keeps a σ-moved application off the store
+                // (`reify_value_transient`), so the CONSTRAINT GUARD population named above
+                // arrives here as a `Value::Entity` and the `other => other.clone()`
+                // arm handed `reduce_op_value` a value it returns untouched. Worse
+                // than no answer, the arm BELOW then rebuilt it as the NULLARY
+                // `apply_f()` — dropping the goal's arguments — because its own
+                // "a goal WITH arguments is an `Apply` already" was true of the two
+                // carriers that existed when it was written. Both are one call to
+                // `value_as_occurrence` now; DRIVEN by
+                // `wi_dqd5w_spec_op_relational_view_test::a_constraint_guard_body_takes_the_relational_view`,
+                // which fails when this narrows back to `Term`.
+                let operand = node_occurrence::value_as_occurrence(kb, &goal_val);
                 // WI-20260902-VZC2C — AND IT GOES IN AS AN APPLICATION, which for a
                 // NULLARY operation is not the same thing as going in on the occurrence
                 // carrier. The storage canon ([`KnowledgeBase::nullary_canon`]) makes
@@ -1786,27 +1800,25 @@ impl SearchStream {
                     named_args: Vec::new(),
                     type_args: Vec::new(),
                 };
-                let operand = match operand {
-                    Value::Node(occ) => {
-                        if matches!(
-                            occ.as_expr(),
-                            Some(Expr::Apply { .. } | Expr::ApplyWithin { .. })
-                        ) {
-                            Value::Node(occ)
-                        } else {
-                            Value::Node(occ.rebuilt_expr(apply_f()))
-                        }
-                    }
-                    // Every remaining carrier that got through the gate: `SymbolRef` today,
-                    // and anything later that heads as a bare nullary bodied Bool op. The
-                    // application is what the reading MEANS at this point, so build one
-                    // rather than pass a value `reduce_op_value` will hand straight back.
-                    _ => Value::Node(NodeOccurrence::new_expr(
-                        apply_f(),
-                        crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0),
-                        None,
-                    )),
-                };
+                // NO CARRIER MATCH SINCE WI-20260906-7YPGM: `value_as_occurrence` is
+                // total and returns an occurrence, so the `operand` is one by
+                // construction and the old two-arm match's second arm could not run. It
+                // used to synthesize `apply_f()` for the carriers with no occurrence to
+                // rebuild — `Value::SymbolRef` being the measured one — and those now
+                // arrive as an `Expr::Ref` occurrence that this arm rebuilds to the same
+                // application, at the same 0..0 span, through the same helper. Driven
+                // either way by `a_spliced_symbol_ref_goal_takes_the_same_reading`
+                // (WI-20260902-VZC2C), which is what says the two paths agreed.
+                let operand = Value::Node(
+                    if matches!(
+                        operand.as_expr(),
+                        Some(Expr::Apply { .. } | Expr::ApplyWithin { .. })
+                    ) {
+                        operand
+                    } else {
+                        operand.rebuilt_expr(apply_f())
+                    },
+                );
                 let eq_goal = kb.make_goal_value(eq_sym, vec![operand, Value::Bool(true)]);
                 let fr = self.stack.last_mut().unwrap();
                 // Rewrite goal[0] in place, same goal count — `delay_mode` is
@@ -1880,13 +1892,13 @@ impl SearchStream {
                     // `Entity`-carried call would silently never reduce. The args are
                     // reused from the goal's own occurrence rather than round-tripped
                     // through `Value`, which keeps their occurrence identity (WI-621).
-                    let goal_occ: Option<Rc<NodeOccurrence>> = match &goal_val {
-                        Value::Node(o) => Some(Rc::clone(o)),
-                        Value::Term { id, .. } => {
-                            Some(node_occurrence::materialize_from_handle(kb, *id))
-                        }
-                        _ => None,
-                    };
+                    // WI-20260906-7YPGM: every carrier, through the one
+                    // materializer — the goal walk builds `Value::Entity` goals now,
+                    // and `_ => None` made this hook answer nothing for them. The
+                    // CALL-shape test is still made below (`call_parts`), so a goal
+                    // with no `Apply` reading falls through exactly as before.
+                    let goal_occ: Option<Rc<NodeOccurrence>> =
+                        Some(node_occurrence::value_as_occurrence(kb, &goal_val));
                     // WI-1040: a woven goal's args live in `ApplyWithin.args` and its
                     // dictionary in `requirements` — both carried through the rebuild
                     // below, so the n-ary call the resolver reduces is still woven and
@@ -4553,20 +4565,46 @@ impl KnowledgeBase {
 
     /// Resolve a builtin goal argument (read through [`TermView`]) to a
     /// `Value` under σ — the representation-agnostic analog of
-    /// `walk(goal's positional arg, σ)`. A term child is `walk_view`d; an
-    /// occurrence child that is a bound `Global` var leaf is resolved via σ,
-    /// otherwise kept as-is (WI-246). `None` ⇒ the arg slot is absent.
+    /// `walk(goal's positional arg, σ)`. A term child is `walk_view`d; a
+    /// value-level var leaf and an occurrence child that is a bound `Global` var
+    /// leaf are resolved via σ, otherwise kept as-is (WI-246). `None` ⇒ the arg
+    /// slot is absent.
+    ///
+    /// **ALL THREE VAR SPELLINGS CHASE, and the bare `Value::Var` one is
+    /// WI-20260906-7YPGM.** A logic variable reaches an argument slot on three
+    /// carriers — `Term::Var(Global)`, `Expr::Var(Global)`, and the value-level
+    /// `Value::Var(Global)` (WI-109) — and this function is what the delay tests
+    /// (`value_is_unbound_var`, `value_is_ground`) and
+    /// [`Self::resolve_result_target`] read AFTER. The third arm was missing and
+    /// the gap was invisible while nothing put a bare `Value::Var` in an argument
+    /// slot: the goal walk interned an answer link's leaf to `Term::Var`, which the
+    /// first arm chases. 7YPGM stopped interning it, so the link now arrives on its
+    /// own carrier and an UNWALKED `Value::Var` read as "still unbound" however
+    /// deeply σ had bound it. MEASURED, a LOST SOLUTION: `[loose(?x, ?y), eq(?y, 1),
+    /// simple(?y)]` as term goals answered 1 definite solution and answered 0 —
+    /// `eq` delayed on the link, rotated behind `simple`, and after `simple` BOUND
+    /// it still read the stale `Var` and floundered. Found by `/code-review`;
+    /// DRIVEN by `wi_7ypgm_goal_walk_flatness_test::
+    /// a_rotated_builtin_reads_the_link_its_sibling_bound`.
     fn walk_arg(&self, item: Option<ViewItem>, subst: &Substitution) -> Option<Value> {
+        // One chase for the two carriers that name a var directly, so a later arm
+        // cannot answer a different question about the same variable.
+        let chase = |v: &Var, fallback: Value| match v.as_global() {
+            Some(vid) => self
+                .chase_var(vid, subst)
+                .map_or(fallback, |bound| bound.clone()),
+            None => fallback,
+        };
         Some(match item? {
             ViewItem::Term(t) => self.walk_view(t, subst),
             ViewItem::Value(Value::Term { id: t, .. }) => self.walk_view(*t, subst),
             ViewItem::Owned(Value::Term { id: t, .. }) => self.walk_view(t, subst),
+            ViewItem::Value(v @ Value::Var(var)) => chase(var, v.clone()),
+            ViewItem::Owned(Value::Var(var)) => chase(&var, Value::Var(var)),
             ViewItem::Value(v) => v.clone(),
             ViewItem::Owned(v) => v,
             ViewItem::Node(occ) => match occ.as_expr() {
-                Some(Expr::Var(Var::Global(vid))) => self
-                    .chase_var(*vid, subst)
-                    .map_or_else(|| Value::Node(occ), Clone::clone),
+                Some(Expr::Var(var)) => chase(var, Value::Node(Rc::clone(&occ))),
                 _ => Value::Node(occ),
             },
         })
@@ -8644,6 +8682,22 @@ impl KnowledgeBase {
     /// structurally. Whether a call was DECIDED is the WI-938 hook's question about a
     /// call it built itself, and it asks it there
     /// ([`Self::reduction_left_body_less_call`]).
+    ///
+    /// **`Value::Node` ONLY, AND WI-20260906-7YPGM DELIBERATELY DID NOT WIDEN IT.**
+    /// Stated because that ticket widened its two neighbours
+    /// ([`Self::op_call_as_occ`] and [`Self::is_unreduced_builtin_call`]) for the
+    /// `Value::Entity` goal carrier and a reader will ask why not this one. A
+    /// `Value::Term` bodied op-call operand already answers `false` here and always
+    /// has, so an `Entity` one answering `false` is PARITY, not a regression the
+    /// carrier change introduced — and under `eq` the two are not undefended:
+    /// `unfold_eq_operand` runs BEFORE the builtin and picks such an operand up
+    /// through `op_call_as_occ`, whose `Term` and (since 7YPGM) `Entity` arms both
+    /// case-split it. Under `cmp`, which has no such route, a term-carried bodied
+    /// op-call IS compared structurally — a pre-existing hole this ticket neither
+    /// widened nor closed. Widening this predicate is a behaviour change of its own:
+    /// it decides `eq`'s DOMAIN, where the paragraph above records 5 measured
+    /// failures from admitting too much, so it needs its own measurement rather than
+    /// riding along with a carrier repair. Raised by `/code-review`.
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
         let Value::Node(occ) = v else { return false };
         match occ.as_expr() {
@@ -8719,11 +8773,21 @@ impl KnowledgeBase {
     /// constructor are distinct declarations — unlike Prolog, where `1+2` is
     /// legitimately a term and `X = 1+2` must not evaluate.
     ///
-    /// BOTH CARRIERS, mirroring [`Self::op_call_as_occ`]: a rule-body operand
-    /// reaches here as a `Value::Term` (a term-lowered goal — `walk_view` yields
-    /// `Value::term` for any `Term::Fn`), NOT only as a `Value::Node`. Checking
-    /// just the Node arm misses the very case that motivated this — the
-    /// `sub(?x,?y)` of `neq(sub(?x,?y), 1)` arrives Term-carried.
+    /// ALL THREE STRUCTURAL CARRIERS, mirroring [`Self::op_call_as_occ`]: a
+    /// rule-body operand reaches here as a `Value::Term` (a term-lowered goal —
+    /// `walk_view` yields `Value::term` for any `Term::Fn`), NOT only as a
+    /// `Value::Node`. Checking just the Node arm misses the very case that
+    /// motivated this — the `sub(?x,?y)` of `neq(sub(?x,?y), 1)` arrives
+    /// Term-carried.
+    ///
+    /// WI-20260906-7YPGM ADDED THE `Entity` ARM, and its absence was a WRONG
+    /// ANSWER rather than a missing one — which is what makes it this predicate's
+    /// business and not a carrier tidy-up. The goal walk keeps a σ-moved
+    /// application off the store, so the operand of a term-carried
+    /// `neq(sub(?x,?y), 1)` whose `?x` σ has bound arrives as an `Entity` spine;
+    /// answering `false` for it is exactly the "silently, unconditionally TRUE"
+    /// verdict the paragraph above forbids. DRIVEN by
+    /// `wi_7ypgm_goal_walk_flatness_test::an_entity_carried_builtin_operand_still_delays`.
     fn is_unreduced_builtin_call(&self, v: &Value) -> bool {
         let functor = match v {
             Value::Node(occ) => match occ.as_expr() {
@@ -8734,6 +8798,7 @@ impl KnowledgeBase {
                 Term::Fn { functor, .. } => *functor,
                 _ => return false,
             },
+            Value::Entity { functor, .. } => *functor,
             _ => return false,
         };
         self.builtins.get(&functor).is_some()
@@ -8787,18 +8852,20 @@ impl KnowledgeBase {
         self.is_unreduced_op_call(v) || self.is_unreduced_builtin_call(v)
     }
 
-    /// The occurrence of a bodied (non-builtin) op-call operand, from EITHER
-    /// carrier. A `Value::Node` occurrence — a rule-body atom (WI-246) or the
-    /// WI-580 unfold's own hoisted goals (WI-668) — is returned directly. A
-    /// `Value::Term(Fn{op,…})` is materialized to an occurrence: that is the
-    /// carrier a *term-lowered* goal presents (a direct `resolve(&[term])`
+    /// The occurrence of a bodied (non-builtin) op-call operand, from ANY of the
+    /// three structural carriers. A `Value::Node` occurrence — a rule-body atom
+    /// (WI-246) or the WI-580 unfold's own hoisted goals (WI-668) — is returned
+    /// directly. A `Value::Term(Fn{op,…})` is materialized to an occurrence: that is
+    /// the carrier a *term-lowered* goal presents (a direct `resolve(&[term])`
     /// equation query, or an `or`/`push_choice` branch body), since `walk_view`
     /// yields a `Value::term` for any `Term::Fn`. The Term arm is load-bearing
     /// for carrier-neutrality — WI-668 routed the WI-580 *recursion* onto the
     /// Node arm, but a Term-carried op-call operand still reaches here and must
     /// case-split (regression guard: `wi668_term_carried_opcall_eq_case_splits`).
-    /// `None` when `v` is not such an op-call.
-    fn op_call_as_occ(&self, v: &Value) -> Option<Rc<NodeOccurrence>> {
+    /// A `Value::Entity` is the SAME term-lowered goal once σ has moved it
+    /// (WI-20260906-7YPGM) and takes the arm below for the same reason. `None` when
+    /// `v` is not such an op-call.
+    fn op_call_as_occ(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
         match v {
             // WI-1040 — an `ApplyWithin` is `is_unreduced_op_call` (it is un-reduced
             // by construction until its dictionary reads), but it is NOT what this
@@ -8852,8 +8919,25 @@ impl KnowledgeBase {
                 // into one continuation per `match` ARM of the callee's body. A
                 // host-implemented op has no arms to split on, so admitting one would
                 // hand that function a callee it cannot expand.
+                let id = *id;
                 if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
-                    Some(super::node_occurrence::materialize_from_handle(self, *id))
+                    Some(super::node_occurrence::materialize_from_handle(self, id))
+                } else {
+                    None
+                }
+            }
+            // WI-20260906-7YPGM — the `Term` arm's twin on the carrier the goal walk
+            // now builds. `eq(?r, f(?x))` as a term-carried goal walks to an
+            // `Entity` spine once σ binds `?x`, so its `f(…)` operand stopped being a
+            // `Value::Term` and `_ => None` ABANDONED the WI-580 case-split — the same
+            // missing-solution outcome the CZJ2N paragraph above describes for a bare
+            // nullary call, one carrier over. Same body test as the `Term` arm, and
+            // the occurrence is built by the shared `value_as_occurrence`.
+            Value::Entity { functor, .. } => {
+                let functor = *functor;
+                if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
+                    let v = v.clone();
+                    Some(super::node_occurrence::value_as_occurrence(self, &v))
                 } else {
                     None
                 }

@@ -785,6 +785,34 @@ pub struct DispatchRewrite {
     pub spec_op: Symbol,
 }
 
+/// WI-20260906-7YPGM — the carrier [`KnowledgeBase::reify`] rebuilds a σ-MOVED
+/// application on. The two answers are the same answer: an `Entity` spine and its
+/// interned `Term::Fn` twin read identically through
+/// [`crate::kb::term_view::TermView`], index to the same `DiscrimKey`s, and
+/// fingerprint to the same [`crate::kb::term_view::GoalKey`]. Only the STORAGE
+/// differs, and the choice is the CLAUDE.md representation note applied:
+///
+///  - `HashConsed` — the ASSERT and ANSWER sides. What they build is persistent,
+///    heavily-shared structure (a stored fact, a binding handed out), which is
+///    what hash-consing pays off for.
+///  - `Transient` — the resolver's GOAL WALK. A σ-applied goal lives for one
+///    resolution step (memoized back into `goals[0]` for this frame's retries,
+///    then dropped), so interning it is pure cost — and worse than cost when a
+///    substituted leaf is still an UNBOUND variable: `with_fresh_vars` mints a
+///    new `VarId` per clause opening, so `Term::Var(Global(fresh))` can never
+///    dedup and the store grew +2 per resolve of a `Value::Term` conjunction, for
+///    ever, under a store that is monotone by design (WI-SPGBP). MEASURED on
+///    `[loose(?x, ?y), simple(?y)]`; pinned flat by
+///    `wi_7ypgm_goal_walk_flatness_test`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ReifyCarrier {
+    /// Lower an all-leaf rebuild to a hash-consed `Term::Fn` via
+    /// [`KnowledgeBase::fn_value`].
+    HashConsed,
+    /// Rebuild as a `Value::Entity` spine; touch the store not at all.
+    Transient,
+}
+
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
@@ -6958,6 +6986,19 @@ impl KnowledgeBase {
         term: TermId,
         subst: &subst::Substitution,
     ) -> crate::eval::value::Value {
+        self.reify_on(term, subst, ReifyCarrier::HashConsed)
+    }
+
+    /// The shared body of [`Self::reify`] and the `Term` leg of
+    /// [`Self::reify_value_transient`] — ONE substitution, parameterized only by the
+    /// carrier a σ-moved application is rebuilt on. Written once because the two
+    /// differ in nothing else: a rule written twice is an asymmetry waiting.
+    fn reify_on(
+        &mut self,
+        term: TermId,
+        subst: &subst::Substitution,
+        carrier: ReifyCarrier,
+    ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         // Chase the var chain carrier-faithfully — `walk_view` surfaces a
         // non-`Term` binding (an answer link's `Value::Var` / `Value::Entity`
@@ -6974,7 +7015,7 @@ impl KnowledgeBase {
                     // re-hash an identical node). `substitute_vars_transient`'s idiom.
                     let mut changed = false;
                     let mut sub = |kb: &mut Self, a: TermId| {
-                        let v = kb.reify(a, subst);
+                        let v = kb.reify_on(a, subst, carrier);
                         if !matches!(v, Value::Term { id } if id == a) {
                             changed = true;
                         }
@@ -6989,7 +7030,16 @@ impl KnowledgeBase {
                     if !changed {
                         return Value::term(t);
                     }
-                    self.fn_value(functor, pos.into_vec(), named.into_vec())
+                    match carrier {
+                        ReifyCarrier::HashConsed => {
+                            self.fn_value(functor, pos.into_vec(), named.into_vec())
+                        }
+                        ReifyCarrier::Transient => Value::Entity {
+                            functor,
+                            pos: Rc::from(&pos[..]),
+                            named: Rc::from(&named[..]),
+                        },
+                    }
                 }
                 // Leaf (Const/Ref/Ident/…) or an unbound `Var` — already final.
                 _ => Value::term(t),
@@ -7016,7 +7066,7 @@ impl KnowledgeBase {
             // where a binding is handed OUT; see the argument on
             // `fold_const_occurrences`. Everything reaching THIS line keeps its
             // carrier, including a `Const` occurrence still in flight.
-            other => self.reify_value(&other, subst),
+            other => self.reify_value_on(&other, subst, carrier),
         }
     }
 
@@ -7121,9 +7171,45 @@ impl KnowledgeBase {
         v: &crate::eval::value::Value,
         subst: &subst::Substitution,
     ) -> crate::eval::value::Value {
+        self.reify_value_on(v, subst, ReifyCarrier::HashConsed)
+    }
+
+    /// [`Self::reify_value`] with the rebuild kept OFF the hash-consed store
+    /// (WI-20260906-7YPGM) — the resolver's lazy goal walk, and its only caller.
+    /// Same substitution, same answers, same reads through
+    /// [`crate::kb::term_view::TermView`]; the only difference is that a σ-moved
+    /// application comes back as a `Value::Entity` spine instead of an interned
+    /// `Term::Fn`. See [`ReifyCarrier`] for why a goal may not take the interning
+    /// form.
+    ///
+    /// IT IS THE `Value` FRONT AND NOT A `TermId` ONE BECAUSE THE WALK MEMOIZES. It
+    /// writes the σ-applied goal back into `goals[0]`, so the NEXT visit to the frame
+    /// (a rotation after a delay, a choice-point retry) re-walks whatever the last one
+    /// produced — an `Entity` spine, not the `Value::Term` it started as. A
+    /// `Term`-only walk with an `other => other` fall-through therefore stopped
+    /// applying σ to a goal the moment it first moved, freezing it at the first
+    /// visit's σ; this entry point applies σ to EVERY carrier, which is what the
+    /// interning walk got for free by always handing back a `Value::Term`. Found by
+    /// `/code-review`.
+    pub(crate) fn reify_value_transient(
+        &mut self,
+        v: &crate::eval::value::Value,
+        subst: &subst::Substitution,
+    ) -> crate::eval::value::Value {
+        self.reify_value_on(v, subst, ReifyCarrier::Transient)
+    }
+
+    /// The shared body of [`Self::reify_value`] and
+    /// [`Self::reify_value_transient`]; see [`ReifyCarrier`].
+    fn reify_value_on(
+        &mut self,
+        v: &crate::eval::value::Value,
+        subst: &subst::Substitution,
+        carrier: ReifyCarrier,
+    ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match v {
-            Value::Term { id: t, .. } => self.reify(*t, subst),
+            Value::Term { id: t, .. } => self.reify_on(*t, subst, carrier),
             Value::Node(occ) => {
                 Value::Node(node_occurrence::substitute_occurrence(self, occ, subst))
             }
@@ -7145,7 +7231,7 @@ impl KnowledgeBase {
                     Some(Value::Var(v2)) if v2.as_global() == Some(vid) => v.clone(),
                     Some(bound) => {
                         let bound = bound.clone();
-                        self.reify_value(&bound, subst)
+                        self.reify_value_on(&bound, subst, carrier)
                     }
                 },
                 None => v.clone(),
@@ -7165,7 +7251,7 @@ impl KnowledgeBase {
                 pos,
                 named,
             } => {
-                let (pos, named) = self.reify_value_children(pos, named, subst);
+                let (pos, named) = self.reify_value_children(pos, named, subst, carrier);
                 Value::Entity {
                     functor: *functor,
                     pos,
@@ -7173,7 +7259,7 @@ impl KnowledgeBase {
                 }
             }
             Value::Tuple { pos, named } => {
-                let (pos, named) = self.reify_value_children(pos, named, subst);
+                let (pos, named) = self.reify_value_children(pos, named, subst, carrier);
                 Value::Tuple { pos, named }
             }
             other => other.clone(),
@@ -7367,11 +7453,28 @@ impl KnowledgeBase {
     /// value carrier (`Value::Entity`/`Tuple`). The child slices borrow from the
     /// caller's `&Value`, not from `self`, so the `&mut self` [`Self::reify_value`]
     /// recursion iterates them directly; named args keep their symbol keys.
+    /// NO `changed` SHORT-CIRCUIT, unlike [`Self::reify_on`]'s `Term::Fn` arm — asked
+    /// and declined, WI-20260906-7YPGM, so it is not rediscovered as an oversight.
+    /// That arm can share because a term child's unchanged reification is always
+    /// `Value::term(a)` for the child's own `TermId`, which is one comparison. Here
+    /// the children are `Value`s and `Value` has NO `PartialEq` by design (WI-486: no
+    /// carrier-blind comparator), so the same test costs a bespoke per-carrier
+    /// identity predicate — a hand-written variant list of exactly the kind
+    /// `Value::lowers_to_leaf_term`'s doc records going stale, and one whose failure
+    /// mode is "reported unchanged when it moved", i.e. a goal σ never reached. That
+    /// is the defect class this ticket exists to close, so it is the wrong trade for a
+    /// saving nothing has measured: `/code-review` raised it as LOW after this ticket
+    /// put an `Entity` on the resolver's memoized re-walk path, and `wi_tests` moved
+    /// 365.45 s → 367.47 s across the whole change. The sound version is to have this
+    /// walk REPORT whether it moved (a `(Value, bool)` return threaded through
+    /// `reify_value_on`), which is a signature change for every caller and wants its
+    /// own measurement.
     fn reify_value_children(
         &mut self,
         pos: &Rc<[crate::eval::value::Value]>,
         named: &Rc<[(Symbol, crate::eval::value::Value)]>,
         subst: &subst::Substitution,
+        carrier: ReifyCarrier,
     ) -> (
         Rc<[crate::eval::value::Value]>,
         Rc<[(Symbol, crate::eval::value::Value)]>,
@@ -7379,11 +7482,11 @@ impl KnowledgeBase {
         use crate::eval::value::Value;
         let mut new_pos: Vec<Value> = Vec::with_capacity(pos.len());
         for c in pos.iter() {
-            new_pos.push(self.reify_value(c, subst));
+            new_pos.push(self.reify_value_on(c, subst, carrier));
         }
         let mut new_named: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
         for (s, c) in named.iter() {
-            new_named.push((*s, self.reify_value(c, subst)));
+            new_named.push((*s, self.reify_value_on(c, subst, carrier)));
         }
         (Rc::from(new_pos), Rc::from(new_named))
     }
@@ -8235,13 +8338,25 @@ impl KnowledgeBase {
     /// `Value::Term` for anything untouched — so no `kb.alloc` happens on this
     /// path. Every reader chases it through [`Self::chase_var`], which follows all
     /// three carriers. The resolver's goal walk σ-applies a link through
-    /// [`Self::reify`], which lowers an all-leaf result back to a hash-consed term
-    /// — so a goal keeps its `Term` carrier for the readers that fold `Term` /
-    /// `Node` only — at the ONE cost of interning a linked leaf that is still
-    /// UNBOUND when a later `Value::Term` conjunct walks over it (measured +2 per
-    /// resolve of `[loose(?x, ?y), simple(?y)]` as `Value::Term` goals; a rule body
-    /// walks its own vars as occurrences and pays nothing). Pinned red in
-    /// `wi_n20ez_answer_links_transient_test`.
+    /// [`Self::reify_value_transient`] (WI-20260906-7YPGM), which keeps the rebuild
+    /// off the store too, so the WALK enters nothing — including a linked leaf still
+    /// UNBOUND when a later `Value::Term` conjunct walks over it, which was that
+    /// ticket's residue and was interned (measured +2 per resolve of `[loose(?x, ?y),
+    /// simple(?y)]` as `Value::Term` goals; a rule body walks its own vars as
+    /// occurrences and paid nothing). Pinned flat in
+    /// `wi_7ypgm_goal_walk_flatness_test::the_walk_is_flat_over_an_unbound_link`.
+    ///
+    /// **AND THIS FUNCTION IS THEN THE ONE THAT ENTERS IT** — said here because the
+    /// sentence above stopped one clause short in 7YPGM's first cut and `/code-review`
+    /// measured the difference. The `tree_subst` NORMALIZATION below re-interns every
+    /// non-`Term` entry through `value_to_term`, and a σ-moved goal is now an
+    /// `Entity`, so a goal that goes on to make a HEAD MATCH puts its spine — fresh
+    /// var and all — back into the store. That comment's "every stdlib case today"
+    /// fast path is narrower than it was. MEASURED on `[loose(?a, ?y), unify(?x,
+    /// Box(v: ?y)), takes(?x)]`: +4 per resolve before 7YPGM, +2 after — halved, not
+    /// closed. Closing it means retiring the term-only `tree_subst` reads beneath
+    /// (the WI-636 boundary), which is why it is PINNED rather than fixed:
+    /// `wi_7ypgm_goal_walk_flatness_test::a_head_match_over_an_entity_goal_still_interns`.
     pub fn with_fresh_vars(
         &mut self,
         id: RuleId,

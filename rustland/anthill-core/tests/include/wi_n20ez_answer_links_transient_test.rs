@@ -30,18 +30,19 @@
 //! store by 0 after the first run (goal type positions ride occurrence children; a
 //! fired equation's rewrite is cached). So no row pins that channel.
 //!
-//! THE ONE RESIDUAL THAT IS REACHABLE is the goal walk's: the resolver σ-applies a
-//! `Value::Term` goal through `reify`, whose `fn_value` lowers an all-leaf result
-//! back to a hash-consed term — and interns a linked leaf that is still UNBOUND at
-//! that walk as a new `Term::Var`. That only arises for a `Value::Term`
-//! CONJUNCTION whose earlier goal linked a var the later goal mentions before
-//! anything bound it (a rule body walks its own vars as occurrences and pays
-//! nothing; the CLI's goals are occurrence patterns since J0RM4). MEASURED +2 per
-//! resolve, and pinned red by [`a_term_conjunction_with_an_unbound_link_still_interns`]:
-//! it goes red the day the walk stops interning — which needs every goal reader
-//! (the constraint guard, the Bool hook, simp reassembly) to fold an `Entity` goal,
-//! since a non-interning walk makes one; a non-interning twin was tried and those
-//! readers went blind — and is deleted then, as J0RM4's row was for this ticket.
+//! THE ONE RESIDUAL THAT WAS REACHABLE was the goal walk's, and it is CLOSED —
+//! WI-20260906-7YPGM, whose `wi_7ypgm_goal_walk_flatness_test` owns the measurement
+//! now. The resolver σ-applied a `Value::Term` goal through `reify`, whose `fn_value`
+//! lowers an all-leaf result back to a hash-consed term, and interned a linked leaf
+//! still UNBOUND at that walk as a new `Term::Var` (+2 per resolve of a `Value::Term`
+//! CONJUNCTION whose earlier goal linked a var the later goal mentions before anything
+//! bound it; a rule body walks its own vars as occurrences and paid nothing). The walk
+//! takes `reify_value_transient` instead, so a σ-moved goal is a `Value::Entity` spine,
+//! and
+//! the four goal readers that folded `Term` / `Node` only were widened for it. This
+//! file's row `a_term_conjunction_with_an_unbound_link_still_interns` asserted that
+//! growth ON PURPOSE so that closing it would trip the row; it tripped, and it is
+//! DELETED, as J0RM4's row was for this ticket.
 //!
 //! # What each row measures, and what fails when the change is backed out
 //!
@@ -191,60 +192,6 @@ fn a_two_slot_compound_head_subterm_is_flat() {
 #[test]
 fn a_fact_with_omitted_fields_is_flat() {
     assert_flat("n20ez.Top(a: ?x)", 1);
-}
-
-// ── The residual site, pinned ───────────────────────────────────────────────
-
-/// `[loose(?x, ?y), simple(?y)]` as `Value::Term` goals: `loose` links `?y` to a
-/// fresh var its body never binds, and the walk of `simple(?y)` reifies that link,
-/// interning the fresh var — +2 per resolve (the var term and the rebuilt goal).
-/// Asserted so the site is REMEMBERED, not relaxed. The control beside it: the same
-/// pair with the link BOUND before the second goal walks is flat.
-#[test]
-fn a_term_conjunction_with_an_unbound_link_still_interns() {
-    let mut kb = load_kb_bare(&[
-        "namespace n20ez_w
-  entity Box(v: Int64)
-  fact Box(v: 1)
-           rule loose(?x, ?y) :- Box(v: ?x)
-  rule simple(?x) :- Box(v: ?x)
-end
-",
-    ]);
-    let cfg = ResolveConfig::default();
-    let loose = kb.try_resolve_symbol("n20ez_w.loose").expect("loose loaded");
-    let simple = kb.try_resolve_symbol("n20ez_w.simple").expect("simple loaded");
-    let mut conj = |kb: &mut KnowledgeBase| {
-        let (x_sym, y_sym) = (kb.intern("x"), kb.intern("y"));
-        let x = kb.fresh_var(x_sym);
-        let y = kb.fresh_var(y_sym);
-        let xt = kb.alloc(anthill_core::kb::term::Term::Var(Var::Global(x)));
-        let yt = kb.alloc(anthill_core::kb::term::Term::Var(Var::Global(y)));
-        let g1 = kb.alloc(anthill_core::kb::term::Term::Fn {
-            functor: loose,
-            pos_args: smallvec::SmallVec::from_slice(&[xt, yt]),
-            named_args: smallvec::SmallVec::new(),
-        });
-        let g2 = kb.alloc(anthill_core::kb::term::Term::Fn {
-            functor: simple,
-            pos_args: smallvec::SmallVec::from_elem(yt, 1),
-            named_args: smallvec::SmallVec::new(),
-        });
-        assert_eq!(kb.resolve(&[Value::term(g1), Value::term(g2)], &cfg).len(), 1);
-    };
-    conj(&mut kb);
-    let after_first = kb.term_store_len();
-    conj(&mut kb);
-    conj(&mut kb);
-    let grew = kb.term_store_len() as i64 - after_first as i64;
-    // The query terms themselves are new each round (fresh vars), so subtract what
-    // the two goal terms cost: two var terms and two applications.
-    assert!(
-        grew > 2 * 4,
-        "the walk of `simple(?y)` no longer interns the unbound link: the residual \
-         site named in this file's header has been closed — delete this row rather \
-         than relax it (grew {grew} over two rounds, of which 8 are the query terms)",
-    );
 }
 
 // ── The goal walk reads the new carriers ────────────────────────────────────

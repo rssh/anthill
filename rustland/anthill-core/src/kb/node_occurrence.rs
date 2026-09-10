@@ -4954,6 +4954,112 @@ pub fn value_to_term(
     }
 }
 
+/// WI-20260906-7YPGM — a goal / operand `Value` as the OCCURRENCE its readers
+/// fold. The carrier-neutral front for the three resolver sites that must hand
+/// [`crate::kb::resolve`]'s `reduce_op_value` (or its own case-split) a
+/// `Value::Node`: the WI-580 Bool relational view, the WI-938 arity+1 functional
+/// view, and `op_call_as_occ`.
+///
+/// It exists because 7YPGM made the `Value::Entity` carrier a GOAL carrier. The
+/// resolver's lazy goal walk keeps a σ-moved application off the hash-consed store
+/// ([`KnowledgeBase::reify_value_transient`]), so what used to arrive at those three
+/// sites as a `Value::Term` — materialized there by [`materialize_from_handle`] —
+/// now commonly arrives as an `Entity` spine. Each of them read `Term` and `Node`
+/// only, and each answered NOTHING for anything else: measured, `constraint c: no
+/// ?ls: Box(items: ?ls) -: contains(?ls, "z")` loaded clean over a row that
+/// violates it (`wi_dqd5w_spec_op_relational_view_test`).
+///
+/// TOTAL, and every arm is the reading its carrier already has elsewhere: a `Node`
+/// is itself, a `Term` materializes, an `Entity` is the APPLICATION it spells, a
+/// scalar / `Var` / `SymbolRef` is its `Expr` leaf ([`scalar_value_expr`]), and
+/// anything else rides as the `Expr::Spliced` carrier WI-1040 added for exactly
+/// that. A caller that needs a CALL still tests the shape it got (both hooks match
+/// `Expr::Apply` / `ApplyWithin` and fall through otherwise, which is their
+/// pre-existing no-answer outcome for an unrecognized goal).
+///
+/// THE `Entity` ARM DOES NOT GO THROUGH [`value_to_term`], and that is the whole
+/// design decision. That pair (`value_to_term` + `materialize_from_handle`) would
+/// agree with the `Term` arm BY CONSTRUCTION — but it ALLOCATES, and the arity+1
+/// view's own goal is `f(a…, ?r)` whose `?r` is an unbound fresh var, so interning
+/// it is verbatim the leak 7YPGM closed (a fresh `VarId` per clause opening can
+/// never dedup). So the common case builds `visit_fn`'s `UnknownFn` shape —
+/// `Expr::Apply { recv_type: None, functor, pos_args, named_args, type_args: [] }`
+/// — directly.
+///
+/// WHERE THE TWO COULD DISAGREE IS NAMED, NOT ARGUED AWAY: `visit_fn` keys on the
+/// functor's LAST DOTTED SEGMENT, so a functor naming a reflect FORM
+/// (`if_expr`/`lambda_expr`/`apply`/`ListLiteral`/…) materializes as that form and
+/// NOT as an `Apply`. [`visit_fn_keys_functor`] is the predicate for exactly that
+/// question, so such an `Entity` takes the `value_to_term` route and the two
+/// carriers stay one reading. It is the rare arm — every caller has already gated
+/// the functor to a declared bodied OPERATION — and paying a store write there is
+/// what keeps the common arm free of one.
+///
+/// It is `visit_fn_keys_functor` and NOT [`is_reflect_form_functor`] because that
+/// one omits `Dictionary` on purpose, and asking it here would have left exactly one
+/// functor able to disagree — the divergence this paragraph claims is closed. Raised
+/// by `/code-review` against the first form of this comment, which named that
+/// function and so was not sound as written.
+///
+/// THE SPAN IS 0..0 on a synthesized node. That is not a loss against the `Term`
+/// arm: `materialize_from_handle` gives a term with no `term_spans` stamp the same
+/// offset (WI-1039), and every goal term reaching these sites is a rule-body or
+/// `lower_query` term, which is never stamped.
+///
+/// RECURSIVE ON `Entity` NESTING, which [`materialize_from_handle`] deliberately is
+/// NOT (WI-253 made it iterative after ~3 host frames per source nesting level blew
+/// the debug thread stack). The depth here is the same one [`KnowledgeBase::reify`]
+/// and `reify_value` already recurse over — a σ-moved goal spine — at one frame per
+/// level rather than three, so this adds no shape those two do not already carry.
+/// The `Term` arm still delegates to the iterative walker, so a deep TERM costs
+/// nothing here.
+pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurrence> {
+    match v {
+        Value::Node(o) => Rc::clone(o),
+        Value::Term { id, .. } => materialize_from_handle(kb, *id),
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => {
+            if visit_fn_keys_functor(kb, *functor) {
+                // The ONE materializer, so the keyed form reads identically from
+                // both carriers. An `Err` is a carrier with no term form at all
+                // (an opaque handle beneath the spine) — carried as `Spliced`
+                // rather than dropped; no caller can read it as a call, which is
+                // the same no-answer outcome the `Term` carrier has for it.
+                return match value_to_term(kb, v) {
+                    Ok(t) => materialize_from_handle(kb, t),
+                    Err(_) => {
+                        NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None)
+                    }
+                };
+            }
+            let pos_args: Vec<Rc<NodeOccurrence>> =
+                pos.iter().map(|c| value_as_occurrence(kb, c)).collect();
+            let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = named
+                .iter()
+                .map(|(k, c)| (*k, value_as_occurrence(kb, c)))
+                .collect();
+            NodeOccurrence::new_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: *functor,
+                    pos_args,
+                    named_args,
+                    type_args: Vec::new(),
+                },
+                empty_span(),
+                None,
+            )
+        }
+        other => match scalar_value_expr(other) {
+            Some(expr) => NodeOccurrence::new_expr(expr, empty_span(), None),
+            None => NodeOccurrence::new_expr(Expr::Spliced(other.clone()), empty_span(), None),
+        },
+    }
+}
+
 // ── Substitution over a rule-body-atom occurrence ───────────────
 
 /// WI-246: apply a resolution substitution σ to a rule-body-atom occurrence
@@ -6069,6 +6175,20 @@ fn subst_var_leaf(
     // suite). Then materialize: a term (nested unbound vars kept as `Expr::Var`),
     // a value-level var leaf, a scalar, or — when a nested binding is a spine — the
     // spliced value.
+    //
+    // WI-20260906-7YPGM NAMED THIS `reify` AS A SECOND INTERNING GOAL WALK BESIDE
+    // `step_init`'s, AND IT IS NOT ONE — MEASURED, so the next reader does not have to
+    // re-derive it. Instrumented with `kb.term_store_len()` either side of this call
+    // and run over `wi_tests`: **31 084 entries, 0 that grew the store, 0 that rebuilt
+    // an application at all** (the sibling `Entity`/`Tuple` arm above: 0 of both too).
+    // The reason is structural rather than lucky — reaching here means σ bound this
+    // occurrence's var to a `Value::Term`, and the compound bindings that would have a
+    // var beneath them to move do not arrive on that carrier: an answer link is a
+    // `Value::Var` / `Value::Entity` / an UNTOUCHED shared `Value::Term` since N20EZ,
+    // and a fact match binds ground subterms. So `reify` here is a chase-and-
+    // materialize, never a rebuild, and swapping it for the transient applier would
+    // have turned ~31k materialized occurrences into `Expr::Spliced` spines for no
+    // measured gain. 7YPGM therefore changed `step_init` ALONE.
     let applied = kb.reify(t, subst);
     match applied {
         Value::Term { id, .. } => materialize_from_handle(kb, id),
@@ -7375,6 +7495,34 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
     )
 }
 
+/// WI-20260906-7YPGM — could [`visit_fn`] key this functor to anything OTHER than its
+/// generic `push_unknown_fn` → `Expr::Apply` arm? The question
+/// [`value_as_occurrence`] must ask before it builds that generic shape itself for a
+/// `Value::Entity`, so the two carriers of one value cannot read differently.
+///
+/// [`is_reflect_form_functor`] answers it for every arm BUT `Dictionary`, which it
+/// omits deliberately: that arm's own test reads the NAMED ARGS
+/// ([`is_dictionary_node`]) and a functor-only predicate could mirror the symbol half
+/// only — an OVER-admission, and the wrong trade for that function's caller, the
+/// loader's rule-body-atom builder, which would then take the materialize fallback for
+/// a plain `Dictionary[S = …]` TYPE application.
+///
+/// IT IS THE RIGHT TRADE HERE, which is why this is a separate predicate rather than a
+/// widening of that one. Over-admitting sends a value through `value_to_term` +
+/// [`materialize_from_handle`] — the ONE materializer, which then applies
+/// `is_dictionary_node` EXACTLY and falls to the generic application if the shape does
+/// not hold — so the cost is a store write on a rare ground shape and never a divergent
+/// reading. UNDER-admitting is what would diverge. Raised by `/code-review`.
+///
+/// The `Dictionary` leg is NOT DRIVEN: a dictionary reaches a goal as an
+/// `ApplyWithin.requirements` occurrence, not as an `Entity` child, so nothing this
+/// loader accepts puts one in the position that would tell the two apart. It is here
+/// because the alternative is a soundness argument with a named hole in it.
+fn visit_fn_keys_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    is_reflect_form_functor(kb, functor)
+        || super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
+}
+
 /// WI-1045 — is this `Term::Fn` the DICTIONARY construction node,
 /// `Dictionary(sub₀ … subₙ₋₁, impl: S)`?
 ///
@@ -7389,9 +7537,17 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// its "mirrors `visit_fn`'s match arms" rule on this one entry, and the reason is
 /// this predicate's second half: that function is keyed on a functor alone and
 /// cannot see the named args, so it could only mirror the symbol test — which is
-/// the over-admission above. Nothing is lost: it gates the loader's RULE-BODY-atom
-/// builder, and a dictionary node is emitted into OP BODIES, which reach
-/// [`materialize_from_handle`] directly.
+/// the over-admission above. Nothing is lost AT THAT CALLER: it gates the loader's
+/// RULE-BODY-atom builder, and a dictionary node is emitted into OP BODIES, which
+/// reach [`materialize_from_handle`] directly.
+///
+/// WI-20260906-7YPGM ADDED A SECOND CALLER FOR WHICH THE TRADE INVERTS, so the
+/// sentence above is now about ONE of two and says so. [`value_as_occurrence`] asks
+/// "would `visit_fn` key this functor", and there an over-admission costs a store
+/// write while an under-admission is a cross-carrier divergence — the opposite
+/// ordering. It therefore asks [`visit_fn_keys_functor`], which adds the symbol half
+/// back on top. A recorded reason not to widen is scoped to the caller it was
+/// recorded for.
 fn is_dictionary_node(
     kb: &KnowledgeBase,
     functor: Symbol,
