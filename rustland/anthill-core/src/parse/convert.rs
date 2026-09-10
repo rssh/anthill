@@ -115,14 +115,10 @@ enum WorkOp<'t> {
     Yield(TermId),
 }
 
-/// One slot in a function-application / tuple / pattern-constructor
-/// argument list. Positional slots consume the next result; named
-/// slots carry the field-name symbol and consume one result.
-#[derive(Copy, Clone)]
-enum ArgSlot {
-    Positional,
-    Named(Symbol),
-}
+// `ArgSlot` — one slot in a function-application / tuple / pattern-constructor
+// argument list — now lives in `super::ir` and arrives through the `use super::ir::*`
+// above. WI-20260909-C7ANM moved it there because `SimpleTermStore::arg_order` records
+// it for the LOADER to read back, so the vocabulary is shared rather than duplicated.
 
 /// One member of a distributive projection `x.(m1, …, mn)` (WI-639).
 /// `label` is the result tuple key (== `member` for a bare member, the
@@ -2339,6 +2335,21 @@ impl<'a> Converter<'a> {
                     },
                     span,
                 );
+                // WI-20260909-C7ANM: carry the WRITTEN order across the split above.
+                // `Term::Fn` files the same list into `pos_args` and `named_args`, and
+                // a caller that must put a named argument back into a POSITIONAL column
+                // — the rule-head parameter form, 060 §2.1 — cannot recover where it was
+                // written from either list. Recorded only for a MIXED list; the callee
+                // owns that predicate.
+                //
+                // THIS FRAME IS THE ONLY PRODUCER THAT NEEDS IT, and the reason is a
+                // property of the READER, not of this site: the reader
+                // (`convert_rule_head_with_params`) fires only on a head whose functor
+                // resolves to the predicate a rule defines. The other three slot-walking
+                // frames build a `dot_apply` marker, a `pattern_constructor` marker and a
+                // tuple — none of which can be such a head. Adding a fourth frame that
+                // can be one means recording here too.
+                self.terms.record_arg_order(tid, &slots);
                 results.push(tid);
             }
             BuildFrame::Infix { node, slots } => {

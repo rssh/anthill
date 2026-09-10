@@ -20204,6 +20204,26 @@ impl<'a> Loader<'a> {
             } if !named_args.is_empty() => (*functor, pos_args.clone(), named_args.clone()),
             _ => return None,
         };
+        // (0) THE SURFACE, before anything about the name. §2.1's form is `name: Type`
+        // in a `(…)` ARGUMENT LIST; a `[…]` BRACKET is a type application, and `T = Red`
+        // inside one is a type ARGUMENT — the thing `Spec[T = Leaf]` has always meant.
+        // The two are byte-identical once built (WI-710/WI-927's whole reason for the
+        // provenance mark), so only the surface tells them apart.
+        //
+        // WI-20260909-C7ANM. Without this, `rule myrel[T = Red] :- …` was rebuilt as
+        // `myrel(?T)` with a `domain(?T, Red)` bound, so the `rule` and `fact` spellings
+        // of one bracketed head meant DIFFERENT things — MEASURED, the `fact` kept the
+        // binding and a body goal `myrel[T = ?t]` answered `?t = Red`, while the `rule`
+        // refused that goal with "expected 1 positional, got 0 positional + `T`". And
+        // `rule myrel[Int64, T = Red]` reached [`Self::rule_head_written_columns`] with
+        // positional args no written order was recorded for, which is a PANIC — a
+        // bracket is built by `convert_instantiation_term`, not by the argument-list
+        // frame that records the order. Declining at the surface is one repair for both:
+        // the head falls through to the generic conversion, which is what the `fact`
+        // spelling already took.
+        if self.parsed.terms.is_type_application(parse_id) {
+            return None;
+        }
         // (1) the head's own category. A qualified head REFERENCES and introduces
         // nothing, so `remap_symbol`'s answer is what decides: a resolved CONSTRUCTOR is
         // an entity head and keeps its named args.
@@ -20253,18 +20273,62 @@ impl<'a> Loader<'a> {
         if params.is_empty() {
             return None;
         }
-        let mut new_pos: SmallVec<[TermId; 4]> =
+        // CONVERSION ORDER IS UNCHANGED — the positional args first, then the
+        // parameters — and only the ASSEMBLY below moves. That matters: a bare name
+        // written positionally resolves BEFORE any parameter enters
+        // `rule_param_vars`, so it stays the symbolic constant the spec says it is,
+        // whichever column it ends up in.
+        let converted_pos: SmallVec<[TermId; 4]> =
             pos_args.iter().map(|&a| self.convert_term(a)).collect();
         let mut new_named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        // The parameter COLUMNS, keyed so [`Self::rule_head_written_columns`] can put
+        // each back where it was written.
+        let mut param_cols: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         for &(key, value) in named_args.iter() {
             if !params.iter().any(|&(k, v)| k == key && v == value) {
-                new_named.push((key, self.convert_term(value)));
+                // WI-20260909-C7ANM: the KEY is REINTERNED, like the parameter branch
+                // below already does for its variable name. `key` is a `parse.symbols`
+                // index and a head is a KB term, and the two tables share no numbering
+                // — MEASURED, this head kept `from:` as whatever KB symbol happened to
+                // sit at the parse index, and a body goal writing `mix(from: …)` was
+                // refused with "expected 2 positional + `TypeExtractor`".
+                //
+                // ONLY THIS SHAPE COULD SEE IT: a head with a non-parameter named arg
+                // reaches here only beside a parameter (`params.is_empty()` returns
+                // above), which is the same mixed head this ticket repairs.
+                let key = self.reintern(key);
+                let value = self.convert_term(value);
+                new_named.push((key, value));
                 continue;
             }
-            let name = self.reintern(key);
-            let vid = self.kb.fresh_var(name);
-            self.rule_param_vars
-                .insert(self.parsed.symbols.local_name(key).to_owned(), vid);
+            // ONE VARIABLE PER PARAMETER NAME PER RULE, not per head.
+            //
+            // WI-20260909-C7ANM. `rule_param_vars` is cleared once per RULE (see the
+            // head loop's "THE BOUNDS ARE PER HEAD, THE PARAMETERS ARE PER RULE"), and
+            // the heads share ONE body converted after them all — so minting a fresh
+            // var here overwrote the earlier head's entry, and every head but the LAST
+            // got a column the body never binds. MEASURED on `rule twin: aa(x: Red, ?d),
+            // bb(?d, x: Red) :- seedr(x), seedb(?d)`: `aa(?p, blue())` came back
+            // FLOUNDERED with `?p` free and a residual `domain(?p, Red)`, where the
+            // sigil twin answered `?p = red` — the same "both spellings, one answer"
+            // invariant this ticket is about, one head further along.
+            //
+            // The sigil form gets this for free: `?x` in two heads is ONE parse `VarId`,
+            // so its `var_map` lookup reuses the same KB var. This is that lookup, keyed
+            // by the parameter's name because a parameter has no parse var to key on.
+            // The BOUND still rides `rule_head_type_bounds`, which IS per head — so each
+            // head installs its own bound on the shared variable, exactly as the sigil
+            // spelling does.
+            let local = self.parsed.symbols.local_name(key).to_owned();
+            let vid = match self.rule_param_vars.get(&local) {
+                Some(&existing) => existing,
+                None => {
+                    let name = self.reintern(key);
+                    let fresh = self.kb.fresh_var(name);
+                    self.rule_param_vars.insert(local, fresh);
+                    fresh
+                }
+            };
             // The bound goes through the SAME channel the `?x: T` form uses
             // (`rule_head_type_bounds` → `install_rule_type_bounds` → the typer's
             // generated `domain` goal), so the two spellings are one internal form and
@@ -20297,8 +20361,9 @@ impl<'a> Loader<'a> {
             };
             self.in_rule_head_bound = saved_bound_ctx;
             self.rule_head_type_bounds.push((vid, bound));
-            new_pos.push(self.kb.alloc(Term::Var(Var::Global(vid))));
+            param_cols.push((key, self.kb.alloc(Term::Var(Var::Global(vid)))));
         }
+        let new_pos = self.rule_head_written_columns(parse_id, &converted_pos, &param_cols)?;
         let head = self.kb.alloc(Term::Fn {
             functor: head_sym,
             pos_args: new_pos,
@@ -20306,6 +20371,111 @@ impl<'a> Loader<'a> {
         });
         self.term_map.insert(parse_id.raw(), head);
         Some(head)
+    }
+
+    /// WI-20260909-C7ANM — the parameter columns and the positional ones, in the order
+    /// the author WROTE them.
+    ///
+    /// A parameter is a COLUMN, not a named argument: §2.1 says `rule g(x: Red, ?d)` is
+    /// the same rule as `rule g(?x: Red, ?d)`, so `x` is column 0 and `?d` is column 1.
+    /// `Term::Fn` files the head's arguments into a positional list and a named list,
+    /// which loses that interleaving — appending the parameters after the positional
+    /// args built `g(?d, ?x)` instead, and MEASURED that `g(red(), ?z)` came back with
+    /// `?z = red` — a value that never occupied `?z`'s column — while `g(blue(), ?z)`
+    /// was ADMITTED, which `x: Red` says it must not be. One wrong order, both symptoms: the bound
+    /// was correctly installed on `x`, and `x` was in the wrong column.
+    ///
+    /// The written order comes from the parse store
+    /// ([`crate::parse::ir::SimpleTermStore::arg_order`]), which records it exactly when
+    /// the split loses it. An ABSENT record means the list was not mixed, and with a
+    /// parameter present that leaves only "no positional args".
+    ///
+    /// `None` — a LOAD ERROR, not a panic — when the record and the two lists disagree.
+    /// The only way that happens is a converter frame that built a mixed argument list
+    /// without recording its order; today no such frame can produce a head this reader
+    /// is asked about (the argument-list frame records, and the bracket frame is
+    /// declined at gate (0) above), but the ADMITTING predicate is
+    /// [`Self::head_functor_defines_a_predicate`], which says yes to any UNRESOLVED
+    /// functor — a wider door than the census that closes it. A Rust panic out of the
+    /// loader is a compiler crash rather than a diagnostic, so the disagreement is
+    /// reported and the head falls back to the generic conversion.
+    ///
+    /// `parse_keyed_params` IS KEYED BY PARSE-TABLE SYMBOLS, because that is what
+    /// [`ArgSlot::Named`] carries. Its sibling `new_named` at the call site is keyed by
+    /// KB symbols (it goes into the built head), and the two tables share no numbering —
+    /// so "make them symmetric" is the one edit that must NOT be made here: re-interning
+    /// these keys makes every `find` below miss.
+    fn rule_head_written_columns(
+        &mut self,
+        parse_id: TermId,
+        positional: &[TermId],
+        parse_keyed_params: &[(Symbol, TermId)],
+    ) -> Option<SmallVec<[TermId; 4]>> {
+        // COPIED OUT of the parse store: the walk below reports through `self.errors`.
+        let order: Option<SmallVec<[ArgSlot; 4]>> = self
+            .parsed
+            .terms
+            .arg_order(parse_id)
+            .map(|o| o.iter().copied().collect());
+        let Some(order) = order else {
+            if !positional.is_empty() {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "WI-742 §2.1: this rule head has {} positional argument(s) beside {} \
+                         parameter(s), but no written argument order was recorded for it, so \
+                         the parameters cannot be placed in their columns",
+                        positional.len(),
+                        parse_keyed_params.len()
+                    ),
+                });
+                return None;
+            }
+            return Some(parse_keyed_params.iter().map(|&(_, t)| t).collect());
+        };
+        let mut out: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut next_pos = 0usize;
+        let mut placed = 0usize;
+        for slot in order.iter() {
+            match slot {
+                ArgSlot::Positional => match positional.get(next_pos) {
+                    Some(&t) => {
+                        next_pos += 1;
+                        out.push(t);
+                    }
+                    None => {
+                        self.errors.push(LoadError::Other {
+                            message: format!(
+                                "WI-742 §2.1: this rule head's recorded argument order names \
+                                 more positional slots than its {} positional argument(s)",
+                                positional.len()
+                            ),
+                        });
+                        return None;
+                    }
+                },
+                // A named arg that is NOT a parameter stays a named arg and takes no
+                // column — `rule reaches(from: ?a, x: Red)` keeps `from:` where it is.
+                ArgSlot::Named(k) => {
+                    if let Some(&(_, t)) = parse_keyed_params.iter().find(|&&(pk, _)| pk == *k) {
+                        out.push(t);
+                        placed += 1;
+                    }
+                }
+            }
+        }
+        if next_pos != positional.len() || placed != parse_keyed_params.len() {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "WI-742 §2.1: this rule head's recorded argument order places {next_pos} of \
+                     {} positional arguments and {placed} of {} parameters; the order and the \
+                     argument lists have diverged",
+                    positional.len(),
+                    parse_keyed_params.len()
+                ),
+            });
+            return None;
+        }
+        Some(out)
     }
 
     /// WI-742 §2.1 — is this resolved head functor the PREDICATE a rule defines, rather

@@ -2226,6 +2226,36 @@ referenced bare in the body, and they SHADOW a same-named symbol in scope. The
 schema follows the parameter list: `adult : Relation[(name: String, age: Int64)]`,
 names and types alike.
 
+A parameter is a COLUMN, and it holds the position it is WRITTEN in, so
+`rule g(x: Red, ?d)` is `g`'s first column and `rule g(?d, x: Red)` is its
+second. Parameters and sigil variables may therefore be interleaved freely. A
+named argument that is NOT a parameter takes no column at all and keeps its key
+where it stands (`rule mixed(from: ?a, x: Red)` is one column, `x`, plus the key
+`from:`).
+
+A parameter NAME denotes one clause variable for the WHOLE rule, not per head:
+a multi-head rule's heads share one body, so `rule twin: aa(x: Red, ?d), bb(?d,
+x: Red) :- …` reads one `x` in both heads, exactly as the `?x` spelling does.
+
+Only a `(…)` ARGUMENT LIST carries parameters. A `[…]` BRACKET is a type
+application, so `T = Red` inside one is the type ARGUMENT it has always been:
+`rule Spec[T = Red] :- …` binds `Spec`'s type parameter and means what the
+`fact Spec[T = Red]` spelling means, not a column named `T`.
+
+**Where the two spellings do NOT yet agree** (WI-20260909-C7ANM measured both;
+neither is delivered):
+
+- **A body-less head.** `rule f(?d, ?x: Red)` is refused — a DECLARATION stores
+  no clause for the bound's one enforcer to run in (see the `?x: T` entry above)
+  — while `rule f(?d, x: Red)` loads clean and declares `f`, its written
+  parameter enforcing nothing. The refusal reads the minted `?x: T` marker, and
+  a parameter is a plain named argument the marker test cannot see.
+- **An equational head.** `rule pk: pick(?a: Red, ?b) <=> 7 [simp]` fires; the
+  `pick(a: Red, ?b)` spelling of it loads clean and is INERT — the
+  reclassification runs on a rule's head atom, and an equation's head is the
+  connective, whose LHS it never descends into. So `a: Red` stays a named
+  argument and the LHS never matches.
+
 The reclassification is decided by the head's RESOLVED CATEGORY, never by case:
 an ENTITY-CONSTRUCTOR head keeps its named arguments untouched (`fact
 palette(c: red())` is unchanged, and entities are commonly lowercase). It also

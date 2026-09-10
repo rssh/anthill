@@ -18,6 +18,21 @@ use crate::span::Span;
 
 // ── Simple term store (parse-time only) ─────────────────────────
 
+/// One slot in a written argument list — `f(a, k: b, c)` is
+/// `[Positional, Named(k), Positional]`.
+///
+/// WI-20260909-C7ANM: this lives HERE, not in the converter that builds it, because
+/// [`SimpleTermStore::arg_order`] records it for the loader. `Term::Fn` splits a
+/// call's arguments into a positional list and a named list, which loses the
+/// INTERLEAVING between the two — and the rule-head parameter form (060 §2.1) turns a
+/// named argument into a positional column, so it is the one reader that needs the
+/// written order back.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ArgSlot {
+    Positional,
+    Named(Symbol),
+}
+
 /// Parse-time term paired with its source span. Bundling enforces the
 /// every-term-has-a-span invariant the legacy occurrence side-table relies on (see
 /// `docs/design/expr-occurrences.md`).
@@ -125,6 +140,27 @@ pub struct SimpleTermStore {
     /// which pins `ListLiteral(?x)` resolving to `anthill.reflect.ListLiteral` and went
     /// red the moment the query converter started lowering.
     collection_literals: HashSet<TermId>,
+
+    /// WI-20260909-C7ANM: the WRITTEN argument order of a call whose argument list
+    /// MIXES positional and named slots — the one shape `Term::Fn`'s positional/named
+    /// SPLIT cannot express. Recorded like [`Self::minted`] / [`Self::type_applications`],
+    /// for the same stated reason: provenance the consumer needs is carried, not
+    /// re-derived.
+    ///
+    /// RECORDED ONLY FOR THE MIXED SHAPE, and that predicate is the whole contract: an
+    /// all-positional list is its own order, and an all-named one keeps written order in
+    /// `named_args` (the parse store does not sort — the KB's hash-consed store does).
+    /// So an ABSENT entry means "the split is lossless here", not "nobody recorded it",
+    /// and the reader may treat positional-then-named as written order exactly then.
+    ///
+    /// THE SLOTS COVER THE ARGUMENT LIST ONLY. A `ParseAux` named child the converter
+    /// appends after the walk (`type_args`, `recv_type`) has no slot here, because it
+    /// was not written in the list; every reader filters those out first
+    /// (`named_child_survives_walk`).
+    ///
+    /// Governed by the `TermId`-stability caveat stated on [`Self::minted`], like its
+    /// three siblings.
+    arg_order: HashMap<TermId, SmallVec<[ArgSlot; 4]>>,
 }
 
 impl SimpleTermStore {
@@ -211,6 +247,27 @@ impl SimpleTermStore {
     /// the term.
     pub fn is_collection_literal(&self, id: TermId) -> bool {
         self.collection_literals.contains(&id)
+    }
+
+    /// WI-20260909-C7ANM: record the WRITTEN slot order of `id`'s argument list.
+    ///
+    /// A NO-OP unless the list actually MIXES positional and named slots — see the
+    /// `arg_order` field for why that predicate is the contract and not an
+    /// optimization. Recording it here rather than at each caller keeps the predicate
+    /// in ONE place: a producer that hands over its slots cannot record a subset by
+    /// accident.
+    pub fn record_arg_order(&mut self, id: TermId, slots: &[ArgSlot]) {
+        let mixed = slots.iter().any(|s| matches!(s, ArgSlot::Positional))
+            && slots.iter().any(|s| matches!(s, ArgSlot::Named(_)));
+        if mixed {
+            self.arg_order.insert(id, slots.iter().copied().collect());
+        }
+    }
+
+    /// The written slot order of `id`'s argument list, or `None` when the
+    /// positional/named split already IS that order (see [`Self::record_arg_order`]).
+    pub fn arg_order(&self, id: TermId) -> Option<&[ArgSlot]> {
+        self.arg_order.get(&id).map(|v| v.as_slice())
     }
 
     /// Iterate every allocated `(TermId, &Term)` in allocation order.

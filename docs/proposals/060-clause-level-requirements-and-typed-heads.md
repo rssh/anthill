@@ -124,10 +124,17 @@ How it lands, in four steps:
    entities are commonly lowercase, so spelling can never be the discriminator).
 3. **Scope — bare body references, loud typos.** The introduced names are
    clause-scoped, referenced bare like operation parameters; a body typo is an
-   unresolved-name error, never a silent fresh variable.
+   unresolved-name error, never a silent fresh variable. Clause-scoped means per
+   RULE: a multi-head rule's heads share one body, so one parameter name is one
+   variable across all of them (WI-20260909-C7ANM).
 4. **Compilation — identical to §2.** Head structurally bare (indexed as today),
    `domain(?p, Person)`-style generated goals, bounds read by
-   `relation_clause_columns`.
+   `relation_clause_columns`. A parameter is a **column in the position it is
+   written**, so the two spellings agree on order as well as meaning and may be
+   interleaved (`rule g(x: Red, ?d)` vs `rule g(?d, x: Red)`). `Term::Fn` files a
+   call's arguments into a positional list and a named list, which loses that
+   interleaving; the parse store carries the written order across the split
+   (WI-20260909-C7ANM).
 
 Bounds of the form:
 

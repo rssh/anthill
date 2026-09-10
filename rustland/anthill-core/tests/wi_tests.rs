@@ -1671,3 +1671,6 @@ mod wi_96ztm_two_dictionaries_test;
 
 #[path = "include/wi_s8cbv_projection_requirement_test.rs"]
 mod wi_s8cbv_projection_requirement_test;
+
+#[path = "include/wi_c7anm_head_parameter_column_test.rs"]
+mod wi_c7anm_head_parameter_column_test;

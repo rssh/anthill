@@ -39,6 +39,12 @@
 //!    `the_parameter_spelling_earns_the_same_c666a_admission` fails at load; the sigil
 //!    spelling's admission row passes either way.
 //!
+//! WHERE THE PARAMETER LANDS IS NOT ASKED HERE. Every §2.1 head below is ALL
+//! parameters, so its columns come out in written order whatever the rebuild does with
+//! the positional/named split. A head that MIXES a parameter with a sigil variable did
+//! not, and answered the wrong column silently — `wi_c7anm_head_parameter_column_test`
+//! owns that question and its controls (WI-20260909-C7ANM).
+//!
 //! NO ROW PINS AN "UNRESOLVED BARE NAME IN A HEAD" REFUSAL, deliberately — see
 //! [`an_unresolved_bare_head_name_stays_a_symbolic_constant`], which is what such a
 //! refusal would break.
