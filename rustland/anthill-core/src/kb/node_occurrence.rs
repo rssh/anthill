@@ -4969,13 +4969,19 @@ pub fn value_to_term(
 /// ?ls: Box(items: ?ls) -: contains(?ls, "z")` loaded clean over a row that
 /// violates it (`wi_dqd5w_spec_op_relational_view_test`).
 ///
-/// TOTAL, and every arm is the reading its carrier already has elsewhere: a `Node`
-/// is itself, a `Term` materializes, an `Entity` is the APPLICATION it spells, a
-/// scalar / `Var` / `SymbolRef` is its `Expr` leaf ([`scalar_value_expr`]), and
-/// anything else rides as the `Expr::Spliced` carrier WI-1040 added for exactly
-/// that. A caller that needs a CALL still tests the shape it got (both hooks match
-/// `Expr::Apply` / `ApplyWithin` and fall through otherwise, which is their
-/// pre-existing no-answer outcome for an unrecognized goal).
+/// TOTAL, AND IT READS THE VIEW RATHER THAN ENUMERATING CARRIERS. Exactly two
+/// carriers are named, because exactly two own a materializer of their own: a
+/// `Node` IS an occurrence, and a `Term` has [`materialize_from_handle`]. Every
+/// other carrier is asked [`crate::kb::term_view::TermView::head`] — an application
+/// with a functor becomes that application, reading its children through `pos_arg` /
+/// `named_arg`; anything else is its `Expr` leaf ([`scalar_value_expr`]) or rides
+/// the `Expr::Spliced` carrier WI-1040 added for exactly that. So `Entity`, `Tuple`
+/// and any carrier added later are handled by the same three lines, and a caller
+/// that needs a CALL still tests the shape it got (both hooks match `Expr::Apply` /
+/// `ApplyWithin` and fall through otherwise, their pre-existing no-answer outcome
+/// for an unrecognized goal). A `Tuple` heads `functor: None`, so it takes the leaf
+/// tail and stays `Spliced` — unchanged, and now by the view's own answer rather
+/// than by omission from a list.
 ///
 /// THE `Entity` ARM DOES NOT GO THROUGH [`value_to_term`], and that is the whole
 /// design decision. That pair (`value_to_term` + `materialize_from_handle`) would
@@ -5014,50 +5020,74 @@ pub fn value_to_term(
 /// The `Term` arm still delegates to the iterative walker, so a deep TERM costs
 /// nothing here.
 pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurrence> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    // TWO CARRIERS OWN A MATERIALIZER, and that is the whole of the carrier match: a
+    // `Node` IS an occurrence, and a `Term` has `materialize_from_handle` — the
+    // iterative walker that also decodes `visit_fn`'s keyed reflect forms. Everything
+    // else is read through the VIEW below rather than enumerated, so a carrier added
+    // later needs no arm here.
     match v {
-        Value::Node(o) => Rc::clone(o),
-        Value::Term { id, .. } => materialize_from_handle(kb, *id),
-        Value::Entity {
-            functor,
-            pos,
-            named,
-        } => {
-            if visit_fn_keys_functor(kb, *functor) {
-                // The ONE materializer, so the keyed form reads identically from
-                // both carriers. An `Err` is a carrier with no term form at all
-                // (an opaque handle beneath the spine) — carried as `Spliced`
-                // rather than dropped; no caller can read it as a call, which is
-                // the same no-answer outcome the `Term` carrier has for it.
-                return match value_to_term(kb, v) {
-                    Ok(t) => materialize_from_handle(kb, t),
-                    Err(_) => {
-                        NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None)
-                    }
-                };
-            }
-            let pos_args: Vec<Rc<NodeOccurrence>> =
-                pos.iter().map(|c| value_as_occurrence(kb, c)).collect();
-            let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = named
-                .iter()
-                .map(|(k, c)| (*k, value_as_occurrence(kb, c)))
-                .collect();
-            NodeOccurrence::new_expr(
-                Expr::Apply {
-                    recv_type: None,
-                    functor: *functor,
-                    pos_args,
-                    named_args,
-                    type_args: Vec::new(),
-                },
-                empty_span(),
-                None,
-            )
-        }
-        other => match scalar_value_expr(other) {
-            Some(expr) => NodeOccurrence::new_expr(expr, empty_span(), None),
-            None => NodeOccurrence::new_expr(Expr::Spliced(other.clone()), empty_span(), None),
-        },
+        Value::Node(o) => return Rc::clone(o),
+        Value::Term { id, .. } => return materialize_from_handle(kb, *id),
+        _ => {}
     }
+    let ViewHead::Functor {
+        functor: Some(functor),
+        pos_arity,
+        named_arity: _,
+    } = v.head(kb)
+    else {
+        // Not an application on any carrier: a scalar / `Var` / `SymbolRef` is its
+        // `Expr` leaf, and anything else rides the `Expr::Spliced` carrier WI-1040
+        // added for exactly that.
+        return match scalar_value_expr(v) {
+            Some(expr) => NodeOccurrence::new_expr(expr, empty_span(), None),
+            None => NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None),
+        };
+    };
+    if visit_fn_keys_functor(kb, functor) {
+        // The ONE materializer, so the keyed form reads identically from both
+        // carriers. An `Err` is a carrier with no term form at all (an opaque handle
+        // beneath the spine) — carried as `Spliced` rather than dropped; no caller
+        // can read it as a call, which is the same no-answer outcome the `Term`
+        // carrier has for it.
+        return match value_to_term(kb, v) {
+            Ok(t) => materialize_from_handle(kb, t),
+            Err(_) => NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None),
+        };
+    }
+    // The children come OWNED first: `pos_arg` / `named_arg` borrow `kb`, and the
+    // recursion below needs it mutably. Same idiom as `occ_arg1_pattern`.
+    let pos: Vec<Value> = (0..pos_arity)
+        .map(|i| v.pos_arg(kb, i).map_or(Value::Unit, |item| item.to_value()))
+        .collect();
+    let named: Vec<(Symbol, Value)> = v
+        .named_keys(kb)
+        .into_iter()
+        .map(|k| {
+            let child = v
+                .named_arg(kb, k)
+                .map_or(Value::Unit, |item| item.to_value());
+            (k, child)
+        })
+        .collect();
+    let pos_args: Vec<Rc<NodeOccurrence>> =
+        pos.iter().map(|c| value_as_occurrence(kb, c)).collect();
+    let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = named
+        .iter()
+        .map(|(k, c)| (*k, value_as_occurrence(kb, c)))
+        .collect();
+    NodeOccurrence::new_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor,
+            pos_args,
+            named_args,
+            type_args: Vec::new(),
+        },
+        empty_span(),
+        None,
+    )
 }
 
 // ── Substitution over a rule-body-atom occurrence ───────────────

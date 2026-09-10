@@ -60,6 +60,22 @@
 //!    first census found; this bullet is what says a census of goal readers is not
 //!    finished when the goal itself reads right.
 //!
+//! **CARRIER-NEUTRAL MEANS READING `TermView`, NOT ADDING AN ARM PER CARRIER** — the
+//! rule this ticket's first cut broke in four places and now follows. `walk_arg` and
+//! `is_unreduced_builtin_call` are ONE VIEW READ each (`value_global_var` over
+//! `index_var`; `head`), `op_call_as_occ` names only the `Node` carrier that has an
+//! extra condition of its own and reads the view for the rest, and
+//! `node_occurrence::value_as_occurrence` names only the two carriers that OWN a
+//! materializer (`Node` IS an occurrence; `Term` has `materialize_from_handle`) and
+//! reads `head` / `pos_arg` / `named_arg` for everything else. An arm list is what
+//! drifted here in the first place: `walk_arg`'s had two of the three VAR spellings
+//! and `is_unreduced_builtin_call`'s two of the three APPLICATION spellings. Where
+//! the view is WIDER than the old list the difference is written out rather than
+//! absorbed — `head` canonicalizes a bare `Ref` / `SymbolRef` to a nullary
+//! application, which `is_unreduced_builtin_call` must NOT read as a call (§5.4's
+//! unapplied function value is DATA) and `op_call_as_occ` MUST (WI-20260902-CZJ2N's
+//! `tau()`); each says so at its site.
+//!
 //! Two readers named in the ticket needed NO change and are recorded so the list is not
 //! read as complete-by-omission: `simp_rewrite`'s `children_of` / `reassemble_value`
 //! already grew their `Entity` / `Tuple` arms in N20EZ (driven by
@@ -91,8 +107,9 @@
 //! | `reify_value_transient`: `Transient` → `HashConsed` (the CARRIER alone) | [`the_walk_is_flat_over_an_unbound_link`] |
 //! | the Bool view's `value_as_occurrence` → the `Term`/`Node` match | `wi_dqd5w_spec_op_relational_view_test::a_constraint_guard_body_takes_the_relational_view` **and** `…::a_quantified_constraint_over_a_spec_op_holds_for_well_formed_rows` |
 //! | the arity+1 view's `value_as_occurrence` → the `Term`/`Node` match | [`the_arity_plus_one_view_reads_an_entity_goal`] |
-//! | `is_unreduced_builtin_call`'s `Entity` arm | [`an_entity_carried_builtin_operand_still_delays`] |
-//! | `op_call_as_occ`'s `Entity` arm | [`an_entity_carried_op_call_operand_still_case_splits`] |
+//! | `is_unreduced_builtin_call`'s view read → the `Node`/`Term` carriers only | [`an_entity_carried_builtin_operand_still_delays`] |
+//! | `op_call_as_occ`'s view read → the `Term` carrier only | [`an_entity_carried_op_call_operand_still_case_splits`] |
+//! | `walk_arg`'s view read → every var spelling but the bare `Value::Var` | *(green alone — see the PAIR below)* |
 //! | `value_as_occurrence`'s `is_reflect_form_functor` branch | [`a_reflect_form_reads_the_same_from_both_carriers`] |
 //!
 //! TWO REPAIRS SHARE ONE ROW, AND NEITHER IS SEPARATELY ATTRIBUTED — said here rather
@@ -107,8 +124,9 @@
 //!    `goals[0]`, so once a goal first moves onto the `Entity` carrier that
 //!    fall-through froze it at the first visit's σ for every later visit — the
 //!    interning walk got this for free by always handing back a `Value::Term`.
-//!  * **`walk_arg` chases all three var spellings** — `Term::Var`, `Expr::Var`, and
-//!    the bare `Value::Var` (WI-109) it did not.
+//!  * **`walk_arg` asks the view** — `value_global_var` over `TermView::index_var`,
+//!    ONE question covering `Term::Var`, `Expr::Var` and the bare `Value::Var`
+//!    (WI-109) its old arm list left out.
 //!
 //! Both are kept. The first is the root — the freeze reaches EVERY σ-free reader of
 //! `goals[0]` (`query_view`'s candidate selection, `apply_eq_rules`' redex,
@@ -116,8 +134,9 @@
 //! repaired by the second. The second is `walk_arg`'s own stated contract ("the
 //! representation-agnostic analog of `walk(goal's positional arg, σ)`", and
 //! `value_is_unbound_var`'s doc names it as the caller that walks first); 2 of 3
-//! spellings is the asymmetry class this whole ticket is about. No fixture separates
-//! them, and none is claimed to.
+//! spellings is the asymmetry class this whole ticket is about, and asking the view
+//! removes the list that could drift again. No fixture separates them, and none is
+//! claimed to.
 //!
 //! CONTROLS — each passes with every one of those backed out:
 //!
@@ -586,7 +605,7 @@ end
 /// here as a correction rather than as part of that list.
 ///
 /// A logic variable reaches a builtin's argument slot on three carriers, and
-/// `walk_arg` chased only two: `Term::Var(Global)` and `Expr::Var(Global)`. The bare
+/// `walk_arg`'s ARM LIST chased two: `Term::Var(Global)` and `Expr::Var(Global)`. The bare
 /// value-level `Value::Var(Global)` (WI-109) was returned UNWALKED, so
 /// `value_is_unbound_var` answered `true` for it by carrier however deeply σ had bound
 /// it. Nothing put one in an argument slot while the walk interned — `fn_value` lowered
@@ -599,7 +618,8 @@ end
 /// is ONE definite solution.
 ///
 /// MEASURED: 1 at HEAD, 0 with the walk transient and this arm missing, 1 again with
-/// it. The row FAILS when the two `Value::Var` arms of `walk_arg` are narrowed back to
+/// it. `walk_arg` is one `value_global_var` read now, so there is no list to leave a
+/// spelling out of. The row FAILS when that read is narrowed back to
 /// `v.clone()` / `v`.
 #[test]
 fn a_rotated_builtin_reads_the_link_its_sibling_bound() {

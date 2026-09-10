@@ -4570,15 +4570,17 @@ impl KnowledgeBase {
     /// leaf are resolved via σ, otherwise kept as-is (WI-246). `None` ⇒ the arg
     /// slot is absent.
     ///
-    /// **ALL THREE VAR SPELLINGS CHASE, and the bare `Value::Var` one is
-    /// WI-20260906-7YPGM.** A logic variable reaches an argument slot on three
-    /// carriers — `Term::Var(Global)`, `Expr::Var(Global)`, and the value-level
-    /// `Value::Var(Global)` (WI-109) — and this function is what the delay tests
-    /// (`value_is_unbound_var`, `value_is_ground`) and
-    /// [`Self::resolve_result_target`] read AFTER. The third arm was missing and
-    /// the gap was invisible while nothing put a bare `Value::Var` in an argument
+    /// **IT ASKS THE VIEW, NOT THE CARRIER** (WI-20260906-7YPGM). "Is this argument a
+    /// bound logic variable?" has ONE owner —
+    /// [`Self::value_global_var`], over `TermView::index_var` — and this function's
+    /// whole job is to answer it and chase. It used to be a six-arm carrier match
+    /// that chased `Term::Var` and `Expr::Var` and NOT the value-level
+    /// `Value::Var` (WI-109), which is the drift an arm-per-carrier list produces
+    /// and the reason the codebase reads through the view instead.
+    ///
+    /// The gap was invisible while nothing put a bare `Value::Var` in an argument
     /// slot: the goal walk interned an answer link's leaf to `Term::Var`, which the
-    /// first arm chases. 7YPGM stopped interning it, so the link now arrives on its
+    /// term arm chased. 7YPGM stopped interning it, so the link now arrives on its
     /// own carrier and an UNWALKED `Value::Var` read as "still unbound" however
     /// deeply σ had bound it. MEASURED, a LOST SOLUTION: `[loose(?x, ?y), eq(?y, 1),
     /// simple(?y)]` as term goals answered 1 definite solution and answered 0 —
@@ -4586,27 +4588,19 @@ impl KnowledgeBase {
     /// it still read the stale `Var` and floundered. Found by `/code-review`;
     /// DRIVEN by `wi_7ypgm_goal_walk_flatness_test::
     /// a_rotated_builtin_reads_the_link_its_sibling_bound`.
+    ///
+    /// `None` ⇒ the arg slot is absent. A non-variable argument, and a variable σ
+    /// does not bind, ride through on the carrier they arrived on.
     fn walk_arg(&self, item: Option<ViewItem>, subst: &Substitution) -> Option<Value> {
-        // One chase for the two carriers that name a var directly, so a later arm
-        // cannot answer a different question about the same variable.
-        let chase = |v: &Var, fallback: Value| match v.as_global() {
-            Some(vid) => self
-                .chase_var(vid, subst)
-                .map_or(fallback, |bound| bound.clone()),
-            None => fallback,
-        };
-        Some(match item? {
-            ViewItem::Term(t) => self.walk_view(t, subst),
-            ViewItem::Value(Value::Term { id: t, .. }) => self.walk_view(*t, subst),
-            ViewItem::Owned(Value::Term { id: t, .. }) => self.walk_view(t, subst),
-            ViewItem::Value(v @ Value::Var(var)) => chase(var, v.clone()),
-            ViewItem::Owned(Value::Var(var)) => chase(&var, Value::Var(var)),
+        let v = match item? {
+            ViewItem::Term(t) => Value::term(t),
+            ViewItem::Node(occ) => Value::Node(occ),
             ViewItem::Value(v) => v.clone(),
             ViewItem::Owned(v) => v,
-            ViewItem::Node(occ) => match occ.as_expr() {
-                Some(Expr::Var(var)) => chase(var, Value::Node(Rc::clone(&occ))),
-                _ => Value::Node(occ),
-            },
+        };
+        Some(match self.value_global_var(&v) {
+            Some(vid) => self.chase_var(vid, subst).map_or(v, Clone::clone),
+            None => v,
         })
     }
 
@@ -8689,15 +8683,28 @@ impl KnowledgeBase {
     /// `Value::Entity` goal carrier and a reader will ask why not this one. A
     /// `Value::Term` bodied op-call operand already answers `false` here and always
     /// has, so an `Entity` one answering `false` is PARITY, not a regression the
-    /// carrier change introduced — and under `eq` the two are not undefended:
-    /// `unfold_eq_operand` runs BEFORE the builtin and picks such an operand up
-    /// through `op_call_as_occ`, whose `Term` and (since 7YPGM) `Entity` arms both
-    /// case-split it. Under `cmp`, which has no such route, a term-carried bodied
-    /// op-call IS compared structurally — a pre-existing hole this ticket neither
-    /// widened nor closed. Widening this predicate is a behaviour change of its own:
-    /// it decides `eq`'s DOMAIN, where the paragraph above records 5 measured
-    /// failures from admitting too much, so it needs its own measurement rather than
-    /// riding along with a carrier repair. Raised by `/code-review`.
+    /// carrier change introduced.
+    ///
+    /// **IT IS ALSO A LIVE WRONG ANSWER, and the size of the hole is MEASURED rather
+    /// than argued** — WI-20260906-4VJ7T owns closing it. The reason is not this
+    /// predicate alone: [`Self::reduce_op_value`] folds only a `Value::Node` too, so
+    /// on the other two carriers a call is neither REDUCED nor DELAYED, and it enters
+    /// `sem_eq_values`' ladder as DATA. Every arm of that ladder asks about a CARRIER
+    /// (reflexivity, a head `Eq` override, a Float); an operation application matches
+    /// none, so it falls out the structural tail. `unfold_eq_operand` does NOT cover
+    /// it — that route declines a GROUND scrutinee at `folded_call_match`'s flex
+    /// check. MEASURED, one program with two readings decided only by where the goal
+    /// was written (rule body = `Node`, correct; term-carried = wrong):
+    /// `neq(dbl(2), 4)` answers 1 where the truth is 0, `eq(dbl(2), 4)` answers 0
+    /// where the truth is 1, `lt(dbl(2), 5)` answers 0 where the truth is 1 — and a
+    /// constraint guard `no ?v: Box(w: ?v) -: neq(dbl(?v), 4)` over `fact Box(w: 2)`
+    /// REFUSES a corpus that violates nothing.
+    ///
+    /// It is not fixed HERE because widening this predicate alone makes such an
+    /// operand delay for ever (nothing would ever reduce it), and widening its
+    /// partner changes what `eq`/`cmp` DECIDE for a whole class of operands — the
+    /// paragraph above records 5 measured `wi616` failures from admitting too much
+    /// through this very door. Raised by `/code-review`.
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
         let Value::Node(occ) = v else { return false };
         match occ.as_expr() {
@@ -8780,28 +8787,38 @@ impl KnowledgeBase {
     /// motivated this — the `sub(?x,?y)` of `neq(sub(?x,?y), 1)` arrives
     /// Term-carried.
     ///
-    /// WI-20260906-7YPGM ADDED THE `Entity` ARM, and its absence was a WRONG
-    /// ANSWER rather than a missing one — which is what makes it this predicate's
-    /// business and not a carrier tidy-up. The goal walk keeps a σ-moved
-    /// application off the store, so the operand of a term-carried
+    /// WI-20260906-7YPGM MADE IT A VIEW READ, and the `Entity` carrier it thereby
+    /// gained was a WRONG ANSWER rather than a missing one — which is what makes it
+    /// this predicate's business and not a carrier tidy-up. The goal walk keeps a
+    /// σ-moved application off the store, so the operand of a term-carried
     /// `neq(sub(?x,?y), 1)` whose `?x` σ has bound arrives as an `Entity` spine;
     /// answering `false` for it is exactly the "silently, unconditionally TRUE"
     /// verdict the paragraph above forbids. DRIVEN by
     /// `wi_7ypgm_goal_walk_flatness_test::an_entity_carried_builtin_operand_still_delays`.
+    ///
+    /// **THE ARITY TEST IS WHAT THE OLD CARRIER MATCH WAS ENCODING, so it is written
+    /// out rather than lost in the rewrite.** That match accepted `Expr::Apply` and
+    /// `Term::Fn` — the two spellings that ARE applications — and the storage canon
+    /// collapses a nullary `Fn{f}` to `Ref(f)` (WI-436), so `pos + named > 0` is the
+    /// same set said carrier-neutrally. Dropping it was tried and is wrong in
+    /// PRINCIPLE even though `wi_tests` stayed green: `head` canonicalizes
+    /// `Term::Ref` / `Value::SymbolRef` / `Expr::Ref` to `ViewHead::nullary`, and a
+    /// bare name in OPERAND position is §5.4's unapplied function value — DATA, and
+    /// the carrier an `OpRef` / dictionary mint rides (WI-20260902-VZC2C). Delaying
+    /// on it would lose an answer, not refuse one. `op_call_as_occ` reads the same
+    /// head WITHOUT this test, deliberately: a bare nullary BODIED-op call is a call
+    /// there (WI-20260902-CZJ2N measured `tau()`), and the difference between the two
+    /// is that this one has no way to tell the reading apart while that one has
+    /// already been given it.
     fn is_unreduced_builtin_call(&self, v: &Value) -> bool {
-        let functor = match v {
-            Value::Node(occ) => match occ.as_expr() {
-                Some(Expr::Apply { functor, .. }) => *functor,
-                _ => return false,
-            },
-            Value::Term { id, .. } => match self.get_term(*id) {
-                Term::Fn { functor, .. } => *functor,
-                _ => return false,
-            },
-            Value::Entity { functor, .. } => *functor,
-            _ => return false,
-        };
-        self.builtins.get(&functor).is_some()
+        match v.head(self) {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => pos_arity + named_arity > 0 && self.builtins.get(&f).is_some(),
+            _ => false,
+        }
     }
 
     /// WI-1057 — did [`Self::reduce_op_value`] hand back a BODY-LESS SPEC-OP CALL it
@@ -8901,48 +8918,43 @@ impl KnowledgeBase {
                 Some(Rc::clone(o))
             }
             Value::Node(_) => None,
-            Value::Term { id, .. } => {
-                // WI-20260902-CZJ2N: a NULLARY bodied-op call is stored bare, so
-                // without the `Ref`/`Ident` arm a term-carried `tau()` operand went
-                // unrecognized and `unfold_eq_operand`'s WI-580 case-split was
-                // abandoned — missing solutions / an undischarged residual where the
-                // equation used to unfold.
-                let functor = match self.get_term(*id) {
-                    Term::Fn { functor, .. } => *functor,
-                    Term::Ref(s) | Term::Ident(s) => *s,
-                    _ => return None,
+            // EVERY OTHER CARRIER READS THE VIEW (WI-20260906-7YPGM). The `Term` and
+            // `Entity` spellings of one op call must give one answer, and an arm each
+            // is how the two drift: `head` already canonicalizes `Term::Fn`,
+            // `Term::Ref`/`Ident`, `Value::SymbolRef` and an `Entity` spine to one
+            // `ViewHead::Functor`, which is exactly the set WI-20260902-CZJ2N had to
+            // spell out by hand ("a NULLARY bodied-op call is stored bare, so without
+            // the `Ref`/`Ident` arm a term-carried `tau()` operand went unrecognized
+            // and `unfold_eq_operand`'s WI-580 case-split was abandoned"). Before
+            // 7YPGM an `Entity`-carried operand — which the goal walk now builds for
+            // `eq(?r, f(?x))` once σ binds `?x` — fell to `_ => None` and abandoned
+            // that same case-split.
+            //
+            // NO ARITY TEST, unlike [`Self::is_unreduced_builtin_call`]: CZJ2N's
+            // `tau()` IS the nullary case, and admitting it here is that ticket's
+            // measured decision.
+            //
+            // WI-20260826-VPEWK widened two OTHER readers of this same
+            // `op_body_node(..).is_some()` shape and deliberately not this one. The
+            // body is not a proxy here, it is the SUBJECT: this feeds
+            // [`Self::unfold_eq_operand`], which case-splits an unground operand into
+            // one continuation per `match` ARM of the callee's body. A
+            // host-implemented op has no arms to split on, so admitting one would
+            // hand that function a callee it cannot expand.
+            _ => {
+                let ViewHead::Functor {
+                    functor: Some(f), ..
+                } = v.head(self)
+                else {
+                    return None;
                 };
-                // WI-20260826-VPEWK widened two OTHER readers of this same
-                // `op_body_node(..).is_some()` shape and deliberately not this one.
-                // The body is not a proxy here, it is the SUBJECT: this feeds
-                // [`Self::unfold_eq_operand`], which case-splits an unground operand
-                // into one continuation per `match` ARM of the callee's body. A
-                // host-implemented op has no arms to split on, so admitting one would
-                // hand that function a callee it cannot expand.
-                let id = *id;
-                if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
-                    Some(super::node_occurrence::materialize_from_handle(self, id))
-                } else {
-                    None
-                }
-            }
-            // WI-20260906-7YPGM — the `Term` arm's twin on the carrier the goal walk
-            // now builds. `eq(?r, f(?x))` as a term-carried goal walks to an
-            // `Entity` spine once σ binds `?x`, so its `f(…)` operand stopped being a
-            // `Value::Term` and `_ => None` ABANDONED the WI-580 case-split — the same
-            // missing-solution outcome the CZJ2N paragraph above describes for a bare
-            // nullary call, one carrier over. Same body test as the `Term` arm, and
-            // the occurrence is built by the shared `value_as_occurrence`.
-            Value::Entity { functor, .. } => {
-                let functor = *functor;
-                if self.builtins.get(&functor).is_none() && self.op_body_node(functor).is_some() {
+                if self.builtins.get(&f).is_none() && self.op_body_node(f).is_some() {
                     let v = v.clone();
                     Some(super::node_occurrence::value_as_occurrence(self, &v))
                 } else {
                     None
                 }
             }
-            _ => None,
         }
     }
 
