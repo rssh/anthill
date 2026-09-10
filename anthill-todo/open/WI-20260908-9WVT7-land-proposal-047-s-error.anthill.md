@@ -329,13 +329,24 @@ while the other 37 codegen rows pass either way. The corpus witness is louder: w
 filter off, `anthill-stl` does not compile at all.
 
 AND THE DRIVER ITSELF, which is what the whole ticket was for:
-`Error.reify(lambda () -> KB.loaded(cons(src, nil)))` on a candidate that does not parse
-returns `err(load_failed(diagnostics))` with the diagnostics intact — the arm that kept
-the guardians `LoadChecker.check` in host Rust (`Err(e) => load_failure_to_rejected`),
-now writable in anthill. `a_scoped_loads_diagnostics_are_caught_in_anthill` asserts both
-arms: a candidate that loads reaches `ok`, one that does not yields exactly one
-diagnostic. It fails under a back-out of the RETYPE at LOAD time, not at run time — a
-bare-`Error` body is refused by a typed `reify`, which is the point of retyping.
+`Error.reify(lambda () -> KB.loaded(cons(src, nil)))` returns `err(load_failed(ds))` with
+the LOADER'S OWN PROSE intact — the arm that kept the guardians `LoadChecker.check` in
+host Rust (`Err(e) => load_failure_to_rejected`), now writable in anthill.
+
+THE ACCEPTANCE ASSERTS THE PROSE, NOT A COUNT, and the first cut of it got this wrong —
+it answered `length(ds)`, which proves a list of the right length arrived and nothing
+about its content, and a model reading "1" learns nothing about what to fix. What the
+diagnostics actually carry, measured:
+  * `namespace broken.` -> `source 0: 1:1: syntax error near `namespace broken.``
+    — located, and it says WHICH candidate, which is what a checker handed several
+    sources needs to attribute the failure.
+  * `operation f(n: Int64) -> String = n` -> `type mismatch in f.return (op-return):
+    expected String, got Int64` — this names the CHECK THAT RAN and both sides of what
+    it wanted. That is a repair instruction, not a verdict, and it is the whole reason
+    the payload is worth catching.
+`a_scoped_loads_diagnostics_are_caught_in_anthill` pins both shapes plus the `ok` arm. It
+fails under a back-out of the RETYPE at LOAD time, not at run time — a bare-`Error` body
+is refused by a typed `reify`, which is the point of retyping.
 
 The bridge's own `loaded` now returns `LoadFailed::LoadFailed { diagnostics }` rather
 than the generic `Error`. That is the retype's consequence, not a defect: the ROW is what

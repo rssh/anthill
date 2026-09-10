@@ -43,8 +43,8 @@ const PROGRAM: &str = r#"
 namespace test.reify
   import anthill.prelude.Result
   import anthill.prelude.Result.{ok, err}
-  import anthill.prelude.{Int64, String, Error, Result}
-  import anthill.prelude.List.{cons, nil, length}
+  import anthill.prelude.{Int64, String, Error, Result, List}
+  import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{KB, LoadFailed}
 
   sort Boom
@@ -131,14 +131,27 @@ namespace test.reify
   -- catchable only because its row was retyped from bare `Error` to
   -- `Error[LoadFailed]` — a typed `reify` refuses a body that does not say what it
   -- raises.
-  operation checkSource(src: String) -> Int64 =
-    match Error.reify(lambda () -> KB.loaded(cons(src, nil)))
-      case ok(_)  -> 0 - 1
-      case err(e) -> match e
-                       case load_failed(ds) -> length(ds)
+  --
+  -- THE DIAGNOSTICS ARE THE ANSWER, WHICH IS WHY THIS CARRIES THE PROSE. Each one is
+  -- already located and already names the CHECK that ran and what it wanted — that is
+  -- what a repair loop feeds back to a model. A checker that answered a COUNT would
+  -- prove a list of the right length arrived and nothing about its content, and a
+  -- model reading "1" learns nothing about what to fix.
+  operation firstDiagnostic(ds: List[T = String]) -> String =
+    match ds
+      case nil()      -> "load failed with no diagnostics"
+      case cons(d, _) -> d
 
-  operation goodSource() -> Int64 = checkSource("namespace ok.one end")
-  operation badSource() -> Int64 = checkSource("namespace broken.")
+  operation checkSource(src: String) -> String =
+    match Error.reify(lambda () -> KB.loaded(cons(src, nil)))
+      case ok(_)  -> "loaded"
+      case err(e) -> match e
+                       case load_failed(ds) -> firstDiagnostic(ds)
+
+  operation goodSource() -> String = checkSource("namespace ok.one end")
+  operation unparsableSource() -> String = checkSource("namespace broken.")
+  operation illTypedSource() -> String =
+    checkSource("namespace u.x  operation f(n: Int64) -> String = n  end")
 
   -- NAME CAPTURE. A parameter merely NAMED `reify`, holding something callable.
   -- `dispatch_call_with_requirements_inner`'s local lookup matches by SHORT NAME,
@@ -362,19 +375,38 @@ fn a_scoped_loads_diagnostics_are_caught_in_anthill() {
         .call("test.reify.goodSource", &[])
         .expect("a source that loads takes the ok arm");
     assert_eq!(
-        int_of(&interp, &good),
-        -1,
+        str_of(&interp, &good),
+        "loaded",
         "a candidate that loads must reach `ok`, not `err`"
     );
 
-    let bad = interp
-        .call("test.reify.badSource", &[])
-        .expect("a source that does NOT load is caught, not propagated");
-    assert_eq!(
-        int_of(&interp, &bad),
-        1,
-        "the raised `load_failed(diagnostics)` must arrive with its diagnostics intact"
-    );
+    // A PARSE failure: located, and it says WHICH candidate — a checker handed several
+    // sources needs that to attribute the failure, and a model needs it to find the line.
+    let unparsable = interp
+        .call("test.reify.unparsableSource", &[])
+        .expect("a source that does NOT parse is caught, not propagated");
+    let unparsable = str_of(&interp, &unparsable);
+    for want in ["source 0", "1:1", "syntax error", "namespace broken."] {
+        assert!(
+            unparsable.contains(want),
+            "the caught diagnostic must carry `{want}`, got: {unparsable}"
+        );
+    }
+
+    // A TYPE failure, which is the shape that makes the payload worth catching: it names
+    // the CHECK that ran (`f.return (op-return)`) and both sides of what it wanted. That
+    // is a repair instruction, not a verdict — and it is what a COUNT would have thrown
+    // away.
+    let ill_typed = interp
+        .call("test.reify.illTypedSource", &[])
+        .expect("a source that does not TYPE is caught the same way");
+    let ill_typed = str_of(&interp, &ill_typed);
+    for want in ["f.return", "op-return", "expected String", "got Int64"] {
+        assert!(
+            ill_typed.contains(want),
+            "the caught diagnostic must carry `{want}`, got: {ill_typed}"
+        );
+    }
 }
 
 /// A LOCAL NAMED `reify` DOES NOT CAPTURE `Error.reify`. The local lookup in
