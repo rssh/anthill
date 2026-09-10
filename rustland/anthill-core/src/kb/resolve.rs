@@ -8686,7 +8686,7 @@ impl KnowledgeBase {
     /// carrier change introduced.
     ///
     /// **IT IS ALSO A LIVE WRONG ANSWER, and the size of the hole is MEASURED rather
-    /// than argued** — WI-20260906-4VJ7T owns closing it. The reason is not this
+    /// than argued** — WI-20260910-FDPJ8 owns closing it. The reason is not this
     /// predicate alone: [`Self::reduce_op_value`] folds only a `Value::Node` too, so
     /// on the other two carriers a call is neither REDUCED nor DELAYED, and it enters
     /// `sem_eq_values`' ladder as DATA. Every arm of that ladder asks about a CARRIER
