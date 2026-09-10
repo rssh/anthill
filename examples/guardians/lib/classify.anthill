@@ -20,11 +20,11 @@ namespace guardians
   -- the same operations by NAME, and the implicit tier that answered them is gone.
   import anthill.prelude.PartialEq.{eq}
   import guardians.{MessageId, Message, Address, Mailbox, Observed, Span, Feature,
-                    Category}
+                    SecurityCategory}
   import guardians.Feature.{ForwardingInstruction, SecrecyInstruction,
                             CredentialRequest, PaymentRedirect,
-                            UrgencyAppeal, InvestmentPitch, MeetingInvite}
-  import guardians.Category.{Suspicious, Ordinary, Other}
+                            UrgencyAppeal, Other}
+  import guardians.SecurityCategory.{Suspicious, NotSuspicious, Unexamined}
   import guardians.TrustLevel.{Untrusted}
 
   -- ---- the two inputs a deployment supplies ----
@@ -37,8 +37,14 @@ namespace guardians
 
   -- ---- what the library derives from them ----
 
-  rule fetched_message(?id)
-    :- InMailbox(box: ?,
+  -- `?box` IS THE FIELD `InMailbox` ALWAYS CARRIED AND THIS RULE USED TO DROP.
+  -- Only `omits_some` (lib/spec.anthill) needs it: without it a report on one
+  -- mailbox is judged against every mailbox loaded, so a correct report omits
+  -- something as soon as a second deployment is present. The two `classified`
+  -- clauses below pass `?` — a category is keyed by message, and which mailbox
+  -- the message arrived in decides nothing about whether it is suspicious.
+  rule fetched_message(?box, ?id)
+    :- InMailbox(box: ?box,
                  message: message(id: ?id, from: ?, reply_to: ?,
                                   subject: ?, body: ?))
 
@@ -70,38 +76,62 @@ namespace guardians
   -- THE CLASSIFICATION. Model atom AND declared judgement AND a computed
   -- corroborator — three independent conditions for one verdict.
   --
-  -- THE SECOND ARGUMENT IS A `Category`, NOT A STRING (lib/spec.anthill). As
+  -- THE SECOND ARGUMENT IS A `SecurityCategory`, NOT A STRING (lib/spec.anthill). As
   -- string literals these three clauses agreed by spelling: a fourth written
   -- `"suspicious"` would have loaded clean and derived a category nothing reads.
   rule classified(?m, Suspicious)
     :- observed_feature(?m, ?f), manipulative(?f), corroborated(?m)
 
-  -- `Ordinary` NOW NEEDS AN OBSERVATION AS WELL, and the ADDITION is the point.
+  -- `NotSuspicious` NEEDS AN OBSERVATION AS WELL, and the ADDITION is the point.
   -- It used to read `fetched_message(?m), not(suspicious(?m))`, which called a
-  -- message the model never looked at ORDINARY — an all-clear derived from
+  -- message the model never looked at NOT SUSPICIOUS — an all-clear derived from
   -- silence. The third clause below is where those messages go instead.
+  --
+  -- `Feature.Other` is what a model emits for a message it read and found
+  -- nothing listed in; that atom lands here rather than in the clause below.
   --
   -- `fetched_message` STAYS, and dropping it was a real defect for the length of
   -- one review. `observed_message` is fed by `Observed` alone — the model's own
-  -- writable vocabulary — so an `Ordinary` clause anchored on it and nothing else
+  -- writable vocabulary — so a `NotSuspicious` clause anchored on it and nothing else
   -- lets a model mint a full all-clear for a message that is not in the mailbox
   -- at all, by observing an id it invented. Measured: with the anchor gone, an
-  -- `Observed` atom on `m99` produced `classified(m99, Ordinary)` beside the five
+  -- `Observed` atom on `m99` produced `classified(m99, NotSuspicious)` beside the five
   -- real rows. That is exactly what this file's header forbids — a verdict never
   -- rests on the model alone — and it is the ONE clause where losing the anchor
   -- is dangerous, since `Suspicious` reaches `InMailbox` through `corroborated`
-  -- and `Other` names `fetched_message` outright.
-  rule classified(?m, Ordinary)
-    :- fetched_message(?m), observed_message(?m), not(suspicious(?m))
+  -- and `Unexamined` names `fetched_message` outright.
+  rule classified(?m, NotSuspicious)
+    :- fetched_message(?, ?m), observed_message(?m), not(suspicious(?m))
 
-  -- CANNOT CATEGORIZE, SAID OUT LOUD. Fetched, and no observation to judge it
+  -- NOT EXAMINED, SAID OUT LOUD. Fetched, and no observation to judge it
   -- by. Together the three clauses are TOTAL over `fetched_message`, which is
   -- what `verdict_is_not_silent` (lib/spec.anthill) demands of the report: a
   -- message the model declined to look at still gets a row, and the row says so.
-  rule classified(?m, Other)
-    :- fetched_message(?m), not(observed_message(?m))
+  rule classified(?m, Unexamined)
+    :- fetched_message(?, ?m), not(observed_message(?m))
 
   rule suspicious(?m) :- classified(?m, Suspicious)
+
+  -- THE POSITIVE GATE on what may enter the summarizer's prompt. Gating on
+  -- `not(suspicious(?m))` instead would let an `Unexamined` message's body through,
+  -- which IS the concealment path: stay silent about m5 and m5's injected text is
+  -- summarized anyway. Stated positively, silence costs the model a visible absence
+  -- from the prose rather than buying one.
+  --
+  -- IT HAS NO CONSUMER TODAY, and the rule is kept because the POLICY is right —
+  -- it was the OPERATION reading it that was wrong. `summarized_of(m: MessageId)
+  -- -> Bool` named no state, so no deployment could bind it (lib/spec.anthill
+  -- records the measurement). The gate now lives in the AGENT, as `risky/1` in
+  -- fixtures/agent/good.anthill: an exhaustive match over `Feature`, applied to
+  -- what `observe` returned. That version over-blocks relative to this rule,
+  -- because it cannot reach `corroborated/1` — the address book is the KB's and
+  -- not the agent's — and over-blocking is the safe direction for a prompt.
+  --
+  -- SO THIS RULE IS THE STRICTER STATEMENT, awaiting a trusted reader. Anything
+  -- that gates the prompt from the TRUSTED side should read it rather than
+  -- restate it; what must not happen again is a declaration that reads as the
+  -- guarantee while nothing implements it.
+  rule summarized(?m) :- classified(?m, NotSuspicious)
 
   rule observed_message(?m) :- observed_feature(?m, ?)
 

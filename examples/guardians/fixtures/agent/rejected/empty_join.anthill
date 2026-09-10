@@ -27,21 +27,21 @@
 -- ================================================================
 sort guardians.agent.EmptyJoinTriage
   import anthill.prelude.{List, Error, External}
-  import anthill.prelude.List.{nil}
-  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
-                    Verdict, categories_of, join_texts}
+  import anthill.prelude.List.{mapElems, nil}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize, Verdict, join_texts, observe}
   import guardians.TrustLevel.{Trusted}
   entity mk
 
   operation run(self: EmptyJoinTriage, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
+    ensures mentions_all(result, box)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
                             body: join_texts(nil))
-      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                        lambda m -> Verdict(message:    m.id,
+                                            evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = EmptyJoinTriage]

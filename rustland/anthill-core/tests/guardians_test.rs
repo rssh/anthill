@@ -158,7 +158,7 @@ fn classifications(kb: &mut KnowledgeBase) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = pairs
         .iter()
         .map(|(mv, cv)| {
-            // `?m` is a `MessageId(value: "…")`; `?c` is a nullary `Category`. Both are
+            // `?m` is a `MessageId(value: "…")`; `?c` is a nullary `SecurityCategory`. Both are
             // read through the carrier-neutral helpers — a `Value::Entity` match would
             // let the carrier decide whether the field is reachable.
             let id = common::entity_field(kb, mv, "value", 0);
@@ -732,15 +732,16 @@ fn the_organisations_identity_is_a_deployment_fact_and_the_default_is_closed() {
 
 // ── the report's world model ─────────────────────────────────────
 
-/// A source asserting one `Verdict` with the given label list — the shape a report
+/// A source asserting one `Verdict` with the given evidence list — the shape a report
 /// row has, as a fact the constraint can see.
-fn verdict_fact(labels: &str) -> String {
+fn verdict_fact(evidence: &str) -> String {
     format!(
         r#"
         namespace guardians
-          import guardians.{{MessageId, Verdict, Category}}
-          import guardians.Category.{{Suspicious, Ordinary, Other}}
-          fact Verdict(message: MessageId(value: "m1"), labels: {labels})
+          import guardians.{{MessageId, Verdict, Feature}}
+          import anthill.prelude.List.{{nil}}
+          import guardians.Feature.{{PaymentRedirect, SecrecyInstruction, Other}}
+          fact Verdict(message: MessageId(value: "m1"), evidence: {evidence})
         end
     "#
     )
@@ -748,12 +749,15 @@ fn verdict_fact(labels: &str) -> String {
 
 #[test]
 fn a_verdict_that_says_nothing_is_refused_by_the_constraint() {
-    // "CANNOT CATEGORIZE" IS A ROW, NOT THE ABSENCE OF ONE, and this is the half of
-    // that rule the loader can enforce. `Triage.run`'s `ensures mentions_all(result)`
-    // stops a message being dropped from the report; `verdict_is_not_silent` stops the
-    // row that survives from being empty. Without it "I declined to judge this one"
-    // has TWO spellings — `[Other]` and `[]` — and the second is indistinguishable
-    // from a row that was never filled in.
+    // "I LOOKED AND FOUND NOTHING" IS A ROW, NOT THE ABSENCE OF ONE, and this is the
+    // half of that rule the loader can enforce. `Triage.run`'s
+    // `ensures mentions_all(result, box)` stops a message being dropped from the
+    // report; `verdict_is_not_silent` stops the row that survives from being empty.
+    // Without it "the model said nothing about this one" has TWO spellings —
+    // `[Other]` and `[]` — and the second is indistinguishable from a row that was
+    // never filled in. Since the agent now calls `observe` on EVERY fetched message
+    // (fixtures/agent/good.anthill), an empty `evidence` means the model returned
+    // nothing about a message it was asked about, which is exactly the silent row.
     //
     // THE CONSTRAINT'S SPELLING IS FORCED and lib/spec.anthill records why at length:
     // an ordinary denial is stored but never registered with the guard engine (§6.2),
@@ -766,39 +770,38 @@ fn a_verdict_that_says_nothing_is_refused_by_the_constraint() {
     let errs = errors_for_extra(&verdict_fact("[]"));
     assert!(
         errs.iter().any(|e| e.contains("verdict_is_not_silent")),
-        "an empty label list must be refused, naming the constraint; got: {errs:#?}"
+        "an empty evidence list must be refused, naming the constraint; got: {errs:#?}"
     );
 }
 
 #[test]
-fn a_verdict_can_carry_two_categories() {
-    // THE CONTROL, AND IT IS THE POINT OF THE FIELD BEING A LIST. A message can be a
-    // payment redirect AND from a sender who is not in the address book;
-    // `classified(?m, ?c)` was always a relation, and `label: String` was the one place
-    // that collapsed it. Without this row the constraint above is satisfied by a field
-    // that admits exactly one label, which is the model this change replaced.
+fn a_verdict_can_carry_two_features() {
+    // THE CONTROL, AND IT IS THE POINT OF THE FIELD BEING A LIST. One message can
+    // carry a payment redirect AND a secrecy instruction, and `observe` returns an
+    // `Observed` per span rather than one verdict per message. Without this row the
+    // constraint above is satisfied by a field that admits exactly one feature.
     //
     // IT PASSES EITHER WAY UNDER THE CONSTRAINT'S BACK-OUT, BY DESIGN — it is the
     // other half of the pair, and what it would catch is a constraint that refuses
-    // too much (`forall … -: nonEmpty(?ls)`, which fires on every verdict; see
-    // measured.md C11). Reverting `labels` to a single `label` reds it outright.
-    let errs = errors_for_extra(&verdict_fact("[Suspicious, Ordinary]"));
+    // too much (`forall … -: nonEmpty(?fs)`, which fires on every verdict; see
+    // measured.md C11). Reverting `evidence` to a single `feature` reds it outright.
+    let errs = errors_for_extra(&verdict_fact("[PaymentRedirect, SecrecyInstruction]"));
     assert!(
         errs.is_empty(),
-        "a verdict carrying two categories must load: {errs:#?}"
+        "a verdict carrying two features must load: {errs:#?}"
     );
 }
 
 #[test]
-fn a_message_the_model_never_looked_at_is_other_rather_than_ordinary() {
+fn a_message_the_model_never_looked_at_is_unexamined_rather_than_not_suspicious() {
     // ENUMERATION IS TOTAL AND DERIVED; CLASSIFICATION IS PARTIAL AND THE MODEL'S.
     // This row drives the classification itself — it resolves `classified(?m, ?c)` over
     // the article's inbox and asserts the pairs, so a clause that stops deriving is a
     // failure here rather than a silently smaller answer set.
     //
-    // WITH NO OBSERVATION, EVERY FETCHED MESSAGE IS `Other`. `Observed` atoms come from
+    // WITH NO OBSERVATION, EVERY FETCHED MESSAGE IS `Unexamined`. `Observed` atoms come from
     // the model at run time and no fixture asserts one, so the base KB is exactly the
-    // "the model has not spoken" state. It used to answer `Ordinary` for all five —
+    // "the model has not spoken" state. It used to answer `NotSuspicious` for all five —
     // an all-clear derived from silence — because the clause read
     // `fetched_message(?m), not(suspicious(?m))`. WHAT FAILS WHEN THAT IS BACKED OUT:
     // this assertion AND `an_observed_manipulative_feature_with_a_corroborator_is_suspicious`
@@ -810,13 +813,13 @@ fn a_message_the_model_never_looked_at_is_other_rather_than_ordinary() {
     assert_eq!(
         rows,
         vec![
-            ("m1".to_string(), "Other".to_string()),
-            ("m2".to_string(), "Other".to_string()),
-            ("m3".to_string(), "Other".to_string()),
-            ("m4".to_string(), "Other".to_string()),
-            ("m5".to_string(), "Other".to_string()),
+            ("m1".to_string(), "Unexamined".to_string()),
+            ("m2".to_string(), "Unexamined".to_string()),
+            ("m3".to_string(), "Unexamined".to_string()),
+            ("m4".to_string(), "Unexamined".to_string()),
+            ("m5".to_string(), "Unexamined".to_string()),
         ],
-        "with no observation, every fetched message is Other"
+        "with no observation, every fetched message is Unexamined"
     );
 }
 
@@ -828,9 +831,9 @@ fn an_observed_manipulative_feature_with_a_corroborator_is_suspicious() {
     // injection. `manipulative(SecrecyInstruction)` is the library's judgement and both
     // corroborators fire on m5 from the fixture data alone.
     //
-    // THE OTHER FOUR MESSAGES STAY `Other`, which is the discrimination this row buys
+    // THE OTHER FOUR MESSAGES STAY `Unexamined`, which is the discrimination this row buys
     // over the one above: an observation on ONE message must not reclassify the rest.
-    // And m5 is `Suspicious` ALONE rather than also `Ordinary` — `Ordinary` is guarded
+    // And m5 is `Suspicious` ALONE rather than also `NotSuspicious` — `NotSuspicious` is guarded
     // by `not(suspicious(?m))`, so a clause that lost that guard reddens here.
     let observation = r#"
         namespace guardians
@@ -851,10 +854,10 @@ fn an_observed_manipulative_feature_with_a_corroborator_is_suspicious() {
     assert_eq!(
         rows,
         vec![
-            ("m1".to_string(), "Other".to_string()),
-            ("m2".to_string(), "Other".to_string()),
-            ("m3".to_string(), "Other".to_string()),
-            ("m4".to_string(), "Other".to_string()),
+            ("m1".to_string(), "Unexamined".to_string()),
+            ("m2".to_string(), "Unexamined".to_string()),
+            ("m3".to_string(), "Unexamined".to_string()),
+            ("m4".to_string(), "Unexamined".to_string()),
             ("m5".to_string(), "Suspicious".to_string()),
         ],
         "an observed manipulative feature with a corroborator classifies that message \
@@ -865,28 +868,28 @@ fn an_observed_manipulative_feature_with_a_corroborator_is_suspicious() {
 #[test]
 fn an_observation_about_a_message_not_in_the_mailbox_carries_no_verdict() {
     // A VERDICT NEVER RESTS ON THE MODEL ALONE — lib/classify.anthill's header states
-    // it, and this row is what holds the `Ordinary` clause to it.
+    // it, and this row is what holds the `NotSuspicious` clause to it.
     //
     // `observed_message` is fed by `Observed` facts and nothing else, and `Observed` is
     // the model's own writable vocabulary (lib/observe.anthill). So a clause anchored on
-    // it ALONE lets a model mint a verdict for a message id it invented. `Ordinary` is
+    // it ALONE lets a model mint a verdict for a message id it invented. `NotSuspicious` is
     // the dangerous one to get wrong, because it is the ALL-CLEAR: the other two reach
-    // the mailbox anyway — `Suspicious` through `corroborated`, `Other` through
+    // the mailbox anyway — `Suspicious` through `corroborated`, `Unexamined` through
     // `fetched_message` outright.
     //
-    // MEASURED, AND IT WAS REAL FOR THE LENGTH OF ONE REVIEW. While the `Ordinary`
+    // MEASURED, AND IT WAS REAL FOR THE LENGTH OF ONE REVIEW. While the `NotSuspicious`
     // clause read `observed_message(?m), not(suspicious(?m))`, this exact source
-    // produced `classified(m99, Ordinary)` beside the five real rows. WHAT FAILS WHEN
+    // produced `classified(m99, NotSuspicious)` beside the five real rows. WHAT FAILS WHEN
     // THE `fetched_message` ANCHOR IS BACKED OUT: this row, and only this row — the
     // other two classification tests observe ids that ARE in the mailbox, which is
     // precisely why they did not catch it.
     let ghost = r#"
         namespace guardians
           import guardians.{MessageId, Span, Observed}
-          import guardians.Feature.{MeetingInvite}
+          import guardians.Feature.{Other}
           fact Observed(at: Span(message: MessageId(value: "m99"), start: 0, end: 1,
                                  quote: "not in this mailbox at all"),
-                        feature: MeetingInvite)
+                        feature: Other)
         end
     "#;
     let mut owned = base_sources();
@@ -918,7 +921,7 @@ fn the_concealment_postcondition_is_refined_but_not_proved_of_a_body() {
     // report is then complete about what it kept and silent about what it dropped,
     // which is exactly the injection's concealment sentence carried out. It leaks
     // nothing, mails nothing and asks for no authority, so no other tier has anything
-    // to say; `ensures mentions_all(result)` is the property meant to catch it.
+    // to say; `ensures mentions_all(result, box)` is the property meant to catch it.
     //
     // WHAT IS CHECKED IS REFINEMENT, NOT PROOF.
     // `a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition`
@@ -2251,10 +2254,11 @@ fn harness_rejects_the_exfiltrating_agent_with_a_repairable_diagnostic() {
 /// match-destructure row is the one that varies.
 ///
 /// `verdicts_of` WENT THE SAME WAY afterwards, and for the same reason plus a worse one:
-/// an agent can spell `msgs.map(lambda m -> Verdict(message: m.id, labels:
-/// categories_of(m.id))).collect()`, AND the declaration's comment claimed a guarantee
-/// the checker does not enforce (measured.md C13). What stayed declared is
-/// `categories_of` — a lookup into the KB, which no operation body can do.
+/// an agent can spell the verdict loop itself, AND the declaration's comment claimed a
+/// guarantee the checker does not enforce (measured.md C13). `categories_of` outlived it
+/// by one round and then went too, for a DIFFERENT reason: `(m: MessageId) ->
+/// List[SecurityCategory]` names no state, so no deployment could bind it. Getting a
+/// category is the agent's work and it is done by RUNNING THE MODEL — `observe`.
 #[test]
 fn an_agent_can_inline_the_body_projection() {
     // The two spellings the ticket names. The fixtures ship the first, so it substitutes
@@ -2317,19 +2321,20 @@ fn a_wrong_sort_at_a_label_polymorphic_parameter_is_refused() {
     let candidate = r#"
 sort guardians.agent.MisprojectingTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
-                    Verdict, categories_of, join_texts}
+  import anthill.prelude.List.{mapElems}
+  import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize, Verdict, observe, join_texts}
   import guardians.TrustLevel.{Trusted}
   entity mk
 
   operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
+    ensures mentions_all(result, box)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let joined = join_texts(msgs)
-      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                        lambda m -> Verdict(message:    m.id,
+                                            evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = MisprojectingTriage]
@@ -2415,9 +2420,12 @@ fn the_concealment_guarantee_cannot_be_inverted_by_a_second_clause() {
     // A2 — THE SEVERE ONE, AND IT IS A RULE. `guardians.mentions_all` is the `ensures`
     // on `Triage.run` and the tier-2 obligation the whole design says no type
     // expresses; `lib/spec.anthill`'s own comment calls it "exactly the CONCEALMENT
-    // half of the injection". The trusted clause is `:- not(omits_some(?r))`. A second
-    // clause `:- omits_some(?r)` makes the postcondition succeed exactly when the
-    // report OMITS a message — the guarantee, inverted, by three lines of source.
+    // half of the injection". The trusted clause is `:- not(omits_some(?r, ?box))`. A
+    // second clause `:- omits_some(?r, ?box)` makes the postcondition succeed exactly
+    // when the report OMITS a message — the guarantee, inverted, by three lines of
+    // source. The candidate must spell the CURRENT arity: at the wrong one the typer
+    // refuses it first and the containment diagnostic this row is about never fires,
+    // which is what a stale copy of this fixture measured.
     //
     // MEASURED (WI-5XBBQ): under the layer this loads with NO diagnostic and
     // `mentions_all` goes from one clause to two. Proposal 061's "rule heads in 2
@@ -2432,8 +2440,8 @@ fn the_concealment_guarantee_cannot_be_inverted_by_a_second_clause() {
     let errs = check_candidate(
         r#"
         namespace guardians
-          rule mentions_all(?r)
-            :- omits_some(?r)
+          rule mentions_all(?r, ?box)
+            :- omits_some(?r, ?box)
         end
     "#,
     )
@@ -2531,18 +2539,19 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
         r#"
         sort guardians.agent.TidyTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
-                            Verdict, categories_of}
+          import anthill.prelude.List.{mapElems}
+          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize, Verdict, observe}
           import guardians.TrustLevel.{Trusted}
           entity mk
 
           operation run(self: TidyTriage, box: Mailbox, llm: Llm,
                         wording: Text[Trusted]) -> Report
-            ensures mentions_all(result)
+            ensures mentions_all(result, box)
             effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
-              Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+              Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                                lambda m -> Verdict(message:    m.id,
+                                                    evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
                      summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
           provides Triage[C = TidyTriage]
@@ -2609,7 +2618,7 @@ fn checking_a_candidate_leaves_no_trace_of_it_in_the_trusted_base() {
 fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
     // THE CONTROL WI-5XBBQ ASKED FOR, AND IT MEASURES THE TYPER RATHER THAN THE GATE.
     //
-    // `Triage.run`'s `ensures mentions_all(result)` is the tier-2 obligation. This
+    // `Triage.run`'s `ensures mentions_all(result, box)` is the tier-2 obligation. This
     // candidate is contained — it declares only under `guardians.agent.`, asserts only
     // at its own names, and provides `Triage` — so the gate has nothing to say about
     // it. What it does is declare its OWN `mentions_all`, trivially true of everything,
@@ -2630,25 +2639,26 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
         r#"
         sort guardians.agent.ShadowTriage
           import anthill.prelude.{List, Error, External}
-          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize,
-                            Verdict, categories_of}
+          import anthill.prelude.List.{mapElems}
+          import guardians.{Triage, Email, Mailbox, Report, Llm, Text, summarize, Verdict, observe}
           import guardians.TrustLevel.{Trusted}
           import guardians.agent.{mentions_all}
           entity mk
 
           operation run(self: ShadowTriage, box: Mailbox, llm: Llm,
                         wording: Text[Trusted]) -> Report
-            ensures mentions_all(result)
+            ensures mentions_all(result, box)
             effects {External, llm.E, Error} =
               let msgs = Email.fetch(box)
-              Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+              Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                                lambda m -> Verdict(message:    m.id,
+                                                    evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
                      summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
           provides Triage[C = ShadowTriage]
         end
         namespace guardians.agent
-          rule mentions_all(?)
+          rule mentions_all(?, ?)
         end
     "#,
     )

@@ -37,7 +37,7 @@ sort guardians.Triage
      declining to judge one is a verdict that says so, not a row left out. >}
   operation run(self: C, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
+    ensures mentions_all(result, box)
     effects {External, llm.E, Error}
 end
 
@@ -45,32 +45,45 @@ end
 -- second one built on the same generic vocabulary, so they live beside the spec
 -- that returns them rather than in vocabulary.anthill.
 
--- THE VERDICT VOCABULARY, CLOSED — the counterpart of lib/observe.anthill's
--- `Feature` on the way out. An open `String` here would have let a report say
--- anything, in the one file next to the one whose whole subject is a closed
--- vocabulary.
+-- THE CLASSIFICATION VOCABULARY, CLOSED, AND INTERNAL. These three are what
+-- lib/classify.anthill DERIVES from the model's observations plus a corroborator
+-- computed with no model in the loop. An open `String` would have let a fourth
+-- clause spell `"suspicious"` and derive a category nothing reads.
 --
--- `Other` IS NULLARY, AND NOT FOR A SECURITY REASON — the obvious inference is
--- the wrong one, so it is written down. `Other(Text[Untrusted])` WOULD BE SAFE:
--- the lattice exists precisely to carry attacker-authored text, and
+-- IT DOES NOT APPEAR IN THE REPORT, AND USED TO. `Verdict` carried
+-- `labels: List[SecurityCategory]`, filled by a declared `categories_of` that
+-- could not exist (see below). The category was never BRANCHED on — nothing in a
+-- checked agent reads one — so all that arrangement bought was an obligation on
+-- the untrusted party to courier a value nothing checked it on, and an
+-- implementation returning `[]` for every message satisfied it. What the report
+-- carries instead is the model's own `evidence`, which the agent obtains by
+-- running the model and which says WHY rather than WHAT.
+--
+-- THE MEMBERS ARE NULLARY, AND NOT FOR A SECURITY REASON — the obvious inference
+-- is the wrong one, so it is written down. A PAYLOAD WOULD BE SAFE: the lattice
+-- exists precisely to carry attacker-authored text, and
 -- fixtures/agent/rejected/leak.anthill is the proof that such text is refused AT
 -- THE SINK rather than at creation, so forbidding the payload would solve by
--- prohibition what the label already solves by tracking. It is nullary because
--- THE VERDICT IS OUTPUT, NOT CONTROL: nothing in a checked agent branches on a
--- `Category`, the report is shown to the user, and `mentions_all` reads only the
--- `message` field of each row. The loose half is output; the tight half is
--- structure.
-enum guardians.Category
+-- prohibition what the label already solves by tracking.
+--
+-- IT HAS NO CONSUMER IN THE PIPELINE TODAY, and that is a fact about the design
+-- rather than about the enum. All three operations that carried a category across
+-- the agent boundary are gone, so the classification is derived, constrained and
+-- driven by the suite, and read by nothing an agent calls. It is knowledge the
+-- knowledge base holds and the trusted side may act on; what it is not is a value
+-- an untrusted party is asked to carry.
+enum guardians.SecurityCategory
   entity Suspicious
-  entity Ordinary
-  entity Other                 -- observed nothing: cannot categorize
+  entity NotSuspicious
+  entity Unexamined            -- the model said nothing about this message
 end
 
 namespace guardians
-  import anthill.prelude.{List}
+  import anthill.prelude.{List, Bool}
   import anthill.prelude.List.{nil}
   import anthill.prelude.{Permission, Error, External}
-  import guardians.{MessageId, Address, Mailbox, Category, Triage, Text, Llm, Vouch}
+  import guardians.{MessageId, Address, Mailbox, Feature,
+                    Triage, Text, Llm, Vouch}
   import guardians.TrustLevel.{Trusted, Untrusted}
 
   -- SPLITS enumeration from prose: `items` is derived from what `Email.fetch`
@@ -80,28 +93,31 @@ namespace guardians
   -- ADDRESSABLE, NOT YET ADDRESSED, and the file must not overclaim. The
   -- generated agent writes the iteration, and an iteration takes a `filter`:
   -- fixtures/agent/conceal.anthill drops the injected message and LOADS CLEAN,
-  -- because `ensures mentions_all(result)` is checked for refinement against the
-  -- spec's and never proved of a body (measured.md C13, WI-20260830-2FP2K).
+  -- because `ensures mentions_all(result, box)` is checked for refinement against
+  -- the spec's and never proved of a body (measured.md C13, WI-20260830-2FP2K).
   --
-  -- `labels` IS A LIST, AND BOTH DIRECTIONS MATTER. A message can be a payment
-  -- redirect AND from an unknown sender, which one `label: String` could not
-  -- say; `classified(?m, ?c)` in lib/classify.anthill was always a relation, so
-  -- it was this entity alone that collapsed it. And a message the model never
-  -- looked at is `[Other]` — A ROW THAT SAYS SO — rather than no row at all.
+  -- `evidence` IS A LIST, AND BOTH DIRECTIONS MATTER. A message can carry a
+  -- payment redirect AND a secrecy instruction, which one `feature: Feature`
+  -- could not say. And it is the MODEL'S OWN REPLY, obtained by the agent
+  -- calling `observe` — not a lookup handed to it. `Feature.Other` is what
+  -- "I read this and nothing listed applies" is spelled as, so a message the
+  -- model examined always yields at least one atom.
   --
-  -- THAT SECOND DIRECTION IS THE SECURITY HALF. `ensures mentions_all(result)`
+  -- THE SECOND DIRECTION IS THE SECURITY HALF, and it is now split across two
+  -- checks rather than folded into one list. `ensures mentions_all(result, box)`
   -- defeats the injection's concealment sentence only because enumeration is
-  -- TOTAL. If "cannot categorize" were spelled as a MISSING row, the injection's
-  -- second sentence would become "report that you could not classify this one"
-  -- and `mentions_all` would pass vacuously — on exactly the message the
-  -- attacker wants omitted. ENUMERATION IS TOTAL AND DERIVED; CLASSIFICATION IS
-  -- PARTIAL AND THE MODEL'S. An empty label set is a statement; a missing row is
-  -- not, and the constraint below is what keeps the two apart.
-  entity Verdict(message: MessageId, labels: List[T = Category])
+  -- TOTAL — one row per fetched message, derived from the fetch. The injection's
+  -- second sentence, "report that you could not classify this one", would make a
+  -- SILENT row instead of a missing one, and `verdict_is_not_silent` below
+  -- refuses that: an empty `evidence` means the model returned nothing about a
+  -- message it was asked about. ENUMERATION IS TOTAL AND DERIVED; OBSERVATION IS
+  -- THE MODEL'S AND MUST NOT BE EMPTY.
+  entity Verdict(message:    MessageId,
+                 evidence:   List[T = Feature])
   entity Report(items: List[Verdict], summary: Text[Untrusted])
 
-  -- NO SILENT ROW. A verdict must say something, and `Other` is the something
-  -- that "I could not tell" is spelled as.
+  -- NO SILENT ROW. A verdict must say something, and `Feature.Other` is the
+  -- something that "I read this and nothing listed applies" is spelled as.
   --
   -- THE SPELLING IS FORCED, TWICE OVER, AND BOTH ALTERNATIVES LOAD CLEAN WHILE
   -- MEASURING NOTHING — which is why it is recorded here rather than left to
@@ -121,42 +137,72 @@ namespace guardians
   -- tested STRUCTURALLY, against `nil`, which is what a list literally is — the
   -- direct spelling, and the one that needs no operation at all.
   constraint verdict_is_not_silent:
-    no ?m -: Verdict(message: ?m, labels: nil)
+    no ?m -: Verdict(message: ?m, evidence: nil)
 
-  -- THE ONE THING AN AGENT CANNOT WRITE FOR ITSELF: the classification, which
-  -- lives in the KB (lib/classify.anthill) and which no operation body can query.
-  -- The PROJECTION over it — one `Verdict` per fetched message — an agent writes
-  -- inline, and every fixture here does.
+  -- `categories_of` AND `features_of` USED TO BE HERE, AND THEY WERE FICTION.
+  -- Both were declared `(m: MessageId) -> List[...]` with no body, no defining
+  -- equation and no host binding, and no deployment could have supplied one: the
+  -- signature names NO STATE. An operation whose answer depends on what the KB
+  -- currently holds is not a function of a `MessageId`, and the stdlib says so
+  -- outright (prelude/effects.anthill: an operation that only reads should take
+  -- what it reads as a parameter). Nor could reflect rescue them — `KB.facts_of`
+  -- enumerates ASSERTED rows and `classified` is DERIVED, while `KB.execute`
+  -- carries `Error`, which their declarations did not grant.
   --
-  -- IT IS A DECLARED TOOL, NOT A PROVED BRIDGE, and after the paragraph below
-  -- this file owes the reader that distinction rather than a second one of the
-  -- same kind. Nothing here CONNECTS `categories_of` to `classified`: it has no
-  -- body, no defining equation and no host binding, exactly like `Email.fetch`,
-  -- `observe` and `choose_recipient`, and like them its binding is a deployment's
-  -- to supply. What the declaration buys is what a declaration can buy — a name
-  -- with a type, so a generated agent's use of it is CHECKED — and what it does
-  -- not buy is any guarantee about what comes back. An implementation returning
-  -- `[]` for every message would satisfy this signature; `verdict_is_not_silent`
-  -- would not catch it, since a guard sees asserted facts and not a list a
-  -- running agent built. So the `labels`-to-`classified` correspondence is
-  -- UNTESTED through the surface an agent actually calls: the suite drives
-  -- `classified` directly. Stated because this file argues at length that a
-  -- declaration must not read as a guarantee the checker does not enforce.
+  -- WHAT REPLACED THEM IS THE WORK THEY WERE STANDING IN FOR. Getting a category
+  -- means RUNNING THE MODEL over a message, and `observe` (lib/tasks.anthill) is
+  -- that operation — it takes the `Llm` and the `Message`, so its state is in its
+  -- signature, and its reply is confined to the closed `Observed` vocabulary. It
+  -- existed all along and NOT ONE FIXTURE CALLED IT: every candidate reached for
+  -- the KB lookup instead, so site 3 of docs/design/two-flows.md — the per-message
+  -- model call this design's whole taint story is built on — was never exercised.
+  -- `Verdict.evidence` is now that reply, projected.
   --
-  -- THIS USED TO BE `verdicts_of(msgs) -> List[Verdict]`, THE WHOLE LOOP, on the
-  -- ground that a generated agent could not spell it. It can, exactly as it can
-  -- spell the body projection that retired `bodies_of` (measured.md C10's
-  -- neighbour, and ../fixtures/agent/good.anthill's header). What was left when
-  -- the projection came out is this: a lookup into the knowledge base.
+  -- `SecurityCategory` STAYS AND IS NO LONGER READ BY ANYTHING AN AGENT CALLS. It
+  -- is derived in lib/classify.anthill, kept total over `fetched_message` by three
+  -- clauses, and driven directly by the suite. The category was never BRANCHED on
+  -- by an agent; carrying it across the boundary only obliged the untrusted party
+  -- to courier a value nothing checked it on. Its remaining reader is
+  -- `summarized/1`, which now has no consumer either — see the note below on the
+  -- prompt gate, which is the thing that should read it.
+
+  -- `summarized_of(m: MessageId) -> Bool` WAS HERE, AND IT WENT LAST OF THE THREE.
+  -- Same defect: no state in the signature, so no deployment could bind it. It is
+  -- recorded separately because it was the only one of the three that GUARDED
+  -- something — `good.anthill` filtered on it so that a suspicious body never
+  -- entered the summarizer's prompt.
   --
-  -- AND THE OLD COMMENT'S SECOND CLAIM WAS FALSE, which is the more important
-  -- half. It read "the operation an agent MUST call to satisfy `mentions_all`;
-  -- fabricating `items` instead fails the postcondition". Nothing made it a
-  -- must — `verdicts_of` took a `List[Message]` an agent could filter first —
-  -- and nothing fails: `ensures` is checked for REFINEMENT against the spec's,
-  -- never PROVED of a body (measured.md C13). A declared operation cannot carry
-  -- a guarantee the checker does not enforce.
-  operation categories_of(m: MessageId) -> List[T = Category]
+  -- WHAT THAT GUARD ACTUALLY WAS, MEASURED BEFORE REMOVING IT: exhibited in ONE
+  -- fixture and enforced in NONE. `conceal.anthill` and every fixture in
+  -- `rejected/` already passed the whole mailbox to `summarize`, and no row in
+  -- guardians_test.rs asserts that a suspicious body cannot reach the prompt. So
+  -- the comment this replaces — "Here `items` reports the message and `summary`
+  -- never sees it", offered as the clearest thing the two channels buy over
+  -- Meijer's single one — was true of one file and of nothing the checker does.
+  -- That is the same failure as `categories_of`'s: a declaration reading as a
+  -- guarantee the checker does not enforce.
+  --
+  -- THE CLAIM IS RE-EARNED, AND BY THE AGENT — see `risky/1` in
+  -- fixtures/agent/good.anthill. The gate is now the candidate's own operation in
+  -- the candidate's own namespace, WITH A BODY: an exhaustive `match` over the
+  -- closed `Feature` enum, applied to the observations the agent already holds
+  -- from `observe`. What was wrong with `summarized_of` was never where it lived;
+  -- it was that nothing backed it.
+  --
+  -- WHY THE AGENT MAY HOLD THIS GATE, which is not obvious and is the reason it
+  -- is not hoisted here. NOTHING THE CHECKER GUARANTEES RESTS ON IT: `summarize`
+  -- returns `Text[Untrusted]` and is refused at every sink whatever went into the
+  -- prompt, so a candidate that skips the filter acquires no authority and merely
+  -- writes a worse report. What the gate protects is WHAT THE USER READS. A
+  -- property whose failure costs the attacker nothing is exactly the kind to ask
+  -- an agent for in code the loader can see, rather than to hand it as a
+  -- declaration nothing implements.
+  --
+  -- IT OVER-BLOCKS, AND THAT IS THE SAFE DIRECTION. `classified(?m, Suspicious)`
+  -- also demands `corroborated/1`, which needs the address book the agent does
+  -- not hold; gating on the manipulative feature alone excludes more bodies, not
+  -- fewer. The corroborator exists so that a VERDICT never rests on the model
+  -- alone, and keeping a body out of a prompt is not a verdict.
 
   -- Chosen WITHOUT consulting a model, which defeats the article's attack at its
   -- root — the injection's whole strategy is to make a model name
@@ -191,14 +237,19 @@ namespace guardians
 
   -- Decidable by comparing two id sets, and it holds whatever the summarizer was
   -- told to omit.
-  rule mentions_all(?r)
-    :- not(omits_some(?r))
+  rule mentions_all(?r, ?box)
+    :- not(omits_some(?r, ?box))
 
-  rule omits_some(?r)
-    :- fetched_message(?m), not(mentioned_in(?r, ?m))
+  -- `?box` IS NOT DECORATION. `fetched_message` used to discard `InMailbox`'s
+  -- `box` field, so a report on one mailbox was judged against every mailbox
+  -- loaded — a correct report `omits_some` as soon as a second deployment is
+  -- present. docs/design/two-flows.md already wrote the condition with the
+  -- mailbox in it; only the code did not.
+  rule omits_some(?r, ?box)
+    :- fetched_message(?box, ?m), not(mentioned_in(?r, ?m))
 
   rule mentioned_in(Report(items: ?items, summary: ?), ?m)
     :- (some ?v in ?items: verdict_of(?v, ?m))
 
-  rule verdict_of(Verdict(message: ?m, labels: ?), ?m)
+  rule verdict_of(Verdict(message: ?m, evidence: ?), ?m)
 end

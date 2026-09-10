@@ -383,7 +383,7 @@ sort guardians.Triage
   sort C = ?
   operation run(self: C, box: Mailbox, llm: Llm) -> Report
     requires owns(caller, box)
-    ensures  mentions_all(result, fetched(box))
+    ensures  mentions_all(result, box)
     effects  {External[Read], Error}
 end
 ```
@@ -605,7 +605,7 @@ the difference is where the guarantee currently stops.** In Flow 2 the model als
 writes the iteration, and an iteration is a place to put a `filter`.
 `fixtures/agent/conceal.anthill` does exactly that — one combinator, dropping the
 injected message before the enumeration — and it loads clean, because
-`ensures mentions_all(result)` is checked for REFINEMENT against the spec's and
+`ensures mentions_all(result, box)` is checked for REFINEMENT against the spec's and
 never PROVED of a body (measured.md C13, WI-20260830-2FP2K). The split below is
 what makes the property STATABLE and decidable; closing the gap is what will make
 it checked.
@@ -618,14 +618,40 @@ exactly the message the attacker wants removed, and `mentions_all` would pass
 over a report that mentions everything it contains. So the rule is stated in two
 halves and both are structural: **enumeration is total and derived;
 classification is partial and the model's.** A `Verdict` carries
-`labels: List[Category]` — several categories where a message earns several, and
-`Other` where the model looked and could not tell — and the constraint
-`verdict_is_not_silent` refuses the empty list, so declining to judge produces a
-row that says so rather than no row at all. An empty label set is a statement; a
-missing row is not.
+`evidence: List[Feature]` — the model's own reply, obtained by the agent calling
+`observe`, with several features where a message earns several and `Other` where
+it read the message and found nothing listed — and the constraint
+`verdict_is_not_silent` refuses the empty list, so a message the model returned
+nothing about produces a row that says so rather than no row at all. An empty
+evidence set is a statement; a missing row is not.
+
+The `Verdict` used to carry `labels: List[SecurityCategory]` instead, filled by a
+declared `categories_of(m: MessageId)`. That operation was unimplementable — its
+signature names no state, so it is not a function of its argument and no
+deployment could bind it — and the category it would have returned was never
+branched on by any agent. `observe` was declared for the real work all along and
+no candidate called it, so site 3 above was never exercised.
+
+`summarized_of` went the same way and it was the only one of the three that
+guarded anything: `good.anthill` filtered on it so a suspicious body never
+entered the summarizer's prompt. Measured before removing it, that guard was
+exhibited in one fixture and enforced in none — every other candidate already
+passed the whole mailbox, and no test asserted the gate.
+
+The gate came back as the AGENT'S OWN CODE. `risky/1` in `good.anthill` is an
+exhaustive match over the closed `Feature` enum, applied to what `observe`
+returned, declared in the candidate's own namespace with a body the loader
+type-checks. Nothing the checker guarantees rests on it — `summarize` returns
+`Text[Untrusted]` and is refused at every sink whatever entered the prompt — so
+a candidate that skips it gains no authority and only writes a worse report.
+What the gate protects is what the user reads, which is exactly the kind of
+property to ask an agent for in visible code rather than hand it as a
+declaration nothing implements. It over-blocks relative to `summarized/1`, which
+also demands a corroborator the agent cannot compute; that is the safe direction
+for a prompt. `SecurityCategory` itself now has no consumer in the pipeline.
 
 What remains is stated as an obligation rather than left implicit:
-`ensures mentions_all(result, fetched(box))` is a `Postcondition` in the sense
+`ensures mentions_all(result, box)` is a `Postcondition` in the sense
 of §8.5, decidable by comparing two id sets, and it would hold regardless of what
 the summarizer was told — the condition is about the report, not about the
 prompt. Stated, refined, and not yet discharged; see above. Flow 1 has nowhere

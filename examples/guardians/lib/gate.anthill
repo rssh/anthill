@@ -70,7 +70,7 @@ namespace guardians
   -- with no name list and no spelling to enumerate:
   --
   --   `fact guardians.TypeChecked(...)`           — the typer's verdict, about itself
-  --   `rule guardians.mentions_all(?r) :- ...`    — the concealment guarantee, inverted
+  --   `rule guardians.mentions_all(?r, ?b) :- ...` — the concealment guarantee, inverted
   --   `fact anthill.reflect.SortProvidesInfo(..)` — hand-written metadata
   --
   -- THE `rule` HALF IS NOT OPTIONAL. `mentions_all` is the `ensures` on

@@ -36,7 +36,9 @@ is `Permission[LiveLlm]`; the free operations `fetch_mail` / `send_email` became
 `lib/email.anthill`; and BOTH vocabulary projections are gone, an agent writing
 each for itself — `bodies_of` became `msgs.map(lambda m -> m.body).collect()`, and
 `verdicts_of` became `msgs.map(lambda m -> Verdict(message: m.id, labels:
-categories_of(m.id))).collect()`, leaving only the KB lookup declared (C13).
+categories_of(m.id))).collect()`, leaving only the KB lookup declared (C13) --
+and `categories_of` itself went on 2026-09-09, as unimplementable rather than as
+a projection an agent could spell (see the update under C13).
 Signatures, rows and guards are unchanged, so every verdict below still reads as
 recorded. Where a CONTROL stopped being available, the entry says so — see D2.
 
@@ -1366,9 +1368,9 @@ the summarizer only ever sees Untrusted mailbox text.
 
 ## C11 · An empty label set can be refused, but only by a QUANTIFIED constraint
 
-**Scenario.** `Verdict(message: MessageId, labels: List[Category])` needs "a
-verdict must say something" as a load-time refusal, so that "I could not
-categorize this" has one spelling (`[Other]`) and not two.
+**Scenario.** `Verdict(message: MessageId, labels: List[SecurityCategory])` needs
+"a verdict must say something" as a load-time refusal, so that "the model never
+spoke about this one" has one spelling (`[Unexamined]`) and not two.
 
 **The obvious spelling is INERT, and it loads clean.** An ordinary denial —
 `constraint verdict_is_not_silent: :- Verdict(…), isEmpty(?ls)` — is stored as
@@ -1582,6 +1584,30 @@ guarantee the checker does not enforce is worse than no declaration.
 
 **WI-20260830-2FP2K** owns closing it; `conceal.anthill` is the fixture to invert
 rather than delete.
+
+**UPDATE 2026-09-09 — `categories_of` IS GONE, AND THE PARAGRAPH ABOVE WAS WRONG
+ABOUT IT.** "A lookup into the knowledge base, which is the one thing an operation
+body genuinely cannot do" read as a limitation of the language. It was a defect in
+the DECLARATION: `(m: MessageId) -> List[SecurityCategory]` names no state, so it
+is not a function of its argument and no deployment could have bound it — and
+reflect does not rescue it either, since `KB.facts_of` enumerates ASSERTED rows
+while `classified` is DERIVED, and `KB.execute` carries `Error`, which the
+declaration did not grant. Getting a category is the agent's work and it is done by
+RUNNING THE MODEL. `observe` (lib/tasks.anthill) was already declared for exactly
+that, with its state in its signature — and NOT ONE FIXTURE CALLED IT, so site 3 of
+two-flows.md was never exercised by any candidate. `Verdict` now carries the model's
+own `evidence`, obtained through `observe`. `summarized_of` went too, and it alone
+guarded something — the summarizer's prompt — but that guard was exhibited in one
+fixture and enforced in no check. The gate returned as the AGENT'S OWN operation
+(`risky/1`, good.anthill) with a real body, which is the difference that mattered:
+nothing the checker guarantees rests on it, since `summarize` returns
+`Text[Untrusted]` and is refused at every sink regardless. `SecurityCategory` now
+has no consumer in the pipeline at all. C13 itself is UNCHANGED:
+the postcondition is still refined
+and never proved of a body. What changed is that `mentions_all` now takes the mailbox
+(`mentions_all(result, box)`), which fixes a separate defect — `fetched_message`
+discarded `InMailbox`'s `box` field, so a report on one mailbox was judged against
+every mailbox loaded.
 
 # Summary
 

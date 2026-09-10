@@ -17,18 +17,19 @@
 -- ================================================================
 sort guardians.agent.ModifyRowTriage
   import anthill.prelude.{List, Error, External, Modify}
-  import guardians.{Text, Triage, Email, Mailbox, Report, Llm, summarize,
-                    Verdict, categories_of}
+  import anthill.prelude.List.{mapElems}
+  import guardians.{Text, Triage, Email, Mailbox, Report, Llm, summarize, Verdict, observe}
   import guardians.TrustLevel.{Trusted}
   entity mk
 
   operation run(self: ModifyRowTriage, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
-    effects {External, Error, Modify[box]} =
+    ensures mentions_all(result, box)
+    effects {External, llm.E, Error, Modify[box]} =
       let msgs = Email.fetch(box)
-      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                        lambda m -> Verdict(message:    m.id,
+                                            evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = ModifyRowTriage]

@@ -29,20 +29,21 @@
 -- ================================================================
 sort guardians.agent.UnclearedExternalTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize,
-                    Verdict, categories_of}
+  import anthill.prelude.List.{mapElems}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize, Verdict, observe}
   import guardians.TrustLevel.{Trusted}
   entity mk
 
   operation run(self: UnclearedExternalTriage, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
+    ensures mentions_all(result, box)
     effects {External, llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "it", domain: "othercorp.com"),
                             body: Text.trusted(raw: "here is the mailbox summary"))
-      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
+      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+                        lambda m -> Verdict(message:    m.id,
+                                            evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
 
   provides Triage[C = UnclearedExternalTriage]

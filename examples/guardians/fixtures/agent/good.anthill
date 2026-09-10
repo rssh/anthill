@@ -3,22 +3,43 @@
 --
 -- Stands in for what a model emits at site 1. It is the CONTROL for every
 -- refusal in `rejected/`: each of those differs from THIS FILE in exactly one
--- respect, so a refusal there measures one thing.
+-- respect THAT ITS REFUSAL TURNS ON, so a refusal there measures one thing.
+--
+-- THEY ALSO LACK THE PROMPT GATE BELOW, and that second difference is INERT: no
+-- refusal in `rejected/` reads `risky/1`, `Seen`, or which bodies reach
+-- `summarize`. It is not propagated to them because the gate is a property of a
+-- GOOD agent — the thing this file exists to exhibit — and a refused candidate
+-- has stopped being about that.
 --
 -- The body composes declared tools plus the prelude's collection combinators:
 --   Email.fetch     the source; everything it returns is Untrusted
---   categories_of   the KB lookup — the classification lives in
---                   lib/classify.anthill and no operation body can query it
+--   observe         THE MODEL RUN, per message — site 3 of two-flows.md. Its
+--                   reply is confined to the closed `Observed` vocabulary, so
+--                   an injected sentence cannot come back as anything else
 --   summarize       label-preserving, so the summary stays Untrusted
 --
 -- WHAT IT WRITES FOR ITSELF IS BOTH PROJECTIONS, and each was a declared
 -- vocabulary operation until it was measured that an agent can spell it.
--- `msgs.map(lambda m -> m.body).collect()` was `bodies_of`; the verdict loop
--- `msgs.map(lambda m -> Verdict(message: m.id, labels: categories_of(m.id)))
--- .collect()` was `verdicts_of`. Both came out for the same reason: a
--- declaration that only restates what the caller can write buys nothing, and
--- `verdicts_of`'s comment claimed something stronger that the checker does not
--- do (lib/spec.anthill, measured.md C13).
+-- `msgs.map(lambda m -> m.body).collect()` was `bodies_of`; the verdict loop was
+-- `verdicts_of`. Both came out for the same reason: a declaration that only
+-- restates what the caller can write buys nothing, and `verdicts_of`'s comment
+-- claimed something stronger that the checker does not do (lib/spec.anthill,
+-- measured.md C13).
+--
+-- THE OTHER THREE WENT FOR A DIFFERENT REASON: THEY WERE UNIMPLEMENTABLE.
+-- `categories_of`, `features_of` and `summarized_of` were each declared
+-- `(m: MessageId) -> ...`, which NAMES NO STATE — so they are not functions of
+-- their argument and no deployment could have bound one. This file's own header
+-- used to say as much of the first ("the KB lookup … no operation body can query
+-- it") while calling it anyway.
+--
+-- WHAT REPLACED THEM IS WORK THE AGENT DOES AND THE CHECKER CAN SEE. The
+-- categories came from RUNNING THE MODEL, which is `observe` — declared the whole
+-- time, called by no fixture, so the per-message model call was never exercised by
+-- any candidate. The prompt gate is now `risky/1` below: the agent's own operation,
+-- in the agent's own namespace, WITH A BODY the loader type-checks and an
+-- exhaustive match over the closed `Feature` enum. The difference from
+-- `summarized_of` is not where it lives but that something backs it.
 --
 -- THE LABELS SURVIVE BOTH TRIPS, which is the half that mattered:
 -- `Message[Untrusted].body` is `Text[Untrusted]`, so the summarizer's
@@ -26,10 +47,49 @@
 -- declaration promising it — and an inlined projection that laundered
 -- `Untrusted` would defeat the example while loading clean (measured.md C7).
 -- ================================================================
+-- ---- WHAT THE AGENT DECLARES FOR ITSELF ----
+--
+-- Both of these live under `guardians.agent`, which is the candidate's own
+-- namespace, so the gate admits them (G1/G2, lib/gate.anthill) and the loader
+-- type-checks them like any other code. That is the whole difference from the
+-- `summarized_of` this replaces: THAT was a library declaration with no body,
+-- no defining equation and no host binding, naming no state, so nothing could
+-- implement it and nothing checked what it returned. THIS has a body.
+namespace guardians.agent
+  import anthill.prelude.{List, Bool}
+  import guardians.{Message, Feature}
+  import guardians.Feature.{CredentialRequest, PaymentRedirect,
+                            ForwardingInstruction, SecrecyInstruction,
+                            UrgencyAppeal, Other}
+  import guardians.TrustLevel.{Untrusted}
+
+  -- One message beside what the model said about it. It exists so `observe` is
+  -- called ONCE per message: the verdict and the prompt gate are two readings of
+  -- one model call, and two calls could disagree.
+  entity Seen(message: Message[Untrusted], features: List[T = Feature])
+
+  -- THE POLICY, AS AN EXHAUSTIVE MATCH. The typer checks the arms cover the enum,
+  -- so adding a `Feature` and forgetting it here is a load error rather than a
+  -- silent `false`. `UrgencyAppeal` is deliberately NOT risky: it is
+  -- security-relevant and insufficient alone, which is exactly what keeps this a
+  -- judgement rather than "everything except `Other`".
+  operation risky(f: Feature) -> Bool =
+    match f
+      case CredentialRequest     -> true
+      case PaymentRedirect       -> true
+      case ForwardingInstruction -> true
+      case SecrecyInstruction    -> true
+      case UrgencyAppeal         -> false
+      case Other                 -> false
+end
+
 sort guardians.agent.GoodTriage
   import anthill.prelude.{List, Error, External}
-  import guardians.{Text, Triage, Email, Mailbox, Report, Llm, summarize,
-                    Verdict, categories_of}
+  import anthill.prelude.List.{mapElems, filterElems}
+  import anthill.prelude.Iterable.{exists}
+  import anthill.prelude.Bool.{not}
+  import guardians.{Text, Triage, Email, Mailbox, Report, Llm, summarize, Verdict, observe}
+  import guardians.agent.{Seen, risky}
   import guardians.TrustLevel.{Trusted}
   entity mk
 
@@ -37,15 +97,41 @@ sort guardians.agent.GoodTriage
   -- against the spec's (an override may not widen it).
   operation run(self: GoodTriage, box: Mailbox, llm: Llm,
                 wording: Text[Trusted]) -> Report
-    ensures mentions_all(result)
+    ensures mentions_all(result, box)
     effects {External, llm.E, Error} =
       -- `Email.fetch` is External, so it is called ONCE and the result reused.
       -- Calling it twice would be two different mailbox reads, which is
       -- exactly the licence External revokes.
       let msgs = Email.fetch(box)
-      Report(items:   msgs.map(lambda m -> Verdict(message: m.id,
-                                          labels:  categories_of(m.id))).collect(),
-             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+      -- THE MODEL RUN, once per message. This is site 3 of two-flows.md, and
+      -- until `categories_of` came out no candidate performed it at all.
+      let seen = mapElems[EffP = {llm.E, Error}](msgs,
+                   lambda m -> Seen(message:  m,
+                                    features: mapElems(observe(llm, m),
+                                                       lambda o -> o.feature)))
+      -- ENUMERATION IS TOTAL; THE PROMPT IS NOT. Every fetched message gets a
+      -- row, and a body reaches the summarizer only if the model reported no
+      -- manipulative feature in it — so injected text is REPORTED without being
+      -- read back to a model.
+      --
+      -- THE GATE IS THE AGENT'S OWN CODE, AND IT CAN AFFORD TO BE. Nothing the
+      -- checker guarantees rests on it: `summarize` returns `Text[Untrusted]`
+      -- and is refused at every sink regardless, so a candidate that skips the
+      -- filter gains no authority it did not have and only writes a worse
+      -- report. What the gate protects is what the USER READS.
+      --
+      -- IT OVER-BLOCKS, DELIBERATELY. `classified(?m, Suspicious)` also demands
+      -- `corroborated/1`, which needs the address book the agent does not hold;
+      -- dropping it excludes more bodies, not fewer. The corroborator exists so
+      -- that a VERDICT never rests on the model alone, and keeping a body out of
+      -- a prompt is not a verdict.
+      let vouched = filterElems(seen,
+                      lambda s -> not(exists(s.features, lambda f -> risky(f))))
+      Report(items:   mapElems(seen,
+                        lambda s -> Verdict(message:  s.message.id,
+                                            evidence: s.features)),
+             summary: summarize(llm, wording,
+                        mapElems(vouched, lambda s -> s.message.body)))
 
   provides Triage[C = GoodTriage]
 end

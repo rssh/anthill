@@ -455,7 +455,7 @@ pub enum LoadError {
     /// functor of the same spelling and unequal to everything else — which lets the
     /// check both accept and refuse on names that denote nothing. Measured on
     /// `examples/guardians/fixtures/agent/good.anthill`, where replacing
-    /// `ensures mentions_all(result)` with `ensures totally_bogus_predicate(result)`
+    /// `ensures mentions_all(result, box)` with `ensures totally_bogus_predicate(result)`
     /// loaded byte-identically.
     UndefinedContractGoal {
         /// The goal's functor, qualified.
