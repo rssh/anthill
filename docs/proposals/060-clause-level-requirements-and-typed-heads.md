@@ -122,6 +122,9 @@ How it lands, in four steps:
    `name: Type` is a typed variable introduction; an **entity-constructor** head
    → named args stay named args (`fact palette(c: red())` untouched — and note
    entities are commonly lowercase, so spelling can never be the discriminator).
+   The classification is asked at every head that has one, not only a relational
+   clause's head atom: an EQUATION's LHS and a BODY-LESS head reach it too, so
+   the two spellings agree on firing and on refusal alike (WI-20260910-7NBZX).
 3. **Scope — bare body references, loud typos.** The introduced names are
    clause-scoped, referenced bare like operation parameters; a body typo is an
    unresolved-name error, never a silent fresh variable. Clause-scoped means per

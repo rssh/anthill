@@ -18950,6 +18950,20 @@ impl ExprBuilderSyms {
     }
 }
 
+/// WI-742 §2.1 — a rule head's sigil-free PARAMETERS, as
+/// [`Loader::classify_rule_head_params`] reads them off the parse term.
+///
+/// `head_sym` is KB-side (the resolved functor). Everything else is PARSE-side:
+/// `pos_args` / `named_args` are the head's own children, and `params` is the subset of
+/// `named_args` that names a sort — so its keys are parse-table symbols, which is what
+/// `ArgSlot::Named` carries and what `rule_head_written_columns` matches against.
+struct RuleHeadParams {
+    head_sym: Symbol,
+    pos_args: SmallVec<[TermId; 4]>,
+    named_args: SmallVec<[(Symbol, TermId); 2]>,
+    params: Vec<(Symbol, TermId)>,
+}
+
 impl<'a> Loader<'a> {
     /// `source_id`: `Some` REUSES an already-registered source entry — the WI-936
     /// declaration pass builds a loader over the same file first, and registering it
@@ -20154,10 +20168,6 @@ impl<'a> Loader<'a> {
     /// IS such an operation, so the head parameter list is that same form rather than a
     /// new convention.
     ///
-    /// Returns `Some(head)` when it reclassified at least one argument; `None` leaves the
-    /// head entirely to [`Self::convert_subject_term`], which is every head in today's
-    /// corpus (see the census below).
-    ///
     /// THE DISCRIMINATOR HAS TWO PARTS, and only the first was ever at risk of being
     /// decided by CASE:
     ///
@@ -20195,7 +20205,34 @@ impl<'a> Loader<'a> {
     /// "nothing ever matches this constant" analysis, which a load check is not. So this
     /// form's typo — a parameter written without its type — reads as a CONSTANT COLUMN
     /// rather than as a variable: a different meaning, not a dead clause.
-    fn convert_rule_head_with_params(&mut self, parse_id: TermId) -> Option<TermId> {
+    /// WI-742 §2.1 — the CLASSIFICATION half of [`Self::convert_rule_head_with_params`]:
+    /// does this head carry sigil-free parameters, and which of its arguments are they?
+    ///
+    /// SPLIT OUT SO THE TWO READERS CANNOT DRIFT (WI-20260910-7NBZX). The body-less
+    /// DECLARATION refusal ([`Self::declaration_clause_carrier`]) must ask the same
+    /// question this converter answers, and it used to ask a WEAKER parse-level one —
+    /// `head_carries_typed_column`, which detects only the minted `?x: T` marker. A
+    /// parameter is a plain named argument that marker test cannot see, so `rule f(?d,
+    /// x: Red)` with no body LOADED CLEAN and declared `f` with its written parameter
+    /// enforcing nothing, while `rule f(?d, ?x: Red)` was refused. Restating the gates
+    /// at the second reader is what this split exists to prevent.
+    ///
+    /// `&mut self` because gate (1) RESOLVES the head functor. On the declaration path
+    /// that resolution is the only one the head gets, since a declaration stores no
+    /// clause and never reaches the build.
+    ///
+    /// GATE (1) IS STRUCTURALLY INERT ON AN EQUATION'S LHS, and the census above does not
+    /// cover that population (it counted HEAD-NODE named args, and an equation's head is
+    /// the connective). An equation LHS's functor is an OPERATION — neither a constructor
+    /// nor a sort — so the gate cannot decline there, and every `name: Sort` on such an
+    /// LHS is a parameter. That is §2.1's rule and not a new one: a RELATIONAL predicate
+    /// head already reads `rule p(?v, kind: Int64) :- …` the same way, and both spellings
+    /// of both shapes agree (MEASURED, all four). What it costs is 055's "a sort is a
+    /// legal argument VALUE" reading, which on such a head has no spelling — the same
+    /// price the relational head has always paid. MEASURED 2026-09-10: no `.anthill` file
+    /// in `stdlib/`, `examples/` or `rustland/` writes an equation head with a top-level
+    /// `name: Sort` argument, so the loss is latent. Raised by /code-review.
+    fn classify_rule_head_params(&mut self, parse_id: TermId) -> Option<RuleHeadParams> {
         let (functor, pos_args, named_args) = match self.parsed.terms.get(parse_id) {
             Term::Fn {
                 functor,
@@ -20273,6 +20310,40 @@ impl<'a> Loader<'a> {
         if params.is_empty() {
             return None;
         }
+        Some(RuleHeadParams {
+            head_sym,
+            pos_args,
+            named_args,
+            params,
+        })
+    }
+
+    /// WI-742 §2.1 — THE BUILD half: turn [`Self::classify_rule_head_params`]'s verdict
+    /// into the head term, one clause variable per parameter.
+    ///
+    /// Returns `Some(head)` when the classification found parameters; `None` leaves the
+    /// head entirely to [`Self::convert_subject_term`], which is every head in today's
+    /// shipped corpus (the census is on the classifier). It also returns `None` — after
+    /// reporting, and after undoing the loader state it wrote — when the written column
+    /// order and the argument lists disagree; see [`Self::rule_head_written_columns`].
+    ///
+    /// WHAT IT WRITES BESIDES THE HEAD, and why the rollback exists: one entry per
+    /// parameter into `rule_param_vars` (which SHADOWS resolved symbols for the rest of
+    /// the rule) and one `(vid, bound)` into `rule_head_type_bounds` (which `load_rule`
+    /// drains per head into `install_rule_type_bounds`). A `None` return that left those
+    /// written would install a `domain(?v, T)` goal on a variable the generically
+    /// rebuilt head does not contain.
+    ///
+    /// THE PARAMETER IS A COLUMN IN THE POSITION IT WAS WRITTEN
+    /// (WI-20260909-C7ANM) — see [`Self::rule_head_written_columns`], which owns that
+    /// half and the measurement behind it.
+    fn convert_rule_head_with_params(&mut self, parse_id: TermId) -> Option<TermId> {
+        let RuleHeadParams {
+            head_sym,
+            pos_args,
+            named_args,
+            params,
+        } = self.classify_rule_head_params(parse_id)?;
         // CONVERSION ORDER IS UNCHANGED — the positional args first, then the
         // parameters — and only the ASSEMBLY below moves. That matters: a bare name
         // written positionally resolves BEFORE any parameter enters
@@ -20284,6 +20355,25 @@ impl<'a> Loader<'a> {
         // The parameter COLUMNS, keyed so [`Self::rule_head_written_columns`] can put
         // each back where it was written.
         let mut param_cols: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        // WI-20260910-7NBZX (found by /code-review): the LOADER STATE this loop writes,
+        // held back so the bail-out below has nothing to undo. Both channels outlive this
+        // function — `rule_head_type_bounds` is drained per head into
+        // `install_rule_type_bounds`, and `rule_param_vars` shadows names for the whole
+        // rule — so a `None` return that left them written would install a
+        // `domain(?v, T)` goal on a variable the GENERICALLY rebuilt head does not
+        // contain. That clause answers nothing, and `anthill run` mutes the load error
+        // that accompanies it, so the observable outcome would be the silently dead
+        // clause this ticket exists to remove.
+        //
+        // A PARAMETER'S BOUND IS STAGED HERE, NOT PUSHED, and a length MARK would not do:
+        // the non-parameter branch below calls `convert_term` on its VALUE, and a `?x: T`
+        // inside one pushes its own bound onto the same channel. Truncating to a mark
+        // would drop THAT bound too — and the fallback `convert_subject_term` cannot
+        // re-collect it, because `convert_term_inner` returns on the `term_map` memo
+        // before reaching the `typed_var` strip. Staging only what this loop's PARAMETER
+        // branch produces leaves every other writer alone.
+        let mut staged_bounds: SmallVec<[(VarId, TermId); 2]> = SmallVec::new();
+        let mut params_minted: SmallVec<[String; 2]> = SmallVec::new();
         for &(key, value) in named_args.iter() {
             if !params.iter().any(|&(k, v)| k == key && v == value) {
                 // WI-20260909-C7ANM: the KEY is REINTERNED, like the parameter branch
@@ -20325,7 +20415,10 @@ impl<'a> Loader<'a> {
                 None => {
                     let name = self.reintern(key);
                     let fresh = self.kb.fresh_var(name);
-                    self.rule_param_vars.insert(local, fresh);
+                    self.rule_param_vars.insert(local.clone(), fresh);
+                    // ONLY THE ONES THIS CALL MINTED are undone on the bail-out: an
+                    // entry an EARLIER HEAD of this rule put there is not ours to remove.
+                    params_minted.push(local);
                     fresh
                 }
             };
@@ -20360,10 +20453,21 @@ impl<'a> Loader<'a> {
                 self.kb.make_sort_ref(bound_sym)
             };
             self.in_rule_head_bound = saved_bound_ctx;
-            self.rule_head_type_bounds.push((vid, bound));
+            staged_bounds.push((vid, bound));
             param_cols.push((key, self.kb.alloc(Term::Var(Var::Global(vid)))));
         }
-        let new_pos = self.rule_head_written_columns(parse_id, &converted_pos, &param_cols)?;
+        let new_pos = match self.rule_head_written_columns(parse_id, &converted_pos, &param_cols) {
+            Some(cols) => cols,
+            None => {
+                // The error is already reported; leave no half-written state behind. The
+                // staged bounds are simply dropped — they were never on the channel.
+                for name in params_minted {
+                    self.rule_param_vars.remove(&name);
+                }
+                return None;
+            }
+        };
+        self.rule_head_type_bounds.extend(staged_bounds);
         let head = self.kb.alloc(Term::Fn {
             functor: head_sym,
             pos_args: new_pos,
@@ -29662,7 +29766,16 @@ impl<'a> Loader<'a> {
                  `:- Spec[t]` guard (WI-582), and this rule has no body.",
             );
         }
-        head_carries_typed_column(&self.parsed.symbols, &self.parsed.terms, head).then_some(
+        // BOTH SPELLINGS OF ONE ANNOTATION (WI-20260910-7NBZX). The marker test answers
+        // for `?x: T`, which the converter lowers to a minted `typed_var` node; the
+        // sigil-free `x: T` is a plain named argument it cannot see, so that spelling
+        // LOADED CLEAN and declared the predicate with its written parameter enforcing
+        // nothing — the "accepted and ignored" case this refusal's own doc says must not
+        // exist. The second question is asked of the CONVERTER'S OWN CLASSIFIER rather
+        // than restated here, so the two readers cannot drift apart again.
+        let carries = head_carries_typed_column(&self.parsed.symbols, &self.parsed.terms, head)
+            || self.classify_rule_head_params(head).is_some();
+        carries.then_some(
             "A typed column `?x: T` has exactly one enforcer, a rewrite's typed-pattern \
              bound (WI-903), or — on a relational CLAUSE — the generated `domain(?x, T)` \
              goal prepended to its body (WI-742); a DECLARATION is neither, storing no \
@@ -29758,6 +29871,19 @@ impl<'a> Loader<'a> {
                 // label on a declaration defines a `Rule` symbol that `using` then
                 // finds nothing under, and both carriers were silently lost the moment
                 // this arm stopped asserting.
+                //
+                // IT OUTRANKS THE "NOTHING WAS MINTED HERE" REFUSAL BELOW, which is a
+                // KNOWN COST rather than a choice (WI-20260910-7NBZX, raised by
+                // /code-review). Since that ticket the carrier test also answers for a
+                // §2.1 PARAMETER, so inside a `provides … language … end` block —
+                // the one position pass 1 does not descend into — `rule d(x: Red)` now
+                // reports the annotation rather than the located
+                // WI-20260821-TTHRK message its untyped twin still gets. BOTH ARE LOUD
+                // and neither is silent, which is why it was left: putting the more
+                // fundamental refusal first means restructuring an arm whose final
+                // branch is where a VALID declaration lands (`emit_own_descriptions`),
+                // and the whole gain is a better sentence on a rule that is refused
+                // either way.
                 if let Some(carrier) = self.declaration_clause_carrier(r) {
                     self.errors.push(LoadError::DeclarationCarriesClauseText {
                         name: rule_introduced_functor_name(
@@ -30067,6 +30193,47 @@ impl<'a> Loader<'a> {
                     // and files its bound through the same channel `?x: T` uses. It
                     // declines (`None`) for every other head, which today is every head
                     // in the shipped corpus.
+                    //
+                    // WI-20260910-7NBZX — AN EQUATION'S HEAD IS THE CONNECTIVE, so the
+                    // reclassifier declines at it (`Fn{<=>, [lhs, rhs]}` carries no named
+                    // args) and the LHS — the thing that actually matches — was never
+                    // reclassified. MEASURED: `rule pk: pick(a: Red, ?b) <=> 7 [simp]`
+                    // loaded clean and was INERT (`pick(red(), 1)` stood) where its sigil
+                    // twin rewrote it to `7`, and the UNTAGGED spelling of it escaped the
+                    // WI-903 refusal its twin gets. A dead rule and a missing refusal,
+                    // both from one character.
+                    //
+                    // RUN FOR ITS EFFECTS, and the build below is left alone: the
+                    // reclassifier MEMOIZES its head into `term_map`, which
+                    // `convert_term_inner` reads FIRST, so the ordinary connective walk
+                    // picks the rebuilt LHS up on its own. Rebuilding the connective node
+                    // here would be a second copy of that walk.
+                    //
+                    // ORDER MATTERS and it is the sigil form's: the LHS's parameters
+                    // enter `rule_param_vars` BEFORE the RHS converts, so an RHS reading
+                    // one bare gets the clause variable, exactly as `?a` is shared across
+                    // an equation today.
+                    //
+                    // THE WHOLE EQUALITY FAMILY, not the DEFINING subset, and the reason
+                    // is that the SIGIL FORM HAS NO CONNECTIVE TEST AT ALL: `?a: Red`
+                    // lowers through `convert_term_inner`'s `typed_var` strip wherever it
+                    // sits, and which connective encloses it decides only what the
+                    // INSTALL SITE does with the bound afterwards. Matching that spelling
+                    // means gating no harder than it does. `parse_equation_lhs` — the
+                    // DEFINING subset — is `<=>` alone since WI-888, and MEASURED that
+                    // left a GUARDED `=` (a firing rewrite since WI-20260820-8RJK8, and
+                    // three of them ship in `map.anthill` / `indexed_seq.anthill`) still
+                    // dead in the sigil-free spelling: `idr(?a: Red) = wrap(?a) :- g
+                    // [simp]` rewrote and `idr(a: Red) = wrap(a) :- g [simp]` did not.
+                    // Found by /code-review. `===` is in this family too and needs no
+                    // carve-out: it is a TEST that fires in NEITHER spelling, so
+                    // reclassifying its LHS puts it on the same path its sigil twin
+                    // already takes.
+                    if let Some((_, lhs, _)) =
+                        parse_connective_head(&self.parsed.symbols, &self.parsed.terms, *tid)
+                    {
+                        self.convert_rule_head_with_params(lhs);
+                    }
                     let head = match self.convert_rule_head_with_params(*tid) {
                         Some(h) => h,
                         None => self.convert_subject_term(*tid),

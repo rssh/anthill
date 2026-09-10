@@ -4200,6 +4200,20 @@ impl<'a> Converter<'a> {
     /// `capture_ok` discipline (kb/load.rs), for its reason: a capture entry on a
     /// rule whose shape was already refused would fold arguments at every redex that
     /// matches its functor and bury the real diagnostic under the consequences.
+    /// COUPLED TO §2.1's HEAD REBUILD, and the coupling is a POSITIONAL INDEX
+    /// (WI-20260910-7NBZX, raised by /code-review). What this records is an index into
+    /// the head's PARSE `pos_args`, while `Loader::rule_head_written_columns` splices
+    /// each sigil-free parameter into that list as a column — so on a head that has
+    /// both, `rule f(?x, k: Int64, ...?args) <=> … [simp]`, the capture sits at parse
+    /// index 1 and at KB index 2.
+    ///
+    /// NOT REACHABLE TODAY, and the reason is a NEIGHBOUR'S guard rather than anything
+    /// here: `fold_capture_redex` declines any rule with a non-empty `rule_type_bounds`
+    /// (`simp_rewrite.rs`), and a parameter always installs one — MEASURED, `?k: Int64`
+    /// and `k: Int64` both answer 5 where the untyped `k: ?k` answers 517, i.e. both
+    /// spellings REFUSE alike. WIDENING THAT EXCLUSION IS WHAT MAKES THIS LIVE: the fold
+    /// would then read the wrong slot rather than decline, so re-derive the index from
+    /// the built head before relaxing it.
     fn claim_rule_head_captures(
         &mut self,
         heads: &[RuleHead],

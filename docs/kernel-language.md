@@ -2242,19 +2242,24 @@ application, so `T = Red` inside one is the type ARGUMENT it has always been:
 `rule Spec[T = Red] :- …` binds `Spec`'s type parameter and means what the
 `fact Spec[T = Red]` spelling means, not a column named `T`.
 
-**Where the two spellings do NOT yet agree** (WI-20260909-C7ANM measured both;
-neither is delivered):
+The form reaches every head that has one, not only a relational clause's head
+atom (WI-20260910-7NBZX):
 
-- **A body-less head.** `rule f(?d, ?x: Red)` is refused — a DECLARATION stores
-  no clause for the bound's one enforcer to run in (see the `?x: T` entry above)
-  — while `rule f(?d, x: Red)` loads clean and declares `f`, its written
-  parameter enforcing nothing. The refusal reads the minted `?x: T` marker, and
-  a parameter is a plain named argument the marker test cannot see.
-- **An equational head.** `rule pk: pick(?a: Red, ?b) <=> 7 [simp]` fires; the
-  `pick(a: Red, ?b)` spelling of it loads clean and is INERT — the
-  reclassification runs on a rule's head atom, and an equation's head is the
-  connective, whose LHS it never descends into. So `a: Red` stays a named
-  argument and the LHS never matches.
+- **An equational head** reclassifies its LHS — for the whole equality family,
+  a guarded `=` included, since which connective encloses the annotation decides
+  only what is done with the bound afterwards. So `rule pk: pick(a: Red, ?b) <=>
+  7 [simp]` fires exactly as `pick(?a: Red, ?b)` does, an untagged spelling of
+  either is refused alike (an untagged equation has no reader for the bound), and
+  a `===` head defines nothing in either spelling. The RHS may read a parameter
+  bare, as it may read a sigil variable.
+- **A body-less RELATIONAL head** — a plain `rule f(…)` with no body and no
+  connective, which under 061 DECLARES the predicate — is refused in both
+  spellings: a declaration stores no clause for the bound's one enforcer to run
+  in (see the `?x: T` entry above), so `rule f(?d, x: Red)` is refused just as
+  `rule f(?d, ?x: Red)` is. Write `:- true` to make it a clause. (An equation
+  head is body-less too and is NOT what this refuses — it has the rewrite reader,
+  per the bullet above.) A declaration that claims no bound is unaffected, and so
+  is a named argument that is not a parameter (`rule reaches(from: ?a)`).
 
 The reclassification is decided by the head's RESOLVED CATEGORY, never by case:
 an ENTITY-CONSTRUCTOR head keeps its named arguments untouched (`fact
