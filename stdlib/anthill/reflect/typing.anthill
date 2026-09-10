@@ -6,7 +6,11 @@ namespace anthill.reflect.typing
   -- here — so without this import the rule loads clean and silently matches nothing.
   import anthill.prelude.List.{cons}
   -- Sorts named in the variance facts below (`Covariant`/`Contravariant`).
-  import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq}
+  -- WI-CBRSW's landmine applies to every name added here: scaland loads this file
+  -- from `EmbeddedStdlib.stdlibPaths`, which does not carry every prelude file, so a
+  -- sort imported here must also be on THAT list or every scaland stdlib test fails
+  -- invisibly to a `cargo-test` acceptance. `Result` was added to it with 027.4.
+  import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq, Result}
 
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, ProvidesConditionInfo, scope}
 
@@ -316,6 +320,12 @@ namespace anthill.reflect.typing
   fact Covariant(sort: Stream, param: T)
   fact Covariant(sort: Pair, param: A)
   fact Covariant(sort: Pair, param: B)
+  -- `Result` (proposal 027.4) is a pure SUM — `ok(value: T)` / `err(error: E)` —
+  -- so both parameters occur only in OUTPUT position, which is the textbook
+  -- condition. Its immediate sibling `Option` two lines up is the same shape with
+  -- the payload dropped, and carries the same fact.
+  fact Covariant(sort: Result, param: T)
+  fact Covariant(sort: Result, param: E)
 
   -- Read-only collection interfaces — the element appears only in OUTPUT
   -- positions (Iterable.iterator -> Stream[Element], IndexedSeq.nth -> Option[T]),

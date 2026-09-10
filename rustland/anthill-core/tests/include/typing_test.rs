@@ -3213,6 +3213,84 @@ fn variance_function_param_A_contravariant() {
     );
 }
 
+/// `Result` (proposal 027.4) is COVARIANT IN BOTH PARAMETERS, and this drives the two
+/// facts that say so.
+///
+/// It is a pure sum — `ok(value: T)` / `err(error: E)` — so both parameters occur only
+/// in OUTPUT position, which is proposal 035's condition. Its sibling `Option` is the
+/// same shape with the payload dropped and has carried `Covariant(Option, T)` since
+/// WI-293; these are that fact's twins.
+///
+/// AT THE SOURCE LEVEL rather than through `types_compatible` like its neighbours,
+/// deliberately: the widening is met by a user at an ARGUMENT, so this drives
+/// parse → typer → `validate_arg_against_param` and not the compatibility predicate
+/// alone. `requires Narrow` is what makes `Wide` the supersort — the relation is spec
+/// satisfaction, and without it the top-level slot refuses too.
+///
+/// FAILS WHEN BACKED OUT: drop either `fact Covariant(sort: Result, param: …)` from
+/// `stdlib/anthill/reflect/typing.anthill` and the matching row below is refused as
+/// `expected Result[…], got Result[…]` — the invariant default. The two REFUSAL rows
+/// pass either way by design; they are what says the facts widen `Result` and nothing
+/// else, since a covariant parameter must still reject the NARROWING direction.
+#[test]
+fn variance_result_is_covariant_in_both_parameters() {
+    let program = |decl: &str, call: &str| {
+        format!(
+            r#"
+namespace test.resvar
+  import anthill.prelude.{{Int64, String, Result}}
+  import anthill.prelude.Result.{{ok, err}}
+
+  sort Wide
+    entity wide(why: String)
+  end
+  sort Narrow
+    requires Wide
+    entity narrow(why: String)
+  end
+
+  operation mkErrNarrow() -> Result[E = Narrow, T = Int64] = err(narrow("x"))
+  operation mkOkNarrow()  -> Result[E = Wide, T = Narrow]  = ok(narrow("x"))
+  operation mkErrWide()   -> Result[E = Wide, T = Int64]   = err(wide("x"))
+  operation mkOkWide()    -> Result[E = Wide, T = Wide]    = ok(wide("x"))
+
+  operation takes({decl}) -> Int64 = 1
+  operation drive() -> Int64 = takes({call})
+end
+"#
+        )
+    };
+
+    // E is covariant: a NARROWER payload flows into a WIDER slot.
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "r: Result[E = Wide, T = Int64]",
+        "mkErrNarrow()",
+    )));
+    // T likewise.
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "r: Result[E = Wide, T = Wide]",
+        "mkOkNarrow()",
+    )));
+
+    // CONTROL, and it is what stops the facts reading as "anything goes": covariance
+    // widens, it does not narrow. Both directions must not be admitted at once.
+    for (decl, call) in [
+        ("r: Result[E = Narrow, T = Int64]", "mkErrWide()"),
+        ("r: Result[E = Wide, T = Narrow]", "mkOkWide()"),
+    ] {
+        match crate::common::try_load_kb_with(&program(decl, call)) {
+            Ok(_) => panic!("a covariant parameter must still refuse the NARROWING direction: {decl} <- {call}"),
+            Err(errs) => {
+                let joined = errs.join("\n");
+                assert!(
+                    joined.contains("takes.r"),
+                    "expected the argument check to refuse it, got:\n{joined}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn variance_invariant_default_rejects_widening() {
     // `Cell` declares no variance for its V param ⇒ invariant (the safe default,
