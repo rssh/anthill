@@ -35,6 +35,7 @@ use std::rc::Rc;
 
 use super::value::Dictionary;
 use super::{EvalError, Interpreter, Value};
+use crate::kb::resolve::TermUnification;
 // WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`literal_int64`,
 // `literal_bool`, …) every scalar builtin below reads its arguments through.
 use crate::kb::term_view::TermView;
@@ -5909,7 +5910,7 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
     match interp.kb.unify_terms(a, b) {
-        Some(sigma) => {
+        TermUnification::Unifier(sigma) => {
             let handle = interp.alloc_subst(sigma);
             Ok(Value::Entity {
                 functor: some_sym,
@@ -5917,10 +5918,28 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
                 named: vec![(value_key, Value::Substitution(handle))].into(),
             })
         }
-        None => Ok(Value::Entity {
+        TermUnification::NoUnifier => Ok(Value::Entity {
             functor: none_sym,
             pos: Vec::new().into(),
             named: Vec::new().into(),
+        }),
+        // WI-20260910-FDPJ8 — UNDECIDED IS NOT `none()`. This operation's declared
+        // result is `Option[Substitution]`, which has no third spelling, and `none`
+        // is documented as "the two terms do not unify" — a DEFINITE claim. An
+        // operand the reduction could not decide licenses neither answer, so it
+        // leaves through the channel that already means "cannot decide yet":
+        // `Suspended` is turned back into a resolver DELAY by `bridge_op_to_eval`
+        // (its own doc: the evaluator is thereby interruptible), and surfaces
+        // loudly at top-level eval, which never sets `bridge_mode`.
+        //
+        // Widening the DECLARED result so this face can spell the third answer in
+        // the language is the real repair and is not this ticket's; until then a
+        // loud suspend is the honest half of the pair, per CLAUDE.md's "prefer a
+        // loud error over a silent skip".
+        TermUnification::Undecided => Err(EvalError::Suspended {
+            detail: "reflect.unify: an operand is an unevaluated call the reduction                      could not decide, so neither `some(σ)` nor `none` is true of                      this pair"
+                .to_string(),
+            truncated: false,
         }),
     }
 }

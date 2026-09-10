@@ -279,12 +279,57 @@ fn dot_apply_args_child(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Rc<NodeOccurrence> {
+    apply_arg_cell_list(occ, kb, "dot_apply", pos_args, named_args)
+}
+
+/// WI-20260910-FDPJ8 — the `List[ApplyArg]` child shared by every reflect wrapper that
+/// carries a call's ARGUMENTS: `dot_apply` and, since this ticket, `apply_within`.
+///
+/// ONE FUNCTION, because one encoding: positionals first as `ApplyArg(name: none(),
+/// value: …)`, then named ones as `ApplyArg(name: some(value: Ref(k)), value: …)`.
+/// `form` only names the twin in [`reflect_ctor_sym`]'s panic message. A second copy
+/// per wrapper is how the two would drift on the order or the wrappers, which is the
+/// cross-carrier miss WI-425/WI-815 make a wrong answer.
+fn apply_arg_cell_list(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    form: &str,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Rc<NodeOccurrence> {
     let cells = pos_args
         .iter()
         .map(|v| (None, Rc::clone(v)))
         .chain(named_args.iter().map(|(k, v)| (Some(*k), Rc::clone(v))))
         .collect::<Vec<_>>();
-    optionally_named_cell_list(occ, kb, "dot_apply", "anthill.reflect.ApplyArg", &cells)
+    optionally_named_cell_list(occ, kb, form, "anthill.reflect.ApplyArg", &cells)
+}
+
+/// WI-20260910-FDPJ8 — a plain `List[T]` child whose elements are the occurrences
+/// themselves, with no per-element wrapper: `apply_within`'s `requirements`
+/// (`List[NodeOccurrence]`).
+///
+/// The cons/nil spine [`optionally_named_cell_list`] builds, minus the `ApplyArg` /
+/// `type_arg` cell — and on the SAME nullary-`Fn{nil}` convention, not the bare-`Ref`
+/// one, because the term side is [`KnowledgeBase::build_list`] (which is what
+/// `wrap_dispatch_channel` calls) and reusing the other convention re-opens the
+/// Ref ≡ nullary-Fn key divergence that helper's own note records.
+fn plain_occurrence_list(
+    occ: &NodeOccurrence,
+    kb: &KnowledgeBase,
+    form: &str,
+    items: &[Rc<NodeOccurrence>],
+) -> Rc<NodeOccurrence> {
+    let resolve = |q: &str| reflect_ctor_sym(kb, q, form);
+    let cons = resolve("anthill.prelude.List.cons");
+    let nil = resolve("anthill.prelude.List.nil");
+    let key = |k: &str| reflect_field_key(kb, k, form);
+    let (k_head, k_tail) = (key("head"), key("tail"));
+    let mut list = synth_ctor(occ, nil, Vec::new());
+    for item in items.iter().rev() {
+        list = synth_ctor(occ, cons, vec![(k_head, Rc::clone(item)), (k_tail, list)]);
+    }
+    list
 }
 
 /// The `List[C]` spine both reflect call channels use, where `C(name: Option[Symbol],
@@ -667,6 +712,40 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         // WI-814 — `LoadBuildFrame::MatchExpr`; `branches` is a `List[MatchBranch]`
         // cons/nil spine (see [`match_branches_child`]).
         Expr::Match { .. } => (dt::qualified(dt::MATCH_EXPR), &["scrutinee", "branches"]),
+        // WI-20260910-FDPJ8 — A WOVEN CALL READS AS ITS REFLECT TWIN, and it used to
+        // fall past this table to `_ => ViewHead::Opaque`.
+        //
+        // THE RECORDED REASON FOR THAT OPAQUE ARGUED AGAINST A DIFFERENT HEAD. It
+        // rejected a TRANSPARENT one — functor = the CALLEE — because "its faithful
+        // term twin is the WRAPPED reflect shape `apply_within(fn = …, args = …,
+        // requirements = …)`, whose head functor is `apply_within` and NOT the callee",
+        // and a transparent head would disagree with `occurrence_to_term`. Every word
+        // of that is right and none of it argues for `Opaque`: the WRAPPED head is
+        // exactly what that twin says, and it is what this table is FOR. `Opaque` is
+        // payload-free, so it did not lose precision — it made two structurally
+        // DIFFERENT woven calls compare EQUAL and share a `GoalKey`, which is the
+        // failure mode WI-1014 spells out one function down for the same collapse.
+        //
+        // THE KEYS ARE THE ENTITY'S OWN FIELDS, in declared order — `entity
+        // apply_within(fn, args, requirements, type_args)` (reflect.anthill). Not a
+        // list assembled here from what `Expr::ApplyWithin` happens to hold: the
+        // schema is what `visit_fn`'s `"apply_within"` arm reads back and what
+        // `try_occurrence_to_term`'s arm now writes, so all three mirror ONE
+        // declaration.
+        //
+        // `type_args` IS CONDITIONAL, exactly as `Expr::Apply`'s own head makes it
+        // (`named_args.len() + usize::from(!type_args.is_empty())`): a bracket-less
+        // woven call keeps the 3-key shape its term producer writes, and only a call
+        // that really carries a bracket grows the fourth child. An unconditional key
+        // would announce a child `record_apply_within_concrete` does not build.
+        Expr::ApplyWithin { type_args, .. } => (
+            "anthill.reflect.Expr.apply_within",
+            if type_args.is_empty() {
+                &["fn", "args", "requirements"]
+            } else {
+                &["fn", "args", "requirements", "type_args"]
+            },
+        ),
         _ => return None,
     })
 }
@@ -771,6 +850,25 @@ fn wrapped_expr_child(
             },
             "args",
         ) => dot_apply_args_child(occ, kb, pos_args, named_args),
+        // WI-20260910-FDPJ8 — the woven call's four children, mirroring
+        // `entity apply_within(fn, args, requirements, type_args)`. `fn` is the CALLEE
+        // as a synthesized `Ref`, matching the `Term::Ref(fn_target_sym)`
+        // `record_apply_within_concrete` writes; `args` reuses the one `List[ApplyArg]`
+        // encoding `dot_apply` already presents, so a call's arguments read the same
+        // whichever wrapper carries them.
+        (Expr::ApplyWithin { functor: f, .. }, "fn") => leaf(Expr::Ref(*f)),
+        (
+            Expr::ApplyWithin {
+                args, named_args, ..
+            },
+            "args",
+        ) => apply_arg_cell_list(occ, kb, "apply_within", args, named_args),
+        (Expr::ApplyWithin { requirements, .. }, "requirements") => {
+            plain_occurrence_list(occ, kb, "apply_within", requirements)
+        }
+        (Expr::ApplyWithin { type_args, .. }, "type_args") => {
+            apply_type_args_child(occ, kb, type_args)
+        }
         (Expr::VarRef { name: n }, "name") => leaf(Expr::Ref(*n)),
         (Expr::Lambda { param, .. }, "param") => Rc::clone(param),
         (Expr::Lambda { body, .. }, "body") => Rc::clone(body),

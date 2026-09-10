@@ -4320,6 +4320,65 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             }
             return occ_build_fn(kb, functor, &[], &all);
         }
+        // WI-20260910-FDPJ8 — A WOVEN CALL HAS A TERM TWIN, and until this ticket it
+        // fell to the `_ => return None` below as a "child-bearing / non-goal form".
+        //
+        // THE HEAD AND THE TWIN LAND TOGETHER, deliberately. `term_view` now heads an
+        // `Expr::ApplyWithin` as `Functor{apply_within, 0, 3|4}` instead of `Opaque`;
+        // a head with no twin here would not be agreement, only a DIFFERENT
+        // disagreement — the view announcing children that `occurrence_to_term`
+        // answers `Bottom` for, which is the partial-twin shape WI-815 hardened
+        // `fingerprint_into` against.
+        //
+        // THE SHAPE IS THE ENTITY'S, not this function's invention: `entity
+        // apply_within(fn: Symbol, args: List[ApplyArg], requirements:
+        // List[NodeOccurrence], type_args: Option[T = List[type_arg]])`. It is what
+        // `record_apply_within_concrete` writes, what `visit_fn`'s `"apply_within"` arm
+        // reads back, and what the view presents — one declaration, three producers.
+        // Canonicalized through `canonicalize_record_named_args` for the same reason
+        // that producer is: the declared order is the discrim tree's order.
+        //
+        // `type_args` OMITTED WHEN EMPTY, mirroring the view's conditional key and
+        // `occ_build_apply`'s own "empty channel ⇒ IDENTICAL to `occ_build_fn`" rule —
+        // so a bracket-less woven call keeps exactly the 3-key term its producer
+        // writes today, and its `TermId` and discrim keying do not move.
+        Some(Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            requirements,
+            type_args,
+        }) => {
+            let aw = kb.resolve_symbol("anthill.reflect.Expr.apply_within");
+            let fn_ref = kb.alloc(Term::Ref(*functor));
+            let args_list = apply_arg_list_term(kb, args, named_args)?;
+            let mut reqs: Vec<TermId> = Vec::with_capacity(requirements.len());
+            for r in requirements {
+                reqs.push(try_occurrence_to_term(kb, r)?);
+            }
+            let reqs_list = kb.build_list(&reqs);
+            let (k_fn, k_args, k_reqs) = (
+                kb.intern("fn"),
+                kb.intern("args"),
+                kb.intern("requirements"),
+            );
+            let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> =
+                smallvec::SmallVec::from_slice(&[
+                    (k_fn, fn_ref),
+                    (k_args, args_list),
+                    (k_reqs, reqs_list),
+                ]);
+            if !type_args.is_empty() {
+                let list = type_args_list_term(kb, type_args)?;
+                named.push((kb.intern("type_args"), list));
+            }
+            kb.canonicalize_record_named_args(aw, &mut named);
+            kb.alloc(Term::Fn {
+                functor: aw,
+                pos_args: smallvec::SmallVec::new(),
+                named_args: named,
+            })
+        }
         Some(Expr::Bottom) | None => kb.alloc(Term::Bottom),
         // A spliced value — the goal walk's carrier for an answer link's `Entity`
         // spine under another compound (`take(pair(?p, 1))` with `?p` linked to
@@ -4453,6 +4512,48 @@ fn occ_build_apply(
         Some((kb.resolve_symbol("anthill.reflect.type_arg"), list))
     };
     occ_build_fn_with(kb, functor, pos_args, named_args, slot)
+}
+
+/// WI-20260910-FDPJ8 — the `List[ApplyArg]` term for a call's ARGUMENTS: one
+/// `ApplyArg(name: none() | some(value: Ref(k)), value: <arg>)` per argument,
+/// positionals first in written order, then the named ones, on the prelude cons/nil
+/// spine.
+///
+/// The term-side twin of `term_view::apply_arg_cell_list`, and the loader's
+/// `mk_apply_arg` + `build_list` encoding written once more because that one is a
+/// method on the loader's own symbol cache. `None` propagates from a child with no
+/// goal-term shape, the same recursive try-contract [`occ_build_fn_with`] has.
+fn apply_arg_list_term(
+    kb: &mut KnowledgeBase,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<TermId> {
+    let cell_sym = kb.resolve_symbol("anthill.reflect.ApplyArg");
+    let (k_name, k_value) = (kb.intern("name"), kb.intern("value"));
+    let mut cells: Vec<TermId> = Vec::with_capacity(pos_args.len() + named_args.len());
+    for (label, child) in pos_args
+        .iter()
+        .map(|c| (None, c))
+        .chain(named_args.iter().map(|(k, c)| (Some(*k), c)))
+    {
+        let name_term = match label {
+            Some(k) => {
+                let name_ref = kb.alloc(Term::Ref(k));
+                crate::kb::load::build_some(kb, name_ref)
+            }
+            None => crate::kb::load::build_none(kb),
+        };
+        let value_term = try_occurrence_to_term(kb, child)?;
+        cells.push(kb.alloc(Term::Fn {
+            functor: cell_sym,
+            pos_args: smallvec::SmallVec::new(),
+            named_args: smallvec::SmallVec::from_slice(&[
+                (k_name, name_term),
+                (k_value, value_term),
+            ]),
+        }));
+    }
+    Some(kb.build_list(&cells))
 }
 
 /// WI-1013: the `List[type_arg]` term for a call's type-argument bindings — one

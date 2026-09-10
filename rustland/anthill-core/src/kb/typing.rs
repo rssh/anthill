@@ -26110,7 +26110,6 @@ pub(crate) fn record_apply_within_concrete(
     kb: &mut KnowledgeBase,
     site: crate::kb::CallSite,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    pos_args: &SmallVec<[TermId; 4]>,
     fn_target_sym: Symbol,
     callee_spec_sort: Symbol,
     spec_op_sym: Symbol,
@@ -26151,14 +26150,34 @@ pub(crate) fn record_apply_within_concrete(
     let args_field = kb.intern("args");
     let reqs_field = kb.intern("requirements");
 
+    // WI-20260910-FDPJ8 — THE ENTITY'S OWN CANONICAL CONSTRUCTOR FORM, and both halves
+    // of that are a change.
+    //
+    // NO POSITIONAL CHANNEL. `anthill.reflect.Expr.apply_within` declares three named
+    // fields and no positionals, so `pos_args` described a shape the schema has not
+    // got. It was also DEAD: `materialize_apply` (req_insertion.rs) is the only
+    // producer of the `ClassifiedApply` this reads, and it hardcodes
+    // `pos_args: SmallVec::new()`. Dropping it removes a divergence between what this
+    // writes and what `visit_fn`'s reader / the view head can see, at no cost to any
+    // value ever produced — and the PARAMETER goes with it, so a future caller cannot
+    // hand this function positionals for it to discard in silence.
+    //
+    // AND THROUGH `canonicalize_record_named_args`, not a hand-ordered `from_slice`.
+    // The key order here happened to match the declared field order, so this is not a
+    // bug fix — it is what stops the next field (or a reordered declaration) from
+    // silently minting a term the discrim tree keys differently from every other
+    // `apply_within`. One canon, asked of the functor, exactly as every other record
+    // producer asks it.
+    let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
+        (fn_field, fn_ref),
+        (args_field, orig_args_tid),
+        (reqs_field, requirements_list),
+    ]);
+    kb.canonicalize_record_named_args(aw_sym, &mut named);
     let rewritten = kb.alloc(Term::Fn {
         functor: aw_sym,
-        pos_args: pos_args.clone(),
-        named_args: SmallVec::from_slice(&[
-            (fn_field, fn_ref),
-            (args_field, orig_args_tid),
-            (reqs_field, requirements_list),
-        ]),
+        pos_args: SmallVec::new(),
+        named_args: named,
     });
     kb.record_dispatch_rewrite(site, rewritten, spec_op_sym);
     true

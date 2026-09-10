@@ -64,7 +64,19 @@ namespace anthill.kernel
   -- (and `let ?v = e`): resolver-implemented, carrier-agnostic, binding via a
   -- frame effect rather than a return value (parallels Eq.eq). `-> Bool` names
   -- the test outcome; the substitution it really produces is the term-level
-  -- `anthill.reflect.unify` face. Never dispatches — structural only.
+  -- `anthill.reflect.unify` face.
+  --
+  -- NEVER DISPATCHES, AND THAT IS ABOUT THE COMPARISON, NOT THE OPERANDS — corrected
+  -- by WI-20260910-FDPJ8, whose measurement made the older unqualified "structural
+  -- only" reading untenable. `unify` selects no carrier's `Eq` member, which is the
+  -- whole contrast with `PartialEq.eq`; it does NOT leave an operand uninterpreted.
+  -- An operand that is a CALL is reduced to its value first, and one the reduction
+  -- cannot decide DELAYS rather than being compared as a term — WI-483's substitution
+  -- transparency and WI-738's soundness floor, both of which `unify` has shared with
+  -- `eq`/`cmp` through one operand pipeline since they landed. MEASURED, in a rule
+  -- body, before and after FDPJ8: `unify(dbl(2), 4)` over `operation dbl(n: Int64)
+  -- -> Int64 = add(n, n)` SUCCEEDS. Reading "structural only" as "compares raw terms"
+  -- predicts a failure there and always did.
   --
   -- WI-1056: an OPERATION-LEVEL type parameter, for the reason `struct_eq` below
   -- already states — it is not a spec op, so nothing binds a carrier parameter for
@@ -86,7 +98,11 @@ namespace anthill.kernel
   -- via the same `builtin_eq` structural comparator `=`/`eq` shortcut to today —
   -- but under its OWN symbol, so when `=`/`eq` become genuinely dispatched
   -- semantic equality (`Eq.eq`, Phase 2 / WI-616) `===` stays structural. Needs
-  -- no `Eq` instance. Never dispatches. Unlike `Eq.eq` (whose `T` is the `Eq`
+  -- no `Eq` instance. Never dispatches — in the same sense `unify` above spells out
+  -- (WI-20260910-FDPJ8): no carrier's `Eq` member is selected, but a CALL in operand
+  -- position is still reduced to its value first, and one that cannot be reduced
+  -- delays. MEASURED in a rule body, before and after that ticket:
+  -- `struct_eq(dbl(2), 4)` SUCCEEDS. Unlike `Eq.eq` (whose `T` is the `Eq`
   -- spec's own param, bound per-call by spec-op dispatch), `struct_eq` is not a
   -- spec op, so it carries an OPERATION-LEVEL type parameter `[T]` (proposal 042)
   -- the typer binds per call — letting `a === b` type-check in an operation body.

@@ -184,6 +184,15 @@ pub enum BuiltinTag {
     /// (succeeds/fails). Total, carrier-agnostic, never dispatches (WI-615 /
     /// proposal 051). Until WI-616 this tag also backed `PartialEq.eq`; structural
     /// inequality is `not(a === b)`.
+    ///
+    /// "NEVER DISPATCHES" IS ABOUT THE COMPARISON, NOT THE OPERANDS. It selects no
+    /// carrier's `Eq` member — the contrast with [`Self::SemEq`] below. It does NOT
+    /// compare raw terms: `eq_operands` runs [`KnowledgeBase::reduce_operand`] on both
+    /// sides, so a CALL is reduced to its value first and an undecidable one DELAYS
+    /// (WI-483 / WI-738). MEASURED in a rule body, unchanged by
+    /// WI-20260910-FDPJ8: `struct_eq(dbl(2), 4)` SUCCEEDS. That ticket made the same
+    /// true on the `Term` and `Entity` carriers, which is what put a reader in front
+    /// of the older unqualified wording.
     Eq,
     /// `anthill.prelude.PartialEq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
     /// 051 Phase 2): the `PartialEq.eq` spec op, dispatched through the carrier's
@@ -198,7 +207,10 @@ pub enum BuiltinTag {
     /// The bind-counterpart of `Eq`: same structural walk, but a flex var head
     /// **binds** to the other side (an occurs-checked frame effect →
     /// `SuccessWithBindings`) instead of merely comparing. The object-level face
-    /// of `<=>` (and `let ?v = e`). Carrier-agnostic, never dispatches.
+    /// of `<=>` (and `let ?v = e`). Carrier-agnostic, and never dispatches in
+    /// [`Self::Eq`]'s sense — no carrier's `Eq` member is selected, while an operand
+    /// that is a CALL is still reduced first and an undecidable one delays. See that
+    /// tag's paragraph; `unify` shares the one operand pipeline with it.
     Unify,
     /// `anthill.prelude.Ord.gt(?a, ?b)` — greater-than on Int/Float constants.
     Gt,
@@ -721,6 +733,29 @@ enum EqOperands {
     Ready(Value, Value),
     Delay,
     Absent,
+}
+
+/// WI-20260910-FDPJ8 — the answer [`KnowledgeBase::unify_terms`] gives, three-valued
+/// because the question has three answers and its old `Option<Substitution>` could
+/// spell only two.
+///
+/// [`Self::NoUnifier`] and [`Self::Undecided`] are the two that were conflated, and
+/// conflating them is a WRONG ANSWER rather than a lost distinction: "no unifier" is a
+/// definite claim about the terms, while "undecided" says the walk met an operand it
+/// may not commit a structural verdict over (the WI-738 floor). See `unify_terms` for
+/// the measurement.
+pub enum TermUnification {
+    /// The most general unifier.
+    Unifier(Substitution),
+    /// No unifier exists — a functor / arity / scalar mismatch, or an occurs-check
+    /// violation.
+    NoUnifier,
+    /// An operand is an unevaluated CALL that reduction could not decide, so no
+    /// structural verdict may be committed either way. The term-level twin of the
+    /// resolver's delay; `reflect_unify` raises it as [`crate::eval::EvalError::Suspended`],
+    /// which the resolver bridge turns back into a delay and top-level eval reports
+    /// loudly — never `none()`, which would be the definite claim above.
+    Undecided,
 }
 
 /// Outcome of the structural unification walk (`builtin_unify`, proposal 049).
@@ -6370,8 +6405,13 @@ impl KnowledgeBase {
     /// `SuccessWithBindings` carrying the new bindings as a frame effect, plain
     /// `Success` when the two sides are already equal with nothing to bind,
     /// `Delay` on a complex op-call operand (substitution transparency), and
-    /// `Failure` on a mismatch or occurs-check violation. Carrier-agnostic and
-    /// structural-only — it never dispatches (the proposal Invariant).
+    /// `Failure` on a mismatch or occurs-check violation. Carrier-agnostic, and
+    /// "never dispatches" in the sense [`BuiltinTag::Eq`] spells out: the proposal
+    /// Invariant is that no carrier's `Eq` member is selected. It is NOT "compares raw
+    /// terms" — [`Self::unify_values`] opens with [`Self::reduce_operand`] on both
+    /// sides and delays on an undecidable call (WI-483 / WI-738), so
+    /// `unify(dbl(2), 4)` succeeds. WI-20260910-FDPJ8 made that true on every carrier
+    /// rather than only on occurrences.
     fn builtin_unify<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
@@ -6584,17 +6624,38 @@ impl KnowledgeBase {
     }
 
     /// Term-level structural unification (proposal 049's "honest signature"):
-    /// the most general unifier of `a` and `b` as a substitution, or `None`
-    /// when they do not unify. The DATA face shared with the object-level
-    /// `<=>` builtin — `<=>` installs this σ as a frame effect, the term-level
-    /// `reflect.unify` returns it as data (for reflection and the WI-010
-    /// self-hosted resolver). Occurs-checked; a delaying op-call operand (only
-    /// reachable from occurrence-carried inputs) reads as non-unifiable here.
-    pub fn unify_terms(&mut self, a: TermId, b: TermId) -> Option<Substitution> {
+    /// the most general unifier of `a` and `b`. The DATA face shared with the
+    /// object-level `<=>` builtin — `<=>` installs this σ as a frame effect, the
+    /// term-level `reflect.unify` returns it as data (for reflection and the WI-010
+    /// self-hosted resolver). Occurs-checked.
+    ///
+    /// **THREE-STATE SINCE WI-20260910-FDPJ8, and the collapse it replaces was a
+    /// WRONG ANSWER.** This returned `Option<Substitution>` and mapped
+    /// [`UnifyOutcome::Delay`] onto `None` — which at this face MEANS "these terms do
+    /// not unify". The old doc ring-fenced that as safe with a CARRIER claim, "a
+    /// delaying op-call operand (only reachable from occurrence-carried inputs) reads
+    /// as non-unifiable here", and FDPJ8 falsified exactly that claim: `unify_values`
+    /// reaches [`Self::reduce_operand`] and [`Self::operand_is_unevaluated_call`], both
+    /// carrier-neutral since that ticket, so a TERM-carried op call now delays too.
+    /// MEASURED over `operation dbl(n: Int64) -> Int64 = add(n, n)`:
+    /// `unify_terms(dbl(?x), dbl(?y))` answered `None` — "no unifier" for two terms
+    /// that plainly unify structurally — and `reflect_unify` handed that to the
+    /// program as `none()`. DRIVEN by
+    /// `wi_fdpj8_op_call_carrier_test::an_undecidable_pair_is_not_reported_as_non_unifiable`.
+    ///
+    /// A THREE-STATE RETURN RATHER THAN A DOC NOTE, because the caller cannot recover
+    /// the distinction from `None` and every reader of this face is deciding something
+    /// on it. Rejecting the smaller repairs by name: keeping `Option` and merely
+    /// documenting the collapse leaves the wrong answer in place; skipping the
+    /// reduce/delay step on THIS face restores the WI-738 structural lie
+    /// (`unify(sub(2,1), 1)` would report a unifier over an uninterpreted call); and
+    /// panicking is wrong for a legal program.
+    pub fn unify_terms(&mut self, a: TermId, b: TermId) -> TermUnification {
         let mut work = Substitution::new();
         match self.unify_values(Value::term(a), Value::term(b), &mut work) {
-            UnifyOutcome::Ok if !work.is_contradiction() => Some(work),
-            _ => None,
+            UnifyOutcome::Ok if !work.is_contradiction() => TermUnification::Unifier(work),
+            UnifyOutcome::Delay => TermUnification::Undecided,
+            _ => TermUnification::NoUnifier,
         }
     }
 
@@ -7953,6 +8014,119 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-20260910-FDPJ8 — the occurrence [`Self::reduce_op_value`] folds when the call
+    /// arrives on a carrier that is not `Value::Node`, or `None` when this value is
+    /// nothing that function could have reduced anyway.
+    ///
+    /// **IT IS A COST GATE EVERYWHERE BUT ONE ARM, and that arm is named rather than
+    /// absorbed into the headline.** Every `None` below is a `return v` that function
+    /// reaches on its own two lines later — EXCEPT for a childless `Value::Entity`,
+    /// which `value_as_occurrence` materializes as `Expr::Apply{f, [], []}` and
+    /// `reduce_op_value` WOULD reduce through WI-941's genuinely-nullary path
+    /// (`declared == Some(0)`). On that one carrier the arity leg below is a
+    /// behavioural narrowing, and its own bullet says why that narrowing is the
+    /// intended reading. What the gate buys elsewhere is not building an occurrence
+    /// SPINE for the operands that are plainly not op-calls — `eq(?x, cons(1, cons(2, nil)))` walks its whole list through
+    /// [`node_occurrence::value_as_occurrence`] otherwise, once per `eq` goal, and
+    /// `reduce_operand` runs on BOTH operands of every `eq` / `neq` / `cmp` / `arith` /
+    /// `unify`. Each leg is therefore the same question that function asks, on the
+    /// SPELLED functor:
+    ///
+    ///  * **APPLIED (`pos + named > 0`)** — the carrier canon collapses a nullary
+    ///    `Fn{f}` to `Ref(f)` (WI-436), so on every carrier but `Node` a bare name and a
+    ///    nullary call are ONE term and `head` reads both as [`ViewHead::nullary`].
+    ///    Opening it as a call is the reading WI-20260902-VZC2C explicitly refused here
+    ///    — "a bare nullary op in an ARROW-typed slot is §5.4's unapplied function
+    ///    value … which is also why `reduce_op_value` may not simply open a `Ref`" —
+    ///    and folding one would turn a function VALUE into its result. The site that
+    ///    HAS the reading (the WI-580 goal hook) rebuilds the `Expr::Apply` itself
+    ///    before calling, and arrives on the `Node` arm above. This is
+    ///    [`Self::is_unreduced_builtin_call`]'s test, for the same reason and on the
+    ///    same carriers.
+    ///
+    ///    **THIS LEG ALONE DRIVES NO ROW, and the honest reason is that
+    ///    `value_as_occurrence` mostly makes it redundant** — measured, not assumed:
+    ///    dropping it leaves `wi_fdpj8_op_call_carrier_test` green, because a nullary
+    ///    head on a `Term` / `SymbolRef` materializes to the `Expr::Ref` LEAF and the
+    ///    `Expr::Apply` match below hands it straight back. The one carrier it does
+    ///    reach is a childless `Value::Entity`, which that function's `head` arm builds
+    ///    as an `Expr::Apply{f, [], []}`; nothing in the corpus produces one in operand
+    ///    position. It is kept because the ALIGNMENT is load-bearing even where the
+    ///    behaviour is not yet reachable: a reduction that opened a bare name while
+    ///    [`Self::is_unreduced_op_call`] — where the same test IS driven, by
+    ///    `a_bare_nullary_op_name_is_still_data` — called it data would be the exact
+    ///    reduce/delay disagreement this ticket exists to remove.
+    ///  * **NOT A BUILTIN, UNLESS THE DISPATCH DECODE CAN REDIRECT IT** — that function
+    ///    bails on `self.builtins.get(&op)`, where `op` is the POST-dispatch callee. A
+    ///    materialized occurrence carries no typer stamp (`value_as_occurrence` builds a
+    ///    fresh `Expr::Apply`; a term never had one), so its dispatch is always
+    ///    `Unclassified` and the ONE thing that can move `op` off the spelled functor is
+    ///    [`Self::classify_unstamped_spec_op_call`] — gated, first, on
+    ///    [`super::typing::defaulted_spec_op_parent`]. So a builtin that is also a
+    ///    defaulted spec op is admitted and everything else builtin leaves here, which
+    ///    is what keeps WI-738's own `neq(sub(?x,1), 1)` operand off the materializer.
+    ///  * **A DECLARED OPERATION** — EVERY arm that reduces reads `op_records`, with no
+    ///    exception to name: [`KnowledgeBase::op_body_node`] is a projection of it,
+    ///    [`Self::body_less_dispatchable`] and [`Self::host_op_reducible_at_a_value`]
+    ///    both probe the signature ON that record, and `defaulted_spec_op_parent`'s
+    ///    `op_has_runnable_body` leg requires one. So a functor with no record has
+    ///    nothing for any of them, and the HOST arm in particular is covered rather
+    ///    than excluded. This is the leg that turns an entity constructor away — `cons`
+    ///    / `some` / `Box` are entity declarations, not operations, and they are the
+    ///    operands a structural `eq` is MADE of.
+    ///
+    /// **`Expr::ApplyWithin` IS NOT REACHED FROM HERE, and the reason is OP-HOOD, not
+    /// opacity.** The second half of this ticket gave a woven call a real head —
+    /// `Functor{apply_within, 0, 3|4}`, its reflect entity's own shape — so the view
+    /// DOES recognize one now, and an earlier draft of this paragraph saying otherwise
+    /// was already stale when it was written. What turns it away is the `op_records`
+    /// leg: `anthill.reflect.Expr.apply_within` is an ENTITY, so it has no operation
+    /// record and none of `reduce_op_value`'s arms could act on the wrap anyway.
+    ///
+    /// The WOVEN CALL ITSELF is still handled where WI-1040 put it — the `Node` arm
+    /// above, reading `Expr::ApplyWithin` directly, which is the carrier its only
+    /// producer (`weave_covered_call`) writes to. Nothing here narrows that.
+    fn op_call_occurrence_to_reduce(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
+        let ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity,
+        } = v.head(self)
+        else {
+            return None;
+        };
+        if pos_arity + named_arity == 0 {
+            return None;
+        }
+        if self.builtins.get(&f).is_some()
+            && super::typing::defaulted_spec_op_parent(self, f).is_none()
+        {
+            return None;
+        }
+        // THE UNION, so this gate is a SUPERSET of its delay partner BY CONSTRUCTION.
+        // `op_record` alone is the wider reduce-only set (a defaulted spec op, a
+        // body-less dispatchable one, a `NeedsDict` callee) — but it is not a superset
+        // of [`Self::functor_leaves_an_unreduced_op_call`], whose host leg asks
+        // `is_interpreter_mapped_op`, and that index is keyed under BOTH the resolved
+        // symbol and its `canonical_sym` twin (`kb/mod.rs`) while `op_records` is keyed
+        // under one spelling. A callee in that gap would be reported UN-REDUCED by the
+        // delay predicate while this gate never even ATTEMPTED it — the two disagreeing
+        // about which calls get tried, which is the drift this ticket is about. Asking
+        // the delay predicate itself is what removes the second list. Raised by
+        // `/code-review`.
+        //
+        // NO FIXTURE DRIVES THIS LEG, said so a reader does not go looking for one: the
+        // gap needs a goal spelled with a host op's `canonical_sym` twin, and nothing in
+        // the corpus writes one. It ships because the ALTERNATIVE is a second admission
+        // list beside `functor_leaves_an_unreduced_op_call`, and two lists answering one
+        // question is what this whole ticket is about — not because a row went red.
+        if self.op_record(f).is_none() && !self.functor_leaves_an_unreduced_op_call(f) {
+            return None;
+        }
+        let v = v.clone();
+        Some(node_occurrence::value_as_occurrence(self, &v))
+    }
+
     /// WI-483: reduce a dispatched rule-body method-op call operand
     /// (`Expr::Apply{op, args}` where `op` is a CONCRETE operation) by inlining
     /// the operation body with the call args substituted into its param vars BY
@@ -7988,7 +8162,36 @@ impl KnowledgeBase {
         const FOLD_DEPTH_CAP: usize = 64;
         let occ = match &v {
             Value::Node(o) => Rc::clone(o),
-            _ => return v,
+            // WI-20260910-FDPJ8 — EVERY OTHER CARRIER MATERIALIZES. `_ => return v`
+            // made this function fold only an occurrence, and its partner
+            // [`Self::is_unreduced_op_call`] opened with the same match — internally
+            // consistent, and the consequence was one level up: on the `Value::Term`
+            // and `Value::Entity` carriers a bodied op call was NEITHER REDUCED NOR
+            // DELAYED, so it entered `sem_eq_values`' ladder as DATA and fell out the
+            // structural tail. MEASURED over `operation dbl(n: Int64) -> Int64 =
+            // add(n, n)`, one program with two readings decided only by where the goal
+            // was written: `neq(dbl(2), 4)` answered 1 where the truth is 0,
+            // `eq(dbl(2), 4)` answered 0 where the truth is 1, and the constraint guard
+            // `no ?v: Box(w: ?v) -: neq(dbl(?v), 4)` REFUSED a corpus violating nothing.
+            // DRIVEN by `wi_fdpj8_op_call_carrier_test`.
+            //
+            // THE REDUCTION MOVES FIRST AND THE DELAY FOLLOWS IT, never the other way:
+            // widening the delay predicate alone would make such an operand delay for
+            // ever, since nothing else reduces it — a never-answer traded for a
+            // sometimes-wrong one.
+            //
+            // WHAT THE ORDERING DOES NOT PROMISE, said here because the sentence above
+            // reads like it does: a call the reduction ATTEMPTS and cannot decide still
+            // delays, and if nothing will ever ground it, it delays for ever. That is
+            // WI-483/WI-738's deliberate outcome, not a gap — the residual surfaces as
+            // a FLOUNDER (loudly, per WI-737) rather than as a silent structural lie.
+            // The ordering promises only that every call the delay predicate can report
+            // was tried first, which `op_call_occurrence_to_reduce`'s union leg is what
+            // makes true.
+            _ => match self.op_call_occurrence_to_reduce(&v) {
+                Some(o) => o,
+                None => return v,
+            },
         };
         // WI-1040 — a WOVEN call: the typer sweep rewrote a spec-op call covered by a
         // clause `require[X]` into `apply_within(fn = op, args = …, requirements =
@@ -8677,81 +8880,136 @@ impl KnowledgeBase {
     /// call it built itself, and it asks it there
     /// ([`Self::reduction_left_body_less_call`]).
     ///
-    /// **`Value::Node` ONLY, AND WI-20260906-7YPGM DELIBERATELY DID NOT WIDEN IT.**
-    /// Stated because that ticket widened its two neighbours
-    /// ([`Self::op_call_as_occ`] and [`Self::is_unreduced_builtin_call`]) for the
-    /// `Value::Entity` goal carrier and a reader will ask why not this one. A
-    /// `Value::Term` bodied op-call operand already answers `false` here and always
-    /// has, so an `Entity` one answering `false` is PARITY, not a regression the
-    /// carrier change introduced.
-    ///
-    /// **IT IS ALSO A LIVE WRONG ANSWER, and the size of the hole is MEASURED rather
-    /// than argued** — WI-20260910-FDPJ8 owns closing it. The reason is not this
-    /// predicate alone: [`Self::reduce_op_value`] folds only a `Value::Node` too, so
-    /// on the other two carriers a call is neither REDUCED nor DELAYED, and it enters
+    /// **CARRIER-NEUTRAL SINCE WI-20260910-FDPJ8, and it was a WRONG ANSWER before,
+    /// not a missing one.** Until that ticket this opened `let Value::Node(occ) = v
+    /// else { return false }`, matching [`Self::reduce_op_value`]'s own carrier match —
+    /// internally consistent, and the consequence one level up: on `Value::Term` and
+    /// `Value::Entity` a bodied op call was neither REDUCED nor DELAYED, so it entered
     /// `sem_eq_values`' ladder as DATA. Every arm of that ladder asks about a CARRIER
-    /// (reflexivity, a head `Eq` override, a Float); an operation application matches
-    /// none, so it falls out the structural tail. `unfold_eq_operand` does NOT cover
-    /// it — that route declines a GROUND scrutinee at `folded_call_match`'s flex
-    /// check. MEASURED, one program with two readings decided only by where the goal
-    /// was written (rule body = `Node`, correct; term-carried = wrong):
-    /// `neq(dbl(2), 4)` answers 1 where the truth is 0, `eq(dbl(2), 4)` answers 0
-    /// where the truth is 1, `lt(dbl(2), 5)` answers 0 where the truth is 1 — and a
-    /// constraint guard `no ?v: Box(w: ?v) -: neq(dbl(?v), 4)` over `fact Box(w: 2)`
-    /// REFUSES a corpus that violates nothing.
+    /// (reflexivity, a head `Eq` override, a Float, a partial carrier); an operation
+    /// application matches none, so it fell out the structural tail. MEASURED, one
+    /// program with two readings decided only by where the goal was written (rule body
+    /// = `Node`, correct; term- and entity-carried = wrong): `neq(dbl(2), 4)` answered
+    /// 1 where the truth is 0, `eq(dbl(2), 4)` answered 0 where the truth is 1,
+    /// `Int64.lt(dbl(2), 5)` answered 0 (loudly, through WI-879's undecided
+    /// diagnostic) where the truth is 1 — and the constraint guard `no ?v: Box(w: ?v)
+    /// -: neq(dbl(?v), 4)` over `fact Box(w: 2)` REFUSED a corpus violating nothing.
+    /// DRIVEN by `wi_fdpj8_op_call_carrier_test`.
     ///
-    /// It is not fixed HERE because widening this predicate alone makes such an
-    /// operand delay for ever (nothing would ever reduce it), and widening its
-    /// partner changes what `eq`/`cmp` DECIDE for a whole class of operands — the
-    /// paragraph above records 5 measured `wi616` failures from admitting too much
-    /// through this very door. Raised by `/code-review`.
+    /// **THE ORDER IS THE WHOLE REPAIR.** Widening this predicate ALONE is wrong —
+    /// nothing else would reduce such an operand, so it would delay for ever, trading a
+    /// sometimes-wrong answer for a never-answer. `reduce_op_value` materializes a
+    /// non-`Node` call FIRST ([`Self::op_call_occurrence_to_reduce`]), so a call is
+    /// reduced on every carrier, and this predicate then reports only what that
+    /// reduction genuinely left behind.
+    ///
+    /// **WHAT STAYS OUT IS UNCHANGED, and it is what the wi616 paragraph above is
+    /// about**: this widens the CARRIER, never the DISPATCH. `reduce_operand` still
+    /// passes `dispatch_body_less: false`, so `Set.insert` / `Set.empty` are as
+    /// un-reduced and as structurally compared on a term as they were on an occurrence,
+    /// and the `op_body_node(..).is_some() || is_interpreter_mapped_op(..)` test below
+    /// is the same set of callees it was.
+    ///
+    /// **TWO SHAPES ARE ASKED ON THE `Node` CARRIER BEFORE THE VIEW READ**, because the
+    /// view cannot express them — not because a carrier list is being kept:
+    ///  * `Expr::ApplyWithin` — and since this ticket's second half the reason is NOT
+    ///    that the view cannot see it. It heads as `Functor{apply_within, 0, 3|4}`,
+    ///    its reflect entity's shape; what the view arm cannot do is DECIDE it, because
+    ///    [`Self::functor_leaves_an_unreduced_op_call`] asks about the head functor and
+    ///    `apply_within` is an entity with no body and no host mapping — so the view
+    ///    arm would answer `false` where WI-1040 requires `true`. A woven call that
+    ///    came back un-rewritten is un-reduced BY CONSTRUCTION, which is a fact about
+    ///    the FORM and not about its functor, so it is asked on the carrier that has
+    ///    the form.
+    ///  * A NULLARY `Expr::Apply` is a call unambiguously, where every other carrier
+    ///    collapses `Fn{f}` to `Ref(f)` (WI-436) and cannot tell one from §5.4's
+    ///    unapplied function value. The view arm therefore carries
+    ///    [`Self::is_unreduced_builtin_call`]'s `pos + named > 0` test — delaying on a
+    ///    bare name would lose an answer, not refuse one — while this arm keeps
+    ///    answering for the shape that says it is a call. `reduce_op_value` draws the
+    ///    line in exactly the same place, for the same WI-20260902-VZC2C reason.
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
-        let Value::Node(occ) = v else { return false };
-        match occ.as_expr() {
-            Some(Expr::Apply { functor, .. }) => {
-                // WI-20260826-VPEWK — the HOST leg, and it is admissible here where
-                // WI-1057's body-less one explicitly was not. That ticket kept
-                // `reduction_left_body_less_call` a SEPARATE predicate precisely
-                // because this one "also decides `eq`'s domain, where a body-less spec
-                // op may be symbolic ALGEBRA — measured, folding the two broke 5 wi616
-                // cases". A HOST-IMPLEMENTED op cannot be that: `is_interpreter_mapped_op`
-                // answers true only for an operation some `operation_map` clause binds
-                // to a host FUNCTION, which exists to compute. `Set.insert` — the named
-                // algebra case, and what the wi616 five are about — is mapped nowhere
-                // and is untouched by this leg.
+        if let Value::Node(occ) = v {
+            match occ.as_expr() {
+                // WI-1040 — a WOVEN call (`apply_within(fn = …, requirements = [?d])`)
+                // that came back un-rewritten is un-reduced BY CONSTRUCTION: the arm in
+                // `reduce_op_value` either resolves its dictionary and returns the
+                // reduction of the impl call, or returns the node untouched. So reaching
+                // here means the dictionary was not readable, and the only honest answer
+                // is to delay.
                 //
-                // WITHOUT IT the reduction and the delay disagreed, and the gap was a
-                // WRONG ANSWER rather than a missing one. `reduce_op_value` now reduces
-                // a host call, so an UNGROUND one comes back un-reduced (the bridge
-                // declines a non-ground argument and `unwrap_or(v)` restores the call) —
-                // and this predicate, still asking for a body, called that bare `Apply`
-                // ordinary DATA. `eq` then compared the CALL to `true` structurally and
-                // decided FALSE. MEASURED: `rule ung(?b) :- Bool.and(?b, true) = true`
-                // answered `no solutions`, where the same rule over a BODIED op answers
-                // `1 conditional (residual goals undischarged)`. A reduction widened
-                // without its delay predicate is the WI-738 soundness floor knocked out
-                // from under exactly the calls the widening newly admits.
-                self.builtins.get(functor).is_none()
-                    && (self.op_body_node(*functor).is_some()
-                        || self.is_interpreter_mapped_op(*functor))
+                // Not a cosmetic addition: MEASURED, without it the WI-938 hook routed
+                // `unify(?r, <the apply_within node>)` and BOUND the result variable to
+                // the call itself — the "definite-looking wrong answer" that hook's own
+                // comment warns about, produced by the one shape it had never seen.
+                // Deliberately unconditional on the callee (no `op_body_node` test): a
+                // BODY-LESS spec op is exactly the case a dictionary exists to dispatch,
+                // and it has no body to fold.
+                //
+                // WI-20260910-FDPJ8 — ASKED HERE AND NOT THROUGH THE VIEW BELOW, even
+                // though that half of this ticket gave the form a real head
+                // (`Functor{apply_within, 0, 3|4}`). The view arm decides by the head
+                // FUNCTOR, and `apply_within` is an ENTITY with no body and no host
+                // mapping, so it would answer `false` where this must answer `true`.
+                // What makes a woven call un-reduced is its FORM, not its functor.
+                Some(Expr::ApplyWithin { .. }) => return true,
+                // WI-20260910-FDPJ8 — a NULLARY application, which only this carrier can
+                // tell apart from a bare name (see the doc above). Answered here so the
+                // view arm below may carry the arity test that keeps §5.4's unapplied
+                // function value DATA.
+                Some(Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                }) if pos_args.is_empty() && named_args.is_empty() => {
+                    return self.functor_leaves_an_unreduced_op_call(*functor)
+                }
+                _ => {}
             }
-            // WI-1040 — a WOVEN call (`apply_within(fn = …, requirements = [?d])`)
-            // that came back un-rewritten is un-reduced BY CONSTRUCTION: the arm in
-            // `reduce_op_value` either resolves its dictionary and returns the
-            // reduction of the impl call, or returns the node untouched. So reaching
-            // here means the dictionary was not readable, and the only honest
-            // answer is to delay.
-            //
-            // Not a cosmetic addition: MEASURED, without it the WI-938 hook routed
-            // `unify(?r, <the apply_within node>)` and BOUND the result variable to
-            // the call itself — the "definite-looking wrong answer" that hook's own
-            // comment warns about, produced by the one shape it had never seen.
-            // Deliberately unconditional on the callee (no `op_body_node` test): a
-            // BODY-LESS spec op is exactly the case a dictionary exists to dispatch,
-            // and it has no body to fold.
-            Some(Expr::ApplyWithin { .. }) => true,
+        }
+        match v.head(self) {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => pos_arity + named_arity > 0 && self.functor_leaves_an_unreduced_op_call(f),
             _ => false,
         }
+    }
+
+    /// WI-20260910-FDPJ8 — [`Self::is_unreduced_op_call`]'s decision, once the shape has
+    /// been established as an application: does `functor` name an operation
+    /// [`Self::reduce_op_value`] would have REDUCED, so that a call of it still standing
+    /// as a call must DELAY rather than be compared as data?
+    ///
+    /// Split out so the two arms above cannot drift: they differ in how they recognize
+    /// an application, never in what they decide about one.
+    fn functor_leaves_an_unreduced_op_call(&self, functor: Symbol) -> bool {
+        // WI-20260826-VPEWK — the HOST leg, and it is admissible here where
+        // WI-1057's body-less one explicitly was not. That ticket kept
+        // `reduction_left_body_less_call` a SEPARATE predicate precisely
+        // because this one "also decides `eq`'s domain, where a body-less spec
+        // op may be symbolic ALGEBRA — measured, folding the two broke 5 wi616
+        // cases". A HOST-IMPLEMENTED op cannot be that: `is_interpreter_mapped_op`
+        // answers true only for an operation some `operation_map` clause binds
+        // to a host FUNCTION, which exists to compute. `Set.insert` — the named
+        // algebra case, and what the wi616 five are about — is mapped nowhere
+        // and is untouched by this leg.
+        //
+        // WITHOUT IT the reduction and the delay disagreed, and the gap was a
+        // WRONG ANSWER rather than a missing one. `reduce_op_value` now reduces
+        // a host call, so an UNGROUND one comes back un-reduced (the bridge
+        // declines a non-ground argument and `unwrap_or(v)` restores the call) —
+        // and this predicate, still asking for a body, called that bare `Apply`
+        // ordinary DATA. `eq` then compared the CALL to `true` structurally and
+        // decided FALSE. MEASURED: `rule ung(?b) :- Bool.and(?b, true) = true`
+        // answered `no solutions`, where the same rule over a BODIED op answers
+        // `1 conditional (residual goals undischarged)`. A reduction widened
+        // without its delay predicate is the WI-738 soundness floor knocked out
+        // from under exactly the calls the widening newly admits.
+        self.builtins.get(&functor).is_none()
+            && (self.op_body_node(functor).is_some() || self.is_interpreter_mapped_op(functor))
     }
 
     /// WI-738: is `v` an operand that is an unevaluated BUILTIN call — the

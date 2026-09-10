@@ -151,7 +151,6 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     kb,
                     site,
                     &named_args,
-                    &pos_args,
                     fn_target_sym,
                     callee_spec_sort,
                     spec_op_sym,

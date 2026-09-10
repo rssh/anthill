@@ -676,7 +676,15 @@ namespace anthill.reflect
     -- dispatching dictionary; at apply time the eval expands it into the
     -- callee's name-keyed frame.requirements, which the body reads via
     -- `var_ref(__req_*)`. See `docs/design/operation-call-model.md` §"The IR".
-    entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[NodeOccurrence])
+    -- WI-20260910-FDPJ8 — `type_args` MIRRORS `apply` ABOVE, and it was missing rather
+    -- than deliberately absent. `Expr::ApplyWithin` carries a `type_args` channel
+    -- (`weave_covered_call` copies it off the `Expr::Apply` it rewrites, so a covered
+    -- `op[T = Int](x)` has one) and `visit_fn`'s `"apply_within"` arm already READ a
+    -- `type_args` named arg — off an entity that declared no such field. Reader and
+    -- occurrence agreed with each other and disagreed with the schema; this makes the
+    -- schema the one shape all three producers build.
+    entity apply_within(fn: Symbol, args: List[ApplyArg], requirements: List[NodeOccurrence],
+                        type_args: Option[T = List[type_arg]])
     entity ho_apply_within(predicate: Term, args: List[Term], requirements: List[NodeOccurrence])
     entity constructor_within(name: Symbol, args: List[ApplyArg], requirements: List[NodeOccurrence])
     entity lambda_within(param: Pattern, body: NodeOccurrence, requirements: List[NodeOccurrence])
