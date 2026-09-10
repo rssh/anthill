@@ -45295,6 +45295,9 @@ fn labels_match_aligned(
     if resolved_labels_equal(kb, subst, a, e) {
         return true;
     }
+    if labels_match_by_subsumption(kb, a, e) {
+        return true;
+    }
     let (
         TypeExtractor::Parameterized { base: a_base, .. },
         TypeExtractor::Parameterized { base: e_base, .. },
@@ -56285,6 +56288,110 @@ fn resolved_labels_equal(kb: &KnowledgeBase, subst: &Substitution, a: &Value, b:
     // Node-vs-Node, AND the cross-carrier Term-vs-Node case the old hand-rolled
     // match silently returned `false` for.
     views_structurally_equal(kb, &ra, &rb)
+}
+
+/// A LABEL'S ARGUMENT IS A TYPE, AND TYPES SUBSUME — for the label sorts that say so.
+///
+/// `Error[T]`'s argument is a payload TYPE, so a boundary declared to handle `Wide`
+/// admits a body raising `Narrow` when `Narrow <: Wide`: the Java/Scala catch rule, and
+/// what makes a hierarchy of error types worth declaring. `Modify[p]`'s argument is a
+/// PLACE — `effects.anthill`'s header is emphatic that it is never a type — so
+/// subsumption is meaningless there and identity is the whole rule.
+///
+/// ONE CHECK, THREE KINDS OF ARGUMENT, and the existing variance facts tell them apart
+/// (proposal 035: variance is a FACT, not a keyword). This leg runs only where a
+/// `Covariant`/`Contravariant` fact is declared; no fact means invariant, which is
+/// `Modify`'s rule and is already decided by the legs around this one. So `Modify` is
+/// protected by the DEFAULT rather than by anyone remembering to protect it.
+///
+/// THE COVARIANT ARM IS THE ONE THAT ADMITS, though what it expresses is the
+/// contravariant relation, and the flip is already applied by WHAT THIS COMPARES. "A
+/// handler for `Wide` handles `Narrow`" is contravariance of the handler; but `a` here
+/// is the body's ACTUAL label and `e` the callback parameter's DECLARED one, and being
+/// a parameter is what turned the relation round before this function is reached. So
+/// the direction wanted is `actual refines declared`, which is `Variance::Covariant`.
+/// MEASURED: declaring `Contravariant(Error, T)` applies the flip twice and refuses
+/// exactly the programs this admits.
+///
+/// NOMINAL AND SHALLOW, DELIBERATELY — via [`sort_refines`], not `types_compatible`,
+/// and this is the whole reason the leg is written by hand rather than delegating to
+/// `check_binding_by_variance` like `parameterized_compatible_view` does. That
+/// delegation was the first shipped shape and it KILLED THE `wi_tests` BINARY: an
+/// overflowed thread stack past its guard page, reported as
+/// `malloc: Heap corruption detected / *** Incorrect guard value`, taking 4400 tests
+/// down as collateral. Not a cycle — the same run passed 4417/0 under
+/// `RUST_MIN_STACK=32M` — but DEPTH, because this site is already far down the typer's
+/// expression walk and structural equality used to bottom out here. Attaching a full
+/// compatibility descent at a former leaf is what cost the remaining budget.
+/// `sort_refines` walks the flat `requires` chain instead: no descent into arrows or
+/// nested parameterizations, no substitution to clone, and an immutable KB.
+///
+/// THE LIMIT THAT BUYS: only a PLAIN SORT REFERENCE on both sides subsumes.
+/// `Error[List[T = X]]` against `Error[List[T = Y]]` falls back to the exact-match leg
+/// above, even where `X` refines `Y`. A payload type is a sort in every case this rule
+/// is for, so the restriction costs nothing today — and the day it does, the fix is to
+/// bound the typer's compatibility walk (which carries no depth cap and no visited set,
+/// unlike eval's `step_cap` / `depth_cap` and the bridge's `BRIDGE_REENTRY_CAP`), not
+/// to widen this leg back onto an unbounded one.
+fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Value) -> bool {
+    let base = |v: &Value| match type_head(kb, v) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(kb.canonical_sort_sym(s)),
+        _ => None,
+    };
+    let (Some(a_base), Some(e_base)) = (base(a), base(e)) else {
+        return false;
+    };
+    if a_base != e_base {
+        return false;
+    }
+    // A plain sort REFERENCE only — see "the limit that buys" above.
+    let arg_sort = |v: &Value, name: &str| match extract_type_param(kb, v, name) {
+        Some(av) => match type_head(kb, &av) {
+            TypeHead::SortRef(s) => Some(kb.canonical_sort_sym(s)),
+            _ => None,
+        },
+        None => None,
+    };
+    let params: Vec<Symbol> = kb.type_param_syms_of(e_base).to_vec();
+    if params.is_empty() {
+        return false;
+    }
+    let mut any_declared = false;
+    for p in params {
+        let variance = declared_variance(kb, e_base, p);
+        let name = kb.local_name_of(p);
+        // A label whose argument is UNWRITTEN on either side decides nothing here. Bare
+        // `Error` is `Error[T = ?]`, an undecided payload, and letting it match through
+        // this leg would answer a question 027.4 records as open — whether an undecided
+        // argument satisfies a decided demand — in passing and in the loose direction.
+        let (Some(av), Some(ev)) = (arg_sort(a, name), arg_sort(e, name)) else {
+            return false;
+        };
+        let ok = match variance {
+            Variance::Covariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, av, ev)
+            }
+            Variance::Contravariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, ev, av)
+            }
+            // No fact: identity, which the exact-match leg above already decided. This
+            // arm exists so a MIXED sort (one declared parameter, one not) still holds
+            // its undeclared parameters to equality rather than ignoring them.
+            Variance::Invariant => av == ev,
+            Variance::Bivariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, av, ev) || sort_refines(kb, ev, av)
+            }
+        };
+        if !ok {
+            return false;
+        }
+    }
+    // Every parameter agreed, but if NONE of them declared a variance this is just the
+    // equality the leg above already tried — say so rather than answering twice.
+    any_declared
 }
 
 /// Pair present-labels from two rows by greedy structural unification.

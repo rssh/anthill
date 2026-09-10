@@ -10,7 +10,7 @@ namespace anthill.reflect.typing
   -- from `EmbeddedStdlib.stdlibPaths`, which does not carry every prelude file, so a
   -- sort imported here must also be on THAT list or every scaland stdlib test fails
   -- invisibly to a `cargo-test` acceptance. `Result` was added to it with 027.4.
-  import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq, Result}
+  import anthill.prelude.{Option, Stream, Pair, Function, Iterable, IndexedSeq, Result, Error}
 
   import anthill.reflect.{Term, Symbol, KB, SortInfo, OperationInfo, EntityInfo, SortRequiresInfo, SortProvidesInfo, ProvidesConditionInfo, scope}
 
@@ -347,6 +347,24 @@ namespace anthill.reflect.typing
   -- E checks the effect row by subsumption (fewer effects <: more), the row twin
   -- of subtype_effect_rows.
   fact Contravariant(sort: Function, param: A)
+  -- `Error`'s payload. A boundary declared to handle `Wide` admits a body raising
+  -- `Narrow` when `Narrow <: Wide`, and not the reverse — the Java/Scala catch rule.
+  --
+  -- COVARIANT, THOUGH THE RELATION IT EXPRESSES IS THE CONTRAVARIANT ONE, and the
+  -- difference is where the flip is applied. "A handler for `Wide` handles `Narrow`" is
+  -- contravariance of the HANDLER, and if this label were compared handler-to-handler
+  -- that is what the fact would say. It is not: the row check compares the body's
+  -- ACTUAL row against the callback parameter's DECLARED one, and being a parameter is
+  -- what already turned the relation round. `check_binding_by_variance`'s covariant arm
+  -- is `types_compatible(actual, declared)` — precisely "the raised payload is one the
+  -- declared boundary covers". Declaring `Contravariant` here applies the flip a second
+  -- time and refuses exactly the programs this is meant to admit; MEASURED, that is
+  -- what it did.
+  --
+  -- `Modify` gets NO fact on purpose. Its argument is a PLACE, never a type (see
+  -- `effects.anthill`'s header), so subsumption is meaningless there and the invariant
+  -- default is its whole rule.
+  fact Covariant(sort: Error, param: T)
   fact Covariant(sort: Function, param: B)
   fact Covariant(sort: Function, param: E)
 
