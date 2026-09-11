@@ -2513,6 +2513,23 @@ impl TypingEnv {
         &self.param_rigids[..self.sort_rigid_len]
     }
 
+    /// The OPERATION's OWN params alone — the complement of
+    /// [`Self::enclosing_instance_param_rigids`]. These are the ones a CALLER
+    /// instantiates, so a callee's type-argument channel may still mention their skolems
+    /// when the body is checked (see [`op_own_param_ref_rewrite`]).
+    ///
+    /// TWO FAMILIES LIVE HERE, NOT ONE (WI-1FKR2): the declared `[A]` brackets and the
+    /// INLINE signature variables (`via(b: Box[?t]) -> Box[?t]`), which §5.4 quantifies
+    /// exactly as it does a bracket. `op_own_param_ref_rewrite` reaches only the first —
+    /// it keys off `OperationInfo.type_params`, which the inline family is not in — so an
+    /// inline variable still rides out of a call site un-rewritten and ungroundable,
+    /// reproducing the WI-708 dangling-var shape one level down. Not a regression (that
+    /// is the behaviour before the rewrite existed) and not covered by a test; recorded on
+    /// WI-20260908-9WVT7.
+    fn op_own_param_rigids(&self) -> &[(VarId, TermId)] {
+        &self.param_rigids[self.sort_rigid_len..]
+    }
+
     /// Set the sort whose body is currently being type-checked and
     /// snapshot its **direct** `requires` chain (cheap-ish: one
     /// `SortRequiresInfo` scan via `direct_requires_chain`). `check_apply`
@@ -19111,6 +19128,14 @@ fn check_apply_iter(
             .unwrap_or_default();
         if !op.type_params.is_empty() || !sort_params.is_empty() {
             let op_scope = kb.symbols.scope_id(fn_sym);
+            let enclosing_refs = op_own_param_ref_rewrite(kb, env);
+            // Sized for BOTH lists: the op's own parameters and — WI-20260911-RS2G4 —
+            // the enclosing sort's, which the second loop below appends. The
+            // `enclosing_refs` rewrite applies to the FIRST loop only, and deliberately:
+            // a sort parameter whose walk lands on a bare var (the WI-424 body skolem
+            // included) is SKIPPED there rather than rewritten, because an occupied key
+            // is what `Interpreter::enter_operation`'s same-sort inheritance reads as
+            // "the call site chose explicitly". Each loop states its own rule at its site.
             let mut resolved: Vec<(Symbol, TermId)> =
                 Vec::with_capacity(op.type_params.len() + sort_params.len());
             for (name, var) in &op.type_params {
@@ -19121,6 +19146,15 @@ fn check_apply_iter(
                 // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
                 // rather than a stale unresolved var.
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
+                // …and when the WHOLE entry is one of the enclosing operation's own
+                // skolems, it becomes the `Ref(<op-scoped>)` spelling a body reference
+                // carries, so the frame that installs this channel can ground it by
+                // symbol identity. See [`op_own_param_ref_rewrite`] for why a skolem
+                // cannot ride out as-is, and for why this is the WHOLE entry only.
+                let walked = enclosing_refs
+                    .iter()
+                    .find(|(rigid, _)| *rigid == walked)
+                    .map_or(walked, |(_, named)| *named);
                 let key = op_scoped_type_param_symbol(kb, op_scope, *name);
                 resolved.push((key, walked));
             }
@@ -26638,6 +26672,72 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         type_params: rec.type_params,
         requires: rec.requires,
     })
+}
+
+/// The rewrite that makes a callee's type-argument channel READABLE by the frame that
+/// installs it: each skolem standing for one of the ENCLOSING operation's own type
+/// parameters, paired with the `Term::Ref(<op-scoped symbol>)` a BODY reference to that
+/// parameter carries.
+///
+/// WHY THE CHANNEL CANNOT SIMPLY CARRY THE SKOLEM. At a call site inside `operation
+/// caller[U](…)` the callee's `T` genuinely resolves to `U` — a `Var::Rigid` minted per
+/// body — because what `U` stands for is decided by the CALLER, not here. Written as the
+/// skolem, that entry is unreadable at run time: eval's `collect_closed_type_args` has
+/// only the frame's channel, keyed by op-scoped symbols, and a skolem carries no symbol
+/// that keys it. Written as `Ref(caller.U)` it is the SAME spelling `reduce_var`'s
+/// `find_type_arg` already resolves for a body reference (WI-708), so one identity match
+/// answers both.
+///
+/// IDENTITY, NOT NAME, AND THAT IS THE POINT. Joining a skolem to a channel entry by
+/// short name looks equivalent and is not: an anonymous skolem — the `?` an unwritten
+/// slot of `Box[V = ?]` becomes — is named after the SORT's parameter, so a caller
+/// declaring `[V]` captured it and the unwritten slot was silently filled with the
+/// caller's unrelated type argument (measured: `Cell[V = Box[V = String]]` where the
+/// control spelling the caller's parameter `[W]` left `Box[V = ?V]`). Only skolems minted
+/// for THIS operation's declared parameters are listed here, so nothing else can match.
+///
+/// The enclosing SORT's params are deliberately absent: they are not caller-instantiated
+/// per call, they ride the carrier, and no frame channel binds them.
+///
+/// APPLIED TO A WHOLE ENTRY, NEVER INSIDE ONE, and that restriction is measured rather
+/// than cautious. A skolem nested in a canonical `effects_rows(...)` spine is a ROW TAIL
+/// (`row_tail_var_of`, WI-516: a rigid set-valued var "is a row VARIABLE, not a single
+/// concrete label"), and both `row_tail_var_of` and `row_tail_termid` match only
+/// `Term::Var` — so rewriting one to a `Ref` would leave the decompose side reading NO
+/// tail, silently closing a row that must stay open. Instrumented, a deep rewrite fired on
+/// exactly those: `EffP` and `E2` entries shaped `effects_rows(...)` across the stdlib and
+/// a row-threading probe. Substituting a row variable needs row APPEND, which a term
+/// substitution cannot express.
+///
+/// The cost is that a skolem nested in a NON-row type argument (`List[T = U]`) still
+/// rides out ungrounded. That is the behaviour before this change, unchanged — not a
+/// regression, just not yet fixed.
+/// DECLARED BRACKETS ONLY. The rigid list this joins against also holds the WI-1FKR2
+/// INLINE signature variables, which are not in `OperationInfo.type_params` and so are
+/// never rewritten — see [`TypingEnv::op_own_param_rigids`] for what that costs.
+fn op_own_param_ref_rewrite(kb: &mut KnowledgeBase, env: &TypingEnv) -> Vec<(TermId, TermId)> {
+    let Some(enclosing) = env.enclosing_op() else {
+        return Vec::new();
+    };
+    let rigids = env.op_own_param_rigids();
+    if rigids.is_empty() {
+        return Vec::new();
+    }
+    let Some(rec) = super::op_info::lookup_operation_info(kb, enclosing) else {
+        return Vec::new();
+    };
+    let scope = kb.symbols.scope_id(enclosing);
+    let mut out = Vec::with_capacity(rec.type_params.len());
+    for (name, var) in &rec.type_params {
+        let Var::Global(vid) = var else { continue };
+        let Some((_, rigid)) = rigids.iter().find(|(v, _)| v == vid) else {
+            continue;
+        };
+        let key = op_scoped_type_param_symbol(kb, scope, *name);
+        let named = kb.alloc(Term::Ref(key));
+        out.push((*rigid, named));
+    }
+    out
 }
 
 /// WI-708: the symbol a BODY reference to op type-param `declared` resolves to — the
@@ -45773,6 +45873,9 @@ fn labels_match_aligned(
     if resolved_labels_equal(kb, subst, a, e) {
         return true;
     }
+    if labels_match_by_subsumption(kb, a, e) {
+        return true;
+    }
     let (
         TypeExtractor::Parameterized { base: a_base, .. },
         TypeExtractor::Parameterized { base: e_base, .. },
@@ -54541,7 +54644,7 @@ fn filled_carrier_sort(
 /// this one. Kept anyway: `kind_of` is documented for DISPLAY, and a membership gate
 /// that happens to be unreachable is still asking the wrong question. The same misread
 /// on the PARENT side is reachable and driven — see [`impl_parent_sort_of_op`].
-fn genuine_concrete_sort(kb: &KnowledgeBase, s: Symbol) -> Option<Symbol> {
+pub(crate) fn genuine_concrete_sort(kb: &KnowledgeBase, s: Symbol) -> Option<Symbol> {
     if is_sort_param_symbol(kb, s) || !kb.has_kind(s, crate::intern::SymbolKind::Sort) {
         return None;
     }
@@ -56927,6 +57030,110 @@ fn resolved_labels_equal(kb: &KnowledgeBase, subst: &Substitution, a: &Value, b:
     // Node-vs-Node, AND the cross-carrier Term-vs-Node case the old hand-rolled
     // match silently returned `false` for.
     views_structurally_equal(kb, &ra, &rb)
+}
+
+/// A LABEL'S ARGUMENT IS A TYPE, AND TYPES SUBSUME — for the label sorts that say so.
+///
+/// `Error[T]`'s argument is a payload TYPE, so a boundary declared to handle `Wide`
+/// admits a body raising `Narrow` when `Narrow <: Wide`: the Java/Scala catch rule, and
+/// what makes a hierarchy of error types worth declaring. `Modify[p]`'s argument is a
+/// PLACE — `effects.anthill`'s header is emphatic that it is never a type — so
+/// subsumption is meaningless there and identity is the whole rule.
+///
+/// ONE CHECK, THREE KINDS OF ARGUMENT, and the existing variance facts tell them apart
+/// (proposal 035: variance is a FACT, not a keyword). This leg runs only where a
+/// `Covariant`/`Contravariant` fact is declared; no fact means invariant, which is
+/// `Modify`'s rule and is already decided by the legs around this one. So `Modify` is
+/// protected by the DEFAULT rather than by anyone remembering to protect it.
+///
+/// THE COVARIANT ARM IS THE ONE THAT ADMITS, though what it expresses is the
+/// contravariant relation, and the flip is already applied by WHAT THIS COMPARES. "A
+/// handler for `Wide` handles `Narrow`" is contravariance of the handler; but `a` here
+/// is the body's ACTUAL label and `e` the callback parameter's DECLARED one, and being
+/// a parameter is what turned the relation round before this function is reached. So
+/// the direction wanted is `actual refines declared`, which is `Variance::Covariant`.
+/// MEASURED: declaring `Contravariant(Error, T)` applies the flip twice and refuses
+/// exactly the programs this admits.
+///
+/// NOMINAL AND SHALLOW, DELIBERATELY — via [`sort_refines`], not `types_compatible`,
+/// and this is the whole reason the leg is written by hand rather than delegating to
+/// `check_binding_by_variance` like `parameterized_compatible_view` does. That
+/// delegation was the first shipped shape and it KILLED THE `wi_tests` BINARY: an
+/// overflowed thread stack past its guard page, reported as
+/// `malloc: Heap corruption detected / *** Incorrect guard value`, taking 4400 tests
+/// down as collateral. Not a cycle — the same run passed 4417/0 under
+/// `RUST_MIN_STACK=32M` — but DEPTH, because this site is already far down the typer's
+/// expression walk and structural equality used to bottom out here. Attaching a full
+/// compatibility descent at a former leaf is what cost the remaining budget.
+/// `sort_refines` walks the flat `requires` chain instead: no descent into arrows or
+/// nested parameterizations, no substitution to clone, and an immutable KB.
+///
+/// THE LIMIT THAT BUYS: only a PLAIN SORT REFERENCE on both sides subsumes.
+/// `Error[List[T = X]]` against `Error[List[T = Y]]` falls back to the exact-match leg
+/// above, even where `X` refines `Y`. A payload type is a sort in every case this rule
+/// is for, so the restriction costs nothing today — and the day it does, the fix is to
+/// bound the typer's compatibility walk (which carries no depth cap and no visited set,
+/// unlike eval's `step_cap` / `depth_cap` and the bridge's `BRIDGE_REENTRY_CAP`), not
+/// to widen this leg back onto an unbounded one.
+fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Value) -> bool {
+    let base = |v: &Value| match type_head(kb, v) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(kb.canonical_sort_sym(s)),
+        _ => None,
+    };
+    let (Some(a_base), Some(e_base)) = (base(a), base(e)) else {
+        return false;
+    };
+    if a_base != e_base {
+        return false;
+    }
+    // A plain sort REFERENCE only — see "the limit that buys" above.
+    let arg_sort = |v: &Value, name: &str| match extract_type_param(kb, v, name) {
+        Some(av) => match type_head(kb, &av) {
+            TypeHead::SortRef(s) => Some(kb.canonical_sort_sym(s)),
+            _ => None,
+        },
+        None => None,
+    };
+    let params: Vec<Symbol> = kb.type_param_syms_of(e_base).to_vec();
+    if params.is_empty() {
+        return false;
+    }
+    let mut any_declared = false;
+    for p in params {
+        let variance = declared_variance(kb, e_base, p);
+        let name = kb.local_name_of(p);
+        // A label whose argument is UNWRITTEN on either side decides nothing here. Bare
+        // `Error` is `Error[T = ?]`, an undecided payload, and letting it match through
+        // this leg would answer a question 027.4 records as open — whether an undecided
+        // argument satisfies a decided demand — in passing and in the loose direction.
+        let (Some(av), Some(ev)) = (arg_sort(a, name), arg_sort(e, name)) else {
+            return false;
+        };
+        let ok = match variance {
+            Variance::Covariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, av, ev)
+            }
+            Variance::Contravariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, ev, av)
+            }
+            // No fact: identity, which the exact-match leg above already decided. This
+            // arm exists so a MIXED sort (one declared parameter, one not) still holds
+            // its undeclared parameters to equality rather than ignoring them.
+            Variance::Invariant => av == ev,
+            Variance::Bivariant => {
+                any_declared = true;
+                av == ev || sort_refines(kb, av, ev) || sort_refines(kb, ev, av)
+            }
+        };
+        if !ok {
+            return false;
+        }
+    }
+    // Every parameter agreed, but if NONE of them declared a variance this is just the
+    // equality the leg above already tried — say so rather than answering twice.
+    any_declared
 }
 
 /// Pair present-labels from two rows by greedy structural unification.
@@ -60234,7 +60441,11 @@ fn bare_sort_compatible<A: TermView, B: TermView>(
 /// genuinely bare-interned copy would have to be fixed at its PRODUCER anyway — the rule
 /// [`KnowledgeBase::canonical_sym`] states for itself, "never papered over by a
 /// `canonical_sym` call at the consumer".
-fn sort_sym_compatible(kb: &KnowledgeBase, actual_sym: Symbol, expected_sym: Symbol) -> bool {
+pub(crate) fn sort_sym_compatible(
+    kb: &KnowledgeBase,
+    actual_sym: Symbol,
+    expected_sym: Symbol,
+) -> bool {
     if same_sort_canonical(kb, actual_sym, expected_sym) {
         return true;
     }

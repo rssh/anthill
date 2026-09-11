@@ -167,3 +167,59 @@ end
          same member name must NOT hijack it to the inferred carrier `WIS`"
     );
 }
+
+/// WI-708 ONE LEVEL DEEPER — the channel a callee is handed must be CLOSED over the
+/// caller's own.
+///
+/// `tyOf2[U]` passes its own parameter down: at that call site the typer resolves the
+/// callee's `T` to `U`, which is a SKOLEM there (`Var::Rigid`), because what `U` stands
+/// for is not known until `tyOf2` is called. So the channel `tyOf` receives names a
+/// variable, and `tyOf`'s body read of `T` delivered it verbatim — the same dangling-var
+/// shape this file's first test pins for the one-level case, produced by the other half
+/// of the same join. `collect_closed_type_args` grounds it against the calling frame.
+///
+/// THE FIRST ROW IS THE CONTROL: `direct` goes through no enclosing generic operation
+/// and passes either way. Measured before the fix — `direct` → `Cell[V = Int64]`,
+/// `nested` → `Cell[V = Var(Rigid(VarId { id: 1624, name: … }))]`.
+#[test]
+fn a_type_argument_passed_through_a_generic_caller_is_ground() {
+    let src = r#"
+namespace test.wi708c
+  import anthill.prelude.{Cell, Int64, Type}
+
+  operation tyOf[T](x: T) -> Type = Cell[V = T]
+  operation tyOf2[U](y: U) -> Type = tyOf(y)
+
+  operation direct() -> Type = tyOf(5)
+  operation nested() -> Type = tyOf2(5)
+end
+"#;
+    let mut interp = interp_for(src);
+
+    let arg_sort = |interp: &mut anthill_core::eval::Interpreter, op: &str| -> String {
+        let v = interp
+            .call(&format!("test.wi708c.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let id = match v {
+            Value::Term { id, .. } => id,
+            other => panic!("{op}: got {other:?}"),
+        };
+        let named = match interp.kb().get_term(id).clone() {
+            Term::Fn { named_args, .. } => named_args,
+            other => panic!("{op}: expected Fn, got {other:?}"),
+        };
+        match interp.kb().get_term(named[0].1).clone() {
+            Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
+            other => panic!(
+                "{op}: `V` must bind a resolved sort, not a dangling type variable; got {other:?}"
+            ),
+        }
+    };
+
+    assert_eq!(arg_sort(&mut interp, "direct"), "Int64");
+    assert_eq!(
+        arg_sort(&mut interp, "nested"),
+        "Int64",
+        "a type argument routed through a generic caller must arrive ground"
+    );
+}

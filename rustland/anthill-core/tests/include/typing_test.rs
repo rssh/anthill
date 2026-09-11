@@ -3213,6 +3213,152 @@ fn variance_function_param_A_contravariant() {
     );
 }
 
+/// AN EFFECT LABEL'S ARGUMENT SUBSUMES WHEN ITS SORT SAYS SO — a boundary declared to
+/// handle `Wide` admits a body raising `Narrow` (`Narrow <: Wide`), and not the reverse.
+/// The Java/Scala catch rule, reached through the same variance facts that govern
+/// ordinary parameterized types (proposal 035) rather than a rule of its own.
+///
+/// `Error` carries `fact Covariant(sort: Error, param: T)`. The COVARIANT arm is the one
+/// that admits even though what it expresses is the contravariant relation — "a handler
+/// for `Wide` handles `Narrow`" is contravariance of the HANDLER, but the row check
+/// compares the body's ACTUAL row against the callback parameter's DECLARED one, and
+/// being a parameter already turned the relation round. MEASURED: declaring
+/// `Contravariant(Error, T)` applies the flip twice and refuses exactly row 1 below.
+///
+/// FAILS WHEN BACKED OUT, two independent ways: drop the fact from
+/// `stdlib/anthill/reflect/typing.anthill`, or delete the `labels_match_by_subsumption`
+/// leg from `labels_match_aligned`, and row 1 is refused as "the closed row does not
+/// admit". Row 2 PASSES EITHER WAY BY DESIGN and is what says the leg widens the check
+/// rather than switching it off — a `Narrow` boundary must still not swallow a `Wide`
+/// raise.
+#[test]
+fn an_effect_labels_argument_subsumes_where_its_sort_declares_variance() {
+    let program = |boundary: &str, raiser: &str, escapes: &str| {
+        format!(
+            r#"
+namespace test.labelvar
+  import anthill.prelude.{{Int64, String, Error, Result}}
+  import anthill.prelude.Result.{{ok, err}}
+
+  sort Wide
+    entity wide(why: String)
+  end
+  sort Narrow
+    requires Wide
+    entity narrow(why: String)
+  end
+
+  operation raises() -> Int64 effects {{Error[{raiser}]}} = Error.raise({raiser2}("x"))
+
+  operation boundary() -> Result[E = {boundary}, T = Int64]{escapes} =
+    Error.reify[T1 = {boundary}](lambda () -> raises())
+end
+"#,
+            raiser2 = if raiser == "Wide" { "wide" } else { "narrow" }
+        )
+    };
+
+    // 1. A WIDE boundary admits a NARROW raiser — the catch rule.
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program("Wide", "Narrow", "")));
+
+    // 2. CONTROL: a NARROW boundary does not swallow a WIDE raise. It is not merely
+    //    refused — the label stays in the CALLER's row, which is the row check saying
+    //    the boundary discharged nothing, so declaring the escape makes it load.
+    match crate::common::try_load_kb_with(&program("Narrow", "Wide", "")) {
+        Ok(_) => panic!("a Narrow boundary must not discharge a Wide raise"),
+        Err(errs) => {
+            let joined = errs.join("\n");
+            assert!(
+                joined.contains("undeclared effect") && joined.contains("Wide"),
+                "expected the undischarged label to reach the caller's row, got:\n{joined}"
+            );
+        }
+    }
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "Narrow",
+        "Wide",
+        " effects {Error[Wide]}",
+    )));
+}
+
+/// `Result` (proposal 027.4) is COVARIANT IN BOTH PARAMETERS, and this drives the two
+/// facts that say so.
+///
+/// It is a pure sum — `ok(value: T)` / `err(error: E)` — so both parameters occur only
+/// in OUTPUT position, which is proposal 035's condition. Its sibling `Option` is the
+/// same shape with the payload dropped and has carried `Covariant(Option, T)` since
+/// WI-293; these are that fact's twins.
+///
+/// AT THE SOURCE LEVEL rather than through `types_compatible` like its neighbours,
+/// deliberately: the widening is met by a user at an ARGUMENT, so this drives
+/// parse → typer → `validate_arg_against_param` and not the compatibility predicate
+/// alone. `requires Narrow` is what makes `Wide` the supersort — the relation is spec
+/// satisfaction, and without it the top-level slot refuses too.
+///
+/// FAILS WHEN BACKED OUT: drop either `fact Covariant(sort: Result, param: …)` from
+/// `stdlib/anthill/reflect/typing.anthill` and the matching row below is refused as
+/// `expected Result[…], got Result[…]` — the invariant default. The two REFUSAL rows
+/// pass either way by design; they are what says the facts widen `Result` and nothing
+/// else, since a covariant parameter must still reject the NARROWING direction.
+#[test]
+fn variance_result_is_covariant_in_both_parameters() {
+    let program = |decl: &str, call: &str| {
+        format!(
+            r#"
+namespace test.resvar
+  import anthill.prelude.{{Int64, String, Result}}
+  import anthill.prelude.Result.{{ok, err}}
+
+  sort Wide
+    entity wide(why: String)
+  end
+  sort Narrow
+    requires Wide
+    entity narrow(why: String)
+  end
+
+  operation mkErrNarrow() -> Result[E = Narrow, T = Int64] = err(narrow("x"))
+  operation mkOkNarrow()  -> Result[E = Wide, T = Narrow]  = ok(narrow("x"))
+  operation mkErrWide()   -> Result[E = Wide, T = Int64]   = err(wide("x"))
+  operation mkOkWide()    -> Result[E = Wide, T = Wide]    = ok(wide("x"))
+
+  operation takes({decl}) -> Int64 = 1
+  operation drive() -> Int64 = takes({call})
+end
+"#
+        )
+    };
+
+    // E is covariant: a NARROWER payload flows into a WIDER slot.
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "r: Result[E = Wide, T = Int64]",
+        "mkErrNarrow()",
+    )));
+    // T likewise.
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "r: Result[E = Wide, T = Wide]",
+        "mkOkNarrow()",
+    )));
+
+    // CONTROL, and it is what stops the facts reading as "anything goes": covariance
+    // widens, it does not narrow. Both directions must not be admitted at once.
+    for (decl, call) in [
+        ("r: Result[E = Narrow, T = Int64]", "mkErrWide()"),
+        ("r: Result[E = Wide, T = Narrow]", "mkOkWide()"),
+    ] {
+        match crate::common::try_load_kb_with(&program(decl, call)) {
+            Ok(_) => panic!("a covariant parameter must still refuse the NARROWING direction: {decl} <- {call}"),
+            Err(errs) => {
+                let joined = errs.join("\n");
+                assert!(
+                    joined.contains("takes.r"),
+                    "expected the argument check to refuse it, got:\n{joined}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn variance_invariant_default_rejects_widening() {
     // `Cell` declares no variance for its V param ⇒ invariant (the safe default,

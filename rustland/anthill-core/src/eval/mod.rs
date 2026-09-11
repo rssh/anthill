@@ -324,6 +324,18 @@ pub(crate) struct ErrorLayer {
     pub reify: Symbol,
     pub result_ok: Symbol,
     pub result_err: Symbol,
+    /// `Error.reify`'s PAYLOAD type parameter, as a SYMBOL — the key
+    /// `enter_reify_boundary` reads `T1` off the type-argument channel with.
+    ///
+    /// RESOLVED HERE SO A RENAME CANNOT BE SILENT. Read by name at the boundary, a
+    /// missing `T1` is indistinguishable from the two legitimate reasons a boundary
+    /// cannot be narrowed, so renaming the parameter in
+    /// `stdlib/anthill/prelude/effects.anthill` would quietly revert EVERY boundary in
+    /// the program to catching wide — no error, no diagnostic, nothing printed. Resolved
+    /// at layer construction it is a missing symbol, which makes the whole layer `None`:
+    /// `Error.reify` then dispatches as an ordinary body-less operation and fails loudly
+    /// as `OperationBodyMissing`, which is what a declaration nothing implements should do.
+    pub reify_payload_param: Symbol,
 }
 
 impl ErrorLayer {
@@ -331,10 +343,14 @@ impl ErrorLayer {
     /// to call, so the boundary is simply absent rather than broken.
     fn resolve(kb: &KnowledgeBase) -> Option<Self> {
         let r = |qn: &str| kb.try_resolve_symbol(qn);
+        let reify = r("anthill.prelude.Error.reify")?;
         Some(Self {
-            reify: r("anthill.prelude.Error.reify")?,
+            reify,
             result_ok: r("anthill.prelude.Result.ok")?,
             result_err: r("anthill.prelude.Result.err")?,
+            // Proposal 058 §4.2 rule 1 is why it is `T1` and not `T`: the latter would
+            // shadow the enclosing sort's own parameter.
+            reify_payload_param: kb.type_param_sym_of(reify, "T1")?,
         })
     }
 }

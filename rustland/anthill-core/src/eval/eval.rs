@@ -67,7 +67,39 @@ impl Interpreter {
     /// recursion. Enforces `EvalConfig::step_cap` per iteration so
     /// TCO'd infinite tail loops surface as `StepsExhausted` rather than
     /// hanging the host.
+    /// The trampoline, wrapped so that an ERROR EXIT LEAVES THE STACK AS IT FOUND IT.
+    ///
+    /// `run_inner` drains its own frames on the success path, but an `Err` return abandons
+    /// whatever was live — and until proposal 027.4 nothing could error with a SUSPENDED
+    /// frame installed, because any boundary beneath a raise absorbed it. A DECLINED raise
+    /// is an ordinary outcome now, so the leftovers became reachable: `deliver` answers
+    /// `Done` only on an empty stack, so the next call on the same interpreter popped past
+    /// its own base into the stale frame and died `Internal("deliver: parent frame had no
+    /// awaiting state")`. Measured on one interpreter, for a call that answered `ok(42)`
+    /// when it was fresh.
+    ///
+    /// HERE AND NOT AT THE DRIVER, because there are three drivers
+    /// (`invoke_op_with_requirements`, `run_with_requirements`, `eval_node_isolated`) and
+    /// repairing one leaves the others to rediscover it. Every present and future entry
+    /// into the trampoline is covered by construction, and `floor` — which this run
+    /// already computes to bound the boundary scan — is exactly the depth to return to.
+    ///
+    /// The sweep is not optional on this path: releasing a scoped-KB layer only RETIRES
+    /// the slot, and `LayerArenaRef::sweep` is what discards it (`eval::layer_arena`).
+    /// Dropping abandoned frames drops their `Value::Kb` handles, so without the sweep the
+    /// host is handed a KB that is still layered with `TermStore::pinned` non-zero — and
+    /// `run_inner`'s own per-iteration sweep has stopped running by then.
     pub fn run(&mut self) -> Result<Value, EvalError> {
+        let floor = self.stack.depth().saturating_sub(1);
+        let result = self.run_inner();
+        if result.is_err() {
+            self.stack.truncate_to(floor);
+            self.sweep_layers();
+        }
+        result
+    }
+
+    fn run_inner(&mut self) -> Result<Value, EvalError> {
         let prof = self.profiling;
         // `pending` carries a produced value awaiting delivery to its parent
         // frame. The trampoline alternates between reducing the top frame
@@ -82,7 +114,7 @@ impl Interpreter {
         // it owns. A `reify` boundary below it belongs to an outer `run()` (a
         // builtin's `interp.call` pushes onto the live stack), and answering that
         // one from here would hand an outer frame's `Result` back as this call's
-        // value. See `ActivationStack::topmost_reify_boundary`.
+        // value. See `ActivationStack::reify_boundaries`.
         let floor = self.stack.depth().saturating_sub(1);
         loop {
             if let Some(cap) = self.config.step_cap {
@@ -313,7 +345,7 @@ impl Interpreter {
                 // Eval reads them here so every dispatch path (plain,
                 // deferred, same-sort, pin-now) installs the same
                 // type-arg channel on the callee's frame (WI-272).
-                let type_args = collect_resolved_type_args(occ);
+                let type_args = collect_closed_type_args(&mut self.kb, &self.stack, occ);
                 use crate::kb::typing::CallClass;
                 match class.as_deref() {
                     Some(CallClass::DeferToRequirement {
@@ -382,7 +414,7 @@ impl Interpreter {
                 requirements,
                 ..
             } => {
-                let type_args = collect_resolved_type_args(occ);
+                let type_args = collect_closed_type_args(&mut self.kb, &self.stack, occ);
                 // WI-857: `apply_within(fn = …)` has TWO producers with OPPOSITE
                 // conventions — `record_apply_within_rewrite` writes the SPEC op,
                 // `record_apply_within_concrete` writes the IMPL member — so passing
@@ -2318,7 +2350,7 @@ impl Interpreter {
         //    is the arm an `OpRef` denoting `reify` arrives at, which never passes
         //    through here.)
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values);
+            return self.enter_reify_boundary(arg_values, &type_args);
         }
 
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
@@ -2479,7 +2511,7 @@ impl Interpreter {
         // meaning is its symbol, never its name), so this costs one
         // `Option<Symbol>` comparison per dispatch.
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values);
+            return self.enter_reify_boundary(arg_values, &type_args);
         }
 
         // 2. Registered Rust builtin?
@@ -3438,15 +3470,18 @@ impl Interpreter {
     /// this frame and delivers `err(payload)` ([`Self::recover_at_reify_boundary`]).
     /// Both then pop the boundary and hand a `Result` to its parent.
     ///
-    /// WHAT IS DELIBERATELY DROPPED: the call's `requirements` and `type_args`.
-    /// The typer DOES write all three of `reify[Rho, X, T1]` into the type-arg
-    /// channel, so this is a discard and not an absence — but the channel is keyed
-    /// by `Error.reify`'s own op-scoped symbols, and the thunk is a separate
-    /// operation with its own, so forwarding it would install the wrong
-    /// parameters. Said here because it stops being harmless the day `reify` gains
-    /// a `requires`, or the day the boundary wants `T1` (see 027.4's open question
-    /// about a raise whose payload is not of the reified type).
-    fn enter_reify_boundary(&mut self, arg_values: Vec<Value>) -> Result<StepOutcome, EvalError> {
+    /// WHAT IS DELIBERATELY DROPPED: the call's `requirements`, and the `Rho` / `X`
+    /// halves of its `type_args`. The channel is keyed by `Error.reify`'s own op-scoped
+    /// symbols and the thunk is a separate operation with its own, so FORWARDING it to
+    /// the thunk would install the wrong parameters. `T1` is READ here rather than
+    /// forwarded — it is what the boundary is typed at — which is why `type_args` is a
+    /// parameter of this function. The `requirements` discard stops being harmless the
+    /// day `reify` gains a `requires`.
+    fn enter_reify_boundary(
+        &mut self,
+        arg_values: Vec<Value>,
+        type_args: &FrameTypeArgs,
+    ) -> Result<StepOutcome, EvalError> {
         // EVERYTHING THAT CAN REFUSE THIS CALL RUNS BEFORE ANYTHING IS INSTALLED,
         // so a bad call is a plain error over an untouched stack. Both refusals
         // are reachable from source: a row-polymorphic arrow slot does not refuse
@@ -3468,6 +3503,29 @@ impl Interpreter {
                 got: body.type_name().to_string(),
             });
         }
+        // `T1`, the payload SORT this boundary discharges — off the type-argument channel
+        // the typer filled at this call site, then narrowed to the sort it names.
+        //
+        // KEYED BY THE SYMBOL the layer resolved once (`ErrorLayer::reify_payload_param`),
+        // not by the written name: read by name, a renamed parameter in
+        // `effects.anthill` would be indistinguishable from the two legitimate reasons a
+        // boundary cannot be narrowed, and every boundary in the program would quietly
+        // revert to catching wide. Resolved at layer construction, a rename is a missing
+        // symbol, the layer is `None`, and `Error.reify` fails loudly as a body-less
+        // operation instead.
+        //
+        // `None` AT EVERY STEP MEANS "CANNOT NARROW", NOT "SOMETHING WENT WRONG", and the
+        // boundary then catches wide exactly as it did before the narrowing existed. See
+        // `AwaitState::ReifyBoundary::payload` for the three shapes that reach it and for
+        // why refusing instead broke working programs. The ROW is the guarantee either
+        // way; this is the extra check, available only where the payload is nominal.
+        let payload = self
+            .error_layer
+            .as_ref()
+            .map(|l| l.reify_payload_param)
+            .and_then(|key| find_type_arg(type_args, key))
+            .and_then(|t| payload_sort_of(&self.kb, t));
+
         // The profiler counts this the way `enter_operation` counts an ordinary
         // entry; without it `Error.reify` appears in neither `ANTHILL_PROFILE`
         // table, and the boundary and thunk frames carry the PARENT's `op`, so
@@ -3486,7 +3544,7 @@ impl Interpreter {
         // frame by PUSHING instead of replacing, that surfaces as a loud
         // `Internal` rather than as a boundary answering its own placeholder.
         self.suspend_and_push(
-            AwaitState::ReifyBoundary,
+            AwaitState::ReifyBoundary { payload },
             crate::kb::node_occurrence::bottom_node(),
         )?;
         self.apply_callable_value(body, Vec::new(), SmallVec::new(), SmallVec::new())
@@ -3517,12 +3575,14 @@ impl Interpreter {
     /// `UnhandledEffect`, `UnsupportedHandlerAction` and the rest propagate — a
     /// reify boundary handles the `Error` EFFECT, not interpreter faults.
     ///
-    /// It catches on the error's CARRIER and not on the payload's SORT, which is
-    /// wider than the type says and is 027.4's open question, recorded there: a
-    /// body declaring `{Error[Boom], Error[DivisionByZero]}` reified at
-    /// `T1 = Boom` has the second label left in the CALLER's row by the typer, yet
-    /// this catches it too. Narrowing needs `T1` at run time and a rule for a
-    /// payload that matches no boundary; both are design, not a line.
+    /// AND IT CATCHES ONLY WHAT THE BOUNDARY IS TYPED AT. A body declaring
+    /// `{Error[Boom], Error[Other]}` reified at `T1 = Boom` has the second label left in
+    /// the CALLER's row by the typer, and this is where the runtime says the same: the
+    /// scan takes the innermost boundary that ACCEPTS the payload, and a raise no
+    /// boundary accepts propagates out of the run carrying its own payload. A boundary
+    /// the runtime could not narrow accepts anything
+    /// ([`super::frame::AwaitState::ReifyBoundary`]'s `payload`), which is what every
+    /// boundary did before this rule existed.
     ///
     /// On success the boundary frame is left on TOP and no longer awaiting, so
     /// the caller delivers the returned `err(payload)` FROM it: `deliver` pops
@@ -3539,13 +3599,81 @@ impl Interpreter {
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {
             return Err(e);
         };
-        let Some(idx) = self.stack.topmost_reify_boundary(floor) else {
+        // The innermost boundary that ACCEPTS this payload — not simply the innermost.
+        // A `reify` typed at `Boom` does not discharge `Error[Other]`; the row says so
+        // (the label stays in the caller's, and the typer refuses a caller that omits
+        // it), and this is where the runtime says the same. A raise the boundary
+        // declines travels past it, exactly as it would past a frame that is not a
+        // boundary at all.
+        let raised = payload.clone();
+        let accepted = self
+            .stack
+            .reify_boundaries(floor)
+            .into_iter()
+            .find(|(_, declared)| match declared {
+                // A narrowed boundary judges; an un-narrowable one catches wide.
+                Some(sort) => self.payload_matches(*sort, &raised),
+                None => true,
+            });
+        let Some((idx, _)) = accepted else {
             return Err(e);
         };
-        let payload = payload.clone();
-        let caught = self.build_result_arm(err_ctor, payload)?;
+        let caught = self.build_result_arm(err_ctor, raised)?;
         self.stack.unwind_to_boundary(idx);
         Ok(caught)
+    }
+
+    /// Is `raised` a value of the sort a boundary was typed at?
+    ///
+    /// NOMINAL, on the payload sort, through [`sort_sym_compatible`] — canonical
+    /// identity, the entity→parent climb, and `requires`-refinement — rather than a
+    /// reimplementation of those three legs here.
+    ///
+    /// IT IS NOT FULL PARITY WITH THE TYPER, and claiming so would be false twice over.
+    /// The typer's sort-against-sort arm is `bare_sort_compatible`, which adds
+    /// `sort_provides_admissibly` / `witness_provides_admissibly` and an alias
+    /// re-dispatch; and label discharge does not run through `types_compatible` at all,
+    /// it runs through `labels_match_aligned`. Both extra legs were driven by the review
+    /// and both programs are REFUSED at load today, so nothing escapes through the gap —
+    /// but that is containment, not agreement.
+    ///
+    /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, and the direction is not chosen here —
+    /// it is the one `labels_match_by_subsumption` applies to the ROW. THE ROW READS A
+    /// FACT AND THIS DOES NOT: `labels_match_by_subsumption` picks its direction from
+    /// `declared_variance(Error, T)`, satisfied by `fact Covariant(sort: Error, param: T)`
+    /// in `anthill.reflect.typing`. Edit that one line to `Contravariant` and the typer
+    /// stops discharging where this keeps catching, with no Rust change to notice it.
+    /// `Error`'s payload is declared `Covariant` (`anthill.reflect.typing`), so a caller
+    /// whose body raises `Error[Narrow]` conforms to a `reify` typed at `Error[Wide]`
+    /// when `sort Narrow requires Wide` — the typer DISCHARGES that label. If the
+    /// runtime then declined the raise it would escape an operation the typer has
+    /// already typed effect-free, so equality alone would be unsound, not merely strict.
+    ///
+    /// A NARROWED BOUNDARY DECLINES A PAYLOAD WHOSE SORT IT CANNOT READ, and the
+    /// alternative was tried and is WRONG. Catching it looked symmetric with the
+    /// un-narrowable boundary rule — "neither side is known, so catch" — but the two are
+    /// not symmetric: a boundary that narrowed HAS been told what it discharges, and the
+    /// row told the OUTER boundary about everything else. MEASURED on a fixture that
+    /// loads clean — `innerAtBoom` at `T1 = Boom` declaring a tuple label as escaping,
+    /// wrapped in a `reify` typed at that tuple — catching gave `ok` at the outer
+    /// boundary and `err(Tuple{…})` at the inner: the inner stole a label the row had
+    /// assigned to the outer, which is the exact defect this narrowing exists to close.
+    ///
+    /// The un-narrowable side still catches those payloads, because a tuple's own
+    /// boundary is un-narrowable too (its `T1` head is the ENTITY
+    /// `TypeExtractor.NamedTuple`), so `None` accepts it before this predicate is
+    /// consulted. That is why declining here costs nothing a program can spell.
+    ///
+    /// THE TYPE-ARGUMENT AXIS IS NOT DECIDED HERE, and that is a PRE-EXISTING hole this
+    /// narrowing neither opens nor closes: a value's runtime sort is its head, so a
+    /// boundary at `Box[V = Int64]` accepts a `Box[V = String]` — as every boundary did
+    /// before, when none of them judged at all. Deciding it needs the raised value's type
+    /// ARGUMENTS, which the runtime does not reconstruct. Recorded on WI-20260908-9WVT7.
+    fn payload_matches(&self, declared: Symbol, raised: &Value) -> bool {
+        let Some(got) = runtime_carrier_sort(&self.kb, raised) else {
+            return false;
+        };
+        crate::kb::typing::sort_sym_compatible(&self.kb, got, declared)
     }
 
     /// WI-20260907-0QV5A — the ARM SCAN of a `match`, shared by the two states
@@ -3936,7 +4064,7 @@ impl Interpreter {
                 // ([`Self::recover_at_reify_boundary`]) rejoins at that same
                 // step with `err(payload)`, so the boundary is answered once and
                 // in one shape either way.
-                AwaitState::ReifyBoundary => {
+                AwaitState::ReifyBoundary { .. } => {
                     // The layer is all-or-nothing and `reify` could not have been
                     // dispatched without it, so this frame cannot exist without an
                     // `ok`. Loud rather than assumed, per the house rule.
@@ -4299,6 +4427,71 @@ fn find_requirement<'a>(
     reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
 }
 
+/// The payload SORT a boundary typed at `T1` discharges, or `None` where the runtime
+/// cannot narrow — see [`AwaitState::ReifyBoundary::payload`] for what `None` then means.
+///
+/// A PLAIN SORT NAME, or the head of a parameterized one. `has_kind(_, Sort)` is not
+/// decoration: a TUPLE type is `Fn { functor: TypeExtractor.NamedTuple }`, and
+/// `NamedTuple` is an ENTITY, so head-reading alone would install a boundary at a symbol
+/// no value's `runtime_carrier_sort` can ever equal — silently declining every raise.
+/// Measured before this test existed: a `reify` at `(a: Int64, b: String)` let its own
+/// raise escape `main` as `error: Tuple`, out of an operation the typer typed
+/// effect-free.
+///
+/// AND A TYPE PARAMETER IS NOT A PAYLOAD SORT, even though it passes `has_kind(_, Sort)`
+/// — `scan_operation_params` registers each `[P]` as a `SymbolKind::Sort` so that a bare
+/// `x: P` routes through the type-param branch, exactly as `sort T = ?` does inside a
+/// sort. An ungrounded parameter reaches here as `Ref(<op-scoped P>)` (that is the
+/// spelling `op_own_param_ref_rewrite` gives it), and taking it at face value narrowed a
+/// boundary to a symbol no value's carrier sort can ever equal, so every raise was
+/// declined. MEASURED, on `rule viaGenericRule(?r) :- catchIt(lambda () -> mayFail(0 - 1), ?r)`
+/// — a rule-body bridge, whose frame channel is empty so nothing grounds `P`: `no
+/// solutions`, silently, where the same call at a concrete payload answered
+/// `err(boom(why: "negative"))`.
+///
+/// BOTH TESTS ARE [`genuine_concrete_sort`], the typer's own, rather than a fourth
+/// spelling of "is this a parameter". It asks the scope's name SET
+/// (`is_sort_param_symbol`); a hand-rolled test over the ordered SYMBOL list disagrees
+/// with it, because `add_type_param` appends to that list only when the name insert is
+/// new — driven by the review on `sort Rec { sort Inner.T = ?  sort T = ? }`, where the
+/// set says "parameter" and the list says "not", and this would then narrow to a symbol
+/// no carrier can equal.
+fn payload_sort_of(kb: &KnowledgeBase, t1: crate::kb::term::TermId) -> Option<Symbol> {
+    let head = match kb.get_term(t1) {
+        Term::Ref(s) => *s,
+        Term::Fn { functor, .. } => *functor,
+        _ => return None,
+    };
+    crate::kb::typing::genuine_concrete_sort(kb, head)
+}
+
+/// Ground every type-parameter reference in `t` against the enclosing operation's
+/// type-argument channel — the deep half of [`collect_closed_type_args`].
+///
+/// BY SYMBOL IDENTITY, through the same [`find_type_arg`] a body reference goes through
+/// (`reduce_var`, WI-708). A reference to an enclosing operation's type parameter reaches
+/// here as `Term::Ref(<op-scoped symbol>)` because the typer writes it that way
+/// (`op_own_param_ref_rewrite`), which is what lets this be an identity match rather than
+/// a name comparison. A genuine sort reference is no key of any channel — those hold only
+/// an operation's own parameter symbols — so it falls straight through.
+///
+/// Recursion mirrors [`KnowledgeBase::apply_subst`]: `Fn` children are mapped, every
+/// other carrier is a leaf. A `Var` leaf is deliberately left alone: a skolem the typer did
+/// not rewrite is not this operation's parameter (an anonymous `?` slot, an inline
+/// signature variable), and an unsolved `Var::Global` is the typer's to refuse
+/// (`check_unconstrained_type_params`) — filling either here would be a guess.
+fn ground_type_params(
+    kb: &mut KnowledgeBase,
+    t: crate::kb::term::TermId,
+    chan: &FrameTypeArgs,
+) -> crate::kb::term::TermId {
+    if let Term::Ref(sym) = kb.get_term(t) {
+        let sym = *sym;
+        return find_type_arg(chan, sym).unwrap_or(t);
+    }
+    kb.map_fn_children(t, |kb, id| ground_type_params(kb, id, chan))
+}
+
 /// Find a frame-level operation type-argument value by its declared
 /// param name (e.g. `T` from `operation foo[T](...)`). Same lookup
 /// contract as `find_requirement` but on the type-arg channel
@@ -4340,6 +4533,51 @@ fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
             entries.iter().copied().collect()
         }
     })
+}
+
+/// [`collect_resolved_type_args`] CLOSED over the calling frame's own channel — the
+/// only spelling any dispatch path should use.
+///
+/// THE INVARIANT: a frame's type-argument channel is GROUND with respect to the generic
+/// context it was installed from. No entry mentions a type parameter of an enclosing
+/// operation, so every reader — `reduce_var`'s body read (WI-708), the `Term::Ref` head
+/// arm, `Error.reify`'s payload (027.4) — gets a type it can use without chasing.
+///
+/// WHY THE TYPER CANNOT DO THIS. It writes `resolved_type_args` once per CALL SITE, and
+/// at a call site inside `operation caller[U](…)` the callee's `T` is genuinely `U` —
+/// `U` is a skolem there, and what it stands for is not known until `caller` is called.
+/// Grounding is therefore a run-time step, and this is the one place a callee's channel
+/// is built, so it is the one place that step belongs.
+///
+/// MEASURED, and it is not a `reify` corner: `operation tyOf[T](x: T) -> Type = Cell[V =
+/// T]` called from `operation tyOf2[U](y: U) -> Type = tyOf(y)` evaluated to `Cell[V =
+/// Var(Rigid P)]` — a dangling variable, the exact WI-708 regression one level deeper —
+/// while the direct `tyOf(5)` gave `Cell[V = Int64]`. The `Error.reify` case
+/// (`Error.reify(body)` inside `operation catchIt[P](…) -> Result[E = P, …]`) is the
+/// same defect reached through the `T1` channel.
+///
+/// Costs nothing on the common path: no callee type params, or no enclosing ones, and
+/// the two `is_empty` tests answer before any walk.
+fn collect_closed_type_args(
+    kb: &mut KnowledgeBase,
+    stack: &super::frame::ActivationStack,
+    occ: &Rc<NodeOccurrence>,
+) -> FrameTypeArgs {
+    let mut args = collect_resolved_type_args(occ);
+    if args.is_empty() {
+        return args;
+    }
+    let Some(caller) = stack.top() else {
+        return args;
+    };
+    if caller.type_args.is_empty() {
+        return args;
+    }
+    let chan = caller.type_args.clone();
+    for (_, t) in args.iter_mut() {
+        *t = ground_type_params(kb, *t, &chan);
+    }
+    args
 }
 
 /// The sort / constructor a value REFERENCES: an entity, a `Fn` term, or a bare
