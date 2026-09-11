@@ -3664,6 +3664,77 @@ pub fn occurrence_has_unbound_var(
     false
 }
 
+/// The OPAQUE-SKOLEM analogue of [`occurrence_has_var_ref`], and it exists for the
+/// reason that function's neighbour records: two predicates that disagree about what
+/// counts as a universal are worse than either being wrong alone.
+///
+/// `value_mentions_opaque_skolem` walked a `Value::Node` through the generic
+/// `head`/`pos_arg`/`named_arg` reader, which supplies NOTHING for the occurrence forms
+/// `occ_head` deliberately reports as `ViewHead::Opaque` — `Expr::ApplyWithin`, a rule-head
+/// occurrence, any literal whose reflect functor is absent. A skolem under one of those was
+/// invisible to the gate, and the closed-world verdict about an eigenvariable stood. This
+/// walks the occurrence tree itself, exactly as the `var_ref` sibling does.
+pub fn occurrence_mentions_opaque_skolem(
+    kb: &KnowledgeBase,
+    subst: &crate::kb::subst::Substitution,
+    skolems: &std::collections::HashSet<crate::intern::Symbol>,
+    root: &Rc<NodeOccurrence>,
+) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(root)];
+    while let Some(occ) = stack.pop() {
+        match &occ.kind {
+            NodeKind::Expr { expr, .. } => match expr {
+                // The two symbol-bearing leaves: a contract skolem is minted as a
+                // `Term::Ref`, and `Ident` is included for the same conservative reason
+                // `term_mentions_opaque_skolem` accepts it.
+                Expr::Ref(name) | Expr::Ident(name) => {
+                    if skolems.contains(name) {
+                        return true;
+                    }
+                }
+                Expr::Spliced(v) => {
+                    if kb.value_mentions_opaque_skolem(v, subst, skolems) {
+                        return true;
+                    }
+                }
+                _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            },
+            NodeKind::Pattern { .. } => {
+                for_each_pattern_child(&occ, |c| stack.push(Rc::clone(c)));
+            }
+            // DESCENDED, unlike the `var_ref` sibling, and the asymmetry is the point:
+            // a rule head carries `pos_args` / `named_args` as TERMS, which is exactly
+            // the carrier a contract skolem (`Term::Ref`) lives in. The sibling skips
+            // this arm because a `var_ref` binder reference lives in bodies; a skolem
+            // does not have that restriction.
+            //
+            // NOT DRIVEN, and the direction is why it is here anyway. Missing a skolem
+            // lets a closed-world verdict about an eigenvariable stand — the shape that
+            // produced this change's one unsound contract discharge. Finding one that
+            // does not decide anything costs at most a reconsideration the second gate
+            // then declines. The over-approximation is safe; the under-approximation is
+            // not.
+            NodeKind::RuleHead {
+                pos_args,
+                named_args,
+                ..
+            } => {
+                if pos_args
+                    .iter()
+                    .any(|t| kb.term_mentions_opaque_skolem_pub(*t, subst, skolems))
+                    || named_args
+                        .iter()
+                        .any(|(_, t)| kb.term_mentions_opaque_skolem_pub(*t, subst, skolems))
+                {
+                    return true;
+                }
+            }
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => {}
+        }
+    }
+    false
+}
+
 /// WI-067 / proposal 050: does an occurrence reference a binder / parameter via
 /// an `Expr::VarRef` (the node-carrier twin of the `var_ref(name)` term)? The
 /// open-world-parameter floundering gate (`resolve.rs` `step_naf` / `step_builtin`)

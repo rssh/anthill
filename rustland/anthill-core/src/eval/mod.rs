@@ -1997,6 +1997,17 @@ impl Interpreter {
         // exactly where a floundered residual would otherwise read as `unit`, a
         // positive answer to a question the search never decided.
         if !sol.is_definite() {
+            // A `Solution` can now say WHY it is not definite (`Solution::undecided` —
+            // no ANSWER, as opposed to no BINDING), and this face does not read it,
+            // deliberately: BOTH producers of an undecided answer (the resolver's
+            // open-world guard and its opaque-skolem reconsideration) fire ONLY under a
+            // Γ overlay, and `gamma` is set at exactly one site in the tree
+            // (`typing::prove_from_gamma`'s bridge). No resolve that reaches THIS face
+            // has it set, so a branch here would be one nothing can drive. What would
+            // change that is a producer OUTSIDE the Γ bridge, not merely a second cause
+            // — an earlier draft of this note said "a second producer", and the same
+            // change then added one without making this face reachable.
+            // `prove_from_gamma_verdict` is the reader that exists today.
             return Err(self.raise_relation_floundered(sol.residual));
         }
         // Zero free variables → Unit (membership relation).

@@ -3162,12 +3162,24 @@ impl Interpreter {
         match self.kb.prove_rule_predicate(pred, args.to_vec()) {
             crate::kb::resolve::PredicateProof::Proved => Ok(Value::Bool(true)),
             crate::kb::resolve::PredicateProof::Refuted => Ok(Value::Bool(false)),
-            crate::kb::resolve::PredicateProof::Undecided { .. } => {
-                Err(EvalError::Internal(format!(
-                    "rule-backed predicate `{}` could not be decided at eval \
-                 (proof truncated or floundered)",
-                    self.kb.local_name_of(pred)
-                )))
+            // THE SUB-SEARCH'S OWN WORDS WHERE IT HAS ANY — the sibling of
+            // `builtins.rs`'s semantic-eq face, which reads the same field. A `..` here
+            // absorbed the new `fault` silently and kept emitting "proof truncated or
+            // floundered" for a goal the resolver can now name precisely: a no-order
+            // comparison never came near a depth limit, and this face HAS an error
+            // channel to say so on.
+            crate::kb::resolve::PredicateProof::Undecided { fault, .. } => {
+                let name = self.kb.local_name_of(pred).to_string();
+                Err(EvalError::Internal(match fault {
+                    Some(err) => format!(
+                        "rule-backed predicate `{name}` could not be decided at eval: {}",
+                        err.message
+                    ),
+                    None => format!(
+                        "rule-backed predicate `{name}` could not be decided at eval \
+                         (proof truncated or floundered)"
+                    ),
+                }))
             }
             // WI-1092 — the bridge resolved a target nothing defines. Both eval faces
             // reach this through the same helper, and both hand it to the WI-818

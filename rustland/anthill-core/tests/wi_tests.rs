@@ -71,6 +71,12 @@ mod wi714_recursive_relation_test;
 #[path = "include/wi741_spec_typed_column_test.rs"]
 mod wi741_spec_typed_column_test;
 
+#[path = "include/resolver_error_channel_test.rs"]
+mod resolver_error_channel_test;
+
+#[path = "include/gamma_verdict_three_valued_test.rs"]
+mod gamma_verdict_three_valued_test;
+
 #[path = "include/wi742_typed_relational_head_test.rs"]
 mod wi742_typed_relational_head_test;
 

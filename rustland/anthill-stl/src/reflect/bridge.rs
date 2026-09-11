@@ -557,7 +557,17 @@ struct SearchStreamAdapter {
 impl SearchStreamAdapter {
     /// Wrap one resolver solution as a reflect `Solution`.
     fn make_solution(&self, sol: anthill_core::kb::resolve::Solution) -> Solution {
-        let anthill_core::kb::resolve::Solution { subst, residual } = sol;
+        // `undecided` is bound and NOT used, deliberately and with a name rather than
+        // a `..`: this DATA face's `Solution::Undecided` is a catch-all for every
+        // non-definite answer, so it already calls a FLOUNDERED search "undecided" too.
+        // The core's new list is the finer distinction (no ANSWER vs no BINDING) and
+        // this face has no variant for it yet; a `..` here would hide that gap at the
+        // one site that would otherwise show it.
+        let anthill_core::kb::resolve::Solution {
+            subst,
+            residual,
+            undecided: _undecided,
+        } = sol;
         let subst_bridge: Box<dyn Substitution> =
             Box::new(SubstBridge::from_core(subst, Rc::clone(&self.kb)));
         if residual.is_empty() {

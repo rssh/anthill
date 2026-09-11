@@ -281,6 +281,25 @@ pub enum BuiltinTag {
     TypeDomain,
 }
 
+/// A fault the resolver DETECTED but could not previously report — the payload of
+/// [`BuiltinResult::Error`] and [`StepResult::Error`].
+///
+/// NOT AN UNDECIDED ANSWER and not a refutation. `Unknown` says the question has no
+/// answer; `Failure` says the answer is no; this says the QUESTION was malformed, or an
+/// invariant this resolver relies on does not hold — so the search that follows would
+/// be answering something other than what was asked.
+///
+/// WHY IT EXISTS AT ALL: the sites that raise it had `debug_assert!(false, …)` followed
+/// by `return BuiltinResult::Failure`, which is loud in a debug build and SILENTLY
+/// WRONG in a release one — a refutation reported for a goal nobody evaluated. That is
+/// the "loud error over silent skip" rule broken in exactly the way the rule names, and
+/// it survived because there was nowhere for the loudness to go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolveError {
+    /// What went wrong, already phrased for a reader.
+    pub message: String,
+}
+
 /// Result of executing a builtin.
 enum BuiltinResult {
     /// Builtin succeeded; continue with current substitution unchanged.
@@ -311,8 +330,109 @@ enum BuiltinResult {
     /// producer must choose it, so no consumer can forget the truncated case —
     /// the exact "forgot the check" bug class WI-628 fights.
     Delay { truncated: bool },
+    /// The goal is UNDECIDED and no later binding can change that — the THIRD TRUTH
+    /// VALUE, not a schedule.
+    ///
+    /// THE DISTINCTION FROM [`Self::Delay`] IS THE WHOLE POINT, and conflating them is
+    /// what this variant fixes. `Delay` is a PROMISE: "re-ask me, a later goal may bind
+    /// my operands." `Unknown` is an ANSWER: "my operand is a universal — Γ does not
+    /// hold this goal, the closed-world reading does not apply to it, and nothing will
+    /// ever instantiate it." Both residualize, which is why one stood in for the other;
+    /// what they must not share is the DIAGNOSIS at the drain, where "the search gave up
+    /// on an unbound variable" (a defect in the query) and "this ranges over a universal"
+    /// (a legitimate answer) are opposite verdicts.
+    ///
+    /// NOT AN ERROR either, and that is the second confusion this variant is built
+    /// against: `SortMismatch` (ill-typed), `NoOrder` (unimplemented dispatch, WI-SM910)
+    /// and a malformed `Error` type shape are all genuinely WRONG and want a loud error
+    /// channel — a separate variant, not this one. Nothing is wrong here.
+    ///
+    /// SCHEDULED EXACTLY AS `Delay`: the goal still rotates behind the tail, because a
+    /// SIBLING goal may yet FAIL and refute the clause outright, and a refutation is a
+    /// real answer that must win over an undecided one. Residualizing early would report
+    /// "undecided" for a clause that is definitely false.
+    Unknown { cause: UnknownCause },
     /// Builtin definitively failed (e.g. lookup_symbol for non-existent name).
     Failure,
+    /// The builtin could not be EVALUATED — the goal is ill-typed, unsupported, or
+    /// malformed. RESIDUALIZE IT AND RECORD WHY. See [`ResolveError`].
+    ///
+    /// THE FOURTH THING, distinct from all three neighbours: `Failure` claims the
+    /// answer is no, `Unknown` that there is no answer, `Delay` that the answer is not
+    /// available yet. This claims nothing about the goal at all — it says the resolver
+    /// could not ask it.
+    ///
+    /// IT DOES NOT STOP THE SEARCH, and an earlier draft of this variant did. Aborting
+    /// is wrong for the population that actually reaches here: an ill-typed comparison
+    /// in one branch says nothing about the others, and `builtin_cmp`'s own doc requires
+    /// that the goal still come back in `Solution::residual` with `definite = false` —
+    /// "the machine-readable half … what a test can assert". Aborting produces no
+    /// residual at all. So this schedules exactly as [`Self::Delay`] does and records
+    /// its message on the stream.
+    ///
+    /// WHAT IT REPLACES, at `builtin_cmp`'s no-order arm: three workarounds for one
+    /// missing outcome. `Delay` faked the OUTCOME — the operands there are already
+    /// ground, so "re-ask me once something binds" is simply false, and no later binding
+    /// introduces an order between a `String` and an `Int64`. `eprintln!` faked the
+    /// DIAGNOSTIC, on stderr, deduped process-wide so the second occurrence prints
+    /// nothing. (`truncated: true` was NOT a fake and stays: an un-evaluated goal really
+    /// does mean emptiness is not refutation. What its doc complains of is the wording
+    /// of the message it drives, not the flag.)
+    ///
+    /// NOT `Unknown`. That says the question has no answer — true of a universal, false
+    /// here: `gt("a", 3)` is a question that should never have been asked, and
+    /// `Solution::undecided` feeds `GammaVerdict::universal`, which would then report an
+    /// ill-typed comparison as a statement about a parameter.
+    Error(ResolveError),
+}
+
+/// WHY a [`BuiltinResult::Unknown`] goal has no answer — carried so the drain can name
+/// the cause instead of reporting every undischarged goal as a floundered search.
+///
+/// An enum rather than a string because each cause has its own recognizer in this file
+/// and its own repair for the author; a new cause adds a variant and the compiler finds
+/// every reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnknownCause {
+    /// The goal mentions an OPEN-WORLD parameter — a `var_ref` binder reference under a
+    /// Γ overlay ([`KnowledgeBase::value_has_open_world_ref`], proposal 050 / WI-067).
+    ///
+    /// Closed-world absence is not negation here: the parameter is universally
+    /// quantified, so "no fact says so" means UNKNOWN, not false. This is the case the
+    /// resolver used to fake with `force_delay` — a scheduling primitive standing in for
+    /// a truth value, promising a later decision that can never arrive.
+    OpenWorldParameter,
+    /// An operand is an OPAQUE SKOLEM — a fresh ground constant standing for a
+    /// universally quantified parameter (`proof_verify`'s contract σ, the
+    /// eigenvariable reading).
+    ///
+    /// THE SAME CATEGORY AS [`Self::OpenWorldParameter`], A DIFFERENT CARRIER, and
+    /// that is why it is a second variant rather than a reuse. A `var_ref` binder
+    /// reference is recognizably non-ground and the resolver DELAYS on it before any
+    /// builtin runs. A skolem is a perfectly ordinary `Term::Ref`: the structural
+    /// compare decides goals about it happily and confidently, and every verdict it
+    /// gives that reflexivity did not force is a closed-world reading of a universal.
+    /// `eq(c, 1)` came back FALSE, and an author was told their contract was refuted
+    /// when nothing had decided it.
+    OpaqueSkolem,
+}
+
+impl UnknownCause {
+    /// Does this cause mean the goal ranges over a UNIVERSAL — a parameter standing for
+    /// every input, where closed-world absence is not negation?
+    ///
+    /// AN EXHAUSTIVE MATCH, which is the promise this enum's doc makes ("a new cause
+    /// adds a variant and the compiler finds every reader"). Its one reader used to
+    /// test `!undecided.is_empty()` and assume the answer, so a third cause with a
+    /// different repair would have silently inherited the universal wording.
+    pub fn is_universal(self) -> bool {
+        match self {
+            // A `var_ref` binder reference under Γ.
+            UnknownCause::OpenWorldParameter => true,
+            // A contract σ's eigenvariable.
+            UnknownCause::OpaqueSkolem => true,
+        }
+    }
 }
 
 /// WI-879 — the outcomes of asking two operands for their ORDER
@@ -388,7 +508,13 @@ pub(crate) enum PredicateProof {
     /// * `truncated: false` — only residual (floundered) solutions over an
     ///   otherwise COMPLETE search (WI-519 "no definite solution"): undecided, but
     ///   there is no truncation to surface.
-    Undecided { truncated: bool },
+    Undecided {
+        truncated: bool,
+        /// A fault the sub-search reported ([`ResolveError`]) — `None` for an ordinary
+        /// incompleteness. Turned into a [`BuiltinResult::Error`] by the consumer, which
+        /// is inside a `SearchStream` and can record it.
+        fault: Option<ResolveError>,
+    },
 }
 
 /// WI-628 — the outcome of the SLD→eval `eq`/`neq` bridge
@@ -482,6 +608,20 @@ pub struct ResolveConfig {
     /// hence the `allow` — the field is an internal channel, not public surface.
     #[allow(private_interfaces)]
     pub gamma: Option<Rc<SubstTree<Value>>>,
+    /// The EIGENVARIABLES of the proof this resolution serves — opaque constants
+    /// standing for universally quantified parameters (`proof_verify`'s contract σ).
+    ///
+    /// EXACTLY [`Self::gamma`]'s SCOPE, which is why it rides beside it: seeded only by
+    /// the `prove_from_gamma` bridge, the same for every frame in one resolve, `None`
+    /// for every ordinary resolution. Closed-world reasoning does not apply to these —
+    /// see [`UnknownCause::OpaqueSkolem`] — so the resolver reconsiders a definite
+    /// verdict about one instead of letting the structural compare decide it.
+    ///
+    /// `None` and `Some(<empty>)` mean the same thing here and both are reachable: a
+    /// guard discharge goes through the same bridge and seeds an EMPTY set, because no
+    /// contract σ ran. That is the point of the placement — a resolution that minted no
+    /// eigenvariables cannot see one.
+    pub opaque_skolems: Option<Rc<std::collections::HashSet<Symbol>>>,
     /// WI-FFPGD — is this resolution asking for ANSWERS or for PROOFS?
     ///
     /// `true` (the default): [`SearchStream::is_duplicate_answer`] collapses two
@@ -535,6 +675,7 @@ impl Default for ResolveConfig {
             simplify: false,
             definite_only: false,
             gamma: None,
+            opaque_skolems: None,
             dedup_answers: true,
         }
     }
@@ -564,6 +705,19 @@ impl Default for ResolveConfig {
 pub struct Solution {
     pub subst: Substitution,
     pub residual: Vec<Value>,
+    /// The subset of [`Self::residual`] that is UNDECIDED rather than merely
+    /// undischarged — the goals a builtin answered [`BuiltinResult::Unknown`] on, each
+    /// with the cause it named.
+    ///
+    /// A PARALLEL LIST, not a change to `residual`'s type: 56 readers ask `residual`
+    /// only `is_empty()` / `len()`, and every one of them is still asking the right
+    /// question (an undecided goal IS undischarged, so the answer is still not
+    /// definite). What they cannot ask today is WHICH KIND of non-answer this is, and
+    /// that is the only thing added here. Named `undecided` to match the data face's
+    /// own word — `Interpreter::make_solution_value` already reifies
+    /// `undecided(subst, residual)` (`eval/mod.rs`), which is this same third outcome
+    /// one layer up.
+    pub undecided: Vec<(Value, UnknownCause)>,
 }
 
 impl Solution {
@@ -694,6 +848,23 @@ struct ResolverFrame {
     /// keeps its occurrence), matched via `match_view_value_pattern` — parity
     /// with the already-`Value` Γ overlay, no lowering to a hash-consed term.
     assumed_facts: Vec<Value>,
+    /// Goals in THIS frame a builtin answered [`BuiltinResult::Unknown`] on, with the
+    /// cause it named — carried so the residual can say WHY it has no answer.
+    ///
+    /// FRAME-LOCAL AND MUTATED IN PLACE. An `Unknown` goal rotates behind the tail like
+    /// a delayed one and is only materialized much later, at `step_init`'s
+    /// `consecutive_delays >= goals.len()` gate, by which point the outcome that produced
+    /// it is long gone. Rotation mutates the frame rather than rebuilding it, so this
+    /// list survives it. Not stream-level (`self.truncated`'s home): a goal answered
+    /// `Unknown` on a branch that later BACKTRACKS must not colour a solution from a
+    /// different branch.
+    ///
+    /// THE INVARIANT FOR A FRAME PUSH: a push that RESUMES this goal list's rotation
+    /// (one carrying `consecutive_delays + 1` rather than `delay_mode.reset()`) must
+    /// inherit this list, because the gate it is marching toward is the list's only
+    /// reader. Exactly one push does — `step_choice_point`'s delay fallback, which says
+    /// so at its site; every other resets the counter and rightly starts empty.
+    undecided: Vec<(Value, UnknownCause)>,
 }
 
 // THE `Value` → `TermId` REIFY IS GONE from this module (`reify_goal_value` /
@@ -816,6 +987,10 @@ pub struct ResolveStats {
     /// instead of silently deciding from a truncated search. Mirrors the
     /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time.
     pub truncated: bool,
+    /// Faults the search detected ([`ResolveError`]) — empty for a healthy resolution.
+    /// Snapshotted from [`SearchStream::errors`] at drain, beside `truncated` and for
+    /// the same reason: `resolve` has no `Err` channel to return them on.
+    pub errors: Vec<ResolveError>,
 }
 
 /// Lazy search stream that yields one solution at a time via
@@ -872,6 +1047,22 @@ pub struct SearchStream {
     /// `resolve` consumers — the constraint / quantifier guards, which read
     /// `is_empty()` as refutation — is the filed WI-628 follow-up.)
     truncated: bool,
+    /// Faults this search DETECTED — see [`ResolveError`]. Empty for a healthy
+    /// resolution.
+    ///
+    /// RIDES THE STREAM, NOT THE RETURN, for exactly `truncated`'s reason and by its
+    /// precedent: `KnowledgeBase::resolve` answers `Vec<Solution>`, so there is no `Err`
+    /// for a fault to come back on without changing that signature and every caller.
+    /// `drain_all` snapshots it onto [`ResolveStats`], where a caller that wants
+    /// diagnostics reads them and one that does not still cannot be misled — a fault
+    /// also sets `truncated`, which forbids reading the short result as a refutation.
+    ///
+    /// PER-STREAM, and that is a deliberate change from what it replaces. The `eprintln`
+    /// it supersedes deduped in a process-wide `thread_local`, so the SECOND query in a
+    /// process reported nothing at all. Here each search reports its own faults; the
+    /// volume problem that motivated the process-wide set (31 lines for a four-fact
+    /// self-join, O(N²) in the extent) is handled by deduping on push instead.
+    errors: Vec<ResolveError>,
 }
 
 /// WI-628 — the three-way verdict of draining a CLOSED sub-resolution (see
@@ -887,6 +1078,27 @@ struct DrainVerdict {
     /// A branch was abandoned at the depth limit — an empty result is then
     /// UNDECIDED, never a refutation.
     truncated: bool,
+    /// The cause carried by a residual solution that had no ANSWER, as opposed to no
+    /// BINDING — `None` when every residual was an ordinary flounder.
+    ///
+    /// WITHOUT THIS the sub-search's third value dies at the drain. `not(P)` over an
+    /// eigenvariable sub-resolves `P`, which answers `Unknown` and residualizes
+    /// correctly — and then `step_naf` had only `residual: bool` to read, so the goal
+    /// came out wearing the flounder wording ("delayed on a variable nothing bound"),
+    /// which is the query-is-at-fault repair this channel exists to stop giving for a
+    /// universal. MEASURED: `ensures not(eq(x, 1))` reported exactly that.
+    undecided: Option<UnknownCause>,
+    /// Faults the sub-search reported ([`ResolveError`]).
+    ///
+    /// THE THIRD THING THAT MUST COME UP, and the one this struct forgot. `truncated`
+    /// and `undecided` both cross this boundary; `errors` did not, so a
+    /// `BuiltinResult::Error` raised INSIDE `not(P)` recorded its message on the
+    /// sub-stream and the sub-stream was then dropped. MEASURED: `not(gt("a", 1))` came
+    /// back with `stats.errors == []` and `truncated == true`, so
+    /// `prove_from_gamma_verdict` — which now reads `stats.errors` — saw no fault and
+    /// reported `ensures not(gt(x, 1))` with the generic "left UNDISCHARGED / bind what
+    /// it waits on" wording, naming a repair that does not exist.
+    errors: Vec<ResolveError>,
 }
 
 /// WI-1044 — what [`KnowledgeBase::classify_unstamped_spec_op_call`] did, as the
@@ -904,6 +1116,53 @@ enum UnstampedDispatch {
 }
 
 impl SearchStream {
+    /// Record a fault, mark the stream INCOMPLETE, and dedup.
+    ///
+    /// The first two always travel together, which is why they share one door:
+    /// recording without `truncated` would leave an eager consumer free to read the
+    /// short result as a refutation — the WI-628 hole wearing a new cause.
+    ///
+    /// DEDUPED ON PUSH — the STORAGE, and only the storage. A four-fact extent joined
+    /// against itself reaches the faulting arm once per candidate PAIR, so the arm runs
+    /// O(N²) times in the extent; each of those still formats its message and this
+    /// discards the duplicates. The `eprintln` it replaces was no better on this axis —
+    /// it computed both operand LABELS first and built its `SEEN` key from them, so the
+    /// formatting work was already paid before the dedup; only the final `eprintln!` was
+    /// skipped. (An earlier version of this note claimed the opposite. It was wrong.)
+    ///
+    /// SAID RATHER THAN FIXED, because the cost that motivated that set is gone: it was
+    /// stderr I/O and 31 interleaved lines in a reader's terminal, not two `format!`s of
+    /// two short operand labels. A pre-format dedup would need the label pair as a key,
+    /// and computing the labels is most of the work — so the guard would cost about what
+    /// it saves. Linear scan on the list itself for the same reason: it is expected to
+    /// hold nothing, and one or two entries at worst.
+    fn record_error(&mut self, err: ResolveError) {
+        self.truncated = true;
+        self.note_error(err);
+    }
+
+    /// Record a fault WITHOUT marking the stream incomplete — the message only.
+    ///
+    /// SPLIT FROM [`Self::record_error`] because the two halves do not always travel
+    /// together, and fusing them put a regression in the one place they come apart.
+    /// `step_naf` folds a sub-search's faults up so they are not lost with the
+    /// sub-stream; but that fold runs on the DEFINITE path too, where `not(P)` failed
+    /// because an later candidate PROVED `P`. That answer is complete — an earlier
+    /// candidate's faulted comparison did not contribute to it — so marking the outer
+    /// stream truncated there makes the eager guards (`eval_negation_guard`,
+    /// `eval_forall_guard`, the counting config, all `definite_only`) read
+    /// `from_emptiness(true, truncated, …)` as UNDECIDABLE for a constraint that was
+    /// definitively decided: a load-time failure where there was none.
+    ///
+    /// So the diagnostic is kept and the completeness claim is not. The pre-existing
+    /// `self.truncated |= v.truncated` stays exactly where it was, inside the
+    /// residual-or-truncated arm.
+    fn note_error(&mut self, err: ResolveError) {
+        if !self.errors.contains(&err) {
+            self.errors.push(err);
+        }
+    }
+
     /// Yield the next solution, consuming self and returning the
     /// continuation stream. Returns `None` when exhausted.
     pub fn split_first(mut self, kb: &mut KnowledgeBase) -> Option<(Solution, SearchStream)> {
@@ -930,6 +1189,7 @@ impl SearchStream {
     fn drain_verdict(mut self, kb: &mut KnowledgeBase) -> DrainVerdict {
         let mut definite = false;
         let mut residual = false;
+        let mut undecided: Option<UnknownCause> = None;
         loop {
             if self.is_empty() {
                 break;
@@ -939,6 +1199,13 @@ impl SearchStream {
                     if sol.is_definite() {
                         definite = true;
                         break;
+                    }
+                    // FIRST cause wins and later residuals do not clear it: the question
+                    // downstream is "was any of this undecided rather than merely
+                    // undischarged", and one undecided branch is enough to make the
+                    // flounder wording wrong.
+                    if undecided.is_none() {
+                        undecided = sol.undecided.first().map(|(_, cause)| *cause);
                     }
                     residual = true;
                 }
@@ -950,6 +1217,8 @@ impl SearchStream {
             definite,
             residual,
             truncated: self.truncated,
+            undecided,
+            errors: self.errors.clone(),
         }
     }
 
@@ -988,6 +1257,7 @@ impl SearchStream {
         }
         let mut stats = self.stats.clone();
         stats.truncated = self.truncated;
+        stats.errors = self.errors.clone();
         (solutions, stats)
     }
 
@@ -1065,6 +1335,38 @@ impl SearchStream {
                 // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
                 // keeps its occurrence identity.
                 let residual: Vec<Value> = frame.goals.clone();
+                // WHICH of those goals had no answer as opposed to no BINDING — recorded
+                // when each was answered, because the outcome is long gone by here.
+                // This is the ONE gate an `Unknown` goal reaches after rotating, so
+                // dropping it here would make every undecided answer indistinguishable
+                // from a floundered one at the drain.
+                //
+                // FILTERED TO THE GOALS STILL PENDING, because the list is append-only
+                // and a recorded goal can later be DISCHARGED. The Γ consult re-reifies
+                // each goal under the current σ on every pass, so one that answered
+                // `Unknown` on pass 1 (nothing structurally matched it yet) can match a
+                // Γ fact on pass 2 once a sibling binds its variable, and leave the
+                // list. Its stale cause would then colour a residual it is not in —
+                // reporting an ordinary flounder as a universal, the two verdicts this
+                // channel exists to separate, swapped.
+                //
+                // NOT DRIVEN, said plainly. Reaching it needs a goal that answers
+                // `Unknown` on one pass and is discharged from Γ on a later one, in a
+                // frame that then exhausts on a DIFFERENT goal; nothing in the corpus
+                // does, and I did not build one. The filter is cheap and the invariant
+                // it restores is the one this field's doc claims ("the subset of
+                // `residual`"), which the append-only list did not maintain — but no row
+                // fails if it is removed.
+                let undecided: Vec<(Value, UnknownCause)> = frame
+                    .undecided
+                    .iter()
+                    .filter(|(g, _)| {
+                        residual
+                            .iter()
+                            .any(|r| crate::kb::term_view::views_structurally_equal(kb, g, r))
+                    })
+                    .cloned()
+                    .collect();
                 self.stack.pop();
                 // WI-519: this is a FLOUNDERED branch (delay-and-rotate exhausted
                 // with goals still undischarged). In definite-only mode it is not
@@ -1073,7 +1375,11 @@ impl SearchStream {
                 if self.config.definite_only {
                     return Some(StepResult::Continue);
                 }
-                let sol = Solution { subst, residual };
+                let sol = Solution {
+                    subst,
+                    residual,
+                    undecided,
+                };
                 self.record_solution_in_nearest_choice_point();
                 return Some(StepResult::YieldSolution(sol));
             }
@@ -1084,6 +1390,7 @@ impl SearchStream {
             let sol = Solution {
                 subst: frame.subst.clone(),
                 residual: vec![],
+                undecided: vec![],
             };
             self.stack.pop();
 
@@ -1395,7 +1702,7 @@ impl SearchStream {
             // builtin (`neq(5, 0)`) finds no Γ match and runs normally; `gamma`
             // is `None` for every resolution but the typer's bridge, so this is
             // inert otherwise.
-            let mut force_delay = false;
+            let mut open_world_operand = false;
             if self.config.gamma.is_some() {
                 let frame_subst = self.stack.last().unwrap().subst.clone();
                 let goal_value = kb.reify_value(&goal_val, &frame_subst);
@@ -1420,12 +1727,21 @@ impl SearchStream {
                 // an OPEN-WORLD parameter (a `var_ref` binder reference) — a scalar
                 // builtin (`neq`/`eq`/…) would WRONGLY decide it, treating the
                 // var_ref reflect-term as a ground constant (`neq(var_ref(b), 0)`
-                // succeeds structurally). Force a DELAY so a symbolic guard
-                // FLOUNDERS instead of being NAF-refuted: drop only on a positive
-                // proof of ¬guard (048 §"constructive refutation"). The branch /
-                // match cases that DO know `neq(b, 0)` discharged above via the Γ
-                // fact; this is the symbolic fall-through.
-                force_delay = kb.value_has_open_world_ref(&goal_value, &frame_subst);
+                // succeeds structurally). The goal has no ANSWER: the parameter is
+                // universally quantified, so closed-world absence is not negation —
+                // drop only on a positive proof of ¬guard (048 §"constructive
+                // refutation"). The branch / match cases that DO know `neq(b, 0)`
+                // discharged above via the Γ fact; this is the symbolic fall-through.
+                //
+                // ANSWERED `Unknown`, NOT DELAYED. It used to be a forced
+                // `BuiltinResult::delay()` — a SCHEDULING primitive standing in for a
+                // truth value, promising a later decision that can never arrive, since
+                // nothing will ever instantiate a universal. Both residualize, so the
+                // fake worked; what it could not do is survive to the drain, where
+                // "the search gave up on an unbound variable" (a defect in the query)
+                // and "this ranges over a universal" (a legitimate answer) are opposite
+                // verdicts that were both reported as `Error[RelationFloundered]`.
+                open_world_operand = kb.value_has_open_world_ref(&goal_value, &frame_subst);
             }
             // NAF needs sub-resolution context — handle it specially.
             //
@@ -1464,8 +1780,8 @@ impl SearchStream {
             //
             // Inert outside the typer bridge: `gamma` is `None` for every other
             // resolution, so the block above returns nothing and this dispatch is
-            // reached with `force_delay` false — the pre-WI-567 path exactly.
-            // `force_delay` is deliberately NOT consulted here: `step_naf` owns
+            // reached with `open_world_operand` false — the pre-WI-567 path exactly.
+            // `open_world_operand` is deliberately NOT consulted here: `step_naf` owns
             // the same open-world floundering guard for its INNER goal (it sets
             // `open_world_param` off `value_has_open_world_ref` too), so honouring
             // it at this level as well would only delay twice.
@@ -1477,7 +1793,7 @@ impl SearchStream {
             // expanded by case-splitting the callee's body — one `Continuation`
             // per `match` arm — instead of delaying. Mirrors the `push_choice` /
             // Γ special-cases above (set the frame's ChoicePoint, then continue).
-            if !force_delay && tag == BuiltinTag::SemEq {
+            if !open_world_operand && tag == BuiltinTag::SemEq {
                 let sub = self.stack.last().unwrap().subst.clone();
                 if let Some(candidates) = kb.unfold_eq_operand(&goal_val, &sub) {
                     let f = self.stack.last_mut().unwrap();
@@ -1498,10 +1814,19 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
             }
-            let builtin_result = if force_delay {
-                BuiltinResult::delay()
+            let builtin_result = if open_world_operand {
+                BuiltinResult::Unknown {
+                    cause: UnknownCause::OpenWorldParameter,
+                }
             } else {
-                kb.execute_builtin(tag, &goal_val, &frame.subst)
+                let raw = kb.execute_builtin(tag, &goal_val, &frame.subst);
+                // BORROWED, not cloned. An earlier draft cloned `frame.subst` here to
+                // dodge a borrow that was never in conflict — `frame` borrows
+                // `self.stack` and this method takes `&self`, while `kb` is a separate
+                // object. `Substitution::clone` deep-copies the `parent` chain, so that
+                // put a per-goal allocation in the resolver's hottest loop for a path
+                // that returns on its first line outside the proof bridge.
+                self.reconsider_verdict_over_skolem(kb, tag, &goal_val, &frame.subst, raw)
             };
             match builtin_result {
                 BuiltinResult::Success => {
@@ -1587,6 +1912,65 @@ impl SearchStream {
                     self.stack.pop();
                     return Some(StepResult::Continue);
                 }
+                BuiltinResult::Unknown { cause } => {
+                    // THE THIRD TRUTH VALUE. Everything here is about keeping it apart
+                    // from `Delay` AT THE DRAIN while behaving identically before it.
+                    //
+                    // SCHEDULED EXACTLY AS A DELAY, and that is a decision, not reuse:
+                    // the goal rotates behind the tail so a SIBLING goal still runs and
+                    // may FAIL, refuting the clause outright. A refutation is a real
+                    // verdict and must beat an undecided one, so residualizing here on
+                    // the spot would report "undecided" for a clause that is definitely
+                    // FALSE. That is why this is not the early exit it looks like it
+                    // should be — an `Unknown` costs the same rotations a `Delay` does.
+                    //
+                    // WHAT DIFFERS is the record: the goal and its cause go on the FRAME,
+                    // the only channel that survives the rotation. The goal is
+                    // materialized much later, at the `consecutive_delays >= goals.len()`
+                    // gate above, by which point this outcome is long gone — and without
+                    // the record every undecided answer arrives there byte-identical to a
+                    // floundered one, which is the conflation this variant exists to end.
+                    //
+                    // `self.truncated` is deliberately NOT set. Truncation means the
+                    // search was CUT SHORT and might have found more; this search was
+                    // complete and the answer is genuinely undecided. Folding one into
+                    // the other is how the two got confused in the first place.
+                    let goals_len = frame.goals.len();
+                    let subst = frame.subst.clone();
+                    return self.schedule_unanswerable_goal(
+                        &goal_val,
+                        goals_len,
+                        subst,
+                        depth,
+                        delay_mode,
+                        Some(cause),
+                    );
+                }
+                BuiltinResult::Error(err) => {
+                    // A FAULT, not an answer: the goal is ill-typed, unsupported or
+                    // malformed, so the resolver could not ask it at all.
+                    //
+                    // RECORDED FIRST — `record_error` puts the message where a caller
+                    // can read it (`ResolveStats::errors`) and marks the stream
+                    // incomplete, so nobody reads the short result as a refutation. That
+                    // is the whole of what this replaces: an `eprintln!` to stderr,
+                    // deduped process-wide so a second query reported nothing.
+                    //
+                    // THEN SCHEDULED LIKE AN UNKNOWN, with NO cause. It residualizes
+                    // rather than failing, because "not greater" is a claim and there is
+                    // nothing here to make it with; and it contributes no
+                    // `Solution::undecided` entry, because that field feeds
+                    // `GammaVerdict::universal` and a fault is not a statement about a
+                    // parameter.
+                    // Frame reads BEFORE the `&mut self` recorder — `frame` is a shared
+                    // borrow of `self.stack`.
+                    let goals_len = frame.goals.len();
+                    let subst = frame.subst.clone();
+                    self.record_error(err);
+                    return self.schedule_unanswerable_goal(
+                        &goal_val, goals_len, subst, depth, delay_mode, None,
+                    );
+                }
                 BuiltinResult::Delay { truncated } => {
                     // WI-628: a carrier `eq`/`neq` whose closed sub-proof TRUNCATED
                     // folds its truncation onto THIS (outer) stream before the frame
@@ -1609,6 +1993,9 @@ impl SearchStream {
                                 return Some(StepResult::YieldSolution(Solution {
                                     subst,
                                     residual,
+                                    // A DELAY: the operands may yet be bound by a
+                                    // caller. The `Unknown` arm below builds its own.
+                                    undecided: vec![],
                                 }));
                             } else {
                                 // Rotate to end, enter Delayed mode
@@ -2338,6 +2725,7 @@ impl SearchStream {
                 delay_mode: new_delay,
             },
             assumed_facts: new_assumed,
+            undecided: Vec::new(),
         });
         Some(StepResult::Continue)
     }
@@ -2573,6 +2961,7 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: new_assumed,
+                undecided: Vec::new(),
             });
             Some(StepResult::Continue)
         } else {
@@ -2622,7 +3011,13 @@ impl SearchStream {
                         return Some(StepResult::Continue);
                     }
                     self.record_solution_in_nearest_choice_point();
-                    return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                    return Some(StepResult::YieldSolution(Solution {
+                        subst,
+                        residual,
+                        // A DELAY, not an Unknown: this goal's operands may yet be
+                        // bound by a caller — nothing here is undecided.
+                        undecided: vec![],
+                    }));
                 }
                 1
             }
@@ -2943,6 +3338,290 @@ impl SearchStream {
         out
     }
 
+    /// A DEFINITE builtin verdict about an OPAQUE SKOLEM is trustworthy only where
+    /// STRUCTURE forced it — otherwise it is a closed-world reading of a universal, and
+    /// the honest answer is [`UnknownCause::OpaqueSkolem`].
+    ///
+    /// THE DEFECT, concretely. `proof_verify`'s contract σ maps each parameter to a
+    /// fresh ground `Term::Ref` so the body grounds to constants "the resolver compares
+    /// definitely, instead of flex vars it would delay on". It compares them a little
+    /// too definitely: `ensures eq(x, 1)` becomes `eq(c, 1)`, the structural compare
+    /// says FALSE, the search comes back complete-and-empty, and the author is told the
+    /// conjunct "is not derivable from the body". Nothing derived OR refuted it — `c`
+    /// stands for every input, and the site's own doc calls that the EIGENVARIABLE
+    /// reading.
+    ///
+    /// BOTH DIRECTIONS ARE WRONG, which is why this is not a "turn Failure into
+    /// Unknown" rule: `neq(c, 1)` SUCCEEDS structurally, and that is no better —
+    /// `c` might be 1. Success and Failure are reconsidered alike.
+    ///
+    /// REFLEXIVITY IS THE CARVE-OUT, and it is what keeps this from breaking every
+    /// contract that discharges today. `eq(c, c)` holds whatever `c` is, and
+    /// `neq(c, c)` fails whatever `c` is — a verdict about structurally IDENTICAL
+    /// operands does not depend on the value they share. `wi539_contract_proof_test`'s
+    /// `ensures eq(result.value, x)` projects to exactly that shape, so it still
+    /// discharges. Suppressing it instead — which is what widening
+    /// `value_has_open_world_ref` to skolems would have done — is the version of this
+    /// change that looks simpler and silently breaks the passing corpus.
+    ///
+    /// NOT the `nonvar` / `ground` / `ho_apply` family: those answer about the
+    /// CONSTANT (a skolem genuinely is ground, genuinely is nonvar), not about the
+    /// value it stands for, so their verdicts are already right. The same set
+    /// [`Self::builtin_is_reorderable`] carves out, for the same reason.
+    ///
+    /// NOT `SuccessWithBindings` either: reconsidering one would DISCARD a binding the
+    /// builtin already produced, trading a possibly-wrong answer for a certainly-lost
+    /// one. Left as a stated limit rather than silently folded in.
+    ///
+    /// Inert outside the proof bridge — `gamma` is `None` for every other resolution,
+    /// and `opaque_skolems` is empty until a contract proof mints one.
+    fn reconsider_verdict_over_skolem(
+        &self,
+        kb: &mut KnowledgeBase,
+        tag: BuiltinTag,
+        goal: &Value,
+        subst: &Substitution,
+        result: BuiltinResult,
+    ) -> BuiltinResult {
+        if self.config.gamma.is_none() {
+            return result;
+        }
+        if !matches!(result, BuiltinResult::Success | BuiltinResult::Failure) {
+            return result;
+        }
+        if matches!(
+            tag,
+            BuiltinTag::NonVar | BuiltinTag::Ground | BuiltinTag::HoApply
+        ) {
+            return result;
+        }
+        let Some(skolems) = self.config.opaque_skolems.as_deref() else {
+            return result;
+        };
+        if !kb.value_mentions_opaque_skolem(goal, subst, skolems) {
+            return result;
+        }
+        if !Self::skolem_verdict_is_value_dependent(tag, &result) {
+            return result;
+        }
+        // TWO QUESTIONS, AND THE FIRST DRAFT ASKED ONLY ONE. The polarity test above says
+        // WHICH verdict of this tag *could* turn on an operand's value; it does not say
+        // that this one DID. The gate that got us here is
+        // `value_mentions_opaque_skolem` — "is a skolem anywhere in this goal" — and a
+        // goal can mention one without the skolem deciding anything.
+        //
+        // MEASURED REGRESSION, which is how this second question was found:
+        // `ensures neq(result, nil)` on a body returning `box(value: x)` becomes
+        // `neq(box(value: c), nil)`. It succeeds because `box` and `nil` are DIFFERENT
+        // CONSTRUCTORS — true for every `c` — and the first draft flipped it to
+        // `Unknown`, un-discharging a contract that had always discharged. A predicate
+        // true OF the target does not identify it.
+        if Self::difference_is_skolem_free(kb, goal, subst, skolems) {
+            return result;
+        }
+        BuiltinResult::Unknown {
+            cause: UnknownCause::OpaqueSkolem,
+        }
+    }
+
+    /// Would this verdict CHANGE if the opaque skolem in the goal stood for something
+    /// else?
+    ///
+    /// AN ALLOWLIST, NOT A DENYLIST, and the inversion is the correction to the first
+    /// draft. That draft asked the opposite question — "is this verdict forced?" — with
+    /// `_ => false` underneath, so every tag it had not thought about was reconsidered
+    /// into `Unknown`. `unify(c, c)` is forced by structural identity exactly as
+    /// `eq(c, c)` is; a field projection over a record that merely CONTAINS a skolem is
+    /// forced by the record's shape; `is_entity_of` / `extract_sort` / `find_dictionary`
+    /// read a sort or a dictionary, not the value a parameter stands for. Turning any of
+    /// those into `Unknown` un-discharges a contract that is genuinely proved. The safe
+    /// default is to leave a verdict alone, so the tags whose verdict really does depend
+    /// on the value say so by name.
+    ///
+    /// | tag | verdict that is FORCED (structure decided it) | verdict that DEPENDS on the value |
+    /// |---|---|---|
+    /// | `SemEq` / `Eq` / `Unify` | `Success` — `eq(c, c)` holds for every `c` | `Failure` — `eq(c, 1)`, `c` might BE 1 |
+    /// | `SemNeq` | `Failure` — `neq(c, c)` fails for every `c` | `Success` — `neq(c, 1)`, same reason |
+    ///
+    /// Both directions matter and they are separate axes: the `SemEq` row turns a wrong
+    /// FAILURE into `Unknown`, the `SemNeq` row a wrong SUCCESS. A fix that handled only
+    /// one would look right on half the tests.
+    ///
+    /// THE ORDERING FAMILY (`Lt`, `Gte`, …) IS ABSENT, and for a reason: neither of its
+    /// verdicts means "the operands reduced to the same thing", so the polarity rule has
+    /// no safe carve-out to admit it with — `gt(c, c)` is false, but so is `gt(1, 2)`.
+    /// It needs no entry: an eigenvariable is a `Term::Ref`, not an ordered literal, so
+    /// `value_ord` has nothing to compare and `builtin_cmp`'s no-order arm reports a
+    /// FAULT ([`BuiltinResult::Error`]) instead. `prove_from_gamma_verdict` reads that as
+    /// `GammaVerdict::Faulted` and the author gets the resolver's own words, naming the
+    /// operand pair — better than anything an entry here could say. The two mechanisms
+    /// cover disjoint halves; this list is the equality half.
+    fn skolem_verdict_is_value_dependent(tag: BuiltinTag, result: &BuiltinResult) -> bool {
+        match tag {
+            // `unify` sits here for the SAME reason `eq` does, and its absence was an
+            // argument made in one direction only: `unify(c, c)` is forced by structural
+            // identity — the SUCCESS direction, exactly where `eq` is also left alone.
+            // `unify(c, 1)` fails because the terms differ, and `c` might BE 1, so the
+            // FAILURE is value-dependent in precisely the way `eq(c, 1)`'s is. Unlike the
+            // ordering family it has the safe carve-out. (A binding
+            // `SuccessWithBindings` is never reconsidered — see the caller.)
+            BuiltinTag::SemEq | BuiltinTag::Eq | BuiltinTag::Unify => {
+                matches!(result, BuiltinResult::Failure)
+            }
+            BuiltinTag::SemNeq => matches!(result, BuiltinResult::Success),
+            _ => false,
+        }
+    }
+
+    /// Do this comparison's two operands differ at a position NO skolem occupies?
+    ///
+    /// If they do, the verdict is forced whatever the skolems stand for: no value of `c`
+    /// makes `box(value: c)` into `nil`, so `neq(box(value: c), nil)` succeeds for every
+    /// `c` and its success is not a closed-world reading of anything.
+    ///
+    /// ASKED BY SUBSTITUTION AND UNIFICATION, not by a hand-written walk, and that is
+    /// the correction this function exists in its third form to make. Replace every
+    /// skolem with a FRESH VARIABLE and ask whether the operands can unify: if they
+    /// cannot, no assignment to those positions makes them equal, so the verdict is
+    /// structural. One fresh var PER SKOLEM SYMBOL, shared across both operands, so `c`
+    /// against `c` stays one unknown rather than two.
+    ///
+    /// WHY NOT A WALK. The first two versions were hand-written parallel walks and each
+    /// shipped a regression of the same kind — covering the case in front of it rather
+    /// than the carrier's actual shape. It missed NAMED arguments (and in this language
+    /// an entity IS a named-arg carrier, so `pair(a: c, b: 3)` vs `pair(a: 1, b: 2)`
+    /// compared nothing at all), and before that it missed the functor level. Unification
+    /// already knows every carrier, every arity and every child list, and is exercised by
+    /// the whole corpus; a third copy of that knowledge is a third chance to drift.
+    ///
+    /// REDUCED FIRST, with the builtin's own reducer. THE VERDICT BEING SECOND-GUESSED
+    /// IS ABOUT THE REDUCED OPERANDS: `builtin_cmp` and `sem_eq_values` both
+    /// `reduce_operand` before comparing, so a projection or op-call is already folded
+    /// by the time they answer. Walking the RAW goal asks about different terms — and
+    /// UNSOUNDLY: `ensures neq(result.value, 1)` on `wrap(x) = box(value: x)` arrives as
+    /// `neq(box(value: c).value, 1)`, whose unreduced operands are a `dot_apply` node
+    /// against a `Const`. Read raw, that is a structural difference and the closed-world
+    /// `Success` stood — reporting DISCHARGED for a contract that is FALSE at `wrap(1)`.
+    ///
+    /// `Delay` COUNTS AS "COULD UNIFY". An undecided unification is not a proof that
+    /// structure forbids equality, and the safe side of this predicate is to return
+    /// `false` — which reconsiders the verdict into `Unknown` rather than letting a
+    /// closed-world answer about a universal stand.
+    fn difference_is_skolem_free(
+        kb: &mut KnowledgeBase,
+        goal: &Value,
+        subst: &Substitution,
+        skolems: &std::collections::HashSet<Symbol>,
+    ) -> bool {
+        // Read both operands out to owned `Value`s first — `pos_arg` borrows `kb`, and
+        // `reduce_operand` needs it mutably.
+        let (Some(a), Some(b)) = (
+            goal.pos_arg(kb, 0).map(|v| v.to_value()),
+            goal.pos_arg(kb, 1).map(|v| v.to_value()),
+        ) else {
+            return false; // not a two-operand comparison — nothing to compare
+        };
+        let a = kb.reduce_operand(a, subst);
+        let b = kb.reduce_operand(b, subst);
+        // Every eigenvariable becomes a fresh unknown. `substitute_ref_terms` is the
+        // carrier-neutral σ (`Value::Term` grounds in term-land, a denoted `Value::Node`
+        // is rebuilt through the View layer) and its term core replaces exactly
+        // `Term::Ref`/`Term::Ident`, which is how a contract skolem is minted.
+        // ONE FRESH VAR PER SKOLEM, minted per reconsideration and discarded with the
+        // scratch substitution below. The set is the CURRENT PROOF's eigenvariables —
+        // `ResolveConfig::opaque_skolems` is seeded from this `FlowEnv` and holds the
+        // contract's parameters, not every skolem the KB ever minted — so `k` is an
+        // operation's arity. The var ids are not reclaimed; that is a real if small
+        // monotonic cost, recorded rather than hidden.
+        let mut map: std::collections::HashMap<Symbol, TermId> =
+            std::collections::HashMap::with_capacity(skolems.len());
+        for sk in skolems {
+            let vid = kb.fresh_var(*sk);
+            let var = kb.alloc(Term::Var(Var::Global(vid)));
+            map.insert(*sk, var);
+        }
+        let a = super::typing::substitute_ref_terms(kb, &a, &map);
+        let b = super::typing::substitute_ref_terms(kb, &b, &map);
+        let mut work = Substitution::new();
+        matches!(kb.unify_values(a, b, &mut work), UnifyOutcome::Fail)
+    }
+
+    /// Residualize-or-rotate a goal the resolver could not answer — the scheduling half
+    /// shared by [`BuiltinResult::Unknown`] and [`BuiltinResult::Error`].
+    ///
+    /// ONE OWNER, because the two arms differ in exactly one thing — whether a CAUSE is
+    /// recorded for [`Solution::undecided`] — and everything else about them is the same
+    /// decision. Written twice they would drift, and the half that drifts silently is the
+    /// rotation: a goal that residualizes when it should rotate loses its siblings'
+    /// chance to refute the clause outright.
+    ///
+    /// ROTATES rather than residualizing on the spot whenever there is a tail, and that
+    /// is the decision, not an optimization: a SIBLING goal may still `Failure` and
+    /// refute the clause, and a refutation is a real verdict that must beat "no answer".
+    /// Residualizing early would report undecided for a clause that is definitely FALSE.
+    ///
+    /// `cause` distinguishes the two callers. `Some` — a universal, whose cause reaches
+    /// `prove_from_gamma_verdict`. `None` — a FAULT, already recorded on the stream by
+    /// `record_error`; it must NOT populate `undecided`, because that field feeds
+    /// `GammaVerdict::universal` and an ill-typed comparison is not a statement about a
+    /// parameter.
+    fn schedule_unanswerable_goal(
+        &mut self,
+        goal_val: &Value,
+        goals_len: usize,
+        subst: Substitution,
+        depth: usize,
+        delay_mode: DelayMode,
+        cause: Option<UnknownCause>,
+    ) -> Option<StepResult> {
+        if goals_len == 1 {
+            // Nothing to rotate behind: no sibling can refute, so this answer is as
+            // decided as it will ever get.
+            self.stack.pop();
+            if self.config.definite_only {
+                return Some(StepResult::Continue);
+            }
+            self.record_solution_in_nearest_choice_point();
+            return Some(StepResult::YieldSolution(Solution {
+                subst,
+                residual: vec![goal_val.clone()],
+                undecided: cause
+                    .map(|c| vec![(goal_val.clone(), c)])
+                    .unwrap_or_default(),
+            }));
+        }
+        let new_consecutive = match delay_mode {
+            DelayMode::Normal => 1,
+            DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+        };
+        self.record_undecided_on_frame(goal_val, cause);
+        self.rotate_naf_goal_behind_tail(goal_val, depth, new_consecutive);
+        Some(StepResult::Continue)
+    }
+
+    /// Remember, on the CURRENT frame, that `goal` is being rotated with no ANSWER
+    /// rather than with no binding — `None` records nothing, which is the ordinary
+    /// delay.
+    ///
+    /// Paired with [`Self::rotate_naf_goal_behind_tail`] at every site that rotates a
+    /// possibly-undecided goal: the rotation is what makes the record necessary, since
+    /// the goal is materialized much later, at `step_init`'s
+    /// `consecutive_delays >= goals.len()` gate, where its cause is no longer in hand.
+    ///
+    /// A MULTISET, not a set: a goal that rotates more than once is recorded on each
+    /// pass, so one undecided goal may appear several times in
+    /// [`Solution::undecided`]. Its readers ask only whether the list is NON-EMPTY
+    /// (`typing::prove_from_gamma_verdict` takes the FIRST cause and stops), so the
+    /// repetition is inert — said here rather
+    /// than deduplicated, because a dedup needs a `Value` equality this carrier has
+    /// no cheap form of, and the repetition is bounded by the rotation count that
+    /// already bounds the search.
+    fn record_undecided_on_frame(&mut self, goal: &Value, cause: Option<UnknownCause>) {
+        if let (Some(cause), Some(f)) = (cause, self.stack.last_mut()) {
+            f.undecided.push((goal.clone(), cause));
+        }
+    }
+
     /// Rotate the current frame's `goals[0]` (a delayed / undecided NAF goal)
     /// behind the rest of the goal list, re-entering `Init` in `Delayed` mode with
     /// the given consecutive-delay count. The single rotate primitive shared by
@@ -3000,6 +3679,15 @@ impl SearchStream {
         let open_world_param =
             self.config.gamma.is_some() && kb.value_has_open_world_ref(&inner, &subst);
         if open_world_param || !kb.value_is_ground(&inner, &subst) {
+            // THE TWO REASONS THIS BRANCH IS TAKEN ARE NOT ONE, and the OR above is
+            // what hid it: `!value_is_ground` is a DELAY (a caller may yet bind the
+            // inner goal's variables), while `open_world_param` is an
+            // [`UnknownCause::OpenWorldParameter`] — `not(P)` over a universal has no
+            // answer and never will. They still SCHEDULE identically, for the reason
+            // the `Unknown` arm in `step_init` gives (a sibling may refute, and a
+            // refutation beats an undecided answer); what differs is only what the
+            // residual remembers.
+            let cause = open_world_param.then_some(UnknownCause::OpenWorldParameter);
             // Delay — same mechanism as other builtins
             match delay_mode {
                 DelayMode::Normal => {
@@ -3011,15 +3699,22 @@ impl SearchStream {
                             return Some(StepResult::Continue);
                         }
                         let residual = vec![goal.clone()];
+                        let undecided = cause.map(|c| vec![(goal.clone(), c)]).unwrap_or_default();
                         self.record_solution_in_nearest_choice_point();
-                        return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                        return Some(StepResult::YieldSolution(Solution {
+                            subst,
+                            residual,
+                            undecided,
+                        }));
                     } else {
                         // First delay of this goal — start the rotation counter at 1.
+                        self.record_undecided_on_frame(goal, cause);
                         self.rotate_naf_goal_behind_tail(goal, depth, 1);
                         return Some(StepResult::Continue);
                     }
                 }
                 DelayMode::Delayed { consecutive_delays } => {
+                    self.record_undecided_on_frame(goal, cause);
                     self.rotate_naf_goal_behind_tail(goal, depth, consecutive_delays + 1);
                     return Some(StepResult::Continue);
                 }
@@ -3040,6 +3735,7 @@ impl SearchStream {
                 // WI-537: the inner `P` of `not(P)` must see Γ too, so a Γ fact
                 // proving `P` correctly fails `not(P)` (sound negation under Γ).
                 gamma: self.config.gamma.clone(),
+                opaque_skolems: self.config.opaque_skolems.clone(),
                 // WI-FFPGD: this sub-search asks whether P has ANY proof, and
                 // `drain_verdict` stops at the first definite one — an answer SET
                 // is not the question, so deduping it would only cost fingerprints.
@@ -3059,6 +3755,21 @@ impl SearchStream {
             // `not(P)` from silently succeeding on an incomplete search.
             let sub_stream = kb.resolve_lazy_goals(vec![goal_v], &sub_config);
             let v = sub_stream.drain_verdict(kb);
+            // FOLDED HERE, NOT IN A BRANCH. The first version of this fold sat inside
+            // the `v.residual || v.truncated` arm, which drops every fault on the
+            // `v.definite` path — and `drain_verdict` BREAKS at the first definite
+            // solution, so an earlier candidate that hit a faulting arm has already
+            // recorded its message on the sub-stream by then. `not(P)` would fail
+            // correctly and the un-evaluable comparison inside `P` would never be
+            // mentioned. The sub-stream dies at the end of this statement either way, so
+            // the fold belongs where the drain is, beside it.
+            for err in v.errors.iter().cloned() {
+                // `note_error`, NOT `record_error`: this runs on every path including
+                // the DEFINITE one, where the answer is complete and marking the outer
+                // stream truncated would turn a decided constraint into an undecidable
+                // one. The completeness fold stays in its own arm below.
+                self.note_error(err);
+            }
 
             if v.definite {
                 // P has a definite solution → P holds → not(P) FAILS — backtrack.
@@ -3113,8 +3824,39 @@ impl SearchStream {
                     self.stack.pop();
                     let residual = vec![goal.clone()];
                     self.record_solution_in_nearest_choice_point();
-                    return Some(StepResult::YieldSolution(Solution { subst, residual }));
+                    return Some(StepResult::YieldSolution(Solution {
+                        subst,
+                        residual,
+                        // THE INNER SEARCH'S CAUSE, carried up through
+                        // `DrainVerdict::undecided`. `not(P)` over a universal
+                        // sub-resolves `P`, which answers `Unknown` and residualizes
+                        // correctly — and this yield used to drop that, so the goal came
+                        // out wearing the flounder wording.
+                        //
+                        // THE GAP WAS WIDER THAN THE NOTE THAT STOOD HERE, which framed
+                        // it as reachable only through a RULE BODY on the theory that
+                        // `open_world_param` covers anything present in `inner`. It does
+                        // not: that gate tests `value_has_open_world_ref` only, so an
+                        // opaque SKOLEM in `inner` walks straight past it into the ground
+                        // branch. MEASURED — `ensures not(eq(x, 1))` reported "delayed on
+                        // a variable nothing bound" for an eigenvariable.
+                        //
+                        // The cause is attached to `not(P)`, the goal actually
+                        // residualizing here, rather than to the inner goal that produced
+                        // it: `residual` holds `not(P)`, and `Solution::undecided`'s
+                        // readers intersect the two.
+                        undecided: v
+                            .undecided
+                            .map(|cause| vec![(goal.clone(), cause)])
+                            .unwrap_or_default(),
+                    }));
                 } else {
+                    // The tail case records the cause on the FRAME before rotating, for
+                    // the reason `record_undecided_on_frame` exists: the goal is
+                    // materialized much later, at `step_init`'s exhaustion gate, where
+                    // `v` is long gone. Without this the sole-goal case above would carry
+                    // the cause and the multi-goal one would silently drop it.
+                    self.record_undecided_on_frame(goal, v.undecided);
                     // Rotate the undecided `not(P)` behind the tail — but THREAD the
                     // incoming `delay_mode` into the counter (like the groundness-gate
                     // Delayed branch above), NOT a hard `1`. A ground-floundering
@@ -3346,6 +4088,30 @@ impl SearchStream {
                         DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
                     };
                     let inherited = frame.assumed_facts.clone();
+                    // INHERITED, exactly as `assumed_facts` is, and for a reason the
+                    // counter beside it makes precise: this push CONTINUES the current
+                    // goal list's rotation (`consecutive_delays + 1`) rather than
+                    // starting a fresh one. The `cd >= goals.len()` gate that will
+                    // eventually fire reads the frame's `undecided`, so resetting it
+                    // here loses every cause recorded before this rotation while the
+                    // counter keeps marching toward that gate — the answer arrives with
+                    // the undecided goal in `residual` and NOTHING in `undecided`, and
+                    // `prove_from_gamma_verdict` then reports the universal case as
+                    // "delayed on a variable nothing bound". Precisely the confusion
+                    // this channel exists to end.
+                    //
+                    // THE ONLY PUSH THAT NEEDS THIS, censused: the other six either
+                    // `delay_mode.reset()` (2535, 2771, 3771, 3899, 4066) or start
+                    // `Normal` (4481), so their frames begin a rotation rather than
+                    // resume one and an empty list is right for them.
+                    //
+                    // LATENT, NOT DRIVEN — said plainly rather than credited to a
+                    // neighbouring test. Reaching it needs a frame that has already
+                    // recorded an `Unknown` and then meets a rule goal whose every
+                    // candidate delays; nothing in the corpus does, and I could not
+                    // build one. What argues the fix is complete is the census above,
+                    // not a row.
+                    let inherited_undecided = frame.undecided.clone();
                     self.stack.pop();
                     self.stack.push(ResolverFrame {
                         goals: rotated,
@@ -3357,6 +4123,7 @@ impl SearchStream {
                             },
                         },
                         assumed_facts: inherited,
+                        undecided: inherited_undecided,
                     });
                     return Some(StepResult::Continue);
                 }
@@ -3384,6 +4151,7 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
+                undecided: Vec::new(),
             });
             return Some(StepResult::Continue);
         }
@@ -3511,6 +4279,7 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
+                undecided: Vec::new(),
             });
         } else {
             // Rule with body
@@ -3677,6 +4446,7 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
+                undecided: Vec::new(),
             });
         }
 
@@ -4091,6 +4861,7 @@ impl KnowledgeBase {
                 delay_mode: DelayMode::Normal,
             },
             assumed_facts: Vec::new(),
+            undecided: Vec::new(),
         };
         SearchStream {
             stack: vec![initial_frame],
@@ -4106,6 +4877,7 @@ impl KnowledgeBase {
                 // WI-537: the Γ overlay rides into the stream so `step_init`'s
                 // candidate step can consult it (an `Rc` clone — a refcount bump).
                 gamma: config.gamma.clone(),
+                opaque_skolems: config.opaque_skolems.clone(),
                 // WI-FFPGD: answers-or-proofs rides in too — `is_duplicate_answer`
                 // reads it at the goals-empty yield.
                 dedup_answers: config.dedup_answers,
@@ -4115,6 +4887,7 @@ impl KnowledgeBase {
             next_barrier: 0,
             cut_cache: HashMap::new(),
             truncated: false,
+            errors: Vec::new(),
         }
     }
 
@@ -4150,6 +4923,27 @@ impl KnowledgeBase {
     /// silently deciding from an incomplete search. Drains via
     /// [`SearchStream::drain_all`], which keeps the stream alive past exhaustion
     /// so the flag survives (the plain `split_first` loop dropped it).
+    /// [`Self::resolve_goals_with_truncation`] with the FULL stats — the entry point for
+    /// a caller that needs `ResolveStats::errors` as well as `truncated`.
+    ///
+    /// A SIBLING RATHER THAN `resolve_with_stats`, and the difference is not cosmetic.
+    /// `resolve_with_stats` takes `&[V: TermView]` and routes each goal through
+    /// `resolve_lazy` → `bind_value_to_value(g.as_bind_value())`, which is NOT the
+    /// identity for a `Value::Node`: `occ_view_bind_value` unwraps a SPLICED occurrence
+    /// to the value it carries. The constraint guards hand over `Vec<Value>` goals built
+    /// from a `LogicalQuery`, so switching them to that front door risked resolving a
+    /// different goal than before. This keeps `resolve_lazy_goals`' path exactly — the
+    /// one `resolve_goals_with_truncation` has always used — and only widens what comes
+    /// back.
+    pub fn resolve_goals_with_stats(
+        &mut self,
+        goals: Vec<Value>,
+        config: &ResolveConfig,
+    ) -> (Vec<Solution>, ResolveStats) {
+        let stream = self.resolve_lazy_goals(goals, config);
+        stream.drain_all(self, config.max_solutions)
+    }
+
     pub fn resolve_goals_with_truncation(
         &mut self,
         goals: Vec<Value>,
@@ -4755,6 +5549,115 @@ impl KnowledgeBase {
         self.value_is_ground(v, &Substitution::new())
     }
 
+    /// Does `v` mention a constant this KB minted as an OPAQUE SKOLEM
+    /// (a member of this resolution's [`ResolveConfig::opaque_skolems`])?
+    ///
+    /// A DIFFERENT QUESTION FROM [`Self::value_has_open_world_ref`], deliberately kept
+    /// as its own predicate rather than folded into it. Both find universals, but they
+    /// are consumed at opposite ends of the builtin: the `var_ref` one runs BEFORE
+    /// dispatch and forces the goal not to be decided at all, while this one runs AFTER
+    /// and reconsiders a verdict already given. Widening the first to cover skolems was
+    /// the obvious move and is wrong — it would suppress `eq(c, c)`, which reflexivity
+    /// decides for ANY `c`, and every contract that discharges by projection today
+    /// (`wi539_contract_proof_test`) would stop discharging.
+    pub(crate) fn value_mentions_opaque_skolem(
+        &self,
+        v: &Value,
+        subst: &Substitution,
+        skolems: &std::collections::HashSet<Symbol>,
+    ) -> bool {
+        if skolems.is_empty() {
+            return false; // this resolution minted no eigenvariables
+        }
+        match v {
+            Value::Term { id, .. } => self.term_mentions_opaque_skolem(*id, subst, skolems),
+            // ITS OWN WALK, like the `var_ref` sibling's. The generic reader below
+            // supplies no children for the occurrence forms `occ_head` reports as
+            // `ViewHead::Opaque`, so a skolem under one of those was invisible here.
+            Value::Node(occ) => {
+                super::node_occurrence::occurrence_mentions_opaque_skolem(self, subst, skolems, occ)
+            }
+            // THE SAME CHASE THE SIBLING MAKES (`value_has_open_world_ref_inner`,
+            // WI-N20EZ): a bound leaf reads as its BINDING. Without it a goal carried as
+            // a `Value::Entity` of `Value`s — which is how a reified goal lands — whose
+            // argument is a var bound to a skolem answers `false`, and the closed-world
+            // verdict about an eigenvariable stands. This arm was missing in the first
+            // draft: the walk was written beside its sibling rather than sharing it, and
+            // had already drifted from it before it shipped.
+            Value::Var(Var::Global(vid)) => match self.chase_to_concrete(*vid, subst) {
+                Some(end) => self.value_mentions_opaque_skolem(end, subst, skolems),
+                None => false,
+            },
+            other => {
+                let (is_sk, pos) = match other.head(self) {
+                    ViewHead::Functor {
+                        functor, pos_arity, ..
+                    } => (functor.is_some_and(|f| skolems.contains(&f)), pos_arity),
+                    _ => (false, 0),
+                };
+                if is_sk {
+                    return true;
+                }
+                (0..pos).any(|i| {
+                    other.pos_arg(self, i).is_some_and(|c| {
+                        self.value_mentions_opaque_skolem(&c.to_value(), subst, skolems)
+                    })
+                }) || other.named_keys(self).into_iter().any(|k| {
+                    other.named_arg(self, k).is_some_and(|c| {
+                        self.value_mentions_opaque_skolem(&c.to_value(), subst, skolems)
+                    })
+                })
+            }
+        }
+    }
+
+    /// [`Self::value_mentions_opaque_skolem`]'s hash-consed arm.
+    /// [`Self::term_mentions_opaque_skolem`] for the occurrence walk in
+    /// `node_occurrence`, which reaches a rule head's term-carried arguments.
+    pub(crate) fn term_mentions_opaque_skolem_pub(
+        &self,
+        term: TermId,
+        subst: &Substitution,
+        skolems: &std::collections::HashSet<Symbol>,
+    ) -> bool {
+        self.term_mentions_opaque_skolem(term, subst, skolems)
+    }
+
+    fn term_mentions_opaque_skolem(
+        &self,
+        term: TermId,
+        subst: &Substitution,
+        skolems: &std::collections::HashSet<Symbol>,
+    ) -> bool {
+        let walked = match self.walk_view(term, subst) {
+            Value::Term { id, .. } => id,
+            // Chain ended off the store — read it back through the value arm, exactly
+            // as `term_has_var_ref` hands off to its own (WI-N20EZ carriers).
+            other => return self.value_mentions_opaque_skolem(&other, subst, skolems),
+        };
+        match self.terms.get(walked) {
+            Term::Ref(sym) | Term::Ident(sym) => skolems.contains(sym),
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                if skolems.contains(functor) {
+                    return true;
+                }
+                let pos_args = pos_args.clone();
+                let named_args = named_args.clone();
+                pos_args
+                    .iter()
+                    .any(|&a| self.term_mentions_opaque_skolem(a, subst, skolems))
+                    || named_args
+                        .iter()
+                        .any(|&(_, a)| self.term_mentions_opaque_skolem(a, subst, skolems))
+            }
+            _ => false,
+        }
+    }
+
     /// WI-067 / proposal 050: does a goal value reference an OPEN-WORLD binder /
     /// parameter — a value unknown at static time, so a `not(…)` / scalar builtin
     /// over it must FLOUNDER rather than NAF-succeed (the soundness contract effect
@@ -5100,10 +6003,21 @@ impl KnowledgeBase {
             self.walk_arg(goal.pos_arg(self, 1), subst),
         ) else {
             // A generated goal always has both operands; a missing one means the
-            // generator and this reader disagree about the shape. Loud in debug,
-            // and a failure rather than a silent success in release.
+            // generator and this reader disagree about the shape.
+            //
+            // BOTH, not either. The `debug_assert` keeps the debug build loud where a
+            // developer is watching; the `Error` is what makes the RELEASE build loud,
+            // which it was not — it returned `Failure`, publishing a refutation of a
+            // goal nobody evaluated. "Loud in debug, and a failure rather than a silent
+            // success in release" is what the old comment said, and a silent FAILURE is
+            // no better than a silent success when the reader is `not(…)` or a guard.
             debug_assert!(false, "domain(?x, T): generated goal is missing an operand");
-            return BuiltinResult::Failure;
+            return BuiltinResult::Error(ResolveError {
+                message: "domain(?x, T): the generated type-bound guard is missing an \
+                          operand — the loader's generator and the resolver's reader \
+                          disagree about its shape, so no type bound was checked here"
+                    .to_string(),
+            });
         };
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
@@ -5122,7 +6036,12 @@ impl KnowledgeBase {
                 "domain(?x, T): the bound operand is not a type term — the generator \
                  and `install_rule_type_bounds` have diverged",
             );
-            return BuiltinResult::Failure;
+            return BuiltinResult::Error(ResolveError {
+                message: "domain(?x, T): the type-bound operand is not a type term — \
+                          the loader's generator and `install_rule_type_bounds` have \
+                          diverged, so no type bound was checked here"
+                    .to_string(),
+            });
         };
         match super::typing::type_bound_verdict(self, subst, &value, bound_tid) {
             super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
@@ -5997,6 +6916,7 @@ impl KnowledgeBase {
         // flounder has no side effect.
         let mut saw_delay = false;
         let mut saw_truncated = false;
+        let mut saw_unknown: Option<UnknownCause> = None;
         for (ca, cb) in pairs {
             match self.sem_eq_values(ca, cb, subst, true) {
                 BuiltinResult::Success => {}
@@ -6005,14 +6925,57 @@ impl KnowledgeBase {
                     saw_delay = true;
                     saw_truncated |= truncated;
                 }
+                // A field with no ANSWER makes the composite undecided too — recorded
+                // rather than returned, for the same reason `saw_delay` is: a LATER
+                // field may still `Failure`, and a refutation is a real verdict that
+                // must win over an undecided one.
+                //
+                // NOT REACHABLE TODAY, and says so rather than pretending otherwise:
+                // both `Unknown` producers (`step_init`'s open-world guard and its
+                // skolem reconsideration) sit above this call and never inside it. The arm is here because it is the
+                // answer this scan's own rule ("accumulate the strongest
+                // undecidedness") gives — `Unknown` is strictly stronger than `Delay`,
+                // being terminal rather than provisional — and because a `_ =>` here
+                // would silently degrade a future undecided field to "equal".
+                BuiltinResult::Unknown { cause } => saw_unknown = saw_unknown.or(Some(cause)),
+                // A FAULTED FIELD propagates immediately, unlike the two recorded
+                // above: `Delay` and `Unknown` are recorded so a LATER field can still
+                // `Failure` and refute the composite outright, which beats a non-answer.
+                // A fault is different in kind — it says this comparison could not be
+                // performed, so a refutation reached past it would rest on a field
+                // nobody evaluated. Return it and let the caller record it once.
+                BuiltinResult::Error(err) => return Some(BuiltinResult::Error(err)),
                 // `eq` never binds; a surprise binding can't be trusted as a verdict.
                 BuiltinResult::SuccessWithBindings(_) => saw_delay = true,
             }
         }
+        // DELAY DOMINATES UNKNOWN — asked FIRST, and the order is the whole rule.
+        //
+        // The first draft had this backwards on the theory that `Unknown` is "strictly
+        // stronger". It is not: a delayed field's operands may still be bound by a
+        // later goal, and `Unknown` claims "no later binding can change this" — false
+        // for the composite the moment one field is merely waiting. So a pending field
+        // outranks an undecided one, and `saw_truncated` rides out on the `Delay` it
+        // was set alongside.
+        //
+        // ONE CONDITION, NOT TWO. An intermediate draft guarded this as
+        // `saw_delay || saw_truncated`, reasoning about `Delay { truncated: true }`
+        // carrying a completeness bit `Unknown` has no slot for. The reasoning is sound
+        // and the second disjunct is DEAD: `saw_truncated` is set only inside the arm
+        // that sets `saw_delay`, so it cannot be true alone. A guard with no reachable
+        // case is a claimed protection, and claiming one is worse than not having it.
+        // Should an `Unknown`-with-truncation producer ever appear, the bit will need a
+        // home on `Unknown` itself — not a disjunct here that could not see it.
+        //
+        // So `Unknown` is the composite's answer only when NOTHING is still pending:
+        // every field either matched or had no answer at all.
         if saw_delay {
             return Some(BuiltinResult::Delay {
                 truncated: saw_truncated,
             });
+        }
+        if let Some(cause) = saw_unknown {
+            return Some(BuiltinResult::Unknown { cause });
         }
         Some(sem_verdict(true, positive))
     }
@@ -6101,7 +7064,20 @@ impl KnowledgeBase {
             // stream (the step loop folds `Delay { truncated: true }` onto it), so a
             // guard reading empty-as-refute sees it; a flounder over a complete
             // search stays a non-truncated delay.
-            PredicateProof::Undecided { truncated } => BuiltinResult::Delay { truncated },
+            // A FAULT OUTRANKS THE PLAIN DELAY: it schedules the same way (both
+            // residualize) but carries the reason, which is the whole difference between
+            // "re-ask me" and "this could not be evaluated".
+            PredicateProof::Undecided {
+                truncated,
+                fault: Some(err),
+            } => {
+                let _ = truncated; // `record_error` marks the stream incomplete itself
+                BuiltinResult::Error(err)
+            }
+            PredicateProof::Undecided {
+                truncated,
+                fault: None,
+            } => BuiltinResult::Delay { truncated },
             // WI-1092 — the carrier DECLARES this `eq` member and nothing defines it.
             // Not `sem_verdict(false)`: "these two are unequal" is a claim, and there
             // is nothing here to make it with. The resolver has no error channel (an
@@ -6167,12 +7143,33 @@ impl KnowledgeBase {
         // floundered and truncated is still incomplete): only genuine truncation
         // must propagate to the outer stream (see `PredicateProof::Undecided`).
         let v = stream.drain_verdict(self);
+        // THE SECOND `DrainVerdict` CONSUMER, and it dropped the faults the first one
+        // was fixed to keep. `prove_rule_predicate` drains a CLOSED sub-resolution for a
+        // carrier's own rule-backed `eq`/`neq`/`member`; a cross-sort comparison inside
+        // that rule body records its message on the sub-stream, and the sub-stream dies
+        // with `v`. The verdict came out right (`record_error` set the sub-stream's
+        // `truncated`, so `Undecided` rather than a refutation) and the reason was
+        // silently discarded — the same hole as `step_naf`'s, one site over.
+        //
+        // CARRIED ON THE RETURN VALUE, not on KB state. This runs on
+        // `&mut KnowledgeBase` with no `SearchStream` to fold onto, and parking
+        // per-resolution transients on the knowledge base is the mistake the
+        // `opaque_skolems` set was moved off the KB to avoid. `PredicateProof` is the
+        // channel that already crosses this boundary, so the fault rides it and the
+        // caller — which IS inside a stream — turns it into a `BuiltinResult::Error`.
+        let fault = v.errors.first().cloned();
         if v.definite {
             PredicateProof::Proved
         } else if v.truncated {
-            PredicateProof::Undecided { truncated: true }
+            PredicateProof::Undecided {
+                truncated: true,
+                fault,
+            }
         } else if v.residual {
-            PredicateProof::Undecided { truncated: false }
+            PredicateProof::Undecided {
+                truncated: false,
+                fault,
+            }
         } else if crate::kb::op_info::declared_op_with_no_definition(self, pred) {
             // WI-1092 — asked HERE, on the refutation edge, and not before the search:
             // the two verdicts differ only when the search came back empty, and only
@@ -7044,24 +8041,37 @@ impl KnowledgeBase {
                 // helped. (The DIRECTLY written `PartialOrd.gt("a", 1, ?r)` IS refused,
                 // which is what made the claim look true; so is a carrier's own
                 // `Gauge.lt(1, 2, ?r)` — both measured.)
-                self.trace_no_order(no_order, functor, &a, &b);
-                // UNDECIDED, never a silent `Failure`: "not greater" is a CLAIM and there
-                // is nothing here to make it with, and a NAF/guard consumer reading an
-                // empty result as refutation would then decide from a comparison that
-                // never happened. Same reasoning `sem_eq_dispatch` records for
-                // `PredicateProof::Undefined`.
+                // A FAULT, and now it can say so. "Not greater" is a CLAIM and there
+                // is nothing here to make it with, so this must not be `Failure`; but it
+                // is not a `Delay` either, which is what it used to return — the
+                // operands are already GROUND, and no later binding introduces an order
+                // between a `String` and an `Int64`. `Delay` meant "re-ask me once
+                // something binds", which was simply false, and it was chosen only
+                // because residualizing was the one shape available that made no claim.
                 //
-                // `truncated: true`, AND THAT IS THE HALF THAT MAKES THE SENTENCE ABOVE
-                // TRUE. A plain `delay()` was this ticket's first draft and it protected
-                // only `step_naf`, whose sub-search yields residuals. The three EAGER
-                // guard consumers — `eval_negation_guard`, `eval_forall_guard` and the
-                // counting-quantifier config — all resolve with `definite_only: true`, so
-                // the residual never reaches them and `GuardStatus::from_emptiness` reads
-                // the empty result as a verdict unless `truncated` is set: a
-                // `constraint c :- negation(query(… gt(?a, ?b) …))` over a non-literal
-                // carrier still reported HOLDS. Raised by /code-review; the flag's own doc
-                // is widened at its declaration to say what it now covers.
-                return BuiltinResult::Delay { truncated: true };
+                // THE MESSAGE TRAVELS NOW. It used to go to stderr through
+                // `trace_no_order`, deduped in a process-wide `thread_local` so the
+                // SECOND query in a process printed nothing — a diagnostic no test could
+                // assert and no CLI could route. `record_error` puts it on
+                // `ResolveStats::errors` instead, deduped per stream.
+                //
+                // WHAT IS UNCHANGED, deliberately, because two things here were load-
+                // bearing and neither was the `Delay`:
+                //   * the goal still RESIDUALIZES (`BuiltinResult::Error` schedules
+                //     exactly as an `Unknown` does), so it still comes back in
+                //     `Solution::residual` with `definite = false` — the machine-readable
+                //     half this arm's doc requires and WI-879's rows assert on;
+                //   * the stream is still marked TRUNCATED, by `record_error`. That half
+                //     is what protects the three EAGER guard consumers —
+                //     `eval_negation_guard`, `eval_forall_guard`, the counting-quantifier
+                //     config — which resolve with `definite_only: true`, never see the
+                //     residual, and let `GuardStatus::from_emptiness` read the empty
+                //     result as a verdict unless the flag is set. Without it a
+                //     `constraint c :- negation(query(… gt(?a, ?b) …))` over a
+                //     non-literal carrier reported HOLDS.
+                return BuiltinResult::Error(ResolveError {
+                    message: self.no_order_message(no_order, functor, &a, &b),
+                });
             }
         };
         // WI-879 — THE RESULT COLUMN IS READ, at 3 positional args, exactly as
@@ -7130,38 +8140,35 @@ impl KnowledgeBase {
     /// goal comes back in `Solution::residual` with `definite = false`, which is what a test
     /// asserts and what tells the two cases apart at a call site.
     ///
-    /// DEDUPED, and that is not tidiness. The un-deduped first draft wrote **31 lines** for
-    /// a four-fact extent joined against itself (`has(?a), has(?b), gt(?a, ?b)`) — two per
-    /// candidate pair, one at the delay rotation and one at residualization — so the volume
-    /// is O(N²) in the extent, interleaved with the CLI's own output, for a fact the reader
-    /// needs once. Raised by /code-review, measured before and after: the same fixture now
-    /// writes ONE line.
+    /// FORMATS ONLY — it neither prints nor dedups, and both of those are the point of
+    /// what replaced it. This was `trace_no_order`, which wrote the message to stderr
+    /// and suppressed repeats through a process-wide `thread_local` set. Both halves are
+    /// gone: the message now rides `BuiltinResult::Error` to `ResolveStats::errors`, and
+    /// `SearchStream::record_error` dedups PER STREAM — deliberately, since the old
+    /// process-wide set meant the second query in a process reported nothing at all.
     ///
-    /// PROCESS-WIDE and thread-local, so the set is not per-query: the thing it identifies —
-    /// "this comparison has no order for this kind of operand" — is a property of the
-    /// program, not of one search, and a per-query set would restore the volume for a query
-    /// run in a loop. A `thread_local!` rather than KB state because a diagnostic's
-    /// once-ness is not part of the knowledge base, and because `builtin_cmp` holds `&mut
-    /// self` at the call.
-    fn trace_no_order(&self, cause: OrdVerdict, functor: Option<Symbol>, a: &Value, b: &Value) {
-        thread_local! {
-            static SEEN: std::cell::RefCell<HashSet<(Option<Symbol>, String, String)>> =
-                std::cell::RefCell::new(HashSet::new());
-        }
+    /// The volume it was defending against was O(N²) in the extent (31 stderr lines for
+    /// a four-fact self-join, interleaved with the CLI's own output). That cost was I/O
+    /// and reader noise, neither of which this function now incurs; see
+    /// `record_error`'s doc for what is and is not deduped now.
+    fn no_order_message(
+        &self,
+        cause: OrdVerdict,
+        functor: Option<Symbol>,
+        a: &Value,
+        b: &Value,
+    ) -> String {
         let (la, lb) = (self.operand_label(a), self.operand_label(b));
-        if !SEEN.with(|seen| seen.borrow_mut().insert((functor, la.clone(), lb.clone()))) {
-            return;
-        }
         let name = functor.map_or("<comparison>", |f| self.qualified_name_of(f));
         match cause {
-            OrdVerdict::SortMismatch => eprintln!(
-                "[wi879] `{name}` compares {la} against {lb} — two DIFFERENT literal \
+            OrdVerdict::SortMismatch => format!(
+                "`{name}` compares {la} against {lb} — two DIFFERENT literal \
                  sorts, which have no common order, so the goal is UNDECIDED rather than \
                  false. The typer refuses this pair wherever it can see the operand types; \
                  it cannot when a rule variable is bound by a predicate that declares none."
             ),
-            OrdVerdict::NoOrder => eprintln!(
-                "[wi879] `{name}` has no order for this operand pair ({la} and {lb}) — the \
+            OrdVerdict::NoOrder => format!(
+                "`{name}` has no order for this operand pair ({la} and {lb}) — the \
                  goal is UNDECIDED, not false. The resolver compares ordered LITERALS; a \
                  carrier with its own comparison member needs ordering dispatch, which goal \
                  position does not yet do (WI-20260909-SM910)."
@@ -7170,7 +8177,7 @@ impl KnowledgeBase {
             // catch-all would print the no-order text for them — announcing a missing
             // implementation for a comparison that just succeeded — so they are named.
             OrdVerdict::Ordered(_) | OrdVerdict::Unordered => unreachable!(
-                "trace_no_order: `{name}` had an ORDER ({la} and {lb}); `builtin_cmp` \
+                "no_order_message: `{name}` had an ORDER ({la} and {lb}); `builtin_cmp` \
                  handles both answer verdicts before it traces"
             ),
         }
@@ -11978,7 +12985,7 @@ mod tests {
 
         let truncating = kb.prove_rule_predicate(pr, vec![Value::Int(1), Value::Int(2)]);
         assert!(
-            matches!(truncating, PredicateProof::Undecided { truncated: true }),
+            matches!(truncating, PredicateProof::Undecided { truncated: true, .. }),
             "a self-looping predicate truncates its sub-proof → Undecided{{truncated:true}}, got {truncating:?}",
         );
 
@@ -12052,7 +13059,13 @@ mod tests {
         // Direct: the closed sub-proof is UNDECIDED-but-COMPLETE — truncated:false.
         let proof = kb.prove_rule_predicate(myeq_f, vec![Value::term(box1), Value::term(box2)]);
         assert!(
-            matches!(proof, PredicateProof::Undecided { truncated: false }),
+            matches!(
+                proof,
+                PredicateProof::Undecided {
+                    truncated: false,
+                    ..
+                }
+            ),
             "a floundered-but-complete carrier-eq is Undecided{{truncated:false}}, got {proof:?}",
         );
 

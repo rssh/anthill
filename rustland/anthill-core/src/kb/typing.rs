@@ -2675,6 +2675,24 @@ pub struct FlowEnv {
     /// clones as a refcount bump on the per-Visit `Env` clone; `assume` is
     /// copy-on-write — `Rc::make_mut` clones the (shallow) tree only at a fork.
     facts: Rc<SubstTree<Value>>,
+    /// The EIGENVARIABLES of the proof this environment belongs to — the opaque
+    /// constants `proof_verify`'s contract σ substituted for the operation's
+    /// parameters, so that discharging the contract about them discharges it for every
+    /// input.
+    ///
+    /// HERE, NOT ON THE KB, and the placement is the point. These are per-proof and
+    /// dead the moment the proof returns; they have exactly `gamma`'s scope, and
+    /// `ResolveConfig::gamma`'s own doc states that criterion — "`None` for every
+    /// ordinary resolution … global to one resolve call, so it rides the config". On
+    /// the KB the set grew for the KB's lifetime, forced a `layer.rs` monotone-vs-scoped
+    /// decision that need not exist, and — because the typer calls `prove_from_gamma`
+    /// for every `if`/`match` guard discharge, not only for contract proofs — made
+    /// every later Γ-bridge goal pay a skolem walk for constants no contract had put
+    /// there. Riding the env makes "empty outside a contract proof" structural rather
+    /// than an argument about symbol uniqueness.
+    ///
+    /// `Rc` for the same reason `facts` is: an unchanged env clones as a refcount bump.
+    skolems: Rc<std::collections::HashSet<Symbol>>,
 }
 
 impl FlowEnv {
@@ -2682,10 +2700,28 @@ impl FlowEnv {
     pub fn empty() -> Self {
         FlowEnv {
             facts: Rc::new(SubstTree::new()),
+            skolems: Rc::new(std::collections::HashSet::new()),
         }
     }
 
+    /// Record `sym` as one of this proof's eigenvariables — see [`Self::skolems`].
+    /// Copy-on-write, like [`Self::assume`].
+    pub fn with_skolem(&self, sym: Symbol) -> FlowEnv {
+        let mut next = self.clone();
+        Rc::make_mut(&mut next.skolems).insert(sym);
+        next
+    }
+
+    /// This env's eigenvariables, for seeding [`crate::kb::resolve::ResolveConfig`].
+    pub(crate) fn skolems(&self) -> Rc<std::collections::HashSet<Symbol>> {
+        Rc::clone(&self.skolems)
+    }
+
     /// No facts yet (distinguishes the Γ₀ seed from a narrowed branch env).
+    ///
+    /// Deliberately says nothing about [`Self::skolems`]: this asks whether the flow
+    /// has NARROWED anything, and a contract proof's eigenvariables are a property of
+    /// the goal's vocabulary, not a fact anyone assumed.
     pub fn is_empty(&self) -> bool {
         self.facts.is_empty()
     }
@@ -2843,11 +2879,153 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
         definite_only: true,
         max_solutions: 1,
         gamma: Some(flow.index()),
+        opaque_skolems: Some(flow.skolems()),
         ..super::resolve::ResolveConfig::default()
     };
     kb.resolve(std::slice::from_ref(goal), &config)
         .iter()
         .any(|s| s.residual.is_empty())
+}
+
+/// WHAT Γ SAYS ABOUT A GOAL — three answers, because a proof bridge has three.
+///
+/// [`prove_from_gamma`] returns a bool and therefore folds two of them together: a goal
+/// Γ REFUTES and a goal Γ cannot DECIDE both come back `false`. That fold is safe (an
+/// undecided guard does not fire, which is the conservative direction) but it is not
+/// honest to the author — the two need opposite repairs, and only one of them is a
+/// repair at all. See [`GammaVerdict`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GammaVerdict {
+    /// A DEFINITE (residual-free) solution exists — Γ derives the goal.
+    Proved,
+    /// A COMPLETE search found NO answer at all — not one solution, definite or
+    /// residual, and nothing was cut short. Only here does closed-world reasoning
+    /// license "the goal does not follow".
+    ///
+    /// STRICT, and the strictness is the point. The first draft returned this whenever
+    /// no answer carried an undecided goal, which swept in ordinary FLOUNDERED
+    /// residuals (an unbound `?` in the conjunct) and DEPTH-TRUNCATED searches — both
+    /// of them non-answers, both then reported to the author as "your body is wrong".
+    /// That is the very flounder/refutation conflation this type exists to end,
+    /// relocated one level up.
+    Refuted,
+    /// No proof, and no refutation either — the search did not decide it.
+    ///
+    /// `universal` says WHICH non-answer, because only one of them has a specific
+    /// repair. `true`: some goal ranged over a UNIVERSAL — a `var_ref` binder reference
+    /// or a contract σ's eigenvariable — where closed-world absence is not negation, so
+    /// no further resolution decides it. `false`: an ordinary flounder or a
+    /// depth-truncated search, undischarged rather than undecidable, and possibly
+    /// decidable with more budget or more bindings.
+    ///
+    /// NAMED FOR THE QUESTION, NOT FOR ONE ANSWER. It was `open_world`, after the first
+    /// [`crate::kb::resolve::UnknownCause`]; the second (`OpaqueSkolem`) is a different
+    /// carrier of the same thing, and a field named after one cause invites its reader
+    /// to test for that cause rather than for the property. The property is what the
+    /// message depends on, and [`crate::kb::resolve::UnknownCause::is_universal`] owns
+    /// it in an exhaustive match.
+    Undecided { universal: bool },
+    /// The search could not EVALUATE part of the goal — it reported a fault
+    /// ([`crate::kb::resolve::ResolveError`]), so there is no reading of the result to
+    /// trust. `message` is the fault, already phrased for the author.
+    ///
+    /// ITS OWN VARIANT because it is a different thing from all three others and,
+    /// before it existed, wore the wrong one. An ORDERING over a contract parameter —
+    /// `ensures gt(x, 0)`, whose σ makes `gt(c, 0)` for an eigenvariable `c` — reaches
+    /// `builtin_cmp`'s no-order arm, since `c` is a `Term::Ref` and not an ordered
+    /// literal. That arm now reports a fault and residualizes; this reader dropped the
+    /// fault (it drained with `resolve_goals_with_truncation`, which returns no errors)
+    /// and the residual then read as an ordinary flounder. MEASURED: the author was told
+    /// the conjunct was "left UNDISCHARGED … having delayed on a variable nothing bound
+    /// or stopped at the depth limit", when nothing had delayed and nothing had been cut
+    /// short — and "bind what it waits on" is advice no binding can satisfy.
+    Faulted { message: String },
+}
+
+/// [`prove_from_gamma`]'s answer, un-folded — for the callers that must tell a REFUTED
+/// goal from an UNDECIDED one.
+///
+/// TWO RESOLVES, AND ONLY ON THE COLD PATH. The first is byte-identical to
+/// [`prove_from_gamma`]'s — same config, same reader — so a goal that PROVES costs
+/// exactly what it costs today and this function adds nothing to the hot path. The
+/// second runs only where the first found no proof, which is where the distinction is
+/// wanted and where a diagnostic is about to be written anyway.
+///
+/// WHY THE SECOND RESOLVE IS NEEDED AT ALL, rather than reading the first's solutions:
+/// the first sets `definite_only`, which SKIPS every non-definite branch outright
+/// (`step_init`'s residual gate) — an undecided answer is discarded before it can be
+/// yielded, so `prove_from_gamma` genuinely cannot see one. MEASURED before this
+/// function existed: an open-world goal fired `BuiltinResult::Unknown` and the same
+/// call returned `0 solutions, 0 carrying undecided`.
+///
+/// UNBOUNDED `max_solutions` on the second, deliberately: the question is "does ANY
+/// answer carry an undecided goal", and a bound of 1 would answer it from whichever
+/// residual came out first — reporting the wrong verdict for a goal that is undecided
+/// further down the stream. The fast path has already established there is no proof to
+/// find, so this walks a search that yields only residuals — and a search that ends
+/// having found nothing does the same work either way, since proving a result EMPTY is
+/// what makes [`GammaVerdict::Refuted`] sayable at all.
+///
+/// TRUNCATION IS READ, NOT ASSUMED AWAY. `resolve_goals_with_truncation` rather than
+/// `resolve`, because a search cut off at `max_depth` found no answer for a reason that
+/// has nothing to do with the goal — and `resolve` alone cannot tell that from a
+/// complete empty search, which is exactly the distinction `Refuted` rests on.
+pub fn prove_from_gamma_verdict(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    goal: &Value,
+) -> GammaVerdict {
+    if prove_from_gamma(kb, flow, goal) {
+        return GammaVerdict::Proved;
+    }
+    let config = super::resolve::ResolveConfig {
+        definite_only: false,
+        max_solutions: 0,
+        gamma: Some(flow.index()),
+        opaque_skolems: Some(flow.skolems()),
+        ..super::resolve::ResolveConfig::default()
+    };
+    // `resolve_with_stats`, NOT `resolve_goals_with_truncation`: the latter answers
+    // `(solutions, truncated)` and DROPS `ResolveStats::errors`, so a goal the resolver
+    // could not evaluate came back indistinguishable from one that merely floundered.
+    let (sols, stats) = kb.resolve_with_stats(std::slice::from_ref(goal), &config);
+    let truncated = stats.truncated;
+
+    // READ THE CAUSE, do not infer it from the list being non-empty. Both causes today
+    // answer `is_universal` the same way, so this changes no row — it is here so that a
+    // third cause has to decide rather than inherit the universal wording by default.
+    if let Some(cause) = sols
+        .iter()
+        .flat_map(|s| s.undecided.iter())
+        .map(|(_, cause)| *cause)
+        .next()
+    {
+        return GammaVerdict::Undecided {
+            universal: cause.is_universal(),
+        };
+    }
+    // THE FAULT IS ASKED AFTER, and the order is the point. `stats.errors` is
+    // per-STREAM: a fault raised on ANY branch — a different candidate rule, an
+    // unrelated conjunct — lands in it. `Solution::undecided` is per-ANSWER, so a cause
+    // there is about a goal in THIS residual. Asking the fault first let an unrelated
+    // no-order arm elsewhere in the search rewrite an eigenvariable conjunct's message
+    // into "`gt` has no order for this operand pair", pointing the author at operands
+    // their conjunct does not mention.
+    //
+    // Reached, not dead: an `Error` deliberately contributes NO `undecided` entry (a
+    // fault is not a statement about a universal), so a goal whose only problem is a
+    // fault has nothing above to match and falls here.
+    if let Some(err) = stats.errors.first() {
+        return GammaVerdict::Faulted {
+            message: err.message.clone(),
+        };
+    }
+    // ANY residual answer, or a cut-short search, is a NON-ANSWER — not a refutation.
+    // Only an empty, complete search licenses the closed-world reading.
+    if truncated || sols.iter().any(|s| !s.is_definite()) {
+        return GammaVerdict::Undecided { universal: false };
+    }
+    GammaVerdict::Refuted
 }
 
 /// WI-756 — THE Γ VOCABULARY: the one form every Γ fact and every Γ goal is in.

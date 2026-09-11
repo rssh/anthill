@@ -1645,6 +1645,21 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                         // A bare disjunction / quantifier branch is left to
                         // resolution (its undefined name may be tolerated), and a
                         // known functor with no matching row prints `no solutions`.
+                        // THE RESOLVER'S OWN DIAGNOSTICS. `ResolveStats::errors`
+                        // carries faults the search DETECTED — an ill-typed comparison,
+                        // an unsupported ordering dispatch — which the resolver used to
+                        // write straight to stderr from `trace_no_order` because
+                        // `BuiltinResult` had no error channel. Now that it has one,
+                        // this is the site that has to render them, or converting that
+                        // `eprintln` would simply have DELETED the diagnostic: measured,
+                        // `anthill query` over `gt("a", 1)` explained itself before and
+                        // printed nothing after.
+                        //
+                        // Before the rows, not after: it explains why a query that looks
+                        // like it should answer comes back with a residual or nothing.
+                        for err in &stats.errors {
+                            eprintln!("warning: {}", err.message);
+                        }
                         let unknown = kb.undefined_query_goal_functors(qt);
                         if !unknown.is_empty() {
                             for &sym in &unknown {

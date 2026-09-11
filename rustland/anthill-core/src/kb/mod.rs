@@ -161,8 +161,28 @@ enum GuardStatus {
     Holds,
     /// The constraint is violated (search ran to completion).
     Violated,
-    /// The search truncated at the depth limit; the verdict is undecided.
-    Undecidable(&'static str),
+    /// The search did not decide the constraint — it truncated at the depth limit, or
+    /// it reported a FAULT ([`crate::kb::resolve::ResolveError`]).
+    ///
+    /// AN OWNED STRING, and it had to stop being `&'static str`. The static wording
+    /// always named the depth budget, which is the wrong cause for a fault: a cross-sort
+    /// `gt` inside `negation(query(…))` reports "undecidable within depth budget" for a
+    /// search that never came near a depth limit, while the resolver's own message —
+    /// naming the operand pair — was thrown away with `ResolveStats::errors`. A guard
+    /// that cannot say WHY is the "channel with no reader" this change exists to end.
+    Undecidable(String),
+}
+
+/// The reason an undecided guard reports — the resolver's OWN words where the search
+/// reported a fault, and the depth-budget wording only where it did not.
+///
+/// One builder for the three guards, so a fourth cannot quietly go back to blaming the
+/// depth limit for a fault that has nothing to do with it.
+fn guard_undecided_reason(kind: &str, errors: &[crate::kb::resolve::ResolveError]) -> String {
+    match errors.first() {
+        Some(err) => format!("{kind} constraint undecidable: {}", err.message),
+        None => format!("{kind} constraint undecidable within depth budget"),
+    }
 }
 
 impl GuardStatus {
@@ -185,9 +205,14 @@ impl GuardStatus {
     /// centralizing it here (like the `drain_verdict` extraction on the resolver
     /// side) is what keeps a future emptiness-reading guard from forgetting it —
     /// the exact bug class WI-628 closes.
-    fn from_emptiness(is_empty: bool, truncated: bool, reason: &'static str) -> Self {
+    /// `reason` is a CLOSURE, not a `String`: these guards run per constraint per fact
+    /// assert, and the overwhelmingly common case is the non-truncated one that
+    /// discards it. Passing the built string allocated a `format!` on every evaluation
+    /// for a branch almost never taken — a cost the `&'static str` it replaced did not
+    /// have.
+    fn from_emptiness(is_empty: bool, truncated: bool, reason: impl FnOnce() -> String) -> Self {
         if truncated && is_empty {
-            GuardStatus::Undecidable(reason)
+            GuardStatus::Undecidable(reason())
         } else {
             GuardStatus::from_holds(is_empty)
         }
@@ -3798,7 +3823,14 @@ impl KnowledgeBase {
             definite_only: true,
             ..resolve::ResolveConfig::default()
         };
-        let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
+        // `resolve_goals_with_stats`, not `resolve_goals_with_truncation`: the latter
+        // returns `(solutions, truncated)` and drops `ResolveStats::errors`, so a fault
+        // inside the quantified query never reaches the message below. NOT
+        // `resolve_with_stats` — that front door takes a slice and re-binds each goal
+        // through `as_bind_value`, which unwraps a spliced occurrence; these goals come
+        // from a `LogicalQuery` and must take the path they always took.
+        let (solutions, stats) = self.resolve_goals_with_stats(goals, &config);
+        let truncated = stats.truncated;
         let count = solutions.len();
         // WI-628: a TRUNCATED search UNDERCOUNTS — branches abandoned at the
         // depth limit could hold more solutions — so the true count lies in
@@ -3812,9 +3844,10 @@ impl KnowledgeBase {
         let known_violated = count > max;
         let known_holds = count >= min && max == usize::MAX;
         if truncated && !known_violated && !known_holds {
-            return Ok(GuardStatus::Undecidable(
-                "counting-quantifier constraint undecidable within depth budget",
-            ));
+            return Ok(GuardStatus::Undecidable(guard_undecided_reason(
+                "counting-quantifier",
+                &stats.errors,
+            )));
         }
         Ok(GuardStatus::from_holds(count >= min && count <= max))
     }
@@ -3868,7 +3901,8 @@ impl KnowledgeBase {
             definite_only: true,
             ..resolve::ResolveConfig::default()
         };
-        let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
+        let (solutions, stats) = self.resolve_goals_with_stats(goals, &config);
+        let truncated = stats.truncated;
         // WI-628: a DEFINITE witness (non-empty) violates the forall regardless of
         // truncation; an EMPTY result from a truncated search is UNDECIDED — the
         // violating `(P ∧ not Q)` witness may lie in a branch cut at the depth
@@ -3879,7 +3913,7 @@ impl KnowledgeBase {
         Ok(GuardStatus::from_emptiness(
             solutions.is_empty(),
             truncated,
-            "forall constraint undecidable within depth budget",
+            || guard_undecided_reason("forall", &stats.errors),
         ))
     }
 
@@ -3904,7 +3938,8 @@ impl KnowledgeBase {
                 definite_only: true,
                 ..resolve::ResolveConfig::default()
             };
-            let (solutions, truncated) = self.resolve_goals_with_truncation(goals, &config);
+            let (solutions, stats) = self.resolve_goals_with_stats(goals, &config);
+        let truncated = stats.truncated;
             // WI-628: negation holds iff the inner query has no DEFINITE solution;
             // but an empty result from a TRUNCATED search is UNDECIDED (the
             // refuting solution may sit past the depth cut), so it must NOT read as
@@ -3913,7 +3948,7 @@ impl KnowledgeBase {
             Ok(GuardStatus::from_emptiness(
                 solutions.is_empty(),
                 truncated,
-                "negation constraint undecidable within depth budget",
+                || guard_undecided_reason("negation", &stats.errors),
             ))
         } else {
             Ok(GuardStatus::Holds)

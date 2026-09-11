@@ -40,8 +40,8 @@ use crate::kb::resolve::ResolveConfig;
 use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::{
-    clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma,
-    substitute_ref_terms_term, FlowEnv,
+    clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma_verdict,
+    substitute_ref_terms_term, FlowEnv, GammaVerdict,
 };
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -588,8 +588,16 @@ fn discharge_contract_proof(
     // opaque constants the resolver compares definitely, instead of flex vars it
     // would delay on — the eigenvariable reading of a ∀-quantified contract).
     let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
+    let mut skolems: Vec<Symbol> = Vec::new();
     for (param_sym, _ty) in &rec.params {
         let sk_sym = kb.intern_unique("contract_skolem");
+        // COLLECTED, then handed to the proof's `FlowEnv` below. The resolver has to be
+        // told what these constants ARE: each is ground, so the structural compare
+        // decides goals about it happily, and every such verdict that reflexivity did
+        // not force is a closed-world reading of an EIGENVARIABLE — exactly what this
+        // proof's "holds for all inputs" claim forbids. Untold, `ensures eq(x, 1)`
+        // comes back REFUTED ("not derivable from the body") when nothing decided it.
+        skolems.push(sk_sym);
         let sk = kb.alloc(Term::Ref(sk_sym));
         sigma.insert(*param_sym, sk);
     }
@@ -618,6 +626,11 @@ fn discharge_contract_proof(
     // here, proving the contract from OUTSIDE, against `op.rigidify` there, assuming it
     // from INSIDE. A new rule about WHICH clauses are assumable belongs to both.
     let mut flow = FlowEnv::empty();
+    // The eigenvariables travel WITH Γ, on the same env and for the same span: both are
+    // this proof's, both are gone when it returns.
+    for sk in &skolems {
+        flow = flow.with_skolem(*sk);
+    }
     for c in &rec.requires {
         if !is_value_precondition_clause(kb, c) {
             continue;
@@ -659,13 +672,77 @@ fn discharge_contract_proof(
                     )
                 }
             };
-            if !prove_from_gamma(kb, &flow, &goal) {
-                return write_contract_failed(
-                    kb,
-                    rid,
-                    rule_qn,
-                    "an `ensures` conjunct is not derivable from the body",
-                );
+            // THREE FAILURES, THREE MESSAGES. This was one bool and one sentence —
+            // "not derivable from the body" — for all three, which told an author
+            // whose body is FINE that it is not: an `ensures` over a parameter maps to
+            // an opaque skolem, and a closed-world verdict about an eigenvariable is
+            // not a refutation. The cold path is the right place to pay for the
+            // distinction; a diagnostic is being written anyway.
+            match prove_from_gamma_verdict(kb, &flow, &goal) {
+                GammaVerdict::Proved => {}
+                GammaVerdict::Refuted => {
+                    return write_contract_failed(
+                        kb,
+                        rid,
+                        rule_qn,
+                        "an `ensures` conjunct is not derivable from the body",
+                    );
+                }
+                GammaVerdict::Undecided { universal: true } => {
+                    // SAYS WHAT IS KNOWN, AND NO MORE. An earlier draft added "the
+                    // body is not necessarily wrong", which this verdict does not
+                    // license: a body that genuinely fails its contract over that
+                    // parameter lands here too, because both readings produce the same
+                    // undecided goal. Both are named; neither is asserted.
+                    return write_contract_failed(
+                        kb,
+                        rid,
+                        rule_qn,
+                        "an `ensures` conjunct could not be DECIDED from the body: it \
+                         rests on a parameter, which this proof holds opaque so that \
+                         discharging it proves the contract for EVERY input. Nothing \
+                         derived the conjunct and nothing refuted it — for such a \
+                         parameter the absence of a fact is not its negation. Either \
+                         the body does not establish the conjunct, or it does so under \
+                         assumptions this proof cannot see: add a `requires` clause or \
+                         a guard that puts the needed fact in scope, or weaken the \
+                         `ensures` to what the parameter's assumptions entail",
+                    );
+                }
+                GammaVerdict::Faulted { message } => {
+                    // THE RESOLVER'S OWN WORDS. A fault names the operand pair and the
+                    // reason, which is strictly more useful than any shape-level
+                    // sentence this site could write — an `ensures gt(x, 0)` over a
+                    // parameter reports "`gt` has no order for this operand pair",
+                    // where the generic wording said "bind what it waits on", advice no
+                    // binding can satisfy because nothing was waiting.
+                    return write_contract_failed(
+                        kb,
+                        rid,
+                        rule_qn,
+                        &format!(
+                            "an `ensures` conjunct could not be EVALUATED: {message}. \
+                             The conjunct was neither derived nor refuted, because part \
+                             of it was never computed"
+                        ),
+                    );
+                }
+                GammaVerdict::Undecided { universal: false } => {
+                    // Undischarged for an ORDINARY reason — a flounder on an unbound
+                    // variable, or a search stopped at the depth cap. Not a refutation
+                    // either, so it must not borrow the "not derivable" wording: this
+                    // one really may become decidable with more budget or more
+                    // bindings, which is the repair to name.
+                    return write_contract_failed(
+                        kb,
+                        rid,
+                        rule_qn,
+                        "an `ensures` conjunct was left UNDISCHARGED: the search \
+                         neither derived nor refuted it, having delayed on a variable \
+                         nothing bound or stopped at the depth limit. Bind what it \
+                         waits on, or simplify the conjunct",
+                    );
+                }
             }
         }
     }

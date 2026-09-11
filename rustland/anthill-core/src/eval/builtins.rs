@@ -1562,11 +1562,23 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                 // than guessing a structural answer. WI-628: THREAD `truncated` onto
                 // the Suspend so a genuine depth-truncation propagates through the
                 // bridge to the outer stream (a nested `List.member`-style inner eq).
-                crate::kb::resolve::PredicateProof::Undecided { truncated } => {
-                    let detail = format!(
-                        "semantic eq over `{}` could not be decided (proof truncated)",
-                        i.kb().local_name_of(target)
-                    );
+                crate::kb::resolve::PredicateProof::Undecided { truncated, fault } => {
+                    // THE SUB-SEARCH'S OWN WORDS WHERE IT HAS ANY. This face has an
+                    // error channel (`EvalError`), so a fault reaches the author here
+                    // rather than being folded into the generic "proof truncated"
+                    // wording — which names a depth limit that a no-order comparison
+                    // never came near.
+                    let detail = match &fault {
+                        Some(err) => format!(
+                            "semantic eq over `{}` could not be decided: {}",
+                            i.kb().local_name_of(target),
+                            err.message
+                        ),
+                        None => format!(
+                            "semantic eq over `{}` could not be decided (proof truncated)",
+                            i.kb().local_name_of(target)
+                        ),
+                    };
                     Err(if i.bridge_mode() {
                         EvalError::Suspended { detail, truncated }
                     } else {

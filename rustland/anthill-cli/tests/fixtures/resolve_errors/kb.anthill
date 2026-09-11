@@ -1,0 +1,13 @@
+namespace cli.mix
+  import anthill.prelude.{Int64, String, Bool, PartialOrd}
+  import anthill.kernel.{unify}
+
+  -- `tag` declares no types, so the typer cannot see the operand sorts and
+  -- `gt(?x, 1)` reaches the resolver as a String/Int64 pair. Written DIRECTLY
+  -- the typer refuses it — that is WI-879's own control.
+  fact tag("a")
+  rule answer(?r) :- tag(?x), PartialOrd.gt(?x, 1), unify(?r, 5)
+
+  fact num(7)
+  rule ok(?r) :- num(?x), PartialOrd.gt(?x, 1), unify(?r, 5)
+end
