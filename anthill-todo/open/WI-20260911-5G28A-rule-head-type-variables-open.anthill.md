@@ -105,3 +105,38 @@ WI-20260911-WT8WG items 6–8 (the resolver measurements), WI-743 (the gate and 
 clauses), WI-714 (the applied citation), WI-582 (the introducer), proposal 060 (its §"domain"
 clause already writes a shared head variable `List[T = ?T]`).
 
+## Changes
+
+### 2026-09-11T21:27:45Z — feedback — claude
+
+SCOPE ADDITION (claude, 2026-09-11, agreed with user): THE RECEIVER BRACKET ON A RULE CITATION,
+the rule half of RS2G4 that RS2G4's delivery note already assigns here and that this ticket's
+text does not yet contain. Every acceptance row above is driven by an ARGUMENT (`my_rule(x)`,
+`my_rule([1, 2], ?r)`) or a VALUE (`nest`, `anylist`); WT8WG's parameterised value face is
+driven by NEITHER — `List[T = Letter].domain.takeN(5)` is mode (out) with the type as its only
+INPUT, supplied by the bracket. MEASURED 2026-09-11 (tree 5856c5cc): inside `sort Wrap[T]`, a
+written `rule dom(?x: Wrap[T = T]) :- true` cited as `Wrap[T = Colour].dom.takeN(5)` and as bare
+`Wrap.dom.takeN(5)` both LOAD CLEAN — the bracket is validated (WI-839) and dropped, the bound
+is a type variable so WI-743's gate skips the member goal, and the citation can only flounder at
+the drain. A silent acceptance, and this ticket is where it is closed.
+
+THE DESIGN QUESTION IT CARRIES, to settle in the delivery note before code: a rule has no frame
+channel — its head is its only interface — so an enclosing sort's parameter must travel as a
+HIDDEN HEAD SLOT that a bracketed citation fills and an unbracketed one leaves free (opened
+fresh per firing like every de Bruijn variable). That is WI-743's "the type travels as an
+argument", one level up: the kernel's `domain_member(?x, List[T = ?T])` already IS that shape.
+`build_relation_value` (eval) and `relation_reference_type` (typer) are the two sites; RS2G4's
+`bind_or_refine_member_param` is the operation-side precedent for reading the bracket.
+
+ROWS ADDED TO ACCEPTANCE: (a) `List[T = Letter].domain.takeN(5)` answers 5 definite rows once
+WT8WG has derived the value face (until then, the written twin `Wrap[T = Colour].dom.takeN(5)`
+= 3); (b) bare `List.domain` / `Wrap.dom` stays REFUSED at load — it names no element type, and
+enumerating "lists of something" is the 20-row type enumeration WI-743 measured; (c) the
+refusal WT8WG installs for a parameterised sort's value face is LIFTED here, and the lifting
+row is the control: with this ticket backed out that row is a load error, not a wrong count.
+
+WT8WG delivers its non-parameterised half first (map-colouring, alphabet-words' Letter,
+tiny-sat, 34 of the 37 all-nullary corpus sorts) and refuses the parameterised citation
+loudly; nothing it derives is rework for this ticket — the derived clause for a parameterised
+sort is exactly what the hidden-slot answer here decides, so WT8WG derives none.
+

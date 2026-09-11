@@ -4,8 +4,8 @@
 - created: 2026-09-11T10:03:05Z
 
 - status: Open
-- status_agent: user
-- status_at: 2026-09-11T10:03:05Z
+- status_agent: claude
+- status_at: 2026-09-11T21:34:01Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -230,4 +230,229 @@ is not the 2-ary member relation — "a field named `domain`, an OPERATION" — 
 That sentence was written to exclude a USER's unrelated operation; a DERIVED `<Sort>.domain()`
 operation is the value face of the very relation it describes, so the sentence needs rewording rather
 than the design changing. Flagged, not decided.
+
+### 2026-09-11T21:18:38Z — feedback — claude
+
+IMPLEMENTATION PLAN (claude, 2026-09-11, session with user). Supersedes the two entries above
+where they differ; every "today" figure below was driven on the current tree (5856c5cc) with the
+built CLI, and nothing was built. The user's rule that governs the whole plan: THE AUTHOR WRITES
+NO DOMAIN EXPRESSION, EVER. The author writes a sort; the loader derives its domain; a typed head
+reads it (goal face, WI-743); and a citation reads it (value face, this ticket). Both faces are
+generated. The operation-plus-host-builtin direction of the two entries above is DECLINED: it is
+not what proposal 060 specifies (a MEMBER RELATION named `domain`), it is not what 052 cites (a
+rule reference IS a `Relation`), and it needed the author to meet a builtin.
+
+0. THE SHAPE, IN ONE EQUATION (the user's, 2026-09-11):
+
+    Colour.domain(?x)  ==  anthill.kernel.domain_member(?x, Colour)
+
+  The kernel relation is 2-ary and type-indexed: one clause per sort, the type as the second
+  argument (WI-743). A sort's `domain` is the 1-ary PROJECTION of it at that sort, and it is a
+  MEMBER RELATION of the sort, so 052 cites it by name and the whole Stream API follows:
+
+    sort Colour { entity red  entity green  entity blue }     -- the author writes THIS
+    Colour.domain            -- Relation[T = (x: Colour), E = {Error}]   (derived, not written)
+    Colour.domain.takeN(5)   -- 3 rows, every one definite
+
+  The loader derives, in the sort's own scope and at the same drain that emits the kernel
+  clause, exactly the clause a typed head would have been: `domain(?x) :- true` with the bound
+  `x: Colour` installed. From there NOTHING IS NEW: the typer sweep already prepends the
+  conformance goal and appends the member goal to every bound clause
+  (`install_typed_head_domain_goals`), and the 052 arm already resolves `Sort.rule` on a sort
+  symbol to a relation value (`check_bare_ref` -> `relation_reference_type`, eval
+  `build_relation_value`). MEASURED on the delivered tree with a WRITTEN twin named `dom`
+  (entry of 11:12 above, item 1): `Colour.dom.takeN(5)` = 3, `Colour.dom.head.x` types as
+  `Colour`. The plan makes the loader write that twin, under the name 060 gives it.
+
+1. WHAT PROPOSAL 060 §2.2 ALREADY SPECIFIES, AND THIS PLAN KEEPS UNCHANGED:
+  * derived for any sort with constructors, one clause, type as the second argument;
+    finiteness decides only whether the stream ends; base constructors first, recursive
+    positions first — all delivered by WI-743 and untouched here;
+  * conformance goal prepended, member goal appended (untouched);
+  * domain-defining, not a generator hint: both modes read a sort's domain (kept — the value
+    face reads the SAME clauses through the same appended goal, so the three readers — mode
+    in, mode out, citation — cannot disagree);
+  * a sort with no constructors keeps §2's ladder (kept; see 3.4);
+  * abstract T does not enumerate (untouched; NAR1X);
+  * `Bool` (5TK6B) and two-recursive-position fairness (09E6M) stay where they are.
+
+2. CHANGES TO PROPOSAL 060 — TO DECIDE WITH THE USER BEFORE BUILDING. Each is a text change
+   plus the code that makes the text true; my recommendation is stated with each.
+
+  (A) THE GENERATED GOALS HAVE NO SURFACE SPELLING, AND THE KERNEL DECLARES THEM IN SOURCE.
+      §2.2 says "`domain(?x, T)` dispatches to a member relation T defines, named `domain`",
+      and its delivery note records "one notion, two functors" (`anthill.kernel.domain` the
+      conformance builtin, `anthill.kernel.domain_member` the relation). MEASURED TODAY, and
+      this is the inconsistency to close: after `import anthill.kernel.*`, `domain`,
+      `domain_leaf`, `find_dictionary` and `push_and` all RESOLVE from a user rule body, while
+      `domain_member` "names nothing" — not by policy but by WHEN it is minted
+      (`domain_member_symbol`, defined at the end of the load batch in
+      `derive_domain_member_clauses`, after every body in the batch has resolved; the CLI
+      loads stdlib and user files as ONE batch). And a hand-written `domain(?x, Colour)`
+      goal is worse than reachable: in mode (out) it answers a conditional residual (the
+      builtin cannot generate), and in mode (in) — `r(red)` — it trips
+      `debug_assert!(false, "the bound operand is not a type term")` at resolve.rs:6064,
+      an ABORT in a debug build and a resolver Error in release. So the writable name is the
+      half that cannot generate, and it crashes.
+      RECOMMENDED TEXT: "`domain_member` and the conformance goal are the compiled form of a
+      typed head. Neither has a surface spelling: a source goal on either functor is a load
+      error. The only surfaces are the annotation `?x: T` (input) and `<Sort>.domain`
+      (output)." RECOMMENDED CODE: (i) declare `rule domain_member(?x, ?t)` body-less in
+      `stdlib/anthill/kernel/kernel.anthill` — 061's declaration form, so the predicate exists
+      from the stdlib's pass 1 and the derivation CONTRIBUTES CLAUSES to a declared predicate
+      instead of minting a name at the drain (the user's question "why late minting"; the
+      answer WI-743 gave — "a surface declaration would let code capture the name" — was not
+      applied to `domain` or `domain_leaf`, so it protected nothing); delete
+      `domain_member_symbol`. (ii) Refuse, at the rule-body goal resolution site
+      (`undefined_rule_body_goal_message`'s neighbour in load.rs), a SOURCE goal whose functor
+      is one of the three generated-only kernel functors, with a message naming the typed
+      head as the spelling. A three-entry set on the KB, populated at bootstrap; the typer's
+      generated nodes never pass through that site. (iii) The resolve.rs:6064 assert becomes
+      unreachable from source and stays an internal invariant. ALTERNATIVE, if you prefer the
+      goals writable: leave (ii) out and make 6064 a plain Error — but then 060 must say the
+      goals ARE writable, and the mode-(out) residual of a written `domain(?x, T)` becomes a
+      documented trap. I recommend the refusal.
+
+  (B) THE HAND-WRITTEN OVERRIDE TAKES THE VALUE FACE'S SHAPE: 1-ARY, `domain(?x)` IN THE SORT
+      BODY. §2.2 today: "a relation `domain(?x, T)` in the sort's body". With a derived 1-ary
+      `<Sort>.domain`, a sort that also writes the 2-ary form would hold two arities under one
+      name — 052's citation builds its query from the FIRST clause's head shape and would
+      answer through whichever loaded first, and one-arity-per-predicate (WI-6WVJB) would
+      later refuse it. RECOMMENDED TEXT: "Any sort may write its own domain as a 1-ary
+      relation `domain(?x)` in its body; it then IS the sort's domain — the value face is that
+      relation, and the kernel's `domain_member(?x, S)` forwards to it." A 2-ary `domain` in a
+      sort body becomes a LOUD load error naming the 1-ary spelling (it was WI-743's own
+      spelling for one day; three test fixtures write it, no corpus file does). The
+      parameterised hand-written domain stays refused (unchanged). Cost: the loader hook's
+      arity filter (`pos_arity: 2` -> 1), the forwarding clause (`domain_member(?x, S) :-
+      S.domain(?x)`), the "second argument is neither" refusal retired, and one sweep rule (3.3).
+
+  (C) PARAMETERISED SORTS: THE VALUE FACE IS REFUSED UNTIL WI-5G28A, LOUDLY, AT LOAD.
+      `List[T = Letter].domain` needs the citation's type argument to reach the clause. A rule
+      citation's query is built from the clause head alone (`build_relation_value`), and
+      RS2G4 delivered the receiver-bracket binding for OPERATION members only; the rule half is
+      5G28A. MEASURED TODAY: a written `rule dom(?x: Wrap[T = T]) :- true` inside
+      `sort Wrap[T]` cited as `Wrap[T = Colour].dom.takeN(5)` AND as bare `Wrap.dom.takeN(5)`
+      both LOAD CLEAN — the bracket is validated and dropped, the bound is a type variable so
+      the sweep skips the member goal, and the citation can only flounder at the drain. That
+      is a silent typing acceptance. RECOMMENDED: derive NO value face for a parameterised
+      sort, and make the citation a load error that names 5G28A; add to 5G28A's acceptance
+      "lifting this refusal: `List[T = Letter].domain.takeN(5)` answers 5, bare `List.domain`
+      stays refused (names no element type)". The goal face for parameterised sorts is
+      unchanged (WI-743's `List[T = Letter]` rows keep their counts). ALTERNATIVE: make this
+      ticket depend on 5G28A and deliver both halves at once. I recommend delivering the
+      non-parameterised half now: it is the whole of map-colouring, alphabet-words' `Letter`,
+      tiny-sat, and 34 of the 37 all-nullary corpus sorts.
+
+  (D) kernel-language.md §5.3's sentence "A `domain` in a sort's scope that is not a relation
+      of that shape — a field named `domain`, an operation — is not the sort's domain" stays
+      TRUE and is re-anchored on the 1-ary shape. Its field case is live: `guardians.Address`,
+      `github-todo.FactRef` and `FactHolds` each carry a FIELD named `domain` (census: those
+      three). For them the loader derives NO value face (the name is taken), records the
+      reason (the `domain_member_decline_reason` idiom), and the goal face is unaffected. A
+      later author who wants both renames the field. Recommended: state it in §5.3 as the one
+      case where a sort has a domain and no `.domain`.
+
+3. THE MECHANISM — four edits, each at a site that exists.
+
+  3.1 LOADER, the value face (`derive_domain_member_clauses`, pass 2, beside the kernel
+      clause). For each job that got a kernel clause (structural or forwarded), when
+      `job.params.is_empty()` and `<sort_qn>.domain` is not already bound in the sort's scope
+      and no hand-written domain exists: define the Goal symbol `domain` SCOPED TO THE SORT
+      (copy `emit_induction_rule`'s idiom, including its comment on why the scope is the sort
+      and not `<global>` — the short name registered once in `<global>` makes every later
+      sort's member unreachable), assert `domain(?x) :- true` (empty body) with
+      `assert_rule_debruijn_with_nodes` into `job.domain`, then
+      `install_rule_type_bounds(rid, &[(x, self_type)])` — the same installer the typed-head
+      path uses at load.rs:31164 — and `set_rule_head_span(rid, <the sort's declaration
+      span>)`. THE SPAN IS LOAD-BEARING: the sweep anchors a body-less clause's generated goals
+      on `rule_head_span` and hits `debug_assert!(false, "a type bound on a body-less clause
+      with no source head span")` without one — so `DomainMemberJob` gains the sort's span,
+      collected in `exit_sort_with_body` where the parsed sort is in hand. The re-load guard is
+      the existing `has_domain_member` skip: one place, both clauses.
+  3.2 LOADER, the override hook (decision B): arity 1; forward as `domain_member(?x, S) :-
+      S.domain(?x)`; install the bound `x: S` on every clause of a hand-written `S.domain`
+      (so its citation is typed like the derived one); record S in a KB set
+      `sort_domain_is_written` — read by 3.3; refuse a 2-ary `domain` in a sort body with the
+      migration message; keep the parameterised refusal.
+  3.3 TYPER, one rule at the sweep's existing "THE SELF-CALL TRAP has no arm here" site in
+      `install_typed_head_domain_goals`: a clause of `S.domain` where S is in
+      `sort_domain_is_written` gets the conformance goal and NOT the member goal — a written
+      domain is never generated FROM, which is the loop the loader refuses today one level up.
+      The derived `domain(?x: S) :- true` is NOT in that set and keeps its member goal, which
+      is its whole body. Nothing here keys on a name the typer reads; the loader's shape
+      decision is what the set records.
+  3.4 KERNEL SOURCE + REACHABILITY (decision A): `rule domain_member(?x, ?t)` declared in
+      `kernel.anthill`; `domain_member_symbol` deleted; the three-functor refusal at the
+      rule-body goal site; the parameterised-citation refusal of (C) at the 052 arm
+      (`relation_reference_type`, where the cited Goal is a sort member whose sort has
+      parameters — the receiver bracket is already parsed there, RS2G4). Constructor-less
+      sorts (`String`, primitives, specs) derive no `.domain` and the citation is the ordinary
+      unknown-member error, which is LOUD AT LOAD where a derived-but-floundering member would
+      be loud only at the drain.
+
+4. ROWS — `tests/include/wi_wt8wg_domain_value_face_test.rs`, header naming which rows fail
+   per back-out (RUN each back-out, not predicted — WI-743's header guessed three of six).
+   Axes: [a] the value-face derivation (3.1); [b] the bound + span on the derived clause;
+   [c] the 1-ary hook and forwarding (3.2); [d] the sweep exclusion (3.3); [e] the kernel
+   declaration and the three-functor refusal (3.4); [f] the parameterised refusal; [g] the
+   name-collision decline.
+   (1) `Colour.domain.takeN(5)` = 3 definite rows AND a return-type row: `Colour.domain.head.x`
+       accepted at `Colour`, refused at `Int64` — fails [a] (no member) and [b] (untyped
+       column, or a debug abort at the anchor); (2) one-constructor sort = 1; (3) a recursive
+       non-parameterised sort `Nat { z, s(p: Nat) }`: `Nat.domain.takeN(4)` = 4, and the rows
+       are `z`, `s(z)`, `s(s(z))`, `s(s(s(z)))` IN THAT ORDER (asserts the value face inherits
+       WI-743's fairness; a count alone passes with the order reversed); (4) hand-written
+       1-ary `domain` with 2 rows on a 3-constructor sort: `S.domain.takeN(5)` = 2, the typed
+       head `rule pick(?x: S) :- true` = 2, and mode (in) REFUTES the third constructor —
+       fails [c]; a typed hand-written clause `domain(?x: S)` loads and answers the same 2
+       (does not loop) — fails [d] by non-termination, so the row runs under a solution cap;
+       (5) 052 algebra over the derived face: `Colour.domain.where(lambda c -> eq(c.x, red()))`
+       = 1 — shows a real `Relation`, not a special case; (6) explicit vs derived agree:
+       the 060 §2.2 colouring rule's 6 rows equal a join over six `Colour.domain` citations
+       filtered by the nine inequalities — or, cheaper, `wi743_finite_domain_test` keeps every
+       count (the goal face is untouched; state it in the header as passing either way BY
+       DESIGN); (7) a source goal `domain(?x, Colour)` / `domain_member(?x, Colour)` after
+       `import anthill.kernel.*` is a LOAD ERROR naming the typed head — fails [e]; this row
+       is the control for the resolve.rs:6064 abort, which is unreachable once it passes;
+       (8) `List[T = Letter].domain` and bare `List.domain` are load errors naming 5G28A —
+       fails [f] (loads clean today, measured); (9) a sort with a field named `domain`:
+       no member derived, decline reason readable, the field still resolves as a field,
+       goal face over that sort still enumerates — fails [g] by a merged-kind symbol (the
+       WI-926 `define` merge); (10) `String.domain` is a load error (unknown member);
+       (11) re-loading the same file into a KB does not duplicate `Colour.domain`'s clauses
+       (`Colour.domain.takeN(9)` still 3). Plus the three wi743 hand-written fixtures
+       rewritten to the 1-ary spelling, and `map-colouring`'s `main` gaining one line that
+       cites `Colour.domain` (README sentence: the sort is the domain, and the domain is a
+       value).
+   Acceptance: full workspace suite green via `rustland/scripts/test.sh`; `/code-review` run
+   on a restored tree; scaland: no `Relation` surface exists there (grep: nothing), so
+   `sbt test` must simply stay green — nothing to port.
+
+5. DOCS. Proposal 060 §2.2: the value-face bullet (the equation in §0, "derived, never
+   written"), decisions A–D as adopted, the delivery note's "two functors" reworded as
+   internal; §5.3 of kernel-language.md: the `<Sort>.domain` member beside `induction` under
+   the sort's derived members, the reworded "not the sort's domain" sentence, the no-surface-
+   spelling rule; `docs/design/060-implementation.md` §0 row and §7 ("The VALUE face" moves
+   from NOT delivered to delivered, with the parameterised residue named 5G28A); proposal 052
+   §Naming one sentence (a derived member relation is cited like any rule; OQ2's bare
+   `Sort.rule` arm is what serves it) and OQ4 (a declaration/derived relation does not join
+   the dispatch surface — confirmed by this: it is a rule); this ticket's acceptance line
+   "a full drain of an infinite domain raises `Error[RelationFloundered]`" is CORRECTED: an
+   infinite derived domain is a lazy stream and a `Relation` has no full drain (no `collect`,
+   052); floundering belongs to a constructor-less sort, which under this plan has no
+   `.domain` to drain.
+
+6. NOT IN SCOPE, each with its owner: the parameterised value face (5G28A, decision C);
+   `Bool.domain` (5TK6B); fairness for two recursive positions (09E6M); abstract T (NAR1X);
+   the general "receiver bracket on a rule citation" binding (5G28A) — this plan only
+   REFUSES it where it would otherwise be silent.
+
+7. MEASUREMENTS THIS PLAN RESTS ON, all today, all reverted: the five-name resolution table
+   in (A); the mode-(out) residual and the mode-(in) abort of a written `domain(?x, Colour)`;
+   `anthill.kernel.domain_member` unreachable bare, qualified, by named import, by wildcard
+   import and as a rule-body goal; `Wrap[T = Colour].dom` and `Wrap.dom` loading clean; the
+   field-named-`domain` census (3 sorts); `Colour.dom.takeN(5)` = 3 typed `Colour` (entry of
+   11:12, item 1, on 1eb89144); `rule_ids_by_qn` / `cites_a_relation` serving a derived
+   sort-scoped Goal exactly as they serve `<Sort>.induction`.
 
