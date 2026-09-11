@@ -266,3 +266,52 @@ and `m5_modify_handler_taken_is_none` — which PINNED the `Internal` classifica
 review asked to change, and were rewritten onto `UnhandledEffect` after that run started;
 `eval_tests` re-run alone afterwards is 119 / 119. So 6864 / 0.
 
+### 2026-09-11T21:42:40Z — feedback — claude
+
+CORRECTION TO THE ARITH ITEM, AND THE TICKET STATES A PREMISE THAT DOES NOT HOLD. This
+ticket says of `builtin_arith`'s zero-divisor arm: "while the same division through an
+operation body would become a loud fault. One condition, two opposite readings decided by
+which door it came through." The delivery entry above repeated that as fact. MEASURED, it
+is not reachable.
+
+An operation whose body can divide by zero MUST name the effect — the typer refuses it
+otherwise ("expected declared: [], got undeclared effect: Error[T = DivisionByZero]") —
+and a CONCRETE `Error` member in the row makes `effect_row_admits_relational_view` refuse
+the WI-938 relational view, so the goal never reaches `bridge_op_to_eval` at all.
+
+MEASURED WITH ITS CONTROL, which is what makes the claim rather than the first row alone:
+  operation divByParam(a: Int64, b: Int64) -> Int64
+    effects {Error[T = DivisionByZero]} = a / b
+  divByParam(1, 0, ?r)  ->  no solutions     (the raising call)
+  divByParam(6, 2, ?r)  ->  no solutions     (CONTROL — this would answer 3)
+The control is the point: the raise has nothing to do with it, the relational view is
+simply not granted. So the eval door is unreachable from a rule body for this condition
+and there is no divergence to close. The divergence is real in KIND; its witness is a
+raise on a row the operation does NOT have to declare — the HOST channel's `match_failed`,
+which is exactly what this ticket fixed.
+
+WHAT `div` ACTUALLY IS, since "one condition, two doors" reads as though a rule defined it
+and none does:
+ * a BODY-LESS declaration, `stdlib/anthill/prelude/int64.anthill:89`, with the guarded row
+   `effects { Error[DivisionByZero] :- eq(b, 0) }`, plus the spec op `Divisible.div` the
+   `/` operator resolves to;
+ * at GOAL position a resolver BUILTIN — `BuiltinTag::Div` registered on `Divisible.div`
+   (`kb/mod.rs`) and DERIVED onto each carrier's member (`Int64.div`, `BigInt.div`,
+   `Float.div`) through its `operation_map` entry (WI-879). A builtin decides its goal
+   before any clause is consulted. Confirmed: `div(6, 2, ?r)` answers `?r = 3`, and
+   `not(div(6, 2, 99))` SUCCEEDS — which only a builtin `Failure` produces, since a
+   declared operation with no definition answers `Undefined` (WI-1092) and stays undecided;
+ * at VALUE position eval's host op, which raises.
+The only rules beside it are a law and constraints, not definitions:
+`rule divExact(?a, ?b) <=> div(?a, ?b)` and
+`constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`.
+
+DECIDED BY THE USER: LEAVE `div` AS IS. The standing reason is no longer "the doors are
+inconsistent but the fix is worse" — it is that the two doors ask two different questions
+and the resolver's answer is TRUE. Eval asks what the VALUE is and there is none, so it
+must raise; a goal asks whether a TUPLE IS IN A RELATION, and `(1, 0, q)` is in `div` for
+no `q`. The stdlib already says so in the language itself, at the declaration:
+`constraint div_nonzero_primary`. `builtin_cmp`'s no-order arm is NOT the same shape — there
+the resolver has no order to answer with at all, which is why that one had to become a
+fault. The argument is recorded at `builtin_arith`'s doc, corrected to match this.
+

@@ -8660,24 +8660,38 @@ impl KnowledgeBase {
     /// a partial operation's guard firing (WI-863). Total operations (add/sub/mul)
     /// always return `Some`.
     ///
-    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `None` A FAULT AND DID NOT**, and the
-    /// reason is worth having here because the inconsistency is real and the repair is
-    /// not the obvious one. Through the OTHER door the same division raises:
-    /// `Int64.div` declares `Error[DivisionByZero] :- eq(b, 0)`, and since 0V0F7 a
-    /// raise escaping [`Self::bridge_op_to_eval`] is a loud fault — so one condition
-    /// has two opposite readings decided by which door it came through.
+    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `None` A FAULT AND DID NOT.** That
+    /// ticket named an inconsistency — through the OTHER door the same division raises,
+    /// since `Int64.div` declares `Error[DivisionByZero] :- eq(b, 0)` and a raise
+    /// escaping [`Self::bridge_op_to_eval`] is now a loud fault — and the obvious repair
+    /// was to make this arm loud to match.
     ///
-    /// THE TWO DOORS ASK TWO DIFFERENT QUESTIONS, which is why the divergence stands.
+    /// **THE OTHER DOOR IS NOT REACHABLE FROM A RULE BODY, MEASURED, AND THAT IS WHY
+    /// THERE IS NOTHING TO MATCH.** An operation whose body can divide by zero MUST name
+    /// the effect — the typer refuses it otherwise ("expected declared: [], got
+    /// undeclared effect: Error[T = DivisionByZero]") — and a CONCRETE `Error` member in
+    /// the row makes `effect_row_admits_relational_view` refuse the WI-938 relational
+    /// view, so such a goal never reaches the bridge at all. Measured WITH ITS CONTROL:
+    /// `operation divByParam(a, b) -> Int64 effects {Error[T = DivisionByZero]} = a / b`
+    /// answers `no solutions` for `divByParam(1, 0, ?r)` AND for `divByParam(6, 2, ?r)`,
+    /// which would be 3 — the raise has nothing to do with it. So the divergence is real
+    /// in KIND and has no witness at division: what that ticket actually fixed is a raise
+    /// on a row the operation does not have to declare (the HOST channel's
+    /// `match_failed`).
+    ///
+    /// WHAT STANDS ON ITS OWN MERITS is that the two doors ask two different questions.
     /// Eval asks what the VALUE is and there is none, so it must raise. A goal asks
     /// whether a TUPLE IS IN A RELATION, and `div(1, 0, ?q)` is in it for no `?q` —
     /// which the resolver KNOWS, unlike [`Self::builtin_cmp`]'s no-order arm, where it
-    /// genuinely has no order to answer with. Making this a fault would trade a true
-    /// answer for "undecided": `not(div(1, 0, ?q))` would stop succeeding, and the
-    /// enclosing search would be marked incomplete over a condition the resolver
-    /// decided. Measured, by building it: `wi863_operator_arithmetic_test`'s
-    /// `division_by_zero_is_no_solution_not_a_refusal` and
-    /// `min_over_negative_one_yields_no_solution_not_a_crash` both go red, each with
-    /// `1 solution(s), 1 conditional` where the pin says `no solutions`.
+    /// genuinely has no order to answer with. `int64.anthill` says so in the language
+    /// itself: `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`. Making this
+    /// a fault would trade a true answer for "undecided": `not(div(1, 0, 5))` would stop
+    /// succeeding, and the enclosing search would be marked incomplete over a condition
+    /// the resolver decided. Measured by building it:
+    /// `wi863_operator_arithmetic_test`'s `division_by_zero_is_no_solution_not_a_refusal`
+    /// and `min_over_negative_one_yields_no_solution_not_a_crash` both go red, each with
+    /// `1 solution(s), 1 conditional` where the pin says `no solutions`. USER DECISION,
+    /// taken: leave it.
     fn builtin_arith<V: TermView>(
         &mut self,
         goal: &V,
