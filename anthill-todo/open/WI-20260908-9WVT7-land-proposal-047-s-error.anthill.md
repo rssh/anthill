@@ -566,3 +566,60 @@ enclosing operation's declared parameters are rewritten, so nothing else can mat
 Driven by `a_reify_at_an_operations_own_type_parameter_catches` (with `viaGenericOk` as
 the control that passes either way) and, for the general defect,
 `a_type_argument_passed_through_a_generic_caller_is_ground` in the WI-708 file.
+### 2026-09-11T13:16:42Z — feedback — claude
+
+WHERE THIS TICKET STANDS AT THE END OF THE SESSION. Its five-step build path is DELIVERED and
+the layer runs end to end; what kept it open was follow-on work appended here. Three of the
+four items recorded above are now resolved, and the way each resolved is worth stating because
+two of them were recorded WRONG and only measurement found that out.
+
+DONE INLINE: `T1` is resolved once at `ErrorLayer::resolve`, so renaming the payload parameter
+in `effects.anthill` makes the layer `None` and `Error.reify` fails loudly as the body-less
+declaration it is, instead of silently reverting every boundary in the program to catching
+wide. The existing 21 rows are the drive — a `None` there fails all of them with
+`OperationBodyMissing`.
+
+FILED, NOT INLINE, after tracing showed the inline plan was wrong: WI-20260911-VNQTR. An
+inline `?t` does not ride the type-argument channel in EITHER direction —
+`set_resolved_type_args` is gated on the callee's declared brackets, and `op_own_params =
+rec.type_params ++ inline_type_params` is a LOCAL in `check_operation_bodies` that never
+reaches `OperationInfo`. So extending `op_own_param_ref_rewrite` to it would mint a
+`Ref(?t)` nothing binds — a term that reads as a nominal sort where the skolem was visibly
+wrong, which is the same "confidently wrong beats visibly wrong" hazard /code-review drove
+against the first shape of the channel join. That is a feature, not a patch.
+
+FILED: WI-20260911-3MV2C, the payload's type ARGUMENTS. Pre-existing and untouched by the
+narrowing.
+
+FILED AFTER BEING BUILT AND REVERTED: WI-20260911-0V0F7, the bridged raise. The producer took
+an afternoon; the revert is the finding. Four consumers — `read_facts_resolved`,
+`prove_from_gamma_verdict`, reflect's `split_first`, and the truncation path into the
+load-blocking guards — were each written when faults were rare and specific, and a bridged
+raise changes what every one of them does. Two of those changes can stop a working program.
+NONE of it was visible to a green suite at 6851 passed / 0 failed.
+
+THE METHODOLOGICAL FINDING, since it cost the most and will recur. The repro for that item was
+wrong THREE times, and each wrong version presented identically as `no solutions`:
+ 1. "a DECLINED reify raise in a rule body" — refuted. `rule viaDeclinedClean(?r) :-
+    declinedClean(?r)` answers `err(error: other(n: 7))` correctly. The first probe had hit a
+    rule body calling an operation whose ROW IS NON-EMPTY, which residualizes for its own
+    unrelated reason — and its CONTROL failed identically, which is the only reason it was
+    caught.
+ 2. `guardExhaustible(0 - 5, ?r)` — the operand reaches the bridge UN-REDUCED, so the guard
+    compares a `Node` against an `Int64` and the bridge answers `TypeMismatch { expected: "Ord
+    scalars of matching type", got: "Node and Int64" }`. A different defect entirely.
+ 3. `guardExhaustible(0, ?r)` — a literal argument, which actually raises.
+Only a probe inside `bridge_op_to_eval`'s `Err` arm separated them. Had it not been written,
+version 2 would have shipped as the recorded measurement with a test passing green over a
+defect that was never fixed.
+
+TWO /code-review PASSES ON THE CHANNEL-CLOSURE COMMIT, and both found regressions the suite
+could not: a hard refusal that made a generic `reify` in a rule body answer `no solutions`
+silently; a short-name skolem join that captured an unrelated anonymous `?` slot; and catching
+an unreadable payload at a NARROWED boundary, which let a nested inner boundary steal a label
+the row had assigned to the outer. All three are fixed and pinned. Two header tallies that had
+drifted were replaced by the named sets a back-out actually produces, re-measured.
+
+WHAT REMAINS ON THIS TICKET: nothing of its own. The three open questions live on 3MV2C,
+VNQTR and 0V0F7, each with its measured repro and the reason it is not inline work.
+
