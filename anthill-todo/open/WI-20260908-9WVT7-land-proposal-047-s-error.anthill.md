@@ -483,10 +483,16 @@ ALSO OPEN, EACH RECORDED AT ITS SITE:
  * A RAISE THAT ESCAPES A BRIDGED OPERATION IS REPORTED AS "NO SOLUTIONS".
    `bridge_op_to_eval` turns every `EvalError` into `None`, so the goal residualizes with
    nothing said. MEASURED, with two controls, on an operation whose row is EMPTY:
-   `rule viaHost(?r) :- guardExhaustible(0 - 5, ?r)` — a guard-exhaustible match, so the
-   HOST `Error[MatchFailed]` channel is the door — answers `no solutions`, while
-   `guardExhaustible(5, ?r)` answers `?r = 5` and an ordinary `fine(1, ?r)` answers
-   `?r = 2`.
+   `rule answer(?r) :- guardExhaustible(0, ?r)` — a guard-exhaustible match, so the HOST
+   `Error[MatchFailed]` channel is the door — answered `no solutions`, while
+   `guardExhaustible(5, ?r)` answers `?r = 5`.
+
+   THE ARGUMENT MUST BE A LITERAL, and the first two fixtures written for this were wrong
+   because it was not. Spelled `guardExhaustible(0 - 5, ?r)` the operand reaches the bridge
+   UN-REDUCED, so the guard compares a `Node` against an `Int64` and the bridge answers
+   `TypeMismatch { expected: "Ord scalars of matching type", got: "Node and Int64" }` — a
+   DIFFERENT defect that presents as the same silent `no solutions`. Only a probe inside the
+   bridge's `Err` arm told them apart.
 
    AN EARLIER DRAFT OF THIS ITEM SAID "a DECLINED reify raise", AND THAT IS REFUTED.
    `rule viaDeclinedClean(?r) :- declinedClean(?r)`, where an inner boundary declines an
@@ -497,8 +503,11 @@ ALSO OPEN, EACH RECORDED AT ITS SITE:
    So this is PRE-EXISTING and not a consequence of the narrowing: it predates 027.4 and
    is reached through the host channel, not through `reify`.
 
-   Now actionable: `BuiltinResult::Error(ResolveError)` landed in 227f83b9 and its own doc
-   draws exactly this line — "`Failure` claims the answer is no, `Unknown` that there is no
+   FILED as WI-20260911-0V0F7 after an attempt was built and REVERTED. `BuiltinResult::Error`
+   is the right home, but the producer is the easy half: four consumers (`read_facts_resolved`,
+   `prove_from_gamma_verdict`, reflect's `split_first`, and the load-blocking guard path) were
+   each written when faults were rare, and a bridged raise changes what every one of them does.
+   The channel's own doc draws exactly this line — "`Failure` claims the answer is no, `Unknown` that there is no
    answer, `Delay` that the answer is not available yet. This claims nothing about the goal
    at all — it says the resolver could not ask it."
 
