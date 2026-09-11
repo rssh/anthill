@@ -1,5 +1,4 @@
 use crate::intern::Symbol;
-use crate::kb::term::TermId;
 use crate::span::SourceSpan;
 
 use super::Value;
@@ -67,9 +66,24 @@ pub enum EvalError {
         cap: u64,
         chain: Vec<String>,
     },
+    /// An effect operation was dispatched with NO HANDLER registered for its effect
+    /// sort. NOT an evaluator-invariant bug: the SLD→eval bridge's scratch interpreter
+    /// has an EMPTY effect registry BY CONSTRUCTION (resolution must not perform
+    /// effects), so this is the ordinary outcome there and the bridge residualizes.
+    ///
+    /// WI-20260911-0V0F7 GAVE IT ITS PRODUCER. `invoke_effect_handler` raised
+    /// `Internal("no handler registered for effect …")` instead, which is wrong twice:
+    /// `bridge_op_to_eval` `debug_assert`s on `Internal`, so a program that merely
+    /// instantiated a parametric effect row with a real effect — the case
+    /// `docs/kernel-language.md` admits into the `Bool` relational view BECAUSE the
+    /// bridge residualizes it — ABORTED a debug build; and in release it was classified
+    /// as a fault rather than as the capability gap it is.
     UnhandledEffect {
+        /// The effect sort whose handler is absent.
         effect: Symbol,
-        payload: Option<TermId>,
+        /// Its qualified name, captured at the raise site: `Display` has no
+        /// `KnowledgeBase` to resolve `effect` with, and the name IS the diagnostic.
+        name: String,
     },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
     /// Produced at the effect-dispatch site from a handler's
@@ -231,6 +245,158 @@ pub enum EvalError {
     Internal(String),
 }
 
+/// WI-20260911-0V0F7 — which of three things an [`EvalError`] escaping the SLD→eval
+/// bridge ([`crate::kb::KnowledgeBase::bridge_op_to_eval`]) IS.
+///
+/// THE BRIDGE USED TO ANSWER ONE THING FOR ALL OF THEM: `None`, i.e. residualize and
+/// say nothing. That is right for exactly one of the three — and for the other two it
+/// reports a goal whose callee RAN AND RAISED as a relation with nothing in it, which
+/// is a definite claim the resolver has no grounds for. MEASURED on an operation whose
+/// effect row is EMPTY so nothing else warns: `rule answer(?r) :- guardExhaustible(0,
+/// ?r)` over `operation guardExhaustible(n: Int64) -> Int64 = match n case k | k > 0 ->
+/// k` answered `no solutions` with `stats.errors` empty, beside `guardExhaustible(5,
+/// ?r)` answering `?r = 5`.
+///
+/// AN EXHAUSTIVE MATCH IS THE POINT, not a convenience. A new [`EvalError`] variant
+/// must PICK A SIDE here or the crate does not compile — where the `Err(e) => None`
+/// it replaces absorbed every future variant into silence by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeDisposition {
+    /// The answer is not available YET, and the search that asked is COMPLETE without
+    /// it: delay the goal and claim nothing.
+    ///
+    /// The bridge's pre-existing reading, kept for the population it was written for —
+    /// a bridge-mode suspend (an undecided semantic compare), a capability the scratch
+    /// interpreter does not have (`anthill.reflect.*` lives in a downstream crate, so a
+    /// body reaching one is `OperationBodyMissing` here and runnable elsewhere), and
+    /// the two RAISES that are not domain errors at all (see [`Self::Fault`]).
+    Schedule,
+    /// A search BELOW was cut short, so this answer set is INCOMPLETE — but nothing
+    /// here has a sentence worth printing.
+    ///
+    /// One producer: `EvalError::Suspended { truncated: true }`, a nested carrier-`eq`
+    /// whose closed sub-proof hit its depth cap. THE BRIDGE DROPPED THAT BIT — it
+    /// matched `Suspended { .. }` and returned `None`, so a truncation that
+    /// [`crate::kb::KnowledgeBase::bridge_eq_op_to_eval`] reads through (WI-628) died
+    /// at this bridge instead. An eager NAF/guard consumer then read the short result
+    /// as a refutation, which is the WI-628 hole one bridge over.
+    Truncation,
+    /// The callee could not be RUN TO AN ANSWER: it raised, overflowed, exhausted its
+    /// budget, or found its dispatch incoherent. The answer set is INCOMPLETE **and**
+    /// there is a sentence the author needs.
+    ///
+    /// THE PARTITION OF `Raised` IS BY CAUSE, NOT BY CHANNEL, and a first attempt at
+    /// this got it wrong by testing the variant. `raise_relation_floundered` (WI-737 —
+    /// an eval-side relation drain whose sub-search stayed undischarged) and
+    /// `raise_load_failed` (WI-SPGBP — `KB.loaded` reporting that its sources do not
+    /// load) ride `Raised` and are not domain failures of the callee; they answer
+    /// [`Self::Schedule`]. Every other payload — a user `Error.raise`, and the host
+    /// raises `match_failed` / `division_by_zero` that ride a row they never appear in
+    /// — is a fault.
+    Fault,
+}
+
+impl EvalError {
+    /// WI-20260911-0V0F7 — which [`BridgeDisposition`] this error has when it escapes
+    /// the SLD→eval bridge. See that enum for why each side exists.
+    ///
+    /// BESIDE `Display` AND NOT INSIDE THE BRIDGE, so the list that must be revisited
+    /// when a variant is added sits with the variants. `kb` is needed only to partition
+    /// [`Self::Raised`] by its payload's constructor.
+    pub fn bridge_disposition(&self, kb: &crate::kb::KnowledgeBase) -> BridgeDisposition {
+        match self {
+            // ── Schedule: nothing is wrong, the answer is merely not here ──
+            //
+            // The bridge-mode control signal, whose own doc says this: "produced ONLY
+            // when `EvalConfig::bridge_mode` is set … turned into a delay (the
+            // resolver's own SUSPEND)". Its `truncated` bit is the one thing that must
+            // still cross (WI-628).
+            EvalError::Suspended { truncated: false, .. } => BridgeDisposition::Schedule,
+            EvalError::Suspended { truncated: true, .. } => BridgeDisposition::Truncation,
+            // A CAPABILITY GAP IN THE SCRATCH INTERPRETER, not a defect in the program:
+            // the reflect builtins live in the downstream `anthill-stl` crate and are
+            // registered nowhere the bridge can see (`bridge_op_to_eval`'s own closing
+            // note), so a body that dispatches to one is body-less HERE and runnable in
+            // the very next process. The same op reached from a rule the CLI runs
+            // answers; reporting a fault would name the wrong thing.
+            //
+            // WI-1092's population — an operation an author declared and defined
+            // nowhere — lands here too and IS a defect, and this site cannot tell the
+            // two apart. It is reported where it can be: the typer refuses the call,
+            // and a top-level eval entry surfaces the error with its backtrace.
+            EvalError::OperationBodyMissing { .. } => BridgeDisposition::Schedule,
+            // Proposal 039 / WI-084: the const type-checks and only its runtime VALUE
+            // is absent from this build. The same spec-only-vs-codegen axis as above.
+            EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
+            // THE BRIDGE'S OWN SOUNDNESS CONTRACT SAYS SO, in `bridge_op_to_eval`'s
+            // doc: "the scratch interpreter's effect registry is EMPTY (an effect →
+            // unhandled → error → residualize)". `docs/kernel-language.md`'s
+            // WI-20260830-DQD5W argument rests on it — a parametric effect row is
+            // admitted into the `Bool` relational view BECAUSE a carrier that
+            // instantiates it to a real effect raises, the bridge catches it, and the
+            // goal residualizes. Calling that a fault would make a program that loads
+            // today stop loading, and would advise `Error.reify` for something no
+            // reify repairs.
+            EvalError::UnhandledEffect { .. } => BridgeDisposition::Schedule,
+
+            // ── Fault: the callee could not be run to an answer ──
+            EvalError::Raised { payload } => raised_disposition(kb, payload),
+            EvalError::UnboundVar { .. }
+            | EvalError::UnknownOperation { .. }
+            | EvalError::TypeMismatch { .. }
+            | EvalError::ArityMismatch { .. }
+            | EvalError::Overflow { .. }
+            | EvalError::OverArityConstructor { .. }
+            // THE TWO BUDGET EXHAUSTIONS AGREE, and an earlier draft had them
+            // disagreeing — `DepthExceeded` as a silent truncation beside
+            // `StepsExhausted` as a fault. Both mean the CALLEE did not finish, both
+            // have a cap worth naming, and a `Fault` already marks the stream
+            // incomplete, so the truncation reading gave up the message for nothing.
+            | EvalError::DepthExceeded { .. }
+            | EvalError::StepsExhausted { .. }
+            | EvalError::UnsupportedHandlerAction { .. }
+            | EvalError::CyclicReference
+            | EvalError::ConstCycle { .. }
+            | EvalError::AmbiguousRequirement { .. }
+            | EvalError::UnpinnedRequirement { .. }
+            | EvalError::AmbiguousSpecOpDispatch { .. }
+            | EvalError::MacroRejected { .. }
+            | EvalError::Internal(_) => BridgeDisposition::Fault,
+        }
+    }
+}
+
+/// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless
+/// its payload names one of the two constructors the runtime raises for reasons that
+/// are not domain failures of the callee.
+///
+/// KEYED BY SYMBOL, never by name (WI-897): both constructors are resolved through the
+/// KB's qualified-name table, so a rename moves the key with the declaration. An
+/// UNRESOLVED name answers `None` and therefore matches no payload — which degrades to
+/// "this is a fault", the loud side, rather than to silence.
+fn raised_disposition(kb: &crate::kb::KnowledgeBase, payload: &Value) -> BridgeDisposition {
+    let Value::Entity { functor, .. } = payload else {
+        return BridgeDisposition::Fault;
+    };
+    // WI-737 — an eval-side relation drain that stayed undischarged. The sub-search did
+    // not decide; that is [`BridgeDisposition::Schedule`]'s exact meaning, and calling
+    // it a fault would report "the callee failed" for a goal nothing has answered yet.
+    // WI-SPGBP — `KB.loaded` reporting that the sources it was handed do not load. A
+    // verdict the operation was asked for, delivered on the channel the language gives
+    // it; the rule that called it without an `Error.reify` gets no value, and that is
+    // the missing reify rather than a failure of the load.
+    const NON_FAULT_RAISES: [&str; 2] = [
+        "anthill.prelude.RelationFloundered.relation_floundered",
+        "anthill.reflect.LoadFailed.load_failed",
+    ];
+    for qname in NON_FAULT_RAISES {
+        if kb.try_resolve_symbol(qname) == Some(*functor) {
+            return BridgeDisposition::Schedule;
+        }
+    }
+    BridgeDisposition::Fault
+}
+
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -304,7 +470,9 @@ impl std::fmt::Display for EvalError {
                 }
                 Ok(())
             }
-            EvalError::UnhandledEffect { .. } => write!(f, "unhandled effect"),
+            EvalError::UnhandledEffect { name, .. } => {
+                write!(f, "no handler registered for effect `{name}`")
+            }
             EvalError::Raised { .. } => write!(f, "raised error"),
             EvalError::UnsupportedHandlerAction {
                 action,
@@ -470,9 +638,73 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
             }
             format!("{}({})", name, parts.join(", "))
         }
-        // Handles / streams / substitutions have no readable surface form; name
-        // the carrier kind rather than leaking a debug dump.
-        other => other.type_name().to_string(),
+        // WI-20260911-0V0F7 — A `Term` / `Node` CARRIER IS READ, not named. Every arm
+        // above matches a `Value` variant, so a payload field carried as a hash-consed
+        // `Value::Term` or an occurrence `Value::Node` fell to the carrier-kind
+        // fallback: `raise_match_failed` puts the scrutinee there, and the resolver's
+        // own fault line read `match_failed(occurrence: Node, scrutinee: Node)` —
+        // neither the payload nor its sort, which is exactly what this function exists
+        // to stop printing. Read through [`crate::kb::term_view::TermView`] instead,
+        // which is how the rest of the codebase reads a value whose carrier it does not
+        // care about.
+        //
+        // The arms above are NOT rewritten to go through the view: `Value::Str`'s
+        // depth-0 spelling is a decision about the payload, not about the carrier, and
+        // a view head would flatten it.
+        other => {
+            use crate::kb::term_view::{TermView, ViewHead};
+            match other.head(kb) {
+                ViewHead::Const(lit) => render_literal_at(&lit, depth),
+                ViewHead::Ident(s) => kb.local_name_of(s).to_string(),
+                ViewHead::Functor {
+                    functor,
+                    pos_arity,
+                    named_arity,
+                } => {
+                    let name = functor.map_or_else(
+                        || "(tuple)".to_string(),
+                        |f| kb.local_name_of(f).to_string(),
+                    );
+                    if (pos_arity + named_arity) == 0 || depth >= MAX_DEPTH {
+                        return name;
+                    }
+                    let mut parts: Vec<String> = Vec::with_capacity(pos_arity + named_arity);
+                    for i in 0..pos_arity {
+                        parts.push(match other.pos_arg(kb, i) {
+                            Some(c) => render_payload_at(kb, &c.to_value(), depth + 1),
+                            None => "?".to_string(),
+                        });
+                    }
+                    for key in other.named_keys(kb) {
+                        let rendered = match other.named_arg(kb, key) {
+                            Some(c) => render_payload_at(kb, &c.to_value(), depth + 1),
+                            None => "?".to_string(),
+                        };
+                        parts.push(format!("{}: {rendered}", kb.local_name_of(key)));
+                    }
+                    format!("{name}({})", parts.join(", "))
+                }
+                // A variable, `⊥`, and the genuinely opaque carriers (closures,
+                // streams, substitutions) have no readable surface form; name the
+                // carrier kind rather than leaking a debug dump, as before.
+                _ => other.type_name().to_string(),
+            }
+        }
+    }
+}
+
+/// A literal read off a [`crate::kb::term_view::ViewHead`], spelled exactly as the
+/// `Value` arms above spell the same thing — so `div(1, 0)`'s operands print the same
+/// whether they reached the payload boxed or hash-consed.
+fn render_literal_at(lit: &crate::kb::term::Literal, depth: usize) -> String {
+    use crate::kb::term::Literal;
+    match lit {
+        Literal::String(s) if depth == 0 => s.clone(),
+        Literal::String(s) => format!("{s:?}"),
+        Literal::Int(n) => n.to_string(),
+        Literal::BigInt(n) => n.to_string(),
+        Literal::Float(x) => x.to_string(),
+        Literal::Bool(b) => b.to_string(),
     }
 }
 

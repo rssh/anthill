@@ -2766,10 +2766,16 @@ end
     let err = interp
         .call("test.m5_unhandled.speak", &[console_val])
         .unwrap_err();
+    // WI-20260911-0V0F7 — `UnhandledEffect`, not `Internal`. A missing handler is not
+    // an evaluator-INVARIANT violation: the SLD→eval bridge's scratch interpreter has an
+    // EMPTY effect registry by construction, so this is the ordinary outcome there —
+    // while `bridge_op_to_eval` `debug_assert`s on `Internal`, which made a program that
+    // merely instantiated a parametric effect row ABORT a debug build. The variant
+    // existed with no producer; this is its producer.
     assert!(
-        matches!(&err, anthill_core::eval::EvalError::Internal(msg)
-            if msg.contains("no handler") && msg.contains("ConsoleOutput")),
-        "expected 'no handler' for ConsoleOutput, got {err:?}",
+        matches!(&err, anthill_core::eval::EvalError::UnhandledEffect { name, .. }
+            if name == "anthill.prelude.Console.ConsoleOutput"),
+        "expected UnhandledEffect for ConsoleOutput, got {err:?}",
     );
 }
 
@@ -3100,9 +3106,11 @@ fn m5_modify_handler_taken_is_none() {
     let err = interp
         .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
         .unwrap_err();
+    // WI-20260911-0V0F7 — `UnhandledEffect`, not `Internal`; see
+    // `m5_unhandled_effect_errors_cleanly` for why the classification moved.
     assert!(
-        matches!(&err, EvalError::Internal(m) if m.contains("no handler")),
-        "expected 'no handler' Internal, got {err:?}",
+        matches!(&err, EvalError::UnhandledEffect { name, .. } if name == "anthill.prelude.Modify"),
+        "expected UnhandledEffect for Modify, got {err:?}",
     );
 }
 

@@ -576,11 +576,9 @@ impl Interpreter {
         let mut handler = self
             .effect_handlers
             .take_for_invoke(effect_sym)
-            .ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "no handler registered for effect `{}`",
-                    effect_qname
-                ))
+            .ok_or_else(|| EvalError::UnhandledEffect {
+                effect: effect_sym,
+                name: effect_qname.to_string(),
             })?;
         let action = handler(self, op_sym, args);
         self.effect_handlers.return_handler(effect_sym, handler);

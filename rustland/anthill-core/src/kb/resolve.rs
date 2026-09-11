@@ -317,6 +317,68 @@ pub struct ResolveError {
     pub message: String,
 }
 
+/// WI-20260911-0V0F7 — the OUT-CHANNEL of the operand reduction
+/// ([`KnowledgeBase::reduce_op_value`] and everything it reaches): what the SLD→eval
+/// bridge learned that the reduced `Value` cannot carry.
+///
+/// A SINK THAT IS APPENDED TO AND NEVER MERGED, and both halves of that are the
+/// correction to a first attempt that threaded the news back through the return values
+/// instead. Four types grew a `Faulted` arm whose only job was carrying one optional
+/// error past ten sites; two real bugs came out of it — a fault DROPPED at an exit that
+/// rebuilt its value, and a STALE fault composed onto a bridge that had SUCCEEDED. With
+/// one sink neither is expressible: a reduction that faults has already written here,
+/// and nothing downstream can un-write it or attribute it to a later call.
+///
+/// TWO FIELDS, NOT ONE LIST, because the WI-628 distinction runs through this boundary:
+/// a message is what an author reads, `truncated` is what an EAGER consumer must see
+/// before it reads emptiness as refutation. A bridged sub-search cut at its depth cap
+/// has the second and nothing to say for the first.
+#[derive(Debug, Default)]
+pub struct ReduceFaults {
+    /// Faults, in the order they were produced. Deduping is the STREAM's job
+    /// ([`SearchStream::note_error`]) — one reduction produces at most a handful.
+    errors: Vec<ResolveError>,
+    /// A search below was cut short, so an empty answer set here is not a refutation.
+    truncated: bool,
+}
+
+impl ReduceFaults {
+    /// The callee could not be run to an answer. Marks INCOMPLETE as well: a goal whose
+    /// reduction faulted was never decided, so emptiness is not refutation — the two
+    /// always travel together here, exactly as they do at [`SearchStream::record_error`].
+    pub(crate) fn fault(&mut self, message: String) {
+        self.errors.push(ResolveError { message });
+        self.truncated = true;
+    }
+
+    /// A search below was cut short, with nothing to say about it.
+    pub(crate) fn truncate(&mut self) {
+        self.truncated = true;
+    }
+
+    /// Did the reduction learn anything the caller must act on?
+    ///
+    /// `pub`, like [`Self::rendered_suffix`], because this type appears in
+    /// [`KnowledgeBase::unify_terms`]'s public signature: a caller outside the crate can
+    /// construct one (`Default`) and must be able to read what came back, or the
+    /// parameter would be a write-only hole.
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty() && !self.truncated
+    }
+
+    /// The faults as a clause to append to a caller's own sentence — for the readers
+    /// OUTSIDE the resolver, which have a message of their own and no
+    /// `ResolveStats::errors` to put this in. Empty when nothing faulted, so the
+    /// caller's sentence is unchanged in the common case.
+    pub fn rendered_suffix(&self) -> String {
+        if self.errors.is_empty() {
+            return String::new();
+        }
+        let joined: Vec<&str> = self.errors.iter().map(|e| e.message.as_str()).collect();
+        format!(" ({})", joined.join("; "))
+    }
+}
+
 /// Result of executing a builtin.
 enum BuiltinResult {
     /// Builtin succeeded; continue with current substitution unchanged.
@@ -1180,6 +1242,36 @@ impl SearchStream {
         }
     }
 
+    /// WI-20260911-0V0F7 — fold what the operand reduction learned
+    /// ([`ReduceFaults`]) onto this stream.
+    ///
+    /// AN ASSOCIATED FUNCTION OVER THE TWO FIELDS, not a `&mut self` method, and the
+    /// borrow at the call site is why: [`Self::step_init`] holds a SHARED borrow of
+    /// `self.stack` (the frame it is stepping) across the builtin dispatch, and a
+    /// `&mut self` method would conflict with it where two disjoint field borrows do
+    /// not. Routing the drain through `record_error` instead would mean cloning the
+    /// frame's goal list and substitution before every builtin — a per-goal allocation
+    /// in the resolver's hottest loop, for a sink that is empty on essentially every
+    /// call.
+    ///
+    /// THE `truncated` DECISION IS NOT MADE HERE. [`ReduceFaults::fault`] sets it when
+    /// it records, so a fault is incomplete-by-construction and this drain has one
+    /// behaviour rather than two; see that method for the argument.
+    fn absorb_reduce_faults(
+        errors: &mut Vec<ResolveError>,
+        truncated: &mut bool,
+        faults: ReduceFaults,
+    ) {
+        *truncated |= faults.truncated;
+        for err in faults.errors {
+            // Deduped on push, exactly as `note_error` does and for the same reason: a
+            // self-joined extent reaches one faulting operand once per candidate PAIR.
+            if !errors.contains(&err) {
+                errors.push(err);
+            }
+        }
+    }
+
     /// Yield the next solution, consuming self and returning the
     /// continuation stream. Returns `None` when exhausted.
     pub fn split_first(mut self, kb: &mut KnowledgeBase) -> Option<(Solution, SearchStream)> {
@@ -1843,20 +1935,37 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
             }
+            // WI-20260911-0V0F7 — the sink the operand reduction writes into. It reaches
+            // the SLD→eval bridge through every `reduce_operand` below this dispatch, and
+            // what the bridge learned cannot ride the reduced `Value` back: a callee that
+            // RAN AND RAISED returns the same un-reduced operand a callee the fold merely
+            // declined does. Drained onto the stream before the verdict is acted on, so a
+            // fault is recorded even on the arms that `return` out of this match.
+            let mut faults = ReduceFaults::default();
             let builtin_result = if open_world_operand {
                 BuiltinResult::Unknown {
                     cause: UnknownCause::OpenWorldParameter,
                 }
             } else {
-                let raw = kb.execute_builtin(tag, &goal_val, &frame.subst);
+                let raw = kb.execute_builtin(tag, &goal_val, &frame.subst, &mut faults);
                 // BORROWED, not cloned. An earlier draft cloned `frame.subst` here to
                 // dodge a borrow that was never in conflict — `frame` borrows
                 // `self.stack` and this method takes `&self`, while `kb` is a separate
                 // object. `Substitution::clone` deep-copies the `parent` chain, so that
                 // put a per-goal allocation in the resolver's hottest loop for a path
                 // that returns on its first line outside the proof bridge.
-                self.reconsider_verdict_over_skolem(kb, tag, &goal_val, &frame.subst, raw)
+                self.reconsider_verdict_over_skolem(
+                    kb,
+                    tag,
+                    &goal_val,
+                    &frame.subst,
+                    raw,
+                    &mut faults,
+                )
             };
+            if !faults.is_empty() {
+                Self::absorb_reduce_faults(&mut self.errors, &mut self.truncated, faults);
+            }
             match builtin_result {
                 BuiltinResult::Success => {
                     // Remove goals[0], bump depth, reset delay counter if delayed
@@ -2417,8 +2526,25 @@ impl SearchStream {
                                 // `reduce_operand`: this frame BUILT the call and is
                                 // deciding it, which is the one context in which a
                                 // body-less spec op may be dispatched. See that method.
-                                let reduced =
-                                    kb.reduce_dispatched_goal_call(Value::Node(call_occ), &subst);
+                                // WI-20260911-0V0F7 — the WI-938 hook is DECIDING this
+                                // call, so a bridged callee that raised is this goal's
+                                // own fault, not an unrelated branch's. Drained here
+                                // rather than at the builtin dispatch above because this
+                                // site never reaches it — it either rewrites the goal to
+                                // `unify` or falls through to candidate selection.
+                                let mut faults = ReduceFaults::default();
+                                let reduced = kb.reduce_dispatched_goal_call(
+                                    Value::Node(call_occ),
+                                    &subst,
+                                    &mut faults,
+                                );
+                                if !faults.is_empty() {
+                                    Self::absorb_reduce_faults(
+                                        &mut self.errors,
+                                        &mut self.truncated,
+                                        faults,
+                                    );
+                                }
                                 // ONLY route once the body actually reduced. `unify` is
                                 // structural and never dispatches (proposal 049's
                                 // invariant), so handing it an unreduced call would bind
@@ -3411,6 +3537,7 @@ impl SearchStream {
         goal: &Value,
         subst: &Substitution,
         result: BuiltinResult,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         if self.config.gamma.is_none() {
             return result;
@@ -3445,7 +3572,7 @@ impl SearchStream {
         // CONSTRUCTORS — true for every `c` — and the first draft flipped it to
         // `Unknown`, un-discharging a contract that had always discharged. A predicate
         // true OF the target does not identify it.
-        if Self::difference_is_skolem_free(kb, goal, subst, skolems) {
+        if Self::difference_is_skolem_free(kb, goal, subst, skolems, faults) {
             return result;
         }
         BuiltinResult::Unknown {
@@ -3541,6 +3668,7 @@ impl SearchStream {
         goal: &Value,
         subst: &Substitution,
         skolems: &std::collections::HashSet<Symbol>,
+        faults: &mut ReduceFaults,
     ) -> bool {
         // Read both operands out to owned `Value`s first — `pos_arg` borrows `kb`, and
         // `reduce_operand` needs it mutably.
@@ -3550,8 +3678,8 @@ impl SearchStream {
         ) else {
             return false; // not a two-operand comparison — nothing to compare
         };
-        let a = kb.reduce_operand(a, subst);
-        let b = kb.reduce_operand(b, subst);
+        let a = kb.reduce_operand(a, subst, faults);
+        let b = kb.reduce_operand(b, subst, faults);
         // Every eigenvariable becomes a fresh unknown. `substitute_ref_terms` is the
         // carrier-neutral σ (`Value::Term` grounds in term-land, a denoted `Value::Node`
         // is rebuilt through the View layer) and its term core replaces exactly
@@ -3572,7 +3700,10 @@ impl SearchStream {
         let a = super::typing::substitute_ref_terms(kb, &a, &map);
         let b = super::typing::substitute_ref_terms(kb, &b, &map);
         let mut work = Substitution::new();
-        matches!(kb.unify_values(a, b, &mut work), UnifyOutcome::Fail)
+        matches!(
+            kb.unify_values(a, b, &mut work, faults),
+            UnifyOutcome::Fail
+        )
     }
 
     /// Residualize-or-rotate a goal the resolver could not answer — the scheduling half
@@ -5304,6 +5435,7 @@ impl KnowledgeBase {
         tag: BuiltinTag,
         goal: &Value,
         answer_subst: &Substitution,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         // Every builtin reads its goal carrier-agnostically through `TermView`
         // (WI-482): a rule-body `Value::Node` occurrence resolves without
@@ -5347,21 +5479,21 @@ impl KnowledgeBase {
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
-            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst),
-            BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst),
-            BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst),
-            BuiltinTag::Unify => self.builtin_unify(goal, answer_subst),
+            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst, faults),
+            BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst, faults),
+            BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst, faults),
+            BuiltinTag::Unify => self.builtin_unify(goal, answer_subst, faults),
             BuiltinTag::Gt => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater)
+                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater, faults)
             }
             BuiltinTag::Lt => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less)
+                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less, faults)
             }
             BuiltinTag::Gte => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less)
+                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less, faults)
             }
             BuiltinTag::Lte => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater)
+                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater, faults)
             }
             BuiltinTag::Add => self.builtin_arith(
                 goal,
@@ -5369,6 +5501,7 @@ impl KnowledgeBase {
                 |a, b| Some(a + b),
                 |a, b| Some(a + b),
                 |a, b| Some(a + b),
+                faults,
             ),
             BuiltinTag::Sub => self.builtin_arith(
                 goal,
@@ -5376,6 +5509,7 @@ impl KnowledgeBase {
                 |a, b| Some(a - b),
                 |a, b| Some(a - b),
                 |a, b| Some(a - b),
+                faults,
             ),
             BuiltinTag::Mul => self.builtin_arith(
                 goal,
@@ -5383,6 +5517,7 @@ impl KnowledgeBase {
                 |a, b| Some(a * b),
                 |a, b| Some(a * b),
                 |a, b| Some(a * b),
+                faults,
             ),
             // div/mod are PARTIAL: a zero divisor → None → Failure — the SLD reading
             // of the declared `Error[DivisionByZero] :- eq(b, 0)` (eval raises the
@@ -5400,6 +5535,7 @@ impl KnowledgeBase {
                 |a, b| a.checked_div(b),
                 Self::bigint_checked_div,
                 |a, b| Some(a / b),
+                faults,
             ),
             BuiltinTag::Mod => self.builtin_arith(
                 goal,
@@ -5407,6 +5543,7 @@ impl KnowledgeBase {
                 |a, b| a.checked_rem_euclid(b),
                 Self::bigint_rem_euclid,
                 |_, _| None,
+                faults,
             ),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
             BuiltinTag::ToInt => self.builtin_to_int(goal, answer_subst),
@@ -5416,7 +5553,7 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
-            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
+            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
             BuiltinTag::DomainLeaf => self.builtin_domain_leaf(goal, answer_subst),
         }
@@ -6850,8 +6987,13 @@ impl KnowledgeBase {
     /// args resolve to the same TermId (hash-consed identity = structural equality).
     /// Delays only on flex (`Var::Global`); rigid vars compare by TermId
     /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
-    fn builtin_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
-        match self.eq_operands(goal, subst) {
+    fn builtin_eq<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Ready(a, b) => {
                 if self.values_equal(&a, &b) {
@@ -6866,14 +7008,24 @@ impl KnowledgeBase {
 
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
     /// op. See [`Self::sem_eq_core`].
-    fn builtin_sem_eq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
-        self.sem_eq_core(goal, subst, true)
+    fn builtin_sem_eq<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        self.sem_eq_core(goal, subst, true, faults)
     }
 
     /// WI-616 — `neq(?a, ?b)`, semantic inequality (`neq(a,b) <=> not(eq(a,b))`,
     /// the `Eq` law): [`Self::sem_eq_core`] with the verdict inverted.
-    fn builtin_sem_neq<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
-        self.sem_eq_core(goal, subst, false)
+    fn builtin_sem_neq<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        self.sem_eq_core(goal, subst, false, faults)
     }
 
     /// WI-616 (proposal 051 Phase 2) — the shared core of semantic `eq`/`neq`
@@ -6906,8 +7058,9 @@ impl KnowledgeBase {
         goal: &V,
         subst: &Substitution,
         positive: bool,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
-        match self.eq_operands(goal, subst) {
+        match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => self.sem_eq_values(a, b, subst, positive),
@@ -7147,9 +7300,30 @@ impl KnowledgeBase {
                 // not decide from an incomplete run; a clean bridge-mode suspend is
                 // `truncated: false` (a complete flounder).
                 Ok(BridgeEqOutcome::Undecided { truncated }) => BuiltinResult::Delay { truncated },
-                // The op's own runtime error also residualizes (WI-483
-                // substitution-transparency) — a plain, non-truncated delay.
-                Err(_) => BuiltinResult::delay(),
+                // WI-20260911-0V0F7 — THE OP'S OWN RUNTIME ERROR STILL RESIDUALIZES
+                // (WI-483 substitution-transparency), AND NOW IT SAYS SO. This read
+                // `Err(_) => BuiltinResult::delay()`: a carrier's own `eq` that RAISED
+                // came back as "re-ask me once something binds", which is false twice
+                // over — the operands are already ground, and nothing was reported. The
+                // same defect `bridge_op_to_eval` had, at the sibling bridge, and it
+                // takes the same partition rather than a second reading of it.
+                Err(e) => match e.bridge_disposition(self) {
+                    // Nothing is wrong and nothing is incomplete: a capability the
+                    // scratch interpreter has not, or a raise that is not a domain
+                    // failure of the callee.
+                    crate::eval::BridgeDisposition::Schedule => BuiltinResult::delay(),
+                    // A search below was cut short. (A bridge-mode suspend arrives as
+                    // `Ok(Undecided { truncated })` above and never reaches here; this
+                    // arm is for an error that carries the same incompleteness.)
+                    crate::eval::BridgeDisposition::Truncation => {
+                        BuiltinResult::Delay { truncated: true }
+                    }
+                    // `record_error` marks the stream incomplete itself, so the fault
+                    // carries both halves — exactly as it does at the other bridge.
+                    crate::eval::BridgeDisposition::Fault => BuiltinResult::Error(ResolveError {
+                        message: self.bridge_fault_message(target, &e),
+                    }),
+                },
             };
         }
         match self.prove_rule_predicate(target, vec![a, b]) {
@@ -7456,7 +7630,12 @@ impl KnowledgeBase {
     /// (`Var::Global`), else the two `Value`s. Two term values compare by
     /// hash-consed-`TermId` identity (= the original `a == b` test); occurrence
     /// values compare structurally (WI-246) — both via `views_structurally_equal`.
-    fn eq_operands<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> EqOperands {
+    fn eq_operands<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> EqOperands {
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -7466,8 +7645,8 @@ impl KnowledgeBase {
         };
         // WI-482: project a dispatched dot operand (`eq(?v, ?p.x)`); WI-483: fold a
         // dispatched method-op operand (`eq(?v, ?b.peek())`) to its value.
-        let a = self.reduce_operand(a, subst);
-        let b = self.reduce_operand(b, subst);
+        let a = self.reduce_operand(a, subst, faults);
+        let b = self.reduce_operand(b, subst, faults);
         // WI-483/WI-738: an operand that is an unevaluated CALL — a complex
         // op-call body that did not fold, or a builtin nested in operand position
         // (`eq(?y, add(?x,?x))`) — is treated as un-ground: delay rather than
@@ -7505,7 +7684,12 @@ impl KnowledgeBase {
     /// sides and delays on an undecidable call (WI-483 / WI-738), so
     /// `unify(dbl(2), 4)` succeeds. WI-20260910-FDPJ8 made that true on every carrier
     /// rather than only on occurrences.
-    fn builtin_unify<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_unify<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
         let (a, b) = match (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -7519,7 +7703,7 @@ impl KnowledgeBase {
         // top-level bindings travel back via `SuccessWithBindings` (the resolver
         // lifts `extra.bindings`, never the parent).
         let mut work = Substitution::with_parent(subst.clone());
-        match self.unify_values(a, b, &mut work) {
+        match self.unify_values(a, b, &mut work, faults) {
             UnifyOutcome::Delay => BuiltinResult::delay(),
             UnifyOutcome::Fail => BuiltinResult::Failure,
             // A binding to two structurally-distinct values surfaces as a
@@ -7550,6 +7734,7 @@ impl KnowledgeBase {
         &mut self,
         goal: &V,
         subst: &Substitution,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } => pos_arity,
@@ -7625,7 +7810,9 @@ impl KnowledgeBase {
         // what makes it the σ-VALUE rather than the variable leaf.
         let out_slot = goal.named_arg(self, out_sym);
         match self.walk_arg(out_slot, subst) {
-            Some(out) => self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out),
+            Some(out) => {
+                self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out, faults)
+            }
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
     }
@@ -7659,6 +7846,7 @@ impl KnowledgeBase {
         op_functor: Symbol,
         arg_vals: &[Value],
         out: Value,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         use super::typing::{FindDictFetch, FindDictOutcome};
         let dict =
@@ -7707,7 +7895,7 @@ impl KnowledgeBase {
         // IS both: against an unbound variable it binds, against a supplied
         // dictionary it compares structurally through the WI-1019 view.
         let mut work = Substitution::with_parent(subst.clone());
-        match self.unify_values(out, dict, &mut work) {
+        match self.unify_values(out, dict, &mut work, faults) {
             UnifyOutcome::Delay => BuiltinResult::delay(),
             UnifyOutcome::Fail => BuiltinResult::Failure,
             UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
@@ -7743,12 +7931,26 @@ impl KnowledgeBase {
     /// reduce/delay step on THIS face restores the WI-738 structural lie
     /// (`unify(sub(2,1), 1)` would report a unifier over an uninterpreted call); and
     /// panicking is wrong for a legal program.
-    pub fn unify_terms(&mut self, a: TermId, b: TermId) -> TermUnification {
+    pub fn unify_terms(
+        &mut self,
+        a: TermId,
+        b: TermId,
+        faults: &mut ReduceFaults,
+    ) -> TermUnification {
         let mut work = Substitution::new();
-        match self.unify_values(Value::term(a), Value::term(b), &mut work) {
+        // EXHAUSTIVE, because the catch-all it replaces was a trap. `_ =>
+        // TermUnification::NoUnifier` absorbed any new [`UnifyOutcome`] variant into
+        // the DEFINITE claim "these terms do not unify" — silently, and at the one face
+        // whose `none()` is documented to mean exactly that. WI-20260910-FDPJ8 closed
+        // that mapping for `Delay` and WI-20260911-0V0F7 came within a variant of
+        // reopening it (a `Faulted` arm would have landed here as `NoUnifier`), which is
+        // why the sink carries faults instead and why this list now names every case.
+        match self.unify_values(Value::term(a), Value::term(b), &mut work, faults) {
             UnifyOutcome::Ok if !work.is_contradiction() => TermUnification::Unifier(work),
+            // A contradictory σ is no unifier — the terms do not unify.
+            UnifyOutcome::Ok => TermUnification::NoUnifier,
             UnifyOutcome::Delay => TermUnification::Undecided,
-            _ => TermUnification::NoUnifier,
+            UnifyOutcome::Fail => TermUnification::NoUnifier,
         }
     }
 
@@ -7759,13 +7961,19 @@ impl KnowledgeBase {
     /// the other side; two concrete heads compare structurally and recurse on a
     /// functor match. Children are head-normalized on their own reach (the
     /// laziness — a bound cell keeps its interior unreduced).
-    fn unify_values(&mut self, a: Value, b: Value, work: &mut Substitution) -> UnifyOutcome {
+    fn unify_values(
+        &mut self,
+        a: Value,
+        b: Value,
+        work: &mut Substitution,
+        faults: &mut ReduceFaults,
+    ) -> UnifyOutcome {
         // Step 1: chase head vars through σ (including bindings made earlier in
         // THIS unify), then head-normalize on reach.
         let a = self.chase_value(a, work);
         let b = self.chase_value(b, work);
-        let a = self.reduce_operand(a, work);
-        let b = self.reduce_operand(b, work);
+        let a = self.reduce_operand(a, work, faults);
+        let b = self.reduce_operand(b, work, faults);
         // Step 2: an unreduced op-call head (a complex body, or a builtin in
         // operand position — WI-738) ⇒ delay the whole goal (never commit to a
         // structural verdict over an uninterpreted callee).
@@ -7780,7 +7988,7 @@ impl KnowledgeBase {
             return self.unify_bind(vid, a, work);
         }
         // Steps 4–6: both heads concrete — structural compare + recurse.
-        self.unify_concrete(&a, &b, work)
+        self.unify_concrete(&a, &b, work, faults)
     }
 
     /// Step 3: bind flex `vid` to the head-normalized `other` side, occurs-checked.
@@ -7803,7 +8011,13 @@ impl KnowledgeBase {
     /// functor/arity/scalar/head-kind mismatch BEFORE reducing children — the
     /// work a bottom-first derive pass would forfeit. The bind-enabled twin of
     /// [`views_structurally_equal`] (which only tests).
-    fn unify_concrete(&mut self, a: &Value, b: &Value, work: &mut Substitution) -> UnifyOutcome {
+    fn unify_concrete(
+        &mut self,
+        a: &Value,
+        b: &Value,
+        work: &mut Substitution,
+        faults: &mut ReduceFaults,
+    ) -> UnifyOutcome {
         let eq_or = |same: bool| {
             if same {
                 UnifyOutcome::Ok
@@ -7849,7 +8063,7 @@ impl KnowledgeBase {
                         (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
                         _ => return UnifyOutcome::Fail,
                     };
-                    match self.unify_values(ca, cb, work) {
+                    match self.unify_values(ca, cb, work, faults) {
                         UnifyOutcome::Ok => {}
                         other => return other,
                     }
@@ -7862,7 +8076,7 @@ impl KnowledgeBase {
                         (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
                         _ => return UnifyOutcome::Fail,
                     };
-                    match self.unify_values(ca, cb, work) {
+                    match self.unify_values(ca, cb, work, faults) {
                         UnifyOutcome::Ok => {}
                         other => return other,
                     }
@@ -8063,6 +8277,7 @@ impl KnowledgeBase {
         goal: &V,
         subst: &Substitution,
         pred: impl Fn(std::cmp::Ordering) -> bool,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         // The head, read ONCE — `builtin_arith` opens the same way. Both the diagnostic
         // below and the result-column decision at the end need it, and `head` on a
@@ -8084,8 +8299,8 @@ impl KnowledgeBase {
         };
         // WI-482: project a dispatched dot operand (`lt(?p.x, ?limit)`); WI-483:
         // fold a method-op operand (`lt(?b.peek(), ?limit)`).
-        let a = self.reduce_operand(a, subst);
-        let b = self.reduce_operand(b, subst);
+        let a = self.reduce_operand(a, subst, faults);
+        let b = self.reduce_operand(b, subst, faults);
         // WI-483/WI-738: an operand that is an unevaluated call (complex body, or
         // a builtin nested in operand position — `lt(sub(?x,?y), 1)`) is
         // un-ground → delay.
@@ -8444,6 +8659,25 @@ impl KnowledgeBase {
     /// a carrier the op does not define) and yields `Failure` — the SLD reading of
     /// a partial operation's guard firing (WI-863). Total operations (add/sub/mul)
     /// always return `Some`.
+    ///
+    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `None` A FAULT AND DID NOT**, and the
+    /// reason is worth having here because the inconsistency is real and the repair is
+    /// not the obvious one. Through the OTHER door the same division raises:
+    /// `Int64.div` declares `Error[DivisionByZero] :- eq(b, 0)`, and since 0V0F7 a
+    /// raise escaping [`Self::bridge_op_to_eval`] is a loud fault — so one condition
+    /// has two opposite readings decided by which door it came through.
+    ///
+    /// THE TWO DOORS ASK TWO DIFFERENT QUESTIONS, which is why the divergence stands.
+    /// Eval asks what the VALUE is and there is none, so it must raise. A goal asks
+    /// whether a TUPLE IS IN A RELATION, and `div(1, 0, ?q)` is in it for no `?q` —
+    /// which the resolver KNOWS, unlike [`Self::builtin_cmp`]'s no-order arm, where it
+    /// genuinely has no order to answer with. Making this a fault would trade a true
+    /// answer for "undecided": `not(div(1, 0, ?q))` would stop succeeding, and the
+    /// enclosing search would be marked incomplete over a condition the resolver
+    /// decided. Measured, by building it: `wi863_operator_arithmetic_test`'s
+    /// `division_by_zero_is_no_solution_not_a_refusal` and
+    /// `min_over_negative_one_yields_no_solution_not_a_crash` both go red, each with
+    /// `1 solution(s), 1 conditional` where the pin says `no solutions`.
     fn builtin_arith<V: TermView>(
         &mut self,
         goal: &V,
@@ -8451,6 +8685,7 @@ impl KnowledgeBase {
         int_op: impl Fn(i64, i64) -> Option<i64>,
         bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> Option<num_bigint::BigInt>,
         float_op: impl Fn(f64, f64) -> Option<f64>,
+        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } if pos_arity >= 2 => pos_arity,
@@ -8469,8 +8704,8 @@ impl KnowledgeBase {
         };
         // WI-482: project a dispatched dot operand (`mul(?p.x, ?dt)`); WI-483:
         // fold a method-op operand (`mul(?b.peek(), ?dt)`).
-        let a = self.reduce_operand(a, subst);
-        let b = self.reduce_operand(b, subst);
+        let a = self.reduce_operand(a, subst, faults);
+        let b = self.reduce_operand(b, subst, faults);
         // WI-483/WI-738: an operand that is an unevaluated call is un-ground →
         // delay. Includes a NESTED arithmetic builtin (`add(sub(?x,?y), 1, ?z)`),
         // so nested arithmetic composes: the inner call delays until it grounds.
@@ -8489,6 +8724,8 @@ impl KnowledgeBase {
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
             // `None` from an `*_op` = argument outside the op's domain (zero
             // divisor / unsupported carrier) → Failure, same as a cross-type pair.
+            // NOT a fault — see this function's doc for why the divergence from eval
+            // stands rather than being closed here (WI-20260911-0V0F7).
             (Some(Num::Int(x)), Some(Num::Int(y))) => match int_op(x, y) {
                 Some(r) => self.alloc(Term::Const(Literal::Int(r))),
                 None => return BuiltinResult::Failure,
@@ -9261,6 +9498,7 @@ impl KnowledgeBase {
         subst: &Substitution,
         depth: usize,
         dispatch_body_less: bool,
+        faults: &mut ReduceFaults,
     ) -> Value {
         const FOLD_DEPTH_CAP: usize = 64;
         let occ = match &v {
@@ -9346,7 +9584,7 @@ impl KnowledgeBase {
                 spec_op_sym: *functor,
                 impl_op_sym: target,
             });
-            return self.reduce_op_value(Value::Node(call), subst, depth, dispatch_body_less);
+            return self.reduce_op_value(Value::Node(call), subst, depth, dispatch_body_less, faults);
         }
         let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
@@ -9552,7 +9790,7 @@ impl KnowledgeBase {
             match self.walk_arg(item, subst) {
                 Some(a) => {
                     let a = if reduce_args && depth < FOLD_DEPTH_CAP {
-                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less)
+                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less, faults)
                     } else {
                         a
                     };
@@ -9591,7 +9829,7 @@ impl KnowledgeBase {
         // the concrete argument types instead, which is the one entry that can.
         if needs_dict {
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, faults)
                 .unwrap_or(v);
         }
         // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
@@ -9605,7 +9843,7 @@ impl KnowledgeBase {
         // the call term and calling that a definite answer.
         let Some(body) = body else {
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, faults)
                 .unwrap_or(v);
         };
         // Build the fold substitution: every op-body var named after a param maps
@@ -9619,7 +9857,7 @@ impl KnowledgeBase {
         // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
         // match / unfoldable op-call) ⇒ COMPLEX → return the ORIGINAL call.
         let reduced = self.reduce_dot_value(Value::Node(folded), subst);
-        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false);
+        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false, faults);
         match reduced {
             // A COMPLEX body (`match`/`if`/`let`/recursion) the structural fold
             // can't collapse. WI-625 gap 1 — the SLD→eval dual of the eval→SLD eq
@@ -9636,7 +9874,7 @@ impl KnowledgeBase {
             // once per level. A complex body nested inside another op therefore
             // rides its enclosing op's single top-level bridge.
             Value::Node(_) if depth == 0 => self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, faults)
                 .unwrap_or(v),
             other => other,
         }
@@ -9686,6 +9924,49 @@ impl KnowledgeBase {
             _ => return None,
         };
         super::typing::resolve_op_target_checked(self, impl_sym, spec_op).ok()
+    }
+
+    /// WI-20260911-0V0F7 — what a bridged operation's FAULT says, for the TWO bridges
+    /// that have one to report ([`Self::bridge_op_to_eval`] and the carrier-`eq` bridge
+    /// in [`Self::sem_eq_dispatch`]).
+    ///
+    /// ONE OWNER, because the two sites report the same event and a reader must not be
+    /// able to tell which door a raise came through from its wording alone. The eq
+    /// bridge answered `BuiltinResult::delay()` for every `Err` before this — the same
+    /// silent residualize this ticket is about, one bridge over — so it acquired a
+    /// sentence at the moment it acquired a verdict.
+    ///
+    /// THE PAYLOAD, NOT ITS SORT. An earlier draft labelled the raise through
+    /// `operand_label`, which is a SORT labeller — `Error.raise("disk full")` printed
+    /// "RAISED `String`". [`crate::eval::render_raised_payload`] is the one owner of a
+    /// payload's text and every other consumer of a raise already uses it.
+    ///
+    /// THE REPAIR NAMED IS `Error.reify`, AND THE OBVIOUS SECOND SUGGESTION IS REFUSED
+    /// ON PURPOSE. "Declare the label and call it from a context that can handle it" is
+    /// strictly worse than the state being fixed: `effect_row_admits_relational_view`
+    /// requires an empty row or all-parametric members and `effect_member_is_parametric`
+    /// refuses `Error[T = P]` by design, so declaring the label stops the WI-938
+    /// relational hook firing at all — 0 solutions with `stats.errors` EMPTY, which is
+    /// where this started.
+    fn bridge_fault_message(&self, op: Symbol, e: &EvalError) -> String {
+        // THE REPAIR RIDES WITH THE CAUSE, because only one cause has that repair. An
+        // earlier draft appended the `Error.reify` sentence to EVERY fault, and for a
+        // `TypeMismatch`, an ambiguous dispatch or an exhausted budget both of its
+        // clauses are false — the call did not "raise", and no reify fixes it. Raised by
+        // `/code-review`, which pointed at this ticket's own `TypeMismatch` row.
+        let (detail, repair) = match e {
+            EvalError::Raised { payload } => (
+                format!("raised {}", crate::eval::render_raised_payload(self, payload)),
+                " Handle it inside the operation — `Error.reify` turns a raise into a \
+                 `Result` the rule can read.",
+            ),
+            other => (other.to_string(), ""),
+        };
+        format!(
+            "`{}` could not be evaluated by the resolver: {detail}. An empty answer set \
+             here is NOT a refutation — the call produced no value.{repair}",
+            self.qualified_name_of(op),
+        )
     }
 
     /// WI-625 gap 1 (SLD→eval op-body dispatch bridge): run a CONCRETE op whose
@@ -9739,12 +10020,19 @@ impl KnowledgeBase {
     /// `anthill-stl` crate and are NOT registered here, so a body dispatching to
     /// one hits the dispatch fall-through — `OperationBodyMissing` for these
     /// declared ops since WI-818 — → residualize (a benign capability gap).
+    ///
+    /// WI-20260911-0V0F7 — `None` NO LONGER MEANS ONE THING. It still means "do not
+    /// reduce this operand", which is all a caller can act on; what the caller is TOLD
+    /// about it now depends on [`EvalError::bridge_disposition`], and rides `faults`
+    /// rather than the return value. See that enum, and [`ReduceFaults`] for why a sink
+    /// rather than a richer return.
     fn bridge_op_to_eval(
         &mut self,
         op: Symbol,
         params: &[Symbol],
         param_args: &HashMap<Symbol, Value>,
         subst: &Substitution,
+        faults: &mut ReduceFaults,
     ) -> Option<Value> {
         // Reify + ground-gate each arg under σ, in declaration order (before
         // taking the KB — this needs σ, which the interpreter has not). `reify_value`
@@ -9772,34 +10060,59 @@ impl KnowledgeBase {
         // still costing a term intern per bridged Node operand (pinned for the
         // KB's lifetime, span discarded) and leaving the duty to convert
         // UNENFORCED at every future bridge site.
-        let outcome = self.run_in_bridge_interp(|interp| interp.call_op_bridged(op, &args))?;
-        match outcome {
-            Ok(value) => Some(value),
-            // The bridge-mode suspend signal (an undecided semantic compare):
-            // delay, exactly like the resolver's own SUSPEND. By design.
-            Err(EvalError::Suspended { .. }) => None,
-            // Any other eval error residualizes per WI-483 substitution-
-            // transparency: a callee's runtime-domain error (`Overflow`,
-            // `Raised`), an unhandled effect (resolution must not perform
-            // effects), or a body needing a real requirement dict (gap 3) must
-            // not break the enclosing rule. That covers the two INCOHERENT-INSTANCE
-            // verdicts as well (`AmbiguousRequirement`, WI-855;
-            // `AmbiguousSpecOpDispatch`, WI-842): the rule DELAYS on a tie instead of
-            // committing to a first match, and the naming diagnostic is what an eval
-            // entry sees — a bridged eval may not abort the enclosing rule, so this
-            // site reports by NOT answering. The one class worth surfacing is an
-            // evaluator-INVARIANT `Internal` bug — assert it loudly in debug/test
-            // builds (the loud-over-silent rule) while still residualizing in
-            // release rather than aborting resolution.
-            Err(e) => {
-                debug_assert!(
-                    !matches!(e, EvalError::Internal(_)),
-                    "bridge_op_to_eval: internal evaluator error bridging `{}`: {e}",
-                    self.qualified_name_of(op),
-                );
-                None
-            }
+        let Some(outcome) = self.run_in_bridge_interp(|interp| interp.call_op_bridged(op, &args))
+        else {
+            // WI-20260911-0V0F7 — THE RE-ENTRY CAP IS A TRUNCATION, and the `?` that
+            // stood here swallowed it. `run_in_bridge_interp` answers `None` when the
+            // eval↔SLD ping-pong hits [`BRIDGE_REENTRY_CAP`]: a branch was CUT SHORT, so
+            // an empty answer set past it is undecided rather than refuted — which is
+            // exactly what the sibling `bridge_eq_op_to_eval` already says of the same
+            // cut (`Undecided { truncated: true }`, with its own WI-628 note). Marked
+            // and not MESSAGED: the cap is the runtime's own budget and names nothing
+            // about this program. Raised by `/code-review`.
+            faults.truncate();
+            return None;
+        };
+        let e = match outcome {
+            Ok(value) => return Some(value),
+            Err(e) => e,
+        };
+        // WI-20260911-0V0F7 — EVERY eval error used to leave here as `None`, i.e.
+        // "residualize and say nothing". Three different things were wearing that one
+        // answer, and for two of them it is a claim the resolver has no grounds for: a
+        // goal whose callee RAN AND RAISED came back indistinguishable from one the
+        // fold merely declined, so the empty answer set read as a relation with nothing
+        // in it. [`EvalError::bridge_disposition`] partitions them, exhaustively and
+        // beside the variants, so a new variant must pick a side instead of inheriting
+        // silence.
+        //
+        // THE VALUE ANSWER IS `None` IN ALL THREE CASES, and that is unchanged by
+        // design: WI-483 substitution-transparency says a callee's own failure must not
+        // break the enclosing rule, so the operand stays un-reduced and the goal
+        // delays. What changes is WHAT THE STREAM IS TOLD about the delay.
+        let disposition = e.bridge_disposition(self);
+        // An evaluator-INVARIANT bug is still asserted loudly in debug/test builds (the
+        // loud-over-silent rule) while residualizing in release rather than aborting
+        // resolution. It answers `Fault` below, so release builds now NAME it too.
+        debug_assert!(
+            !matches!(e, EvalError::Internal(_)),
+            "bridge_op_to_eval: internal evaluator error bridging `{}`: {e}",
+            self.qualified_name_of(op),
+        );
+        match disposition {
+            // By design: an undecided semantic compare, or a capability the scratch
+            // interpreter does not have. Nothing is wrong and nothing is incomplete.
+            crate::eval::BridgeDisposition::Schedule => {}
+            // WI-628 one bridge over: a sub-search below was cut short, so this answer
+            // set is incomplete even though there is no sentence to print.
+            crate::eval::BridgeDisposition::Truncation => faults.truncate(),
+            // THE PAYLOAD, NOT ITS SORT. An earlier draft labelled the raise through
+            // `operand_label`, which is a SORT labeller — `Error.raise("disk full")`
+            // printed "RAISED `String`". `render_raised_payload` is the one owner of a
+            // payload's text and every other consumer of a raise already uses it.
+            crate::eval::BridgeDisposition::Fault => faults.fault(self.bridge_fault_message(op, &e)),
         }
+        None
     }
 
     /// Shared core of the SLD→eval bridge (WI-625): lend the KB to a fresh
@@ -9927,9 +10240,14 @@ impl KnowledgeBase {
     /// call (`?b.peek()`). The single operand-reduction pipeline shared by
     /// `eq`/`cmp`/`arith`. A residual (complex) op-call is left as-is here; the
     /// caller delays on it via [`Self::is_unreduced_op_call`].
-    fn reduce_operand(&mut self, v: Value, subst: &Substitution) -> Value {
+    fn reduce_operand(
+        &mut self,
+        v: Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Value {
         let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, false)
+        self.reduce_op_value(v, subst, 0, false, faults)
     }
 
     /// WI-1057 — [`Self::reduce_operand`] for the ONE site that is deciding a call
@@ -9954,9 +10272,14 @@ impl KnowledgeBase {
     ///
     /// The goal shape ([`Self::body_less_relation_arity`]) and this reduction are the
     /// admitting and the deciding half of one decision, and they have one reader each.
-    fn reduce_dispatched_goal_call(&mut self, v: Value, subst: &Substitution) -> Value {
+    fn reduce_dispatched_goal_call(
+        &mut self,
+        v: Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Value {
         let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, true)
+        self.reduce_op_value(v, subst, 0, true, faults)
     }
 
     /// WI-483: is `v` a residual (unfolded) method-op call operand — a

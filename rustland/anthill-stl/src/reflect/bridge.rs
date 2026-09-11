@@ -632,12 +632,19 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
             }
             // EXHAUSTION DROPS THE STREAM, so a fault recorded on a branch that yielded
             // NOTHING is not visible here — `split_first` takes `self` by value and
-            // returns no continuation on this path. Reachable only under
-            // `definite_only`, which suppresses the residual a faulted goal would
-            // otherwise yield; this face resolves with it off, so every fault reaches
-            // the arm above. Stated rather than assumed: a face that turns
-            // `definite_only` on would need `split_first` to hand the exhausted stream
-            // back.
+            // returns no continuation on this path.
+            //
+            // THIS USED TO SAY "reachable only under `definite_only`, … so every fault
+            // reaches the arm above", AND THAT IS FALSE (WI-20260911-0V0F7, measured).
+            // A branch can fault and still yield nothing with `definite_only` OFF: the
+            // WI-938 relational hook falls through to ordinary candidate selection when
+            // the reduction is undecided, so `rule bad :- rank(green(), 1)` over a
+            // raising `rank` FAILS the branch instead of residualizing. Since a bridged
+            // raise became a fault, that is an ordinary program rather than a corner.
+            // Closing it needs `SearchStream::split_first` to hand the exhausted stream
+            // back — a signature change on the resolver's public door, since `step` is
+            // private to that module. Pinned by
+            // `a_fault_on_a_branch_that_yielded_nothing_is_invisible_here`.
             None => Ok(None),
         }
     }
@@ -1383,6 +1390,196 @@ end
             "the Err must carry the resolver's own words, naming the operand sorts; \
              got: {text}"
         );
+    }
+
+    /// WI-20260911-0V0F7 — one program for the three rows below: a raise the resolver
+    /// reaches through the SLD→eval bridge, a clause that PROVES beside it, and a
+    /// two-clause control with no raise at all.
+    ///
+    /// A NON-EXHAUSTIVE `sort` MATCH, not the ticket's guard-exhaustible one, and the
+    /// substitution is a finding rather than a preference. `match n case k | k > 0 -> k`
+    /// routes its guard through `PartialOrd.gt`, whose `requires` slot this KB cannot
+    /// fill — `load_source_bridge_with_stdlib` loads the stdlib SOURCE with no Rust host
+    /// bindings, where `anthill-core`'s test helper registers them — so the bridged run
+    /// dies `Internal("DeferToRequirement: requirement param `__req_weakord` not bound
+    /// in caller frame")` and trips `bridge_op_to_eval`'s own debug_assert: a
+    /// debug-build ABORT from a program that loads clean. PRE-EXISTING and not this
+    /// ticket's (the assert and the requirement path are both untouched here); recorded
+    /// because the identical fixture passes in `anthill-core`'s rows, so the difference
+    /// is the host-binding set and not the language.
+    ///
+    /// A `sort` scrutinee's arms are NOT checked for exhaustiveness (unlike an `enum`),
+    /// so this loads clean and raises `Error[MatchFailed]` through the HOST channel on
+    /// `green` — the effect row stays EMPTY, nothing else in the program warns, and no
+    /// requirement dictionary is involved.
+    const RAISING_MATCH: &str = r#"
+namespace rstl.match
+  import anthill.prelude.{Int64}
+
+  sort Colour
+    entity red
+    entity green
+  end
+
+  operation rank(c: Colour) -> Int64 = match c case red() -> 1
+
+  rule bad :- rank(green(), 1)
+
+  rule both :- rank(green(), 1)
+  rule both :- rank(red(), 1)
+
+  rule clean :- rank(red(), 1)
+  rule clean :- rank(red(), 1)
+end
+"#;
+
+    /// WI-20260911-0V0F7 — the same `Err` arm, reached by a BRIDGED RAISE rather than
+    /// by an ill-typed comparison. The raise is the far more common producer: every
+    /// operation whose body can fail at run time now reaches this face through it,
+    /// where before the pull handed back an `undecided` row and the callee's failure
+    /// went nowhere.
+    ///
+    /// CONTROL: `execute_pattern_query` passes either way — a healthy query still
+    /// streams its rows.
+    #[test]
+    fn a_bridged_raise_takes_the_error_arm() {
+        // `both`, not `bad`: this arm can only report a fault on a pull that also YIELDS
+        // — see `a_fault_on_a_branch_that_yielded_nothing_is_invisible_here` below, which
+        // pins the other half. `both`'s second clause proves, so there is a row for the
+        // fault to win over.
+        let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
+        let goal = {
+            let mut kb = bridge.kb.borrow_mut();
+            kb.resolve_qualified_name_term("rstl.match.both")
+        };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        let text = match stream.split_first() {
+            Err(e) => format!("{e:?}"),
+            Ok(_) => panic!(
+                "an operation that RAN AND RAISED must take the Err arm, not hand back \
+                 an `undecided` row as though the goal merely had no answer"
+            ),
+        };
+        assert!(
+            text.contains("match_failed"),
+            "the Err must carry the raised PAYLOAD; got: {text}"
+        );
+    }
+
+    /// THE OTHER HALF, AND IT CORRECTS A CLAIM AT THE ARM'S OWN SITE. That comment said
+    /// a fault invisible here is "reachable only under `definite_only`, which suppresses
+    /// the residual a faulted goal would otherwise yield; this face resolves with it
+    /// off, so every fault reaches the arm above". MEASURED FALSE: `rule bad :-
+    /// rank(green(), 1)` faults and yields NOTHING with `definite_only` off, because the
+    /// WI-938 relational hook falls through to ordinary candidate selection when the
+    /// reduction is undecided, and `rank` heads no clauses — so the branch FAILS rather
+    /// than residualizing, `split_first` takes `self` by value on that path, and the
+    /// recorded fault dies with the stream.
+    ///
+    /// NOT FIXED HERE, and the reason is the shape of the repair rather than its size:
+    /// `SearchStream::split_first` would have to hand the exhausted stream back, which
+    /// is a signature change on the resolver's public door, and `step` — the loop that
+    /// would let this adapter keep ownership — is private to that module. PINNED so the
+    /// gap is a measured fact with a site rather than a stale sentence.
+    #[test]
+    fn a_fault_on_a_branch_that_yielded_nothing_is_invisible_here() {
+        let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
+        let goal = {
+            let mut kb = bridge.kb.borrow_mut();
+            kb.resolve_qualified_name_term("rstl.match.bad")
+        };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        assert!(
+            matches!(stream.split_first(), Ok(None)),
+            "TODAY's behaviour, pinned rather than endorsed: the raise was recorded on \
+             the stream and the stream was dropped, so this face reports an ordinary \
+             empty result. When the resolver's door can hand back an exhausted stream, \
+             this row is where the change announces itself"
+        );
+    }
+
+    /// THE COST OF THE ARM ABOVE, PINNED RATHER THAN DISCOVERED. A fault is checked
+    /// BEFORE the row is built and WINS over it, and the continuation is deliberately
+    /// not stored — so a query whose SIBLING candidate answers perfectly well dies at
+    /// the first pull with that answer discarded.
+    ///
+    /// That trade was argued at the site when the arm was written (WI-879's channel:
+    /// "the stream is in a faulted state, and the continuation is deliberately not
+    /// stored"), and a bridged raise does not change the argument — it changes how
+    /// OFTEN the trade is taken, which is why it is measured here instead of left to
+    /// be found. A future change that lets the good row through belongs at that site,
+    /// and this row is where it announces itself.
+    #[test]
+    fn a_faulted_branch_costs_a_sibling_candidates_answer() {
+        let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
+        let goal = {
+            let mut kb = bridge.kb.borrow_mut();
+            kb.resolve_qualified_name_term("rstl.match.both")
+        };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
+        // PULLED TO THE END, not once, because WHICH clause the resolver tries first is
+        // discrimination-tree order and not source order — a single pull would assert
+        // one of two orders and pass by luck under the other. What is order-independent
+        // is that the consumer can never drain this stream: some pull faults, and the
+        // `Err` arm stores no continuation, so `Ok(None)` is unreachable.
+        let mut stream = bridge.execute(query).expect("execute builds the stream");
+        let mut rows = 0;
+        loop {
+            match stream.split_first() {
+                Ok(Some((_, rest))) => {
+                    rows += 1;
+                    stream = rest;
+                    assert!(rows < 8, "the stream must fault, not run away");
+                }
+                Ok(None) => panic!(
+                    "the faulted clause must take the Err arm at some pull — a consumer \
+                     that reaches exhaustion has been handed a COMPLETE answer set over \
+                     a search one of whose clauses never ran"
+                ),
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// CONTROL for the row above (passes either way by design): the same shape with NO
+    /// raise drains to `Ok(None)`, so what that row measures is the fault and not "a
+    /// two-clause query cannot be drained".
+    #[test]
+    fn a_clean_two_clause_query_drains_to_exhaustion() {
+        let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
+        let goal = {
+            let mut kb = bridge.kb.borrow_mut();
+            kb.resolve_qualified_name_term("rstl.match.clean")
+        };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
+        let mut stream = bridge.execute(query).expect("execute builds the stream");
+        let mut rows = 0;
+        loop {
+            match stream.split_first() {
+                Ok(Some((_, rest))) => {
+                    rows += 1;
+                    stream = rest;
+                    assert!(rows < 8, "the stream must exhaust, not run away");
+                }
+                Ok(None) => break,
+                Err(e) => panic!("a healthy two-clause query must not fault; got {e:?}"),
+            }
+        }
+        // NOT a row COUNT: `clean`'s two clauses prove the same nullary goal, and the
+        // resolver dedups identical answers. What the control asserts is the EXIT —
+        // `Ok(None)`, i.e. the consumer drained the stream — which is exactly what the
+        // row above says a fault makes unreachable.
+        assert!(rows >= 1, "`rank(red()) = 1`, so `clean` holds");
     }
 
     #[test]

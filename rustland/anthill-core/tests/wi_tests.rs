@@ -365,6 +365,9 @@ mod wi_9wvt7_reify_typing_test;
 #[path = "include/wi_9wvt7_error_reify_test.rs"]
 mod wi_9wvt7_error_reify_test;
 
+#[path = "include/wi_0v0f7_bridged_raise_test.rs"]
+mod wi_0v0f7_bridged_raise_test;
+
 #[path = "include/wi642_rule_body_requires_test.rs"]
 mod wi642_rule_body_requires_test;
 

@@ -133,7 +133,7 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::resolve::ResolveConfig;
+use anthill_core::kb::resolve::{ReduceFaults, ResolveConfig};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
@@ -442,7 +442,7 @@ fn an_undecidable_pair_is_not_reported_as_non_unifiable() {
     let dx = call(&mut kb, "fdpj8.dbl", &[x]);
     let dy = call(&mut kb, "fdpj8.dbl", &[y]);
     assert!(
-        matches!(kb.unify_terms(dx, dy), TermUnification::Undecided),
+        matches!(kb.unify_terms(dx, dy, &mut ReduceFaults::default()), TermUnification::Undecided),
         "`unify_terms(dbl(?x), dbl(?y))` is UNDECIDED — nothing has said what either \
          call is. `NoUnifier` here is a definite claim the walk never earned, and it \
          is what `reflect.unify` hands out as `none()`",
@@ -450,12 +450,12 @@ fn an_undecidable_pair_is_not_reported_as_non_unifiable() {
 
     let d2 = call(&mut kb, "fdpj8.dbl", &[two]);
     assert!(
-        matches!(kb.unify_terms(d2, four), TermUnification::Unifier(_)),
+        matches!(kb.unify_terms(d2, four, &mut ReduceFaults::default()), TermUnification::Unifier(_)),
         "`unify_terms(dbl(2), 4)`: `dbl(2)` IS 4, so the pair unifies with an empty σ",
     );
     let d4 = call(&mut kb, "fdpj8.dbl", &[four]);
     assert!(
-        matches!(kb.unify_terms(d4, four), TermUnification::NoUnifier),
+        matches!(kb.unify_terms(d4, four, &mut ReduceFaults::default()), TermUnification::NoUnifier),
         "THE THIRD ANSWER, and the polarity that says the row above is not just \
          reporting success for everything: `dbl(4)` is 8, which does not unify with 4",
     );
