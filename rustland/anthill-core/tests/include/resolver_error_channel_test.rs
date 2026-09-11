@@ -201,3 +201,47 @@ end
         sols.len()
     );
 }
+
+
+#[test]
+fn a_faulted_extent_read_refuses_with_the_reason() {
+    // `read_facts_resolved` already refuses loudly when its search TRUNCATES — "a
+    // missing answer is undecided, not refuted". A search that could not EVALUATE part
+    // of the query owes the same refusal, and before the resolver had a fault channel
+    // it instead returned a silently SHORT row list with the reason on stderr.
+    //
+    // `derived` is rule-backed and its body compares a String against an Int64, which
+    // reaches `builtin_cmp`'s no-order arm.
+    //
+    // CONTROL: `a_clean_extent_read_still_returns_rows` passes either way by design —
+    // it says the new refusal did not swallow the ordinary read. Back out the
+    // `stats.errors` check in `read_facts_resolved` and this row alone fails, with a
+    // short row list instead of an error.
+    let src = r#"
+namespace rec.ext
+  import anthill.prelude.{Int64, String, Bool, PartialOrd}
+  fact tag("a")
+  sort Rows
+    entity derived(v: Int64)
+    rule derived(v: ?x) :- tag(?x), PartialOrd.gt(?x, 1)
+  end
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let f = kb
+        .try_resolve_symbol("rec.ext.Rows.derived")
+        .expect("derived functor");
+    let err = kb
+        .read_facts_resolved(f, &[])
+        .expect_err("a search that could not be evaluated must refuse, not return rows");
+    let text = err.to_string();
+    assert!(
+        text.contains("could not evaluate"),
+        "the refusal must name the FAULT, not a depth cap the search never reached; \
+         got: {text}"
+    );
+    assert!(
+        text.contains("two DIFFERENT literal sorts"),
+        "and must carry the resolver's own words; got: {text}"
+    );
+}

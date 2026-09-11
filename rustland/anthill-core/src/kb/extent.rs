@@ -1488,6 +1488,17 @@ pub enum ExtentReadError {
     /// silently short list — the WI-767 "a missing answer is undecided, not
     /// refuted" discipline carried onto the Resolve read.
     SearchTruncated { functor: String },
+    /// A [`KnowledgeBase::read_facts_resolved`] search reported a FAULT
+    /// ([`crate::kb::resolve::ResolveError`]) — a goal it could not EVALUATE, such as an
+    /// ill-typed comparison. `detail` is the resolver's own message.
+    ///
+    /// SIBLING OF [`Self::SearchTruncated`], and kept apart from it for the reason that
+    /// variant's doc gives about silence: both make the row set UNDECIDED rather than
+    /// complete, so both must refuse loudly — but they have different causes and
+    /// different repairs, and reporting a fault as a depth truncation names a budget the
+    /// search never approached. Before the resolver had a fault channel, this case wrote
+    /// to stderr from `trace_no_order` and this read returned a silently SHORT row list.
+    SearchFaulted { functor: String, detail: String },
     /// A [`KnowledgeBase::read_facts_resolved`] read of a functor with no declared
     /// field schema ([`KnowledgeBase::entity_field_names`] returned `None`), or a
     /// `selection` naming a field the functor lacks — the Resolve read needs the
@@ -1514,6 +1525,11 @@ impl std::fmt::Display for ExtentReadError {
                 f,
                 "read_facts_resolved(`{functor}`): resolution truncated at the depth cap; \
                  the row set is undecided, not complete — raise the depth budget"
+            ),
+            ExtentReadError::SearchFaulted { functor, detail } => write!(
+                f,
+                "read_facts_resolved(`{functor}`): the resolver could not evaluate part \
+                 of the query — {detail}. The row set is undecided, not complete"
             ),
             ExtentReadError::NoFieldSchema { functor } => write!(
                 f,
@@ -1836,9 +1852,19 @@ impl KnowledgeBase {
     ) -> Result<Vec<Value>, ExtentReadError> {
         let goal = self.enumeration_goal(functor, selection)?;
         let config = crate::kb::resolve::ResolveConfig::default();
-        let (solutions, truncated) =
-            self.resolve_goals_with_truncation(vec![goal.clone()], &config);
-        if truncated {
+        // `resolve_goals_with_stats`, not `resolve_goals_with_truncation`: the latter
+        // drops `ResolveStats::errors`, so a goal this search could not EVALUATE came
+        // back as a short row list with no reason attached. This read already refuses
+        // loudly on truncation for exactly that discipline (a missing answer is
+        // undecided, not refuted); a fault is the same obligation with a different cause.
+        let (solutions, stats) = self.resolve_goals_with_stats(vec![goal.clone()], &config);
+        if let Some(err) = stats.errors.first() {
+            return Err(ExtentReadError::SearchFaulted {
+                functor: self.local_name_of(functor).to_string(),
+                detail: err.message.clone(),
+            });
+        }
+        if stats.truncated {
             return Err(ExtentReadError::SearchTruncated {
                 functor: self.local_name_of(functor).to_string(),
             });
