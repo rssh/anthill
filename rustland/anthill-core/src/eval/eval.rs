@@ -3435,12 +3435,24 @@ impl Interpreter {
         // `T1`, the payload SORT this boundary discharges — off the type-argument channel
         // the typer filled at this call site, then narrowed to the sort it names.
         //
+        // KEYED BY THE SYMBOL the layer resolved once (`ErrorLayer::reify_payload_param`),
+        // not by the written name: read by name, a renamed parameter in
+        // `effects.anthill` would be indistinguishable from the two legitimate reasons a
+        // boundary cannot be narrowed, and every boundary in the program would quietly
+        // revert to catching wide. Resolved at layer construction, a rename is a missing
+        // symbol, the layer is `None`, and `Error.reify` fails loudly as a body-less
+        // operation instead.
+        //
         // `None` AT EVERY STEP MEANS "CANNOT NARROW", NOT "SOMETHING WENT WRONG", and the
         // boundary then catches wide exactly as it did before the narrowing existed. See
         // `AwaitState::ReifyBoundary::payload` for the three shapes that reach it and for
         // why refusing instead broke working programs. The ROW is the guarantee either
         // way; this is the extra check, available only where the payload is nominal.
-        let payload = find_type_arg_by_name(&self.kb, type_args, REIFY_PAYLOAD_PARAM)
+        let payload = self
+            .error_layer
+            .as_ref()
+            .map(|l| l.reify_payload_param)
+            .and_then(|key| find_type_arg(type_args, key))
             .and_then(|t| payload_sort_of(&self.kb, t));
 
         // The profiler counts this the way `enter_operation` counts an ordinary
@@ -4342,39 +4354,6 @@ fn find_requirement<'a>(
     name: Symbol,
 ) -> Option<&'a super::value::Dictionary> {
     reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
-}
-
-/// The name of `Error.reify`'s PAYLOAD type parameter, as
-/// `stdlib/anthill/prelude/effects.anthill` declares it.
-///
-/// A NAME AND NOT A SYMBOL, and coupled to that file: the type-argument channel is
-/// keyed by the callee's op-scoped parameter symbols, which are minted per operation,
-/// so the stable handle across the two files is the written name. (Proposal 058 §4.2
-/// rule 1 is why it is not simply `T`: that would shadow the sort's own parameter.)
-///
-/// RENAMING THE PARAMETER THERE IS SILENT, AND THAT IS A KNOWN WEAKNESS OF THIS
-/// SPELLING. A missing key reads as "this boundary cannot be narrowed", which is a
-/// legitimate outcome for two other reasons, so every boundary in the program would
-/// quietly revert to catching wide with nothing printed. The repair is to resolve the
-/// symbol ONCE at `ErrorLayer::resolve`, where a rename fails at layer construction and
-/// the existing symbol-keyed `find_type_arg` does the lookup; recorded on
-/// WI-20260908-9WVT7 rather than done here, because the layer's resolve is a separate
-/// surface from the boundary.
-pub(crate) const REIFY_PAYLOAD_PARAM: &str = "T1";
-
-/// A type argument by the name the callee DECLARED, rather than by interned symbol —
-/// see [`REIFY_PAYLOAD_PARAM`] for why the boundary needs the name. Linear over a
-/// channel of at most a handful of entries, walked once per boundary entry.
-fn find_type_arg_by_name(
-    kb: &KnowledgeBase,
-    type_args: &FrameTypeArgs,
-    name: &str,
-) -> Option<crate::kb::term::TermId> {
-    type_args
-        .iter()
-        .rev()
-        .find(|(s, _)| kb.local_name_of(*s) == name)
-        .map(|(_, t)| *t)
 }
 
 /// The payload SORT a boundary typed at `T1` discharges, or `None` where the runtime

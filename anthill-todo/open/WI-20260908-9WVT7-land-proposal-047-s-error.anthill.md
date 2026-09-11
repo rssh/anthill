@@ -480,11 +480,27 @@ ALSO OPEN, EACH RECORDED AT ITS SITE:
    reasons, so a rename in `effects.anthill` would quietly revert every boundary in the
    program to catching wide. The repair is to resolve the SYMBOL once at
    `ErrorLayer::resolve`, where a rename fails at layer construction.
- * A DECLINED RAISE INSIDE A RULE BODY RESIDUALIZES TO "NO SOLUTIONS". `bridge_op_to_eval`
-   turns an `EvalError::Raised` into no answer, so a rule calling the shape this design
-   encourages — one `reify` per label, the rest declared as escaping — yields zero
-   solutions rather than a failure. Before the narrowing every raise inside a boundary was
-   absorbed, so the rule always answered. Needs a route out of the bridge, which is design.
+ * A RAISE THAT ESCAPES A BRIDGED OPERATION IS REPORTED AS "NO SOLUTIONS".
+   `bridge_op_to_eval` turns every `EvalError` into `None`, so the goal residualizes with
+   nothing said. MEASURED, with two controls, on an operation whose row is EMPTY:
+   `rule viaHost(?r) :- guardExhaustible(0 - 5, ?r)` — a guard-exhaustible match, so the
+   HOST `Error[MatchFailed]` channel is the door — answers `no solutions`, while
+   `guardExhaustible(5, ?r)` answers `?r = 5` and an ordinary `fine(1, ?r)` answers
+   `?r = 2`.
+
+   AN EARLIER DRAFT OF THIS ITEM SAID "a DECLINED reify raise", AND THAT IS REFUTED.
+   `rule viaDeclinedClean(?r) :- declinedClean(?r)`, where an inner boundary declines an
+   `Other` and an outer effect-free one catches it, answers `?r = err(error: other(n: 7))`.
+   What the first probe actually hit was a rule body calling an operation whose ROW IS
+   NON-EMPTY, which residualizes for its own pre-existing reason — its control
+   (`viaCaught`, no declined raise at all) failed identically, which is what exposed it.
+   So this is PRE-EXISTING and not a consequence of the narrowing: it predates 027.4 and
+   is reached through the host channel, not through `reify`.
+
+   Now actionable: `BuiltinResult::Error(ResolveError)` landed in 227f83b9 and its own doc
+   draws exactly this line — "`Failure` claims the answer is no, `Unknown` that there is no
+   answer, `Delay` that the answer is not available yet. This claims nothing about the goal
+   at all — it says the resolver could not ask it."
 
 OPEN, AND NOT CLOSED BY THIS: THE TYPE-ARGUMENT AXIS. A value's runtime sort is its HEAD,
 so a boundary at `Box[V = Int64]` accepts a `Box[V = String]`. Driven by the review:
