@@ -1698,3 +1698,6 @@ mod wi_fdpj8_op_call_carrier_test;
 
 #[path = "include/wi_fdpj8_apply_within_shape_test.rs"]
 mod wi_fdpj8_apply_within_shape_test;
+
+#[path = "include/wi_7tn1q_occurs_check_sort_alias_test.rs"]
+mod wi_7tn1q_occurs_check_sort_alias_test;

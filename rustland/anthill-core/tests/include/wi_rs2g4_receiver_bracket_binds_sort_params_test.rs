@@ -80,19 +80,22 @@
 //! [`a_bracket_contradicting_an_argument_stays_loud`],
 //! [`the_wi708_operation_parameter_channel_is_unchanged`].
 //!
-//! WHAT THIS DELIVERY MAKES REACHABLE AND DOES NOT FIX — measured, not assumed, and NOT
-//! a row here because the failure is an ABORT that would take the whole test binary with
-//! it. A call-site bracket whose VALUE mentions the enclosing sort's own type parameter —
+//! WHAT THIS DELIVERY MADE REACHABLE AND DID NOT FIX — since fixed by
+//! WI-20260911-7TN1Q, whose `wi_7tn1q_occurs_check_sort_alias_test` carries the rows.
+//! A call-site bracket whose VALUE mentions the enclosing sort's own type parameter —
 //! `Box.empty[T = Option[T = T]]()`, `[T = List[T = T]]`, `[T = Box[T = T]]` written
-//! inside `sort Box[T]` — does not terminate: σ gets a binding whose `Ref(Box.T)` the
-//! SortAlias chain resolves back to the very variable, `walk_type_deep` chases it, and the
-//! loader overflows its stack. MEASURED AT THE PARENT COMMIT: the CALLEE spelling already
+//! inside `sort Box[T]` — did not terminate: σ got a binding whose `Ref(Box.T)` the
+//! SortAlias chain resolves back to the very variable, `walk_type_deep` chased it, and the
+//! loader overflowed its stack. MEASURED AT THE PARENT COMMIT: the CALLEE spelling already
 //! aborted there (since WI-841 gave it the sort scope), while the receiver spelling loaded
-//! clean *because the bracket was dropped*. So this ticket adds no defect and removes no
-//! defect; it gives the second spelling the first one's behaviour, crash included. The
-//! occurs check at `bind_resolved` does not catch it because it is structural over
-//! `Term::Var` and the cycle runs through a `Term::Ref` alias — making it alias-aware is a
-//! change to the core unifier with its own census, not this ticket's.
+//! clean *because the bracket was dropped*. So this ticket added no defect and removed no
+//! defect; it gave the second spelling the first one's behaviour, crash included. The
+//! occurs check at `bind_resolved` missed it because it was structural over `Term::Var`
+//! while the cycle runs through a `Term::Ref` alias; 7TN1Q gave `occurs_in` that arm, and
+//! the `prior`-is-`None` refusal this file's own `seed_receiver_type_args` leg renders
+//! ("a receiver binding for 'T' that does not mention 'T' itself") is what the receiver
+//! spelling now reports — a message written here against a refusal that could not yet
+//! happen.
 //!
 //! THE MOVED W6JH0 ROWS are in `wi_w6jh0_companion_receiver_bracket_test`, each rewritten
 //! there with what moved and why; the largest is that a receiver bracket on a

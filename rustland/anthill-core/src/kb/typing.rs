@@ -26717,6 +26717,12 @@ fn op_scoped_type_param_symbol(
 /// DISTINCT declared parameter — so no binding is contradicted by a SIBLING binding.
 /// A binding contradicted by an ARGUMENT or by the expected type is caught downstream,
 /// by the WI-385/WI-836 conformance checks, not here.
+///
+/// WI-20260911-7TN1Q — ONE EXCEPTION, and it is narrow by construction: a value that
+/// MENTIONS the parameter it binds. The occurs check refuses that binding, and a
+/// discarded `false` made the refusal silent, so the leg below reads the verdict for
+/// that one fault and reports it. The already-pinned case WI-367 / WI-379 rely on is
+/// untouched — it is gated out by the `prior` read. See the comment at the site.
 fn seed_op_type_args(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -26746,9 +26752,9 @@ fn seed_op_type_args(
     // this be a plain `zip` rather than an index carried back out of the resolver.
     let mut selections: Vec<InstanceSelection> = Vec::new();
     let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
-    for (target, (_, value)) in targets.into_iter().zip(type_args) {
-        if let Some(param) = target.param() {
-            let param = type_param_var_term(kb, param);
+    for (target, (key, value)) in targets.into_iter().zip(type_args) {
+        if let Some(param_var) = target.param() {
+            let param = type_param_var_term(kb, param_var);
             // WI-342 S4b: a type-arg is a carrier-agnostic `Value` (`Value: TermView`),
             // so unify it directly — a value-in-type arg (`Value::Node`) unifies
             // cross-carrier through the typer's view dispatch, no re-ground.
@@ -26782,12 +26788,73 @@ fn seed_op_type_args(
             // [`expand_written_bracket_value`]; the receiver spelling runs the same
             // expansion at [`seed_receiver_type_args`], one rule at both writers.
             let expanded = expand_written_bracket_value(kb, written, target.slot_spec().is_some());
-            unify_types(
-                kb,
-                subst,
-                &TermIdView(param),
-                expanded.as_ref().unwrap_or(written),
-            );
+            let bound = expanded.as_ref().unwrap_or(written);
+            // WI-20260911-7TN1Q — THE ONE FAULT THE DISCARD BELOW MUST NOT SWALLOW. A
+            // value that MENTIONS the parameter it binds (`Box.empty[T = Option[T = T]]()`
+            // inside `sort Box[T]`) is refused by [`occurs_in`]'s `Term::Ref` arm, and a
+            // discarded `false` would make that refusal SILENT: the call would type at
+            // whatever the context wanted, which is the WI-20260911-RS2G4 defect one
+            // channel over. It aborted before the arm existed, so "loads clean" is not the
+            // behaviour being preserved here.
+            //
+            // THREE READS, and the order is the whole content. `prior` and `mentions` are
+            // taken BEFORE the unify because the unify is what consumes them; the verdict
+            // decides, and the other two say WHICH fault a `false` is:
+            //   * `prior` SOME — the parameter was already pinned, so a `false` is a
+            //     disagreement with that pin and the discard stands. WI-367 / WI-379
+            //     depend on exactly that being a no-op (see the LIMIT in this function's
+            //     doc), and this leg does not touch it.
+            //   * `mentions` — asked as a FACT rather than inferred from `prior` alone,
+            //     because `bind_resolved` also answers `false` on the STICKY contradiction
+            //     flag, which an earlier binding in this same expression can have set. A
+            //     `false` that is neither keeps today's discard rather than getting a
+            //     message invented for a case nothing drives.
+            // `mentions` is TRUE for the identity binding `[T = T]` too (the value IS the
+            // var), and that is not a fault: `unify_types` walks both sides and returns on
+            // its identity fast-path, so the verdict gate is what keeps the control
+            // loading. That control is a row of `wi_7tn1q_occurs_check_sort_alias_test`.
+            let (prior, mentions) = match param_var {
+                Var::Global(vid) => (
+                    subst.resolve_as_value(vid).is_some(),
+                    occurs_in_view(kb, vid, bound),
+                ),
+                // `call_bracket_scopes` publishes a `Var::Global` per parameter; a
+                // non-global would be a stored DeBruijn spine reaching a call site.
+                _ => (false, false),
+            };
+            let agreed = unify_types(kb, subst, &TermIdView(param), bound);
+            if !agreed && !prior && mentions {
+                // BY THE DECLARED NAME, which is the bare spelling the author wrote
+                // (`declared` is where every `Param` / `NamedSlot` target's var came
+                // from, so the lookup is total); the written KEY is the fallback for a
+                // positional binding whose var no scope claims — a shape
+                // `resolve_call_type_arg_targets` does not produce.
+                let param_name = declared
+                    .iter()
+                    .find(|(_, v)| *v == param_var)
+                    .map(|(s, _)| *s)
+                    .or(*key)
+                    .map(|s| kb.local_name_of(s).to_string());
+                // LOUD IN BOTH PROFILES (found by `/code-review`). The tripwire is a
+                // `debug_assert`, but the REFUSAL is not: the binding has already been
+                // rejected, so returning here would type the call at whatever the context
+                // wants — the silent wrong answer this whole leg exists to stop. A name
+                // that cannot be recovered degrades the message, never the verdict.
+                debug_assert!(
+                    param_name.is_some(),
+                    "seed_op_type_args: bracket target {param_var:?} names no declared \
+                     parameter and the binding wrote no key"
+                );
+                let name = param_name.unwrap_or_else(|| format!("{param_var:?}"));
+                return Err(bracket_binding_mentions_its_parameter(
+                    kb,
+                    "a type argument",
+                    &name,
+                    value,
+                    fn_sym,
+                    span,
+                ));
+            }
         }
         let Some(spec_sort) = target.slot_spec() else {
             continue;
@@ -26811,6 +26878,52 @@ fn seed_op_type_args(
         push_selection(kb, &mut selections, spec_sort, witness, slots, fn_sym, span)?;
     }
     Ok(selections)
+}
+
+/// WI-20260911-7TN1Q — the refusal BOTH bracket channels render when a written binding
+/// for a type parameter MENTIONS that parameter: `Box.empty[T = Option[T = T]]()` and
+/// `Box[T = Option[T = T]].empty()`, each written inside `sort Box[T]`. σ would get
+/// `?T := Option[T = Ref(Box.T)]`, whose `Ref` the SortAlias chain resolves back to `?T`
+/// itself — a cycle [`walk_type_deep`] chases until the stack ends, which is what both
+/// spellings did before [`occurs_in`] gained its `Term::Ref` arm.
+///
+/// ONE MESSAGE, because it is one fault. `channel` is the only thing the two spellings do
+/// not share — which bracket the author wrote — so the remaining bytes are identical, as
+/// 035's interchangeable forms require. It names the PARAMETER and the VALUE because
+/// "cannot unify" would name neither.
+///
+/// AND IT SAYS WHY, because the refusal is a REPRESENTATION limit and not a malformed
+/// program (found by `/code-review`). `Box.empty[T = List[T = T]]()` — "the same operation
+/// at the instance whose element is a `List` of my own `T`" — is a well-formed intent; it
+/// is unexpressible only because a bracket binds the ENCLOSING sort's canonical parameter
+/// variable (`call_bracket_scopes` spans that scope, and `sort_type_params_as_pairs`
+/// publishes one var per parameter), so the callee's `T` and the enclosing instance's `T`
+/// ARE one variable. A message asserting only "does not mention itself" sends the author
+/// looking for their own mistake. Giving the callee's parameters fresh variables is what
+/// would make the family expressible, and that is a design change, not a diagnostic.
+///
+/// `#[track_caller]` so WI-510's `site` keeps reporting the CALLING seeding site rather
+/// than this builder; `here()` chains through.
+#[track_caller]
+fn bracket_binding_mentions_its_parameter(
+    kb: &KnowledgeBase,
+    channel: &str,
+    param: &str,
+    written: &Value,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> TypeError {
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+        expected: format!(
+            "{channel} for '{param}' that does not mention '{param}' itself (the bracket \
+             binds the ENCLOSING sort's own '{param}', so a value mentioning it would be \
+             cyclic — a call at another instance cannot be written in terms of this one)"
+        ),
+        actual: type_display_name_value(kb, written),
+    }
 }
 
 /// WI-20260911-RS2G4 (058 rule 1, the SORT half of the binding) — a form-(3) COMPANION
@@ -26915,35 +27028,60 @@ fn seed_receiver_type_args(
         // READ BEFORE THE UNIFY, because it is what decides WHICH fault a `false` is.
         // [`seed_op_type_args`] is the only earlier writer, so a parameter that is
         // already BOUND can only have been bound by the callee's bracket — that is the
-        // two-bracket contradiction. A parameter that is still FREE cannot be
-        // contradicted by anything, and `bind_resolved` refuses it for exactly one
-        // reason: the OCCURS check, i.e. the receiver's own value mentions the parameter
-        // it is binding (`Box[T = Box[T = T]]` written inside `sort Box[T]`). Reporting
-        // that as "the callee bracket says …" would name a bracket the author never
-        // wrote.
+        // two-bracket contradiction. A parameter that is still FREE is the OCCURS check —
+        // the receiver's own value mentions the parameter it is binding (`Box[T = Box[T =
+        // T]]` written inside `sort Box[T]`). Reporting that as "the callee bracket says
+        // …" would name a bracket the author never wrote.
         // `sort_type_params_as_pairs` publishes a `Var::Global` term per parameter
         // (`published_param_var`), so the match is total in practice; a non-var term
         // would answer `None` and take the occurs arm, which is the honest reading of
         // "nothing was bound here".
-        let prior = match kb.get_term(*var_term) {
-            Term::Var(Var::Global(vid)) => subst.resolve_as_value(*vid).cloned(),
-            _ => None,
+        //
+        // WI-20260911-7TN1Q (found by `/code-review`): `mentions` is READ, not inferred
+        // from `prior` being `None`. This leg used to conclude "the value mentions the
+        // parameter" from the verdict alone, and that is one cause too few —
+        // `bind_resolved` also answers `false` on σ's STICKY contradiction flag
+        // (`!subst.is_contradiction()` is its last line), which [`seed_op_type_args`] runs
+        // FIRST on this same σ and can have set. A correct receiver binding of a free
+        // parameter then rendered the cyclic-value message, blaming the author for a value
+        // they did not write. The callee leg asks the same question the same way, and says
+        // so at its site.
+        let (prior, mentions) = match kb.get_term(*var_term) {
+            Term::Var(Var::Global(vid)) => {
+                let vid = *vid;
+                (
+                    subst.resolve_as_value(vid).cloned(),
+                    occurs_in_view(kb, vid, &value),
+                )
+            }
+            _ => (None, false),
         };
         if !unify_types(kb, subst, &TermIdView(*var_term), &value) {
             // AS WRITTEN, not as expanded: `[T = List]` is what the author typed, and
             // telling them their `List` disagrees with `List[T = ?T]` names a variable
             // this pass minted.
             let Some(prior) = prior else {
-                return Err(TypeError::Other {
-                    site: TypeError::here(),
+                if !mentions {
+                    // FREE, refused, and the value does NOT mention the parameter: the
+                    // sticky flag above. NOT a silent skip — the conflicting re-bind that
+                    // set it also recorded a `contradiction_details` entry, and
+                    // [`enforce_member_tie`] renders that as its own
+                    // `OperationTypeParams` refusal naming the REAL disagreeing pair. This
+                    // leg staying quiet is what lets that message be the one the author
+                    // sees, instead of a second, wrong one about a cycle.
+                    continue;
+                }
+                // WI-20260911-7TN1Q: the same bytes as the callee bracket's, one noun over
+                // — [`bracket_binding_mentions_its_parameter`].
+                let param_name = kb.local_name_of(*param).to_string();
+                return Err(bracket_binding_mentions_its_parameter(
+                    kb,
+                    "a receiver binding",
+                    &param_name,
+                    &written_value,
+                    fn_sym,
                     span,
-                    context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
-                    expected: format!(
-                        "a receiver binding for '{}' that does not mention '{0}' itself",
-                        kb.local_name_of(*param),
-                    ),
-                    actual: type_display_name_value(kb, &written_value),
-                });
+                ));
             };
             let callee = walk_type_deep_value(kb, subst, &prior);
             return Err(TypeError::ReceiverBracketConflict {
@@ -53908,7 +54046,22 @@ fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
         // head is a distinct constant/binder and never occurs as `vid` (it would
         // formerly have read as `Opaque` and fallen through to `false`).
         ViewHead::Var(x) => x.as_global() == Some(vid),
-        ViewHead::Functor { pos_arity, .. } => {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
+            // WI-20260911-7TN1Q: the exact twin of [`occurs_in`]'s `Term::Ref` leaf — a
+            // BARE (nullary) head naming a sort-level type parameter IS an occurrence of
+            // that parameter's variable. Nullary because that is what a `Term::Ref`
+            // reads as through the view, and because the deep spelling of a
+            // param-HEADED application (`F[X = Int64]`) carries its `F` as a child
+            // `sort_ref`, which this walk reaches on its own.
+            if let (Some(s), 0, 0) = (functor, pos_arity, named_arity) {
+                if sort_param_ref_is_var(kb, s, vid) {
+                    return true;
+                }
+            }
             for i in 0..pos_arity {
                 if let Some(c) = v.pos_arg(kb, i) {
                     if occurs_in_view(kb, vid, &c) {
@@ -54234,38 +54387,40 @@ fn bind_or_refine_member_param(
     // answered `true`: [`unify_parameterized_with_sort_ref`] returns `true`
     // unconditionally, so its boolean does not see a nested bind conflict.
     //
-    // A **NEW** ONE, not the absolute `is_contradiction()` flag, because the flag is not a
-    // statement about THIS bind. `enforce_member_tie` ACCEPTS a contradictory σ whenever
+    // A **NEW** DETAIL, not the absolute `is_contradiction()` flag, because the flag is not
+    // a statement about THIS bind. `enforce_member_tie` ACCEPTS a contradictory σ whenever
     // every recorded detail is exempt — a WI-424 body rigid as the prior, or a pair that
-    // re-unifies — and those calls load. Reading the flag therefore made every LATER
-    // refinement in such a call fall back to the raw bind, which would make one program's
-    // verdict depend on argument ORDER. The census says the shape is live: a green
-    // `wi_tests` run records 12 505 conflicts against 93 429 refinements, so σ carries the
-    // flag on calls that pass.
+    // re-unifies — and those calls load. Reading the flag would therefore make every LATER
+    // refinement in such a call fall back to the raw bind, i.e. make one program's verdict
+    // depend on argument ORDER. The census says the shape is live: a green `wi_tests` run
+    // records 12 505 conflicts against 93 429 refinements, so σ carries the flag on calls
+    // that pass.
     //
-    // NOT DRIVEN, and said plainly rather than credited to a neighbour. Reaching it needs
-    // ONE call in which a tolerated conflict is recorded BEFORE a bracket value's
-    // refinement, and the two shapes that tolerate a conflict both resist that: inside a
-    // sort body the rigid exemption applies, but an argument there does not pin the
-    // enclosing sort's parameters at all (measured — a bracket-less sibling call returns
-    // `Option[T = ?B]`), and the re-unify exemption fires on the callee's OWN sort
-    // reference, which is the same variable the refinement would be for. The candidate
-    // driver that looked like it worked — `Duo3[B = List].two(d3(x: 1, y: [1]), …)` inside
-    // `sort Duo3[A, B]` — loads clean under BOTH readings, for the first of those reasons.
-    // This is hardening on a reachable path, not a fix for a measured row.
+    // The detail COUNT is the whole discriminator because a conflict `subst` already
+    // records pushes no second copy (`bind_term` dedups per `(var, attempted)`), so an
+    // exact repeat inside the trial is not news — σ already carries it and
+    // `enforce_member_tie` already judges it.
     //
-    // The detail COUNT is the discriminator because a conflict `subst` already records
-    // pushes no second copy (`bind_term` dedups per var), so an exact repeat inside the
-    // trial is not news — σ already carries it and `enforce_member_tie` already judges
-    // it. The flag is still consulted for the one thing the count cannot say: a trial
-    // that turned it on where `subst` had it off.
+    // WI-20260911-7TN1Q — AND A THIRD CONJUNCT `(prior_flag || !trial.is_contradiction())`
+    // USED TO STAND HERE, claiming to catch "a trial that turned the flag on where `subst`
+    // had it off". It could not: every writer reachable inside the trial is a
+    // `Substitution::bind*`, and each PUSHES a detail before setting the flag. So a trial
+    // that raises the flag anew has grown the count and the conjunct above rejects it
+    // first; a dedup hit instead means the entry — and therefore the flag — was ALREADY in
+    // σ, so `trial.is_contradiction() == prior_flag` and the disjunction is a tautology.
+    // The `contradiction_details` field doc does warn that DIRECT `contradiction = true`
+    // writers record nothing, which is the state the conjunct was written for; the two in
+    // this file are `FIRST_CUT_9C2PZ`-gated and neither is on `unify_types`' callee side,
+    // and MEASURED with a temporary probe at this site the state never arises at all —
+    // `flag set, no detail` fired 0 times across `anthill-core`'s 6046 tests. Removed
+    // rather than re-documented, because a guard that cannot fire reads as protection.
+    // `/code-review` raised the conjunct as a LOST-DETAIL defect; the count conjunct is
+    // why it never was one.
     let prior_details = subst.contradiction_details.len();
-    let prior_flag = subst.is_contradiction();
     let mut trial = subst.clone();
     let var_t = kb.alloc_or_find_var_term(Var::Global(vid));
     if unify_types(kb, &mut trial, &TermIdView(var_t), &TermIdView(t))
         && trial.contradiction_details.len() == prior_details
-        && (prior_flag || !trial.is_contradiction())
     {
         *subst = trial;
         return;
@@ -54274,9 +54429,16 @@ fn bind_or_refine_member_param(
 }
 
 /// Occurs check: does `vid` appear anywhere inside `term`?
+///
+/// WI-20260911-7TN1Q: "appear" includes a `Term::Ref` NAMING the variable's parameter —
+/// the spelling a written `T` inside `sort Box[T]` actually lowers to. See
+/// [`sort_param_ref_is_var`] for why that is the walk's own rule and not a widening.
 fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
     match kb.get_term(term) {
         Term::Var(Var::Global(v)) => *v == vid,
+        // WI-20260911-7TN1Q: a `Ref` to a sort-level type parameter is an occurrence of
+        // that parameter's variable — see [`sort_param_ref_is_var`].
+        Term::Ref(s) => sort_param_ref_is_var(kb, *s, vid),
         Term::Fn {
             pos_args,
             named_args,
@@ -54286,6 +54448,45 @@ fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
                 || named_args.iter().any(|(_, t)| occurs_in(kb, vid, *t))
         }
         _ => false,
+    }
+}
+
+/// WI-20260911-7TN1Q — is `sym` a sort-level type PARAMETER whose `SortAlias` target is
+/// `Var::Global(vid)`? The alias-aware half of the occurs check, asked by [`occurs_in`]'s
+/// `Term::Ref` arm and by [`occurs_in_view`]'s bare-head one.
+///
+/// MIRRORS [`walk_type`]'S ALIAS HOP EXACTLY — the same `is_sort_param_symbol` gate and
+/// the same `resolve_sort_alias` read — and that correspondence is the whole
+/// justification: the occurs check must refuse precisely the bindings the σ walk can
+/// chase, no more. A written `T` inside `sort Box[T]` lowers to `Term::Ref(Box.T)`, the
+/// parameter's SYMBOL, not to its variable; `walk_type` resolves that `Ref` back to
+/// `?T_Box`, so `?T_Box := Option[T = Ref(Box.T)]` is cyclic THROUGH THE ALIAS and
+/// `walk_type_deep_g` chased it until the stack ended (WI-20260911-7TN1Q, reachable from
+/// WI-841 on; `wi_7tn1q_occurs_check_sort_alias_test` carries the six programs).
+///
+/// THE `is_sort_param_symbol` GATE IS NOT LOAD-BEARING, and saying so is the honest half:
+/// a top-level `sort Term = ?` in `anthill.reflect` also has a `SortAlias`-to-`Var` entry,
+/// and MEASURED with the gate forced open (`if false && !is_sort_param_symbol`) the three
+/// corpora load with identical fact/rule counts and `anthill-core`'s 6045 tests pass. It
+/// stays because the CORRESPONDENCE with `walk_type` is the entire argument for this arm's
+/// scope — an occurs check that refused more than the walk can chase would be refusing
+/// bindings for no reason — not because a row needs it. `walk_type` states the same gate's
+/// purpose at its own site.
+///
+/// WHAT THE VID COMPARISON IS FOR, by contrast, is measured: answering "is `sym` ANY sort
+/// parameter" instead of "is it THIS one" refuses `Duo.pairOf[A = Box[T = T]]()` written
+/// inside `sort Box[T]`, a legitimate program — back-out (E) of the test file, 1 red.
+///
+/// THE CENSUS, with a temporary probe on every firing: the arm fires NOWHERE in `stdlib/`,
+/// `examples/github-todo`, `rustland/anthill-todo/anthill`, or the workspace suite —
+/// only on the programs the test file names.
+fn sort_param_ref_is_var(kb: &KnowledgeBase, sym: Symbol, vid: VarId) -> bool {
+    if !is_sort_param_symbol(kb, sym) {
+        return false;
+    }
+    match resolve_sort_alias(kb, sym) {
+        Some(t) => matches!(kb.get_term(t), Term::Var(Var::Global(v)) if *v == vid),
+        None => false,
     }
 }
 
