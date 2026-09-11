@@ -16,6 +16,8 @@ any of these files.
 |---------|-------|--------|
 | [`ancestor/`](ancestor/) | Recursion — transitive closure as two clauses; one relation queried in three modes | Runs |
 | [`map-colouring/`](map-colouring/) | Generate-and-test: a domain from facts, `!=` guards, the answer queried free | Runs |
+| [`alphabet-words/`](alphabet-words/) | The domain of a RECURSIVE type as a relation over (value, type) — the type travels as an argument; fair enumeration by length; why the domain goal follows the body | Runs |
+| [`tiny-sat/`](tiny-sat/) | The same domain relation over another element sort; exclusive clause cases so a model is counted once | Runs |
 
 ### Not yet here
 

@@ -170,3 +170,77 @@ fn classic_mini_map_colouring_yields_six_definite_colourings() {
          are exactly 6 three-colourings of the Australian mainland",
     );
 }
+
+/// Words over an alphabet: the domain of a RECURSIVE type as a relation over
+/// (value, type term), hand-written in the shape WI-743 derives.
+///
+/// Pins the ANSWERS (27 and 12) and that every row is DEFINITE. A typed head over
+/// `List[T = Letter]` gives TODAY one CONDITIONAL answer with the domain goal
+/// undischarged (measured 2026-09-11, `wi742_typed_relational_head_test` pins the
+/// shape), which a count alone would read as "1 solution". When WI-743 lands the
+/// example drops its hand-written `domain` for the typed head, and these numbers
+/// must hold unchanged — that is what makes the example a driver rather than a
+/// demo.
+#[test]
+fn classic_mini_alphabet_words_enumerates_every_word() {
+    let mut kb = load_example("alphabet-words");
+
+    let w = fresh(&mut kb, "w");
+    let sols = query(&mut kb, "classic.alphabet.word", &[w]);
+    assert!(
+        sols.iter().all(|s| s.is_definite()),
+        "every word must be DECIDED — a conditional row is the domain goal left \
+         undischarged, not a word",
+    );
+    assert_eq!(
+        sols.len(),
+        27,
+        "3^3 three-letter words over {{a, b, c}}: the spine fixes three cells and \
+         the domain relation fills each from `Letter`",
+    );
+
+    let w = fresh(&mut kb, "w");
+    let sols = query(&mut kb, "classic.alphabet.no_repeat", &[w]);
+    assert!(sols.iter().all(|s| s.is_definite()));
+    assert_eq!(
+        sols.len(),
+        12,
+        "3 * 2 * 2 words with no letter next to itself — the `!=` guards prune \
+         after the domain has filled the cells",
+    );
+
+    // The domain with NOTHING binding the spine is an INFINITE relation. It must
+    // yield exactly the solution cap (`query` asks for 100) and then stop — the
+    // enumeration is fair by length, so answers keep arriving and the cap is
+    // reached; a depth-first descent into one branch would never return.
+    let w = fresh(&mut kb, "w");
+    let sols = query(&mut kb, "classic.alphabet.any_word", &[w]);
+    assert!(sols.iter().all(|s| s.is_definite()));
+    assert_eq!(
+        sols.len(),
+        100,
+        "an infinite, fair domain stops at the solution cap rather than hanging \
+         or running dry",
+    );
+}
+
+/// Tiny SAT: the same domain relation over `List[T = Bit]`, the formula as the
+/// test. Pins that there are exactly two models and that each is one DEFINITE row
+/// — the `or2` cases are exclusive, so an assignment satisfying both literals of
+/// a clause is not counted twice.
+#[test]
+fn classic_mini_tiny_sat_finds_both_models() {
+    let mut kb = load_example("tiny-sat");
+    let vs = fresh(&mut kb, "vs");
+    let sols = query(&mut kb, "classic.sat.model", &[vs]);
+    assert!(
+        sols.iter().all(|s| s.is_definite()),
+        "a model is a fully bound assignment, never a conditional row",
+    );
+    assert_eq!(
+        sols.len(),
+        2,
+        "(p or not q) and (q or r) and (not p or not r) has exactly two models — \
+         p q r = yes yes no and no no yes — and exclusive `or2` cases count each once",
+    );
+}
