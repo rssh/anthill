@@ -156,9 +156,13 @@ namespace anthill.prelude
     -- not a rule about reify. A rule that calls a bodied operation which reifies
     -- works: `rule r(?x) :- caught(?x)` answers.
     --
-    -- The catch is on the RAISE, not on the payload's sort: a body declaring two
-    -- `Error` labels reified at one of them catches both. 027.4's open questions
-    -- carry the measurement.
+    -- IT CATCHES ITS OWN PAYLOAD AND LETS THE REST PAST. A body declaring two
+    -- `Error` labels reified at one of them discharges only that one; the other
+    -- stays in the CALLER's row, which the typer already requires it to declare.
+    -- Where the runtime cannot tell — a payload that is a tuple, or a `T1` still
+    -- standing for an enclosing operation's type parameter — the boundary catches
+    -- WIDE, because the row discharged the label whatever the payload turns out
+    -- to be. 027.4 carries the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
       effects {Rho}
   end

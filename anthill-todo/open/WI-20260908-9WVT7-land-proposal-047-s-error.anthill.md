@@ -189,7 +189,7 @@ THREE THINGS THE PROPOSAL'S SKETCH DID NOT SAY, each settled by writing it.
    nested `run()` with a boundary beneath it: the operation that re-enters `run()` on a
    live stack is reached from the RESOLVER, and a rule body's raise appears in no caller's
    row, so a typed `reify` cannot wrap it. `frame.rs::the_boundary_scan_stops_at_the_floor`
-   drives `topmost_reify_boundary` directly — delete `floor` and nothing else goes red.
+   drives `reify_boundaries` directly — delete `floor` and nothing else goes red.
    (Bounding the RAISE scan is what 027.4 owed. The SUCCESS path still rides `deliver`'s
    pre-existing unbounded pop.)
 
@@ -351,3 +351,193 @@ is refused by a typed `reify`, which is the point of retyping.
 The bridge's own `loaded` now returns `LoadFailed::LoadFailed { diagnostics }` rather
 than the generic `Error`. That is the retype's consequence, not a defect: the ROW is what
 generates the host signature, so a raiser that says what it raises types its bridge too.
+\n
+### 2026-09-10T09:16:23Z — feedback — claude
+
+THE ONE SOUNDNESS GAP IS CLOSED: a boundary now catches ONLY the payload it is typed at.
+USER DIRECTION, and it is the standard rule — handle ours, return not-ours as an error;
+Scala additionally lets a handler name several types.
+
+THE TYPE SYSTEM ALREADY SAID THIS. `reify` shares its row tail, so a body raising
+`{Error[Boom], Error[Other]}` reified at `Boom` leaves `Error[Other]` in the CALLER's
+row. Measured three ways: the caller declaring it LOADS; the caller omitting it is
+REFUSED ("undeclared effect: Error[T = Other]"); and a `reify` at `Boom` around a body
+raising only `Other` is REFUSED too ("expected Result[E = Boom], got Result[E = Other]")
+— `T1` is INFERRED from the body's row, so a boundary cannot even be typed at a label its
+body does not raise. Only the runtime disagreed.
+
+WHAT IT DID INSTEAD. `AwaitState::ReifyBoundary` was a unit variant, so recovery could
+only ask "is this an `EvalError::Raised`". It swallowed the `Other` into a
+`Result[E = Boom]` and the caller's `case boom(w)` died one step later on a value that
+could never legally be there: MEASURED, `caughtBoom(7)` answered
+`match_failed(scrutinee: other(n: 7))`. Now it answers `error: other(n: 7)` — the raise
+escapes carrying its own payload.
+
+THE MECHANISM. `ReifyBoundary { payload: Option<Symbol> }` carries the payload SORT, read
+off the type-argument channel the dispatch arm already received and previously dropped —
+probed, the channel really does carry `key=T1 term=Ref(Boom)`. `T1` is narrowed to the
+sort it names at INSTALL, not at the catch, so the catch path is total. The unwind goes
+from
+"the innermost boundary" to "the innermost boundary that ACCEPTS this payload":
+`ActivationStack::reify_boundaries` returns candidates innermost-first and
+`payload_matches` judges each against `runtime_carrier_sort` of the raised value. Nothing
+accepts it -> it propagates out of the run, exactly as a raise outside every boundary
+does.
+
+A WIDER BOUNDARY ADMITS A NARROWER RAISE, and that is not a choice made at the boundary.
+`Error`'s payload is declared `Covariant` (035's variance facts), so a body raising
+`Error[Narrow]` conforms to a `reify` typed at `Error[Wide]` where `sort Narrow requires
+Wide`, and the typer DISCHARGES the label. Equality would therefore be UNSOUND, not
+merely strict — the raise would escape an operation already typed effect-free.
+`payload_matches` answers through `sort_sym_compatible`, the typer's own sort-vs-sort
+predicate. NOT full parity — the typer's arm is `bare_sort_compatible` and discharge runs
+through `labels_match_aligned`, and the covariant DIRECTION is hardcoded here while the row
+reads `fact Covariant(sort: Error, param: T)`. The extra legs were driven and both programs
+are refused at load today, so nothing escapes; that is containment, not agreement. Driven by
+`a_boundary_catches_a_payload_whose_sort_refines_its_own`
+— and the DRIVING SHAPE NEEDS A WRITTEN `Error.reify[T1 = Boom]`: left to inference `T1`
+comes from the body's row, so the boundary lands ON the raiser's sort and equality answers.
+The first fixture written for this passed with the leg backed out for exactly that reason.
+Measured with the written bracket: 1 failed of 24, and the inferred-`T1` control in the
+same test still passes.
+
+TWO CONSEQUENCES, NEITHER A TRADE.
+ * THE OFF-CHANNEL HOST RAISE IS FIXED BY THE SAME RULE. `raise_match_failed` /
+   `raise_division_by_zero` ride a row they never appear in; they are not `Boom`, so a
+   boundary at `Boom` declines them. Measured: a guard-exhaustible match inside one now
+   surfaces as `match_failed(scrutinee: -5)` where it used to surface as a `match_failed`
+   NESTED INSIDE A SECOND ONE. That was recorded here as a separate open question; it is
+   the same question.
+ * A MULTI-LABEL CATCH NEEDS NO NEW FORM. The effect ROW is the list of labels, and one
+   `reify` per label composes as nested `Result`s — driven: inner at `Boom`, outer at
+   `Other`, and each raise reaches the boundary typed at it. 047 §7's `try_catch` can
+   flatten the nesting later as ordinary sugar.
+
+DRIVEN, with the control. Three new rows —
+`a_boundary_declines_a_payload_it_is_not_typed_at`,
+`each_raise_reaches_the_boundary_typed_at_it`,
+`a_host_raise_is_not_mistaken_for_the_declared_payload`. Measured with `payload_matches`
+forced to `true` (the old carrier-only rule): 3 failed, 12 passed — exactly those three,
+because every other row is about a boundary catching its OWN payload, which both rules
+agree on. The two-way row pins the CHOICE rather than passing by luck: under
+"innermost wins" both raises answer through the inner boundary.
+
+`payload_matches` answers `false` for a value whose sort cannot be read, deliberately: an
+undetermined payload has not been shown to be this boundary's, so it travels on carrying
+its real value rather than being placed in a `Result[E = T1]` a caller is about to
+destructure.
+
+`None` IS "CANNOT NARROW", AND IT CATCHES WIDE — the shape a first attempt at this got
+wrong twice, both caught by `/code-review` with driven repros, and both REGRESSIONS
+against a working program rather than theory:
+
+ * A GENERIC `reify` REACHED THROUGH A RULE BODY OR A HOST `interp.call`. Those push a
+   frame with an EMPTY type-argument channel (`eval/mod.rs:1091`, `:1540`), so nothing can
+   ground `P`. Refusing was measured as `rule viaGenericRule(?r) :- catchIt(lambda () ->
+   mayFail(0 - 1), ?r)` answering `no solutions`, SILENTLY, beside `viaPlainRule` — the same
+   call at a concrete payload — answering `err(boom(why: "negative"))`. In a debug build
+   the sibling `debug_assert` in `bridge_op_to_eval` ABORTS instead. Pinned by
+   `a_generic_boundary_answers_through_a_rule_body`, with the concrete row as its control.
+ * A TUPLE PAYLOAD. A tuple type's head is `TypeExtractor.NamedTuple`, an ENTITY, so
+   head-reading alone installed a boundary at a symbol no value's `runtime_carrier_sort`
+   can equal and every raise was declined. Measured as `error: Tuple` escaping `main` from
+   an operation the typer typed effect-free, beside a `Boom` row in the same program that
+   caught. Pinned by `a_payload_the_runtime_cannot_narrow_is_still_caught`.
+
+And a type PARAMETER is registered as `SymbolKind::Sort` (so `x: P` routes through the
+type-param branch), so `has_kind` alone answers YES for `catchIt.P` — the first of the two
+above. The guard is symbol identity against the declaring scope's parameter list.
+
+ALSO FIXED HERE, BECAUSE THE NARROWING MADE IT REACHABLE: A DECLINED RAISE POISONED THE
+INTERPRETER. `run()` drains to empty on success but an `Err` return abandoned live frames,
+and until now nothing could error with a SUSPENDED frame installed — any boundary beneath
+a raise absorbed it. A declined raise is an ordinary outcome now, so the leftovers became
+reachable: `deliver` answers `Done` only on an empty stack, so the NEXT call on the same
+interpreter popped past its own base into the stale frame and died
+`Internal("deliver: parent frame had no awaiting state")`. Measured on one interpreter, a
+call that answered `ok(42)` fresh. `invoke_op_with_requirements` now truncates to its entry
+depth on error; pinned by `a_declined_raise_leaves_the_interpreter_usable` with the
+fresh-interpreter row as its control. Every other test builds its own interpreter, which is
+why none of them would have noticed; `anthill-todo`'s remint loop is the real caller that
+would.
+
+`payload_matches` answers through `sort_sym_compatible`, the typer's OWN sort-against-sort
+predicate (canonical identity, the entity→parent climb, `requires`-refinement), rather than
+a two-leg reimplementation. A NARROWED boundary DECLINES a payload whose sort it cannot
+read, and an un-narrowable one catches it: catching at a narrowed boundary was measured
+letting an inner `reify[T1 = Boom]` swallow a tuple label its own row had left to the
+caller (`a_narrowed_boundary_does_not_steal_an_unreadable_payload`).
+
+ALSO OPEN, EACH RECORDED AT ITS SITE:
+ * AN INLINE SIGNATURE VARIABLE IS NOT REWRITTEN. `op_own_param_ref_rewrite` keys off
+   `OperationInfo.type_params`, but the rigid list it joins against is that PLUS the
+   WI-1FKR2 inline family (`via(b: Box[?t]) -> Box[?t]`, which §5.4 quantifies exactly as
+   a bracket). An inline variable therefore still rides out ungroundable, reproducing the
+   WI-708 dangling-var shape. Not a regression — that is the behaviour before the rewrite
+   — and not covered by a test.
+ * A RENAMED `T1` IS SILENT. `enter_reify_boundary` finds the payload parameter by the
+   NAME `"T1"`; a missing key reads as "cannot narrow", which is legitimate for two other
+   reasons, so a rename in `effects.anthill` would quietly revert every boundary in the
+   program to catching wide. The repair is to resolve the SYMBOL once at
+   `ErrorLayer::resolve`, where a rename fails at layer construction.
+ * A DECLINED RAISE INSIDE A RULE BODY RESIDUALIZES TO "NO SOLUTIONS". `bridge_op_to_eval`
+   turns an `EvalError::Raised` into no answer, so a rule calling the shape this design
+   encourages — one `reify` per label, the rest declared as escaping — yields zero
+   solutions rather than a failure. Before the narrowing every raise inside a boundary was
+   absorbed, so the rule always answered. Needs a route out of the bridge, which is design.
+
+OPEN, AND NOT CLOSED BY THIS: THE TYPE-ARGUMENT AXIS. A value's runtime sort is its HEAD,
+so a boundary at `Box[V = Int64]` accepts a `Box[V = String]`. Driven by the review:
+nested boundaries at `Box[V=Int64]` / `Box[V=String]` both answer through the INNER one
+whichever way round they are, the control with two distinct payload SORTS answers
+`outer-caught`, and a caller that then uses the field at its declared `Int64` type answers
+`no solutions` — the confusion degrading into a silent failure. The typer DOES distinguish
+them (`expected declared: [], got undeclared effect: Error[T = Box[V = Int64]]`). This is
+PRE-EXISTING — before the narrowing no boundary judged at all — so the narrowing neither
+opens nor widens it, but it is the same defect class one type-argument deeper. Closing it
+needs the raised value's type ARGUMENTS, which the runtime does not reconstruct.
+
+THE GENERIC BOUNDARY WAS NOT A `reify` PROBLEM. `operation catchIt[P](body) -> Result[E =
+P, T = Int64] = Error.reify(body)` has `T1 = Var(Rigid P)` at its call site — correct, and
+useless on its own, since what `P` stands for is decided by the CALLER. That was the one
+case the narrowing regressed, and chasing it found a GENERAL, pre-existing defect: a
+callee's type-argument channel was installed UNCLOSED, so any type parameter routed
+through a generic caller arrived as a dangling skolem. MEASURED on main, with no `reify`
+in sight: `operation tyOf[T](x: T) -> Type = Cell[V = T]` called from `operation tyOf2[U](y:
+U) -> Type = tyOf(y)` gave `Cell[V = Var(Rigid(VarId { id: 1624, … }))]` while the direct
+`tyOf(5)` gave `Cell[V = Int64]` — the WI-708 dangling-`Ref(T)` regression one level
+deeper, produced by the other half of the same join.
+
+`collect_closed_type_args` closes a callee's channel over the CALLING frame's before
+installing it, which is the invariant WI-708 half-established: a frame's type-argument
+channel is GROUND with respect to the generic context it came from, so no reader has to
+chase. The typer cannot do the grounding — at a call site inside `caller[U]` the callee's
+`T` genuinely IS `U`, a skolem, and what `U` stands for is a run-time fact.
+
+BUT THE TYPER OWNS THE SPELLING, and that is what makes the join identity-keyed.
+`op_own_param_ref_rewrite` writes each skolem standing for one of the ENCLOSING
+operation's own parameters as `Ref(<op-scoped symbol>)` — the spelling a BODY reference
+already carries — so eval grounds it with the same `find_type_arg` identity match
+`reduce_var` uses (WI-708) and never compares a name.
+
+THE REWRITE APPLIES TO A WHOLE ENTRY, NEVER INSIDE ONE, and that restriction is measured.
+A skolem nested in a canonical `effects_rows(...)` spine is a ROW TAIL (WI-516: a rigid
+set-valued var is a row VARIABLE, not a label), and `row_tail_var_of` / `row_tail_termid`
+both match only `Term::Var` — rewriting one to a `Ref` leaves the decompose side reading
+NO tail and silently closes a row that must stay open. `/code-review` raised it against the
+first shape of this fix; instrumented, a DEEP rewrite fired on exactly those, `EffP` and
+`E2` entries shaped `effects_rows(...)`, across the stdlib and a row-threading probe. The
+cost of the restriction: a skolem nested in a NON-row type argument (`List[T = U]`) still
+rides out ungrounded — the behaviour before this change, unchanged.
+
+A FIRST ATTEMPT JOINED BY SHORT NAME AND WAS WRONG. `/code-review` drove it with a
+one-letter control: an ANONYMOUS skolem — the `?` an unwritten `Box[V = ?]` slot becomes,
+named after the SORT's parameter — was captured by a caller declaring `[V]`, giving
+`Cell[V = Box[V = String]]` where the same program with the caller's parameter spelled
+`[W]` left the slot a visibly dangling `Box[V = ?V]`. Pre-change it was visibly wrong;
+short-name-joined it was CONFIDENTLY wrong, which is worse. Only skolems minted for the
+enclosing operation's declared parameters are rewritten, so nothing else can match.
+
+Driven by `a_reify_at_an_operations_own_type_parameter_catches` (with `viaGenericOk` as
+the control that passes either way) and, for the general defect,
+`a_type_argument_passed_through_a_generic_caller_is_ground` in the WI-708 file.

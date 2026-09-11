@@ -190,16 +190,50 @@ pub enum AwaitState {
     ///
     ///  * `reify` is the ONE dispatch that must NOT be TCO'd. The extra frame
     ///    is not overhead to be dropped; it is what
-    ///    [`ActivationStack::topmost_reify_boundary`] finds.
+    ///    [`ActivationStack::reify_boundaries`] finds.
     ///  * The two exits differ. A normal delivery wraps the thunk's value as
     ///    `ok(v)`; the raise path truncates to this frame and delivers
     ///    `err(payload)`. Both then pop it and hand the `Result` to its parent,
     ///    so the boundary is answered exactly once either way.
     ///
-    /// Only `EvalError::Raised` is caught here. `Internal`, `StepsExhausted`,
+    /// Only `EvalError::Raised` is caught here, and only a raise whose PAYLOAD IS OF
+    /// THE TYPE THIS BOUNDARY WAS TYPED AT. `Internal`, `StepsExhausted`,
     /// `UnhandledEffect` and the rest pass through: a reify boundary handles the
     /// `Error` EFFECT, not interpreter faults.
-    ReifyBoundary,
+    ReifyBoundary {
+        /// The payload SORT this boundary discharges — `Some(Boom)` for a `reify` typed
+        /// at `Error[Boom]`, read off the type-argument channel as `T1` at the call site.
+        ///
+        /// CARRIED BECAUSE THE TYPE SYSTEM ALREADY DRAWS THIS LINE AND THE RUNTIME MUST
+        /// TOO. `reify`'s row shares its tail: a body raising `{Error[Boom],
+        /// Error[Other]}` reified at `Boom` leaves `Error[Other]` in the CALLER's row,
+        /// and the typer refuses a caller that does not declare it. Without this field
+        /// the unwind caught on the error's CARRIER — "is this a raise" — so it
+        /// swallowed `Other` too and delivered it inside a `Result[E = Boom]`, which
+        /// surfaced one step later as a match failure on a value that could never
+        /// legally be there. Measured, before this: `caughtBoom(7)` answered
+        /// `match_failed(scrutinee: other(n: 7))`.
+        ///
+        /// A `Symbol` AND NOT THE TYPE TERM: the narrowing is a question about a
+        /// value's SORT, which is all `runtime_carrier_sort` can answer, so resolving
+        /// `T1` to that sort once at INSTALL keeps the catch path total.
+        ///
+        /// `None` IS "THIS BOUNDARY CANNOT BE NARROWED", AND IT CATCHES WIDE — exactly
+        /// what every boundary did before the narrowing existed. Three shapes reach it,
+        /// all ordinary: a `T1` still standing for an enclosing operation's type
+        /// parameter (a generic `reify` entered from a host `interp.call` or a rule-body
+        /// bridge, where the frame channel is empty and nothing can ground it), a `T1`
+        /// whose head names no sort (a TUPLE payload's head is the ENTITY
+        /// `TypeExtractor.NamedTuple`), and a `T1` absent from the channel altogether.
+        ///
+        /// NOT A FALLBACK PAPERING OVER AN ERROR — the ROW is the guarantee either way.
+        /// The typer discharged this label by the signature (WI-329), and the narrowing
+        /// is an ADDITIONAL check available only where the payload is nominal. Refusing
+        /// instead was measured and is worse than useless: `rule viaGenericRule(?r) :-
+        /// catchIt(lambda () -> mayFail(0 - 1), ?r)` aborted on a `debug_assert` in debug
+        /// and SILENTLY LOST ITS ANSWER in release, for a program that worked before.
+        payload: Option<Symbol>,
+    },
 }
 
 /// A single activation.
@@ -327,8 +361,15 @@ impl ActivationStack {
         self.depth_cap = cap;
     }
 
-    /// Proposal 027.4 — index of the innermost [`AwaitState::ReifyBoundary`] at
-    /// or above `floor`, or `None` if this run owns no boundary.
+    /// Proposal 027.4 — every [`AwaitState::ReifyBoundary`] at or above `floor`,
+    /// INNERMOST FIRST, paired with the payload type each was typed at.
+    ///
+    /// A LIST AND NOT THE TOPMOST, because a boundary may DECLINE: a raise is caught
+    /// by the innermost boundary whose payload type it matches, and travels past the
+    /// ones it does not — the same rule the row already states statically, since a
+    /// label a `reify` does not discharge stays in the caller's row. The caller
+    /// decides acceptance (it needs the KB, which this type does not hold), so the
+    /// candidates are collected here and judged there.
     ///
     /// `floor` is NOT decoration. `run()` drains until the stack is EMPTY and has
     /// no per-run base, so a builtin's `interp.call` pushes its frames on top of
@@ -336,14 +377,30 @@ impl ActivationStack {
     /// answering it from an inner one would hand that outer frame's `Result` back
     /// as the inner call's value. (The wider defect — `deliver` popping past the
     /// base — is pre-existing; bounding this scan is what 027.4 owes.)
-    pub fn topmost_reify_boundary(&self, floor: usize) -> Option<usize> {
+    pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[(usize, Option<Symbol>); 2]> {
         self.frames
             .iter()
             .enumerate()
             .skip(floor)
             .rev()
-            .find(|(_, f)| matches!(f.awaiting, Some(AwaitState::ReifyBoundary)))
-            .map(|(i, _)| i)
+            .filter_map(|(i, f)| match &f.awaiting {
+                Some(AwaitState::ReifyBoundary { payload }) => Some((i, *payload)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Drop back to `depth` frames, discarding everything above.
+    ///
+    /// FOR AN ERROR EXIT ONLY, and one caller by design: [`Interpreter::run`] restoring
+    /// the `floor` it entered at when the trampoline returned `Err` — see the comment
+    /// there for what leaking those frames cost, and for why the repair sits at the
+    /// trampoline rather than at any of its three drivers. A no-op when the stack is
+    /// already at or below `depth`.
+    pub(crate) fn truncate_to(&mut self, depth: usize) {
+        if self.frames.len() > depth {
+            self.frames.truncate(depth);
+        }
     }
 
     /// Discard every frame above `idx` and leave the boundary there no longer
@@ -351,7 +408,7 @@ impl ActivationStack {
     /// delivers `err(payload)` FROM this frame, which pops it and cascades to
     /// its parent exactly as the success path does.
     ///
-    /// `idx` must come from [`Self::topmost_reify_boundary`] — hence `pub(crate)`
+    /// `idx` must come from [`Self::reify_boundaries`] — hence `pub(crate)`
     /// where the rest of this type is `pub`. `ActivationStack` is re-exported, so a
     /// `pub` spelling would put a precondition nothing outside the crate can honour
     /// on the public surface, guarded only by a `debug_assert` that is absent from
@@ -362,7 +419,7 @@ impl ActivationStack {
     pub(crate) fn unwind_to_boundary(&mut self, idx: usize) {
         debug_assert!(matches!(
             self.frames.get(idx).map(|f| &f.awaiting),
-            Some(Some(AwaitState::ReifyBoundary))
+            Some(Some(AwaitState::ReifyBoundary { .. }))
         ));
         self.frames.truncate(idx + 1);
         self.frames[idx].awaiting = None;
@@ -478,7 +535,9 @@ mod tests {
     fn the_boundary_scan_stops_at_the_floor() {
         let boundary = || {
             let mut f = dummy_frame();
-            f.awaiting = Some(AwaitState::ReifyBoundary);
+            f.awaiting = Some(AwaitState::ReifyBoundary {
+                payload: Some(Symbol::from_raw(1)),
+            });
             f
         };
         let mut s = ActivationStack::new();
@@ -487,16 +546,21 @@ mod tests {
         s.push(boundary()).unwrap(); // 2 — this run's boundary
         s.push(dummy_frame()).unwrap(); // 3 — the thunk
 
+        let idx = |v: SmallVec<[(usize, Option<Symbol>); 2]>| -> Vec<usize> {
+            v.into_iter().map(|(i, _)| i).collect()
+        };
         // A run whose floor is 2 sees only its own.
-        assert_eq!(s.topmost_reify_boundary(2), Some(2));
+        assert_eq!(idx(s.reify_boundaries(2)), vec![2]);
         // A run entered ABOVE both must not reach down for one.
         assert_eq!(
-            s.topmost_reify_boundary(3),
-            None,
+            idx(s.reify_boundaries(3)),
+            Vec::<usize>::new(),
             "a nested run must not answer its caller's boundary"
         );
-        // The outer run owns both, and takes the INNERMOST.
-        assert_eq!(s.topmost_reify_boundary(0), Some(2));
+        // The outer run owns both, and sees them INNERMOST FIRST — the order the
+        // acceptance walk consumes, so a raise the inner one declines reaches the
+        // outer one and no other.
+        assert_eq!(idx(s.reify_boundaries(0)), vec![2, 0]);
     }
 
     /// The unwind: everything above the boundary is discarded and the boundary itself
@@ -507,12 +571,14 @@ mod tests {
         let mut s = ActivationStack::new();
         s.push(dummy_frame()).unwrap();
         let mut b = dummy_frame();
-        b.awaiting = Some(AwaitState::ReifyBoundary);
+        b.awaiting = Some(AwaitState::ReifyBoundary {
+            payload: Some(Symbol::from_raw(1)),
+        });
         s.push(b).unwrap();
         s.push(dummy_frame()).unwrap();
         s.push(dummy_frame()).unwrap();
 
-        let idx = s.topmost_reify_boundary(0).expect("the boundary is there");
+        let (idx, _) = s.reify_boundaries(0)[0];
         s.unwind_to_boundary(idx);
 
         assert_eq!(s.depth(), 2, "every frame above the boundary is discarded");
