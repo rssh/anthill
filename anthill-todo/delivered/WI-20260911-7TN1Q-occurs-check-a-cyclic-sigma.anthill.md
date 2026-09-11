@@ -3,9 +3,9 @@
 - id: WI-20260911-7TN1Q-occurs-check-a-cyclic-sigma
 - created: 2026-09-11T14:39:50Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-11T14:39:50Z
+- status_at: 2026-09-11T16:40:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -99,4 +99,72 @@ WI-20260911-RS2G4 (the receiver spelling, and the header note that records this)
 ### 2026-09-11T14:40:30Z — feedback — claude
 
 RUST-ONLY: scaland loads no operations, so it has no call-site bracket and no twin to keep in step.
+
+### 2026-09-11T16:40:47Z — feedback — claude
+
+DELIVERED. `occurs_in` is alias-aware, and the callee bracket no longer swallows the
+refusal. Rows: `wi_7tn1q_occurs_check_sort_alias_test` (8), whose header carries the
+back-out table and the census.
+
+THE TICKET NAMED ONE HALF OF THE FIX. `occurs_in`'s `Term::Ref` arm ends the abort, as
+predicted — but with the binding refused the CALLEE spelling then LOADED CLEAN, because
+`seed_op_type_args` discards `unify_types`' verdict. That is silence, which the acceptance
+forbids, so the callee leg now reads the verdict for this ONE fault (gated on `prior` so
+WI-367 / WI-379's already-pinned discard is untouched) and both channels render from one
+builder. The receiver spelling needed no new message: RS2G4 had already written one against
+exactly this refusal, which could not fire until now.
+
+THE CENSUS, zero everywhere. A temporary probe logged every firing of the new arm: stdlib +
+an empty program 0, `examples/github-todo` 0, `rustland/anthill-todo/anthill` 0, full
+workspace suite 6877 passed / 0 failed / 0 firings. Nothing that exists was newly refused,
+so there was no legitimate program to judge. Final suite after the review fixes: 6885
+passed, 0 failed.
+
+FIVE BACK-OUTS, each measured separately — (A) the predicate off: the BINARY ABORTS; (B)
+`occurs_in`'s `Term::Ref` arm alone off: the same abort, which is what says the cycle runs
+through the `TermId` reader; (C) `occurs_in_view`'s bare-head arm alone off: 5 red, no
+abort; (D) the callee leg off: 4 red; (E) the vid comparison dropped: 1 red, and that row
+is the only thing between this check and one that refuses a legitimate program.
+
+ONE CLAIM OF MINE WAS WRONG AND IS CORRECTED IN PLACE. I wrote that the
+`is_sort_param_symbol` gate keeps the arm narrow "or it would refuse bindings across the
+whole stdlib" — inherited from `walk_type`'s doc, not measured. Forced open, the three
+corpora load with identical fact/rule counts and `anthill-core`'s 6045 tests pass. The gate
+stays for the CORRESPONDENCE with `walk_type`, which is the arm's whole justification, and
+`sort_param_ref_is_var`'s doc now says that instead.
+
+`/code-review` (high) found five things; three were mine and are fixed here:
+  * the receiver leg inferred "the value mentions the parameter" from the verdict alone,
+    so a correct binding could be blamed for a cycle whenever sigma already carried the
+    STICKY contradiction flag. It now reads the fact, exactly as the callee leg does. No
+    program reaches that state, and the header says so rather than crediting a row.
+  * a `debug_assert!(false, ...)` arm failed OPEN in release, letting a refused binding
+    type at whatever the context wanted. The tripwire stays; the refusal does not depend
+    on it.
+  * the bare refusal read as "you wrote something illegal". `Box.empty[T = List[T = T]]()`
+    is a well-formed INTENT — the same operation at another instance — unexpressible only
+    because a bracket binds the ENCLOSING sort's canonical variable, so the callee's `T`
+    and this instance's `T` are one variable. The message now says that, pinned by
+    `the_refusal_says_why_it_is_a_representation_limit`. Giving the callee's parameters
+    fresh variables is what would make the family expressible; that is a design change and
+    is not in this ticket.
+
+The fourth was folded in INLINE rather than filed, because the change is a one-line
+deletion: `bind_or_refine_member_param`'s third conjunct
+`(prior_flag || !trial.is_contradiction())`. The review read it as losing a conflict
+detail; it never could — every writer reachable inside the trial pushes a detail BEFORE
+setting the flag, so a trial that raises the flag anew has grown the count the SECOND
+conjunct checks, and a dedup hit means the flag was already in sigma, making the
+disjunction a tautology. Measured with a probe at the site: `flag set, no detail` fired 0
+times across 6046 tests. Removed with the proof in its place, because a guard that cannot
+fire reads as protection.
+
+The fifth is filed as WI-20260911-6B67S: a receiver-bound requirement slot skips
+`validate_instance_selection`, so `check_selection_bindings` says a witness PROVIDES the
+spec when it provides nothing. Pre-existing in RS2G4, out of this ticket's diff.
+
+RUST-ONLY, now measured rather than inherited: `scaland/core/.../load/Loader.scala:397`
+states it emits no `SortAlias` fact and has no typer, and scaland's `occursIn` is the
+resolution-path check in `subst/Substitution.scala`. There is no alias to be cycle-aware
+about and no type walk to overflow.
 
